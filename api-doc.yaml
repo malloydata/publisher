@@ -3543,31 +3543,40 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expressions gating this source, declared with a
-            source-level `#(authorize)` annotation — the source's own, or, when it
-            declares none, the nearest source it extends that does. (File-level
-            `##(authorize)` is deprecated and fails the model load, so no
-            expression here ever comes from one.) Each is a Malloy boolean
-            expression over declared givens, evaluated as a disjunction (OR) and
-            enforced at query time. An empty or absent list means unrestricted.
+            Effective authorize expression gating this source: the `code` of
+            the source's own `#(authorize)`-tagged gate dimension, as the
+            author wrote it, or, when the source declares none of its own,
+            the nearest source it extends that does. (File-level
+            `##(authorize)` and the retired string-form `#(authorize)
+            "<expr>"` annotation are both refused at model load, so no
+            expression here ever comes from either.) A source may declare at
+            most one gate dimension, so a dimension-form source contributes
+            exactly one element; the field stays typed as an array so existing
+            introspection consumers keep parsing it as one, and see the
+            caution below before reading more than one. Enforced at query time
+            by grafting the gate dimension onto the source by name. An empty or
+            absent list means unrestricted.
 
-            How a denial surfaces depends on what the expression reads. An
-            expression referencing only givens is a whole-source gate: the request
-            is denied with HTTP 403 unless at least one expression evaluates true.
-            An expression that also references a row field of the source is a
-            row-level gate, applied as a filter instead — such a request succeeds
-            with HTTP 200 and returns only the rows the expression admits, which
-            may be none. Do not treat a 200 with zero rows as "no gate applied".
+            Every gate is enforced as a row filter, whether or not its
+            expression reads a row field: the gate dimension is grafted onto the
+            source the query enters through and evaluated by the same query. A
+            caller the gate admits nowhere therefore gets HTTP 200 with zero
+            rows, not a 403. Do not treat a 200 with zero rows as "no gate
+            applied". A 403 means the gate could not be applied at all: the
+            entry point renamed or dropped the field the gate reads, or a given
+            the gate names was not supplied. Both are denials, but only one is
+            visible as a status code.
 
-            IMPORTANT for anything re-implementing the decision: this flat list
-            cannot always express the predicate. Expressions from one source are
-            OR-ed, but when more than one source gates the entry point (its own
-            gate plus one carried from the source it derives from) those sources
-            are AND-ed, and both sets appear here as one list. So a list of two
-            expressions may mean "either" or "both". Treat it as "at least these
-            constraints apply" — use it to decide THAT a source is gated, not to
-            recompute WHETHER a given caller passes. Reading it as a pure
-            disjunction grants where Publisher denies.
+            IMPORTANT for anything re-implementing the decision: this flat
+            list is not a predicate you can evaluate. A dimension-form source
+            contributes exactly one expression, but a package still carrying a
+            retired string-form gate beyond the load-time refusal's reach (that
+            refusal sees only one import hop) can flatten to several, and
+            expressions that came from different declaring sources are AND-ed
+            rather than OR-ed. Treat the list as "at least these constraints
+            apply": use it to decide THAT a source is gated, not to recompute
+            WHETHER a given caller passes. Reading it as a pure disjunction
+            grants where Publisher denies.
 
             Givens are caller-asserted, so this is a boundary only behind a
             trusted tier — see docs/authorize.md.
