@@ -48,6 +48,9 @@ how the loop earns trust, not a permanent limitation — as agents prove out, it
 optimization becomes automatic. Read the gap scoring below in that frame: each closed row is not
 parity with dbt; it is the runtime absorbing another thing humans used to hand-compile.
 
+One thing the framing should not imply: the sequencing below is governance and integration first.
+The runtime is why the plan coheres, not what ships next.
+
 ## Open source first
 
 A standing rule for everything in this plan: **capability lands in the open-source Publisher; the
@@ -81,12 +84,13 @@ deployments running the dbt → Malloy pattern today:
 | DAG, `ref()`, build order, selective builds | Run + build-plan DAG, scoped reruns, content-addressed reuse, freshness-objective scheduling — all shipped | **Closed** |
 | Incremental models | `refresh="incremental"` with `watermark=`/`merge_key=`, on Postgres and BigQuery; late-arriving data is operator-repaired | **Closed, narrowly** |
 | Materialization configs | One annotation (`#@ persist` / `preaggregate` / `#(index)`); the platform absorbs identity, scheduling, and cleanup | **Closed — simpler than dbt** |
-| Test framework (severities, scoping) | Nothing today — the clearest place dbt leads | Open · design in progress |
+| Test framework (severities, scoping) | Nothing today — the clearest place dbt leads. Data tests: design in progress. Unit tests (fixture → expected result): cheap once source rebinding lands | Open · design in progress |
 | Enforced contracts | Really two contracts, and neither exists yet. *Upstream* (warehouse → model): compile catches shape errors, but as an error deep in a model, not at a named, diagnosable boundary — and compile alone misses a class of errors that only a dry-run against the warehouse catches. *Downstream* (model → consumers): a view's fields are API surface for dashboards and agents; a removed field compiles clean and breaks them silently | Open · lands in `lint` |
 | Seeds | Package-local CSVs already work — the per-package duckdb reads `.csv`/`.xlsx` in place, versioned with the package. Missing: joinability — the CSV sits on the sandbox connection, marts on the warehouse connection, and Malloy can't join across them | **Mostly closed** |
 | SCD2 snapshots | The incremental machinery — watermark ledger, stable physical naming, transactional in-place advance, retry discipline — is most of the write path. But the shipped modes can't hold history (`merge` overwrites the prior value; the no-key range replace assumes append-only sources), and the cache lifecycle — re-address → clean rebuild → collection — discards accumulated observations | Open · a write path + lifecycle exemptions, not a new engine |
 | Staging query shapes (`UNION ALL`, correlated date explosion, non-linear pipelines) | `connection.sql()` sources are already persistable, so staging SQL can be lifted verbatim and gain the orchestrator immediately | Open · bridged; closed only by language work |
 | Feature-flag DAG pruning, dispatch hooks, templating | Givens cover value substitution; per-tenant variance requires an external build step today | Open · package variants |
+| Macros & packages (reuse across projects and tenants) | npm-style package dependencies for Malloy packages — versioned, declared, lockfile-resolved — are being scoped; override sources (a package declares a typed default, a consumer rebinds it) follow; expression-level macros are language work | Open · package dependencies + override sources |
 
 **The verdict:** the remaining gap is four things — governance (tests, contracts, seeds), state
 (SCD2), staging expressiveness, and variance. Each one closed converts another slab of dbt pipeline
@@ -151,6 +155,17 @@ team should own. All of it becomes product:
   package that would fail to compile can never ship), with injection points for per-tenant
   documentation and synonyms, and environment-resolved bindings so the dev→prod dataset swap is
   configuration.
+- **Package dependencies and override sources.** The dbt pattern of tenant-specific projects over
+  a shared package needs two things. *Dependencies:* an npm-style mechanism — a package declares a
+  versioned dependency on another, resolved through a lockfile — so a conformed model is published
+  once and consumed by many tenant packages. This is being scoped now, and "npm-style" is
+  deliberate: the model is npm's (declared, versioned, lockfile-resolved, registry-backed); whether
+  it rides on the npm registry itself is part of the scoping. *Override sources:* the shared
+  package declares a typed default source (often empty-but-typed) and the consuming package
+  supplies its own. That is what makes a shared dependency usable across tenants whose physical
+  bindings differ — the conformed model is imported, the bindings are local — and it is dbt's
+  macro-override pattern at the source level. Expression-level macros (one transformation applied
+  across many fields) have no Malloy unit to publish today; that is language work, in Lane B.
 - **Record the lockstep.** Stamp the upstream transform's git ref or manifest hash into the package
   at publish and surface it, so "the dbt build and the served Malloy package are on the same ref"
   is a recorded, checkable fact instead of a convention in someone's Terraform.
@@ -158,6 +173,13 @@ team should own. All of it becomes product:
 ## C. Convert: move the seam down
 
 Staged, cheapest first, each stage independently valuable.
+
+**What incremental looks like.** One mart at a time, with dbt running below throughout. Bind to
+the dbt mart today; when ready, lift its staging SQL verbatim into `connection.sql()` sources and
+let the orchestrator run it; put tests on it; then Malloy-ify the SQL as the language lands. No
+step requires the previous mart to have finished its journey. What gates the *first full cutover*
+of a pipeline is Stage 1, Stage 2, and the reuse gap above — tests, snapshots, and shared packages
+are what a team cannot leave dbt without — which is why they are ordered first.
 
 ### Stage 1 — Governance: tests, contracts, seeds
 
@@ -175,6 +197,13 @@ versioned, human-editable, servable table — it needs to be pushable into the w
 as a managed, content-addressed table (rebuilt when the file changes) so it can join the marts it
 exists to enrich, which is what policy lookups are for.
 
+Unit tests are a separate, cheaper thing. A Malloy model is pure declarations over sources, so a
+unit test is a fixture CSV per source plus an expected result, run on the per-package duckdb
+sandbox that already reads package files in place. It lands in `lint` alongside data tests and
+reuses the same source-rebinding mechanism as package variants. Two honest limits: dialect-specific
+expressions and `connection.sql()` sources test on duckdb, not the warehouse; and a test cannot
+cross the sandbox/warehouse boundary, which is why the rebinding has to exist first.
+
 ### Stage 2 — State: SCD2 as a realization mode
 
 Point-in-time analysis rests on history that source systems don't retain, and production
@@ -186,8 +215,13 @@ strategy *and* a check strategy (no source's updated-at is trustworthy until pro
 hard-delete close-out — none of which the shipped delta modes provide. **Lifecycle exemptions:** a
 history artifact is *primary data, not a cache* — a definition change must carry history forward
 instead of rebuilding from current state, collection must never reclaim the only copy, and
-retention becomes a stated posture. The write path lands in the open-source Publisher, which
-already owns the incremental ledger; the lifecycle protections are the managed platform's layer.
+retention becomes a stated posture. Both land in the open-source Publisher, which already owns the
+incremental ledger: the write path, and the invariants that make history safe — history artifacts
+are exempt from collection and re-addressing, and a definition change carries history forward or
+refuses rather than rebuilding from current state. As with every other mechanism here, the
+Publisher ships a basic refresh schedule and exposes the run and lifecycle mechanics over the API
+for external orchestration; the managed platform layers retention policy, backups, and freshness
+objectives on top.
 
 ### Stage 3 — Staging: SQL sources now, language later
 
@@ -203,15 +237,15 @@ Two decoupled lanes, so conversion isn't gated on language design:
   operations** first (the single disqualifier for staging: multi-source entities, taxonomy
   unpivots, past/future splits are all `UNION ALL`), then **correlated table functions** (per-row
   date explosion), then **non-linear pipelines** (a named stage consumed by several branches), then
+  **expression-level macros** (one transformation declared once, applied across many fields), then
   quality-of-life (a `QUALIFY` equivalent, richer ordering, function breadth). Each feature that
   lands retires a class of raw SQL from Lane A: **Lane A makes conversion possible; Lane B makes it
   idiomatic** — and readable by the audience this whole plan serves.
 
 ### Stage 4 — Variance: per-tenant compilation as product
 
-Builds on package variants: feature-flag pruning becomes capability-flag variants; dispatch hooks
-become **override sources** — a package declares a typed default source (often empty-but-typed) and
-a consuming package supplies its own. Most templating dissolves along the way: value substitution
+Builds on package variants and override sources (section B): feature-flag pruning becomes
+capability-flag variants; dispatch hooks become override sources. Most templating dissolves along the way: value substitution
 is already covered by givens and parameters, and defensive compile-time introspection exists mostly
 because inputs lacked contracts — which Stage 1 fixes at the root. The honest expectation: a thin
 per-tenant compile step survives every version of this plan. The goal is that the product does it,
@@ -234,8 +268,8 @@ driven by declarations, not a team-maintained build system.
 | Horizon | Items |
 | --- | --- |
 | Now | Honest CI signals · `dbt bind`/`check` · `lint` skeleton + contributed checks · refresh hook · the "Malloy for dbt users" guide · fold the severity/scoping/warn-stream requirements into the assertions design |
-| Next | Semantic-layer converter + reconciliation harness · `ci compile` + example package · package variants · warehouse-joinable seeds · SCD2 design doc · SQL-source dependency-edge spike |
-| Later | Language features in measured-usage order · full staging conversion (SQL sources → progressive Malloy-ification) · override sources |
+| Next | Semantic-layer converter + reconciliation harness · `ci compile` + example package · package variants · npm-style package dependencies · override sources · unit tests in `lint` · warehouse-joinable seeds · SCD2 design doc · SQL-source dependency-edge spike |
+| Later | Language features in measured-usage order · full staging conversion (SQL sources → progressive Malloy-ification) · expression-level macros |
 
 ## Open questions — input welcome
 
