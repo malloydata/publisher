@@ -562,22 +562,27 @@ source: regional is duckdb.table('customers') extend {
 
    it("grants on the first disjunct", async () => {
       await writeModel("rt_disj.malloy", DISJUNCTION);
-      const { result } = await runGated(
+      const { compactResult } = await runGated(
          "rt_disj.malloy",
          "run: regional -> { aggregate: c }",
          { ROLE: "admin", REGION: "nowhere" },
       );
-      expect(result.data).toBeDefined();
+      // `customers` has 2 rows total; a broken `or` (e.g. evaluated as
+      // `and`) would deny both, which `.toBeDefined()` cannot distinguish
+      // from a genuine grant (both resolve to a defined `{c: 0}`/`{c: 2}`).
+      const rows = compactResult as unknown as { c: number }[];
+      expect(rows[0].c).toBe(2);
    });
 
    it("grants on the second disjunct", async () => {
       await writeModel("rt_disj.malloy", DISJUNCTION);
-      const { result } = await runGated(
+      const { compactResult } = await runGated(
          "rt_disj.malloy",
          "run: regional -> { aggregate: c }",
          { ROLE: "nobody", REGION: "us-west" },
       );
-      expect(result.data).toBeDefined();
+      const rows = compactResult as unknown as { c: number }[];
+      expect(rows[0].c).toBe(2);
    });
 
    it("denies (zero rows) when neither disjunct is satisfied", async () => {
@@ -917,8 +922,8 @@ source: top_join is duckdb.table('customers') extend {
 
    it('denies (zero rows) a direct query against a base locked with #(authorize) "false"', async () => {
       // `false` is a constant row filter now — a bare literal is a legal
-      // gate condition (see `authorize.ts`'s `classifyAuthorizeGate`), so
-      // this admits the request into a query that matches zero rows (a
+      // gate condition (see `gate_classification.ts`'s `resolveGateShape`),
+      // so this admits the request into a query that matches zero rows (a
       // `count()` of 0), rather than throwing a 403.
       await writeModel("rt_locked.malloy", LOCKED_BASE);
       const { compactResult } = await runGated(
@@ -1004,8 +1009,17 @@ source: top_join is duckdb.table('customers') extend {
       for (const [label, query] of joinShapes) {
          it(`allows ${label}`, async () => {
             await writeModel("rt_locked.malloy", LOCKED_BASE);
-            const { result } = await runGated("rt_locked.malloy", query, {});
-            expect(result.data).toBeDefined();
+            const { compactResult } = await runGated(
+               "rt_locked.malloy",
+               query,
+               {},
+            );
+            // `customers` has 2 rows; the entry point's own `count()` is
+            // unaffected by a join to the locked `base_locked` (Q16), so a
+            // wrongly-fired join gate (which would zero this out) is
+            // distinguishable from a genuine allow — unlike `.toBeDefined()`.
+            const rows = compactResult as unknown as { c: number }[];
+            expect(rows[0].c).toBe(2);
          });
       }
 
