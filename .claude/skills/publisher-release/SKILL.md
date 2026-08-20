@@ -19,9 +19,10 @@ YAML, and it is the authority when this file and it disagree.
 behaviour writes the note**, in the same PR, as a `## [Unreleased]` section —
 which is the only way it gets written by someone who knows what changed. The
 release then carries it to users on its own: `gh-release` appends every
-`[Unreleased]` section to the release page, then opens a PR stamping those
-headings with the version that shipped them. Writing the section is the whole
-job; merging that PR is the one thing the release cannot do for itself.
+`[Unreleased]` section to the release page, then pushes a branch stamping those
+headings with the version that shipped them and prints a link to open it as a PR.
+Writing the section is the whole job; opening and merging that PR is the one
+thing the release cannot do for itself.
 
 ### Does this change need one?
 
@@ -63,9 +64,9 @@ Three states, in order:
    #1024 (pre-aggregation off by default) and #1030 (on by default) are one
    section for exactly this reason.
 3. **`## [<version>] — <what changed>`** once a release has shipped it. **CI
-   writes this** — `gh-release` opens a `docs: stamp the release notes shipped in
-   <version>` PR after the release is cut, and a human merges it. You do not
-   stamp by hand, and you do not guess the number in advance.
+   writes this** — `gh-release` pushes a `release-notes-stamp-<version>` branch
+   after the release is cut, and a human opens and merges it. You do not stamp by
+   hand, and you do not guess the number in advance.
 
 Once a section is stamped, it is history and does not get rewritten. A follow-up
 that changes that behaviour opens a **new** `[Unreleased]` section referencing
@@ -77,7 +78,8 @@ are assigned at dispatch time and a release can fail, so a section stamped early
 can name a version that does not exist — which is exactly why the stamp runs
 after `gh release create` succeeds and not before. Stamping a version that has
 **already** shipped is a different act and sometimes necessary, because the
-stamp PR needs a human to merge and can be missed; step 3 covers it.
+stamp branch needs a human to open and merge, and can be missed; step 3 covers
+it, including why the obvious command for it is destructive.
 
 ## Which number to bump
 
@@ -205,13 +207,14 @@ and "any output means bump" then walks the version a second time for nothing.
 ### 3. Sanity-check the notes
 
 `gh-release` reads `RELEASE_NOTES.md` itself: it appends every `## [Unreleased]`
-section to the release page, then opens a PR stamping those headings. There is
-nothing to paste, so this step is a read and one check.
+section to the release page, then pushes a branch stamping those headings. There
+is nothing to paste, so this step is a read and one check.
 
 ```bash
 grep -n '^## \[Unreleased\]' RELEASE_NOTES.md
 node scripts/release-notes.mjs extract | head -40
-gh pr list --repo malloydata/publisher --search 'docs: stamp the release notes' --state open
+# a previous release's stamp, still waiting on a human
+git ls-remote --heads origin 'refs/heads/release-notes-stamp-*'
 ```
 
 What you are checking is that the sections listed are the ones this release
@@ -223,22 +226,55 @@ If a section is present that should **not** ship yet, the work behind it is
 already on `main` and the note is telling the truth; the fix is a release, not
 an edit.
 
-**A previous release's stamp PR left open is the one that will bite you**, which
-is what the third command is for. The stamp cannot merge itself: `main` requires
-a pull request and that PR's checks never run, so it waits for a human. Until it
-merges, its sections still read `[Unreleased]` and this release re-appends the
-*previous* release's narrative to its own page. Merge it first. If it is gone or
-was never opened, stamp by hand instead — the one case where you write a version
-number into a note yourself, because the release that shipped it is already
-public and its number is no longer a guess:
+**A previous release's stamp left unmerged is the one that will bite you**, which
+is what the third command is for. The stamp cannot land itself: `main` requires a
+pull request, so the release pushes the branch and stops. Until someone opens and
+merges it, its sections still read `[Unreleased]` and *this* release re-appends
+the previous release's narrative to its own page.
+
+`git ls-remote` rather than `gh pr list --search`, deliberately. That search is
+full text, not title-scoped, so it matches any PR whose body merely discusses the
+stamp — including release-prep PRs, which all explain the mechanism. The branch
+name is exact, and it also catches a branch that was pushed but never opened,
+which the PR search cannot see at all. If you want the PR too:
+`gh pr list --repo malloydata/publisher --search '"stamp the release notes shipped in" in:title' --state open`.
+
+So: if the branch is there, open and merge it before dispatching.
+
+#### If the branch is gone too
+
+Then stamp by hand — the one case where you write a version number into a note
+yourself, because the release that shipped it is already public and its number is
+no longer a guess. **Scope it first.** The bare command is destructive:
 
 ```bash
-node scripts/release-notes.mjs stamp <the version that shipped it>
+# DESTRUCTIVE — rewrites EVERY [Unreleased] section in the file
+node scripts/release-notes.mjs stamp <version>
 ```
 
-then open a PR with that. 0.0.249 is the worked example: it put all six of its
-sections on its release page and stamped none of them, because the step still
-pushed straight to a protected `main`.
+Unscoped it stamps every `[Unreleased]` heading, including the ones *this*
+release is about to ship. Those get labelled with a version that never contained
+them and vanish from the next release's page — the exact failure `--titles` was
+added to prevent. And you cannot just pass `--titles`: that file lives in
+`$RUNNER_TEMP` and died with the run.
+
+Re-establish the scope by comparing the shipped release page against the file:
+
+```bash
+gh release view "v<version>" --repo malloydata/publisher --json body -q .body | grep '^## '
+node scripts/release-notes.mjs extract | grep '^## '
+```
+
+Both print stripped titles, so the sets are directly comparable. If they are
+**identical**, every remaining section belongs to that release and the unscoped
+stamp is safe. If the file has extras, write just the shipped headings — verbatim
+from `RELEASE_NOTES.md`, `[Unreleased]` marker included — into a file and pass
+`--titles <that file>`. Either way, commit on a branch and open a PR.
+
+0.0.249 is the worked example, and it is why this section exists: it put all six
+of its sections on its release page and stamped none of them, because the step
+still pushed straight to a protected `main`. The unscoped stamp was safe there
+only because the two sets happened to match — six on the page, six in the file.
 
 ### 4. Dispatch
 
@@ -266,7 +302,7 @@ npm view @malloy-publisher/skills version
 gh release view "v<version>" --repo malloydata/publisher
 ```
 
-### 6. Merge the stamp PR
+### 6. Open and merge the stamp
 
 Half verification, half the one task the release genuinely cannot finish itself.
 Two things `gh-release` did, both visible without leaving the run:
@@ -274,25 +310,35 @@ Two things `gh-release` did, both visible without leaving the run:
 - The release page carries the narrative under the generated header. The job
   logs `attached N narrative section(s)`, or `no [Unreleased] sections` when
   there were none.
-- A `docs: stamp the release notes shipped in <version>` PR is open, named in
-  the job summary with its URL.
+- A `release-notes-stamp-<version>` branch is pushed, and the job summary's
+  *Release notes* section carries a compare link to open it as a PR.
+
+**Follow that link, open the PR, merge it.** The run stops at a branch on
+purpose: a PR opened by a person triggers `pull_request`, so its checks run and
+any maintainer can merge it, where one opened by the workflow would trigger no
+workflows at all and only an admin could ever merge it. One click buys back the
+check suite. Left unopened it costs exactly what a failed stamp used to — the
+next release re-appends this release's narrative to its own page, and so does the
+one after.
 
 ```bash
 gh release view "v<version>" --repo malloydata/publisher --json body -q .body | head -40
-gh pr list --repo malloydata/publisher --search 'docs: stamp the release notes' --state open
+git ls-remote --heads origin 'refs/heads/release-notes-stamp-*'
 ```
 
-**Merge that PR before you walk away.** Its required checks will never run —
-GitHub does not trigger workflows for events authored by `GITHUB_TOKEN` — so
-blank checks are expected, not breakage, and the merge needs a repo admin. Left
-open it costs exactly what a failed stamp used to: the next release re-appends
-this release's narrative to its own page, and so does the one after.
+Merging it moves `main` while `publish-packages` may still be polling npm. That
+is safe, but only because `RELEASE_NOTES.md` is in none of the paths its
+"main moved" guard watches — not because the window is closed.
 
 The stamp step is `continue-on-error`, deliberately: the release is already
-public and correct by then, and reddening a finished release over a docs PR would
-send someone hunting a publishing problem that does not exist. So a missing PR is
-a real possibility — read the job summary rather than assuming. When it is
-missing, stamp by hand as in step 3.
+public and correct by then, and reddening a finished release over a docs commit
+would send someone hunting a publishing problem that does not exist. So a missing
+branch is a real possibility — **read the job summary rather than assuming**. It
+always writes a line, including `No [Unreleased] sections to stamp` when there
+was nothing to do, so silence there means the step died and not that the release
+had no narrative. Re-running the job does not help: `gh release create` fails on
+the existing tag, and the stamp step is skipped behind it. Recover by hand as in
+step 3.
 
 A **prerelease** skips the stamp, matching the rest of the job.
 

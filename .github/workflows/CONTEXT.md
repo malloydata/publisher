@@ -46,16 +46,43 @@ and `docker-image.yml` are then called with that ref. `publish-packages` trigger
 trains (see below). `gh-release` cuts the tag, and only after npm and Docker have both succeeded.
 
 `gh-release` also owns the release notes. It appends every `## [Unreleased]` section of
-`RELEASE_NOTES.md` to the release body (via `scripts/release-notes.mjs`) and then opens a PR stamping
-those headings with the shipped version. Both used to be manual post-release steps and were reliably
+`RELEASE_NOTES.md` to the release body (via `scripts/release-notes.mjs`) and then pushes a
+`release-notes-stamp-<version>` branch stamping those headings with the shipped version, printing a
+compare link for a human to open as a PR. Both used to be manual post-release steps and were reliably
 skipped — 0.0.243 through 0.0.247 shipped with none of their narrative.
 
-Only the first half is fully automatic. **The stamp is a PR because it has to be**: `main` is a
-protected branch requiring a pull request, so the direct `git push origin main` this step did until
-0.0.250 was rejected with `GH006` on every attempt, retry included. 0.0.249 is the worked example —
-all six of its sections reached the release page and not one was stamped. The token cannot be granted
-a bypass from inside the workflow: `main` is on **classic** branch protection, which has no
-Actions-bypass lever, so that is a repo-admin change to the protection itself.
+**Only the first half is automatic, and the reasons the second half stops at a branch are the whole
+story of this step.** It has been written three ways; two of them are wrong and look right.
+
+*Not a push to `main`,* which is what it did until 0.0.250 and which never once worked. `main` is
+protected and requires a pull request, so every attempt was rejected with `GH006`, retry included.
+0.0.249 is the worked example: six sections on its release page, none stamped, and nobody noticed
+until the next release was being cut.
+
+*Not `gh pr create` either,* which is the obvious replacement and was the first fix attempted.
+Opening a PR with `GITHUB_TOKEN` requires the repo/org setting **"Allow GitHub Actions to create and
+approve pull requests", which is off by default**, and reading that setting needs admin — so from a
+`maintain` account it cannot be confirmed. Depending on an unverifiable permission is precisely how
+the `GH006` bug was written in the first place: that code assumed a push it was never allowed to
+make, and the comment above it admitted the assumption was unconfirmed. The same shape would have
+failed the same way, silently, at the next release.
+
+*A branch push, then.* It is **proven** on this token — `prepare` pushes `release/sdk-<version>`
+every release — and needs no permission beyond the `contents: write` the job already has. Letting a
+person open the PR is not merely the safe option, it is the better one: a PR opened by a human
+triggers `pull_request`, so its checks run and **any maintainer can merge it**, where a bot-authored
+PR triggers no workflows at all, leaving required checks at `expected` forever and an admin as the
+only possible merger. The cost is one click, and it buys back the check suite.
+
+There is a cheaper fix available to an admin, and it is worth checking before anyone assumes this
+shape is permanent. Classic protection exposes *"Allow specified actors to bypass required pull
+requests"* (`required_pull_request_reviews.bypass_pull_request_allowances`), which accepts apps and
+may accept `github-actions`; a ruleset with a bypass actor is the other route, and enabling the
+Actions-can-create-PRs setting would at least allow the bot-PR shape. None of the three is verifiable
+from a `maintain` account, which is why none is assumed here. Each also trades away something real:
+a bypass widens the surface flagged under *Hardening that is not in place yet*, since `release.yml`
+carries no ref guard, and a GitHub App token adds a stored credential to a repo that deliberately has
+none for npm.
 
 Two things about that pair are easy to get wrong.
 
@@ -76,23 +103,29 @@ release re-appends **this** release's narrative to its own page, and so does the
 until a human notices. That is why every failure path in the step emits a `::warning` and a
 job-summary line naming the fix, rather than relying on `continue-on-error` alone.
 
-Moving to a PR shrinks that failure window without closing it: the consequence is identical whether
-the PR was never opened or was opened and left sitting. So the stamp PR is part of releasing, not
-paperwork after it — merge it before the next dispatch, and check for a stale one before dispatching.
-Two properties of that PR are worth knowing before someone files a bug about it:
+Ending at a branch shrinks that failure window without closing it, and moves the last inch of it
+onto a person: the consequence is identical whether the branch was never pushed or was pushed and
+never opened. **So the stamp is part of releasing, not paperwork after it** — open and merge it before
+the next dispatch, and check for a stale one before dispatching. Three things about that:
 
-- **Its required checks never run.** GitHub does not trigger workflows for events authored by
-  `GITHUB_TOKEN`, so the required checks stay `expected` forever and only an admin can merge it. The
-  PR body says so, because blank checks on a green repo look like breakage.
-- **A re-run of `gh-release` is safe.** The branch is named for the version and force-pushed, and a
-  `gh pr create` that fails because the PR already exists falls back to reporting that PR's URL
-  rather than failing the step.
+- **Every outcome writes a job-summary line, including the no-ops.** "No sections to stamp" and
+  "already stamped" say so explicitly, because an empty *Release notes* section in the summary is
+  indistinguishable from the step dying before it wrote anything — and telling a releaser to "read
+  the summary" is useless if silence is ambiguous.
+- **The branch is pushed without `--force`.** A stamp branch already on the remote may carry a
+  human's conflict resolution, which is the documented fix when `main` moved under
+  `RELEASE_NOTES.md`; recomputing the stamp and forcing over it would discard that silently. A
+  rejected push is therefore inspected, and an existing branch is reported and left alone.
+- **A re-run of `gh-release` is not a recovery path for a missed stamp.** `gh release create` has no
+  `--clobber`, so on a re-run it fails on the existing tag, and the stamp step's implicit `success()`
+  means it never runs at all. Recovery is manual; step 3 of the `publisher-release` skill has it.
 
-The durable fix is an admin one: migrate `main` to a ruleset and give the Actions token a bypass on
-the pull-request requirement, or hand the step a GitHub App token so its PR can run checks and
-auto-merge. Both trade away something real — the first widens the surface flagged under *Hardening
-that is not in place yet*, since `release.yml` has no ref guard, and the second adds a stored
-credential to a repo that deliberately has none for npm.
+One trap in that manual recovery, because the obvious command is destructive: `release-notes.mjs
+stamp <version>` **without `--titles` rewrites every `[Unreleased]` section in the file**, including
+ones the *upcoming* release is about to ship — mislabelling them and erasing them from the next
+release's page, which is the exact failure `--titles` was added to prevent. The titles file lives in
+`$RUNNER_TEMP` and does not survive the run, so a manual stamp has to re-establish the scope; the
+skill spells out how.
 
 `scripts/release-notes.mjs` has unit coverage in `scripts/release-notes.spec.ts`, run by `build.yml`'s
 `lint_format` job on every PR (`bun run test:scripts`), which also smoke-runs `extract` against the
@@ -100,10 +133,13 @@ real `RELEASE_NOTES.md` so a heading it cannot read a title from fails the PR th
 than the release that would silently drop the narrative. The release path itself is dispatch-only and
 cannot be exercised in CI.
 
-The stamp used to push to `main` while `publish-packages` may still have been polling, and that
-guard ignored it only because `RELEASE_NOTES.md` is not among the paths it watches. As a PR it cannot
-collide at all: the branch it pushes is not `main`, and `main` moves only when someone merges, long
-after the run. The path list is no longer what keeps those two apart.
+The stamp step itself can no longer collide with `publish-packages`: it pushes a branch, so `main`
+does not move while that job polls npm. But the path list still matters, because the release does not
+end when the run does — the operator is told to open and merge the stamp PR next, and
+`publish-packages` can still be inside its poll budget when they do. That merge does move `main`
+mid-release, and it is harmless for one reason only: `RELEASE_NOTES.md` is in none of the paths that
+guard watches. Adding a watched path that `RELEASE_NOTES.md` matches would turn every narrative
+release into an aborted package dispatch.
 
 npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored token. There is no
 `NPM_TOKEN` in this repo and one should not be added back. The Docker and PyPI paths do use secrets
