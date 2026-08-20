@@ -815,8 +815,9 @@ describe("row-level authorize — misplaced-annotation scan (Task C)", () => {
     *  of its own — docs/authorize.md's own worked example shape. */
    const JOIN_OF_GATED_SOURCE = `##! experimental.givens
 
-#(authorize) "false"
 source: salaries is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is false
    measure: n is count()
 }
 
@@ -869,8 +870,11 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
             path.join(dir, "m.malloy"),
             `##! experimental.givens
 
-#(authorize) "false"
-source: salaries is duckdb.sql("select 1 as id") extend { measure: n is count() }
+source: salaries is duckdb.sql("select 1 as id") extend {
+   #(authorize)
+   internal dimension: authorized is false
+   measure: n is count()
+}
 
 source: headcount_by_dept is duckdb.sql("select 1 as id") extend {
    join_one: salaries on id = salaries.id
@@ -924,7 +928,7 @@ source: salaries is duckdb.table('parent') extend {
 }
 
 source: headcount_by_dept is duckdb.table('childtable') extend {
-   #(authorize) "false"
+   #(authorize)
    join_one: salaries on id = salaries.id
    measure: headcount is count()
 }
@@ -961,7 +965,7 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
             `source: s is duckdb.sql("select 1 as id") extend {
-   #(authorize) "false"
+   #(authorize)
    dimension: arr is [1, 2, 3]
 }
 `,
@@ -989,7 +993,7 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
             `source: s is duckdb.sql("select 1 as id") extend {
-   #(authorize) "false"
+   #(authorize)
    dimension: rec is {a is 1}
 }
 `,
@@ -1056,8 +1060,11 @@ describe("row-level authorize — cross-file join false positive (fix1)", () => 
    // a file the importing model does not fully see.
    const A_WITH_JOINER = `##! experimental.givens
 
-#(authorize) "false"
-source: sal is duckdb.table('parent') extend { measure: n is count() }
+source: sal is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is false
+   measure: n is count()
+}
 
 source: mid is duckdb.table('childtable') extend {
    join_one: sal on id = sal.id
@@ -1092,8 +1099,11 @@ source: top is mid extend {}
       // carries a join field whose `referenceID` names it.
       const A_SAL_ONLY = `##! experimental.givens
 
-#(authorize) "false"
-source: sal is duckdb.table('parent') extend { measure: n is count() }
+source: sal is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is false
+   measure: n is count()
+}
 `;
       const B = `##! experimental.givens
 import "a.malloy"
@@ -1161,37 +1171,26 @@ describe("row-level authorize — authored annotation on a join line of a gated 
 
    const GATED_SALARIES = `##! experimental.givens
 
-#(authorize) "false"
 source: salaries is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is false
    measure: n is count()
 }
 `;
 
-   it("CRITICAL — same-text authored annotation on the join line FAILS the load (case C)", async () => {
+   // Case C ("same-text") and case D ("different-text") collapse into ONE
+   // test under the dimension form: the STRING form's annotation carried a
+   // quoted expression, so "same text" vs "different text" was a real,
+   // distinguishing dimension worth pinning separately (proving the
+   // misplaced-annotation check is structural, not text-keyed). A field-
+   // position `#(authorize)` tag carries no expression text at all — there
+   // is nothing left to vary between the two cases — so case D is no longer
+   // a distinct scenario and is not preserved as a separate test.
+   it("CRITICAL — an authored annotation directly on the join line FAILS the load (case C; case D no longer distinct — see comment above)", async () => {
       const { model, duckdb, dir } = await createModel(
          `${GATED_SALARIES}
 source: headcount is duckdb.table('childtable') extend {
-   #(authorize) "false"
-   join_one: salaries on id = salaries.id
-   measure: h is count()
-}
-`,
-      );
-      try {
-         const err = compilationErrorOf(model);
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/field "salaries" of source "headcount"/);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-
-   it("CRITICAL — different-text authored annotation on the join line ALSO FAILS the load (case D)", async () => {
-      const { model, duckdb, dir } = await createModel(
-         `${GATED_SALARIES}
-source: headcount is duckdb.table('childtable') extend {
-   #(authorize) "1 = 1"
+   #(authorize)
    join_one: salaries on id = salaries.id
    measure: h is count()
 }
