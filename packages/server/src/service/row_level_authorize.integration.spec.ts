@@ -2477,6 +2477,12 @@ source: X is duckdb.table('parent') extend {
             .catch((e) => e);
          expect(err).not.toBeInstanceOf(AccessDeniedError);
          expect(err).toBeInstanceOf(Error);
+         // Tightened: a warehouse that silently COERCED instead of erroring
+         // would still satisfy the two checks above (a throw serves no
+         // rows either way) but would be a materially different, worse
+         // failure mode. Pin the actual message so that residual risk is
+         // covered rather than merely "some Error was thrown".
+         expect((err as Error).message).toMatch(/Conversion Error/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -2498,6 +2504,10 @@ source: X is duckdb.table('parent') extend {
             .catch((e) => e);
          expect(err).not.toBeInstanceOf(AccessDeniedError);
          expect(err).toBeInstanceOf(Error);
+         // Tightened for the same reason as the `=` case above: pin the
+         // actual message so a warehouse that silently coerced instead of
+         // erroring would fail this test.
+         expect((err as Error).message).toMatch(/Conversion Error/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -2510,22 +2520,32 @@ source: X is duckdb.table('parent') extend {
    // proves both the empty-given hazard and the non-empty-given correct
    // filter end to end.
 
-   it("KNOWN GAP — a function-call operand (`upper(val) = $REGION`) is refused, but now at LOAD time (G3, whole-model abort) rather than request time (a scoped 403)", async () => {
-      // `expandGivenIds`'s `resolveFieldUsagePath` walk reports an empty
-      // path for a function-call expression's `refSummary.fieldUsage`
-      // ("could not be resolved to a field this model can reach"), so G3
-      // refuses the WHOLE model's load — safe (nothing loads or serves at
-      // all), but a much larger blast radius than the STRING form's
-      // per-entry-point 403.
+   it("a function-call operand (`upper(val) = $REGION`) loads and filters correctly (C2 fix — was wrongly a whole-model load abort)", async () => {
+      // Was: `expandGivenIds`'s `resolveFieldUsagePath` walk reported the
+      // synthetic empty-path `fieldUsage` entry Malloy emits for the
+      // function call as unresolvable, so G3 refused the WHOLE model's load
+      // for a perfectly legal gate. Fixed by skipping empty-path entries
+      // (the real reference, `val`, arrives as its own separate entry) —
+      // see task-3-fix-brief.md C2. Confirmed load succeeds and the gate
+      // actually filters, not just that it no longer throws.
       const { model, duckdb, dir } = await grammarModel(
          "upper(val) = $REGION",
          "REGION :: string",
       );
       try {
-         const err = (model as unknown as { compilationError?: Error })
-            .compilationError;
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/could not be resolved/);
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { REGION: "A" },
+         );
+         const rows = result.compactResult as unknown as { n: number }[];
+         expect(rows[0].n).toBe(1);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
