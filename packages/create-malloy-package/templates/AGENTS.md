@@ -129,8 +129,9 @@ it). If you moved the ports above, add the same `--port` and `--mcp_port` flags 
 this command as well, spelled exactly the way the port-override command above spells
 them, `--` separator and all where that command carries one; nothing carries them
 over for you. Note also that `--init` clears persisted runtime state, so materialized
-tables and saved themes go with it; it rebuilds from `publisher.config.json`, never
-from the database it replaces.
+tables, saved themes, and any environment or package you added over the REST API
+rather than writing into `publisher.config.json` all go with it; it rebuilds from
+`publisher.config.json`, never from the database it replaces.
 {{packageSection}}
 ## Query the data (MCP or REST)
 

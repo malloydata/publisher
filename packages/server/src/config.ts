@@ -44,7 +44,7 @@ const BUNDLED_DEFAULT_CONFIG_PATH = path.join(
  * that's an explicit user mistake and the caller should surface it as
  * an error rather than silently falling back.
  */
-function resolvePublisherConfigPath(serverRoot: string): {
+export function resolvePublisherConfigPath(serverRoot: string): {
    path: string;
    isBundledDefault: boolean;
 } | null {
@@ -675,7 +675,7 @@ export const getQueryMetadataMode = (): QueryMetadataMode => {
    );
 };
 
-function substituteEnvVars(value: string): string {
+export function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 
    return value.replace(envVarPattern, (_match, varName) => {
@@ -691,7 +691,7 @@ function substituteEnvVars(value: string): string {
    });
 }
 
-function processConfigValue(value: unknown): unknown {
+export function processConfigValue(value: unknown): unknown {
    if (typeof value === "string") {
       return substituteEnvVars(value);
    }
