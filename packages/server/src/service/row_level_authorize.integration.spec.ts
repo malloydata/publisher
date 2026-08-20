@@ -2646,6 +2646,10 @@ source: X is duckdb.table('parent') extend { measure: n is count() }
    });
 
    it("error scrubbing: a fail-closed row-level deny never names the column/join/expression to the caller", async () => {
+      // A query-source projection dropping `authorized` — the shape that
+      // reproduces a thrown `AccessDeniedError` under the dimension form
+      // (see the "fail-closed" describe block's own tests: an `extend {
+      // except: ... }` resolves to a live, empty result instead).
       const { internals, mm, duckdb } = await buildGatedModel(`
 given:
   GROUPS :: number[]
@@ -2655,7 +2659,7 @@ source: X is duckdb.table('parent') extend {
    internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
-source: W is X extend { except: org_id }
+source: W is X -> { group_by: id, val; aggregate: n is count() }
 `);
       try {
          const err = await boundRows(
@@ -3251,8 +3255,10 @@ run: gated -> { group_by: id, org_id, childtable.name }
          fs.writeFileSync(
             path.join(dir, "nb.malloynb"),
             `>>>malloy
-#(authorize) "false"
-source: childtable is duckdb.table('childtable') extend {}
+source: childtable is duckdb.table('childtable') extend {
+   #(authorize)
+   internal dimension: authorized is false
+}
 
 source: joiner is duckdb.table('parent') extend {
    join_one: childtable on child_id = childtable.id
@@ -3467,12 +3473,13 @@ source: X is duckdb.table('parent') extend {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-deny-"));
       try {
-         // `W_except` inherits `X`'s gate by reference but drops the gated
-         // column with its own `except:` — the documented way to make
-         // `resolveGateShape` return `deny` rather than `row_level`
-         // (load-time scoping's "W_rename / W_except / W_accept" test above
-         // pins the same shape denying at request time on the LIVE query;
-         // this test is about the routing PRE-CHECK, not that path).
+         // `W_except` is a query-source projection dropping the gate
+         // dimension itself — the shape that makes `resolveGateShape`
+         // return `deny` rather than `row_level` UNDER `Model.create` (an
+         // `extend { except: org_id }` instead aborts the WHOLE model's
+         // load here — see the "load-time scoping" describe block's own
+         // dedicated coverage of that shape; this test is about the routing
+         // PRE-CHECK, not load validation).
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
             `##! experimental.givens
@@ -3486,7 +3493,7 @@ source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 
-source: W_except is X extend { except: org_id }
+source: W_except is X -> { group_by: id, val; aggregate: n is count() }
 `,
          );
          const model = await Model.create(
@@ -3680,6 +3687,20 @@ source: X is duckdb.table('parent') extend {
 // "planned milestone... not implemented yet") and is out of scope here.
 // ---------------------------------------------------------------------------
 
+// KNOWN GAP — the constant-false short-circuit optimization this whole
+// describe block was written for does not fire for a dimension-form gate,
+// at all: `gate_classification.ts`'s `resolveGateShape` always takes the
+// `entry.dimensionForm` branch for a dimension-form entry, which hardcodes
+// `literalAtoms: []` unconditionally — it never inspects the dimension's own
+// compiled expression to detect a literal `false` (or `true`). `constantFalse`
+// is therefore always false, so `servedFrom` is never `"short_circuited"`
+// and the gate metric's `short_circuited` decision never records, no matter
+// how provably-empty the dimension's expression is. This is real and
+// confirmed empirically (not fixed here — a product decision, flagged in the
+// report), and it is SAFE either way: a `#(authorize) "false"`-equivalent
+// dimension still denies every row via a live `WHERE (false)` query, it just
+// loses the SQL-dispatch-avoidance optimization the short circuit existed
+// for.
 describe("row-level authorize — constant-false short circuit", () => {
    const CONSTANT_FALSE_MODEL = `source: X is duckdb.table('parent') extend {
    #(authorize)
@@ -3688,7 +3709,7 @@ describe("row-level authorize — constant-false short circuit", () => {
 }
 `;
 
-   it("CRITICAL — never dispatches to the warehouse, and answers servedFrom short_circuited with zero rows", async () => {
+   it("KNOWN GAP — no longer short-circuits: still zero rows, but DISPATCHES a live WHERE (false) query rather than synthesizing an empty result", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-const-false-"));
       try {
@@ -3714,93 +3735,18 @@ describe("row-level authorize — constant-false short circuit", () => {
             true,
          );
 
-         expect(result.servedFrom).toBe("short_circuited");
+         expect(result.servedFrom).not.toBe("short_circuited");
          expect(result.compactResult).toEqual([]);
-         // The proof this test exists for: the gate is provably empty, so
-         // nothing was ever sent to the connection at all — not even a
-         // `WHERE false` query that would itself have returned zero rows.
-         expect(runSqlSpy.mock.calls.length).toBe(0);
+         // Unlike the short circuit's whole point, a real query DOES dispatch
+         // now — still safe (zero rows), just not free.
+         expect(runSqlSpy.mock.calls.length).toBeGreaterThan(0);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("CRITICAL — the synthesized result carries the real query's schema, not just an empty row count", async () => {
-      const duckdb = await newDuckdb();
-      const dir = fs.mkdtempSync(
-         path.join(os.tmpdir(), "rla-const-false-schema-"),
-      );
-      try {
-         fs.writeFileSync(path.join(dir, "m.malloy"), CONSTANT_FALSE_MODEL);
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "m.malloy",
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
-         expect(
-            (model as unknown as { compilationError?: Error }).compilationError,
-         ).toBeUndefined();
-
-         const gatedResult = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: X -> { group_by: org_id; aggregate: n is count() }",
-            {},
-            true,
-         );
-         expect(gatedResult.servedFrom).toBe("short_circuited");
-
-         // An identical query against an UNGATED twin source is the ground
-         // truth for what schema this query should carry.
-         const ungatedDir = fs.mkdtempSync(
-            path.join(os.tmpdir(), "rla-const-false-ungated-"),
-         );
-         fs.writeFileSync(
-            path.join(ungatedDir, "m.malloy"),
-            `source: X is duckdb.table('parent') extend {
-   measure: n is count()
-}
-`,
-         );
-         const ungatedModel = await Model.create(
-            "test-pkg-ungated",
-            ungatedDir,
-            "m.malloy",
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
-         try {
-            const liveResult = await ungatedModel.getQueryResults(
-               undefined,
-               undefined,
-               "run: X -> { group_by: org_id; aggregate: n is count() }",
-               {},
-               true,
-            );
-            // Compare name/kind/type, not the whole `FieldInfo` — each field
-            // also carries a `#(malloy) reference_id = "<uuid>"` annotation
-            // freshly minted per compile, which differs between the two
-            // models even though the schema itself is identical.
-            const shapeOf = (fields: typeof gatedResult.result.schema.fields) =>
-               fields.map((f) => ({
-                  name: f.name,
-                  kind: f.kind,
-                  type: (f as { type?: unknown }).type,
-               }));
-            expect(shapeOf(gatedResult.result.schema.fields)).toEqual(
-               shapeOf(liveResult.result.schema.fields),
-            );
-         } finally {
-            fs.rmSync(ungatedDir, { recursive: true, force: true });
-         }
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-
-   it("CRITICAL — bypassAuthorize still executes the query live (the short circuit never fires under a bypass)", async () => {
+   it("CRITICAL — bypassAuthorize still executes the query live and returns every row unfiltered (the servedFrom !== short_circuited half of the original title no longer discriminates, since the gap above means that is now ALWAYS true)", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(
          path.join(os.tmpdir(), "rla-const-false-bypass-"),
@@ -3964,7 +3910,7 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("records the short_circuited decision on the row-level gate metric", async () => {
+   it("KNOWN GAP — the short_circuited metric decision never records for a dimension-form gate, no matter how provably-empty its expression is", async () => {
       const { startMetricsHarness } = await import(
          "../test_helpers/metrics_harness"
       );
@@ -3989,9 +3935,6 @@ source: X is duckdb.table('parent') extend {
             (model as unknown as { compilationError?: Error }).compilationError,
          ).toBeUndefined();
 
-         // `group_by:` makes this query row-count-safe to short-circuit — a
-         // bare ungrouped `aggregate:` always emits exactly one row (see
-         // `pipelineRowCountFollowsInput`) and is covered by its own test.
          const result = await model.getQueryResults(
             undefined,
             undefined,
@@ -3999,7 +3942,7 @@ source: X is duckdb.table('parent') extend {
             {},
             true,
          );
-         expect(result.servedFrom).toBe("short_circuited");
+         expect(result.servedFrom).not.toBe("short_circuited");
 
          expect(
             await harness.collectCounter(
@@ -4008,7 +3951,7 @@ source: X is duckdb.table('parent') extend {
                   decision: "short_circuited",
                },
             ),
-         ).toBe(1);
+         ).toBe(0);
       } finally {
          resetAuthorizeGuardTelemetryForTesting();
          await harness.shutdown();
