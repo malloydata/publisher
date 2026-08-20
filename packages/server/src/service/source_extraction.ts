@@ -40,6 +40,7 @@ import {
    type MisplacedAuthorizeAnnotation,
 } from "./authorize";
 import { parseFilters, type FilterDefinition } from "./filter";
+import { findGateDimensionCandidates } from "./gate_dimension";
 import {
    derivedStructsReachable,
    effectiveAncestorGateExprs,
@@ -482,6 +483,22 @@ export function extractSourcesFromModelDef(
             // field re-derives enforcement from it; only `authorizeMap`
             // (kept internal) drives `validateAuthorizeProbes`.
             authorize = effectiveGroups.flat();
+         } else {
+            // Dimension-form gate: surface the gate dimension's own `code`
+            // (the expression as authored) so introspection keeps working —
+            // this is display/introspection ONLY. Enforcement still grafts
+            // by the dimension's NAME (`./gate_classification`), never by
+            // re-parsing this text. `validateGateDimensionsForModel` already
+            // refused a model with more than one candidate on this source
+            // (G1), so `[0]` is safe; own `fields` already includes an
+            // inherited-unchanged gate dimension (see `gate_dimension.ts`'s
+            // header note), so no separate ancestor walk is needed here.
+            const gateDimension = findGateDimensionCandidates(
+               struct as SourceDef,
+            )[0] as { code?: unknown } | undefined;
+            if (typeof gateDimension?.code === "string") {
+               authorize = [gateDimension.code];
+            }
          }
          const views: ExtractedView[] = struct.fields
             .filter((field) => field.type === "turtle")
