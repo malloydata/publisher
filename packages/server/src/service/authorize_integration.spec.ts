@@ -2321,8 +2321,11 @@ describe("authorize allows a givens-free joined gate (MUST-FIX 2)", () => {
    it('allows a same-file `#(authorize) "true"` source joined by an ungated top', async () => {
       await writeModel(
          "rt_pub.malloy",
-         `#(authorize) "true"
-source: pub_gated is duckdb.table('customers') extend { measure: c is count() }
+         `source: pub_gated is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is true
+}
 
 source: pub_joiner is duckdb.table('customers') extend {
   join_one: pub_gated on id = pub_gated.id
@@ -2347,8 +2350,11 @@ source: pub_joiner is duckdb.table('customers') extend {
 // `query`, the request below returned every row of a base locked with
 // `#(authorize) "false"`.
 describe("the caller-text guard covers sourceName/queryName too", () => {
-   const LOCKED = `#(authorize) "false"
-source: inj_locked is duckdb.table('customers') extend { measure: c is count() }
+   const LOCKED = `source: inj_locked is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is false
+}
 
 source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
 `;
@@ -2511,11 +2517,17 @@ describe("authorize is classified by Malloy's annotation route", () => {
 
    for (const tag of GATE_SPELLINGS) {
       it(`enforces (zero rows) a gate written ${tag}`, async () => {
-         const closer = blockCloser(tag);
+         // The block closer's indentation must match the tag's (field
+         // position, inside `extend {}`) or Malloy fails to close the
+         // annotation and reports a spurious "Missing '}'" for the source.
+         const closer = blockCloser(tag).replace("\n|", "\n  |");
          await writeModel(
             "route.malloy",
-            `${tag} "false"${closer}
-source: route_locked is duckdb.table('customers') extend { measure: c is count() }
+            `source: route_locked is duckdb.table('customers') extend {
+  measure: c is count()
+  ${tag}${closer}
+  internal dimension: authorized is false
+}
 `,
          );
          await expectDeniedByFilter(
