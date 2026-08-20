@@ -468,10 +468,12 @@ export async function probeTargetColumns(
       // `current_schema()`: two schemas in one catalog can hold the same table
       // name, and probing the wrong one would describe a table this build never
       // wrote.
-      const schema = segments.length >= 3 ? segments[segments.length - 2] : "main";
-      const database = segments.length >= 3
-         ? segments[segments.length - 3]
-         : segments[segments.length - 2];
+      const schema =
+         segments.length >= 3 ? segments[segments.length - 2] : "main";
+      const database =
+         segments.length >= 3
+            ? segments[segments.length - 3]
+            : segments[segments.length - 2];
       sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
               FROM duckdb_columns()
               WHERE database_name = '${escapeSqlString(database, dialect)}'
@@ -1062,6 +1064,7 @@ export type IncrementalStepReasonCode =
    | "shape_mismatch"
    | "ledger_unreadable"
    | "plan_error"
+   | "chained_storage"
    // Skips.
    | "frontier_unreadable"
    | "not_advanced";
@@ -1156,10 +1159,7 @@ export interface DeltaTarget {
     * read (a stored table's rows arrive through a query passthrough, which is
     * where the read is attributed and costed).
     */
-   deltaRows(
-      start: WatermarkBound,
-      end: WatermarkBound,
-   ): Promise<string>;
+   deltaRows(start: WatermarkBound, end: WatermarkBound): Promise<string>;
    /**
     * The SOURCE's watermark frontier, for a watermark that has no clock to take a
     * range end from (a number or a string). Read from the source rather than the

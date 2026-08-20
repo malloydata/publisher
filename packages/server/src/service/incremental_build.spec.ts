@@ -45,8 +45,7 @@ function lineage(
       declaration:
          "declaration" in overrides ? overrides.declaration : declaration(),
       dialect: overrides.dialect ?? "postgres",
-      targetDialect:
-         overrides.targetDialect ?? overrides.dialect ?? "postgres",
+      targetDialect: overrides.targetDialect ?? overrides.dialect ?? "postgres",
       physicalTableName: "orders_v1",
       connectionName: "wh",
       storageDestinationName: overrides.storageDestinationName,

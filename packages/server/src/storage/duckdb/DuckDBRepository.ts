@@ -272,9 +272,6 @@ export class DuckDBRepository implements ResourceRepository {
       environmentId: string,
       table: LedgerTableIdentity,
    ): Promise<void> {
-      return this.incrementalLedgerRepo.deleteEntry(
-         environmentId,
-         table,
-      );
+      return this.incrementalLedgerRepo.deleteEntry(environmentId, table);
    }
 }

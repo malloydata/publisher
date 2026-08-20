@@ -164,20 +164,24 @@ describe("redactConnectionSecrets", () => {
             service as unknown as {
                buildOneSourceIntoStorage: (...a: unknown[]) => Promise<unknown>;
             }
-         ).buildOneSourceIntoStorage(
-            { name: "orders_by_month", connectionName: "orders_pg" },
-            {
+         ).buildOneSourceIntoStorage({
+            persistSource: {
+               name: "orders_by_month",
+               connectionName: "orders_pg",
+            },
+            instruction: {
                sourceEntityId: "sid-1",
                physicalTableName: "mz_orders_by_month",
                destination: "lake",
             },
             // strict: throw instead of falling through to recompute-from-raw.
-            { strict: true, update: () => {} },
+            manifest: { strict: true, update: () => {} },
             environment,
-            "SELECT 1",
-            {},
-            true, // dependsOnStorageUpstream — take the chained path
-         );
+            publicBuildSQL: "SELECT 1",
+            buildSQL: "SELECT 1",
+            builtEntries: {},
+            dependsOnStorageUpstream: true, // take the chained path
+         });
 
          // A failed ATTACH is infrastructure, not a shape limit: it must NOT
          // present as the strict-upstreams refusal (that message means "we could
@@ -2935,15 +2939,16 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       });
       const svc = ctx.service as unknown as {
          buildDownstreamViaParents: unknown;
-         buildOneSourceIntoStorage: (
-            s: unknown,
-            i: BuildInstruction,
-            m: Manifest,
-            e: unknown,
-            sql: string,
-            built: Record<string, unknown>,
-            dep: boolean,
-         ) => Promise<{
+         buildOneSourceIntoStorage: (p: {
+            persistSource: unknown;
+            instruction: BuildInstruction;
+            manifest: Manifest;
+            environment: unknown;
+            publicBuildSQL: string;
+            buildSQL: string;
+            builtEntries: Record<string, unknown>;
+            dependsOnStorageUpstream: boolean;
+         }) => Promise<{
             physicalTableName: string;
             storageDestinationName?: string;
          }>;
@@ -2969,13 +2974,14 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                       message: "uncarried parent",
                    }),
                 );
-      return svc.buildOneSourceIntoStorage(
-         source,
+      return svc.buildOneSourceIntoStorage({
+         persistSource: source,
          instruction,
          manifest,
          environment,
-         "SELECT should_not_run",
-         {
+         publicBuildSQL: "SELECT should_not_run",
+         buildSQL: "SELECT should_not_run",
+         builtEntries: {
             up: {
                sourceEntityId: "up",
                sourceName: "daily",
@@ -2984,8 +2990,8 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                schema: [{ name: "order_date", type: "DATE" }],
             },
          },
-         true, // dependsOnStorageUpstream
-      );
+         dependsOnStorageUpstream: true,
+      });
    }
 
    it("stacks on the parent: builds by reading it and returns the storage entry", async () => {
@@ -3070,33 +3076,35 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       const run = () =>
          (
             ctx.service as unknown as {
-               buildOneSourceIntoStorage: (
-                  s: unknown,
-                  i: BuildInstruction,
-                  m: unknown,
-                  e: unknown,
-                  sql: string,
-                  built: Record<string, unknown>,
-                  dep: boolean,
-               ) => Promise<{ storageDestinationName?: string }>;
+               buildOneSourceIntoStorage: (p: {
+                  persistSource: unknown;
+                  instruction: BuildInstruction;
+                  manifest: unknown;
+                  environment: unknown;
+                  publicBuildSQL: string;
+                  buildSQL: string;
+                  builtEntries: Record<string, unknown>;
+                  dependsOnStorageUpstream: boolean;
+               }) => Promise<{ storageDestinationName?: string }>;
             }
-         ).buildOneSourceIntoStorage(
-            fakeSource({
+         ).buildOneSourceIntoStorage({
+            persistSource: fakeSource({
                name: "monthly",
                sourceEntityId: "abcdef1234567890",
                annotationFields: { storage: "shared" },
             }),
-            {
+            instruction: {
                sourceEntityId: "abcdef1234567890",
                materializedTableId: "mt",
                physicalTableName: "monthly__mabc",
                realization: "COPY",
                destination: "shared",
             },
-            new Manifest(),
+            manifest: new Manifest(),
             environment,
-            "SELECT should_not_run",
-            {
+            publicBuildSQL: "SELECT should_not_run",
+            buildSQL: "SELECT should_not_run",
+            builtEntries: {
                up: {
                   sourceEntityId: "up",
                   sourceName: "daily",
@@ -3105,8 +3113,8 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
                   schema: [{ name: "order_date", type: "DATE" }],
                },
             },
-            true, // dependsOnStorageUpstream
-         );
+            dependsOnStorageUpstream: true,
+         });
 
       return { run, write };
    }

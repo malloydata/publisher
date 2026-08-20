@@ -39,8 +39,17 @@ export type ManifestBindOutcome = "success" | "failure" | "timeout";
  * pooling the two into one series. `delta` is an incremental refresh advancing
  * an in-warehouse table in place — typically far cheaper than a CTAS, which is
  * why it gets its own series instead of skewing `in_warehouse`.
+ *
+ * `delta_storage` is the same advance applied to a `storage=` table, kept apart
+ * from `delta` for the reason `storage` is kept apart from `in_warehouse`: its
+ * rows cross an egress boundary and its DML runs on a different engine, so
+ * pooling the two would average two different cost profiles into one number.
  */
-export type StorageBuildEngine = "storage" | "in_warehouse" | "delta";
+export type StorageBuildEngine =
+   | "storage"
+   | "in_warehouse"
+   | "delta"
+   | "delta_storage";
 /** Why a source was refused materialization into a storage destination. */
 export type EligibilityRefusalReason =
    | "free_parameter"
