@@ -78,8 +78,10 @@ given:
 source: base is duckdb.sql("select 1 as org_id")
 
 #@ persist name="gated"
-#(authorize) "org_id = $ORG"
-source: gated is base -> { select: org_id }
+source: gated is base -> { select: org_id } extend {
+   #(authorize)
+   internal dimension: authorized is org_id = $ORG
+}
 `,
       );
       const outcome = await classifyPersistSourceGate(
@@ -95,46 +97,43 @@ source: gated is base -> { select: org_id }
       });
    });
 
-   it("records rejected when one of two AND'd gate groups rejects, preserving OR within the accepting group", async () => {
-      // `derived`'s OWN group OR's two valid row-level comparisons together
-      // (resolveGateShape's own `gateFilterText` fold — not re-tested here);
-      // `base`'s group (carried in via the query-source derivation, per
-      // `collectEntryPointGates`) compares a field against a bare literal,
-      // which `classifyAuthorizeGate` rejects (`no_given_reference`). The two
-      // groups are AND'd, so the second's rejection must win regardless of
-      // the first's shape.
-      //
-      // `base`'s literal-only gate could not survive a real local package
-      // load — `validateAuthorizeProbes` rejects a field-vs-literal
-      // comparison at load time. This fixture reaches `classifyPersistSourceGate`
-      // directly, skipping that validation, so the shape tested here is one
-      // load validation would in fact catch UNLESS `base` lived in a model
-      // this one only transitively imports: load validation covers only the
-      // importING model's own entry points (`authorize.ts`'s
-      // `validateAuthorizeProbes` doc), so a cross-model import is the one
-      // way this shape reaches compile time for real.
-      const { modelDef, materializer, deps, sources } = await compileModel(
+   it("records rejected when a query-source derivation inherits an ancestor's gate dimension whose given is off THIS deps surface", async () => {
+      // Replaces the old string form's "two AND'd groups, one rejects" case:
+      // that shape OR'd two independently-authored `#(authorize)` annotations
+      // on one source, which the dimension form cannot express at all — G4
+      // refuses a source declaring more than one gate dimension (see
+      // `gate_dimension_integration.spec.ts`'s "more than one annotated
+      // dimension" test). What still needs pinning under the dimension form
+      // is that `derived`'s inherited copy of `base`'s gate (carried in via
+      // the query-source derivation, same mechanism `collectEntryPointGates`
+      // uses for every other inheritance case in this file) is re-checked
+      // against THIS CALL's own given surface, not the compiling model's, and
+      // is rejected rather than silently admitted when the given the
+      // inherited gate references isn't on it (`unreachable_given` — see
+      // `resolveGateShape`'s doc for why the deps struct, not the compiled
+      // model, is the actual given surface used at classification time).
+      const { modelDef, materializer, sources } = await compileModel(
          `##! experimental.persistence
 ##! experimental.givens
 
 given:
   ORG :: number
-  ORG2 :: number
 
-#(authorize) "org_id = 999"
-source: base is duckdb.sql("select 1 as org_id")
+source: base is duckdb.sql("select 1 as org_id") extend {
+   #(authorize)
+   internal dimension: authorized is org_id = $ORG
+}
 
 #@ persist name="derived"
-#(authorize) "org_id = $ORG"
-#(authorize) "org_id = $ORG2"
-source: derived is base -> { select: org_id }
+source: derived is base extend {}
 `,
       );
+      const restrictedDeps = createGateClassificationDeps([]);
       const outcome = await classifyPersistSourceGate(
          sources.derived,
          modelDef,
          materializer,
-         deps,
+         restrictedDeps,
          "m.malloy",
       );
       expect(outcome.classification).toBe("rejected");
@@ -187,12 +186,15 @@ given:
   ORG :: number
   DEPT :: number
 
-#(authorize) "dept_id = $DEPT"
-source: locked is duckdb.sql("select 1 as dept_id")
+source: locked is duckdb.sql("select 1 as dept_id") extend {
+   #(authorize)
+   internal dimension: authorized is dept_id = $DEPT
+}
 
 #@ persist name="joiner"
-#(authorize) "org_id = $ORG"
 source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
+   #(authorize)
+   internal dimension: authorized is org_id = $ORG
    join_one: locked on x = locked.dept_id
 }
 `,
@@ -246,8 +248,10 @@ source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
 given:
   ORG :: number
 
-#(authorize) "org_id = $ORG"
-source: locked is duckdb.sql("select 1 as org_id, 1 as x")
+source: locked is duckdb.sql("select 1 as org_id, 1 as x") extend {
+   #(authorize)
+   internal dimension: authorized is org_id = $ORG
+}
 
 #@ persist name="derived"
 source: derived is locked extend {
@@ -276,21 +280,41 @@ source: derived is locked extend {
       ).not.toThrow();
    });
 
-   it("classifies row_level/attributed for a persist source over a composite entry point, gated on one member", async () => {
+   it("records rejected for a persist source over a composite entry point whose own `select:` projects the gated member's gate field away", async () => {
       // `comp` is a query_source whose base is `compose(member_a, member_b)`.
       // Only `member_a` carries the gate; Malloy resolves the composite to
       // ONE concrete member per query and copies that member's own notes
       // onto `query.compositeResolvedSourceDef` (see
       // `malloy_annotation_invariants.spec.ts`), which `collectEntryPointGates`
-      // reads as the entry point's OWN gate — no join or deep walk involved.
+      // reads as the entry point's OWN gate — discovery finds it with no join
+      // or deep walk involved.
+      //
+      // Under the OLD string form this classified `row_level`/`attributed:
+      // true`: the gate was a source-level annotation carrying literal
+      // expression TEXT (`"org_id in $GROUPS"`), grafted independently of
+      // which fields `comp`'s own `-> { select: … }` happened to keep. The
+      // dimension form instead grafts a reference to the `authorized` FIELD
+      // itself (`where: (authorized)`) at the ENTRY POINT's own compiled
+      // struct — and `authorized` is `internal`, so a `select:` that does not
+      // name it (this one only keeps `org_id`/`amount`) drops it from
+      // `comp`'s own fields the same way any other unselected field is
+      // dropped; `internal` also makes it unselectable even from within
+      // `comp`'s own pipeline (confirmed: naming it explicitly in `select:`
+      // is a compile error, "'authorized' is internal"). The lift then fails
+      // ("'authorized' is not defined") and `resolveGateShape` rejects rather
+      // than guessing — fails CLOSED, not open, so this is a coverage gap
+      // (a composite entry point narrowed by `select:` cannot be classified
+      // row-level and so cannot be colocated-served), not a security one.
       const { modelDef, materializer, deps, sources } = await compileModel(
          `##! experimental { persistence composite_sources givens }
 
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
-source: member_a is duckdb.sql("select 7 as org_id, 1 as amount")
+source: member_a is duckdb.sql("select 7 as org_id, 1 as amount") extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+}
 
 source: member_b is duckdb.sql("select 99 as org_id, 2 as amount")
 
@@ -308,7 +332,7 @@ source: comp is combo -> { select: org_id, amount }
          "m.malloy",
       );
       expect(outcome).toEqual({
-         classification: "row_level",
+         classification: "rejected",
          attributed: true,
       });
       expect(() =>
@@ -318,7 +342,7 @@ source: comp is combo -> { select: org_id, amount }
             "persist",
             outcome,
          ),
-      ).not.toThrow();
+      ).toThrow(/authorize/i);
    });
 
    it("records the fail-closed outcome when classification throws", async () => {
@@ -332,8 +356,10 @@ given:
 source: base is duckdb.sql("select 1 as org_id")
 
 #@ persist name="gated"
-#(authorize) "org_id = $ORG"
-source: gated is base -> { select: org_id }
+source: gated is base -> { select: org_id } extend {
+   #(authorize)
+   internal dimension: authorized is org_id = $ORG
+}
 `,
       );
       const source = sources.gated;
