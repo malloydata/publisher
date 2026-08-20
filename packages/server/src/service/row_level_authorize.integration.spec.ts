@@ -3966,17 +3966,19 @@ source: X is duckdb.table('parent') extend {
 // declared default admits every row for a caller who supplies nothing.
 // ---------------------------------------------------------------------------
 
-describe("row-level authorize — vacuous default atom", () => {
-   /**
-    * Load `text` through the real `Model.create` — same idiom as the
-    * "load-time scoping" describe block's own `createModel`, duplicated
-    * (not imported) because that helper is local to its own `describe`
-    * body. `assertNoVacuousDefaultAtom` is a LOAD-TIME check inside
-    * `validateAuthorizeProbes`, so `buildGatedModel` (used by the sibling
-    * "grammar" describe block above) cannot exercise it — that harness
-    * deliberately SKIPS `Model.create`'s pre-flight validation (see its own
-    * doc comment).
-    */
+// The STRING form's `assertNoVacuousDefaultAtom` drew a narrow distinction:
+// `$ROLE != 'admin'` OR'd in, with ROLE defaulting to '', is REFUSED
+// (vacuously TRUE for a caller supplying nothing — admits everyone), while
+// `$ROLE = 'admin'` with the SAME default is fine (FALSE at the default, a
+// legitimate admin-override idiom). The dimension form's G4
+// (`validateGateDimension` in `gate_dimension.ts`) does not draw that
+// distinction at all: it refuses ANY referenced given carrying a declared
+// default, UNCONDITIONALLY — this is the permanent security rule the task
+// brief names, not a narrower vacuousness check. Both shapes below are now
+// refused for the SAME reason (G4), including the admin-override idiom that
+// used to load and work correctly. This is a real, confirmed, INTENDED
+// narrowing (G4 is by design unconditional), not a regression to paper over.
+describe("row-level authorize — vacuous default atom (superseded by G4's unconditional defaulted-given refusal)", () => {
    async function createModel(
       text: string,
    ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
@@ -3997,7 +3999,7 @@ describe("row-level authorize — vacuous default atom", () => {
          .compilationError;
    }
 
-   it("CRITICAL — `$ROLE != 'admin'` OR'd with a row-level gate, ROLE defaulting to '', is refused at load (vacuously true for a caller supplying nothing)", async () => {
+   it("CRITICAL — `$ROLE != 'admin'` OR'd with a row-level gate, ROLE defaulting to '', is refused at load — now by G4 (any defaulted given), not the string form's narrower vacuousness detection", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -4013,23 +4015,20 @@ source: X is duckdb.table('parent') extend {
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/ROLE.*!=.*'admin'/);
-         expect(err?.message).toMatch(/evaluates to TRUE/i);
+         expect(err?.message).toMatch(/\$ROLE.*declared with a default/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("names the entry point it probed, which for a derived one is NOT the source that authored the gate", async () => {
-      // Pins the one cost of `assertNoVacuousDefaultAtom` NOT taking the
-      // `ownNotes.length === 0` escape its `rejected` sibling takes (see the
-      // comment at its call site). The refusal is correct — a vacuous atom is
-      // wrong wherever the gate reaches — but whichever entry point probes it
-      // first is what the message names, and here that can be the derivation
-      // rather than `X`, which is where the annotation actually lives. Asserted
-      // so a future change to that escape is a visible diff rather than a silent
-      // change in what an author is told to go and look at.
+   it("G4 fires on the source that declares the gate dimension, regardless of any derivation reachable from it", async () => {
+      // Different mechanic from the string form's own "which entry point
+      // probed first" concern: G4 runs once per top-level source inside
+      // `validateGateDimensionsForModel`'s loop, keyed on whichever source
+      // OWNS the gate-dimension candidate. `Derived` (a query-source
+      // projection) does not carry `authorized` in its own field space at
+      // all, so G4 only ever fires on `X`.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -4047,19 +4046,18 @@ source: Derived is X -> { group_by: org_id }
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         // The atom is named either way — that half is unambiguous.
-         expect(err?.message).toMatch(/ROLE.*!=.*'admin'/);
-         // And it names SOME entry point. `Derived` carries no annotation of its
-         // own, so if it probed first the message points at it rather than at
-         // `X`, which is the source an author would have to be told about.
-         expect(err?.message).toMatch(/on source "(X|Derived)"/);
+         expect(err?.message).toMatch(/on source "X"/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("`$ROLE = 'admin'` OR'd with a row-level gate, ROLE defaulting to '', still loads and works as an admin-override (false at the default, not vacuous)", async () => {
+   it("KNOWN GAP — `$ROLE = 'admin'` OR'd with a row-level gate, ROLE defaulting to '', used to load and work as an admin-override (false at the default, not vacuous); G4 now refuses it too, unconditionally", async () => {
+      // Confirms the loss is real and total: even the SAFE defaulted-given
+      // idiom the string form's narrower check preserved is gone. An author
+      // wanting this shape today must declare `ROLE` with NO default and
+      // require every caller to supply it explicitly.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -4073,35 +4071,9 @@ source: X is duckdb.table('parent') extend {
 }
 `);
       try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         // A caller who omits ROLE gets its declared default (''), which is
-         // not 'admin' — the atom is false, so the gate falls through to the
-         // GROUPS membership test exactly as if the atom were absent. GROUPS
-         // has no default (`docs/givens.md`: an array given can't declare
-         // one), so it must still be supplied.
-         const noRole = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [] },
-         );
-         const noRoleRows = noRole.compactResult as unknown as {
-            n: number;
-         }[];
-         expect(noRoleRows[0].n).toBe(0);
-         // The admin override still works when a caller DOES supply it.
-         const admin = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: X -> { aggregate: n is count() }",
-            {},
-            true,
-            { ROLE: "admin", GROUPS: [] },
-         );
-         const adminRows = admin.compactResult as unknown as { n: number }[];
-         expect(adminRows[0].n).toBe(4);
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/\$ROLE.*declared with a default/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -4280,21 +4252,26 @@ source: X is duckdb.table('parent') extend {
 });
 
 // ---------------------------------------------------------------------------
-// P0 — composite resolution copies a composite parent's OWN #(authorize) note
-// OBJECT onto the resolved member struct's own blockNotes, alongside the
-// member's own note. Reading that merged set as one source's own OR list
-// (the pre-fix shape) folds a DIFFERENT declaring source's condition into
-// this source's disjunction, silently turning this file's own AND-across-
-// sources rule into an OR the moment a query-source base resolves through a
-// composite. `effectiveAncestorGateExprs` (`gate_registry_walk.ts`) and
-// `Model.collectEntryPointGates`/`gateExprsForOwnAnnotations` (`model.ts`)
-// now IDENTITY-SUBTRACT the parent's own notes before reading the member's,
-// and keep the two sources' gates as separate GROUPS rather than one
-// concatenated list (`AuthorizeMap`, `authorize.ts`) — see those modules' doc
-// comments for the mechanics.
+// P0 (STRING form, fixed) — composite resolution copies a composite parent's
+// OWN #(authorize) note OBJECT onto the resolved member struct's own
+// blockNotes, alongside the member's own note, which (pre-fix) folded a
+// DIFFERENT declaring source's condition into this source's disjunction.
+//
+// KNOWN GAP — under the dimension form, the underlying CONSTRUCT this whole
+// block exercised (a gate dimension on a composite `combo` AND a different
+// gate dimension on one of its members, both meant to AND together) cannot
+// be built at all: Malloy's composite resolution copies a member's fields
+// (including its gate dimension) into the composite's OWN struct, so
+// `combo`'s struct ends up with BOTH its own annotated dimension and the
+// member's — and G1 ("a source may declare at most one #(authorize) gate
+// dimension") refuses the load outright. Confirmed empirically. There is no
+// way to re-express "parent gate AND member gate, ANDed not ORed" under the
+// dimension form's one-dimension-per-source rule, so this block is
+// repurposed to pin that refusal rather than the AND-not-OR guarantee it
+// used to prove.
 // ---------------------------------------------------------------------------
 
-describe("row-level authorize — composite gate grouping (P0 leak, fixed)", () => {
+describe("row-level authorize — composite + gate dimension (superseded: the dimension form's G1 refuses the construct this block used to exercise)", () => {
    async function createModel(
       text: string,
    ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
@@ -4317,18 +4294,11 @@ describe("row-level authorize — composite gate grouping (P0 leak, fixed)", () 
          .compilationError;
    }
 
-   // THE LEAK: `combo`'s own gate (`region = $REGION`) and `member_a`'s own
-   // gate (`org_id in $GROUPS`) are declared on two DIFFERENT sources and
-   // must AND. Before the fix, Malloy's by-reference copy of `combo`'s note
-   // onto the resolved `member_a` struct made `member_a`'s "own" list read
-   // as `["region = $REGION", "org_id in $GROUPS"]` — one OR'd disjunction —
-   // so the whole condition collapsed to `(region=$REGION) AND ((region=
-   // $REGION) OR (org_id in $GROUPS))`, which a truthful `region` term alone
-   // satisfies regardless of `org_id`. Every assertion below is load-bearing:
-   // dropping (a) would let a fix "solve" this by failing the load; dropping
-   // (c) would let a fix that denies every caller (destroying the feature)
-   // pass.
-   it("CRITICAL — a composite parent's gate and its resolved member's gate AND; they do not fold into one OR", async () => {
+   it("KNOWN GAP — a composite parent's own gate dimension PLUS its resolved member's gate dimension now REFUSES the load (G1), rather than composing (correctly, post-fix) or leaking (the pre-fix bug)", async () => {
+      // `combo`'s own struct ends up carrying BOTH `visible` (its own
+      // annotation) and `authorized` (copied in from `member_a` by Malloy's
+      // composite field resolution) as gate-dimension candidates — G1's
+      // "a source may declare at most one" fires on `combo` itself.
       const { model, duckdb, dir } = await createModel(
          `##! experimental.composite_sources
 ##! experimental.givens
@@ -4337,88 +4307,52 @@ given:
   REGION :: string
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
-source: member_a is duckdb.sql("SELECT 7 as org_id, 'us' as region UNION ALL SELECT 8, 'us'") extend {}
+source: member_a is duckdb.sql("SELECT 7 as org_id, 'us' as region UNION ALL SELECT 8, 'us'") extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id, 'eu' as region") extend {}
 
-#(authorize) "region = $REGION"
-source: combo is compose(member_a, member_b)
-
-source: qs is combo -> { group_by: org_id, region }
+source: combo is compose(member_a, member_b) extend {
+   #(authorize)
+   internal dimension: visible is region = $REGION
+}
 `,
       );
       try {
-         // (a) the fix must not "solve" the leak by failing the load.
-         expect(compilationErrorOf(model)).toBeUndefined();
-
-         // (b) a caller whose GROUPS names neither org gets EXACTLY ZERO
-         // rows — pre-fix, `combo`'s own gate (`region = 'us'`, true here)
-         // made the whole disjunction true regardless of GROUPS, leaking
-         // every `region='us'` row.
-         const denied = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: qs -> { select: org_id, region }",
-            {},
-            true,
-            { REGION: "us", GROUPS: [999] },
-         );
-         expect((denied.compactResult as unknown[]).length).toBe(0);
-
-         // (c) a caller whose GROUPS names the org gets EXACTLY that row —
-         // without this, a fix that makes `qs` deny every caller would also
-         // pass (a) and (b) while destroying the feature.
-         const allowed = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: qs -> { select: org_id, region }",
-            {},
-            true,
-            { REGION: "us", GROUPS: [7] },
-         );
-         const rows = allowed.compactResult as unknown as {
-            org_id: number;
-            region: string;
-         }[];
-         expect(rows).toEqual([{ org_id: 7, region: "us" }]);
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/"combo".*more than one/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   // THE LOAD-SIDE FAILURE: before groups, `qs`'s effective gate concatenated
-   // `combo`'s atom with `member_a`'s condition into ONE OR'd list —
-   // `["$ROLE != 'admin'", "$ROLE != 'admin'", "org_id in $GROUPS"]` (the
-   // ancestor copy doubling it) — which the vacuous-default check would walk
-   // as one list, potentially misattributing a hazard found in one source's
-   // atom to a DIFFERENT source's declared note. Keeping the two sources'
-   // gates as separate groups means `combo`'s atom is classified and
-   // validated entirely on its own — every gate is a row filter now (there is
-   // no more given-only vs row-level split), so `ROLE` here carries NO
-   // declared default: the point of this test is grouping independence, not
-   // the vacuous-default check itself (that check has its own dedicated
-   // coverage elsewhere), and a defaulting `ROLE` would make this atom
-   // genuinely vacuous on its own regardless of grouping.
-   it("CRITICAL — a composite gate and its resolved member's row-level gate load independently, with no cross-group interference", async () => {
+   it("a gate dimension on a composite member ALONE (no gate on the composite itself) still resolves and enforces through the composite", async () => {
+      // The one composite shape that DOES survive: only ONE source in the
+      // whole compose() chain declares a gate dimension at all. Composite
+      // resolution copies `member_a`'s `authorized` field onto `combo`'s own
+      // struct, so `combo` itself is discovered as gated — queried directly,
+      // not through a further query-source derivation (which would drop the
+      // `internal` dimension the same way `Z`/`Z2` do elsewhere in this
+      // file).
       const { model, duckdb, dir } = await createModel(
          `##! experimental.composite_sources
 ##! experimental.givens
 
 given:
-  ROLE :: string
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
-source: member_a is duckdb.sql("SELECT 7 as org_id UNION ALL SELECT 8 as org_id") extend {}
+source: member_a is duckdb.sql("SELECT 7 as org_id UNION ALL SELECT 8 as org_id") extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
 
-#(authorize) "$ROLE != 'admin'"
 source: combo is compose(member_a, member_b)
-
-source: qs is combo -> { group_by: org_id }
 `,
       );
       try {
@@ -4426,12 +4360,10 @@ source: qs is combo -> { group_by: org_id }
          const result = await model.getQueryResults(
             undefined,
             undefined,
-            "run: qs -> { select: org_id }",
+            "run: combo -> { select: org_id }",
             {},
             true,
-            // ROLE has no default, so it must be supplied explicitly — a
-            // separate, pre-existing constraint this test isn't exercising.
-            { ROLE: "analyst", GROUPS: [7] },
+            { GROUPS: [7] },
          );
          const rows = result.compactResult as unknown as { org_id: number }[];
          expect(rows).toEqual([{ org_id: 7 }]);
