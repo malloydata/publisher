@@ -675,6 +675,89 @@ export const getQueryMetadataMode = (): QueryMetadataMode => {
    );
 };
 
+/**
+ * Local MCP request/response tracing. Off by default so a normal server
+ * never persists tool payloads. `metadata` writes hashes and counts only;
+ * `retrieval` persists the exact get_context request and ranked response.
+ * Exact traces never enter console logs.
+ */
+export type McpTraceMode = "off" | "metadata" | "retrieval";
+
+export const getMcpTraceMode = (): McpTraceMode => {
+   const raw = process.env.PUBLISHER_MCP_TRACE;
+   if (raw === undefined || raw.trim() === "") return "off";
+   const value = raw.trim().toLowerCase();
+   if (value === "off" || value === "metadata" || value === "retrieval") {
+      return value;
+   }
+   throw new Error(
+      `PUBLISHER_MCP_TRACE must be off | metadata | retrieval (got ${JSON.stringify(raw)})`,
+   );
+};
+
+const DEFAULT_MCP_TRACE_RETENTION = 10_000;
+
+/**
+ * Maximum persisted MCP traces. Oldest unreferenced traces are evicted
+ * once this count is exceeded. Traces linked from an eval run are exempt.
+ */
+export const getMcpTraceRetention = (): number => {
+   const value = parseIntEnv("PUBLISHER_MCP_TRACE_RETENTION");
+   if (value === undefined) return DEFAULT_MCP_TRACE_RETENTION;
+   if (value < 1) {
+      throw new Error(
+         `PUBLISHER_MCP_TRACE_RETENTION must be a positive integer (got ${value})`,
+      );
+   }
+   return value;
+};
+
+/**
+ * Local evaluation workspace. Off by default. When on, Publisher exposes
+ * `/api/v0/evals` and persists eval sets, cases, runs, events, and named
+ * checkpoints in `publisher.db`. No eval MCP tools are registered: the
+ * store is REST-only so a blind answerer does not see goldens in its
+ * tool list.
+ */
+export const getEvalStoreEnabled = (): boolean => {
+   return parseBoolEnv("PUBLISHER_EVAL_STORE") ?? false;
+};
+
+/**
+ * Local dimensional-value index for typed `get_context`. Off by default.
+ * `lexical` indexes distinct values for dimensions tagged `#(index)` on
+ * sources with no authorize/filter visibility, and ranks them by substring
+ * match. Values never leave the machine for embedding.
+ */
+export type DimensionValueIndexMode = "off" | "lexical";
+
+export const getDimensionValueIndexMode = (): DimensionValueIndexMode => {
+   const raw = process.env.PUBLISHER_DIMENSION_VALUE_INDEX;
+   if (raw === undefined || raw.trim() === "") return "off";
+   const value = raw.trim().toLowerCase();
+   if (value === "off" || value === "lexical") return value;
+   throw new Error(
+      `PUBLISHER_DIMENSION_VALUE_INDEX must be off | lexical (got ${JSON.stringify(raw)})`,
+   );
+};
+
+const DEFAULT_DIMENSION_VALUE_CAP = 500;
+
+/**
+ * Maximum distinct values stored per indexed dimension. One extra row is
+ * fetched to detect truncation; the stored set is then clipped to this cap.
+ */
+export const getDimensionValueIndexCap = (): number => {
+   const value = parseIntEnv("PUBLISHER_DIMENSION_VALUE_CAP");
+   if (value === undefined) return DEFAULT_DIMENSION_VALUE_CAP;
+   if (value < 1) {
+      throw new Error(
+         `PUBLISHER_DIMENSION_VALUE_CAP must be a positive integer (got ${value})`,
+      );
+   }
+   return value;
+};
+
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 

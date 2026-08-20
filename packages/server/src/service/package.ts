@@ -42,6 +42,10 @@ import {
 } from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
+   computeSourceContentSha,
+   mintServedRevision,
+} from "./package_revision";
+import {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
@@ -210,6 +214,8 @@ export class Package {
    // tag does not fail the load (see Model.validateRenderTags); this is the
    // response-level signal that a tag is misconfigured.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   private servedRevision: string = mintServedRevision();
+   private sourceContentSha: string = "";
    /**
     * Manifest-shape deprecations the load tolerated (a root-level `scope`), kept
     * so publish can report a still-parsing-but-outdated manifest. Not on the wire
@@ -247,6 +253,23 @@ export class Package {
       this.malloyConfig = malloyConfig;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+      this.refreshServingIdentity();
+   }
+
+   public getServedRevision(): string {
+      return this.servedRevision;
+   }
+
+   public getSourceContentSha(): string {
+      return this.sourceContentSha;
+   }
+
+   private refreshServingIdentity(): void {
+      this.servedRevision = mintServedRevision();
+      this.sourceContentSha = computeSourceContentSha(
+         this.packagePath,
+         this.models.keys(),
+      );
    }
 
    /**
@@ -972,6 +995,8 @@ export class Package {
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
          buildPlan: this.buildPlan,
+         servedRevision: this.servedRevision,
+         sourceContentSha: this.sourceContentSha,
       };
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
@@ -1970,6 +1995,7 @@ export class Package {
          }
       }
       this.models = nextModels;
+      this.refreshServingIdentity();
       // The freshly-compiled models start with no serve bindings and no serve
       // connections; re-apply both so a reload preserves serve routing.
       this.pushStorageServeBindingsToModels();

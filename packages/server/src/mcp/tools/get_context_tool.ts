@@ -12,6 +12,34 @@ import {
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
+import { getDimensionValueIndexMode, getMcpTraceMode } from "../../config";
+import { McpTraceStore } from "../../service/mcp_trace_store";
+import {
+   compactRankedSummary,
+   RETRIEVAL_VERSION,
+   TYPED_RETRIEVAL_VERSION,
+   retrievalConfigHash,
+   type RetrievalEvidence,
+} from "../../service/retrieval_evidence";
+import {
+   collectSourceMeta,
+   ensureDimensionValueIndex,
+   searchDimensionValues,
+} from "../../service/dimension_value_index";
+import {
+   buildSourceCards,
+   buildTypedEnvelope,
+   isProminenceListing,
+   isTypedRequest,
+   kindsForTarget,
+   resolveScope,
+   searchTargetSchema,
+   scopeSchema,
+   toTypedEntity,
+   validateTypedCall,
+   type SearchTarget,
+   type TypedEntity,
+} from "./get_context_typed";
 import {
    entityRowKey,
    getEmbeddingIndexStatus,
@@ -234,13 +262,48 @@ const getContextShape = {
       .max(500)
       .optional()
       .describe(
-         'Plain-English description of what you need, e.g. "revenue by product category". Omit, with environmentName and packageName set, to list the package\'s sources.',
+         'Legacy adapter. Plain-English description of what you need. Prefer search_targets. Omit, with environmentName and packageName set, to list the package\'s sources.',
       ),
    sourceName: z
       .string()
       .optional()
       .describe(
-         "Optional. Narrow results to entities within this source (the drill-down phase).",
+         "Optional. Narrow results to entities within this source (the drill-down phase). Prefer scopes[].source.",
+      ),
+   search_targets: z
+      .array(searchTargetSchema)
+      .optional()
+      .describe(
+         "Typed search targets. Each has target_type (source, dimension, measure, view, dimensional_value) and optional search_text (null lists by prominence). Do not mix source targets with other types.",
+      ),
+   scopes: z
+      .array(scopeSchema)
+      .optional()
+      .describe(
+         "Optional scopes. Each needs environment and package; model_path and source narrow a drill-down.",
+      ),
+   filter_params: z
+      .record(z.union([z.string(), z.array(z.string())]))
+      .nullable()
+      .optional()
+      .describe(
+         "Filter values for sources that declare #(filter). Unused on the legacy path; protected sources are not value-indexed.",
+      ),
+   user_prompt: z
+      .string()
+      .max(2000)
+      .nullable()
+      .optional()
+      .describe(
+         "Optional. The user prompt that triggered this call, for traces only. Not used for ranking.",
+      ),
+   offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe(
+         "Source-listing page offset, copied from next_offset. Rejected with search_text or non-source targets.",
       ),
    limit: z
       .number()
@@ -249,7 +312,7 @@ const getContextShape = {
       .max(50)
       .optional()
       .describe(
-         "Maximum results to return (max 50). Ranked retrieval defaults to 10; the listing tiers return everything unless you set this.",
+         "Maximum results to return (max 50). Ranked retrieval defaults to 10; typed source listings default to 20; other listings return everything unless you set this.",
       ),
 };
 type GetContextParams = z.infer<z.ZodObject<typeof getContextShape>>;
@@ -570,31 +633,35 @@ async function getPackageIndex(
  * first and the reference material last, and the reference stays terse to buy
  * room for it. Full prose belongs in docs/ai-agents.md, not here.
  */
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in names the model actually defines. Start here when you do not know the environment or package names.
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a question. Prefer typed search_targets; the older query string still works.
 
 ## Contract rules
-- Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
-- Start broad and narrow down: environments, then packages, then sources, then a query.
-- An error, stale, or note field means the data did not load or predates the files: read it before trusting a number.
-- A source's joins list is complete: empty means it declares none, so write that relationship inline rather than probing for one.
-- Read a source's doc before querying it: it carries grain and population rules its fields do not.
+- Use the names it returns verbatim; never invent an environment, package, or entity.
+- Do not mix source targets with other types in the same call.
+- Only combine entities from calls with identical scope (environment/package/model_path/source).
+- A source's joins list is complete: empty means it declares none.
+- Read a source's doc before querying it: it carries grain its fields do not.
+- An error, stale, or note field means the data did not load or predates the files.
+- Pass resource_id fields to malloy_executeQuery verbatim.
+
+## Call modes
+1. Listing: omit search_targets and query. none → environments; environmentName → packages; + packageName → sources with joins.
+2. Phase 1: source targets (usually with environmentName, no package) to pick sources.
+3. Phase 2: scoped dimension/measure/view/dimensional_value targets.
 
 ## Parameters
-All optional; supply what you know.
-- none: the environments and their package names.
-- environmentName: that environment's packages.
-- + packageName: that package's sources, each with its joins.
-- + query: what you need, in plain English; returns the most relevant sources, views, queries, joins and fields.
-- sourceName: drill down into one source. Its own entity comes back only when relevant; its doc and joins always arrive in sources.
-- limit: caps results (max 50; retrieval defaults to 10).
+search_targets: [{target_type, search_text}]; null search_text lists by prominence.
+scopes: [{environment, package, model_path, source}].
+environmentName/packageName/query/sourceName: legacy adapter. sourceName still drills into one source.
+limit (max 50). offset: source listings only.
 
 ## Response
-results[]: kind (source/view/query/dimension/measure/join), name, source, modelPath, doc — these map onto malloy_executeQuery; pass a view or query as queryName with sourceName. A join adds relationship, traversed as joinName.fieldName. alsoIn names other sources holding the same concept at the same score; choose by their docs.
-sources[]: per source behind a result — its doc (may be truncated) and full joins.
-With an embedding provider, ranking is semantic and entities carry a score. belowCutoffCount counts matches below the floor: 0 with no results means nothing is related. A "lexical" retrieval adds a retrievalReason; only "indexing" is worth retrying.
+Typed: ranking, total_available, returned, sources[] (resource_id, doc, joins, givens, authorize) plus per-target ranked entities (kind, name, source, modelPath, doc, alsoIn, relationship).
+Legacy: results[] of the same entity shape.
+belowCutoffCount / retrievalReason as today.
 
 ## Worked example
-{"environmentName":"examples","packageName":"storefront","query":"revenue by product category"}`;
+{"search_targets":[{"target_type":"source","search_text":"orders and revenue"}],"scopes":[{"environment":"examples","package":"storefront"}]}`;
 
 /**
  * Every tier of this tool answers with `results`, so an error keeps that key
@@ -618,6 +685,636 @@ function contextError(uri: string, identifier: string, error: unknown) {
    );
 }
 
+async function packageScopedResource(
+   environmentStore: EnvironmentStore,
+   uri: string,
+   payload: Record<string, unknown>,
+   pkg: Package,
+   request: {
+      environmentName: string;
+      packageName: string;
+      query?: string;
+      sourceName?: string;
+      limit?: number;
+      search_targets?: SearchTarget[];
+      offset?: number;
+   },
+   extras?: {
+      retrievalVersion?: string;
+      dimensionalValues?: RetrievalEvidence["index"]["dimensionalValues"];
+   },
+) {
+   let embeddingStatus: EmbeddingIndexStatus | undefined;
+   if (embeddingConfigured()) {
+      try {
+         embeddingStatus = await getEmbeddingIndexStatus(
+            environmentStore.storageManager.getDuckDbConnection(),
+            request.environmentName,
+            request.packageName,
+            Array.from(
+               (
+                  await getPackageIndex(
+                     environmentStore,
+                     request.environmentName,
+                     request.packageName,
+                  )
+               ).byId.keys(),
+            ).length,
+         );
+      } catch {
+         embeddingStatus = undefined;
+      }
+   }
+   const servedRevision =
+      typeof pkg.getServedRevision === "function"
+         ? pkg.getServedRevision()
+         : undefined;
+   const sourceContentSha =
+      typeof pkg.getSourceContentSha === "function"
+         ? pkg.getSourceContentSha()
+         : undefined;
+   const evidence: RetrievalEvidence = {
+      servedRevision,
+      sourceContentSha,
+      retrievalVersion: extras?.retrievalVersion ?? RETRIEVAL_VERSION,
+      retrievalConfigHash: retrievalConfigHash({
+         resultLimit:
+            typeof request.limit === "number" ? request.limit : undefined,
+         retrievalVersion: extras?.retrievalVersion,
+         dimensionValueIndex: getDimensionValueIndexMode(),
+      }),
+      index: {
+         lexical: "ready",
+         semantic: embeddingConfigured()
+            ? (embeddingStatus?.status ?? "indexing")
+            : "unavailable",
+         ...(extras?.dimensionalValues
+            ? { dimensionalValues: extras.dimensionalValues }
+            : {}),
+         generation: embeddingStatus
+            ? Date.parse(embeddingStatus.lastSyncedAt ?? "") || undefined
+            : undefined,
+      },
+   };
+   const includeEvidence =
+      typeof pkg.getServedRevision === "function" ||
+      getMcpTraceMode() !== "off";
+   const results = Array.isArray(payload.results)
+      ? payload.results
+      : Array.isArray(payload.targets)
+        ? (payload.targets as Array<{ results?: unknown[] }>).flatMap(
+             (target) => target.results ?? [],
+          )
+        : [];
+   const rankedSummary = compactRankedSummary(results);
+   let traceId: string | undefined;
+   if (getMcpTraceMode() !== "off") {
+      try {
+         const db = environmentStore.storageManager.getDuckDbConnection();
+         const store = new McpTraceStore(db);
+         traceId = await store.record({
+            toolName: "malloy_getContext",
+            request,
+            response: payload,
+            rankedSummary,
+            resultCount: rankedSummary.resultCount,
+            environmentName: request.environmentName,
+            packageName: request.packageName,
+            retrievalConfigHash: evidence.retrievalConfigHash,
+         });
+      } catch (error) {
+         logger.debug("[MCP Tool getContext] trace persist failed", {
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
+   }
+   return jsonResource(uri, {
+      ...payload,
+      ...(includeEvidence ? { evidence } : {}),
+      ...(traceId ? { traceId } : {}),
+   });
+}
+
+interface RankedRetrieval {
+   results: ResultEntity[];
+   belowCutoffCount: number;
+   retrieval?: "semantic" | "lexical";
+   retrievalReason?: RetrievalReason;
+}
+
+async function rankEntities(args: {
+   environmentStore: EnvironmentStore;
+   environmentName: string;
+   packageName: string;
+   pkgIndex: PackageIndex;
+   query: string;
+   sourceName?: string;
+   kinds?: Set<string>;
+   limit: number;
+}): Promise<RankedRetrieval> {
+   const { environmentStore, environmentName, packageName, pkgIndex } = args;
+   const { byId, index } = pkgIndex;
+   const kindOk = (kind: string) => !args.kinds || args.kinds.has(kind);
+   const scoped = Boolean(args.sourceName);
+   const configured = embeddingConfigured();
+   let semanticResults: ResultEntity[] | undefined;
+   let belowCutoffCount = 0;
+   let retrievalReason: RetrievalReason | undefined;
+   const pool = Array.from(byId.values()).filter(
+      (e) =>
+         kindOk(e.kind) &&
+         (!args.sourceName || e.source === args.sourceName),
+   );
+
+   if (configured) {
+      let provider: EmbeddingProvider | null = null;
+      try {
+         provider = getEmbeddingProvider();
+      } catch (error) {
+         retrievalReason = "unavailable";
+         logger.warn(
+            "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
+            {
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+      }
+      if (provider) {
+         try {
+            const semantic = await trySemanticSearch({
+               db: environmentStore.storageManager.getDuckDbConnection(),
+               provider,
+               pkg: pkgIndex.pkg,
+               environmentName,
+               packageName,
+               entities: pool,
+               query: args.query,
+               limit: scoped
+                  ? args.limit
+                  : Math.min(SEMANTIC_MAX_LIMIT, args.limit * 3),
+               sourceName: args.sourceName || undefined,
+            });
+            if ("hits" in semantic) {
+               const byKey = new Map(
+                  pool.map((e) => [
+                     entityRowKey(e.kind, e.source ?? "", e.name),
+                     e,
+                  ]),
+               );
+               const ranked = semantic.hits.flatMap((hit) => {
+                  const e = byKey.get(
+                     entityRowKey(hit.kind, hit.source ?? "", hit.name),
+                  );
+                  if (!e || !kindOk(e.kind)) return [];
+                  return [
+                     {
+                        kind: e.kind,
+                        name: e.name,
+                        source: e.source,
+                        environmentName,
+                        packageName,
+                        modelPath: e.modelPath,
+                        doc: e.doc,
+                        ...(e.relationship
+                           ? { relationship: e.relationship }
+                           : {}),
+                        ...(e.aliases ? { aliases: e.aliases } : {}),
+                        score: Math.round(hit.score * 10_000) / 10_000,
+                     },
+                  ];
+               });
+               semanticResults = scoped
+                  ? ranked.slice(0, args.limit)
+                  : groupSiblings(ranked, args.limit);
+               belowCutoffCount = semantic.belowCutoffCount;
+            } else {
+               retrievalReason = REASON_BY_UNAVAILABLE[semantic.unavailable];
+            }
+         } catch (error) {
+            retrievalReason = "unavailable";
+            logger.warn(
+               "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
+               {
+                  error:
+                     error instanceof Error ? error.message : String(error),
+               },
+            );
+         }
+      }
+   }
+
+   if (semanticResults !== undefined) {
+      return {
+         results: semanticResults,
+         belowCutoffCount,
+         retrieval: "semantic",
+      };
+   }
+
+   const sanitized = sanitize(args.query);
+   let hits: lunr.Index.Result[] = [];
+   try {
+      hits = index.search(sanitized);
+   } catch (error) {
+      logger.warn("[MCP Tool getContext] lunr search failed", {
+         error: error instanceof Error ? error.message : String(error),
+      });
+      hits = [];
+   }
+   const results = hits
+      .map((hit) => byId.get(hit.ref))
+      .filter((e): e is Entity => e !== undefined)
+      .filter((e) => kindOk(e.kind))
+      .filter((e) => !args.sourceName || e.source === args.sourceName)
+      .slice(0, args.limit)
+      .map((e) => ({
+         kind: e.kind,
+         name: e.name,
+         source: e.source,
+         environmentName,
+         packageName,
+         modelPath: e.modelPath,
+         doc: e.doc,
+         ...(e.relationship ? { relationship: e.relationship } : {}),
+         ...(e.aliases ? { aliases: e.aliases } : {}),
+      }));
+   return {
+      results,
+      belowCutoffCount: 0,
+      retrieval: configured ? "lexical" : undefined,
+      ...(retrievalReason ? { retrievalReason } : {}),
+   };
+}
+
+function listKind(
+   pkgIndex: PackageIndex,
+   kinds: Set<string>,
+   environmentName: string,
+   packageName: string,
+   sourceName: string | undefined,
+   modelPath: string | undefined,
+): ResultEntity[] {
+   return Array.from(pkgIndex.byId.values())
+      .filter((e) => kinds.has(e.kind))
+      .filter((e) => !sourceName || e.source === sourceName)
+      .filter((e) => !modelPath || e.modelPath === modelPath)
+      .map((e) => ({
+         kind: e.kind,
+         name: e.name,
+         source: e.source,
+         environmentName,
+         packageName,
+         modelPath: e.modelPath,
+         doc: e.doc,
+         ...(e.relationship ? { relationship: e.relationship } : {}),
+         ...(e.aliases ? { aliases: e.aliases } : {}),
+      }));
+}
+
+async function typedSourceDiscovery(
+   environmentStore: EnvironmentStore,
+   environmentName: string,
+   targets: SearchTarget[],
+   limit: number,
+   offset?: number,
+) {
+   const environment = await environmentStore.getEnvironment(
+      environmentName,
+      false,
+   );
+   const packages = await environment.listPackages();
+   const sourceRows: ResultEntity[] = [];
+   const mergedContext = new Map<
+      string,
+      {
+         name: string;
+         modelPath: string;
+         doc: string;
+         joins: Array<{
+            name: string;
+            relationship: Relationship;
+            doc?: string;
+         }>;
+      }
+   >();
+   for (const pkg of packages) {
+      if (!pkg.name) continue;
+      let pkgIndex: PackageIndex;
+      try {
+         pkgIndex = await getPackageIndex(
+            environmentStore,
+            environmentName,
+            pkg.name,
+         );
+      } catch {
+         continue;
+      }
+      for (const [name, entry] of pkgIndex.sourceContext) {
+         mergedContext.set(`${pkg.name}::${name}`, {
+            ...entry,
+            name,
+         });
+      }
+      sourceRows.push(
+         ...listKind(
+            pkgIndex,
+            new Set(["source"]),
+            environmentName,
+            pkg.name,
+            undefined,
+            undefined,
+         ),
+      );
+   }
+
+   const searchText = targets.find((t) => t.search_text)?.search_text;
+   let ranked = sourceRows;
+   let retrieval: "semantic" | "lexical" | undefined;
+   let retrievalReason: RetrievalReason | undefined;
+   let belowCutoffCount = 0;
+   if (searchText) {
+      const collected: ResultEntity[] = [];
+      for (const pkg of packages) {
+         if (!pkg.name) continue;
+         let pkgIndex: PackageIndex;
+         try {
+            pkgIndex = await getPackageIndex(
+               environmentStore,
+               environmentName,
+               pkg.name,
+            );
+         } catch {
+            continue;
+         }
+         const one = await rankEntities({
+            environmentStore,
+            environmentName,
+            packageName: pkg.name,
+            pkgIndex,
+            query: searchText,
+            kinds: new Set(["source"]),
+            limit,
+         });
+         collected.push(...one.results);
+         if (one.retrieval === "semantic") retrieval = "semantic";
+         else if (one.retrieval === "lexical" && retrieval !== "semantic") {
+            retrieval = "lexical";
+            retrievalReason = one.retrievalReason;
+         }
+         belowCutoffCount += one.belowCutoffCount;
+      }
+      ranked = collected
+         .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+         .slice(0, limit);
+   }
+
+   const typedEntities = ranked.map((row, index) => toTypedEntity(row, index + 1));
+   const byPackageContext = new Map<
+      string,
+      {
+         name: string;
+         modelPath: string;
+         doc: string;
+         joins: Array<{
+            name: string;
+            relationship: Relationship;
+            doc?: string;
+         }>;
+      }
+   >();
+   for (const entity of typedEntities) {
+      const key = entity.source ?? entity.name;
+      const fromPkg = mergedContext.get(`${entity.packageName}::${key}`);
+      if (fromPkg) byPackageContext.set(key, fromPkg);
+   }
+   const cards = typedEntities.map((entity) => {
+      const context =
+         byPackageContext.get(entity.source ?? entity.name) ??
+         mergedContext.get(`${entity.packageName}::${entity.name}`);
+      return {
+         name: entity.name,
+         modelPath: entity.modelPath,
+         doc: context?.doc ?? entity.doc,
+         joins: context?.joins ?? [],
+         resource_id: {
+            environment: environmentName,
+            package: entity.packageName,
+            model_path: entity.modelPath,
+            source: entity.name,
+         },
+         ...(entity.score !== undefined ? { score: entity.score } : {}),
+      };
+   });
+   const prominence = !searchText;
+   const envelope = buildTypedEnvelope({
+      ranking: prominence ? "prominence" : "relevance",
+      sources: cards,
+      targets: targets.map((target) => ({
+         target_type: target.target_type,
+         search_text: target.search_text ?? null,
+         results: typedEntities,
+      })),
+      offset,
+      limit,
+      pageSources: prominence,
+   });
+   return jsonResource(
+      buildMalloyUri({ environment: environmentName }, "get-context"),
+      {
+         ...envelope,
+         ...(retrieval ? { retrieval } : {}),
+         ...(retrievalReason ? { retrievalReason } : {}),
+         ...(retrieval === "semantic" ? { belowCutoffCount } : {}),
+      },
+   );
+}
+
+async function typedPackageSearch(args: {
+   environmentStore: EnvironmentStore;
+   environmentName: string;
+   packageName: string;
+   pkgIndex: PackageIndex;
+   targets: SearchTarget[];
+   sourceName?: string;
+   modelPath?: string;
+   entityName?: string;
+   limit: number;
+   offset?: number;
+   uri: string;
+   noteFor: (extra?: string) => Record<string, string>;
+}) {
+   const {
+      environmentStore,
+      environmentName,
+      packageName,
+      pkgIndex,
+      targets,
+      sourceName,
+      modelPath,
+      entityName,
+      limit,
+      offset,
+      uri,
+      noteFor,
+   } = args;
+   const sourceMeta = await collectSourceMeta(pkgIndex.pkg);
+   let dimensionalValuesStatus:
+      | RetrievalEvidence["index"]["dimensionalValues"]
+      | undefined;
+   const targetResults: Array<{
+      target_type: SearchTarget["target_type"];
+      search_text: string | null;
+      results: TypedEntity[];
+   }> = [];
+   const allEntities: TypedEntity[] = [];
+   let retrieval: "semantic" | "lexical" | undefined;
+   let retrievalReason: RetrievalReason | undefined;
+   let belowCutoffCount = 0;
+   const prominence = isProminenceListing(targets);
+
+   for (const target of targets) {
+      if (target.target_type === "dimensional_value") {
+         let db;
+         try {
+            db = environmentStore.storageManager.getDuckDbConnection();
+         } catch {
+            db = undefined;
+         }
+         if (db && getDimensionValueIndexMode() !== "off") {
+            const meta = await ensureDimensionValueIndex({
+               db,
+               pkg: pkgIndex.pkg,
+               environmentName,
+               packageName,
+            });
+            dimensionalValuesStatus = meta?.status ?? "unavailable";
+            const hits = await searchDimensionValues({
+               db,
+               environmentName,
+               packageName,
+               searchText: target.search_text,
+               sourceName,
+               dimensionName: entityName,
+               limit,
+            });
+            const typedHits = hits.map((hit) =>
+               toTypedEntity(
+                  {
+                     kind: "dimensional_value",
+                     name: hit.name,
+                     source: hit.source,
+                     environmentName,
+                     packageName,
+                     modelPath: hit.modelPath,
+                     doc: "",
+                     dimension: hit.dimension,
+                  },
+                  hit.rank,
+               ),
+            );
+            targetResults.push({
+               target_type: target.target_type,
+               search_text: target.search_text ?? null,
+               results: typedHits,
+            });
+            allEntities.push(...typedHits);
+         } else {
+            dimensionalValuesStatus = "off";
+            targetResults.push({
+               target_type: target.target_type,
+               search_text: target.search_text ?? null,
+               results: [],
+            });
+         }
+         continue;
+      }
+
+      const kinds = new Set(kindsForTarget(target.target_type));
+      const searchText = target.search_text?.trim();
+      let rows: ResultEntity[];
+      if (!searchText) {
+         rows = listKind(
+            pkgIndex,
+            kinds,
+            environmentName,
+            packageName,
+            sourceName,
+            modelPath,
+         ).slice(0, limit);
+      } else {
+         const ranked = await rankEntities({
+            environmentStore,
+            environmentName,
+            packageName,
+            pkgIndex,
+            query: searchText,
+            sourceName,
+            kinds,
+            limit,
+         });
+         rows = ranked.results;
+         if (ranked.retrieval === "semantic") retrieval = "semantic";
+         else if (ranked.retrieval === "lexical" && retrieval !== "semantic") {
+            retrieval = "lexical";
+            retrievalReason = ranked.retrievalReason;
+         }
+         belowCutoffCount += ranked.belowCutoffCount;
+      }
+      const typedRows = rows.map((row, index) => toTypedEntity(row, index + 1));
+      targetResults.push({
+         target_type: target.target_type,
+         search_text: target.search_text ?? null,
+         results: typedRows,
+      });
+      allEntities.push(...typedRows);
+   }
+
+   const cards = buildSourceCards({
+      entities: allEntities,
+      environmentName,
+      packageName,
+      sourceContext: pkgIndex.sourceContext,
+      sourceMeta,
+   });
+   const envelope = buildTypedEnvelope({
+      ranking: prominence ? "prominence" : "relevance",
+      sources: cards,
+      targets: targetResults,
+      offset,
+      limit,
+      pageSources: prominence && targets.every((t) => t.target_type === "source"),
+   });
+   const extraNote =
+      dimensionalValuesStatus === "off" &&
+      targets.some((t) => t.target_type === "dimensional_value")
+         ? "Dimensional values are not indexed on this server (PUBLISHER_DIMENSION_VALUE_INDEX=off). Query the dimension's distinct values with malloy_executeQuery."
+         : undefined;
+   return packageScopedResource(
+      environmentStore,
+      uri,
+      {
+         ...envelope,
+         ...(retrieval ? { retrieval } : {}),
+         ...(retrievalReason ? { retrievalReason } : {}),
+         ...(retrieval === "semantic" ? { belowCutoffCount } : {}),
+         ...noteFor(extraNote),
+      },
+      pkgIndex.pkg,
+      {
+         environmentName,
+         packageName,
+         sourceName,
+         limit,
+         search_targets: targets,
+         offset,
+      },
+      {
+         retrievalVersion: TYPED_RETRIEVAL_VERSION,
+         dimensionalValues: dimensionalValuesStatus,
+      },
+   );
+}
+
 /**
  * Registers the malloy_getContext MCP tool. It is a progressive-discovery tool:
  * with no environment it lists environments, with an environment but no package
@@ -636,13 +1333,38 @@ export function registerGetContextTool(
       GET_CONTEXT_DESCRIPTION,
       getContextShape,
       async (params: GetContextParams) => {
-         const { environmentName, packageName, query, sourceName, limit } =
-            params;
-         const max = limit ?? 10;
+         const typed = isTypedRequest(params);
+         const targets = params.search_targets ?? [];
+         if (typed) {
+            const typedError = validateTypedCall({
+               targets,
+               offset: params.offset,
+            });
+            if (typedError) {
+               return jsonToolError(
+                  buildMalloyUri({}, "get-context"),
+                  {
+                     message: typedError,
+                     suggestions: [
+                        "Use only source targets for discovery, then a separate call for dimension/measure/view/dimensional_value.",
+                     ],
+                  },
+                  { results: [] },
+               );
+            }
+         }
+         const scope = resolveScope(params);
+         const environmentName = scope.environmentName;
+         const packageName = scope.packageName;
+         const query = params.query;
+         const sourceName = scope.sourceName;
+         const limit = params.limit;
+         const max = limit ?? (typed ? 20 : 10);
          logger.info("[MCP Tool getContext] Retrieving context", {
             environmentName,
             packageName,
-            query,
+            hasQuery: Boolean(query),
+            hasTargets: typed,
             sourceName,
             limit,
          });
@@ -673,6 +1395,38 @@ export function registerGetContextTool(
                return contextError(
                   buildMalloyUri({}, "get-context"),
                   "environments",
+                  error,
+               );
+            }
+         }
+
+         // Typed phase 1: source targets with an environment and no package
+         // search every package in that environment.
+         if (
+            typed &&
+            environmentName &&
+            !packageName &&
+            targets.some((t) => t.target_type === "source")
+         ) {
+            try {
+               return await typedSourceDiscovery(
+                  environmentStore,
+                  environmentName,
+                  targets,
+                  max,
+                  params.offset,
+               );
+            } catch (error) {
+               logger.warn("[MCP Tool getContext] typed source discovery failed", {
+                  environmentName,
+                  error: error instanceof Error ? error.message : String(error),
+               });
+               return contextError(
+                  buildMalloyUri(
+                     { environment: environmentName },
+                     "get-context",
+                  ),
+                  environmentName,
                   error,
                );
             }
@@ -777,7 +1531,7 @@ export function registerGetContextTool(
             );
          }
 
-         const { byId, index, sourceContext } = pkgIndex;
+         const { byId, sourceContext } = pkgIndex;
          const uri = buildMalloyUri(
             { environment: environmentName, package: packageName },
             "get-context",
@@ -821,6 +1575,23 @@ export function registerGetContextTool(
             return note ? { note } : {};
          };
 
+         if (typed) {
+            return typedPackageSearch({
+               environmentStore,
+               environmentName,
+               packageName,
+               pkgIndex,
+               targets,
+               sourceName,
+               modelPath: scope.modelPath,
+               entityName: scope.entityName,
+               limit: max,
+               offset: params.offset,
+               uri,
+               noteFor,
+            });
+         }
+
          // Tier 3: package but no query -> list the package's sources as an
          // overview the agent can then query or drill into.
          const sanitized = query ? sanitize(query) : "";
@@ -852,14 +1623,26 @@ export function registerGetContextTool(
             // (explores/export {}), not an empty database. Say so, only in the
             // empty case, so the populated payload stays byte-identical.
             if (results.length === 0 && !sourceName) {
-               return jsonResource(uri, {
-                  results,
-                  ...noteFor(
-                     "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call malloy_getStatus for load errors and stale packages.",
-                  ),
-               });
+               return packageScopedResource(
+                  environmentStore,
+                  uri,
+                  {
+                     results,
+                     ...noteFor(
+                        "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call malloy_getStatus for load errors and stale packages.",
+                     ),
+                  },
+                  pkgIndex.pkg,
+                  { environmentName, packageName, query, sourceName, limit },
+               );
             }
-            return jsonResource(uri, { results, ...noteFor() });
+            return packageScopedResource(
+               environmentStore,
+               uri,
+               { results, ...noteFor() },
+               pkgIndex.pkg,
+               { environmentName, packageName, query, sourceName, limit },
+            );
          }
 
          // Tier 4: retrieval over the package's entities. With an
@@ -870,169 +1653,48 @@ export function registerGetContextTool(
          // `retrieval` marker and per-entity `score` appear ONLY when a
          // provider is configured, so the unconfigured payload stays
          // byte-identical to the lexical-only releases.
-         const configured = embeddingConfigured();
-         // A drill-down is confined to one source, so no two hits can be the
-         // same concept in parallel sources and there is nothing to collapse.
-         const scoped = Boolean(sourceName);
-         let semanticResults: ResultEntity[] | undefined;
-         let belowCutoffCount = 0;
-         // Why a configured server answered lexically. Without it "lexical"
-         // is a dead end: an agent cannot tell a cold index, which clears in
-         // seconds and is worth retrying, from a down provider, which is not.
-         let retrievalReason: RetrievalReason | undefined;
-         if (configured) {
-            let provider: EmbeddingProvider | null = null;
-            try {
-               provider = getEmbeddingProvider();
-            } catch (error) {
-               retrievalReason = "unavailable";
-               logger.warn(
-                  "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
-                  {
-                     error:
-                        error instanceof Error ? error.message : String(error),
-                  },
-               );
-            }
-            if (provider) {
-               try {
-                  // The raw query embeds better than the lunr-sanitized
-                  // one; sanitize() only exists to strip lunr operators.
-                  const semantic = await trySemanticSearch({
-                     db: environmentStore.storageManager.getDuckDbConnection(),
-                     provider,
-                     pkg: pkgIndex.pkg,
-                     environmentName,
-                     packageName,
-                     entities: Array.from(byId.values()),
-                     query: query ?? sanitized,
-                     // Over-fetch so sibling collapsing can refill the
-                     // window with genuinely different concepts instead of
-                     // returning fewer results than asked for. A drill-down
-                     // is already confined to one source, so nothing there
-                     // can collapse and the extra rows would be waste.
-                     limit: scoped
-                        ? max
-                        : Math.min(SEMANTIC_MAX_LIMIT, max * 3),
-                     // "" means no drill-down, matching the lexical
-                     // path's truthiness filter.
-                     sourceName: sourceName || undefined,
-                  });
-                  if ("hits" in semantic) {
-                     const byKey = new Map(
-                        Array.from(byId.values()).map((e) => [
-                           entityRowKey(e.kind, e.source ?? "", e.name),
-                           e,
-                        ]),
-                     );
-                     // Rows are only a vector cache: modelPath and doc
-                     // come from the live entity, and a hit with no live
-                     // entity (deleted since the last sync) is dropped.
-                     const ranked = semantic.hits.flatMap((hit) => {
-                        const e = byKey.get(
-                           entityRowKey(hit.kind, hit.source ?? "", hit.name),
-                        );
-                        if (!e) return [];
-                        return [
-                           {
-                              kind: e.kind,
-                              name: e.name,
-                              source: e.source,
-                              environmentName,
-                              packageName,
-                              modelPath: e.modelPath,
-                              doc: e.doc,
-                              ...(e.relationship
-                                 ? { relationship: e.relationship }
-                                 : {}),
-                              ...(e.aliases ? { aliases: e.aliases } : {}),
-                              score: Math.round(hit.score * 10_000) / 10_000,
-                           },
-                        ];
-                     });
-                     semanticResults = scoped
-                        ? ranked.slice(0, max)
-                        : groupSiblings(ranked, max);
-                     belowCutoffCount = semantic.belowCutoffCount;
-                  } else {
-                     retrievalReason =
-                        REASON_BY_UNAVAILABLE[semantic.unavailable];
-                  }
-               } catch (error) {
-                  // Defensive: trySemanticSearch does not throw, but the
-                  // storage handle lookup can (e.g. before initialization
-                  // or under a partial test double). Semantic retrieval
-                  // must never take tier 4 down with it.
-                  retrievalReason = "unavailable";
-                  logger.warn(
-                     "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
-                     {
-                        error:
-                           error instanceof Error
-                              ? error.message
-                              : String(error),
-                     },
-                  );
-               }
-            }
-         }
-
-         if (semanticResults !== undefined) {
-            const sources = contextForResults(semanticResults, sourceContext);
-            return jsonResource(uri, {
-               retrieval: "semantic",
-               // Always present on a semantic response, including 0: the
-               // reading depends on being able to tell 0 from absent.
-               belowCutoffCount,
-               results: semanticResults,
-               ...(sources.length > 0 ? { sources } : {}),
-               ...noteFor(),
-            });
-         }
-
-         let hits: lunr.Index.Result[] = [];
-         try {
-            hits = index.search(sanitized);
-         } catch (error) {
-            logger.warn("[MCP Tool getContext] lunr search failed", {
-               query,
-               error: error instanceof Error ? error.message : String(error),
-            });
-            hits = [];
-         }
-
-         // Defensive: skip any hit whose ref is missing from the entity map.
-         const results = hits
-            .map((hit) => byId.get(hit.ref))
-            .filter((e): e is Entity => e !== undefined)
-            // Drill-down: narrow to one source when sourceName is set.
-            .filter((e) => !sourceName || e.source === sourceName)
-            .slice(0, max)
-            .map((e) => ({
-               kind: e.kind,
-               name: e.name,
-               source: e.source,
-               environmentName,
-               packageName,
-               modelPath: e.modelPath,
-               doc: e.doc,
-               ...(e.relationship ? { relationship: e.relationship } : {}),
-               ...(e.aliases ? { aliases: e.aliases } : {}),
-            }));
-
-         const sources = contextForResults(results, sourceContext);
+         const ranked = await rankEntities({
+            environmentStore,
+            environmentName,
+            packageName,
+            pkgIndex,
+            query: query ?? sanitized,
+            sourceName,
+            limit: max,
+         });
+         const sources = contextForResults(ranked.results, sourceContext);
          const context = sources.length > 0 ? { sources } : {};
-         return jsonResource(
+         if (ranked.retrieval === "semantic") {
+            return packageScopedResource(
+               environmentStore,
+               uri,
+               {
+                  retrieval: "semantic",
+                  belowCutoffCount: ranked.belowCutoffCount,
+                  results: ranked.results,
+                  ...context,
+                  ...noteFor(),
+               },
+               pkgIndex.pkg,
+               { environmentName, packageName, query, sourceName, limit },
+            );
+         }
+         return packageScopedResource(
+            environmentStore,
             uri,
-            configured
+            ranked.retrieval === "lexical"
                ? {
                     retrieval: "lexical",
-                    ...(retrievalReason ? { retrievalReason } : {}),
-                    results,
+                    ...(ranked.retrievalReason
+                       ? { retrievalReason: ranked.retrievalReason }
+                       : {}),
+                    results: ranked.results,
                     ...context,
                     ...noteFor(),
                  }
-               : { results, ...context, ...noteFor() },
+               : { results: ranked.results, ...context, ...noteFor() },
+            pkgIndex.pkg,
+            { environmentName, packageName, query, sourceName, limit },
          );
       },
    );

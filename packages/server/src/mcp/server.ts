@@ -12,6 +12,7 @@ import {
 } from "./tools/reload_package_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
+import { registerGetTraceTool } from "./tools/get_trace_tool";
 import skillsBundle from "./skills/skills_bundle.json";
 
 export const testServerInfo = {
@@ -67,6 +68,7 @@ export function initializeMcpServer(
    registerReloadPackageTool(mcpServer, environmentStore);
    registerSearchDatabaseSchemaTool(mcpServer, environmentStore);
    registerGetStatusTool(mcpServer, environmentStore);
+   registerGetTraceTool(mcpServer, environmentStore);
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
    // MCP but do not load skill files (e.g. Codex, ChatGPT, Cursor) can pull the

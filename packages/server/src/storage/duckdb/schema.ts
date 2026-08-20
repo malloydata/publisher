@@ -237,6 +237,9 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
   `);
 
    await createEntityEmbeddingsTable(db);
+   await createMcpTraceTable(db);
+   await createEvalStoreTables(db);
+   await createDimensionValueIndexTables(db);
 }
 
 async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
@@ -255,6 +258,27 @@ async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
    );
    await db.run(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_materializations_active_key ON materializations(active_key)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_mcp_traces_created_at ON mcp_traces(created_at)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_eval_cases_set_id ON eval_cases(set_id)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_eval_evidence_set_id ON eval_evidence(set_id)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_eval_runs_set_id ON eval_runs(set_id)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_eval_events_run_id ON eval_events(run_id)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_eval_checkpoints_run_id ON eval_checkpoints(run_id)",
+   );
+   await db.run(
+      "CREATE INDEX IF NOT EXISTS idx_dimension_values_lookup ON dimension_values(environment_name, package_name, generation, source_name, dimension_name)",
    );
    // Not a key prefix any more, and so load-bearing rather than merely helpful:
    // deleting a package's rows is now a scan of a non-key column.
@@ -686,6 +710,165 @@ export async function createEntityEmbeddingsTable(
   `);
 }
 
+export async function createMcpTraceTable(db: DuckDBConnection): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS mcp_traces (
+      trace_id VARCHAR PRIMARY KEY,
+      tool_name VARCHAR NOT NULL,
+      mode VARCHAR NOT NULL,
+      request_json VARCHAR,
+      response_json VARCHAR,
+      request_hash VARCHAR,
+      response_hash VARCHAR,
+      ranked_summary_json VARCHAR,
+      result_count INTEGER,
+      environment_name VARCHAR,
+      package_name VARCHAR,
+      retrieval_config_hash VARCHAR,
+      referenced INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL
+    )
+  `);
+}
+
+/**
+ * Local evaluation workspace. These tables are created on every boot
+ * (CREATE IF NOT EXISTS) and are NOT in dropAllTables, so `--init`
+ * preserves goldens, reviewed cases, and named model checkpoints.
+ */
+export async function createEvalStoreTables(
+   db: DuckDBConnection,
+): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS eval_sets (
+      id VARCHAR PRIMARY KEY,
+      name VARCHAR NOT NULL,
+      description VARCHAR,
+      target_model_path VARCHAR,
+      environment_name VARCHAR,
+      package_name VARCHAR,
+      draft_revision INTEGER NOT NULL,
+      export_revision INTEGER,
+      metadata_json VARCHAR,
+      status VARCHAR DEFAULT 'active',
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    )
+  `);
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS eval_cases (
+      id VARCHAR PRIMARY KEY,
+      set_id VARCHAR NOT NULL,
+      qid VARCHAR NOT NULL,
+      question VARCHAR NOT NULL,
+      split VARCHAR,
+      tags_json VARCHAR,
+      state VARCHAR NOT NULL,
+      source_json VARCHAR,
+      selection_json VARCHAR,
+      golden_json VARCHAR,
+      golden_revision INTEGER NOT NULL DEFAULT 0,
+      artifact_refs_json VARCHAR,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    )
+  `);
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS eval_evidence (
+      id VARCHAR PRIMARY KEY,
+      set_id VARCHAR NOT NULL,
+      case_id VARCHAR,
+      kind VARCHAR NOT NULL,
+      snippet VARCHAR,
+      local_ref VARCHAR,
+      sensitivity VARCHAR,
+      redaction_json VARCHAR,
+      created_at TIMESTAMP NOT NULL
+    )
+  `);
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS eval_runs (
+      id VARCHAR PRIMARY KEY,
+      set_id VARCHAR NOT NULL,
+      set_revision INTEGER NOT NULL,
+      config_json VARCHAR NOT NULL,
+      status VARCHAR NOT NULL,
+      summary_json VARCHAR,
+      created_at TIMESTAMP NOT NULL,
+      updated_at TIMESTAMP NOT NULL
+    )
+  `);
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS eval_events (
+      id VARCHAR PRIMARY KEY,
+      run_id VARCHAR NOT NULL,
+      case_id VARCHAR,
+      kind VARCHAR NOT NULL,
+      payload_json VARCHAR NOT NULL,
+      created_at TIMESTAMP NOT NULL
+    )
+  `);
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS eval_checkpoints (
+      id VARCHAR PRIMARY KEY,
+      label VARCHAR NOT NULL,
+      run_id VARCHAR,
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      model_path VARCHAR NOT NULL,
+      served_revision VARCHAR,
+      source_content_sha VARCHAR,
+      issue_ids_json VARCHAR,
+      files_json VARCHAR NOT NULL,
+      created_at TIMESTAMP NOT NULL
+    )
+  `);
+}
+
+/**
+ * Lexical dimensional-value cache. Dropped on `--init` like embeddings:
+ * it is derived from live queries, not author-reviewed goldens.
+ */
+export async function createDimensionValueIndexTables(
+   db: DuckDBConnection,
+): Promise<void> {
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS dimension_value_generations (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      generation INTEGER NOT NULL,
+      served_revision VARCHAR,
+      status VARCHAR NOT NULL,
+      truncated_count INTEGER NOT NULL DEFAULT 0,
+      value_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name)
+    )
+  `);
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS dimension_values (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      generation INTEGER NOT NULL,
+      model_path VARCHAR NOT NULL,
+      source_name VARCHAR NOT NULL,
+      dimension_name VARCHAR NOT NULL,
+      value VARCHAR NOT NULL,
+      truncated INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (
+        environment_name,
+        package_name,
+        generation,
+        model_path,
+        source_name,
+        dimension_name,
+        value
+      )
+    )
+  `);
+}
+
 // TODO: Remove this during projects cleanup
 // Tables in the pre-rename schema, listed children-first so DROP order
 // satisfies foreign-key dependencies on the legacy `projects` table.
@@ -718,6 +901,13 @@ async function dropLegacyProjectSchema(db: DuckDBConnection): Promise<void> {
    }
 }
 
+/**
+ * Tables `--init` wipes. Eval tables are deliberately absent: goldens and
+ * named checkpoints are the expensive artifacts the local eval workflow
+ * produces, and they survive `--init`. Remove them only through the
+ * explicit eval reset endpoint. `mcp_traces` is included so a reinit
+ * clears transient tool evidence without touching reviewed cases.
+ */
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
    const tables = [
       "build_manifests",
@@ -729,6 +919,9 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "environments",
       "themes",
       "entity_embeddings",
+      "mcp_traces",
+      "dimension_values",
+      "dimension_value_generations",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

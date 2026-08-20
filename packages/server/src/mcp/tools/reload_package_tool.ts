@@ -95,6 +95,13 @@ export function registerReloadPackageTool(
                // these apart otherwise, and only one of them keeps their work.
                mode,
                name: pkg.name,
+               ...("servedRevision" in pkg &&
+                  pkg.servedRevision !== undefined && {
+                     servedRevision: pkg.servedRevision,
+                     sourceContentSha: (
+                        pkg as { sourceContentSha?: string }
+                     ).sourceContentSha,
+                  }),
                ...(pkg.description !== undefined && {
                   description: pkg.description,
                }),

@@ -65,6 +65,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(names.has("malloy_reloadPackage")).toBe(true);
       expect(names.has("malloy_searchDatabaseSchema")).toBe(true);
       expect(names.has("malloy_getStatus")).toBe(true);
+      expect(names.has("malloy_getTrace")).toBe(false);
    });
 
    /**
@@ -128,6 +129,8 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          "alsoIn",
          "belowCutoffCount",
          "retrievalReason",
+         "search_targets",
+         "resource_id",
       ]) {
          expect(description).toContain(term);
       }

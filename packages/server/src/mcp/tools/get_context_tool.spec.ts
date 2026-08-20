@@ -1320,3 +1320,163 @@ describe("get_context semantic retrieval", () => {
       }
    });
 });
+
+const mockTypedModel = {
+   getSourceInfos: () => [
+      {
+         name: "order_items",
+         annotations: ["#(doc) One row per product sold on an order."],
+         schema: {
+            fields: [
+               { kind: "dimension", name: "state", annotations: [] },
+               {
+                  kind: "measure",
+                  name: "sales",
+                  annotations: ["#(doc) Total sales amount."],
+               },
+               {
+                  kind: "view",
+                  name: "by_category",
+                  annotations: ["#(doc) Sales by product category."],
+               },
+               {
+                  kind: "join",
+                  name: "current_building",
+                  relationship: "one",
+                  annotations: ["#(doc) Building this asset sits in."],
+               },
+            ],
+         },
+      },
+   ],
+   getQueries: () => [
+      {
+         name: "top_orders",
+         sourceName: "order_items",
+         annotations: ["#(doc) Highest value orders."],
+      },
+   ],
+   getSources: () => [
+      {
+         name: "order_items",
+         givens: [{ name: "ROLE", type: "string" }],
+         authorize: undefined,
+      },
+   ],
+};
+const mockTypedPackage = {
+   listModels: async () => [{ path: "ecommerce.malloy" }],
+   getModel: () => mockTypedModel,
+};
+
+describe("get_context typed contract", () => {
+   it("returns a Credible-shaped envelope for source targets", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockTypedPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [
+               { target_type: "source", search_text: "product sold" },
+            ],
+            scopes: [
+               { environment: "malloy-samples", package: "ecommerce" },
+            ],
+         }),
+      );
+      expect(payload.ranking).toBe("relevance");
+      expect(payload.sources[0].name).toBe("order_items");
+      expect(payload.sources[0].resource_id).toEqual({
+         environment: "malloy-samples",
+         package: "ecommerce",
+         model_path: "ecommerce.malloy",
+         source: "order_items",
+      });
+      expect(payload.sources[0].joins).toHaveLength(1);
+      expect(payload.targets[0].results[0].entityId).toBe(
+         "source:order_items:order_items",
+      );
+      expect(payload.targets[0].results[0].rank).toBe(1);
+      expect(payload.results).toBeUndefined();
+   });
+
+   it("maps named queries through the view target type", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockTypedPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [
+               { target_type: "view", search_text: "highest value" },
+            ],
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+         }),
+      );
+      const names = payload.targets[0].results.map((r: { name: string }) => r.name);
+      expect(names).toContain("top_orders");
+      expect(
+         payload.targets[0].results.every(
+            (r: { kind: string }) => r.kind === "view",
+         ),
+      ).toBe(true);
+   });
+
+   it("rejects mixing source targets with entity targets", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockTypedPackage),
+      });
+      const result = await handler({
+         search_targets: [
+            { target_type: "source", search_text: "orders" },
+            { target_type: "measure", search_text: "sales" },
+         ],
+         environmentName: "malloy-samples",
+         packageName: "ecommerce",
+      });
+      expect(result.isError).toBe(true);
+      expect(parse(result).error).toMatch(/Do not mix source targets/);
+   });
+
+   it("lists dimensions by prominence when search_text is null", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockTypedPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "dimension" }],
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "ecommerce",
+                  source: "order_items",
+               },
+            ],
+         }),
+      );
+      expect(payload.ranking).toBe("prominence");
+      expect(payload.targets[0].results.map((r: { name: string }) => r.name)).toEqual([
+         "state",
+      ]);
+      expect(payload.sources[0].entities.dimensions[0].entityId).toBe(
+         "dimension:order_items:state",
+      );
+   });
+
+   it("keeps the legacy query payload byte-compatible", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "state",
+         }),
+      );
+      expect(payload.results[0].kind).toBe("dimension");
+      expect(payload.ranking).toBeUndefined();
+      expect(payload.targets).toBeUndefined();
+   });
+});
+
