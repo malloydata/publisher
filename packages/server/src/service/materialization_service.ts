@@ -2959,13 +2959,14 @@ export class MaterializationService {
    }): StorageIncrementalRefresh {
       const { context, lineage, persistSource, instruction } = params;
       return {
-         plan: async ({ session, sourceType, handle }) => {
+         plan: async ({ session, sourceType, handle, quotedTablePath }) => {
             const { target, readCost } = storageDeltaTarget({
                session,
                sourceType,
                handle,
                destinationName: params.destinationName,
                physicalTableName: params.physicalTableName,
+               quotedTablePath,
                lineage,
                persistSource,
                buildSQL: params.buildSQL,

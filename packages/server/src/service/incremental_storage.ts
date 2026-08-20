@@ -16,7 +16,7 @@ import {
 import type { BuildReadCost } from "./build_read_cost";
 import type { FederatedSourceType } from "./connection";
 import type { QueryMetadata } from "./query_metadata";
-import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
+import { quoteIdentifier } from "./quoting";
 import { errMessage } from "../utils";
 
 /**
@@ -65,6 +65,12 @@ export function storageDeltaTarget(params: {
    destinationName: string;
    /** Logical, unquoted physical table name, WITHOUT the destination catalog. */
    physicalTableName: string;
+   /**
+    * The table's quoted path as the CREATE names it, passed in rather than
+    * re-derived: the delta's DML and the seed's CTAS have to name the same table,
+    * and one derivation is what makes that so rather than two that agree today.
+    */
+   quotedTablePath: string;
    lineage: IncrementalLineage;
    persistSource: PersistSource;
    /**
@@ -85,6 +91,7 @@ export function storageDeltaTarget(params: {
       persistSource,
       buildSQL,
       queryMetadata,
+      quotedTablePath,
    } = params;
    const sourceDialect = persistSource.dialectName;
    const logicalTablePath = `${destinationName}.${params.physicalTableName}`;
@@ -95,14 +102,7 @@ export function storageDeltaTarget(params: {
       target: {
          dialect: STORAGE_TARGET_DIALECT,
          runner: (sql) => session.runSQL(sql),
-         // Must name the table the way the build CREATEd it, which is why this
-         // goes through the manifest quoting rule rather than quoteTablePath: an
-         // author's `name=` may already be canonical SQL, and re-quoting it would
-         // aim the DML at a table whose name contains the quote characters.
-         quotedTablePath: quoteManifestTablePath(
-            logicalTablePath,
-            STORAGE_TARGET_DIALECT,
-         ),
+         quotedTablePath,
          logicalTablePath,
 
          deltaRows: async (start, end) => {

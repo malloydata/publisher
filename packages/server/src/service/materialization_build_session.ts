@@ -1000,6 +1000,12 @@ export async function buildDownstreamIntoStorage(params: {
          // of the shared catalog database.
          await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       }
+      // Pinned here as well as on the non-chained path, which is the only other
+      // place a build session is created. No predicate or boundary probe runs on
+      // this one today — a chained source is excluded from the delta path — so
+      // this guards the case that lifting that exclusion creates, in the one
+      // function where its absence would not be obvious.
+      await pinSessionToUTC(session);
 
       // Compile the transient rebind model against the build session. Its only
       // connection is the attached destination; the upstream virtual sources

@@ -90,6 +90,9 @@ function targetFor(
       handle: "orders_pg_db",
       destinationName: "lake",
       physicalTableName: "orders__g000__abc",
+      // What the session passes: the same value its CTAS names, so the DML in
+      // these tests is aimed at the table a real build would have created.
+      quotedTablePath: '"lake"."orders__g000__abc"',
       lineage: opts.lineage ?? LINEAGE,
       persistSource: fakeSource({
          name: "orders",
