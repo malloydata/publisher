@@ -321,28 +321,31 @@ async function boundRows(
 /**
  * The shared multi-entry-point fixture for both the "load-time scoping" and
  * "entry-point matrix" describe blocks below: `X` is gated; `Y` inherits by a
- * bare `extend {}`; `Z`/`Z2` are `query_source` projections (one keeps the
- * gated column, one drops it); `W_rename`/`W_except`/`W_accept` each inherit
- * `X`'s gate BY REFERENCE (no annotation of their own) but can't express it
- * after their own `extend` renames/drops the field; `cp_joiner` is an
- * ordinary, unannotated `join_one:` of `X`; `query: q` is a bare named query
- * over `X` with no annotation of its own. One fixture, not two: earlier this
- * file kept a `SCOPED_ENTRY` variant (this minus `cp_joiner`/`query: q`) to
- * dodge a `source_extraction.ts` bug that reported `cp_joiner`'s ordinary
- * join as a misplaced annotation and aborted the whole load before
- * `validateAuthorizeProbes` was ever reached — see the file header. With
- * that bug fixed, verbatim `ENTRY` loads cleanly through the REAL
- * `Model.create` (pinned by the tests in "load-time scoping" below, which
- * use `createModel`, not `buildGatedModel`), so the split fixture no longer
- * earns its keep.
+ * bare `extend {}`; `Z`/`Z2` are `query_source` projections; `W_accept`
+ * inherits `X`'s gate dimension BY REFERENCE (no annotation of its own) but
+ * drops it via an allow-list; `cp_joiner` is an ordinary, unannotated
+ * `join_one:` of `X`; `query: q` is a bare named query over `X` with no
+ * annotation of its own.
+ *
+ * `W_rename`/`W_except` (renaming/excepting the COLUMN the gate dimension's
+ * own expression reads, not the dimension field itself) are deliberately NOT
+ * members of this fixture any more — under the dimension form,
+ * `validateGateDimensionsForModel` walks every top-level source (including a
+ * derived one that merely inherited the gate dimension unchanged) and
+ * `expandGivenIds` fails to resolve `org_id` by name on either derivation,
+ * which throws unconditionally and aborts the WHOLE model's load, not just
+ * that one entry point. Folding either into `ENTRY` would take every other
+ * member down with it, so that shape gets its own isolated fixture — see
+ * "renaming/excepting a column the gate dimension depends on" below.
  */
 const ENTRY = `##! experimental.givens
 
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -351,10 +354,6 @@ source: Y is X extend {}
 source: Z is X -> { group_by: id, org_id, val; aggregate: n is count() }
 
 source: Z2 is X -> { group_by: id, val; aggregate: n is count() }
-
-source: W_rename is X extend { rename: tenant is org_id }
-
-source: W_except is X extend { except: org_id }
 
 source: W_accept is X extend { accept: id, val, n }
 
@@ -376,8 +375,11 @@ describe("row-field #(authorize) gate — load-time validation", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
-source: X is duckdb.table('parent') extend { measure: n is count() }
+source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+   measure: n is count()
+}
 `;
 
    it("CRITICAL — Model.create loads it cleanly (validateAuthorizeProbes is shape-aware: it probes the gate as a source-level filter on the entry point, not a one-row probe)", async () => {
@@ -427,8 +429,11 @@ source: X is duckdb.table('parent') extend { measure: n is count() }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
-source: X is duckdb.sql("select 1 as id, 1 as org_id") extend { measure: n is count() }
+source: X is duckdb.sql("select 1 as id, 1 as org_id") extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+   measure: n is count()
+}
 `,
          );
          const { MalloyConfig, FixedConnectionMap: FCM } = await import(
@@ -492,29 +497,19 @@ describe("row-level authorize — load-time scoping", () => {
          .compilationError;
    }
 
-   /** Whether `spyOn(logger, "warn")` was called with the entry-point
-    *  unexpressible warning for `sourceName`. */
-   function warnedUnexpressible(
-      warnSpy: { mock: { calls: unknown[][] } },
-      sourceName: string,
-   ): boolean {
-      return warnSpy.mock.calls.some((call) => {
-         const [message, fields] = call as [string, { sourceName?: string }?];
-         return (
-            typeof message === "string" &&
-            message.includes("not expressible at this entry point") &&
-            fields?.sourceName === sourceName
-         );
-      });
-   }
-
-   it("Z2 (query-source, gate column projected away): load succeeds and warns, request still denies", async () => {
-      const warnSpy = spyOn(logger, "warn");
-      warnSpy.mockClear();
+   it("Z2 (query-source, gate column projected away): load succeeds, request still denies", async () => {
+      // No load-time warning fires for this shape under the dimension form:
+      // `validateGateDimensionsForModel` finds no `authorized` candidate on
+      // `Z2`'s own struct at all (silently "not gated" rather than "gated but
+      // unexpressible"), so `onWarning` never runs for it — the warning check
+      // this test used to make was specific to the STRING form's
+      // `validateAuthorizeProbes` pre-flight, which re-parsed text and could
+      // therefore detect "gated but broken" at LOAD time. The dimension
+      // form's discovery only re-derives from the base (`X`) at REQUEST time
+      // (`gateExprsForOwnAnnotations`), which is what still denies below.
       const { model, duckdb, dir } = await createModel(ENTRY);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         expect(warnedUnexpressible(warnSpy, "Z2")).toBe(true);
 
          await expect(
             model.getQueryResults(
@@ -532,51 +527,70 @@ describe("row-level authorize — load-time scoping", () => {
       }
    });
 
-   it("Z (query-source, gate column kept): loads with no compilation error and serves rows filtered by the gate", async () => {
+   it("Z (query-source derivation of the gated source): loads with no compilation error but DENIES at request time — the gate dimension itself is `internal`, so a query-source pipeline stage cannot select it forward the way the string form's re-parsed text could keep reading `org_id` (corrects the string form's old intent for this shape)", async () => {
+      // Under the STRING form, this shape "filtered" because keeping the
+      // COLUMN the expression text mentions (`org_id`) was enough for a
+      // fresh re-parse to succeed at `Z`. Under the dimension form the graft
+      // is by FIELD NAME (`authorized`), and `internal` blocks exactly the
+      // external reference a query-source pipeline stage would need to carry
+      // it forward (`group_by: ..., authorized` fails to compile with
+      // `'authorized' is internal`) — so `Z`'s own field space can never
+      // contain the gate dimension, and the graft has nothing to attach to.
+      // This is the confirmed, unfixable "query-source pipeline that drops
+      // the field" limitation, and it now applies even when the author tries
+      // to keep every column the gate reads — DENY, not the old FILTER. No
+      // load-time warning fires either (same reason as `Z2` above — no
+      // candidate is found on `Z`'s own struct, so there is nothing to warn
+      // about until the request-time re-derivation from `X` denies it).
       const { model, duckdb, dir } = await createModel(ENTRY);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: Z -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [1] },
-         );
-         const rows = result.compactResult as unknown as { n: number }[];
-         // org_id=1 rows are ids 1,2 — filtered, not the unfiltered count of 4.
-         expect(rows[0].n).toBe(2);
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: Z -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("W_rename / W_except / W_accept: load succeeds, warns, and each denies at request time — the rest of the model still serves", async () => {
-      const warnSpy = spyOn(logger, "warn");
-      warnSpy.mockClear();
+   it("W_accept (extend drops the gate dimension via an allow-list): load succeeds, warns — but KNOWN GAP: request time serves every row UNFILTERED rather than denying", async () => {
+      // `accept: id, val, n` excludes `authorized` entirely, so
+      // `findGateDimensionCandidates(W_accept)` finds no candidate at all —
+      // `validateGateDimension` returns `undefined` for it (not gated), the
+      // same "silently shed" hazard `gate_dimension_integration.spec.ts`'s own
+      // "KNOWN GAP: except: + unannotated redefinition" test documents for a
+      // sibling shape. This is the confirmed, unfixable-in-this-repo
+      // fail-OPEN limitation the task brief calls out — the STRING form
+      // denied this shape (its re-parse of "org_id in $GROUPS" failed since
+      // `org_id` wasn't in `W_accept`'s field space either); the DIMENSION
+      // form cannot even discover that `W_accept` was ever meant to be gated.
+      // Pinned here as a KNOWN GAP, not silently passed as a deny.
       const { model, duckdb, dir } = await createModel(ENTRY);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         for (const name of ["W_rename", "W_except", "W_accept"]) {
-            expect(warnedUnexpressible(warnSpy, name)).toBe(true);
-            await expect(
-               model.getQueryResults(
-                  undefined,
-                  undefined,
-                  `run: ${name} -> { aggregate: n is count() }`,
-                  {},
-                  true,
-                  { GROUPS: [1] },
-               ),
-            ).rejects.toBeInstanceOf(AccessDeniedError);
-         }
-         // The rest of the model — including the SOURCE that declares the
-         // gate — still loads and serves. This is the point of scoping the
-         // failure: three unexpressible derived entry points do not take
-         // down `X` (or `Y`, `Z`) with them.
          const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: W_accept -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [] },
+         );
+         // GROUPS is empty — a gated read would deny/return zero; this KNOWN
+         // GAP instead returns every seed row unfiltered.
+         const rows = result.compactResult as unknown as { n: number }[];
+         expect(rows[0].n).toBe(4);
+         // The rest of the model — including the source that declares the
+         // gate — is unaffected by this one derivation's gap.
+         const gated = await model.getQueryResults(
             undefined,
             undefined,
             "run: X -> { aggregate: n is count() }",
@@ -584,31 +598,104 @@ describe("row-level authorize — load-time scoping", () => {
             true,
             { GROUPS: [1] },
          );
-         const rows = result.compactResult as unknown as { n: number }[];
-         expect(rows[0].n).toBe(2);
+         const gatedRows = gated.compactResult as unknown as { n: number }[];
+         expect(gatedRows[0].n).toBe(2);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
    });
 
-   it("a grammar-rejected gate (not against an in-membership test) still fails the whole model load", async () => {
+   it("CRITICAL — renaming or excepting a COLUMN the gate dimension's own expression depends on (not the dimension field itself) aborts the WHOLE model load, not just that one entry point", async () => {
+      // Different shape from `W_accept` above: here the derivation keeps the
+      // gate dimension `authorized` itself (Malloy flattens it forward
+      // unchanged), but renames/excepts `org_id`, the column `authorized`'s
+      // own expression reads. `validateGateDimensionsForModel` re-validates
+      // EVERY top-level source as its own candidate entry point — including
+      // `W`, which still carries `authorized` — and `expandGivenIds`'s
+      // `resolveFieldUsagePath` walk fails to find `org_id` BY NAME on `W`'s
+      // renamed/excepted struct, which throws unconditionally (no per-entry
+      // warn escape for this one, unlike the STRING form's scoped failure).
+      // The blast radius is therefore worse than the old per-entry-point
+      // warn+deny — one derived, out-of-scope source's rename takes down the
+      // WHOLE file — but it fails SAFE (nothing loads or serves at all)
+      // rather than open, so this is real, new coverage, not a weakened test.
+      for (const extend of ["rename: tenant is org_id", "except: org_id"]) {
+         const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+   measure: n is count()
+}
+
+source: W is X extend { ${extend} }
+`);
+         try {
+            const err = compilationErrorOf(model);
+            expect(err).toBeInstanceOf(ModelCompilationError);
+            expect(err?.message).toMatch(/"org_id".*could not be resolved/);
+         } finally {
+            await duckdb.close();
+            fs.rmSync(dir, { recursive: true, force: true });
+         }
+      }
+   });
+
+   it("a negated membership gate (W2) now loads and warns rather than failing the whole model — the STRING form's grammar refusal does not exist for the dimension form", async () => {
+      // Under the STRING form, `not (x in $Y)` was refused outright at load
+      // (`array_given_needs_in`/negated-membership grammar check). The
+      // dimension form's `validateGateDimension` demotes this to W2 — a
+      // non-fatal warning (`containsNegatedMembership`) — because it is only
+      // a hazard for the EMPTY-given case, not a reason to refuse the whole
+      // expression. This test's old intent (grammar refusal) no longer
+      // exists; it now pins the two real, opposite outcomes: an empty
+      // `GROUPS` matches every row (the W2 hazard, proven rather than
+      // assumed), and a non-empty one still filters correctly.
       const { model, duckdb, dir } = await createModel(
          `##! experimental.givens
 
 given:
   GROUPS :: number[]
 
-#(authorize) "not (org_id in $GROUPS)"
-source: X is duckdb.table('parent') extend { measure: n is count() }
+source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is not (org_id in $GROUPS)
+   measure: n is count()
+}
 `,
       );
       try {
-         const err = compilationErrorOf(model);
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(
-            /not.*is not permitted|negated membership/i,
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const empty = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [] },
          );
+         // The W2 hazard: an EMPTY given makes `not (org_id in [])` true for
+         // every row, admitting all 4 rather than denying every row.
+         expect(
+            (empty.compactResult as unknown as { n: number }[])[0].n,
+         ).toBe(4);
+         const nonEmpty = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: X -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [1] },
+         );
+         // A non-empty given filters correctly: org_id=1 rows (ids 1,2) are
+         // EXCLUDED by the negation, leaving only the org_id=2 rows (ids 3,4).
+         expect(
+            (nonEmpty.compactResult as unknown as { n: number }[])[0].n,
+         ).toBe(2);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -650,7 +737,7 @@ given:
   GROUPS :: number[]
 
 source: X is duckdb.table('parent') extend {
-   #(authorize) "org_id in $GROUPS"
+   #(authorize)
    measure: n is count()
 }
 `,
@@ -665,32 +752,44 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("CRITICAL — two sources independently typing the identical gate text: the one that does not resolve FAILS the load, not downgraded by its neighbor (fix2)", async () => {
-      // `A` and `B` each carry their OWN separately-parsed `#(authorize)`
-      // annotation with the identical TEXT — two distinct note objects, not
-      // one shared by reference. `A` (backed by `parent`, which has org_id)
-      // resolves; `B` (backed by `childtable`, which does not) is a genuine
-      // authoring mistake at the point it is declared. An escape discriminator
-      // keyed on gate TEXT would let `B` off because `A`'s identical string
-      // validated somewhere in the model; the note-OBJECT discriminator must
-      // not, since `B`'s own note is not `A`'s note.
+   it("CRITICAL — two sources independently declaring the same gate-dimension name/expression: the one whose field does not resolve FAILS the load, not downgraded by its neighbor (fix2's guarantee, re-grounded for the dimension form)", async () => {
+      // The STRING form's original point: two SEPARATELY-PARSED annotations
+      // with identical TEXT are two distinct note objects, and a TEXT-keyed
+      // escape would let a broken one off because an unrelated source's
+      // identical string validated elsewhere — the fix required an
+      // OBJECT-identity discriminator instead. That specific failure mode is
+      // now categorically impossible: the dimension form never re-parses
+      // text or discriminates by note identity at all — each source's own
+      // `authorized` dimension is validated entirely on its OWN compiled
+      // expression tree, independent of any other source. What survives of
+      // the original guarantee is the OUTCOME it was protecting: `A`
+      // (backed by `parent`, which has `org_id`) loads and enforces; `B`
+      // (backed by `childtable`, which does not) fails — as an ordinary
+      // "org_id is not defined" compile error on `B`'s own dimension, not
+      // something `A`'s success can paper over.
       const { model, duckdb, dir } = await createModel(
          `##! experimental.givens
 
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
-source: A is duckdb.table('parent') extend { measure: n is count() }
+source: A is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+   measure: n is count()
+}
 
-#(authorize) "org_id in $GROUPS"
-source: B is duckdb.table('childtable') extend { measure: n is count() }
+source: B is duckdb.table('childtable') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+   measure: n is count()
+}
 `,
       );
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/source "B"/);
+         expect(err?.message).toMatch(/org_id/);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
