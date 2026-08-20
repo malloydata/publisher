@@ -2708,8 +2708,11 @@ describe("an inherited gate is reported, not just enforced", () => {
 given:
   ROLE :: string
 
-#(authorize) "false"
-source: rep_locked is duckdb.table('customers') extend { measure: c is count() }
+source: rep_locked is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is false
+}
 
 // Any annotation at all demotes the base's to \`annotations.inherits\`; a render
 // tag is the most innocent way an author trips this.
@@ -2758,11 +2761,17 @@ source: rep_ext is rep_locked extend {}
 given:
   ROLE :: string
 
-#(authorize) "false"
-source: ro_locked is duckdb.table('customers') extend { measure: c is count() }
+source: ro_locked is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is false
+}
 
-#(authorize) "$ROLE = 'analyst'"
-source: ro_ext is ro_locked extend {}
+source: ro_ext is ro_locked extend {
+  except: authorized
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
 `,
       );
       const model = await Model.create(
@@ -2892,8 +2901,10 @@ describe("docs/authorize.md worked example", () => {
 given:
   ROLE :: string
 
-#(authorize) "false"
-source: salaries is duckdb.table('salaries')
+source: salaries is duckdb.table('salaries') extend {
+  #(authorize)
+  internal dimension: authorized is false
+}
 
 source: salaries_plain is salaries extend {
   measure: headcount is count()
@@ -2904,8 +2915,10 @@ source: salaries_tagged is salaries extend {
   measure: headcount is count()
 }
 
-#(authorize) "$ROLE = 'hr'"
 source: salaries_hr is salaries extend {
+  except: authorized
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'hr'
   measure: avg_salary is avg(salary)
 }
 
@@ -2921,10 +2934,6 @@ source: headcount_by_dept is duckdb.table('departments') extend {
       ["salaries", "run: salaries -> { aggregate: n is count() }"],
       ["salaries_plain", "run: salaries_plain -> { aggregate: headcount }"],
       ["salaries_tagged", "run: salaries_tagged -> { aggregate: headcount }"],
-      [
-         "salaries_derived",
-         "run: salaries_derived -> { aggregate: n is count() }",
-      ],
    ];
 
    for (const [name, query] of denied) {
@@ -2937,6 +2946,24 @@ source: headcount_by_dept is duckdb.table('departments') extend {
          expect(Object.values(rows[0])[0]).toBe(0);
       });
    }
+
+   it("denies (AccessDeniedError) salaries_derived regardless of givens — guarantee changed from the string form, worth a docs/authorize.md update", async () => {
+      // `salaries_derived is salaries -> { group_by: department }` does not
+      // select `salaries`'s "authorized" field forward, so the by-name graft
+      // has nothing on `salaries_derived`'s own struct to attach
+      // `where: authorized` to — same fails-CLOSED shape BLOCKING-5 pins.
+      // The doc's own worked example currently reads "denies (zero rows)"
+      // for this row; that prose needs updating alongside a real migration
+      // of docs/authorize.md (out of this file's scope).
+      await writeModel("doc_example.malloy", DOC_EXAMPLE);
+      await expect(
+         runGated(
+            "doc_example.malloy",
+            "run: salaries_derived -> { aggregate: n is count() }",
+            { ROLE: "hr" },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
 
    it("gates salaries_hr on its OWN gate, not the base's", async () => {
       await writeModel("doc_example.malloy", DOC_EXAMPLE);
@@ -2986,8 +3013,11 @@ describe("the early gate agrees with the compiled backstop (no schema oracle)", 
       // all the source extractor can do — leaves it looking unrestricted.
       await writeModel(
          "oracle_derived.malloy",
-         `#(authorize) "false"
-source: locked_src is duckdb.table('customers') extend { measure: c is count() }
+         `source: locked_src is duckdb.table('customers') extend {
+  measure: c is count()
+  #(authorize)
+  internal dimension: authorized is false
+}
 
 source: laundered is locked_src -> { group_by: region }
 `,
@@ -2998,15 +3028,31 @@ source: laundered is locked_src -> { group_by: region }
          "oracle_derived.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("laundered")).toEqual(["false"]);
-      expect(sourceNamed(model, "laundered")?.authorize).toEqual(["false"]);
+      // A CARRIED-IN dimension gate (selfContained — declared on the base,
+      // not on `laundered`'s own struct) is not the "own struct's code"
+      // case `getAuthorize` special-cases; it reports the graft's own
+      // quoted-identifier reference instead of re-deriving the base's
+      // expression text.
+      expect(model.getAuthorize("laundered")).toEqual(["`authorized`"]);
+      expect(sourceNamed(model, "laundered")?.authorize).toEqual([
+         "`authorized`",
+      ]);
+      // Guarantee changed from the string form: `laundered`'s own projection
+      // (`-> { group_by: region }`) does not carry `locked_src`'s
+      // "authorized" field forward, so the by-name graft fails to attach —
+      // same fails-CLOSED shape BLOCKING-5 pins. That denies OUTRIGHT,
+      // before the caller's own bad field reference is ever reached, so the
+      // "no schema oracle" question this test used to isolate is moot here:
+      // no compile of the caller's query happens at all, satisfying it more
+      // strongly (nothing about the caller's query is even evaluated) but
+      // via AccessDeniedError, not a surfaced compile error.
       await expect(
          runGated(
             "oracle_derived.malloy",
             "run: laundered -> { group_by: no_such_field }",
             {},
          ),
-      ).rejects.toThrow(/no_such_field/);
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("refuses an inherited gate whose given collides with an entry default that would satisfy it", async () => {
@@ -3072,8 +3118,11 @@ given:
 // concern a source the PACKAGE declares — no caller-declared alias involved — so
 // neither is covered by the known limitation about caller-declared sources.
 describe("run-target expressions do not skip the early gate", () => {
-   const DECLARED = `#(authorize) "false"
-source: rt_locked is duckdb.table('customers') extend { measure: cc is count() }
+   const DECLARED = `source: rt_locked is duckdb.table('customers') extend {
+  measure: cc is count()
+  #(authorize)
+  internal dimension: authorized is false
+}
 
 query: rt_locked_q is rt_locked -> { group_by: region }
 
