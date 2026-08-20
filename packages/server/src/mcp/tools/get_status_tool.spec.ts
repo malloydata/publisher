@@ -1,9 +1,37 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { registerGetStatusTool } from "./get_status_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
+
+/**
+ * Both env vars steer resolvePublisherConfigPath, which the setup block reads.
+ * A developer (or another spec in the same Bun process) with either one set
+ * would otherwise fail the setup assertions below for reasons unrelated to the
+ * code under test.
+ */
+const savedEnv = {
+   configPath: process.env.PUBLISHER_CONFIG_PATH,
+   bundled: process.env.PUBLISHER_USE_BUNDLED_DEFAULT,
+};
+
+beforeEach(() => {
+   delete process.env.PUBLISHER_CONFIG_PATH;
+   delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
+});
+
+afterEach(() => {
+   if (savedEnv.configPath === undefined)
+      delete process.env.PUBLISHER_CONFIG_PATH;
+   else process.env.PUBLISHER_CONFIG_PATH = savedEnv.configPath;
+   if (savedEnv.bundled === undefined)
+      delete process.env.PUBLISHER_USE_BUNDLED_DEFAULT;
+   else process.env.PUBLISHER_USE_BUNDLED_DEFAULT = savedEnv.bundled;
+});
 
 type Content = Array<{
    type?: string;
@@ -101,5 +129,95 @@ describe("malloy_getStatus", () => {
       expect(result.isError).toBe(true);
       const payload = parse(result);
       expect(payload.error).toContain("store not initialized");
+   });
+
+   it("explains why nothing is served when no package is loaded", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "getstatus-"));
+      try {
+         const handler = captureHandler({
+            serverRootPath: root,
+            getStatus: async () =>
+               ({
+                  timestamp: 1,
+                  initialized: true,
+                  frozenConfig: false,
+                  operationalState: "serving",
+                  environments: [],
+               }) as never,
+         });
+         const payload = parse(await handler());
+         // The measured dead end: healthy-looking status, zero signal. The
+         // setup block is the signal.
+         expect(payload.setup).toBeDefined();
+         expect(payload.setup.configFile).toBeNull();
+         expect(payload.setup.nextAction.length).toBeGreaterThan(0);
+      } finally {
+         fs.rmSync(root, { recursive: true, force: true });
+      }
+   });
+
+   it("omits setup when a package is being served", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "getstatus-"));
+      try {
+         const handler = captureHandler({
+            serverRootPath: root,
+            getStatus: async () =>
+               ({
+                  timestamp: 1,
+                  initialized: true,
+                  frozenConfig: false,
+                  operationalState: "serving",
+                  environments: [{ name: "local", packages: [{ name: "p" }] }],
+               }) as never,
+         });
+         expect("setup" in parse(await handler())).toBe(false);
+      } finally {
+         fs.rmSync(root, { recursive: true, force: true });
+      }
+   });
+
+   it("returns no setup block when there is no server root", async () => {
+      // The early return, not the catch: describeWorkspaceSetup opens with
+      // `if (!serverRoot) return undefined` so this case is not logged as a
+      // failure. Named for what it actually pins.
+      const handler = captureHandler({
+         serverRootPath: undefined as never,
+         getStatus: async () =>
+            ({
+               timestamp: 1,
+               initialized: true,
+               frozenConfig: false,
+               operationalState: "serving",
+               environments: [],
+            }) as never,
+      });
+      const result = await handler();
+      expect(result.isError).toBeFalsy();
+      expect("setup" in parse(result)).toBe(false);
+   });
+
+   it("still answers when the setup diagnosis itself throws", async () => {
+      // Pins the CATCH. The previous version of this test passed
+      // serverRootPath: undefined, which returns early and never throws, so
+      // deleting the whole try/catch left the suite green. A throwing getter
+      // is the cheapest way to make the diagnosis actually fail.
+      const handler = captureHandler({
+         get serverRootPath(): string {
+            throw new Error("boom");
+         },
+         getStatus: async () =>
+            ({
+               timestamp: 1,
+               initialized: true,
+               frozenConfig: false,
+               operationalState: "serving",
+               environments: [],
+            }) as never,
+      } as never);
+      const result = await handler();
+      expect(result.isError).toBeFalsy();
+      const payload = parse(result);
+      expect(payload.operationalState).toBe("serving");
+      expect("setup" in payload).toBe(false);
    });
 });
