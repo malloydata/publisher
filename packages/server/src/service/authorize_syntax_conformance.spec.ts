@@ -274,15 +274,11 @@ afterAll(() => {
          "an arbitrary-boundary trap.",
    );
    lines.push(
-      "- Cases B1 (`not (org_id in $GROUPS)`) and B6/B7 (`like` / `is not null`) name the " +
-         "rejected construct but do not suggest an alternative spelling — contrast with B2, B4, " +
-         "B8, and B9, whose messages both name the construct AND tell the author what to write " +
-         "instead.",
-   );
-   lines.push(
-      "- Case B4's message (`` `function_call` is not a field reference ``) names the AST node " +
-         "kind rather than the author's own syntax (`upper(region)`) — technically accurate, but " +
-         "not in the vocabulary an author who never sees the compiled IR would recognize.",
+      "- Of the three cases still genuinely refused with a message (B2, B3, B9), only B9's " +
+         "(`region = $REGION` with a defaulted given) tells the author what to write instead " +
+         "(`Declare $REGION with no default`). B2's DuckDB conversion error and B3's Malloy " +
+         "compile diagnostic both name the offending construct but stop short of suggesting an " +
+         "alternative spelling.",
    );
    // The report is a courtesy artifact, not test evidence — RESULTS above
    // already carries every assertion. A write failure (read-only tmpdir,
@@ -865,6 +861,13 @@ source: X is duckdb.table('accounts') extend {
       );
       const result = RESULTS[RESULTS.length - 1] as GroupBResult;
       expect(result.failureMode).toBe("request-time-execution-error");
+      // Not the old publisher-synthesized "Access denied for source ..."
+      // message, and it does name the author's construct (the SQL DuckDB
+      // rejects quotes `org_id`) — but this is DuckDB failing to generate
+      // SQL at REQUEST time, not "Malloy's own compile error, on the
+      // author's line" the task brief's table expected. See task-5-report.md.
+      expect(result.message).not.toMatch(/^Access denied for source/);
+      expect(result.message).toMatch(/org_id/);
    });
 
    it("3. `owner in $ROLE` — scalar given, `in` operator (task's `role in $ROLE` shape; `owner` stands in for the field since the fixture has no `role` column)", async () => {
@@ -884,6 +887,11 @@ source: X is duckdb.table('accounts') extend {
       );
       const result = RESULTS[RESULTS.length - 1] as GroupBResult;
       expect(result.failureMode).toBe("load-time");
+      // Malloy's own compile diagnostic, naming the given — not the old
+      // publisher-synthesized "'owner' is not defined" from the deleted
+      // string form's fallback single-row probe.
+      expect(result.message).toMatch(/ROLE/);
+      expect(result.message).not.toMatch(/is not defined/);
    });
 
    it("4. `upper(region) = $REGION` — function call — accepted and filters correctly (C2 fix; previously wrongly refused the WHOLE model load)", async () => {
@@ -913,8 +921,8 @@ source: X is duckdb.table('accounts') extend {
       expect(ids(rows ?? [])).toEqual([1, 2, 4]);
    });
 
-   it("5. `1 = 1` — two constants, no given", async () => {
-      await observe(
+   it("5. `1 = 1` — two constants, no given — accepted, admits all (W1-warned)", async () => {
+      const rows = await observe(
          5,
          "1 = 1",
          `
@@ -928,10 +936,13 @@ source: X is duckdb.table('accounts') extend {
 `,
          {},
       );
+      const result = RESULTS[RESULTS.length - 1] as GroupBResult;
+      expect(result.failureMode).toBe("unexpectedly-admitted");
+      expect(ids(rows ?? [])).toEqual([1, 2, 3, 4, 5, 6]);
    });
 
-   it("6. `region like $PAT`", async () => {
-      await observe(
+   it("6. `region like $PAT` — accepted and filters correctly", async () => {
+      const rows = await observe(
          6,
          "region like $PAT",
          `
@@ -945,10 +956,13 @@ source: X is duckdb.table('accounts') extend {
 `,
          { PAT: "east" },
       );
+      const result = RESULTS[RESULTS.length - 1] as GroupBResult;
+      expect(result.failureMode).toBe("unexpectedly-admitted");
+      expect(ids(rows ?? [])).toEqual([1, 2, 4]);
    });
 
-   it("7. `region is not null`", async () => {
-      await observe(
+   it("7. `region is not null` — accepted, admits all (no row has a null region)", async () => {
+      const rows = await observe(
          7,
          "region is not null",
          `
@@ -962,10 +976,13 @@ source: X is duckdb.table('accounts') extend {
 `,
          {},
       );
+      const result = RESULTS[RESULTS.length - 1] as GroupBResult;
+      expect(result.failureMode).toBe("unexpectedly-admitted");
+      expect(ids(rows ?? [])).toEqual([1, 2, 3, 4, 5, 6]);
    });
 
-   it("8. `amount + 1 > $AMOUNTMIN` — arithmetic", async () => {
-      await observe(
+   it("8. `amount + 1 > $AMOUNTMIN` — arithmetic — accepted and filters correctly", async () => {
+      const rows = await observe(
          8,
          "amount + 1 > $AMOUNTMIN",
          `
@@ -979,6 +996,9 @@ source: X is duckdb.table('accounts') extend {
 `,
          { AMOUNTMIN: 100 },
       );
+      const result = RESULTS[RESULTS.length - 1] as GroupBResult;
+      expect(result.failureMode).toBe("unexpectedly-admitted");
+      expect(ids(rows ?? [])).toEqual([1, 2, 4, 5, 6]);
    });
 
    it("9. `region = $REGION` where $REGION HAS a declared default", async () => {
@@ -998,5 +1018,7 @@ source: X is duckdb.table('accounts') extend {
       );
       const result = RESULTS[RESULTS.length - 1] as GroupBResult;
       expect(result.failureMode).toBe("load-time");
+      // G4 specifically (a declared default), not some other load-time abort.
+      expect(result.message).toMatch(/declared with a default/);
    });
 });
