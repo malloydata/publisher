@@ -116,6 +116,26 @@ describe("renderSqlBound", () => {
 });
 
 describe("canonicalBoundValue", () => {
+   it("refuses a timestamp carrying a zone offset", () => {
+      // Every consumer of this value reads it as UTC text, and the offset says it
+      // is not. Truncating past the offset would relabel the local reading as
+      // UTC: east of UTC that puts covered_through AHEAD of the table, which
+      // skips rows permanently and is the one direction a boundary must not move.
+      // A rejection surfaces as a plan error and seeds instead, which is
+      // expensive and correct.
+      expect(() =>
+         canonicalBoundValue("timestamp", "2024-06-01 07:00:00+05:30"),
+      ).toThrow();
+      expect(() =>
+         canonicalBoundValue("timestamp", "2024-06-01 07:00:00-08:00"),
+      ).toThrow();
+      // A bare Z already says UTC, and the sub-second truncation is deliberate.
+      expect(canonicalBoundValue("timestamp", "2024-06-01T07:00:00Z")).toEqual({
+         malloyType: "timestamp",
+         value: "2024-06-01 07:00:00",
+      });
+   });
+
    it("collapses the shapes a driver hands back", () => {
       const date = new Date("2024-06-01T12:30:00.512Z");
       expect(canonicalBoundValue("date", date)).toEqual({

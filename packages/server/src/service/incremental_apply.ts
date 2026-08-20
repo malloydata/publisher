@@ -150,12 +150,17 @@ function escapeSqlString(value: string, dialect?: string): string {
  * independence from how the compiler and each dialect spell fractional seconds.
  */
 function secondsPrecision(value: string): string {
+   // Anchored at BOTH ends. Fractional seconds are dropped on purpose (see above),
+   // but a zone offset is refused rather than dropped: truncating past `+05:30`
+   // would relabel a local bound as the UTC text every consumer of this value
+   // assumes, and east of UTC that moves `covered_through` AHEAD of the table,
+   // skipping rows permanently. A bare `Z` is accepted because it already says UTC.
    const match = value
       .trim()
-      .match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+      .match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?$/);
    if (!match) {
       throw new Error(
-         `not an ISO-8601 timestamp: ${JSON.stringify(value)} (expected YYYY-MM-DDTHH:MM:SS)`,
+         `not a UTC ISO-8601 timestamp: ${JSON.stringify(value)} (expected YYYY-MM-DDTHH:MM:SS, with no zone offset)`,
       );
    }
    return `${match[1]} ${match[2]}`;
