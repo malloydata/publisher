@@ -145,9 +145,11 @@ source: tracks is base_source extend {
          `>>>malloy
 ##! experimental.givens
 given:
-  ROLE :: string
-#(authorize) "$NOPE = 'x'"
-source: broken is duckdb.sql("select 1 as id")`,
+  ROLE :: string is 'x'
+source: broken is duckdb.sql("select 1 as id") extend {
+  #(authorize)
+  internal dimension: gated is id = 1 and $ROLE = 'x'
+}`,
       );
       const { problems } = await compile(
          "unused.malloynb",
