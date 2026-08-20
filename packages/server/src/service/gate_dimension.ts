@@ -107,6 +107,14 @@ export type GivenIdExpansion =
  * something merely named like the leaf — the bug this replaces would let an
  * unrelated LOCAL field that happens to share the leaf's name (e.g. `struct`
  * has its own `ok`) silently substitute for the join-qualified `h.ok`.
+ *
+ * An intermediate segment may also be a record- or array-typed dimension
+ * (`rec.a`, `tags.each`): Malloy marks those `join` too but they are not
+ * `SourceDef`s, so requiring `isSourceDef` on every segment refused such a
+ * gate at load even though its given resolves fine. They carry their own
+ * `fields`, so the descent is the same one — and an unresolvable NON-EMPTY
+ * path still returns `undefined` rather than resolving to nothing, which is
+ * what G4 rests on.
  */
 function resolveFieldUsagePath(
    struct: SourceDef,
@@ -116,7 +124,10 @@ function resolveFieldUsagePath(
    for (let i = 0; i < path.length - 1; i++) {
       const seg = path[i];
       const joinField = (current.fields ?? []).find(
-         (f) => gateFieldName(f) === seg && isJoined(f) && isSourceDef(f),
+         (f) =>
+            gateFieldName(f) === seg &&
+            isJoined(f) &&
+            (isSourceDef(f) || f.type === "record" || f.type === "array"),
       );
       if (!joinField) return undefined;
       current = joinField as unknown as SourceDef;
