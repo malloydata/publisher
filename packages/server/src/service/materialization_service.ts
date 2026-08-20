@@ -16,8 +16,11 @@ import {
    recordAutoLoadOutcome,
    recordChainedStorageBuild,
    recordDropTables,
+   recordDuplicateTargetSkipped,
    recordManifestBindDegraded,
    recordMaterializationRun,
+   recordSharedAddressInstructions,
+   recordTableCollision,
    recordSourceBuildDuration,
    recordSourcesOutcome,
    recordStorageBuildFailure,
@@ -74,7 +77,7 @@ import {
    type QueryMetadata,
 } from "./query_metadata";
 import type { components } from "../api";
-import { getPersistStorageMode } from "../config";
+import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
 import {
    assertColocatedPersistNotAuthorizeGated,
@@ -1563,6 +1566,35 @@ export class MaterializationService {
          if (instruction.sourceID) {
             bySourceID.set(instruction.sourceID, instruction);
          }
+         // One address, several instructions naming DIFFERENT tables. A host that
+         // mints a physical name per source produces this for an ordinary package:
+         // several sources share one artifact (`#@ persist` is inherited and
+         // `extend` does not change materialization SQL), so a per-source name is a
+         // second table for content that already has one. Every one is built, the
+         // last to finish is the one `entries` records, and the rest are left
+         // unreferenced — a manifest-driven reclaim never names them.
+         //
+         // Reported, not resolved. Picking one would leave the host with an anchor
+         // for a table the build declined to write, which is a worse failure than
+         // the wasted one and is invisible from the host's side. The fix belongs
+         // where the names are minted; this makes the condition visible until then.
+         const clash = bySourceEntityId.get(instruction.sourceEntityId);
+         if (
+            clash &&
+            clash.physicalTableName !== instruction.physicalTableName
+         ) {
+            recordSharedAddressInstructions();
+            logger.warn(
+               "One content address was instructed to build more than one table",
+               {
+                  sourceEntityId: instruction.sourceEntityId,
+                  physicalTableNames: [
+                     clash.physicalTableName,
+                     instruction.physicalTableName,
+                  ],
+               },
+            );
+         }
          bySourceEntityId.set(instruction.sourceEntityId, instruction);
       }
 
@@ -1603,6 +1635,15 @@ export class MaterializationService {
       const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
       const builtSources: string[] = [];
+      // What this run has already written, keyed by the physical table rather than
+      // by the content address: the address says what a table CONTAINS, the
+      // coordinate says which table it IS, and only the second answers "have I
+      // written this already". Both halves of the guard below need that
+      // distinction, in opposite directions.
+      const writtenTargets = new Map<
+         string,
+         { sourceEntityId: string; sourceName: string }
+      >();
       try {
          for (const graph of graphs) {
             const connection = connections.get(graph.connectionName);
@@ -1711,6 +1752,108 @@ export class MaterializationService {
                   assertMaterializationEligible(persistSource);
                }
 
+               // One physical table, written once, by one definition.
+               //
+               // Several sources routinely map onto one artifact: `#@ persist` is
+               // inherited and `extend` does not change a source's materialization
+               // SQL, so a base and its extension compile to the same address and
+               // resolve to the same instruction. Iterating per SOURCE therefore
+               // wrote the table once per name that reached it — and once per graph
+               // that reached it, since a source declared in one model and consumed
+               // in another appears in both models' graphs.
+               // Encoded rather than concatenated: a physical name can contain a
+               // space (see the `quoted-persist-name` scenarios), so a plain
+               // separator could make two different coordinates read as one.
+               //
+               // Exact-match, and so blind in the same place its load-time sibling
+               // is: `Foo`, `foo` and `"foo"` land in different slots here but in
+               // ONE table on a case-folding engine. See the note on
+               // Package.persistenceCollisionWarnings — this guard is no stricter.
+               const target = JSON.stringify(
+                  instruction.destination
+                     ? [
+                          "destination",
+                          instruction.destination,
+                          instruction.physicalTableName,
+                       ]
+                     : [
+                          "connection",
+                          persistSource.connectionName,
+                          instruction.physicalTableName,
+                       ],
+               );
+               const written = writtenTargets.get(target);
+               if (written) {
+                  if (written.sourceEntityId !== sourceEntityId) {
+                     // Same table, different content: each CTAS overwrites the
+                     // other's rows while BOTH addresses get a manifest entry
+                     // naming it, so serving answers one source's query from the
+                     // other's data.
+                     //
+                     // Package.persistenceCollisionWarnings already finds this at
+                     // load for names the MODEL declares. This catches the pair it
+                     // cannot see — physical names an orchestrating host assigns,
+                     // which are absent from the package until the instructions
+                     // arrive.
+                     //
+                     // Strictness follows that same gate rather than inventing a
+                     // second policy: a collision is warn-only by default so a
+                     // package published before the check existed does not break on
+                     // a routine rebuild, and PERSIST_COLLISION_ENFORCE is how a
+                     // deployment that has audited its packages opts into refusing.
+                     const collision =
+                        `Sources '${written.sourceName}' and ` +
+                        `'${persistSource.name}' compile to different SQL but both ` +
+                        `materialize into table ` +
+                        `'${instruction.physicalTableName}', so each overwrites ` +
+                        `the other's rows while both resolve to it at serve time.`;
+                     recordTableCollision();
+                     // Refused HERE, which is mid-loop, so the pair's first table
+                     // has already been written. Narrow by construction rather than
+                     // by luck: under this same flag a package whose MODEL declares
+                     // the colliding names cannot be published at all (the publish
+                     // gate calls formatPersistenceCollisionRejections), so what
+                     // reaches this point is a collision between physical names a
+                     // HOST assigned. A host that mints generational names does not
+                     // produce one. If that changes, the check wants hoisting to a
+                     // pre-pass over the sources before the first write: the failure
+                     // path reclaims storage tables only, so a colocated collision
+                     // leaves a half-written table in the customer's own warehouse.
+                     if (getPersistCollisionEnforce()) {
+                        throw new MaterializationEligibilityError({
+                           message:
+                              `${collision} Give them distinct '#@ persist name=' ` +
+                              `values.`,
+                        });
+                     }
+                     logger.warn(
+                        "Two definitions are materializing into one table",
+                        {
+                           physicalTableName: instruction.physicalTableName,
+                           sourceNames: [
+                              written.sourceName,
+                              persistSource.name,
+                           ],
+                        },
+                     );
+                  } else {
+                     // Same table, same content: the extra name is another route to
+                     // one artifact. Its address already names the table it was
+                     // built under, so there is nothing to build and nothing to
+                     // record.
+                     recordDuplicateTargetSkipped();
+                     logger.debug(
+                        "Skipping a source whose table this run built",
+                        {
+                           sourceName: persistSource.name,
+                           builtAs: written.sourceName,
+                           physicalTableName: instruction.physicalTableName,
+                        },
+                     );
+                     continue;
+                  }
+               }
+
                let entry;
                try {
                   entry = await this.buildOneSource(
@@ -1784,6 +1927,10 @@ export class MaterializationService {
                }
                builtSources.push(persistSource.name);
                entries[sourceEntityId] = entry;
+               writtenTargets.set(target, {
+                  sourceEntityId,
+                  sourceName: persistSource.name,
+               });
                if (entry.storageDestinationName) builtThisRun.push(entry);
             }
          }
@@ -2707,8 +2854,16 @@ export class MaterializationService {
       // DIFFERENT destination is absent here, so the downstream def fails to
       // compile against the rebind model and the caller falls back — cross-catalog
       // parent reuse is out of scope for the spike.
+      // No aliases, and the consequence is a scope boundary rather than a
+      // compile problem: two aliases are two DISTINCT names on one handle, which
+      // is what the serve path emits and compiles. What passing none means is
+      // that a chained downstream reading the EXTENSION's name finds it absent
+      // from the rebind model and falls back to recomputing its upstream from
+      // raw. Correct-but-slower, and out of scope here; the serve path is where
+      // an alias has to resolve.
       const upstreams: ServeBinding[] = deriveServeBindings(
          builtEntries,
+         {},
       ).filter((b) => b.destinationName === destinationName);
       if (upstreams.length === 0) {
          throw new MaterializationEligibilityError({
