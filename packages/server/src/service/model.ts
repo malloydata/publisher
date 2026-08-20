@@ -112,7 +112,12 @@ import {
    stringifyQueryResponse,
 } from "./model_limits";
 import { bigIntReplacer } from "../json_utils";
-import { buildSourceAliasMap, extractRunTargetSourceName } from "./query_text";
+import {
+   buildDerivationBaseMap,
+   buildSourceAliasMap,
+   extractRunTargetSourceName,
+   stripMalloyCommentsAndLiterals,
+} from "./query_text";
 import {
    mergeQueryMetadata,
    type QueryClass,
@@ -1609,94 +1614,134 @@ export class Model {
    }
 
    /**
-    * Deny caller-submitted text that reaches a GATED source through a
-    * derivation the caller itself declared, when the entry-point walk
-    * collected no gate for the entry actually being run.
+    * Deny a request that enters a gated source through a derivation the
+    * REQUEST ITSELF declared, when the entry-point walk collected no gate for
+    * the entry point actually being run.
     *
-    * The dimension form of `#(authorize)` is discovered as an annotated
-    * boolean field on the entry struct's own `fields` and enforced by grafting
-    * `where: \`<name>\`` onto that entry by NAME. A derivation that drops the
-    * field — `extend { except: authorized }`, or an `extend { accept: ... }`
-    * list that simply omits it — therefore presents Malloy IR with no gate
-    * anywhere on it: `gate_classification`'s candidate scan finds nothing,
-    * `ancestorGateExprs`' registry walk reports `{kind: "none"}` for that
-    * shape (Malloy keeps no IR link from the derived struct back to its base),
-    * and `entryPointGatesBySource`'s on-disk fold is keyed on the run target's
-    * own source NAME, which for a caller-declared alias is not an on-disk name
-    * at all. Nothing downstream catches it either: the query boundary
-    * explicitly admits a derivation over a curated source, and a zero-gate
-    * answer also un-blocks storage / pre-aggregation routing. Under the
-    * retired string form the same text failed CLOSED (the annotation sat on
-    * the `source:` line and survived a field-level `except:`/`accept:`), so
-    * this is the dimension form's own regression, reachable by anyone who can
-    * post a query.
+    * ## What it is defending
     *
-    * The line drawn here is CALLER-SUBMITTED text vs. MODEL-DECLARED sources,
-    * not `except:` vs. `accept:`. A model author who writes
-    * `source: Y is X extend { except: authorized }` keeps the documented
-    * fail-open (`docs/authorize.md`) — the same missing IR link means there is
-    * nothing to detect that drop against, and it is accepted as author
-    * discipline. So only names the SUBMITTED TEXT declares
-    * ({@link buildSourceAliasMap}) are followed, and a chain that ends at a
-    * model source carrying no gate (the author's own drop) is admitted exactly
-    * as before.
+    * The dimension form of `#(authorize)` is discovered as an annotated boolean
+    * field on the entry struct's own `fields` and enforced by grafting
+    * `where: \`<name>\`` onto that entry BY NAME. A request that declares its
+    * own derivation dropping that field — `source: mine is X extend { except:
+    * authorized }`, or an `accept:` list that omits it — therefore presents IR
+    * with no gate anywhere on it, and nothing downstream catches it: the query
+    * boundary admits a derivation over a curated source, and a zero-gate answer
+    * also un-blocks storage / pre-aggregation routing. Under the retired string
+    * form the annotation sat on the `source:` line and survived a field-level
+    * `except:`/`accept:`, so the same text failed CLOSED there. This is the
+    * dimension form's own regression, reachable by anyone who can post a query.
     *
-    * Denying is not a new restriction class: a caller-declared alias over a
-    * gated source ALREADY denies whenever it keeps the gate field, because
-    * `resolveGraftTarget` has no `modelDef.contents` key for an ephemeral
-    * caller alias to graft onto — including the trivial
-    * `source: mine is X extend {}`. Failing the gate-DROPPING shapes closed
-    * makes them agree with the shapes that keep it, rather than singling them
-    * out. That is also why the answer is the cannot-attach 403 and not a
-    * 200 with zero rows: there is no gate left to evaluate against the
-    * caller's givens, so supplying the right ones changes nothing.
+    * ## Why the run target comes from the COMPILED query
     *
-    * Deliberately name-based, on the submitted text, and NOT a re-graft onto
-    * the resolved base: re-grafting would have to invent an entry point the
-    * caller never asked for, and it cannot reach the model-authored case
-    * anyway, so it would buy a second, differently-shaped mechanism for no
-    * additional coverage.
+    * {@link resolveAuthorizeSourceFromRunnable} — not a scan of the request
+    * text — decides what is being run, for the same reason the compiled
+    * boundary backstop does: Malloy executes the LAST `run:`, reads around
+    * comments, and resolves a `query:` indirection, so any of those defeats a
+    * first-match text scan in BOTH directions. Reading the first `run:` misses
+    * a laundered derivation that a later `run:` actually executes, and it also
+    * DENIES a query whose laundered alias is declared but never run (the
+    * executed target being some ungated source) — a false positive on text the
+    * author published. The compiled target has neither failure mode.
+    *
+    * ## Why the DERIVATION chain is still read from the text
+    *
+    * Because Malloy does not keep one. Measured against `@malloydata/malloy`:
+    * an ad-hoc `source: mine is X extend { … }` compiles to a struct whose
+    * `sourceRegistry` entry is a `source_registry_reference` to `mine` ITSELF,
+    * whose `referenceID` is unset, and for which `resolveDeclaredSource`
+    * answers `{kind: "none"}` — identically for `except: authorized`, for a
+    * trivial `extend {}`, and for a derivation of an UNGATED sibling. The IR
+    * cannot tell those three apart, so "this entry point's ancestry reaches a
+    * gated source" is not a readable property and the decision cannot be made
+    * on the IR alone.
+    *
+    * The coarser IR-only property that IS readable — "the compiled entry point
+    * is ephemeral (no `modelDef.contents` key) and reads the same relation as
+    * some gated source" — was implemented and measured, and it is wrong: a
+    * gated source and the ungated siblings an author deliberately publishes
+    * beside it normally read the SAME table, so it denies the documented Q16
+    * contract (`source: j is plain extend { join_one: base_locked … }` — joins
+    * are not gated) and ad-hoc composition over an ungated source
+    * (`source: mine is plain extend { measure: … }`). Both are pinned in
+    * `authorize_integration.spec.ts`. So the defence is text-shaped by
+    * necessity, not by preference.
+    *
+    * What that costs is a residual, and it is named rather than papered over:
+    * a spelling of `source: A is B` that {@link buildDerivationBaseMap} cannot
+    * read, but Malloy can, would slip through. The two ways to make a scan
+    * misread text — hiding syntax in a comment and forging it inside a string
+    * literal — are removed before the scan
+    * ({@link stripMalloyCommentsAndLiterals}), and the map over-collects
+    * (every base per name, `query:` included) so an added edge can only widen
+    * denial. What remains is the grammar itself.
+    *
+    * ## The line, and what it costs
+    *
+    * A MODEL-declared derivation that drops the gate field keeps its
+    * documented fail-open (`docs/authorize.md`): the request text declares no
+    * alias for it, so it never enters the walk. That is the accepted
+    * author-discipline gap, and this does not narrow it.
+    *
+    * Denying adds no restriction to request-declared shapes that KEEP the gate
+    * field: those ALREADY denied — including the trivial `extend {}` and an
+    * `accept:` list naming the gate dimension — because
+    * {@link resolveGraftTarget} has no `modelDef.contents` key for an ephemeral
+    * entry point to graft onto. This makes the gate-DROPPING shapes agree with
+    * them instead of being the one spelling that succeeded. It is also why the
+    * answer is the cannot-attach 403 and not a 200 with zero rows: there is no
+    * gate left to evaluate, so supplying the right givens changes nothing.
     */
-   private assertCallerTextDidNotDropGate(query: string | undefined): void {
-      if (!query) return;
-      const target = extractRunTargetSourceName(query);
-      if (!target) return;
-      const aliasOf = buildSourceAliasMap(query);
-      // In scope only when the run target is a derivation THIS TEXT declared.
-      // Without it the walk would also fire on a direct `run: <gated source>`
-      // whose compile FAILS for an unrelated reason (a caller referencing the
-      // `internal` gate dimension by name, or redefining it — Malloy refuses
-      // both outright): the entry-point walk collects nothing off a query that
-      // never compiled, and converting those compiler diagnostics into a 403
-      // would hide a real authoring error behind an access denial while
-      // protecting nothing (the query never ran).
-      if (!aliasOf.has(target)) return;
-      // Walk the submitted text's own `source: NAME is BASE` chain from the run
-      // target. `target` itself is looked up too, which is a no-op for an
-      // ordinary caller alias and fails closed if a caller shadows an on-disk
-      // gated name.
-      const seen = new Set<string>();
-      let current: string | undefined = target;
-      while (current && !seen.has(current)) {
-         seen.add(current);
-         if ((this.entryPointGatesBySource.get(current)?.length ?? 0) > 0) {
+   private async assertRequestDeclaredEntryPointIsNotLaundered(
+      runnable: QueryMaterializer,
+      query: string,
+   ): Promise<void> {
+      // Cheap exits first: a model with no gate has nothing to launder.
+      if (this.entryPointGatesBySource.size === 0) return;
+      const entryPoint =
+         await this.resolveAuthorizeSourceFromRunnable(runnable);
+      // An unresolvable target is a query that did not compile: it returns no
+      // rows, and the compiler's own diagnostic is the right answer. Turning it
+      // into a 403 would hide an authoring error behind an access denial while
+      // protecting nothing — a caller naming the `internal` gate dimension, or
+      // redefining it, lands exactly here.
+      if (!entryPoint) return;
+      const basesOf = buildDerivationBaseMap(
+         stripMalloyCommentsAndLiterals(query),
+      );
+      // Not a derivation THIS REQUEST declared: a model-declared entry point,
+      // whose gates `entryPointGatesBySource` already folded in by name, so the
+      // empty walk result that brought us here is authoritative for it.
+      if (!basesOf.has(entryPoint)) return;
+      // Breadth-first over every base declared for every name reached, so a
+      // chain of any depth is covered and a second declaration of a name can
+      // only add a base to check.
+      const seen = new Set<string>([entryPoint]);
+      const worklist = [entryPoint];
+      for (let i = 0; i < worklist.length; i++) {
+         const name = worklist[i];
+         if ((this.entryPointGatesBySource.get(name)?.length ?? 0) > 0) {
             recordRowLevelGateDecision("denied_by_gate");
             logger.debug(
-               "Caller-declared derivation reaches a gated source with no gate on the run target; denying",
+               "Request-declared derivation reaches a gated source with no gate on the compiled entry point; denying",
                {
                   modelPath: this.modelPath,
-                  runTarget: target,
-                  gatedBase: current,
+                  entryPoint,
+                  gatedBase: name,
                },
             );
-            // Names the run target the caller itself wrote, never the gate's
-            // column or the base it laundered — same opacity as every other
-            // authorize denial.
+            // Names the compiled entry point the request itself declared —
+            // never the gate's column, nor which gated source it reached.
             throw new AccessDeniedError(
-               `Access denied for source "${target}".`,
+               `Access denied for source "${entryPoint}".`,
             );
          }
-         current = aliasOf.get(current);
+         for (const base of basesOf.get(name) ?? []) {
+            if (!seen.has(base)) {
+               seen.add(base);
+               worklist.push(base);
+            }
+         }
       }
    }
 
@@ -1761,12 +1806,13 @@ export class Model {
          /** See {@link assertAuthorizedFromCompiledRunnable}. */
          skipOwnSourceGate?: boolean;
          /**
-          * The caller's own submitted query text, when this request has any —
-          * the surface {@link assertCallerTextDidNotDropGate} reads to catch a
-          * caller-declared derivation that laundered the gate away. Supplied
-          * only by the ad-hoc-text query path; a request that names a source
-          * or a query declares no derivations, and a notebook cell's text is
-          * the AUTHOR's, not a caller's.
+          * The request's own submitted query text, when it has any — read by
+          * {@link assertRequestDeclaredEntryPointIsNotLaundered} for the
+          * derivation chain the IR does not keep. Supplied by the ad-hoc query
+          * path, the only one that compiles text a CALLER wrote. Deliberately
+          * absent for a notebook cell: a cell's text is the AUTHOR's (the
+          * request carries only a `cellIndex`), so a source declared there is
+          * model content and keeps the author-side fail-open.
           */
          callerQueryText?: string;
          /**
@@ -1802,16 +1848,20 @@ export class Model {
       );
 
       if (rowLevel.length === 0) {
-         // No gate was collected for the entry point actually being run. For
-         // caller-submitted text that is not the same as "the run target is
-         // ungated" — see {@link assertCallerTextDidNotDropGate}.
+         // No gate was collected for the entry point actually being run. When
+         // the request declared that entry point itself, that is not the same
+         // as "the run target is ungated" — see
+         // {@link assertRequestDeclaredEntryPointIsNotLaundered}.
          //
          // Skipped under `skipOwnSourceGate` for the same reason the on-disk
-         // fold above is: that flag means `this` gateModel is unrelated to the
-         // path being served, so `entryPointGatesBySource` — the only thing
-         // this check reads — resolves against the wrong file's namespace.
-         if (!options?.skipOwnSourceGate) {
-            this.assertCallerTextDidNotDropGate(options?.callerQueryText);
+         // fold is: that flag means `this` gateModel is unrelated to the path
+         // being served, so `entryPointGatesBySource` — which the check reads
+         // to find the gated relations — is the wrong file's namespace.
+         if (options?.callerQueryText && !options?.skipOwnSourceGate) {
+            await this.assertRequestDeclaredEntryPointIsNotLaundered(
+               runnable,
+               options.callerQueryText,
+            );
          }
          return runnable;
       }
@@ -4187,11 +4237,10 @@ export class Model {
       runnable = await this.authorizeAndBindRunnable(runnable, givens ?? {}, {
          recompile: (mm) => mm.loadRestrictedQuery(queryString),
          bypassAuthorize,
-         // The caller's OWN text (`query`), not `queryString` — which is the
-         // same text after the filter-refinement injection and after the
-         // `sourceName`/`queryName` forms have been synthesized into a `run:`.
-         // Only text the caller actually wrote can declare the derivation
-         // `assertCallerTextDidNotDropGate` looks for.
+         // The caller's OWN text, not `queryString` — which is the same text
+         // after the filter-refinement injection and after the `sourceName` /
+         // `queryName` forms have been synthesized into a `run:`. Only text the
+         // caller actually wrote can declare the derivation this reads.
          callerQueryText: query,
       });
       // No post-hoc check of `queryHadRowLevelFilterAttached(runnable)` here:

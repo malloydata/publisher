@@ -1063,10 +1063,13 @@ describe("pins — load-bearing inferences", () => {
 });
 
 describe("caller-submitted derivations cannot launder the gate away", () => {
-   /** The one gated model every case below queries: `authorized` is the gate
-    *  dimension, keyed on `$GROUPS`, so org1's two rows are the whole of a
-    *  `GROUPS: ["org1"]` caller's legitimate result. */
-   const GATED_MODEL = `given:\n  GROUPS :: string[]\n\nsource: X is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\n`;
+   /** The one model every case below queries. `X` is gated: `authorized` is
+    *  the gate dimension, keyed on `$GROUPS`, so org1's two rows are the whole
+    *  of a `GROUPS: ["org1"]` caller's legitimate result. `Open` is the
+    *  author's own DELIBERATELY ungated source over the same table — it is
+    *  what the over-deny cases run, and what makes "did the fix start denying
+    *  something the author published" observable. */
+   const GATED_MODEL = `given:\n  GROUPS :: string[]\n\nsource: X is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\nsource: Open is duckdb.table('accounts') extend {\n   dimension: doubled is amount * 2\n}\n`;
 
    /** `ids`, but for arbitrary caller-submitted query TEXT rather than a
     *  model-declared source name — the surface a caller who can post a query
@@ -1091,10 +1094,13 @@ describe("caller-submitted derivations cannot launder the gate away", () => {
       ).map((r) => Number(r.id));
    }
 
-   /** The three caller-text shapes that DROP the gate dimension. Each one
-    *  compiles cleanly and, before the graft-target check in
-    *  `assertCallerDerivationRetainsGate`, read every row of both orgs with
-    *  no givens at all. */
+   /** Caller-text shapes that DROP the gate dimension. Each one compiles
+    *  cleanly and, before the check in `assertCallerTextDidNotDropGate`, read
+    *  every row of both orgs with no givens at all. The first three are the
+    *  originally-reported shapes; the rest are spellings of the same laundering
+    *  that a surface-text reading of the request missed (a decoy `run:` in a
+    *  comment, a second real `run:` statement, a comment splitting
+    *  `source: A is B`, and a `query:` hop between the alias and the `run:`). */
    const LAUNDERING_SHAPES: ReadonlyArray<[string, string]> = [
       [
          "accept: drops the gate dimension by omission",
@@ -1115,6 +1121,34 @@ describe("caller-submitted derivations cannot launder the gate away", () => {
       [
          "an inline extend on the laundered alias at the run site does not re-hide it",
          "source: mine is X extend { except: authorized }\nrun: mine extend {} -> { select: id; order_by: id }",
+      ],
+      [
+         "a decoy `run:` inside a line comment does not become the run target",
+         "-- run: bogus\nsource: mine is X extend { except: authorized }\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "a decoy `run:` inside a block comment does not become the run target",
+         "/* run: zzz */\nsource: mine is X extend { except: authorized }\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "Malloy executes the LAST `run:`, so an earlier one is not the run target",
+         "source: mine is X extend { except: authorized }\nrun: Open -> { select: id }\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "a comment between `is` and the base does not unlink the derivation",
+         "source: mine is -- c\n X extend { except: authorized }\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "a block comment between `is` and the base does not unlink the derivation",
+         "source: mine is /* c */ X extend { except: authorized }\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "a `query:` hop between the alias and the `run:` does not break the chain",
+         "source: mine is X extend { except: authorized }\nquery: q is mine -> { select: id; order_by: id }\nrun: q",
+      ],
+      [
+         "a forged declaration inside a string literal cannot relabel the real base",
+         "source: mine is X extend { except: authorized }\nrun: mine -> { where: org_id != 'source: mine is Open'; select: id; order_by: id }",
       ],
    ];
 
@@ -1149,6 +1183,52 @@ describe("caller-submitted derivations cannot launder the gate away", () => {
          }
       });
    }
+
+   /** Shapes where a laundered alias is DECLARED but is NOT what Malloy runs.
+    *  The executed run target is the author's own ungated `Open`, so the right
+    *  answer is the rows — denying here is an over-deny, and it is what a
+    *  surface-text reading of the request produces (it sees `mine` and stops
+    *  looking). */
+   const NOT_THE_RUN_TARGET: ReadonlyArray<[string, string]> = [
+      [
+         "a laundered alias declared but not run — Malloy executes the LAST `run:`",
+         "source: mine is X extend {}\nrun: mine -> { select: id }\nrun: Open -> { select: id; order_by: id }",
+      ],
+      [
+         "a laundered alias merely MENTIONED in a comment",
+         "source: mine is X extend {}\n-- run: mine is what I wanted\nrun: Open -> { select: id; order_by: id }",
+      ],
+   ];
+
+   for (const [label, text] of NOT_THE_RUN_TARGET) {
+      it(`does not over-deny when the laundered alias is not the executed run target — ${label}`, async () => {
+         const { model, duckdb, dir } = await createModel(GATED_MODEL);
+         try {
+            expect(await idsForText(model, text, { GROUPS: ["org1"] })).toEqual(
+               [1, 2, 3, 4],
+            );
+         } finally {
+            await cleanup(duckdb, dir);
+         }
+      });
+   }
+
+   it("control — the author's own ungated source still serves every row, with no givens", async () => {
+      const { model, duckdb, dir } = await createModel(GATED_MODEL);
+      try {
+         // The pin that makes a future over-deny visible: `Open` is ungated by
+         // the author's choice, and nothing about gating `X` may change that.
+         expect(
+            await idsForText(
+               model,
+               "run: Open -> { select: id; order_by: id }",
+               {},
+            ),
+         ).toEqual([1, 2, 3, 4]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
 
    it("legitimate access is untouched — the gated source itself, with correct givens, still reads exactly the caller's own rows", async () => {
       const { model, duckdb, dir } = await createModel(GATED_MODEL);
@@ -1223,18 +1303,38 @@ describe("caller-submitted derivations cannot launder the gate away", () => {
       }
    });
 
-   it("KNOWN GAP preserved — a MODEL-authored derivation that drops the gate still fails open when a caller composes over it", async () => {
+   it("KNOWN GAP preserved — a MODEL-authored derivation that drops the gate still fails open when queried by name", async () => {
       const { model, duckdb, dir } = await createModel(
          `given:\n  GROUPS :: string[]\n\nsource: X is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\nsource: Y is X extend {\n   except: authorized\n}\n`,
       );
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         // The line this fix draws is caller-submitted query text vs.
-         // model-declared sources. `Y` is the author's own (documented,
-         // accepted) drop — Malloy keeps no IR link from `Y` back to `X`, so
-         // there is nothing to detect it against — and composing over `Y` in
-         // caller text inherits that acceptance rather than becoming a new
-         // deny.
+         // The line the fix draws is a MODEL-declared entry point vs. one the
+         // request declared for itself. `Y` is the author's own (documented,
+         // accepted) drop and it has a `modelDef.contents` key, so entering
+         // through it by name is admitted exactly as before.
+         expect(
+            await idsForText(
+               model,
+               "run: Y -> { select: id; order_by: id }",
+               {},
+            ),
+         ).toEqual([1, 2, 3, 4]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("KNOWN GAP preserved — a caller composing over a MODEL-authored derivation that dropped the gate still fails open", async () => {
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: X is duckdb.table('accounts') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $GROUPS\n}\nsource: Y is X extend {\n   except: authorized\n}\n`,
+      );
+      try {
+         // The chain the request declares is `mine` -> `Y`, and `Y` carries no
+         // gate — that drop is the AUTHOR's, and it is the documented,
+         // accepted fail-open. The walk stops there rather than continuing to
+         // `X`, because Malloy keeps no link from `Y` back to `X` and the
+         // request text does not declare one either.
          expect(
             await idsForText(
                model,
