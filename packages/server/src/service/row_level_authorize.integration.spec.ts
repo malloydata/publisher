@@ -1587,15 +1587,25 @@ source: W_except is X extend { except: org_id }
 
 describe("row-level authorize — fail-closed (CRITICAL)", () => {
    it("gate column absent from the entry shape denies with a 403, not a 400/500", async () => {
+      // `W` is a query-source projection that drops the gate DIMENSION
+      // itself (`authorized` is `internal`, so it can never be selected
+      // forward — see the "entry-point matrix" block's `Z`/`Z2` findings).
+      // An `extend { except: org_id }` was the original shape, but under the
+      // dimension form that resolves to a live, empty `WHERE (false)`
+      // result rather than a thrown error (confirmed empirically; see the
+      // "entry-point matrix" block's W_rename/W_except test) — this shape is
+      // the one that reproduces the literal `AccessDeniedError` this test
+      // asserts.
       const { internals, mm, duckdb } = await buildGatedModel(`
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
-source: W is X extend { except: org_id }
+source: W is X -> { group_by: id, val; aggregate: n is count() }
 `);
       try {
          const err = await boundRows(
@@ -1620,7 +1630,7 @@ source: W is X extend { except: org_id }
       const files = new Map<string, string>([
          [
             `${ROOT}deep.malloy`,
-            `##! experimental.givens\n\ngiven:\n  FAR :: number[]\n\n#(authorize) "org_id in $FAR"\nsource: Deep is duckdb.table('parent') extend {\n   measure: n is count()\n}\n`,
+            `##! experimental.givens\n\ngiven:\n  FAR :: number[]\n\nsource: Deep is duckdb.table('parent') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $FAR\n   measure: n is count()\n}\n`,
          ],
          [
             `${ROOT}mid.malloy`,
@@ -1691,15 +1701,21 @@ source: W is X extend { except: org_id }
    });
 
    it("gate compile throws (e.g. an inherited gate whose field was renamed away) denies with a 403", async () => {
+      // Same reasoning as the test above: a query-source projection that
+      // drops `authorized` is what reproduces a thrown `AccessDeniedError`
+      // under the dimension form (an `extend { rename: ... }` resolves to a
+      // live, empty `WHERE (false)` result instead — see the "entry-point
+      // matrix" block's W_rename/W_except test).
       const { internals, mm, duckdb } = await buildGatedModel(`
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
 source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
-source: W is X extend { rename: tenant is org_id }
+source: W is X -> { group_by: id, val; aggregate: n is count() }
 `);
       try {
          const err = await boundRows(
