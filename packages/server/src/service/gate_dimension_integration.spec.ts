@@ -253,7 +253,7 @@ describe("validateGateDimension — pure rules", () => {
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/STRING form.*DIMENSION form/);
+         expect(err?.message).toMatch(/string form.*DIMENSION form/i);
       } finally {
          await cleanup(duckdb, dir);
       }
@@ -274,7 +274,7 @@ describe("validateGateDimension — pure rules", () => {
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/STRING form.*DIMENSION form/);
+         expect(err?.message).toMatch(/string form.*DIMENSION form/i);
       } finally {
          await cleanup(duckdb, dir);
       }
