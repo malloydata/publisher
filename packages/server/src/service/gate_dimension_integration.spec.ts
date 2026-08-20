@@ -671,6 +671,24 @@ describe("dimension-form gate — end to end", () => {
          await cleanup(duckdb, dir);
       }
    });
+
+   it("a field literally named `authorized` that carries no annotation does not collide with a gate dimension declared under a DIFFERENT name", async () => {
+      // The gate attaches to the ANNOTATED field, never by the name
+      // "authorized" — that name is only a convention. `authorized` here is
+      // an ordinary, unannotated dimension that would admit every row if it
+      // (wrongly) drove the graft; `gate_ok` is the real, annotated gate.
+      const { model, duckdb, dir } = await createModel(
+         `given:\n  GROUPS :: string[]\n\nsource: accounts is duckdb.table('accounts') extend {\n   dimension: authorized is true\n   #(authorize)\n   internal dimension: gate_ok is org_id in $GROUPS\n}\n`,
+      );
+      try {
+         expect(await ids(model, "accounts", { GROUPS: ["org1"] })).toEqual([
+            1, 2,
+         ]);
+         expect(model.getAuthorize("accounts")).toEqual(["org_id in $GROUPS"]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
 });
 
 describe("inheritance matrix", () => {
