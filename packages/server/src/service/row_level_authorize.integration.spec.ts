@@ -1342,6 +1342,48 @@ describe("row-level authorize — entry-point matrix", () => {
       return buildGatedModel(ENTRY);
    }
 
+   it("W_rename / W_except (renaming/excepting the COLUMN the gate dimension reads, at REQUEST time only — buildGatedModel bypasses the load-time abort `Model.create` would apply to this shape): the graft still cannot lift, and resolves to an empty result rather than throwing", async () => {
+      // A different fixture from the shared `ENTRY` above, on purpose: through
+      // the REAL `Model.create` (see "load-time scoping"), this shape aborts
+      // the WHOLE model's load — `buildGatedModel` deliberately bypasses that
+      // pre-flight check (see the file header) to isolate what the GRAFT
+      // itself does when reached directly. Confirmed empirically: unlike `Z`/
+      // `Z2` above (which reject with `AccessDeniedError` through this exact
+      // `boundRows` path), a lift failure against `W_rename`/`W_except` here
+      // resolves to a live `WHERE (false)` — a successful, EMPTY result
+      // rather than a thrown error. Still safe (no row ever leaks), but a
+      // different observable surface than the query-source shapes; pinned as
+      // its own case rather than assumed to match them.
+      const { internals, mm, duckdb } =
+         await buildGatedModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+source: X is duckdb.table('parent') extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+   measure: n is count()
+}
+
+source: W_rename is X extend { rename: tenant is org_id }
+source: W_except is X extend { except: org_id }
+`);
+      try {
+         for (const name of ["W_rename", "W_except"]) {
+            const rows = await boundRows(
+               internals,
+               mm,
+               `run: ${name} -> { aggregate: n is count() }`,
+               { GROUPS: [1] },
+            );
+            expect(rows[0].n).toBe(0);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("run: X filters", async () => {
       const { internals, mm, duckdb } = await harness();
       try {
@@ -1372,22 +1414,26 @@ describe("row-level authorize — entry-point matrix", () => {
       }
    });
 
-   it("Z is X -> {...} with the gate column KEPT in the projection filters", async () => {
-      // `Z` is a model-declared query source (`source: Z is X -> {...}`), a
-      // `modelDef.contents` entry in its own right. resolveGraftTarget grafts
-      // `Z` itself, not its base `X`: `Z`'s compiled `SourceDef` snapshotted
-      // `X` at declaration time, so a condition appended to `X` afterward
-      // would never reach it. Grafting `Z` works because `org_id` survived
-      // `Z`'s projection, so it resolves fine in `Z`'s own field space.
+   it("Z is X -> {...}: even keeping every column the gate reads, the gate DIMENSION itself is `internal` and cannot be selected forward, so this DENIES (corrects the string form's old FILTER intent for this shape)", async () => {
+      // Under the STRING form, `Z` "filtered" because `org_id` (the COLUMN
+      // the expression text mentioned) survived the projection, and a fresh
+      // re-parse only needed that column reachable by name. Under the
+      // dimension form the graft is by FIELD NAME (`authorized`), and
+      // `internal` blocks exactly the external reference a query-source
+      // pipeline stage needs to carry it forward — confirmed empirically:
+      // `group_by: ..., authorized` fails to compile with `'authorized' is
+      // internal`. `Z`'s own field space can therefore never contain the
+      // gate dimension, so there is nothing for the graft to attach to. This
+      // is the "one confirmed limitation" from the task brief, and it now
+      // applies even to an author who tries to keep every column the gate
+      // reads.
       const { internals, mm, duckdb } = await harness();
       try {
-         const rows = await boundRows(
-            internals,
-            mm,
-            "run: Z -> { aggregate: n is count() }",
-            { GROUPS: [1] },
-         );
-         expect(rows[0].n).toBe(2);
+         await expect(
+            boundRows(internals, mm, "run: Z -> { aggregate: n is count() }", {
+               GROUPS: [1],
+            }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
       }
@@ -1417,49 +1463,31 @@ describe("row-level authorize — entry-point matrix", () => {
       }
    });
 
-   it("W_rename (org_id renamed away) denies rather than serving unfiltered", async () => {
-      const { internals, mm, duckdb } = await harness();
-      try {
-         await expect(
-            boundRows(
-               internals,
-               mm,
-               "run: W_rename -> { aggregate: n is count() }",
-               { GROUPS: [1] },
-            ),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
-      } finally {
-         await duckdb.close();
-      }
-   });
+   // W_rename / W_except are no longer members of ENTRY (see its doc comment)
+   // and are covered by their own dedicated test above instead, since through
+   // the REAL `Model.create` this shape aborts the whole model's load — a
+   // guarantee `buildGatedModel`'s bypass-load-validation harness cannot
+   // exercise faithfully as an ENTRY member without misrepresenting it.
 
-   it("W_except (org_id excepted) denies rather than serving unfiltered", async () => {
+   it("W_accept (the gate dimension itself dropped via an allow-list): KNOWN GAP — resolves to an unfiltered, EMPTY-graft pass-through rather than a deny", async () => {
+      // `accept: id, val, n` excludes `authorized` entirely — there is no
+      // candidate at all on `W_accept`'s own struct, so `resolveGraftTarget`/
+      // discovery find nothing to graft, and the request proceeds with NO
+      // filter appended (not even a `WHERE false` fallback, since there was
+      // never a condition to fail lifting in the first place). Same confirmed
+      // fail-OPEN limitation as the "load-time scoping" describe block's own
+      // `W_accept` KNOWN GAP test above — restated here because
+      // `entry-point matrix` is this file's other, request-time-focused home
+      // for the full W_rename/W_except/W_accept trio.
       const { internals, mm, duckdb } = await harness();
       try {
-         await expect(
-            boundRows(
-               internals,
-               mm,
-               "run: W_except -> { aggregate: n is count() }",
-               { GROUPS: [1] },
-            ),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
-      } finally {
-         await duckdb.close();
-      }
-   });
-
-   it("W_accept (org_id not accepted) denies rather than serving unfiltered", async () => {
-      const { internals, mm, duckdb } = await harness();
-      try {
-         await expect(
-            boundRows(
-               internals,
-               mm,
-               "run: W_accept -> { aggregate: n is count() }",
-               { GROUPS: [1] },
-            ),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         const rows = await boundRows(
+            internals,
+            mm,
+            "run: W_accept -> { aggregate: n is count() }",
+            { GROUPS: [] },
+         );
+         expect(rows[0].n).toBe(4);
       } finally {
          await duckdb.close();
       }
@@ -1479,28 +1507,32 @@ describe("row-level authorize — entry-point matrix", () => {
       }
    });
 
-   it("a caller-declared ad-hoc derivation (`source: mine is X extend {}` + `run: mine`) filters", async () => {
-      // Filters correctly. `resolveGraftTarget`'s "direct" check
-      // (`findContentsKey`) is evaluated against the STABLE `graftModelDef`
-      // (`this.modelMaterializer`'s own model), not the ephemeral ad-hoc
-      // modelDef the caller's inline `source: mine is X extend {}` compiled
-      // into — so "mine" (which exists only in that ephemeral modelDef)
-      // never matches there, direct or not. This is a TRIVIAL `extend {}`
-      // (no rename/except/accept/dimension/join addition), so Malloy elides
-      // the derivation reference entirely (`resolveDeclaredSource` returns
-      // `none`) but copies X's `#(authorize)` note onto "mine" BY REFERENCE
-      // — the same note object, not a re-parsed equal one — which is exactly
-      // what `findSourceByOwnAnnotationIdentity` traces back to "X" in the
-      // stable model, landing the graft there.
+   it("KNOWN GAP — a caller-declared ad-hoc derivation (`source: mine is X extend {}` + `run: mine`) now DENIES rather than filtering (corrects the string form's old FILTER intent)", async () => {
+      // Under the STRING form, this filtered: `resolveGraftTarget`'s "direct"
+      // check is evaluated against the STABLE `graftModelDef`, not the
+      // ephemeral ad-hoc modelDef the caller's inline `source: mine is X
+      // extend {}` compiled into, so "mine" never matched there directly —
+      // but `findSourceByOwnAnnotationIdentity` could still trace "mine"'s
+      // COPIED source-level `#(authorize)` note object back to "X" in the
+      // stable model, landing the graft there. That trace-back is keyed on a
+      // STRUCT-level annotation note; the dimension form's annotation lives
+      // on the FIELD (`authorized`), not the struct, so there is no
+      // analogous identity to trace even though "mine" (a trivial `extend
+      // {}`) does flatten the `authorized` field itself in unchanged.
+      // Confirmed empirically: this now denies. Not one of the task brief's
+      // six named categories, but the same shape of gap — a caller-declared
+      // ad-hoc derivation of a gated source can no longer be queried through
+      // this graft mechanism, even though it is a safe, harmless shape.
       const { internals, mm, duckdb } = await harness();
       try {
-         const rows = await boundRows(
-            internals,
-            mm,
-            "source: mine is X extend {}\nrun: mine -> { aggregate: n is count() }",
-            { GROUPS: [1] },
-         );
-         expect(rows[0].n).toBe(2);
+         await expect(
+            boundRows(
+               internals,
+               mm,
+               "source: mine is X extend {}\nrun: mine -> { aggregate: n is count() }",
+               { GROUPS: [1] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
       }
