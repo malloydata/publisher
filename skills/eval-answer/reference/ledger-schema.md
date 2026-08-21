@@ -1,154 +1,245 @@
-# Eval event records
+# The eval ledger: files and events
 
-The contract between evaluation stages is append-only events in Publisher's
-eval store (`POST /api/v0/evals/runs/:runId/events`). `eval-answer` writes
-`attempt`, `tool_call`, and `score`. `eval-diagnose` writes `issue` and
-`issue_status`. `eval-improve` writes `candidate`. `eval-loop` writes `gate`,
-further `issue_status`, and `checkpoint` (created after an accepted gate, or
-restored).
+The ledger is plain files in the model package's git repository. There is no
+eval API and no eval database. The conductor (`skill:eval-loop`) reads and
+writes these files directly; the stages share them as their contract.
+`eval-answer` writes `attempt`, `tool_call`, `score`, and `retrieval_score`.
+`eval-diagnose` writes `issue` and `issue_status`. `eval-improve` writes
+`candidate`. `eval-loop` writes `gate`, further `issue_status`, and
+`checkpoint`.
 
-Do not keep a parallel ledger.jsonl as source of truth. Export
-`attempts.jsonl` / `issues.jsonl` only for review. A stage never rewrites
-another stage's fields.
+## Layout
 
-## Event envelope
+```
+evals/<set>/
+  set.json                  # set metadata (below)
+  cases.jsonl               # one case per line
+  intents.jsonl             # retrieval intent dataset (below)
+  judge-regressions.jsonl   # judge verdicts a human overruled
+  runs/<runId>/
+    run.json                # run config, the attribution pins
+    events.jsonl            # append-only event lines
+    artifacts/              # prediction CSVs, judge outputs, transcripts
+```
 
-Every event has `runId`, optional `caseId`, `kind`, and `payload`.
-`kind` is one of: `attempt`, `tool_call`, `score`, `issue`, `issue_status`,
-`candidate`, `gate`, `checkpoint`.
+The set directory lives in the SAME git repository as the model it evaluates,
+so a checkpoint (a git commit) pins the model and the ledger together. Never
+place `evals/` inside the directory tree the answerer's package serves
+(`publisher_data/` or the served package path): gold in the served tree is a
+contamination path.
 
-Goldens live on the case. Bump `golden_revision` on every golden change and
-stamp that revision on each `score` so a re-baseline cannot silently change
-an earlier run. Optional `golden.neededEntities` is the retrieval gold: entity
-ids `score_retrieval.py` scores against. Leave it off until diagnose (or a
-human) names the set; do not invent it from the question. A set-level integer `version` (on `eval.json` and
-`eval_sets.metadata.version`) bumps when any golden in the set is repaired;
-record it on the new run as `config.setVersion`. Issue status is the latest
-`issue_status` for that `issue_id`.
+Rules that make the ledger trustworthy:
 
-## `attempt`
+- `events.jsonl` is append-only. Never edit a line. To void one, append a new
+  event whose payload marks the old one `voided`.
+- A stage never rewrites another stage's fields.
+- One artifact directory per attempt (`qid` plus `sample`). Never overwrite a
+  previous attempt's prediction CSV.
+- End-of-run numbers come from counting event lines (`jq` over
+  `events.jsonl`), never from arithmetic recalled in prose.
+
+## `set.json`
+
+| Field | Notes |
+|---|---|
+| `name` | Set name; also the directory name. |
+| `description` | |
+| `datasetVersion` | Integer. Bump on any golden repair or case change. Runs record the version they scored against. |
+| `targetModelPath` | Model path within the package. |
+
+## `cases.jsonl`
+
+One JSON object per line:
+
+| Field | Notes |
+|---|---|
+| `qid` | Stable case id. |
+| `question` | Exact text the answerer will see. |
+| `split` | `dev` or `holdout`. Frozen at import. Diagnose and improve read `dev` only; the gate runs both. |
+| `tags` | list |
+| `state` | `candidate` / `selected` / `excluded`. |
+| `source` | Where the case came from. |
+| `golden` | `status` (`verified` / `provisional` / `invalid` / `ambiguous`), `kind`, `value` or `path` (artifact under the set directory), `canonicalQuery`, `verifiedBy`. |
+| `goldenRevision` | Integer. Bump on every golden change; `score` events stamp the revision they compared against. |
+
+## `intents.jsonl`
+
+The retrieval intent dataset. Rows describe what a user was looking for, not
+which entities match, so the dataset survives model renames and restructuring.
+
+| Field | Notes |
+|---|---|
+| `intentId` | Stable id. |
+| `term` | The search term as a user or agent would issue it. |
+| `entityType` | `dimension` / `measure` / `view` / `dimensional_value`. |
+| `description` | A few sentences of rich natural language: what the user meant. Specific enough to judge relevance, general enough to stay valid as the model evolves. |
+| `valid` | Boolean. A one-time domain filter: is this a legitimate request in this domain at all? Invalid intents never enter coverage, recall, or precision. |
+
+Per model version, each valid intent is additionally judged in-scope (the
+model represents the concept) or out-of-scope (a coverage gap). That judgment
+lives on the run's `retrieval_score` events, not here, because it changes as
+the model changes.
+
+## `run.json`
+
+The attribution pins. Two runs are comparable only when these match where it
+matters:
+
+| Field | Notes |
+|---|---|
+| `runId` | Directory name. |
+| `mode` | Steps or alias this run walks (see `skill:eval-loop`). |
+| `setName` / `datasetVersion` | What was scored. |
+| `modelGitSha` | Commit of the model repo the answerers ran against. Frozen for the run. |
+| `publisherVersion` | |
+| `judgeVersion` / `rubricSha` | From `reference/judge.md` and its git blob sha. |
+| `answererModel` | |
+| `traceMode` | `retrieval` for a scored run. |
+| `callBudget` | Frozen; raising it mid-run moved mean outcomes on an unchanged model. |
+| `status` | `running` / `complete` / `abandoned`. Updated in place; `run.json` is the one mutable file. |
+
+## Events
+
+Every line in `events.jsonl`: `{ "kind": ..., "caseId": ..., "at": ISO time,
+"payload": {...} }`. `caseId` is the qid, or absent for run-level events.
+`kind` is one of: `attempt`, `tool_call`, `score`, `retrieval_score`,
+`issue`, `issue_status`, `candidate`, `gate`, `checkpoint`.
+
+### `attempt`
 
 | Field | Type | Notes |
 |---|---|---|
-| `qid` | string | Stable case id. |
+| `qid` | string | |
 | `sample` | int or null | Which repeat. Required even when null. |
-| `mode` | string | `measure` / `triage` / `improve`, or the five-step names `scrape` / `eval` / `diagnose` / `improve` / `checkpoint`. |
-| `phase` | string | `baseline` / `loop` / `blind_gate` / `canary` / `final`. |
+| `phase` | string | `baseline` / `loop` / `blind_gate` / `canary` / `final`. `phase` lives here, on the attempt, not in run config. |
 | `question_sha` | string | Hash of the exact text the answerer saw. |
 | `submitted` | bool | False when there was no final query. Not a wrong answer. |
-| `final_query` | string or null | The query that will be scored. Required to replay. |
+| `final_query` | string or null | Required to replay. |
 | `servedRevision` | string or null | From the package actually queried. |
-| `sourceContentSha` | string or null | Bytes the worker compiled. |
-| `n_get_context` | int | |
-| `n_execute` | int | |
-| `n_execute_errors` | int | |
+| `n_get_context` / `n_execute` / `n_execute_errors` | int | |
 | `host_tool_uses` | int | Host-side count, including Read and Shell. |
 | `reported_calls` | int | MCP calls the answerer claimed. |
-| `contaminated` | bool or `"unknown"` | From `scripts/check_contamination.py`. |
+| `contaminated` | bool or `"unknown"` | `"unknown"` when no host log exists. |
 | `contamination_reasons` | list | Empty when clean. |
+| `transcriptPath` | string | The answerer's transcript under `artifacts/`. |
 
-## `tool_call`
+### `tool_call`
 
-One event per MCP `get_context` or `execute_query`. Link evidence; do not
-embed the full trace.
+One event per MCP `get_context` or `execute_query` the attempt made.
 
 | Field | Type | Notes |
 |---|---|---|
 | `tool` | string | `get_context` or `execute_query`. |
-| `traceId` | string or null | `get_context` only. Lookup via `malloy_getTrace`. |
-| `rankedSummary` | object | Entity ids, per-target ranks, `belowCutoffCount`, retrieval config hash. Copied at capture so an issue survives trace eviction. |
+| `traceId` | string or null | `get_context` only; look up via `malloy_getTrace`. |
+| `rankedSummary` | object | Copied at capture from the trace so evidence survives trace eviction: `entityIds`, `ranks`, `resultCount`, and per-target `targets` with within-target ranks. |
 | `error` | string or null | |
 
 Never persist `execute_query` result rows, givens, or credentials.
 
-## `score`
+### `score`
+
+The answer judge's verdict for one attempt (protocol in
+`reference/judge.md`). Every attempt in a scored run gets exactly one.
 
 | Field | Type | Notes |
 |---|---|---|
+| `verdict` | string or null | `match` / `near_match` / `no_match` / `needs_human`; null when the attempt is not scorable. |
+| `reason` | string | Why, from the judge; for a null verdict, why not scorable (`not_submitted`, `golden_missing`, `golden_ambiguous`, `contaminated`). |
+| `confidence` | int or null | 1 to 10. Confidence of 5 or lower forces `needs_human`. |
+| `column_pairing` | object or null | The judge's named gold-to-prediction column correspondence. |
+| `judge_version` / `rubric_sha` | string | Pins which rubric produced this verdict. |
 | `golden_revision` | int | From the case at score time. |
-| `contaminated` | bool | If true, `answer_score` is null and the attempt is excluded. |
-| `answer_score` | object or null | Null when not submitted, not scorable, or contaminated. |
-| `answer_score.f1` | float | Optimization signal. |
-| `answer_score.ex_strict` | bool | `f1 == 1`. Reported, not optimized. |
-| `answer_score.precision` | float | |
-| `answer_score.recall` | float | |
-| `answer_score.n_gold` | int | |
-| `answer_score.n_pred` | int | |
-| `answer_score.matched` | int | Never exceeds `n_gold` or `n_pred`. |
-| `answer_score.failure_bucket` | string or null | Null iff `ex_strict`. |
-| `retrieval_score` | object or null | Null when the needed set is unknown or the attempt is contaminated. |
-| `retrieval_score.context_recall` | float | Fraction of needed entities that appeared in any `get_context` result. |
-| `retrieval_score.mrr` | float | Mean over the needed set of `1/best_rank` (0 if missing). Per-entity MRR. |
-| `retrieval_score.rr_first` | float | `1` over the best rank of any needed entity; 0 if none found. Classic first-hit RR. |
-| `retrieval_score.n_needed` | int | |
-| `retrieval_score.n_found` | int | |
-| `retrieval_score.ranks` | object | Needed id → best 1-based rank, or `null`. |
-| `f1_adjudicated` | float or null | Never overwrites `f1`. |
-| `gold_status` | string | `verified` / `verified_benign` / `suspect` / `verified_wrong`. Case `golden.status` may also be `ambiguous`: not scorable until a later sample or a human picks a replacement. |
-| `exclude_from_scoring` | bool | Set when `verified_wrong`. |
+| `contaminated` | bool or `"unknown"` | Copied from the attempt; true or unknown means `verdict: null`. |
+| `artifactPath` | string | The full judge output under `artifacts/`. |
+| `gold_status` | string | `verified` / `verified_benign` / `suspect` / `verified_wrong`. `verified_wrong` excludes the case from run aggregates. |
 
-`ex_strict` true implies a null `failure_bucket`. A `submitted: false` attempt
-carries no `answer_score`.
+A `submitted: false` attempt gets `verdict: null, reason: "not_submitted"`,
+except for an `unanswerable` golden, where a refusal that names the gap is the
+pass and a confident numeric answer is the fail.
 
-## `issue`
+Aggregates count confident verdicts only: `needs_human` and null verdicts are
+neither passes nor failures and stay out of gate arithmetic.
+
+### `retrieval_score`
+
+One per intent judged in this run (run-level; no `caseId`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `intentId` / `term` / `entityType` | string | From `intents.jsonl`. |
+| `in_scope` | bool | Does THIS model version represent the concept? False is a coverage gap, not a retrieval failure. |
+| `judgments` | list | Per returned entity: `entityId`, `rank`, `level` (`match` / `near_match` / `no_match`), `confidence`, `why`. Empty when nothing returned. |
+| `judge_version` / `rubric_sha` | string | |
+| `traceId` | string or null | The `get_context` call judged. |
+
+Run-level metrics fall out by counting:
+
+- `coverage` = in-scope intents / valid intents.
+- `recall` (on in-scope intents) = fraction whose judgments contain at least
+  one `match` or `near_match`.
+- `precision` = approved judgments (`match` or `near_match`) / all judgments.
+
+### `issue`
 
 | Field | Type | Notes |
 |---|---|---|
 | `issue_id` | string | Stable across status events. |
 | `qids` | list | Affected cases. |
-| `primary_code` | string | From `skill:eval-diagnose`, verbatim. |
-| `contributing_codes` | list | |
+| `primary_code` / `contributing_codes` | string / list | From `skill:eval-diagnose`, verbatim. |
 | `component` | string | `dataset` / `agent-call` / `get_context/model` / `get_context/retrieval` / `construction` / `model-definition`. |
-| `owner` | string | `model` / `retrieval` / `agent-skill` / `dataset` / `environment`. |
-| `severity` | string | |
-| `confidence` | string | |
-| `context_recall` | float or null | From `scripts/score_retrieval.py`. |
-| `mrr` | float or null | Per-entity MRR from the same script. |
+| `owner` | string | `model` / `retrieval` / `agent-skill` / `dataset`. Environment failures stop the run; they are never diagnosed, so there is no environment owner. |
+| `severity` / `confidence` | string | |
 | `sufficiency` | string | `sufficient` / `insufficient` / `unknown`. |
 | `traceIds` | list | |
-| `destination` | string | Phase 1, Phase 2, model, skill, tool, or environment. |
 | `diagnosis` | string | Written before any edit exists. |
 
-## `issue_status`
+### `issue_status`
 
-| Field | Type | Notes |
-|---|---|---|
-| `issue_id` | string | |
-| `status` | string | `open` / `batched` / `fixed` / `rejected` / `deferred`. |
+`issue_id` plus `status`: `open` / `batched` / `fixed` / `rejected` /
+`deferred`. Readers take the latest event for that `issue_id`. Do not invent
+a status column.
 
-Readers take the latest event for that `issue_id`.
+### `candidate`
 
-## `candidate` and `gate`
+Written by `eval-improve`, for every proposed edit, accepted or not. A
+rejected direction keeps its record.
 
-| Field | On | Notes |
-|---|---|---|
-| `issue_ids` | both | |
-| `files` / `servedRevision` | candidate | What changed. |
-| `probes` | candidate | Query and result for each factual claim. |
-| `decision` | gate | `accepted` / `rejected`. |
-| `class` | gate | `docs` / `definition` / `retrieval` / `justified`. |
-| `baselineRunId` / `finalRunId` | gate | |
-| `reason` | gate | Including independent deterministic justification. |
+| Field | Notes |
+|---|---|
+| `issue_ids` | |
+| `files` | Paths the edit touched. |
+| `diffSummary` | One line per file. |
+| `probes` | Query and result for each factual claim. |
 
-## `checkpoint`
+### `gate`
 
-Written by `eval-loop` after an accepted gate, or when a restore runs.
-The bytes live on `GET /api/v0/evals/checkpoints/:id`, not in this payload.
+Written by `eval-loop`, one per gate decision, BEFORE any checkpoint commit.
+
+| Field | Notes |
+|---|---|
+| `issue_ids` | |
+| `decision` | `accepted` / `rejected`. |
+| `class` | `docs` / `definition` / `retrieval` / `justified`. |
+| `baselineRunId` / `finalRunIds` | Plural: acceptance needs two independent runs. |
+| `regressions` | Case ids whose verdict got worse vs baseline. Must be empty to accept. |
+| `holdoutDelta` | Confident-verdict delta on the holdout slice. |
+| `reason` | Including independent deterministic justification when that is the basis. |
+
+### `checkpoint`
+
+Written by `eval-loop` after an accepted gate, or when a restore runs. The
+model bytes live in git, not in this payload.
 
 | Field | Notes |
 |---|---|
 | `action` | `created` / `restored`. |
-| `checkpointId` | |
 | `label` | |
-| `servedRevision` | Package revision at create, or after restore reload. |
+| `modelGitSha` | The commit this checkpoint names (create), or the commit restored to. |
 | `issueIds` | Issues the accepted edit closed. Empty on restore. |
 
-## Rules
+## `judge-regressions.jsonl`
 
-- One artifact directory per attempt (`qid` + `sample`). Never overwrite a
-  previous attempt's prediction CSV.
-- Append, never edit. To void, write a new event and mark the old payload
-  `voided`.
-- End-of-run numbers come from querying events, never from agent arithmetic
-  in a summary paragraph.
-- Cost is optional. Stage linkage (`mode`, `phase`, run config) is not.
+Append a line whenever a human overrules a judge verdict: the case or intent,
+the judge's verdict, the human's, and why. Re-run this file against the judge
+whenever `reference/judge.md` or the judge model changes; a rubric change that
+flips old human-settled verdicts is a judge regression, not new truth.

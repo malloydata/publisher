@@ -1,6 +1,6 @@
 ---
 name: eval-diagnose
-description: 'Diagnose why a scored answer failed and who owns the fix. Walk dataset, agent-call, get_context/model, get_context/retrieval, construction, then model-definition. Write issue events linked by traceId. Use after eval-answer, when triaging a run, or before changing a model. Does not edit the model (eval-improve).'
+description: 'Diagnose why a scored answer failed and who owns the fix. Walk dataset, agent-call, get_context/model, get_context/retrieval, construction, then model-definition. Append issue events to the file ledger, linked by traceId. Use after eval-answer, when triaging a run, or before changing a model. Does not edit the model (eval-improve).'
 ---
 
 # Diagnose One Answer
@@ -30,7 +30,9 @@ never "C1" / "C2" / "C3":
 | `construction` | Did sufficient context arrive, and the agent still built the wrong query? |
 | `model-definition` | Is a measure, join, filter convention, or source semantically wrong? |
 
-`owner` is separate: `model`, `retrieval`, `agent-skill`, `dataset`, or `environment`.
+`owner` is separate: `model`, `retrieval`, `agent-skill`, or `dataset`. There
+is no environment owner: an environment failure stops the run before
+diagnosis (see the boundary above), so no issue can carry it.
 
 `construction` requires proving the needed entities and governing guidance were
 in the returned context. A server trace proves what Publisher returned, not what
@@ -47,10 +49,11 @@ For each `get_context` call, load `malloy_getTrace` by the `traceId` on the
 
 - **Asked:** every retrieval utterance, target types, scopes, and result counts,
   in order.
-- **Returned:** for each needed entity, whether it appeared, best rank, and
-  which utterance. Run `scripts/score_retrieval.py` on the needed set and the
-  attempt's `rankedSummary`s. `context_recall` = fraction that appeared.
-  `mrr` = mean `1/best_rank` (0 if missing). Do not average ranks by hand.
+- **Returned:** for each needed entity, whether it appeared, its best
+  within-target rank, and under which utterance. Read this off the
+  `rankedSummary` on the attempt's `tool_call` events (its `targets` list
+  carries per-target ranks); the trace body is behind `malloy_getTrace`.
+  Count from the trace, never from recollection.
 - **Used:** sources and fields the final query referenced, and needed entities
   that were returned and then unused.
 
@@ -60,10 +63,10 @@ Resolve aliases to the real source (`join_one: bldg is fac_building` uses
 The needed set comes from golden metadata or from the entities the corrected
 answer required. Do not invent it from the question's nouns alone.
 
-`context_recall` is the leading presence indicator; `mrr` is the rank
-indicator. Score 0 with recall 1.0 is prima facie `construction`. Low recall
-is never `construction`, no matter how wrong the query looks. High recall
-with low `mrr` (needed entities returned, but buried) is
+Presence leads; rank refines. Every needed entity present with a wrong
+answer is prima facie `construction`. A needed entity that never appeared is
+never `construction`, no matter how wrong the query looks. Everything
+present but buried deep under noise the agent reasonably skipped is
 `get_context/retrieval` once the request itself was on-target.
 
 ## Step 2: Assign one primary code
@@ -93,11 +96,11 @@ golden. `AMBIGUOUS-REFERENCE` goes to Hold an ambiguous golden. Do not leave
 the run looking like the model failed.
 
 This skill **classifies and hands off**. Write the issue with
-`destination: Phase 2`, `owner: dataset`, and stop for that case. The
-conductor (`skill:eval-loop`) either repairs the golden or holds it as
-`ambiguous`. Do not capture a replacement golden from inside diagnosis
-if you are not also conducting; a diagnosis that writes a new key without
-a version bump silently changes what earlier scores meant.
+`owner: dataset` and stop for that case. The conductor (`skill:eval-loop`)
+either repairs the golden or holds it as `ambiguous`. Do not capture a
+replacement golden from inside diagnosis if you are not also conducting; a
+diagnosis that writes a new key without a version bump silently changes what
+earlier scores meant.
 
 Prior `score` events are not rewritten. They keep the old `golden_revision`.
 
@@ -170,28 +173,32 @@ is wrong (bad grain, wrong join key, inverted filter). Owner: model.
 
 Mine the agent's prose, not only its calls. It often names the gap.
 
-## Step 4: Write issue events, then stop
+## Step 4: Append issue events, then stop
 
-`POST /api/v0/evals/runs/:runId/events` with `kind: issue`:
+Append to `evals/<set>/runs/<runId>/events.jsonl` with `kind: issue`
+(shapes in `skill:eval-answer` `reference/ledger-schema.md`):
 
 - `issue_id`, affected `qids`, `primary_code`, `contributing_codes`
 - `component`, `owner`, `severity`, `confidence`
-- `context_recall`, `mrr`, sufficiency (`sufficient` / `insufficient` / `unknown`)
+- `sufficiency` (`sufficient` / `insufficient` / `unknown`)
 - `traceId`s, not copied trace payloads
-- suspected shared entity, file, or root cause
-- `destination`: Phase 1 (question), Phase 2 (golden), model, skill, tool, environment
+- `diagnosis`: the suspected shared entity, file, or root cause, written
+  before any edit exists
 
-Then `issue_status` with `status: open`. Status is always an event. Readers take
-the latest `issue_status` for that `issue_id`.
+Then `issue_status` with `status: open`. Status is always an event. Readers
+take the latest `issue_status` for that `issue_id`.
 
-Cluster duplicates that share an owner, entity, or file before anyone improves.
-The backlog in DuckDB is the output, not per-question prose.
+Cluster duplicates that share an owner, entity, or file before anyone
+improves. The issue backlog in the event log is the output, not per-question
+prose. Diagnose reads dev cases only; a holdout case with a bad score stays
+undiagnosed so the gate keeps something the improve step never saw.
 
 **Only `owner: model` proceeds to `eval-improve`.** Skill findings go back into
 the analysis or phrase-detection skill. Retrieval findings go to the tool.
 `BAD-REFERENCE` and `AMBIGUOUS-REFERENCE` go to the golden side door in
 `skill:eval-loop` (repair or hold). Do not send them to improve. Other dataset
-findings go back to Phase 1 or 2. Routing a skill bug into the model is
+findings (a bad question, a case worth excluding) go back to the case in
+`cases.jsonl` via the conductor. Routing a skill bug into the model is
 how models accumulate scar tissue.
 
 ## Anti-patterns

@@ -52,11 +52,27 @@ export function isSourceReadme(relative: string): boolean {
    return relative === "README.md";
 }
 
+/**
+ * Test files and Python bytecode caches next to skill scripts. Running the
+ * script tests locally creates __pycache__/, and because check-pack derives
+ * its expectations from the same working tree, the debris would count as
+ * "expected" and ship silently.
+ */
+export function isScriptDebris(relative: string): boolean {
+   const name = path.basename(relative);
+   return (
+      segments(relative).includes("__pycache__") ||
+      name.endsWith(".pyc") ||
+      /_test\.py$/.test(name)
+   );
+}
+
 /** True if a path relative to skills/ must not reach the package. */
 export function isExcluded(relative: string): boolean {
    return (
       isCredible(relative) ||
       isNeverPacked(relative) ||
-      isSourceReadme(relative)
+      isSourceReadme(relative) ||
+      isScriptDebris(relative)
    );
 }

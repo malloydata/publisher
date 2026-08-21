@@ -1,172 +1,142 @@
 ---
 name: eval-answer
-description: 'Score one analytical answer against a verified golden. Run the contamination check, re-execute the submitted query yourself, and compare rows with scripts/match_rows.py. Write attempt, tool_call, and score events to Publisher REST /api/v0/evals. Never explain the failure (eval-diagnose) or edit the model (eval-improve). Use when asked whether an answer was correct, to score a run, or to baseline a model.'
+description: 'Score one analytical answer against a verified golden, and retrieval against the intent dataset. Run the contamination checklist, re-execute the submitted query yourself, then spawn a judge subagent per reference/judge.md. Append attempt, tool_call, score, and retrieval_score events to the file ledger (reference/ledger-schema.md). Never explain the failure (eval-diagnose) or edit the model (eval-improve). Use when asked whether an answer was correct, to score a run, or to baseline a model.'
 ---
 
 # Evaluate One Answer
 
-One user intent, answered once. This skill decides whether that answer was correct,
-records the evidence, and stops.
+One user intent, answered once. This skill decides whether that answer was
+correct, records the evidence, and stops.
 
 **Scope boundary:** verdict and events only. No diagnosis, no model edit.
 
 ## The unit
 
-A chat is not the unit. Segment by user intent. Feedback ("break it out by region")
-is a revision inside the same answer; grade the final accepted revision.
+A chat is not the unit. Segment by user intent. Feedback ("break it out by
+region") is a revision inside the same answer; grade the final accepted
+revision.
 
-Take the question from the stored case (`GET /api/v0/evals/cases/:id`), never from
-memory or a truncated console line. Record `question_sha` of the exact text the
-answerer saw. Record `servedRevision` / model content hash from `get_context` or
-reload, not the package name: a same-named decoy has been measured for hours.
+Take the question from the stored case (`evals/<set>/cases.jsonl`), never from
+memory or a truncated console line. Record `question_sha` of the exact text
+the answerer saw. Record `servedRevision` from `get_context` or reload, not
+the package name: a same-named decoy has been measured for hours.
 
 ## Step 1: Contamination check, before any score
 
-The answerer can Read or Shell its way to gold. Publisher traces do not see that.
+The answerer can Read or Shell its way to gold. Publisher traces do not see
+that, so the check runs on the HOST-side tool-use log you kept for the
+answerer subagent (every tool name and its path or command), plus the MCP
+call counts the answerer reported.
 
-Write the host-side tool-use log (every tool name and its path or command) plus
-the MCP call counts the answerer reported. Then run:
+The checklist. An attempt is contaminated when its log shows any of:
 
-```bash
-python skills/eval-answer/scripts/check_contamination.py \
-  --log tool_uses.json \
-  --gold-globs 'evals/**' 'results/gold/**' \
-  --eval-paths '/api/v0/evals' 'eval_' 'publisher.db' \
-  --model-path path/to/served.malloy \
-  --reported-calls N
-```
+1. a Read, Shell, or any file tool touching `evals/` or a gold artifact path;
+2. any access to the model file under test through a file tool (the
+   `modelPath` argument on an MCP `execute_query` is NOT contamination; the
+   server resolves it, the answerer never reads the file);
+3. `reported_calls` greater than `host_tool_uses` (the detectable
+   under-report floor is reported at most total tool uses).
 
-An attempt is contaminated if it touched an eval path, eval table, gold artifact,
-or the model file under test, or if `reported MCP calls > host tool uses`
-(the detectable under-report floor is `reported <= total tool_uses`).
+`skills/eval-answer/scripts/check_contamination.py` is a reference aid that
+mechanizes the same checklist over a JSON log; your reading of the transcript
+is the check, the script is a second pair of eyes.
 
-Contaminated attempts get `score: null` and `contaminated: true`. They are
-excluded from the run score. They are not "wrong answers."
+Contaminated attempts get `verdict: null` and `contaminated: true`. They are
+excluded from the run aggregates. They are not "wrong answers."
 
-If you cannot produce a host log, mark contamination `unknown` and do not treat
-the attempt as a clean pass.
+If you cannot produce a host log, mark `contaminated: "unknown"` on both the
+attempt and its score event, and do not treat the attempt as a clean pass.
 
 ## Step 2: Re-run the submitted query yourself
 
 Never score the agent's reported rows. Take its final query, execute it with
-`malloy_executeQuery`, and write a prediction CSV.
+`malloy_executeQuery`, and write a prediction CSV under the run's
+`artifacts/` directory.
 
 `submitted: false` when there is no final query. That is not a wrong answer.
-`score` is `null` when not submitted, when the golden is missing / provisional /
-invalid / ambiguous, or when a verified golden has no local artifact to compare.
+No verdict can be issued (`verdict: null`, with the reason) when the attempt
+is not submitted, when the golden is missing, provisional, invalid, or
+ambiguous, or when a verified golden has no local artifact to compare.
 
-## Step 3: Mechanical comparison
+## Step 3: Judge the answer
 
-Do not compare rows by eye, by string equality, or by asking a model.
-An LLM asked to judge row correctness called 20 of 33 wrong answers correct.
+Spawn one fresh judge subagent per attempt, following
+`reference/judge.md` (the rubric, the anchors, and the output shape live
+there; this skill does not restate them). Give it the question, the golden,
+your re-executed prediction rows, the canonical query when present, and the
+relevant source and field definitions from the model. It returns
+`{verdict, confidence, why, column_pairing}`.
 
-Preferred: the contract SQL in this skill's notes, run on DuckDB, if you have
-both sides as `(rid, val)` cells.
+- The judge sees gold. It is therefore never the answerer, and its verdict
+  never leaks back to any answerer.
+- Confidence 5 or lower records as `needs_human`: neither a pass nor a fail,
+  excluded from gate arithmetic, queued for a human look.
+- When a human overrules a verdict, append the case to
+  `evals/<set>/judge-regressions.jsonl`.
+- For a scalar golden, the same protocol applies to a one-value prediction.
+  For `unanswerable`, a refusal that names the gap is the pass; a confident
+  numeric answer is the fail.
+- `match_rows.py` is an aid the judge may run on large row sets, never the
+  verdict.
 
-Fallback, and the reference implementation:
+## Step 4: Score retrieval against the intent dataset
 
-```bash
-python skills/eval-answer/scripts/match_rows.py --gold GOLD.csv --pred PRED.csv --json
-```
+Retrieval is scored per intent row (`evals/<set>/intents.jsonl`), not per
+case, and needs no golden entity ids. For each valid intent this run covers:
 
-The contract, so any other implementation can be checked:
+1. Get the ranked entities for the term: reuse the answerer's `get_context`
+   call via `malloy_getTrace` when one matches the intent, otherwise issue
+   the call yourself with the intent's `term` and `entityType`.
+2. Spawn a retrieval judge per `reference/judge.md`: it decides `in_scope`
+   for this model version and judges each returned entity match, near match,
+   or no match.
+3. Append one `retrieval_score` event per intent with the judgments.
 
-1. Normalize each cell: trim quotes and whitespace; strip a trailing `%` and
-   thousands commas; fold `null` / `none` / `nan` / `n/a` / `<na>` / `nat` and
-   empty to nothing; fold `true` / `false` to `1` / `0`.
-2. Numerics compare under relative tolerance (the script), or render to 7
-   significant digits if you use the SQL form: `round(x, 6 - floor(log10(abs(x))))`,
-   and `0` for zero.
-3. A row key is its non-empty normalized values, sorted. Column order and names
-   do not matter.
-4. `matched` is the multiset intersection size.
-5. `precision = matched / n_pred`, `recall = matched / n_gold`, `f1` their
-   harmonic mean. `ex_strict` is `f1 == 1`.
-
-`f1` is the *answer* signal. Binary pass/fail needs far more samples for the same power.
-`failure_bucket` names the shape (`empty_result`, `row_count_mismatch`,
-`value_mismatch`, `format_mismatch`, `no_result`). `column_agreement` is the
-cheapest hint: extremes matching while means do not is a row-set problem, not
-arithmetic.
-
-An extra column must not zero a correct answer. It buckets as format mismatch
-when the gold values are all present.
-
-For a scalar golden, write a one-row, one-column prediction and compare the same
-way. For `unanswerable`, `submitted: false` or a refusal that names the gap is
-the pass; a confident numeric answer is a fail.
-
-When a needed-entity list is known (`golden.neededEntities` on the case, or
-the set `eval-diagnose` already wrote), score retrieval the same way, with a
-script, not by eye:
-
-```bash
-python skills/eval-answer/scripts/score_retrieval.py \
-  --needed needed.json --ranked ranked.json --json
-```
-
-`needed.json` is the entity ids. `ranked.json` is the `rankedSummary` objects
-from the attempt's `get_context` `tool_call` events (or traces). Do not invent
-the needed set from the question's nouns. If it is unknown, `retrieval_score`
-is `null`.
-
-The contract:
-
-- A needed id matches a returned id exactly, as a bare name
-  (`space_floor` → `join:space_detail:space_floor`), or as kind+name
-  (`join:space_floor`). Last segments must be equal: `floor` is not `floor_key`.
-- Best rank is the minimum across every `get_context` call in the attempt.
-- `context_recall` = fraction of needed entities that appeared (ignores rank).
-- `mrr` = mean over the needed set of `1/best_rank`, or `0` if missing.
-  That is per-entity MRR, not classic single-relevant-document MRR (which is
-  `rr_first`: `1` over the best rank of *any* needed entity).
-- `retrieval_score` is independent of `answer_score`. An attempt can find
-  every entity and still miss the rows.
-
-Contaminated attempts leave `retrieval_score` null, same as `answer_score`.
-
-## Step 4: Adjudicate only the margin
-
-If strict fails and the answer may still be right (extra column, equivalent grain),
-you may project or re-aggregate and record `f1_adjudicated`. Never overwrite `f1`.
+Coverage, recall, and precision fall out by counting events, as defined in
+`reference/ledger-schema.md`. Do not compute them per attempt, and do not
+invent intent rows from a case's nouns mid-run; curating `intents.jsonl` is
+scrape-step work.
 
 ## Step 5: Distrust the golden
 
 A reference answer can be wrong (parent-column fanout, a join on a shared
-non-identifying key). Fanout is not automatically a defect: `AVG` / `STDDEV` /
-`MIN` / `MAX` survive uniform duplication. Classify `verified_wrong` (exclude
-from scoring) vs `verified_benign` (keep). Write that on the score event as
-`gold_status`. Do not encode a rewrite of a bad golden into the model.
+non-identifying key). Fanout is not automatically a defect: `AVG` / `STDDEV`
+/ `MIN` / `MAX` survive uniform duplication. Classify `verified_wrong`
+(exclude from scoring) vs `verified_benign` (keep). Write that on the score
+event as `gold_status`. Do not encode a rewrite of a bad golden into the
+model. A judge verdict of no_match with a why that indicts the golden rather
+than the prediction is exactly the signal to route to diagnosis as a dataset
+issue, not to count as a model failure.
 
-## Step 6: Write events, then stop
+## Step 6: Append events, then stop
 
-`POST /api/v0/evals/runs/:runId/events` with `caseId` set. See
-`reference/ledger-schema.md` for payloads.
+Append to `evals/<set>/runs/<runId>/events.jsonl` with `caseId` set. Shapes
+live in `reference/ledger-schema.md`.
 
-1. `attempt`: qid, sample, question_sha, submitted, final_query, served revision,
-   call counts, contamination verdict.
-2. `tool_call`: one per MCP `get_context` / `execute_query`, with `traceId` and
-   the compact ranked summary from the response (entity ids, ranks, cutoff).
-   Do not copy full traces into the event. `malloy_getTrace` holds the body.
-3. `score`: `answer_score` (`f1`, `ex_strict`, `precision`, `recall`, `n_gold`,
-   `n_pred`, `matched`, `failure_bucket`), `retrieval_score` when a needed
-   set exists, `golden_revision`, `contaminated`, `score` null when the
-   attempt is not scorable.
+1. `attempt`: qid, sample, phase, question_sha, submitted, final_query,
+   served revision, call counts, contamination verdict, transcript path.
+2. `tool_call`: one per MCP `get_context` / `execute_query`, with `traceId`
+   and the `rankedSummary` copied from the trace (per-target ranks included).
+   Do not copy full traces into the event; `malloy_getTrace` holds the body.
+3. `score`: the judge's verdict object plus `judge_version`, `rubric_sha`,
+   `golden_revision`, `contaminated`, `gold_status`, and the judge output's
+   artifact path.
+4. `retrieval_score`: one per intent judged (run-level, no caseId).
 
 A stage never rewrites another stage's fields. End-of-run numbers come from
-querying events, not from your arithmetic in prose.
+counting events, not from your arithmetic in prose.
 
-`n_samples=1` is fine for a loop look. A measurement you will quote needs
-`n_samples>=3` (see `skill:eval-loop`).
+One sample is fine for a loop look. A measurement you will quote needs three
+or more samples per case (see `skill:eval-loop`).
 
 ## Re-score after a golden repair
 
-When `eval-loop` has patched a golden and opened a new run, this skill
-runs again **without a new answerer**: same stored `final_query` (or its
-saved prediction CSV), new gold artifact, new `golden_revision` on the
-`score` event. Contamination does not need to be re-litigated if the
-attempt was already clean. If you must re-execute, do it yourself; do not
-ask the original answerer to "try again" with the new key in context.
+When `eval-loop` has repaired a golden and opened a new run, this skill runs
+again **without a new answerer**: same stored `final_query` (or its saved
+prediction CSV), new gold artifact, fresh judge, new `golden_revision` on the
+`score` event. Contamination does not need to be re-litigated if the attempt
+was already clean. If you must re-execute, do it yourself; do not ask the
+original answerer to "try again" with the new key in context.
 
 ## Related skills
 

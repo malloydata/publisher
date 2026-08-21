@@ -13,8 +13,8 @@ Most of these skills are **shared, open-source Malloy skills** kept in sync with
 
 ## Shared vs Publisher-specific
 
-- **Shared engine skills** (identical to upstream): `eval-answer`, `eval-diagnose`, `eval-improve`, `eval-loop`, `malloy-model`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
-- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI). These name Publisher's own tools directly and are never synced upstream to `ms2data/agent-skills`.
+- **Shared engine skills** (identical to upstream): `malloy-model`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
+- **Publisher-specific skills** (not shared): `eval-answer`, `eval-diagnose`, `eval-improve`, `eval-loop` (the evaluation loop; they name `malloy_*` tools, this server's traces, and its file-ledger layout directly), `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI). These name Publisher's own tools directly and are never synced upstream to `ms2data/agent-skills`.
 
 ## Tool names in shared skills
 
@@ -23,7 +23,7 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 ## Adding or updating a skill
 
 - Update a shared skill **upstream first** (in `ms2data/agent-skills`), then copy it here, which keeps the two byte-identical. Editing only this copy makes the next sync a conflict.
-- The `local/eval-hill-climb` experiment may revise the four `eval-*` skills in this tree first. That is a deliberate local fork: do not overwrite those copies from upstream until the experiment is reconciled. The loop here is scrape/run, eval, diagnose, improve, checkpoint; it is local and agent-conducted, not a Python orchestrator and not a remote Credible publish.
+- The four `eval-*` skills are Publisher-specific (see above), so an upstream sync never touches them. Their loop is scrape/run, eval, diagnose, improve, checkpoint; it is local and agent-conducted, persists in files and git, and scoring is an LLM judge, not a Python orchestrator and not a remote Credible publish. If upstream grows its own eval skills, they are a different lineage; do not copy over these.
 - **Any edit under `skills/` means regenerating the MCP bundle** (`cd packages/server && bun run src/mcp/skills/build_skills_bundle.ts ../../skills`) and committing the resulting `src/mcp/skills/skills_bundle.json`. It is a committed generated asset, and `skills_bundle.spec.ts` fails the build when it drifts from this tree.
 - A new skill directory needs a `.claude/skills/<name>` symlink (`ln -s ../../skills/<name> .claude/skills/<name>`) so Claude Code discovers it.
 - A shared skill may only `skill:`-reference other shared skills; refer to a host wrapper in neutral prose so a verbatim copy never leaves a dangling reference.

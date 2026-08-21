@@ -30,7 +30,7 @@ the gap. Every factual claim is backed by a query you ran.
 
 Do not edit for `BAD-REFERENCE` or `AMBIGUOUS-REFERENCE`. Those are the
 golden side door in `skill:eval-loop`: repair or hold the golden, bump
-`golden_revision`, and open a new baseline run. Being right and unmatched
+`goldenRevision` on the case, and open a new baseline run. Being right and unmatched
 beats encoding a defect or an unsettled key. Do not edit for a skill,
 retrieval, or dataset owner.
 
@@ -95,10 +95,13 @@ new modeling mistake.
 ## Step 4: Verify, report, hand off
 
 Compile, reload, run one trivial query against each source you touched.
-Write a `candidate` event with the diff identity (files, revision), the
-issue_id, probe receipts, and this report. Then stop and wait for the gate
-in `skill:eval-loop`. That skill accepts or reverts, and **only on accept**
-writes a checkpoint. This skill never checkpoints and never self-accepts.
+Append a `candidate` event to the run's `events.jsonl` (shape in
+`skill:eval-answer` `reference/ledger-schema.md`): the files touched, a
+one-line diff summary per file, the issue_ids, probe receipts, and this
+report. Every proposal gets its event, accepted or not; a rejected direction
+keeps its record. Then stop and wait for the gate in `skill:eval-loop`. That
+skill writes the `gate` event, accepts or reverts, and **only on accept**
+checkpoints. This skill never checkpoints and never self-accepts.
 
 ```
 COMPONENT / PRIMARY_CODE / OWNER
