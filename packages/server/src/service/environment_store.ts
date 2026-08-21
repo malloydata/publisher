@@ -1666,13 +1666,21 @@ export class EnvironmentStore {
       logger.info(
          `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
       );
-      // The archive extracts to a sibling directory named for it, resolved
-      // through the containment helper so the target provably stays beside
-      // the archive rather than wherever a crafted name points.
-      const unzippedEnvironmentPath = safeJoinUnderRoot(
-         path.dirname(absoluteEnvironmentPath),
+      // The archive extracts to a sibling directory named for it. Resolve the
+      // target and check it lexically against the archive's directory, in
+      // the one shape CodeQL's js/path-injection query accepts as a barrier
+      // (an unconditional startsWith on the resolved value it later sinks),
+      // so the target provably stays beside the archive.
+      const archiveDir = path.resolve(path.dirname(absoluteEnvironmentPath));
+      const unzippedEnvironmentPath = path.resolve(
+         archiveDir,
          path.basename(absoluteEnvironmentPath, ".zip"),
       );
+      if (!unzippedEnvironmentPath.startsWith(archiveDir + path.sep)) {
+         throw new BadRequestError(
+            `Refusing to unzip "${absoluteEnvironmentPath}": target escapes its directory`,
+         );
+      }
       await fs.promises.rm(unzippedEnvironmentPath, {
          recursive: true,
          force: true,
