@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 # Copy package files first for better layer caching
 COPY package.json bun.lock api-doc.yaml ./
+COPY scripts/add-license-headers.mjs ./scripts/
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
 COPY packages/sdk/package.json ./packages/sdk/package.json
