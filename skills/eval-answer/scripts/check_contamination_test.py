@@ -63,6 +63,28 @@ class ContaminationTests(unittest.TestCase):
         out = check(log, model_path="/tmp/pkg/storefront.malloy")
         self.assertFalse(out["contaminated"])
 
+    def test_custom_gold_paths_extend_defaults(self):
+        # The historical bug: passing glob patterns REPLACED the default
+        # needles, and since matching is substring-only, the gold check
+        # became a no-op. Custom paths must extend, never replace.
+        log = {
+            "toolUses": [
+                {"name": "Read", "input": {"path": "results/gold/x/dw_1.csv"}},
+            ],
+        }
+        out = check(log, gold_paths=["evals/**", "results/gold/**"])
+        self.assertTrue(out["contaminated"])
+        self.assertTrue(any("gold" in r for r in out["reasons"]))
+
+    def test_ledger_read_is_contamination(self):
+        log = {
+            "toolUses": [
+                {"name": "Read", "input": {"path": "evals/beaver/runs/r1/events.jsonl"}},
+            ],
+        }
+        out = check(log)
+        self.assertTrue(out["contaminated"])
+
     def test_underreported_calls(self):
         log = {
             "toolUses": [

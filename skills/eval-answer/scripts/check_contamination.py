@@ -2,10 +2,15 @@
 """Score-time contamination check. Stdlib only.
 
 An attempt is contaminated if the host-side tool-use log touched an eval path,
-eval table, gold artifact, or the model file under test, or if the answerer
-reported more MCP calls than the host observed as tool uses.
+gold artifact, or the model file under test, or if the answerer reported more
+MCP calls than the host observed as tool uses.
 
   python check_contamination.py --log tool_uses.json [options]
+
+All path matching is PLAIN SUBSTRING containment against the flattened tool
+input, never glob expansion. --gold-paths and --eval-paths EXTEND the built-in
+defaults rather than replacing them, so passing extra paths can only widen the
+check.
 
 Exit 0 always when the check itself ran. Exit 1 if the log cannot be read.
 A contaminated attempt is data for the grader, not a script failure.
@@ -32,22 +37,19 @@ import sys
 from typing import Any
 
 
-DEFAULT_GOLD_GLOBS = (
+DEFAULT_GOLD_PATHS = (
     "evals/",
     "results/gold/",
     "gold/",
     "cases.jsonl",
-    "eval.json",
-    "review.json",
+    "intents.jsonl",
+    "set.json",
+    "events.jsonl",
+    "judge-regressions",
 )
 DEFAULT_EVAL_PATHS = (
-    "/api/v0/evals",
-    "eval_sets",
-    "eval_cases",
-    "eval_runs",
-    "eval_events",
-    "eval_evidence",
     "publisher.db",
+    "mcp_traces",
 )
 HOST_FILE_TOOLS = (
     "read",
@@ -103,7 +105,7 @@ def _matches(haystack: str, needles: list[str]) -> list[str]:
 def check(
     log: dict[str, Any],
     *,
-    gold_globs: list[str] | None = None,
+    gold_paths: list[str] | None = None,
     eval_paths: list[str] | None = None,
     model_path: str | None = None,
     reported_calls: int | None = None,
@@ -112,8 +114,11 @@ def check(
     if not isinstance(uses, list):
         raise ValueError("toolUses must be a list")
 
-    needles = list(gold_globs or DEFAULT_GOLD_GLOBS)
-    needles.extend(eval_paths or DEFAULT_EVAL_PATHS)
+    # Custom paths extend the defaults; they never replace them. Replacing
+    # once turned the gold check into a no-op when a caller passed glob
+    # patterns that substring-match nothing.
+    needles = list(DEFAULT_GOLD_PATHS) + list(gold_paths or ())
+    needles.extend(list(DEFAULT_EVAL_PATHS) + list(eval_paths or ()))
     model_needles = []
     if model_path:
         model_needles = [os.path.normpath(model_path), os.path.basename(model_path)]
@@ -154,8 +159,18 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--log", required=True, help="host tool-use JSON")
-    ap.add_argument("--gold-globs", nargs="*", default=None)
-    ap.add_argument("--eval-paths", nargs="*", default=None)
+    ap.add_argument(
+        "--gold-paths",
+        nargs="*",
+        default=None,
+        help="extra gold substrings; extends the defaults, substring match only",
+    )
+    ap.add_argument(
+        "--eval-paths",
+        nargs="*",
+        default=None,
+        help="extra eval-ledger substrings; extends the defaults",
+    )
     ap.add_argument("--model-path", default=None)
     ap.add_argument("--reported-calls", type=int, default=None)
     args = ap.parse_args()
@@ -164,7 +179,7 @@ def main() -> None:
             log = json.load(f)
         out = check(
             log,
-            gold_globs=args.gold_globs,
+            gold_paths=args.gold_paths,
             eval_paths=args.eval_paths,
             model_path=args.model_path,
             reported_calls=args.reported_calls,

@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""Deterministic row-matching oracle for eval-answer. Stdlib only.
+"""Deterministic row-matching REFERENCE AID for eval-answer. Stdlib only.
 
-This decides WHETHER an answer is right. Nothing here is a judgment call, and no
-agent should ever re-implement it: an LLM asked to compare result rows called 20 of
-33 wrong answers correct (61% false-positive) and issued a confident false-negative
-on a perfect answer. Row matching is code. Judgment starts at *why* it failed, which
-is a different skill.
+The verdict belongs to the LLM judge (reference/judge.md); this script is a
+second pair of eyes the judge may run on large row sets. Its output informs
+the judge and never overrides the judgment. Known limits the judge must
+compensate for:
+
+  - Numeric cells are compared as a SORTED vector per row, so two numeric
+    columns with overlapping ranges can cross-match: gold (2020, 5) pairs
+    with pred (5, 2020). The judge pairs columns by meaning instead.
+  - The row key is the full set of non-empty values, so an extra column with
+    real data lowers every row's match even when all gold values are present
+    (attribute_failure names that case, graded_match still scores it low).
+  - A percentage and its fraction (50 vs 0.5) do not match.
 
   python match_rows.py --gold GOLD.csv --pred PRED.csv [--status ok] [--json]
 
-Exit code is 0 whether or not the answer is correct -- a wrong answer is data, not a
-harness failure. Exit 1 means the comparison itself could not be performed.
+Exit code is 0 whether or not the answer is correct -- a wrong answer is data,
+not a harness failure. Exit 1 means the comparison itself could not be
+performed, including a --gold or --pred path that does not exist or cannot be
+read. A prediction file that CONTAINS an execution error still scores (as
+no_result): the error is the answer's failure, not the harness's.
 
 WHY ROWS ARE SPLIT INTO A TEXT KEY AND A NUMERIC VECTOR
 -------------------------------------------------------
@@ -153,15 +163,26 @@ def graded_match(gold_path: str, pred_path: str) -> dict:
     """
     g, ge = read_rows(gold_path)
     p, pe = read_rows(pred_path)
+    # An unreadable path is a harness failure (exit 1 via main), never a zero
+    # score: a path typo must not silently baseline the model at 0.
+    for side, err in (("gold", ge), ("pred", pe)):
+        if err and err.startswith("unreadable"):
+            raise RuntimeError(f"{side} file {err}")
     if ge or pe or g is None or p is None:
+        # A file holding an execution error: the answer failed, score it 0.
         return {"precision": 0.0, "recall": 0.0, "f1": 0.0, "strict": False,
+                "n_gold": 0, "n_pred": 0, "matched": 0}
+    if not g and not p:
+        # Both empty: the prediction reproduced the (empty) golden exactly.
+        # Keeps the contract strict == (f1 == 1) in both directions.
+        return {"precision": 1.0, "recall": 1.0, "f1": 1.0, "strict": True,
                 "n_gold": 0, "n_pred": 0, "matched": 0}
     m = matched_rows(g, p)
     prec = m / len(p) if p else 0.0
     rec = m / len(g) if g else 0.0
     f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) else 0.0
     return {"precision": round(prec, 4), "recall": round(rec, 4), "f1": round(f1, 4),
-            "strict": bool(len(g) == len(p) == m), "n_gold": len(g), "n_pred": len(p),
+            "strict": bool(f1 == 1.0), "n_gold": len(g), "n_pred": len(p),
             "matched": m}
 
 
@@ -203,7 +224,9 @@ def attribute_failure(gold_path: str, pred_path: str, pred_status: str = "ok") -
     g, _ = read_rows(gold_path)
     p, _ = read_rows(pred_path)
     if g is None or p is None:
-        return "unreadable_csv"
+        # Unreadable paths raise in graded_match before this runs; the only
+        # way here is a file whose content is an execution error.
+        return "no_result (execution error in file)"
     if len(p) == 0:
         return "empty_result"
     if len(g) == len(p):
