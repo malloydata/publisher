@@ -64,7 +64,40 @@ The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port
 
 The server also serves the bundled agent [skills](../skills/) as MCP prompts. A host that ingests MCP but does not read skill files from disk (for example Codex, ChatGPT, or Cursor) can pull the same guidance through this channel. MCP prompts are on-demand: a client lists them and the user or host selects one, so guidance that is always-on for skill-aware hosts becomes opt-in here. For authoring or contributing skills, see [docs/agent-skills](agent-skills/).
 
-MCP also defines resources (for example links to a data dictionary). These are a newer part of the standard and many clients do not use them yet; a tool like the MCP Inspector lets you explore them.
+### Inline result rendering (MCP Apps)
+
+A chat client that supports [MCP Apps](https://modelcontextprotocol.io) renders a `malloy_executeQuery` result as a chart or table in the conversation, so a person reads the result instead of the JSON. The agent still receives the same JSON either way; this changes what the human sees, not what the model gets.
+
+The chart is the one your model describes. The widget renders with `@malloydata/render`, the same library the Publisher web UI uses, so the `# bar_chart`, `# line_chart`, `# currency` and other annotation tags already in your model apply here too. Tag problems still come back in the tool result as `renderLogErrors`, which is where the agent reads them.
+
+The card starts collapsed behind a "Show Query Result" header. An agent can open it by default by passing `expanded: true`, which is worth doing for a result that answers the question being asked and not worth doing for a wide table or a query using `nest:`.
+
+Three things make this work, and the server sets all of them up for you:
+
+- it declares the `io.modelcontextprotocol/ui` extension when it initializes
+- it serves the widget as a resource at `ui://execute-query/app.html`, with the MIME type `text/html;profile=mcp-app`
+- `malloy_executeQuery` carries a `_meta` field naming that resource
+
+Nothing to configure. The widget is one self-contained HTML file with no external scripts, styles or fonts, so it needs no hosting URL and no content-security-policy entries, and it works the same whether Publisher is on localhost, in Docker, or behind a proxy. It makes no network requests of its own: the result reaches it from the host, not from the server.
+
+**Most clients do not support MCP Apps, and nothing is lost when they do not.** The tool result is identical either way, so an agent reading the JSON sees exactly what it saw before. A client that ignores the extension simply gets no card.
+
+One thing the widget does not do yet: it ignores the `# theme.*` annotations that the Publisher web UI honours, so a model that sets its own palette renders in Malloy's default colours in chat and in your palette in the UI.
+
+If you build Publisher from source and want the widget, build it. `bun run build` covers it, as does `bun run build:server-deploy`. A server whose widget bundle is missing does not advertise one, which is deliberate: a client told about a widget it cannot read shows a broken card, so the server would rather offer nothing.
+
+If a result renders as plain JSON in a client you expected to draw a chart, check which of the two it is. Ask the server what it serves:
+
+```bash
+curl -s -X POST http://localhost:4040/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}'
+```
+
+A `ui://execute-query/app.html` entry means the server has the widget and the gap is on the client side. A `-32601 Method not found` means this server registered no resources at all, so the widget bundle is missing and the fix is to build it. The server also logs the count as `uiResources` on the `[MCP Init] Finished initializeMcpServer` line, but note that line appears on the first MCP request rather than at startup, because the MCP server is constructed per request.
+
+MCP defines resources more generally, and this widget is currently the only one Publisher serves. A tool like the MCP Inspector lets you explore them.
 
 The server does not require authentication, and `malloy_executeQuery` runs Malloy against the databases your models connect to, so anyone who can reach this port can read that data. The surface is not read-only either: `malloy_reloadPackage` mutates server state, and for a package that carries an install location a reload re-fetches it, overwriting on-disk edits. The same effects are already reachable through the equivalent REST endpoints, so this is a reason to gate the deployment rather than a reason to avoid the tools. The server binds `0.0.0.0` by default, which also exposes it on your network. Bind it to loopback with `--host 127.0.0.1` for local-only use, and put an authenticating gateway in front before exposing it more widely.
 
@@ -86,13 +119,13 @@ Clients such as Cursor and VS Code connect straight to the HTTP endpoint. The ex
 }
 ```
 
-Add or drop the `"type": "http"` field to match your client. Clients that speak only stdio (for example older Claude Desktop builds) connect through `mcp-remote`, below.
+Add or drop the `"type": "http"` field to match your client. Clients that speak only stdio (for example Claude Desktop) connect through `mcp-remote`, below.
 
 If a client cannot reach `localhost:4040`, another local process may be holding that loopback port (some editor and MCP extensions bind it). Move Publisher's MCP server to another port with `--mcp_port`, or point the client at the machine's network address. Note that a client which *can* reach the port is not proof it reached Publisher: if the wrong process holds it, the client connects to that instead. `malloy_getContext` names the environment and packages it is actually talking to, which is the quickest way to tell.
 
 ### With a stdio-only client through mcp-remote
 
-Some clients (for example older Claude Desktop builds) speak only stdio MCP, not HTTP. Bridge them to the HTTP endpoint with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote), which needs no extra script. In the client's MCP config (for Claude Desktop, Settings > Developer > Edit Config) add:
+Some clients (for example Claude Desktop) speak only stdio MCP, not HTTP. Bridge them to the HTTP endpoint with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote), which needs no extra script. In the client's MCP config (for Claude Desktop, Settings > Developer > Edit Config) add:
 
 ```json
 {

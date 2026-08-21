@@ -71,6 +71,26 @@ if (process.env.SKIP_APP_BUNDLE === "1" && !fs.existsSync("../app/dist")) {
    fs.cpSync("../app/dist", "./dist/app", { recursive: true });
 }
 
+// `dist/mcp-apps` is where the MCP server reads the MCP Apps widgets from at
+// runtime (see mcp/ui_resources.ts resolveWidgetDir), so this copy is what puts
+// them in the shipped bundle.
+//
+// A warning rather than a hard failure, which is the difference from the SPA
+// above: a Publisher with no widget bundle is fully functional, it just does not
+// offer inline rendering, and it is built to advertise nothing in that case
+// rather than a widget it cannot serve. So a missing bundle must not break a
+// server build, but it should be visible, because the usual cause is that the
+// widget build step stopped running.
+if (fs.existsSync("../mcp-apps/dist")) {
+   fs.cpSync("../mcp-apps/dist", "./dist/mcp-apps", { recursive: true });
+} else {
+   console.warn(
+      "WARNING: ../mcp-apps/dist is absent, so this server bundle ships without " +
+         "the MCP Apps widgets and will not offer inline result rendering. " +
+         "Run `bun run build:mcp-apps` first to include them.",
+   );
+}
+
 // Copy hand-authored vanilla-JS runtime served at /sdk/publisher.js.
 fs.cpSync("./src/runtime", "./dist/runtime", { recursive: true });
 

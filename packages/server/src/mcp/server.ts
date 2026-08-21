@@ -15,6 +15,7 @@ import {
 } from "./tools/reload_package_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
+import { registerUiResources } from "./ui_resources";
 import skillsBundle from "./skills/skills_bundle.json";
 
 export const testServerInfo = {
@@ -51,7 +52,7 @@ To build a model from a database rather than from an existing package, start wit
 
 Task-specific guidance is served as prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
 
-Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
+Results and any charts render in the Publisher web UI on the REST port (4000 by default). Where this server serves the MCP Apps widget and your client supports it, a malloy_executeQuery result also renders inline in the conversation: call resources/list to see whether it does. The expanded=true parameter opens that card by default; set it when the result answers the question being asked, and leave it closed for a wide table or a query using nest:.`;
 
 export function initializeMcpServer(
    environmentStore: EnvironmentStore,
@@ -62,6 +63,13 @@ export function initializeMcpServer(
    const mcpServer = new McpServer(testServerInfo, {
       instructions: MCP_INSTRUCTIONS,
    });
+
+   // Before the tools, and before the transport connects: this declares the
+   // MCP Apps UI extension, and registerCapabilities throws once connected.
+   // Returns an empty list when the widget bundle was not built, in which case
+   // the tools register without their widget metadata and every client sees
+   // exactly today's behaviour.
+   const uiResources = registerUiResources(mcpServer);
 
    registerExecuteQueryTool(mcpServer, environmentStore);
    registerGetContextTool(mcpServer, environmentStore);
@@ -90,6 +98,7 @@ export function initializeMcpServer(
    const endTime = performance.now();
    logger.info(`[MCP Init] Finished initializeMcpServer`, {
       duration: formatDuration(endTime - startTime),
+      uiResources: uiResources.length,
    });
 
    return mcpServer;
