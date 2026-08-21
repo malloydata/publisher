@@ -34,11 +34,13 @@ import {
    gateFilterText,
    liftProbeFilterCondition,
    quoteMalloyIdentifier,
+   referencedGivenNames,
    type RowLevelGateClassification,
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import {
    expandGivenIds,
+   expandRefSummaryGivenIds,
    findGateDimensionCandidates,
    gateFieldName,
 } from "./gate_dimension";
@@ -224,6 +226,18 @@ function gateExprsForOwnAnnotations(
       (note) => !excludeNotes.includes(note),
    );
    try {
+      // The legacy quoted-string form is refused at LOAD time
+      // (`assertNoLegacyStringGate`) for any caller that runs the full
+      // `Model.create` / package-load-worker preflight — but a caller with
+      // no such preflight (`build_plan.ts`'s materialization-eligibility
+      // compile pass) can still reach this classifier with one intact.
+      // There is no special case here for that: `collectAuthorizeExprs`
+      // (via `parseAuthorizeAnnotation`) now returns the legacy payload
+      // completely verbatim, quotes included, so it is handed to
+      // `resolveGateShape` below as an ordinary Malloy expression — see the
+      // comment at its lift `catch` for why that alone is enough to make
+      // this classifier and the load-time refusal agree structurally,
+      // without either one special-casing the other.
       const own = collectAuthorizeExprs(ownNotes.map((note) => note.text));
       if (own.length > 0) {
          return { exprs: own, fromAncestor: false };
@@ -570,6 +584,21 @@ export async function resolveGateShape(
             graftScope.materializer,
          );
       } catch (err) {
+         // This is also where a legacy quoted-string gate
+         // (`#(authorize) "org_id = 999"`, see `./authorize`'s
+         // `isLegacyQuotedPayload`) lands when it reaches this classifier
+         // with no load-time preflight to have refused it first
+         // (`build_plan.ts`'s materialization-eligibility compile pass has
+         // none). `gateExprsForOwnAnnotations` above hands its payload
+         // through completely verbatim, quotes included, so `filterText`
+         // compiles as an ordinary Malloy expression — but a quoted payload
+         // compiles to a STRING LITERAL, not a boolean, so `liftGateCondition`
+         // throws here ("Filter expression must have boolean value") and the
+         // gate is rejected. That makes the agreement with
+         // `assertNoLegacyStringGate`'s load-time refusal structural rather
+         // than a special case someone has to remember to keep in sync: the
+         // legacy form simply cannot lift as a live gate, here or anywhere
+         // else an expression is actually evaluated.
          logger.debug("Row-level gate condition failed to lift; denying", {
             modelPath: deps.modelPath,
             graftTarget,
@@ -651,7 +680,7 @@ export async function resolveGateShape(
       } else if (!hasUsableExpr) {
          classification = {
             shape: "rejected",
-            cause: "legacy_string_gate",
+            cause: "unclassifiable_condition",
             detail:
                "this entry's lifted condition carries no usable expression",
          };
@@ -662,33 +691,84 @@ export async function resolveGateShape(
       } else {
          // The source-line form: `condition` is a genuine compiled predicate
          // tree (a comparison, `in`, `and`/`or`, …), not a bare field
-         // reference — its own `refSummary.givenUsage` names every given ID
-         // the expression reaches, exactly the same accounting the dimension
-         // form gets from `expandGivenIds`, just already computed by Malloy's
-         // compiler instead of walked by hand. IDs are resolved against
-         // `graftScope.modelDef.givens` — the SAME compiled model
-         // `liftGateCondition` lifted this condition through via
-         // `graftScope.materializer` — never `originModelDef`, whose given
-         // identities are minted fresh per `loadModel` call and would not
-         // match (see `GraftScope`'s doc). An id that fails to resolve to a
-         // name there is IR this walk cannot account for, not evidence the
-         // gate reaches nothing; fail closed the same way `expandGivenIds`'s
-         // `!expansion.ok` does, rather than under-count `givenNames`.
-         const ids = new Set(
-            (condition.refSummary?.givenUsage ?? []).map((g) => g.id),
-         );
-         const givenNames = Array.from(ids)
-            .map((id) => graftScope.modelDef.givens?.[id]?.name)
-            .filter((name): name is string => !!name);
-         if (givenNames.length !== ids.size) {
+         // reference. Its own top-level `refSummary.givenUsage` is NOT
+         // transitive — a bare field reference to another dimension (e.g.
+         // `#(authorize) authorized` over `dimension: authorized is org_id in
+         // $GROUPS`) carries `refSummary.fieldUsage: [{path: ["authorized"]}]`
+         // with NO `givenUsage` at all, the exact non-transitivity
+         // `./gate_dimension`'s `expandGivenIds` already documents and exists
+         // to walk around (confirmed empirically: `condition.refSummary` for
+         // that shape has no `givenUsage` key whatsoever, not an empty one).
+         // Reading `condition.refSummary.givenUsage` directly (as an earlier
+         // version of this branch did) under-counts `givenNames` for exactly
+         // that shape — the gate still grafts and enforces correctly (Malloy
+         // resolved the reference fine), but the classifier reports it as
+         // reading no givens, which is the ONE shape `model.ts`'s
+         // `authorizeReferencedGivenNames` / "gate given unbound; deny
+         // opaquely" backstop must never see: an unsupplied `$GROUPS` then
+         // surfaces as Malloy's raw compile error naming the given, instead
+         // of an opaque 403. So this runs the SAME `fieldUsage`-following
+         // expansion `expandGivenIds` already implements
+         // ({@link expandRefSummaryGivenIds}), resolved against the graft
+         // target's OWN compiled struct — `graftScope.modelDef.contents
+         // [graftTarget]`, the same model `liftGateCondition` lifted this
+         // condition through via `graftScope.materializer` (never
+         // `originModelDef`, whose given identities are minted fresh per
+         // `loadModel` call and would not match — see `GraftScope`'s doc).
+         //
+         // The naive "reject when `givenUsage` is absent" fix is wrong: `1 =
+         // 1` and `org_id = 999` legitimately read no given at all, and
+         // `expandRefSummaryGivenIds` already tells "no field references to
+         // follow" (`ok: true`, empty set) apart from "a referenced path
+         // could not be resolved" (`ok: false`) — only the latter denies.
+         const targetStruct = graftScope.modelDef.contents[graftTarget];
+         if (!isSourceDef(targetStruct)) {
             classification = {
                shape: "rejected",
-               cause: "unreachable_given",
+               cause: "given_usage_unresolvable",
                detail:
-                  "this gate references a given id that does not resolve to a name on this model",
+                  "this gate's graft target does not resolve to a source on this model",
             };
          } else {
-            classification = { shape: "row_level", givenNames };
+            const expansion = expandRefSummaryGivenIds(
+               targetStruct,
+               condition.refSummary,
+            );
+            if (!expansion.ok) {
+               classification = {
+                  shape: "rejected",
+                  cause: "given_usage_unresolvable",
+                  detail: `this gate references \`${expansion.unresolvedPath}\`, which could not be resolved on the graft target`,
+               };
+            } else {
+               const givenNames = Array.from(expansion.givenIds)
+                  .map((id) => graftScope.modelDef.givens?.[id]?.name)
+                  .filter((name): name is string => !!name);
+               // Belt-and-braces: every `$NAME` literally present in the
+               // filter text the IR walk started from must appear among the
+               // resolved names — a mismatch means the walk missed something
+               // the text itself proves is referenced, which is worse than
+               // the plain id-to-name resolution failure below and gets the
+               // same fail-closed answer.
+               const literalNames = referencedGivenNames(filterText);
+               const accountedFor = new Set(givenNames);
+               const unaccounted = literalNames.filter(
+                  (name) => !accountedFor.has(name),
+               );
+               if (
+                  givenNames.length !== expansion.givenIds.size ||
+                  unaccounted.length > 0
+               ) {
+                  classification = {
+                     shape: "rejected",
+                     cause: "unreachable_given",
+                     detail:
+                        "this gate references a given id that does not resolve to a name on this model",
+                  };
+               } else {
+                  classification = { shape: "row_level", givenNames };
+               }
+            }
          }
       }
       // `Model.filterGivensToModelSurface` drops a caller-supplied given that

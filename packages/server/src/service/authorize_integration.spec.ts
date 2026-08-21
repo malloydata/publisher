@@ -479,6 +479,80 @@ async function expectDeniedByFilter(
    expect(rows).toEqual([{ c: 0 }]);
 }
 
+describe("the legacy quoted-string #(authorize) form", () => {
+   it("still refuses to load a genuinely top-level gate, naming the expression as authored", async () => {
+      // Unlike this file's other `#(authorize) "false"` fixtures (reached
+      // only through a join or a separate imported file — Q16/cross-file
+      // territory the load-time sweep never walks into), this gate is
+      // declared directly on a top-level source in the entry model itself,
+      // so `findLegacyStringGates`/`assertNoLegacyStringGate` see it and
+      // refuse the load.
+      await writeModel(
+         "legacy_top_level.malloy",
+         `#(authorize) "org_id = 999"
+source: locked is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "legacy_top_level.malloy",
+         getConnections(),
+      );
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(ModelCompilationError);
+      expect(err?.message).toContain("no longer accepted");
+      // Quoted exactly as authored (not unwrapped) — still names the
+      // offending expression rather than degrading to something empty.
+      expect(err?.message).toContain('"org_id = 999"');
+   });
+
+   it("'\"admin\" = $ROLE' is a LEGAL current-form gate, not the legacy form — loads and filters", async () => {
+      // `isLegacyQuotedPayload` used to key on a leading `"`, which
+      // misidentified this gate as legacy and refused it with a baffling
+      // "unexpected content after the expression" — it merely STARTS with a
+      // quoted string literal (`"admin"`), a normal Malloy sub-expression,
+      // and the whole body is not one quoted string. It must load and
+      // actually filter, not just fail to throw.
+      await writeModel(
+         "quoted_prefix.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) "admin" = $ROLE
+source: gated is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "quoted_prefix.malloy",
+         getConnections(),
+      );
+      expect(model.getNotebookError()).toBeUndefined();
+      expect(model.getAuthorize("gated")).toEqual([`"admin" = $ROLE`]);
+
+      // Matching ROLE admits the request and returns the real row set (both
+      // seeded customers), not just "no error".
+      const { compactResult: admitted } = await runGated(
+         "quoted_prefix.malloy",
+         "run: gated -> { aggregate: c }",
+         { ROLE: "admin" },
+      );
+      expect(admitted as unknown as { c: number }[]).toEqual([{ c: 2 }]);
+
+      // A non-matching ROLE is a gate-verdict denial — zero rows, not a
+      // structural rejection.
+      await expectDeniedByFilter(
+         "quoted_prefix.malloy",
+         "run: gated -> { aggregate: c }",
+         { ROLE: "someone_else" },
+      );
+   });
+});
+
 describe("authorize runtime gate", () => {
    const SINGLE_GATE = `##! experimental.givens
 
@@ -2855,7 +2929,10 @@ source: deep_ext is deep_locked extend {}
          getConnections(),
       );
       // Loaded, not 424 — and the gate is reported rather than silently absent.
-      expect(model.getAuthorize("deep_ext")).toEqual(["$DEEP = 'yes'"]);
+      // The legacy quoted-string form is no longer unwrapped (see
+      // `parseAuthorizeAnnotation`'s doc), so the reported expression carries
+      // its authored quotes verbatim rather than the bare inner text.
+      expect(model.getAuthorize("deep_ext")).toEqual([`"$DEEP = 'yes'"`]);
       await expect(
          runGated("deep_entry.malloy", "run: deep_ext -> { aggregate: c }", {}),
       ).rejects.toBeInstanceOf(AccessDeniedError);

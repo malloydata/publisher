@@ -140,12 +140,23 @@ function resolveFieldUsagePath(
    return field ? { struct: current, field } : undefined;
 }
 
+/** The two `refSummary` slots {@link expandRefSummaryGivenIds} reads —
+ *  matches the shape both a `FieldDef`'s own `refSummary` and a compiled
+ *  `FilterCondition`'s own `refSummary` carry. */
+type ExpandableRefSummary = {
+   fieldUsage?: { path: string[] }[];
+   givenUsage?: { id: string }[];
+};
+
 /**
- * Every given id transitively reachable from `field`'s expression on
+ * Every given id transitively reachable from `refSummary` — a raw IR
+ * reference summary, not necessarily a `FieldDef`'s own — resolved against
  * `struct`. Malloy's own `refSummary.givenUsage` is NOT transitive — a
  * bare-reference wrapper dimension (`authorized is base_authorized`) carries
  * no `givenUsage` of its own even though `base_authorized` does (confirmed by
- * the spike this module implements, F5) — so this walks `refSummary
+ * the spike this module implements, F5), and the SAME gap applies to a
+ * compiled `FilterCondition`'s own top-level `refSummary` (confirmed by
+ * `gate_classification.ts`'s row-level fix review) — so this walks `refSummary
  * .fieldUsage` recursively (through {@link resolveFieldUsagePath}, so a
  * join-qualified reference like `h.ok` is followed into `h`'s own struct
  * rather than silently dropped) and unions in each referenced field's own
@@ -158,22 +169,17 @@ function resolveFieldUsagePath(
  * be resolved at all; see {@link GivenIdExpansion}'s doc for why that
  * distinction is load-bearing.
  *
- * Exported for `./gate_classification`'s `gateExprsForOwnAnnotations`, which
- * needs the same expansion to populate `GateEntry.dimensionForm.givenNames`
- * (resolving each id to its `modelDef.givens[id].name` there, since this
- * function only knows ids).
+ * Exported for `./gate_classification`'s `resolveGateShape`, which runs this
+ * against a LIFTED `FilterCondition`'s own `refSummary` (no owning `FieldDef`
+ * to key `seen` on, hence the plain `refSummary` parameter rather than
+ * {@link expandGivenIds}'s `field`).
  */
-export function expandGivenIds(
+export function expandRefSummaryGivenIds(
    struct: SourceDef,
-   field: FieldDef,
+   refSummary: ExpandableRefSummary | undefined,
    seen: Set<FieldDef> = new Set(),
 ): GivenIdExpansion {
-   if (seen.has(field)) return { ok: true, givenIds: new Set() };
-   seen.add(field);
    const ids = new Set<string>();
-   const refSummary = (field as { refSummary?: unknown }).refSummary as
-      | { fieldUsage?: { path: string[] }[]; givenUsage?: { id: string }[] }
-      | undefined;
    for (const g of refSummary?.givenUsage ?? []) ids.add(g.id);
    for (const usage of refSummary?.fieldUsage ?? []) {
       // Malloy emits a synthetic `fieldUsage` entry with an empty `path` for
@@ -187,12 +193,36 @@ export function expandGivenIds(
       if (!resolved) {
          return { ok: false, unresolvedPath: usage.path.join(".") };
       }
-      if (resolved.field === field) continue;
+      if (seen.has(resolved.field)) continue;
       const nested = expandGivenIds(resolved.struct, resolved.field, seen);
       if (!nested.ok) return nested;
       for (const id of nested.givenIds) ids.add(id);
    }
    return { ok: true, givenIds: ids };
+}
+
+/**
+ * Every given id transitively reachable from `field`'s own expression on
+ * `struct` — {@link expandRefSummaryGivenIds} keyed on `field`'s own
+ * `refSummary`, with `field` itself added to `seen` first so a self- or
+ * mutually-referencing cycle through `field` terminates.
+ *
+ * Exported for `./gate_classification`'s `gateExprsForOwnAnnotations`, which
+ * needs the same expansion to populate `GateEntry.dimensionForm.givenNames`
+ * (resolving each id to its `modelDef.givens[id].name` there, since this
+ * function only knows ids).
+ */
+export function expandGivenIds(
+   struct: SourceDef,
+   field: FieldDef,
+   seen: Set<FieldDef> = new Set(),
+): GivenIdExpansion {
+   if (seen.has(field)) return { ok: true, givenIds: new Set() };
+   seen.add(field);
+   const refSummary = (field as { refSummary?: unknown }).refSummary as
+      | ExpandableRefSummary
+      | undefined;
+   return expandRefSummaryGivenIds(struct, refSummary, seen);
 }
 
 /**

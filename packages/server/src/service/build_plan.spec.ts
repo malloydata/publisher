@@ -760,6 +760,55 @@ source: gated is base -> { select: org_id } extend {
    );
 
    it(
+      "classifies a legacy quoted-string #(authorize) gate REJECTED when the classifier reaches it with no load preflight to have refused it first",
+      async () => {
+         // `compilePackageBuildPlan` has no `Model.create`/package-load-worker
+         // preflight, so a legacy quoted-string gate (`#(authorize) "org_id =
+         // 999"`) reaches this classifier with its payload intact.
+         // `parseAuthorizeAnnotation` returns it completely verbatim, quotes
+         // included (see its doc) — compiled as an ordinary Malloy
+         // expression, that payload is a STRING LITERAL, not a boolean, so
+         // `resolveGateShape`'s probe fails to lift it and the outcome is
+         // `rejected`. This is the invariant `build_plan.spec.ts`'s
+         // `colocatedSourceEligibility` "keys eligibility..." test protects
+         // at the eligibility layer; this test pins the classification
+         // itself, one level down.
+         const pkg = await realPackage(`##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+#(authorize) "org_id = 999"
+source: base is duckdb.sql("select 1 as org_id")
+
+#@ persist name="gated"
+source: gated is base -> { select: org_id }
+`);
+
+         const compiled = await compilePackageBuildPlan(pkg);
+
+         const [sourceID] = Object.keys(compiled.sources).filter(
+            (id) => compiled.sources[id].name === "gated",
+         );
+         expect(sourceID).toBeDefined();
+         // `attributed: true` here — the gate is genuinely the entry point's
+         // own (via query-source derivation from `base`), not reached
+         // through a join. It is the CLASSIFICATION, not the attribution,
+         // that the legacy quoted form flips to `rejected`; either alone
+         // (`rejected` OR `!attributed`) already refuses colocated
+         // eligibility (`materialization_eligibility.ts`), so this pins the
+         // specific mechanism findings-r2 is about rather than the
+         // coarser "somehow refused" shape.
+         expect(compiled.sourceGateOutcomes?.[sourceID]).toEqual({
+            classification: "rejected",
+            attributed: true,
+         });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
       "records a row_level/attributed outcome for a synthesized #@ preaggregate rollup, from the DIFFERENT {model, materializer} pair the rollup was compiled with",
       async () => {
          // No `#(authorize)` gate anywhere in this fixture, so the vacuous
@@ -933,7 +982,12 @@ source: s is base_b -> { select: org_id }
             // refused (the gate is reachable only through a join, so it is
             // unattributed). A positive-eligibility check that lets either
             // source's outcome win nondeterministically is fail-open; the
-            // refusal must win regardless of iteration order.
+            // refusal must win regardless of iteration order. model_a uses
+            // the current unquoted form deliberately — the legacy quoted
+            // form (`#(authorize) "x = $ORG"`) would itself classify
+            // `rejected` (see the legacy-quoted-gate tests below), which
+            // would collapse this into a refused/refused collision and lose
+            // the eligible/refused distinction this test exists to exercise.
             const pkg = await realPackageMulti({
                "model_a.malloy": `##! experimental.persistence
 ##! experimental.givens
@@ -944,7 +998,7 @@ given:
 source: base is duckdb.sql("select 1 as x")
 
 #@ persist name="s"
-#(authorize) "x = $ORG"
+#(authorize) x = $ORG
 source: s is base -> { select: x }
 `,
                "model_b.malloy": `##! experimental.persistence
@@ -953,7 +1007,7 @@ source: s is base -> { select: x }
 given:
   ORG :: number
 
-#(authorize) "x = 1"
+#(authorize) x = 1
 source: locked is duckdb.sql("select 1 as x")
 
 #@ persist name="s"

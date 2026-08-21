@@ -2164,12 +2164,31 @@ export class Model {
         }
       | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
    > {
-      return resolveGateShapeImpl(
+      const result = await resolveGateShapeImpl(
          entry,
          originModelDef,
          graftScope,
          this.gateClassificationDeps(),
       );
+      // Widen `authorizeReferencedGivenNames` with whatever THIS
+      // classification resolved — the source-line form's given names are
+      // only knowable post-lift (via the compiled condition's own
+      // `refSummary`), unlike the dimension form's, which
+      // `computeAuthorizeReferencedGivenNames` already captures at
+      // construction time from `GateEntry.dimensionForm`. Without this, a
+      // source-line field-reference gate's opaque-403 backstop
+      // (`authorizeReferencedGivenNames`, `model.ts`'s "Gate given unbound;
+      // denying opaquely" check) never learns the given it reads, and a
+      // caller who omits it sees Malloy's raw compile error naming the given
+      // instead. Additive and idempotent (a `Set`), and always runs BEFORE
+      // the graft this same request builds is ever executed, cache hit or
+      // miss — safe to widen unconditionally.
+      if (result.shape === "row_level") {
+         for (const name of result.givenNames) {
+            this.authorizeReferencedGivenNames.add(name);
+         }
+      }
+      return result;
    }
 
    /** See `./gate_classification`'s {@link resolveGraftTarget}. */

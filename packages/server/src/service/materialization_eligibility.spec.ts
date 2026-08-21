@@ -127,7 +127,7 @@ source: mz_authz is base -> { aggregate: c is count() }`);
       // EMPTY (`#(authorize)` with no `"expr"` string) — the dimension form,
       // where the expression lives in the annotated `internal dimension:`
       // itself, not in the annotation text. `parseAuthorizeAnnotation("")`
-      // THROWS (`unwrapQuotedExpression` requires a leading `"`), so
+      // THROWS (an empty expression body is rejected outright), so
       // `isAuthorizeAnnotation` only calls this a gate via its catch branch,
       // not the parse-succeeds path every other fixture here exercises. A
       // "cleanup" that made an empty body return `null` instead of throwing

@@ -450,6 +450,16 @@ export function referencedGivenNames(expr: string): string[] {
  * field it reads did not resolve at all, so there was nothing to probe
  * successfully. That case does not fail the load — see
  * `validateAuthorizeProbes`'s doc for how "own vs inherited" is decided.
+ * `given_usage_unresolvable` is a request-time classification failure
+ * distinct from `unreachable_given`: the lifted condition's own
+ * `refSummary`-following expansion (`./gate_dimension`'s
+ * `expandRefSummaryGivenIds`) hit a field reference it could not resolve on
+ * the graft target's struct — the given SET could not be fully determined,
+ * not that a determined given fell off the model's surface.
+ * `unclassifiable_condition` is the lifted condition carrying no usable
+ * expression at all (missing/malformed `.e`) — an IR shape this classifier
+ * has never seen, not a string-form finding, so it gets its own cause rather
+ * than reusing `legacy_string_gate`'s metric label.
  */
 export type RowLevelGateRejectionCause =
    | "unreachable_given"
@@ -460,7 +470,9 @@ export type RowLevelGateRejectionCause =
    | "gate_dimension_negated_membership"
    // Task 3 (the mechanical migration off the string form) produces this —
    // reserved here now so the cause union and this list never drift apart.
-   | "legacy_string_gate";
+   | "legacy_string_gate"
+   | "given_usage_unresolvable"
+   | "unclassifiable_condition";
 
 /**
  * Builds a tuple that must cover EVERY member of `U`. The intersection with
@@ -489,6 +501,8 @@ export const ROW_LEVEL_GATE_REJECTION_CAUSES =
       "gate_dimension_no_given_reference",
       "gate_dimension_negated_membership",
       "legacy_string_gate",
+      "given_usage_unresolvable",
+      "unclassifiable_condition",
    );
 
 /**
@@ -738,15 +752,31 @@ export async function validateAuthorizeProbes(
 }
 
 /**
+ * A double-quoted string literal that consumes an ENTIRE (trimmed) body, start
+ * to end — escaped characters (`\"`, `\\`) included. Anchored on both ends
+ * deliberately: see {@link isLegacyQuotedPayload}'s doc for why "opens with a
+ * quote" is the wrong test.
+ */
+const WHOLE_BODY_QUOTED_STRING = /^"(?:\\.|[^"\\])*"$/;
+
+/**
  * Whether an authorize note's (trimmed) payload is the legacy QUOTED-STRING
- * form (`#(authorize) "<expr>"`) rather than the current unquoted natural-Malloy-
- * expression form (`#(authorize) <expr>`) — decided purely on whether the
- * payload opens with a double quote. Shared by {@link parseAuthorizeAnnotation}
- * (which body to unwrap) and {@link findLegacyStringGates} (which notes to
- * flag for refusal) so the two can never disagree about which form a note is.
+ * form (`#(authorize) "<expr>"`) rather than the current unquoted natural-Malloy
+ * expression form (`#(authorize) <expr>`) — decided by whether the ENTIRE
+ * payload is one double-quoted string literal, not merely whether it opens
+ * with a quote. Malloy accepts a double-quoted string literal as a normal
+ * sub-expression (`where: ("admin" = $ROLE)` compiles), so a legal unquoted
+ * gate can legitimately START with one (`#(authorize) "admin" = $ROLE`) — a
+ * test that only looked at the first character would misidentify it as
+ * legacy.
+ *
+ * This no longer decides how an expression is PARSED — see
+ * {@link parseAuthorizeAnnotation}'s doc, which returns every payload
+ * verbatim regardless of form. Its only remaining job is deciding what
+ * {@link findLegacyStringGates} reports at load time.
  */
 function isLegacyQuotedPayload(payload: string): boolean {
-   return payload.trim().startsWith('"');
+   return WHOLE_BODY_QUOTED_STRING.test(payload.trim());
 }
 
 /**
@@ -754,18 +784,20 @@ function isLegacyQuotedPayload(payload: string): boolean {
  *
  * Returns the inner expression for a well-formed `#(authorize)` / `##(authorize)`
  * annotation, `null` if the string is not an authorize annotation at all, and
- * throws if it looks like one but is malformed (an empty body, or — for the
- * legacy quoted form — mismatched quotes). The throw is what later compile-time
- * validation turns into a model-load error.
+ * throws if it looks like one but has an empty body. The throw is what later
+ * compile-time validation turns into a model-load error.
  *
- * The body is the annotation's expression VERBATIM, unquoted and unmodified —
- * the current form is a natural Malloy boolean expression written directly on
- * the `source:` line (`#(authorize) org_id in $GROUPS`), not a string literal.
- * A body that still opens with a double quote is the LEGACY string form
- * ({@link isLegacyQuotedPayload}) and is unwrapped the old way purely so
- * {@link findLegacyStringGates} can report the exact expression text in its
- * refusal message — that form is never accepted as a live gate; see
- * {@link assertNoLegacyStringGate}.
+ * The body is the annotation's expression VERBATIM, unquoted and unmodified,
+ * with NO EXCEPTION for the legacy quoted-string form
+ * ({@link isLegacyQuotedPayload}) — that form's payload (e.g.
+ * `"org_id = 999"`) is returned exactly as authored, quotes and all, and
+ * compiled downstream as an ordinary Malloy expression. Compiled that way it
+ * is a STRING LITERAL, not a boolean, so `resolveGateShape`'s probe fails to
+ * lift it ("Filter expression must have boolean value") and the gate is
+ * rejected — the legacy form dies by construction wherever an expression is
+ * actually evaluated, rather than by a special case that has to be kept in
+ * sync with {@link findLegacyStringGates}'s load-time refusal. See
+ * {@link assertNoLegacyStringGate} for that refusal.
  *
  * Whether the annotation is source- or file-level is decided by WHERE the note
  * sits (a struct's `blockNotes` vs the model's own notes), not by the `#`/`##`
@@ -786,9 +818,6 @@ export function parseAuthorizeAnnotation(annotation: string): string | null {
    if (trimmed.length === 0) {
       throw new Error("authorize annotation has an empty expression body");
    }
-   if (isLegacyQuotedPayload(trimmed)) {
-      return unwrapQuotedExpression(trimmed);
-   }
    return trimmed;
 }
 
@@ -807,54 +836,6 @@ export function collectAuthorizeExprs(annotations: string[]): string[] {
       }
    }
    return exprs;
-}
-
-/**
- * Strip exactly one layer of wrapping double quotes off the annotation body and
- * return the inner expression. Inner single quotes are part of the expression
- * and pass through untouched; `\"` and `\\` inside the string are unescaped.
- */
-function unwrapQuotedExpression(body: string): string {
-   if (body.length < 2 || body[0] !== '"') {
-      throw new Error(
-         `authorize annotation expression must be a double-quoted string, got: ${body || "(empty)"}`,
-      );
-   }
-
-   let expr = "";
-   let i = 1;
-   let closed = false;
-   for (; i < body.length; i++) {
-      const ch = body[i];
-      if (ch === "\\" && i + 1 < body.length) {
-         const next = body[i + 1];
-         if (next === '"' || next === "\\") {
-            expr += next;
-            i++;
-            continue;
-         }
-      }
-      if (ch === '"') {
-         closed = true;
-         i++;
-         break;
-      }
-      expr += ch;
-   }
-
-   if (!closed) {
-      throw new Error(`authorize annotation has mismatched quotes: ${body}`);
-   }
-   const rest = body.slice(i).trim();
-   if (rest.length > 0) {
-      throw new Error(
-         `authorize annotation has unexpected content after the expression: ${rest}`,
-      );
-   }
-   if (expr.trim().length === 0) {
-      throw new Error("authorize annotation has an empty expression body");
-   }
-   return expr;
 }
 
 /** A source found declaring more than one `#(authorize)` block note of its
