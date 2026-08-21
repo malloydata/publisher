@@ -22,6 +22,7 @@ source: orders is duckdb.table('data/orders.csv') extend {
 // status matrix on a gated source. `role` carries no default — G4 refuses a
 // gate dimension referencing a given that has one — so every test below
 // asserts an explicit role rather than relying on a fallback.
+#(authorize) $role = 'admin'
 source: gated_orders is duckdb.table('data/orders.csv') extend {
    primary_key: id
 
@@ -32,7 +33,4 @@ source: gated_orders is duckdb.table('data/orders.csv') extend {
       where: region = $target_region and amount >= $min_amount
       aggregate: order_count
    }
-
-   #(authorize)
-   internal dimension: authorized is $role = 'admin'
 }
