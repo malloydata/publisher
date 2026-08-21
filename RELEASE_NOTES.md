@@ -29,42 +29,101 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a gate the row-level grammar refuses now costs one source, not the whole model file
+## [Unreleased] — `#(authorize)` is a boolean dimension inside the source now, not a string on the `source:` line (BREAKING)
 
-Supersedes two claims in the "every `#(authorize)` gate is a row filter now" section below, neither of
-which has shipped.
+This is the headline change of this release, and it supersedes every earlier section on this page
+that shows `#(authorize) "<expr>"` on a `source:` line — including the `[0.0.248]` and `[0.0.205]`
+sections below, which describe the syntax as it was when they shipped. **That syntax no longer
+loads.** A gate is now an ordinary boolean **dimension**, declared in field position inside the
+source's own body and tagged `#(authorize)`:
 
-**Package load.** That section says a field-less gate "resolves the same as before this whole redesign
-started". It does not: the row-level grammar is a positive allowlist, and it now governs gates that
-never went through it. `#(authorize) "1 = 1"`, `"'a' = 'a'"`, `"$ROLE like 'ana%'"`, `"$ROLE is not
-null"`, `"$ROLE = 'a' and 1 = 1"`, `"not false"` and `"$ROLE = $ROLE_D"` all load today and are all
-outside the allowlist. Refusing them at load would make `Model.create` raise a `compilationError`,
-which turns the entire model **file** into a compilation-failure placeholder — every source in it,
-gated or not, stops serving.
+```malloy
+##! experimental.givens
 
-So a refused gate that reads no row field is now reported as a load **warning** and that one source
-denies every request, the same escape an inherited gate already takes when one derived entry point
-cannot express it. It is fail-closed because the request path re-runs the identical classification and
-refuses independently. A gate that DOES read a row field is one the grammar always governed, and still
-fails the load.
+given:
+  ROLE :: string
 
-The one refusal not excused this way is a **vacuous default atom** — `#(authorize) "$ROLE_D !=
-'blocked'"` where `ROLE_D` defaults to something the atom is true against, which admits every row to a
-caller who supplies nothing. That check is a load-time probe with no request-time counterpart, so
-warning would leave the source serving unfiltered. It fails the load, and now records a matching
-`vacuous_default_atom` label on `publisher_authorize_row_level_rejected_total`.
+source: orders is duckdb.table('orders.parquet') extend {
+  measure: order_count is count()
 
-**`/compile`.** That section says `/compile` "now denies a row-level gate unconditionally, whether or
-not the given satisfies it". That made a gated source un-authorable — the same class of breakage as
-gating `/compile` on the query boundary, which took out a whole QA session — while protecting nothing,
-since the query path answers a gated source with *filtered rows* rather than a 403. `/compile` never
-runs the query, so it now admits a gate it can decide without running: one that is constant-`true`, or
-one whose every given the caller supplied. A constant-`false` gate, a gate with unsupplied givens, and
-any gate that fails to classify all still deny. Note that `includeSql` then returns the **ungrafted**
-SQL, without the gate's `where:`.
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
+```
 
-`/compile` at scope `append` still denies a gated source: the run target's `SourceDef` belongs to the
-virtual model, so the gate has no graft target there and refuses as a shape it cannot apply.
+### What breaks
+
+- **The string form is refused at model load.** Any `#(authorize) "<expr>"` on a `source:` line
+  fails the load with **HTTP 424**, and the message carries the paste-ready rewrite — the exact
+  annotation and dimension lines to substitute, per finding. **Every existing gated package must be
+  rewritten**; there is no compatibility mode and no flag.
+- **`##(authorize)` (file-level) is refused at load** as well, including one folded in from an
+  imported file. Declare a gate dimension on each source it was meant to protect.
+- **A source may declare at most one gate dimension.** Stacking two `#(authorize)` annotations on
+  one source to mean OR is gone — a second annotated dimension fails the load naming both. Write
+  the disjunction out inside the single expression (`$ROLE = 'admin' or $TENANT = 'acme'`).
+- **The gate dimension must be `internal`, never `private`.** Enforcement grafts
+  `extend { where: (authorized) }` from outside the source, so `private` would compile and then be
+  unreachable by its own enforcement; Publisher refuses it at load, naming the fix. `internal` still
+  blocks a caller's own `select:`/`where:` reference to the field.
+- **A gate dimension's name is now a field no derivation may drop or redefine.** The gate is just a
+  field, so `extend { except: authorized }`, an `accept:` that does not re-list it, or an
+  `except:`-then-unannotated-redefinition all produce a source with **no gate at all** and serve
+  every row — no load error, no warning. The string form lived on the `source:` line and survived
+  those, failing closed. This is the one guarantee the migration loses; see
+  [docs/authorize.md](docs/authorize.md#the-entry-point-and-only-the-entry-point). A `rename:` is
+  safe: the annotation travels with the field and the graft follows the new name.
+
+### What is validated, and what only warns
+
+Refusals fail the whole model load (424, naming the source):
+
+- **G1** — the annotated field must be a scalar boolean dimension, and there must be at most one.
+- **G3** — every given the expression references must be on the gating model's own given surface
+  (declared there, or one `import` hop away). Further away, Malloy would silently bind that given's
+  *declaration default* instead of the caller's value, so it is refused instead. Fix:
+  `import { GROUPS } from "…"`.
+- **G4** — every given the expression references must be declared with **no default**, wherever it
+  appears in the expression. An unsupplied given would otherwise resolve to its default and admit or
+  exclude rows the gate did not mean to.
+
+Warnings load fine and are counted on `publisher_authorize_row_level_rejected_total`:
+
+- **W1** (`gate_dimension_no_given_reference`) — the expression references no given at all, so it is
+  a fixed predicate rather than a rule keyed on the caller. Deliberate for a locked base
+  (`internal dimension: authorized is false`); worth a look otherwise.
+- **W2** (`gate_dimension_negated_membership`) — a negated membership test
+  (`not (org_id in $GROUPS)`). It loads and filters correctly for a non-empty given, but an **empty**
+  given then matches every row instead of none. Best-effort shape match: other spellings of the same
+  inversion do not trigger it, so its absence is no evidence either way.
+
+There is no accepted-shape allowlist any more. The string form validated its expression against a
+small grammar of comparison shapes before it could be attached, so `upper(region) = $REGION`,
+`region like $PAT`, `region is not null` and `amount + 1 > $AMOUNTMIN` were all refused at load; all
+four are legal gate dimensions today. The trade is one case that used to be a named load-time
+refusal and is now a request-time warehouse error: comparing a row field to an array-typed given
+with `=`/`!=` (`org_id = $GROUPS`) loads and grafts cleanly and fails when the warehouse executes
+the cast. Use `in` for an array-typed given.
+
+### Migrating
+
+1. Find every `#(authorize) "<expr>"` and `##(authorize)` in your packages. Load the package — every
+   `.malloy` file in the tree compiles and any failure aborts the load, so the refusal will name
+   each declaring source and hand you the rewrite. The one case that escapes it is a declaring file
+   *outside* the package tree: nothing compiles it, so it loads and then denies every request,
+   counted as `legacy_string_gate` with no author-facing detail.
+2. Paste the rewrite **on two lines**. ⚠️ `#(authorize) internal dimension: authorized is …` on one
+   line looks equivalent and is not: Malloy consumes everything after `#(authorize)` on that line as
+   annotation text, so the dimension never compiles and the source loads with **no gate at all** —
+   no error, no warning. An operator collapsing the rewrite to one line deletes their own access
+   control silently. The annotation goes on its own line, the `internal dimension:` on the next.
+3. Collapse stacked annotations into one `or` expression, and check that no derivation of the gated
+   source `except:`s, non-relisting-`accept:`s, or redefines the new dimension's name.
+
+See [docs/authorize.md](docs/authorize.md) for the full reference, and
+[docs/authorize.md § Enforcement](docs/authorize.md#enforcement) for the per-route behaviour
+(notably: `/compile` admits any gate that references no given, whichever way it resolves, so a
+constant-`false` lock does not hold there and `includeSql` returns the ungrafted SQL).
 
 ### Also fixed
 
@@ -73,41 +132,26 @@ virtual model, so the gate has no graft target there and refuses as a shape it c
   To fix: supply it via `.run({givens: {ROLE: ...}})`" — reaching the caller as a 400. That is exactly
   what `docs/authorize.md` promises never happens. It now maps back to the opaque `Access denied for
   source "…"` 403.
-- **`$X in $Y` checks reachability on both operands.** The membership *candidate* skipped the check
-  every other operand position makes, so a gate naming a given two import hops away classified as a
-  valid row filter and bound that given's declaration **default** at request time instead of the
-  caller's value. It is now refused (`unreachable_given`) like every other unreachable reference.
-- **A documented gate example was never valid Malloy.** `#(authorize) "$ROLE in ['analyst',
-  'admin']"` in `docs/authorize.md` fails to compile — a list literal is not valid in that position.
-  Write two stacked annotations (they OR), or compare a row field to an array given with `in`.
+- **A membership test checks given reachability on both operands.** The membership *candidate*
+  position skipped the check every other operand position makes, so a gate naming a given two import
+  hops away bound that given's declaration **default** at request time instead of the caller's value.
+  It is now refused (`unreachable_given`, G3) like every other unreachable reference.
+- **A documented gate example was never valid Malloy.** `$ROLE in ['analyst', 'admin']` fails to
+  compile — a list literal is not valid in that position. Write the disjunction out
+  (`$ROLE = 'analyst' or $ROLE = 'admin'`), or compare a row field to an array-typed given with `in`.
+- **`/compile` no longer denies a gated source unconditionally.** Denying it made a gated source
+  un-authorable while protecting nothing, since the query path answers a gated source with *filtered
+  rows* rather than a 403. `/compile` never runs the query, so it now admits a gate it can decide
+  without running one. **"Decidable" is presence, not truth:** a gate referencing no given is
+  admitted whichever way it resolves — a constant `false` included — as is one whose every given the
+  caller supplied, right or wrong. Only an unsupplied given denies. `includeSql` then returns the
+  **ungrafted** SQL, without the gate's `where:`, so treat `/compile` as a schema/SQL surface that a
+  `false` lock does not close. `/compile` at scope `append` still denies a gated source outright: the
+  run target's `SourceDef` belongs to the virtual model, so there is no graft target there.
 
-`docs/authorize.md` is reconciled with all of the above: the denial-shape rule, the two-part
-enforcement path, the narrowed "no schema oracle" guarantee, the current metric labels, and the
-removal of the probe-era text describing a mechanism that no longer exists.
+`docs/authorize.md` is reconciled with all of the above.
 
 ---
-
-## [Unreleased] — a provably-`false` row-level `#(authorize)` gate no longer dispatches to the warehouse
-
-When a source's `#(authorize)` gate compiles to the bare literal `false` — the classic whole-source deny,
-`#(authorize) "false"` — a query against it now answers with a synthesized empty result carrying the
-query's real schema, instead of grafting a `WHERE false` filter and running it. `servedFrom` reports the
-new value `"short_circuited"`, distinct from `"storage"`/`"live_fallback"`, and the existing
-`publisher_authorize_row_level_total` metric gains a matching `short_circuited` decision label alongside
-`denied_by_gate`/`empty_after_filter`. This applies regardless of whether a colocated or storage-tier
-artifact would otherwise have served the query — the short circuit is checked first — and never fires
-under `bypassAuthorize`, which already skips gate classification entirely.
-
-The short circuit is vetoed for a query shape where zero input rows would NOT mean zero output rows — a
-bare `aggregate:` with no `group_by:` always emits exactly one row (`count() = 0`, `sum() = null`, …) even
-over empty input, so that shape still runs the (cheap, zero-scan) query live to produce it correctly.
-
-**Scope note:** this covers only the literal-`false` case above. A fail-closed sentinel for an unassigned
-_identity-bound_ trusted given (a second "provably constant-false" shape once considered for this same
-optimization) does not exist yet — `docs/authorize.md` calls system givens a "planned milestone... not
-implemented yet" — so today an unassigned given with no default still throws and is caught into the
-ordinary `rejected` (403) path, unchanged by this release. Extending the short circuit to that case is
-blocked on identity-bound trusted givens shipping.
 
 ## [Unreleased] — a proven row-level `#(authorize)` gate can now be colocated-persisted
 
@@ -194,7 +238,7 @@ instruction before instructing it.
 
 This supersedes the "a gate that references only givens is unaffected" line in the section below, before
 that section has even shipped: there is no longer a separate given-only shape. A gate that reads no row
-field — `$ROLE = 'analyst'`, `$LEVEL > 3`, a bare `#(authorize) "true"`/`"false"` — used to be evaluated by a
+field — `$ROLE = 'analyst'`, `$LEVEL > 3`, a bare `true`/`false` — used to be evaluated by a
 one-row DuckDB probe with a whole-source admit/deny answer. It now classifies and enforces exactly like a
 row-level gate: the condition becomes a constant `where:` (`true` admits every row, `false` matches none),
 and everything in between resolves the same as before this whole redesign started. Classification now has
@@ -203,22 +247,23 @@ only two outcomes, `row_level` and `rejected` — `given_only` is gone.
 ### The breaking change
 
 - **A gate whose verdict used to deny now returns 200 with zero rows, not 403** — for the query path. A
-  caller supplying `ROLE: 'intern'` against `#(authorize) "$ROLE = 'analyst'"` gets an empty result instead
+  caller supplying `ROLE: 'intern'` against a gate of `$ROLE = 'analyst'` gets an empty result instead
   of `AccessDeniedError`. Check any consumer that keys logic on the 403 status for this class of gate; the
   correct row-level equivalent is checking for zero rows.
 - **Package-level FGA denials are unaffected — still 403.** `can_read_package` and every other
   organization/workspace access check remain exactly as they were; only a gate's _own_ verdict moved to
   filtering. Do not conflate the two: a package a caller cannot read at all still never reaches the gate.
 - **`/compile` now denies a row-level gate unconditionally, whether or not the given satisfies it.**
-  `/compile` has no query execution step to apply a row filter to — it is a probe — so where a
-  once-given-only gate used to admit a satisfying given (a real boolean answer, no filter needed), it now
-  denies every time a gate on the target source classifies as `row_level`, matching how a genuinely
-  row-field gate already behaved at this path.
+  Superseded — see the `/compile` bullet in the dimension-form section at the top of this page. It now
+  admits any gate it can decide without running the query, which includes every gate that references
+  no given at all.
 - **A negated scalar comparison (`not ($ROLE = 'blocked')`) is now an accepted gate atom.** It was
   previously reachable only because a field-less condition skipped the row-level grammar entirely; now that
-  every gate goes through it, negating a single `<given-or-field> <op> <given-or-literal>` comparison is
-  explicitly supported (equivalent to flipping the operator). A negated **membership test** (`not (x in
-$GROUPS)`) is still refused — that one has a real emptying-the-set hazard a scalar negation does not.
+  every gate goes through it, negating a single comparison is explicitly supported (equivalent to
+  flipping the operator). A negated **membership test** (`not (x in $GROUPS)`) is **also** accepted
+  under the dimension form, with a **W2 load warning** rather than a refusal — the dimension form does
+  not classify expression shape at all. The emptying-the-set hazard is real and is what the warning is
+  for: an empty given makes the negation true for every row instead of none.
 
 ### Known, accepted narrowing: the "no schema oracle" guarantee is smaller
 
@@ -262,6 +307,10 @@ One caution in the rollback direction: the publish gate is also a load gate, and
 ---
 
 ## [0.0.248] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
+
+> **Syntax note (added later):** every `#(authorize) "<expr>"` sample below is the string form, which
+> is what shipped in 0.0.248. It is **retired and refused at model load** as of the dimension-form
+> section at the top of this page — read that for the current syntax before copying anything here.
 
 A gate whose expression reads no row field works exactly as before; a gate that reads one — its
 own source's, or a joined source's — now filters rows instead of only admitting or rejecting the
@@ -831,6 +880,10 @@ A `.malloy` file in a package's `dashboards/` directory carrying an `# artifact`
 See [docs/configuration.md](docs/configuration.md) for the rule and the recommended layout.
 
 ## [0.0.205] — Source access gates (`#(authorize)`)
+
+> **Syntax note (added later):** the string and file-level forms described here, and the OR semantics
+> of stacked annotations, are all **retired and refused at model load** — see the dimension-form
+> section at the top of this page for the current syntax.
 
 **Sources can now gate query access on givens.** A `#(authorize) "<bool expr>"` annotation (source-level) or `##(authorize)` (file-level) is evaluated against the request's [givens](docs/givens.md) before any query that reads the source runs; access is denied with **HTTP 403** unless at least one in-scope expression is `true` (OR semantics). Enforced on `POST /…/query`, the notebook-cell `GET`, `POST /…/compile`, and the MCP `malloy_executeQuery` tool. Malformed or invalid annotations fail model load with **424**.
 
