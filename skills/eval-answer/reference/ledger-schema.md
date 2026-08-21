@@ -24,9 +24,8 @@ evals/<set>/
 
 The set directory lives in the SAME git repository as the model it evaluates,
 so a checkpoint (a git commit) pins the model and the ledger together. Never
-place `evals/` inside the directory tree the answerer's package serves
-(`publisher_data/` or the served package path): gold in the served tree is a
-contamination path.
+place `evals/` inside the directory tree the answerer's package serves: gold
+in the served tree is a contamination path.
 
 Rules that make the ledger trustworthy:
 
@@ -91,7 +90,7 @@ matters:
 | `mode` | Steps or alias this run walks (see `skill:eval-loop`). |
 | `setName` / `datasetVersion` | What was scored. |
 | `modelGitSha` | Commit of the model repo the answerers ran against. Frozen for the run. |
-| `publisherVersion` | |
+| `serverVersion` | Version of whatever serves the model (Publisher build, platform release). |
 | `judgeVersion` / `rubricSha` | From `reference/judge.md` and its git blob sha. |
 | `answererModel` | |
 | `traceMode` | `retrieval` for a scored run. |

@@ -60,10 +60,11 @@ Output, exactly this shape:
    the conductor records `needs_human`, which is neither a pass nor a fail.
    Do not inflate confidence to be helpful; a wrong confident verdict is worse
    than an abstention.
-7. You MAY run the reference script
-   `skills/eval-answer/scripts/match_rows.py` as an aid on large row sets.
-   Its output informs you; it never overrides your judgment. Known limits:
-   it zeroes on extra columns and can cross-match numeric columns.
+7. On a large row set, compare it as a set rather than scanning pairwise: state
+   how many gold rows you located in the prediction, name the ones you could
+   not, and say what the mismatched values look like (uniformly scaled, off in
+   one column, a different population). "I checked all 76" without that
+   breakdown is not a comparison.
 
 ### Anchors
 

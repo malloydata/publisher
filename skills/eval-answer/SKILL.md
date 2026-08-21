@@ -76,8 +76,9 @@ relevant source and field definitions from the model. It returns
 - For a scalar golden, the same protocol applies to a one-value prediction.
   For `unanswerable`, a refusal that names the gap is the pass; a confident
   numeric answer is the fail.
-- `match_rows.py` is an aid the judge may run on large row sets, never the
-  verdict.
+- Large row sets are still the judge's job. There is no scripted row oracle:
+  a script that can pass a wrong answer is worse than none, and the rubric's
+  containment and column-pairing rules are what the comparison needs.
 
 ## Step 4: Score retrieval against the intent dataset
 

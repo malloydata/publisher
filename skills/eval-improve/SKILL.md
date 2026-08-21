@@ -67,13 +67,14 @@ pilot's 11 accepted edits, 4 of 5 wrong ones died to a single
 Compile-check the edit before saving (scope `file` for an edit), then reload
 the package. Confirm it is not serving a stale model.
 
-Know which file the server actually serves. Unless the environment is
-watch-mounted, Publisher serves a COPY of the package under
-`publisher_data/<env>/<pkg>/`, so editing the model repo and reloading
-recompiles the unchanged copy: the reload succeeds, nothing changes, and a
-verification probe quietly tests the old model. Sync the edit into the
-served copy (or watch-mount the package) before reload, and keep the model
-repo the source of truth that gets committed.
+Know which copy of the file the server actually reads. Hosts commonly serve a
+copy of the package rather than your working tree, so editing the model repo
+and reloading recompiles the unchanged copy: the reload succeeds, nothing
+changes, and a verification probe quietly tests the old model. Confirm the
+edit reached what is served before you trust a probe, and keep the model repo
+the source of truth that gets committed. On open-source Publisher the served
+copy lives under `publisher_data/<env>/<pkg>/` unless the environment is
+watch-mounted; other hosts distinguish a draft from a published version.
 
 ## Step 3: One smallest edit
 

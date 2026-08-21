@@ -8,8 +8,9 @@ description: 'Conduct a local Publisher evaluation loop in five steps: scrape/ru
 You conduct this loop. There is no batch orchestrator to start, no eval API,
 and no eval MCP tools. The ledger is plain files in the model package's git
 repository (`reference/ledger-schema.md` in `skill:eval-answer` defines every
-file and event). Scoring is an LLM judge you spawn per case; the Python under
-`skills/eval-answer/scripts/` is reference aids, never the verdict.
+file and event). Scoring is an LLM judge you spawn per case. There is no
+scripted scorer: the one script in the tree checks contamination, which is the
+one thing a judge cannot see.
 
 ```
 scrape/run  ->  eval  ->  diagnose  ->  improve  ->  checkpoint
@@ -110,7 +111,8 @@ why you keep a host-side tool-use log per answerer.
    package tree). Git is the checkpoint mechanism; without it there is no
    rollback and no run can include improve.
 
-2. Publisher must be up with retrieval tracing on: `PUBLISHER_MCP_TRACE=retrieval`.
+2. The server must be up with retrieval tracing on, so a call's ranked results
+   can be recovered afterwards (open-source Publisher: `PUBLISHER_MCP_TRACE=retrieval`).
    Confirm a trace lookup is available (absent means tracing is off).
    Refuse to start a scored run without it: failures without traces cannot be
    attributed.
@@ -331,11 +333,10 @@ conductor. Do not:
 
 - publish the model to remote Credible as a "true" checkpoint or learning
   curve
-- start a Python orchestrator (`loop.py`, `improve_batch.py`); the scripts
-  under `skills/eval-answer/scripts/` are reference aids for the judge and
-  the contamination checklist, nothing more
-- score by string-diffing rows without a judge, or let a script's number
-  override a judge verdict
+- start a Python orchestrator (`loop.py`, `improve_batch.py`); the only
+  script in the tree is the contamination check
+- score by string-diffing rows instead of judging them, or reintroduce a
+  scripted row oracle: one that can pass a wrong answer is worse than none
 - wait for a bigger gold set before the loop can run; dev/holdout on what
   exists beats waiting
 - register eval MCP tools or stand up an eval API
