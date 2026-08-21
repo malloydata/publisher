@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Compile-time `#(authorize)` gate classification for persist sources:
 // `classifyPersistSourceGate` (`./build_plan`) calls `gate_classification.ts`'s
 // standalone functions directly against a real compiled

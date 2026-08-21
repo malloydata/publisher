@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Discovery and load-time validation for the DIMENSION form of `#(authorize)`
  * — a boolean dimension annotated in FIELD position (rather than a string
