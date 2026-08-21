@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Deployment
 
 > What this is: how to run a built Publisher server — via `npx`, Docker, or Docker Compose — and how

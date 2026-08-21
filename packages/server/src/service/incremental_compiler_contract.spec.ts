@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Real-compiler contract for incremental materialization. Every fact below is
 // load-bearing for the declaration resolver (incremental_declaration.ts), the
 // publish gates (incremental_policy in package.ts) and the delta apply

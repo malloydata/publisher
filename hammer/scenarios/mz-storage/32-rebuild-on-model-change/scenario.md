@@ -3,6 +3,10 @@ id: rebuild-on-model-change
 tags: build-control
 package: rmc
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A model change gives the persist source a new content address
 

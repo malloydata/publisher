@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Shared source / query introspection extracted from a compiled `ModelDef`.
  *

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * The CLI's own output, rendered from real scaffold results rather than from
  * hand-written fixtures, plus the real bin run as a subprocess.

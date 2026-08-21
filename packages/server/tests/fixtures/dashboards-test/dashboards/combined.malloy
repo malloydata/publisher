@@ -1,0 +1,13 @@
+// A composite dashboard: named existing views run separately and combine into
+// one grid. The artifact tag is model-level (`##`), and there is no query of its
+// own in this file.
+//
+// The givens are imported even though nothing in this file references them: a
+// tile's `where: ... ~ $BRAND` lives over in orders.malloy, and Malloy's given
+// namespace is per-file, so without these imports the file surfaces no givens
+// and binding one at run time fails. Importing them is what makes the control
+// row bindable.
+##! experimental.givens
+## artifact { title="Combined" tiles=["orders -> by_brand", "orders -> by_region", "orders -> totals"] dashboard_columns=4 }
+import { orders, region_suggest } from '../orders.malloy'
+import { BRAND, REGION } from '../givens.malloy'

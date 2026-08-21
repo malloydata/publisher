@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { resolveMode, resolveTheme } from "./resolveTheme";
 import type { Theme } from "./types";
@@ -87,6 +90,19 @@ describe("resolveTheme cascade", () => {
       expect(dark.axisFaint).toBe("#475569");
       expect(light.valueColor).toBe("#1f2937");
       expect(dark.valueColor).toBe("#f1f5f9");
+   });
+
+   it("drillLink is a link colour per mode, not a series colour", () => {
+      // A drillable cell has to read as a link against whatever the operator
+      // picked for the data, so this comes from the mode rather than the palette
+      //, and it lightens in dark mode to stay legible on the slate panel.
+      expect(resolveTheme([], "light").drillLink).toBe("#2563eb");
+      expect(resolveTheme([], "dark").drillLink).toBe("#60a5fa");
+      const branded = resolveTheme(
+         [{ palette: { series: ["#ff00aa", "#111111"] } }],
+         "light",
+      );
+      expect(branded.drillLink).toBe("#2563eb");
    });
 
    it("dashboardRoot is mode-keyed and immune to operator background overrides", () => {

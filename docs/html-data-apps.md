@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # In-package HTML data apps
 
 A package can ship a `public/` directory of plain web files next to its `.malloy`
@@ -24,11 +29,13 @@ Reach for an HTML data app when you want a self-contained, custom dashboard that
 and needs no toolchain. A page can also be *embedded* into another site as an auto-resizing iframe
 with `Publisher.embed` (see [Embedding](#embedding)).
 
-The bundled `storefront` package ships one — a Chart.js dashboard in
-[`examples/storefront/public/index.html`](../examples/storefront/public/index.html), backed entirely
-by `Publisher.query` calls against the model's views:
+The bundled `storefront` package ships one, a four-tab Chart.js dashboard in
+[`examples/storefront/public/index.html`](../examples/storefront/public/index.html) with its modules
+in [`public/app/`](../examples/storefront/public/app/), backed by `Publisher.query` /
+`Publisher.queryFull` calls against the model's views and filtered by the model's own
+[givens](givens.md):
 
-![The storefront HTML data app — KPI tiles, category and trend charts, filters, and a top-products table](screenshots/storefront-data-app.png)
+![The storefront HTML data app: a filter row, four KPI cards, revenue by month and by state, and a category performance table](screenshots/storefront-data-app.png)
 
 Filters run new Malloy queries and repaint the KPIs, charts, and table in place — here in the bundled [`html-data-app`](../examples/html-data-app/) SaaS-subscriptions example:
 

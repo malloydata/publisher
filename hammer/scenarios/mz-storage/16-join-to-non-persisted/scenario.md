@@ -3,6 +3,10 @@ id: join-to-non-persisted
 tags: serve-correctness, joins
 package: jnp
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Join to a non-persisted source: base routes, the join falls back to live
 

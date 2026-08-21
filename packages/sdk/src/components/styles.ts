@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Card, CardContent, CardMedia, styled } from "@mui/material";
 
 /**
@@ -6,9 +9,41 @@ import { Card, CardContent, CardMedia, styled } from "@mui/material";
  * the hex values inline so the brand can be retuned in one place.
  */
 export const MALLOY_BRAND = {
-   teal: "#14b3cb", // light wing of the M (governed reports)
-   orange: "#e47404", // right wing of the M (semantic models)
-   darkBlue: "#1474a4", // deep shadow of the M (package data)
+   teal: "#14b3cb", // light wing of the M
+   orange: "#e47404", // right wing of the M
+   darkBlue: "#1474a4", // deep shadow of the M
+} as const;
+
+/**
+ * Accents that extend the logo's three, for the places that need more colors
+ * than the brand supplies. The package page gives every kind of content its
+ * own, and three kinds became six.
+ *
+ * Their own family rather than borrowings from the chart series
+ * (`theme/defaults.ts`), because the two have opposite constraints. A series
+ * color fills a large area and can be light; these sit behind a white icon as a
+ * small solid backplate, where the icon has to stay legible. Measured against
+ * white: violet 5.5:1, magenta 4.6:1, moss 3.9:1, so all three clear 3:1, the
+ * WCAG minimum for a graphical object. The nearest series hues do not: `#aacd85`
+ * sage is 1.8:1, `#ec72b8` pink 2.7:1, `#b87ced` violet 2.9:1.
+ *
+ * These three were picked against the bar, but they are not the only colors it
+ * now binds. `CONTENT_TINT` in `Package/ContentTypeIcon.tsx` paints all three of
+ * `MALLOY_BRAND` behind glyphs as well, and `ContentTypeIcon.spec.ts` holds two
+ * of them to the same 3:1: orange at 3.09:1 and darkBlue at 5.17:1. Orange
+ * clears it by 0.09, so retuning it lighter turns that suite red, in a file a
+ * brand change would not otherwise open. For those two the bar is a component
+ * constraint, not only a brand decision.
+ *
+ * Teal is the exception at 2.5:1, below the bar and inherited from the logo, so
+ * the row it backs carries a white-on-teal glyph that does not meet the
+ * standard. Pre-existing, not introduced here. The spec grandfathers it by
+ * content type rather than by color, so a new type handed teal still fails.
+ */
+export const MALLOY_ACCENT = {
+   violet: "#7c4dcc",
+   magenta: "#c2478f",
+   moss: "#5c8f3f",
 } as const;
 
 /**

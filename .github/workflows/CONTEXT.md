@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # GitHub Actions Workflows, AI Guide
 
 CI and release machinery. Read the YAML for mechanics; this covers what is not visible there: which
@@ -44,6 +49,41 @@ There are three npm trains, and they do not share a version.
 bumps sdk/app/server, commits to a fresh `release/sdk-<version>` branch, and pushes it; `npm-sdk.yml`
 and `docker-image.yml` are then called with that ref. `publish-packages` triggers the other two
 trains (see below). `gh-release` cuts the tag, and only after npm and Docker have both succeeded.
+
+`gh-release` also owns the release notes. It appends every `## [Unreleased]` section of
+`RELEASE_NOTES.md` to the release body (via `scripts/release-notes.mjs`) and then commits the heading
+back to `main` stamped with the shipped version. Both used to be manual post-release steps and were
+reliably skipped — 0.0.243 through 0.0.247 shipped with none of their narrative.
+
+Two things about that pair are easy to get wrong.
+
+**The two halves must agree on which sections shipped.** `extract` runs against the release branch's
+snapshot of the file; `stamp` runs minutes later against whatever `main` has become, and recent
+releases take 4–10 minutes. So `extract --titles` writes the exact heading lines it consumed to a
+file under `$RUNNER_TEMP`, and `stamp --titles` rewrites only those. Unscoped, a section merged
+inside that window was stamped with a version it never shipped in — off that release's page, and off
+every later one, because its heading no longer said `[Unreleased]`. The titles file lives in
+`$RUNNER_TEMP` and not the repo because the stamp step runs `git checkout -B main origin/main`, which
+would discard an in-tree file first.
+
+**A failed stamp is not cheap.** The stamp is `continue-on-error` — by then the release is public and
+correct, and a failed docs commit must not redden it — but the cost is *not* merely a heading that
+still reads `[Unreleased]` for the next release to pick up. That heading is exactly what the next
+release's `extract` matches, so the next release re-appends **this** release's narrative to its own
+page, and so does the one after that, until a human notices and stamps it. That is why every failure
+path in the step emits a `::warning` and a job-summary line naming the fix, rather than relying on
+`continue-on-error` alone. Note also that the stamp is the only `git push origin main` in this repo,
+and whether the workflow token may do it is unconfirmed — every recent commit on `main` arrived by
+squash-merge — so a rejected push is the failure most likely to actually happen.
+
+`scripts/release-notes.mjs` has unit coverage in `scripts/release-notes.spec.ts`, run by `build.yml`'s
+`lint_format` job on every PR (`bun run test:scripts`), which also smoke-runs `extract` against the
+real `RELEASE_NOTES.md` so a heading it cannot read a title from fails the PR that wrote it rather
+than the release that would silently drop the narrative. The release path itself is dispatch-only and
+cannot be exercised in CI.
+
+Note the stamp pushes to `main` while `publish-packages` may still be polling; that guard ignores it
+only because `RELEASE_NOTES.md` is not among the paths it watches.
 
 npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored token. There is no
 `NPM_TOKEN` in this repo and one should not be added back. The Docker and PyPI paths do use secrets

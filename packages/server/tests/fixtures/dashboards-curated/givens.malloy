@@ -1,0 +1,4 @@
+##! experimental.givens
+
+# label="Brand"
+given: BRAND :: filter<string> is f''

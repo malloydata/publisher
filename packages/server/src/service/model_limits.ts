@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Memory guards for the Malloy model-query path (the `runnable.run`
  * flow used by `getQueryResults` and notebook cell execution).

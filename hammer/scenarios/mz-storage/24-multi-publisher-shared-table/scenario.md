@@ -3,6 +3,10 @@ id: multi-publisher-shared-table
 tags: orchestration, cluster
 package: cl
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A source built on one publisher serves on another, from the same table
 

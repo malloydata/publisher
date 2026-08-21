@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Real-compiler contract for the materialization-eligibility gate. The gate
 // reads specific compiled-IR shapes (a Parameter's `value: null` for unbound
 // params; `refSummary.givenUsage` / `given` IR nodes for given references), so

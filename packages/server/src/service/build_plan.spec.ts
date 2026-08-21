@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { PersistSource } from "@malloydata/malloy";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";

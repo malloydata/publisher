@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Reader for the `#@ preaggregate` measure annotation — the authoring surface
  * for pre-aggregation (docs/preaggregation.md).
@@ -40,6 +43,10 @@
  * `#@ preaggregate` line with a grain adds one; a `#@ -preaggregate` line clears
  * every grain accumulated so far.** Nothing else is interpreted.
  *
+ * A `namespace=` binds to the grain on its OWN line and is cleared with it, so
+ * negation needs no separate rule and a namespace can never outlive the grain it
+ * was written for.
+ *
  * Two measured facts make that safe rather than a re-implementation:
  *
  *  - Annotations arrive in `blockNotes` in source order, each with its line, so
@@ -70,6 +77,7 @@
  */
 
 import { Annotations } from "@malloydata/malloy";
+import { isSpliceableNamespace } from "./preaggregation_synthesis";
 import type { LogMessage } from "@malloydata/malloy";
 
 /** One grain a measure is declared at — one rollup. */
@@ -84,11 +92,24 @@ export interface PreaggregateGrain {
    dimensions: string[];
    /** The grain exactly as written, for error text and diagnostics. */
    text: string;
+   /**
+    * Where this rollup's table is created, when the author named it on the same
+    * line — `#@ preaggregate grain="category" namespace="analytics"`. A dataset on
+    * BigQuery, a schema elsewhere; the rollup's own table name is always derived,
+    * so this names the container and never the table.
+    *
+    * Held per grain rather than per measure because a grain IS a table: two grains
+    * are two tables and can genuinely be created in two places, so a namespace
+    * that outranged its grain would silently move a rollup its author never named.
+    * Undefined when unspecified, in which case the base's `#@ persist name=`
+    * supplies it.
+    */
+   namespace?: string;
 }
 
 /** A `#@ preaggregate` line that is present but unusable. */
 export interface PreaggregateDeclarationError {
-   kind: "missing_grain" | "empty_grain";
+   kind: "missing_grain" | "empty_grain" | "invalid_namespace";
    /** Names the measure and the fix; becomes the body of a publish-time 400. */
    message: string;
 }
@@ -223,6 +244,31 @@ export function readPreaggregateAnnotation(
       // Nested form wins; the documented sibling-key form is the fallback. Both
       // parse per line, so this is the same precedence the merged tag applied.
       const grainText = tag.text("preaggregate", "grain") ?? tag.text("grain");
+      // Same nested-then-sibling precedence as `grain`, for the same reason: the
+      // documented form parses as siblings. It binds to THIS line's grain, so a
+      // measure declared at two grains names a namespace for each, and a line
+      // carrying only a namespace is a missing grain like any other.
+      const namespaceText =
+         tag.text("preaggregate", "namespace") ?? tag.text("namespace");
+      let namespace: string | undefined;
+      if (namespaceText !== undefined) {
+         const candidate = namespaceText.trim();
+         // The value is spliced into a generated `#@ persist name="…"`, so it has
+         // to survive being written bare: a quote would end the annotation's own
+         // string, and a name needing quotes cannot be joined to a generated table
+         // name at all (the CREATE and bind sides quote a mixed path differently).
+         // An empty value is refused rather than ignored: an author who typed the
+         // key meant something by it, and silently dropping it would put the
+         // rollup somewhere they did not choose.
+         if (!isSpliceableNamespace(candidate)) {
+            errors.push({
+               kind: "invalid_namespace",
+               message: `Measure \`${name}\` declares \`#@ preaggregate namespace="${candidate}"\`, which is not a plain namespace. Use letters, digits, underscore, dollar or hyphen per part, dot-separated for a qualified one (\`analytics\`, \`my-project.analytics\`) — the rollup's own table name is generated and appended, so a namespace needing quotes cannot be joined to it.`,
+            });
+            continue;
+         }
+         namespace = candidate;
+      }
       if (grainText === undefined) {
          errors.push({
             kind: "missing_grain",
@@ -238,7 +284,11 @@ export function readPreaggregateAnnotation(
          });
          continue;
       }
-      grains.set(dimensions.join("\u0000"), { dimensions, text: grainText });
+      grains.set(dimensions.join("\u0000"), {
+         dimensions,
+         text: grainText,
+         namespace,
+      });
    }
 
    return {

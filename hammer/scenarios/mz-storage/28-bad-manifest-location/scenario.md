@@ -3,6 +3,10 @@ id: bad-manifest-location
 tags: orchestration, resilience, needs-attention
 package: bml
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # An unreachable manifestLocation never errors the package
 

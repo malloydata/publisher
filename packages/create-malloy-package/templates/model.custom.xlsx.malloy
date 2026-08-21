@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // {{sourceName}}: a starter Malloy model over {{dataPath}}, served by Publisher.
 //
 // Check the row count before you trust this. A spreadsheet is only a table when

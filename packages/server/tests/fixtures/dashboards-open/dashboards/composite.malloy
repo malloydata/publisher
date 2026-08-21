@@ -1,0 +1,5 @@
+##! experimental.givens
+import { orders } from '../orders.malloy'
+import { BRAND } from '../givens.malloy'
+
+## artifact { title="Composite" tiles=["orders -> by_brand"] }

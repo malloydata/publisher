@@ -3,6 +3,10 @@ id: cross-environment-same-name
 tags: orchestration, isolation, needs-attention
 package: cesame
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Two environments, same persist `name=`, shared destination → collision
 

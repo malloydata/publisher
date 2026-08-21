@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import "@malloydata/db-duckdb/native";
 import { MalloyConfig } from "@malloydata/malloy";
@@ -355,6 +358,10 @@ describe("service/package", () => {
                               message: "This is the error",
                            };
                         },
+                        // A notebook that failed to compile has no annotations
+                        // and no cells, so it resolves no title or description
+                        // and lists as its path.
+                        getNotebookListing: () => ({}),
                         setQueryBoundary: () => {},
                      } as unknown as Model,
                   ],
@@ -373,9 +380,11 @@ describe("service/package", () => {
             ]);
 
             const notebooks = await packageInstance.listNotebooks();
+            // No `@ts-expect-error` here, unlike listModels above: the
+            // `Notebook` schema now declares `environmentName`, which the
+            // response has always sent (issue #979).
             expect(notebooks).toEqual([
                {
-                  // @ts-expect-error TODO: Fix missing projectName type in API
                   environmentName: "testProject",
                   packageName: "testPackage",
                   path: "model2.malloynb",

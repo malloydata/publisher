@@ -3,6 +3,10 @@ id: opt-out-persist-recomputes
 tags: serve-correctness, freshness, eligibility
 package: nop
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # `#@ -persist` opts a source out of reading the pre-built table
 
