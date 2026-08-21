@@ -86,9 +86,11 @@ import { recordRowLevelGateRejected } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
 import {
+   assertAtMostOneAuthorizeGate,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    findLegacyStringGates,
+   findMultipleAuthorizeGates,
    validateAuthorizeProbes,
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
@@ -736,6 +738,9 @@ async function compileMalloyModel(
       recordRowLevelGateRejected("legacy_string_gate"),
    );
    assertNoLegacyStringGate(legacyStringGates);
+   // A source may declare at most one `#(authorize)` block — see
+   // `findMultipleAuthorizeGates`'s doc.
+   assertAtMostOneAuthorizeGate(findMultipleAuthorizeGates(authorizeOwnNotes));
    // Validate #(authorize) at compile time (shared with Model.create). Throws
    // on an unknown given / source-field reference or a rejected row-level
    // shape; compileOneModel's catch turns it into this model's
@@ -968,6 +973,10 @@ async function compileNotebookModel(
          recordRowLevelGateRejected("legacy_string_gate"),
       );
       assertNoLegacyStringGate(finalLegacyStringGates);
+      // See the identical check in `compileMalloyModel` above.
+      assertAtMostOneAuthorizeGate(
+         findMultipleAuthorizeGates(extracted.authorizeOwnNotes),
+      );
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.
       await validateAuthorizeProbes(mm, {

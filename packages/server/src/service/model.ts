@@ -86,11 +86,13 @@ import {
 } from "./annotations";
 import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
+   assertAtMostOneAuthorizeGate,
    assertNoCallerAuthorizeAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    containsAuthorizeAnnotationTag,
    findLegacyStringGates,
+   findMultipleAuthorizeGates,
    referencedGivenNames,
    validateAuthorizeProbes,
    type AuthorizeMap,
@@ -2536,6 +2538,12 @@ export class Model {
                recordRowLevelGateRejected("legacy_string_gate"),
             );
             assertNoLegacyStringGate(legacyStringGates);
+            // A source may declare at most one `#(authorize)` block — see
+            // `findMultipleAuthorizeGates`'s doc. Same check as the
+            // package-load worker.
+            assertAtMostOneAuthorizeGate(
+               findMultipleAuthorizeGates(sourceResult.authorizeOwnNotes),
+            );
             // Translation-time validation of #(authorize) annotations (shared
             // with the package-load worker so both compile paths validate
             // identically). Compiling the probe surfaces unknown givens and

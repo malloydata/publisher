@@ -5,13 +5,15 @@
  * `#(authorize)` annotation parsing.
  *
  * Annotation format:
- *   #(authorize)  "<malloy-bool-expr>"   — source-level, on a single source
+ *   #(authorize)  <malloy-bool-expr>   — source-level, on a single source
  *
- * The body is a single double-quoted Malloy boolean expression that references
- * declared givens (`$NAME`), e.g. `#(authorize) "$ROLE = 'analyst'"`. The
- * expression itself routinely contains single quotes (Malloy string literals),
- * so we cannot reuse filter.ts's whitespace tokenizer — we unwrap exactly one
- * layer of double quotes and hand the inner expression back untouched.
+ * The body is an UNQUOTED, natural Malloy boolean expression that references
+ * declared givens (`$NAME`), e.g. `#(authorize) $ROLE = 'analyst'`. It is taken
+ * verbatim off the note — no tokenizing, no unwrapping — and handed to Malloy's
+ * own compiler to parse in the target source's real field scope
+ * ({@link ../service/authorize}'s `buildRowLevelProbe`). A body that still opens
+ * with a double quote is the LEGACY string form and is refused; see
+ * {@link assertNoLegacyStringGate}.
  *
  * A file-level `##(authorize)` — the same tag written above a model rather
  * than a source — is deprecated: it is a load error, refused by
@@ -736,13 +738,34 @@ export async function validateAuthorizeProbes(
 }
 
 /**
+ * Whether an authorize note's (trimmed) payload is the legacy QUOTED-STRING
+ * form (`#(authorize) "<expr>"`) rather than the current unquoted natural-Malloy-
+ * expression form (`#(authorize) <expr>`) — decided purely on whether the
+ * payload opens with a double quote. Shared by {@link parseAuthorizeAnnotation}
+ * (which body to unwrap) and {@link findLegacyStringGates} (which notes to
+ * flag for refusal) so the two can never disagree about which form a note is.
+ */
+function isLegacyQuotedPayload(payload: string): boolean {
+   return payload.trim().startsWith('"');
+}
+
+/**
  * Parse a single annotation string into its authorize expression.
  *
  * Returns the inner expression for a well-formed `#(authorize)` / `##(authorize)`
  * annotation, `null` if the string is not an authorize annotation at all, and
- * throws if it looks like one but is malformed (missing quotes, mismatched
- * quotes, or an empty body). The throw is what later compile-time validation
- * turns into a model-load error.
+ * throws if it looks like one but is malformed (an empty body, or — for the
+ * legacy quoted form — mismatched quotes). The throw is what later compile-time
+ * validation turns into a model-load error.
+ *
+ * The body is the annotation's expression VERBATIM, unquoted and unmodified —
+ * the current form is a natural Malloy boolean expression written directly on
+ * the `source:` line (`#(authorize) org_id in $GROUPS`), not a string literal.
+ * A body that still opens with a double quote is the LEGACY string form
+ * ({@link isLegacyQuotedPayload}) and is unwrapped the old way purely so
+ * {@link findLegacyStringGates} can report the exact expression text in its
+ * refusal message — that form is never accepted as a live gate; see
+ * {@link assertNoLegacyStringGate}.
  *
  * Whether the annotation is source- or file-level is decided by WHERE the note
  * sits (a struct's `blockNotes` vs the model's own notes), not by the `#`/`##`
@@ -759,7 +782,14 @@ export async function validateAuthorizeProbes(
 export function parseAuthorizeAnnotation(annotation: string): string | null {
    const content = authorizeNoteContent(annotation);
    if (content === undefined) return null;
-   return unwrapQuotedExpression(content.trim());
+   const trimmed = content.trim();
+   if (trimmed.length === 0) {
+      throw new Error("authorize annotation has an empty expression body");
+   }
+   if (isLegacyQuotedPayload(trimmed)) {
+      return unwrapQuotedExpression(trimmed);
+   }
+   return trimmed;
 }
 
 /**
@@ -827,6 +857,71 @@ function unwrapQuotedExpression(body: string): string {
    return expr;
 }
 
+/** A source found declaring more than one `#(authorize)` block note of its
+ *  own (source-line position) — see {@link assertAtMostOneAuthorizeGate}.
+ *  `texts` is the raw note text of each, in declaration order. */
+export interface MultipleAuthorizeGateFinding {
+   sourceName: string;
+   texts: string[];
+}
+
+/**
+ * Every top-level source that carries MORE THAN ONE `#(authorize)`-tagged
+ * note of its own (source-line position). A source may declare at most one —
+ * this mirrors the dimension form's identical "at most one gate dimension"
+ * rule (G1 in `./gate_dimension`'s `validateGateDimension`), so the
+ * constraint is the same regardless of which form a source uses. The
+ * admin-override idiom this might look like it forecloses
+ * (`#(authorize) "$ROLE = 'admin'"` OR'd with a second block) is still fully
+ * expressible — as a single natural boolean, `#(authorize) $ROLE = 'admin'
+ * or org_id in $GROUPS` — since the current form's payload is an ordinary
+ * Malloy expression, not a name that can only refer to one field.
+ *
+ * Reads `authorizeOwnNotes` ({@link ../service/source_extraction.ts}'s
+ * companion to `authorizeMap`, already own-level-only, struct-annotation-only)
+ * so this only ever counts SOURCE-LINE notes — a dimension-form gate lives on
+ * a FIELD's own annotations and never appears here.
+ */
+export function findMultipleAuthorizeGates(
+   authorizeOwnNotes: ReadonlyMap<string, AnnotationNote[]>,
+): MultipleAuthorizeGateFinding[] {
+   const found: MultipleAuthorizeGateFinding[] = [];
+   for (const [sourceName, notes] of authorizeOwnNotes) {
+      if (notes.length > 1) {
+         found.push({ sourceName, texts: notes.map((note) => note.text) });
+      }
+   }
+   return found;
+}
+
+/**
+ * Refuse a model load carrying any {@link findMultipleAuthorizeGates}
+ * finding, naming every source and every one of its offending annotations at
+ * once — same "name everything found" posture as
+ * {@link assertNoMisplacedAuthorizeAnnotations}/{@link assertNoAuthorizeNearMisses}.
+ */
+export function assertAtMostOneAuthorizeGate(
+   found: readonly MultipleAuthorizeGateFinding[],
+): void {
+   if (found.length === 0) return;
+   const positions = found
+      .map(
+         ({ sourceName, texts }) =>
+            `  - source "${sourceName}" declares ${texts.length}:\n` +
+            texts
+               .map((t) => `      \`${t.trim().split(/[\r\n]/, 1)[0]}\``)
+               .join("\n"),
+      )
+      .join("\n");
+   throw new ModelCompilationError({
+      message:
+         `A source may declare at most one \`#(authorize)\` annotation:\n${positions}\n` +
+         `Combine multiple conditions into one expression with \`or\` instead of ` +
+         `repeating the annotation, e.g. ` +
+         "`#(authorize) $ROLE = 'admin' or org_id in $GROUPS`.",
+   });
+}
+
 /** A source found carrying the legacy STRING form of `#(authorize)` — a
  *  Malloy-quoted expression annotated on the `source:` line itself, now
  *  refused in favor of the dimension form. `exprs` is the parsed body of
@@ -848,13 +943,22 @@ export interface LegacyStringGateFinding {
  * annotation and is flagged there instead, keeping the refusal atomic per
  * declaring source rather than firing once per entry point that inherits
  * it.
+ *
+ * Filters to {@link isLegacyQuotedPayload} notes before parsing — the current
+ * unquoted natural-expression form routes to `authorize` exactly the same way
+ * and must not be caught by this refusal, only the quoted one.
  */
 export function findLegacyStringGates(
    authorizeOwnNotes: ReadonlyMap<string, AnnotationNote[]>,
 ): LegacyStringGateFinding[] {
    const found: LegacyStringGateFinding[] = [];
    for (const [sourceName, notes] of authorizeOwnNotes) {
-      const exprs = collectAuthorizeExprs(notes.map((note) => note.text));
+      const legacyNotes = notes.filter((note) => {
+         const content = authorizeNoteContent(note.text);
+         return content !== undefined && isLegacyQuotedPayload(content);
+      });
+      if (legacyNotes.length === 0) continue;
+      const exprs = collectAuthorizeExprs(legacyNotes.map((note) => note.text));
       if (exprs.length > 0) {
          found.push({ sourceName, exprs });
       }

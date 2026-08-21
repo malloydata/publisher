@@ -584,13 +584,21 @@ export async function resolveGateShape(
       // here is that the graft compiled at THIS entry point at all, which the
       // `liftGateCondition` call above already confirmed by succeeding.
       //
-      // `entry.dimensionForm` is unset in two cases, and they are NOT the
+      // `entry.dimensionForm` is unset in three cases, and they are NOT the
       // same:
-      //  - the residual string-form discovery paths in
+      //  - the CURRENT source-line form — `gateExprsForOwnAnnotations` reads
+      //    the struct's own `#(authorize) <expr>` note and hands its raw,
+      //    unquoted expression text straight through as `entry.exprs`; this
+      //    is the live, expected case the `else` branch below classifies, via
+      //    the lifted condition's own `refSummary.givenUsage` rather than a
+      //    separately-validated `FieldDef` (there is no field here to
+      //    validate — the expression was compiled directly against the
+      //    graft target's real field scope by `liftGateCondition` above);
+      //  - the residual STRING-form discovery paths in
       //    `gateExprsForOwnAnnotations`/`ancestorGateExprs`
       //    (`./gate_registry_walk`) — unreachable for any model that loaded
-      //    successfully, since `assertNoLegacyStringGate` refuses the string
-      //    form at load;
+      //    successfully, since `assertNoLegacyStringGate` refuses the legacy
+      //    quoted string form at load;
       //  - the bare `"false"` FAIL-CLOSED SENTINEL those same functions (and
       //    `collectEntryPointGates`'s own unresolvable-query-source-base
       //    case) synthesize when ancestry can't be confirmed one way or the
@@ -620,33 +628,68 @@ export async function resolveGateShape(
       //    `condition.e` off that trusted result is what `classifyAuthorizeGate`
       //    used to do for the identical bare-literal case.
       let classification: RowLevelGateClassification;
+      // `condition.e` is typed as always-present (`FilterCondition extends
+      // ExprE`), but that is a compile-time promise about a shape
+      // `liftProbeFilterCondition` builds, not a runtime guarantee about
+      // whatever `_query.structRef.filterList` actually contained — a
+      // malformed or unexpected prepared-query response reaching this far
+      // must still fail CLOSED (reject), not throw an uncaught TypeError that
+      // surfaces as a 500 instead of the 403 every other unclassifiable shape
+      // gets here. Checked once, up front, so BOTH the bare-false check and
+      // the source-line branch below can trust `condition.e`'s shape rather
+      // than re-deriving the same guard independently.
+      const hasUsableExpr =
+         condition.e !== undefined &&
+         condition.e !== null &&
+         typeof condition.e === "object" &&
+         typeof (condition.e as { node?: unknown }).node === "string";
       if (entry.dimensionForm) {
          classification = {
             shape: "row_level",
             givenNames: [...entry.dimensionForm.givenNames],
          };
-      } else if (
-         // `condition.e` is typed as always-present (`FilterCondition extends
-         // ExprE`), but that is a compile-time promise about a shape
-         // `liftProbeFilterCondition` builds, not a runtime guarantee about
-         // whatever `_query.structRef.filterList` actually contained — a
-         // malformed or unexpected prepared-query response reaching this far
-         // must still fail CLOSED (reject), not throw an uncaught TypeError
-         // that surfaces as a 500 instead of the 403 every other unclassifiable
-         // shape gets here.
-         condition.e &&
-         typeof condition.e === "object" &&
-         typeof (condition.e as { node?: unknown }).node === "string" &&
-         isBareFalseLiteral(condition.e as { node: string; e?: unknown })
-      ) {
-         classification = { shape: "row_level", givenNames: [] };
-      } else {
+      } else if (!hasUsableExpr) {
          classification = {
             shape: "rejected",
             cause: "legacy_string_gate",
             detail:
-               "this entry's gate is not the dimension form and cannot be classified",
+               "this entry's lifted condition carries no usable expression",
          };
+      } else if (
+         isBareFalseLiteral(condition.e as { node: string; e?: unknown })
+      ) {
+         classification = { shape: "row_level", givenNames: [] };
+      } else {
+         // The source-line form: `condition` is a genuine compiled predicate
+         // tree (a comparison, `in`, `and`/`or`, …), not a bare field
+         // reference — its own `refSummary.givenUsage` names every given ID
+         // the expression reaches, exactly the same accounting the dimension
+         // form gets from `expandGivenIds`, just already computed by Malloy's
+         // compiler instead of walked by hand. IDs are resolved against
+         // `graftScope.modelDef.givens` — the SAME compiled model
+         // `liftGateCondition` lifted this condition through via
+         // `graftScope.materializer` — never `originModelDef`, whose given
+         // identities are minted fresh per `loadModel` call and would not
+         // match (see `GraftScope`'s doc). An id that fails to resolve to a
+         // name there is IR this walk cannot account for, not evidence the
+         // gate reaches nothing; fail closed the same way `expandGivenIds`'s
+         // `!expansion.ok` does, rather than under-count `givenNames`.
+         const ids = new Set(
+            (condition.refSummary?.givenUsage ?? []).map((g) => g.id),
+         );
+         const givenNames = Array.from(ids)
+            .map((id) => graftScope.modelDef.givens?.[id]?.name)
+            .filter((name): name is string => !!name);
+         if (givenNames.length !== ids.size) {
+            classification = {
+               shape: "rejected",
+               cause: "unreachable_given",
+               detail:
+                  "this gate references a given id that does not resolve to a name on this model",
+            };
+         } else {
+            classification = { shape: "row_level", givenNames };
+         }
       }
       // `Model.filterGivensToModelSurface` drops a caller-supplied given that
       // is off this model's own surface, and its safety rests on this: an

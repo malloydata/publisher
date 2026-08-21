@@ -75,10 +75,13 @@ describe("parseAuthorizeAnnotation", () => {
       expect(parseAuthorizeAnnotation(``)).toBeNull();
    });
 
-   it("throws when the body is not quoted", () => {
-      expect(() =>
-         parseAuthorizeAnnotation(`#(authorize) $ROLE = 'analyst'`),
-      ).toThrow(/double-quoted/);
+   it("parses the current unquoted natural-expression form verbatim", () => {
+      expect(parseAuthorizeAnnotation(`#(authorize) $ROLE = 'analyst'`)).toBe(
+         `$ROLE = 'analyst'`,
+      );
+      expect(parseAuthorizeAnnotation(`#(authorize) org_id in $GROUPS`)).toBe(
+         "org_id in $GROUPS",
+      );
    });
 
    it("throws on mismatched / unterminated quotes", () => {
@@ -101,7 +104,7 @@ describe("parseAuthorizeAnnotation", () => {
 
    it("throws when the prefix has no body", () => {
       expect(() => parseAuthorizeAnnotation(`#(authorize)`)).toThrow(
-         /double-quoted/,
+         /empty expression/,
       );
    });
 });
