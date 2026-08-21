@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML Field Extraction (Step 4)
 
 > Read `.lkml` view files and extract field proposals for the Malloy model. Reference `_concepts.md` for type mapping. This runs during Step 4 (PROPOSE DEFINITIONS) to provide LookML-sourced field proposals alongside schema-derived proposals.

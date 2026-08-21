@@ -3,6 +3,10 @@ id: runtime-fallback-honors-live
 tags: serve-correctness, freshness, resilience
 package: rtf
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A binding declaring `fallback=live` degrades to live when the store fails mid-query
 

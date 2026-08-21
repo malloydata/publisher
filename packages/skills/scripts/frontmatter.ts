@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Where a SKILL.md's leading frontmatter block closes, and which newline
  * style it uses. Tolerates both LF and CRLF: an upstream sync or a Windows

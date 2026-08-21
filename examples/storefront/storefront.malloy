@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Storefront — a small but complete ecommerce semantic model.
 //
 // A classic star schema: an `order_items` fact joined to `customers` and

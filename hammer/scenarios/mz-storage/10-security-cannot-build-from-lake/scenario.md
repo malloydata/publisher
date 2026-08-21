@@ -3,6 +3,10 @@ id: security-cannot-build-from-lake
 tags: security
 package: sec3
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Security: a model cannot source FROM the storage destination
 

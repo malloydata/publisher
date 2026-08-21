@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The incremental-refresh gate. Two layers, deliberately:
 //
 //  - Rule tests over constructed declarations, which can name a SUPPORTED

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Box, Button } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import { useState } from "react";

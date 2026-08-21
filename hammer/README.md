@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Hammer — a scenario harness for the Publisher
 
 Hammer runs **markdown scenarios** against a **real** Publisher server. Each

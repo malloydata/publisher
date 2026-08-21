@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * The property this whole split exists for: a storage destination is
  * reachable from the serve path and from nowhere a tenant can author.

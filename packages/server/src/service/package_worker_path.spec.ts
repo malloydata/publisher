@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Integration test: exercise `Package.create` with the package-load
  * worker pool enabled (PACKAGE_LOAD_WORKERS=1).

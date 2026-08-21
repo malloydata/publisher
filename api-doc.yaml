@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 openapi: 3.1.0
 info:
   title: Malloy Publisher - Semantic Model Serving API

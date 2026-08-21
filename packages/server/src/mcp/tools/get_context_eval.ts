@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Retrieval eval for malloy_getContext: lexical baseline vs the optional
  * embedding-backed semantic mode.

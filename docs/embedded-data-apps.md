@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # React SDK (internal / advanced)
 
 > **Heads up:** `@malloy-publisher/sdk` is the React component library the **Publisher Console is

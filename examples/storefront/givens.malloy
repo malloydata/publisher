@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Filter controls for the data app in public/, declared once here.
 //
 // A given is a typed runtime parameter (docs/givens.md). The tags on each

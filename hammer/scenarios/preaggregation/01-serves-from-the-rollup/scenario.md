@@ -3,6 +3,10 @@ id: preaggregate-serves-from-the-rollup
 tags: serve-correctness, preaggregation
 package: pa
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A rollup is created where its author says, and answers the query from there
 

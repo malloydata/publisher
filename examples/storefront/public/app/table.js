@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // One table renderer for every table tile: headings, alignment, and number
 // formats all come from the field metadata, so a tile only has to name a view.
 

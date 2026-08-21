@@ -2,6 +2,10 @@
 name: malloy-gotchas-modeling
 description: Common Malloy modeling mistakes and how to avoid them. Read BEFORE writing source definitions, dimensions, measures, or joins. Covers reserved words, NULL checks, date functions, type casts, field management (extend except/accept/rename vs include public/internal/private), and query-based source gotchas.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Modeling Gotchas
 

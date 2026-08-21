@@ -3,6 +3,10 @@ id: chained-visibility-leak-guard
 tags: security, visibility, chained
 package: chv
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Visibility over a chained downstream: hidden column not reachable
 

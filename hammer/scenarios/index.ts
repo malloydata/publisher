@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Scenario registry. Each scenario is a folder under scenarios/ containing a
 // `scenario.md` (and an optional `hooks.ts`). They are discovered + parsed at
 // startup by the markdown interpreter.

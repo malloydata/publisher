@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { StringFilterExpression } from "@malloydata/malloy-filter";
 import { describe, expect, it } from "bun:test";
 import {

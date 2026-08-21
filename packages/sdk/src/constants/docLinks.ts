@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Central list of the Malloy documentation URLs the Publisher UI links to.
 // Keeping them in one place means a docs move only needs updating here, rather
 // than hunting down hardcoded links across the app.

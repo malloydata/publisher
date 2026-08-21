@@ -2,6 +2,11 @@
 name: malloy-notebook-chat
 description: Steps to follow when the chat is bound to a notebook or saved report. The notebook's cells are the agent's primary context, answer from it, run its queries, and only reach for get_context when the user asks about something outside it.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Notebook/Report Chat Workflow
 
 Steps to follow when the user asks a question:

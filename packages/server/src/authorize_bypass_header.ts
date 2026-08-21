@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Request header carrying an authorize bypass, for trusted data-management
  * callers. Read only here; nothing in this repo bounds who may send it.

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Minimal ANSI coloring with no dependency. Color is disabled when stdout is not a
  * TTY or when NO_COLOR is set, so piped and CI output stays clean.

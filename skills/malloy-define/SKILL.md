@@ -2,6 +2,10 @@
 name: malloy-define
 description: Propose a source plan and field definitions for a Malloy semantic model. Covers picking which sources to model and at what grain, then proposing the specific renames, dimensions, and measures per source, every proposal backed by querying the data.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Propose sources and definitions
 

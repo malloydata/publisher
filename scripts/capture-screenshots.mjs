@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // One-off screenshot capture for the docs. Requires a Publisher server running
 // on localhost:4000 serving the `examples` environment.
 //

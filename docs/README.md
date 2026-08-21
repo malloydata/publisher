@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Publisher documentation
 
 > Start at the [project README](../README.md) for the 60-second quick start. This folder holds the

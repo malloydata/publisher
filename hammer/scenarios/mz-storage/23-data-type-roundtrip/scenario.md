@@ -3,6 +3,10 @@ id: data-type-roundtrip
 tags: serve-correctness
 package: dt
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A materialized source serves back exactly what it captured, types and NULLs included
 

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 export { default as DashboardPage } from "./DashboardPage/DashboardPage";
 export { default as EnvironmentPage } from "./EnvironmentPage/EnvironmentPage";
 export { default as HomePage } from "./HomePage/HomePage";

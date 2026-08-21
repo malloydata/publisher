@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Stack, Typography, Box, Alert } from "@mui/material";
 import Header from "./Header";
 import { EmbeddedQueryResult } from "@malloy-publisher/sdk";

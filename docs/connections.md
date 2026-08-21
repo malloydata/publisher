@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Connections
 
 > What this is: how Publisher reaches databases and query engines — per-package DuckDB sandboxes,

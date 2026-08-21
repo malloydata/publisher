@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The page ships as plain ES modules the browser loads directly: no bundler, no
 // typechecker, nothing else that reads these files. Without this, nothing checks
 // them at all. (Measured: the root `scripts/` directory is unchecked too, since

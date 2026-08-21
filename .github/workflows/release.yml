@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 name: Release (NPM + Docker)
 
 on:
@@ -174,6 +177,10 @@ jobs:
 
   publish-npm:
     needs: prepare
+    # What npm-sdk.yml's publish job declares; a caller cannot grant less.
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/npm-sdk.yml
     secrets: inherit
     with:
@@ -181,6 +188,8 @@ jobs:
 
   publish-docker:
     needs: prepare
+    permissions:
+      contents: read
     uses: ./.github/workflows/docker-image.yml
     secrets: inherit
     with:

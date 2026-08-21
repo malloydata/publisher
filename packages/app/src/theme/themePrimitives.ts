@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /* eslint-disable @typescript-eslint/no-empty-object-type */
 import { createTheme, alpha, PaletteMode, Shadows } from "@mui/material/styles";
 

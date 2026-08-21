@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { metrics, type Meter } from "@opentelemetry/api";
 
 /**

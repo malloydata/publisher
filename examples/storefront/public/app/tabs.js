@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The tabs, as data.
 //
 // Every tile queries `scoped_orders` from ../../data_app.malloy, the source that
