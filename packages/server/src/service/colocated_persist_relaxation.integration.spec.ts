@@ -180,7 +180,7 @@ source: orders is base -> { select: org_id, amount } extend {}
    );
 
    it(
-      "a gate inherited (not re-declared) through a projecting query-source derivation: builds and filters correctly (this used to fail closed under the DIMENSION form — see git history / task-3b-report.md)",
+      "a gate inherited (not re-declared) through a projecting query-source derivation: builds and filters correctly (this used to fail closed under the DIMENSION form — see task-3-report.md)",
       async () => {
          // Under the DIMENSION form this shape used to fail closed: the graft
          // there names the gate FIELD, and `derived`'s own query-source
@@ -209,7 +209,7 @@ source: derived is locked extend {} -> { select: org_id, amount }
 `,
          });
 
-         // Unlike the DIMENSION form (see git history / task-3b-report.md for
+         // Unlike the DIMENSION form (see task-3-report.md for
          // the prior version of this test), the source-line form's note lives
          // on `locked` itself, not on a field `derived`'s projection has to
          // carry forward — so `derived` inherits it the same way the STRING
@@ -318,7 +318,7 @@ source: orders is base -> { select: org_id, amount } extend {}
    );
 
    it(
-      "a chained persist over a gated persist: the downstream builds and filters — the upstream's gate is inherited, not re-declared (this used to fail closed under the DIMENSION form — see git history / task-3b-report.md)",
+      "a chained persist over a gated persist: the downstream builds and filters — the upstream's gate is inherited, not re-declared (this used to fail closed under the DIMENSION form — see task-3-report.md)",
       async () => {
          // `base_orders` declares its OWN gate. `rollup`, one hop further,
          // does NOT re-declare it — it only inherits `base_orders`'s gate via
@@ -370,7 +370,7 @@ source: rollup is base_orders -> { select: org_id, amount }
    );
 
    it(
-      "a persist source over a composite entry point, gated on one member: builds and filters correctly (this used to fail closed under the DIMENSION form — see git history / task-3b-report.md)",
+      "a persist source over a composite entry point, gated on one member: builds and filters correctly (this used to fail closed under the DIMENSION form — see task-3-report.md)",
       async () => {
          // `comp` is a query_source over `compose(member_a, member_b)`. Only
          // `member_a` carries the gate. Malloy resolves the composite to ONE

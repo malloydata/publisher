@@ -319,30 +319,35 @@ async function boundRows(
  * The shared multi-entry-point fixture for both the "load-time scoping" and
  * "entry-point matrix" describe blocks below: `X` is gated; `Y` inherits by a
  * bare `extend {}`; `Z`/`Z2` are `query_source` projections; `W_accept`
- * inherits `X`'s gate dimension BY REFERENCE (no annotation of its own) but
- * drops it via an allow-list; `cp_joiner` is an ordinary, unannotated
- * `join_one:` of `X`; `query: q` is a bare named query over `X` with no
- * annotation of its own.
+ * inherits `X`'s gate BY REFERENCE (its own struct-level note, copied by
+ * Malloy's by-reference note-copy mechanism — no annotation of its own) but
+ * drops the COLUMN the gate expression reads via an allow-list; `cp_joiner`
+ * is an ordinary, unannotated `join_one:` of `X`; `query: q` is a bare named
+ * query over `X` with no annotation of its own.
  *
- * `W_rename`/`W_except` (renaming/excepting the COLUMN the gate dimension's
- * own expression reads, not the dimension field itself) are deliberately NOT
- * members of this fixture any more — under the dimension form,
- * `validateGateDimensionsForModel` walks every top-level source (including a
- * derived one that merely inherited the gate dimension unchanged) and
- * `expandGivenIds` fails to resolve `org_id` by name on either derivation,
- * which throws unconditionally and aborts the WHOLE model's load, not just
- * that one entry point. Folding either into `ENTRY` would take every other
- * member down with it, so that shape gets its own isolated fixture — see
- * "renaming/excepting a column the gate dimension depends on" below.
+ * `W_rename`/`W_except` (renaming/excepting the COLUMN the gate's own
+ * expression reads) are still kept OUT of this fixture and given their own
+ * isolated one — see "renaming/excepting a column the gate dimension depends
+ * on" below — but the reason has changed. Under the retired dimension form,
+ * `validateGateDimensionsForModel` walked every top-level source
+ * unconditionally and `expandGivenIds` failed to resolve `org_id` by name on
+ * either derivation, which threw and aborted the WHOLE model's load, not
+ * just that one entry point; folding either shape in here would have taken
+ * every other member down with it. Under the source-line form there is no
+ * such whole-model walk: `W_rename`/`W_except` now fail their OWN load-time
+ * probe and deny at that one entry point while the rest of the model —
+ * including `Y` — loads and serves normally (confirmed empirically). They
+ * are kept separate anyway, for the same test-isolation reason the rest of
+ * this file favors small dedicated fixtures over one shared with a control
+ * failure baked in.
  */
 const ENTRY = `##! experimental.givens
 
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -372,9 +377,8 @@ describe("row-field #(authorize) gate — load-time validation", () => {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `;
@@ -426,9 +430,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.sql("select 1 as id, 1 as org_id") extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `,
@@ -495,15 +498,13 @@ describe("row-level authorize — load-time scoping", () => {
    }
 
    it("Z2 (query-source, gate column projected away): load succeeds, request still denies", async () => {
-      // No load-time warning fires for this shape under the dimension form:
-      // `validateGateDimensionsForModel` finds no `authorized` candidate on
-      // `Z2`'s own struct at all (silently "not gated" rather than "gated but
-      // unexpressible"), so `onWarning` never runs for it — the warning check
-      // this test used to make was specific to the STRING form's
-      // `validateAuthorizeProbes` pre-flight, which re-parsed text and could
-      // therefore detect "gated but broken" at LOAD time. The dimension
-      // form's discovery only re-derives from the base (`X`) at REQUEST time
-      // (`gateExprsForOwnAnnotations`), which is what still denies below.
+      // `Z2`'s own `group_by: id, val` drops `org_id`, the column the gate's
+      // struct-level condition reads. The note itself survives the
+      // query-source derivation (copied by reference from `X`), but the
+      // load-time probe against `Z2`'s own narrowed field space fails to
+      // resolve `org_id`, so `Z2` is flagged "not expressible at this entry
+      // point" and denies at request time — same observable outcome as the
+      // STRING form's old re-parse failure, reached by a different mechanism.
       const { model, duckdb, dir } = await createModel(ENTRY);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -524,21 +525,51 @@ describe("row-level authorize — load-time scoping", () => {
       }
    });
 
-   it("Z (query-source derivation of the gated source): loads with no compilation error but DENIES at request time — the gate dimension itself is `internal`, so a query-source pipeline stage cannot select it forward the way the string form's re-parsed text could keep reading `org_id` (corrects the string form's old intent for this shape)", async () => {
-      // Under the STRING form, this shape "filtered" because keeping the
-      // COLUMN the expression text mentions (`org_id`) was enough for a
-      // fresh re-parse to succeed at `Z`. Under the dimension form the graft
-      // is by FIELD NAME (`authorized`), and `internal` blocks exactly the
-      // external reference a query-source pipeline stage would need to carry
-      // it forward (`group_by: ..., authorized` fails to compile with
-      // `'authorized' is internal`) — so `Z`'s own field space can never
-      // contain the gate dimension, and the graft has nothing to attach to.
-      // This is the confirmed, unfixable "query-source pipeline that drops
-      // the field" limitation, and it now applies even when the author tries
-      // to keep every column the gate reads — DENY, not the old FILTER. No
-      // load-time warning fires either (same reason as `Z2` above — no
-      // candidate is found on `Z`'s own struct, so there is nothing to warn
-      // about until the request-time re-derivation from `X` denies it).
+   it("Z (query-source derivation of the gated source, keeping every column the gate reads): loads with no compilation error and FILTERS correctly at request time — restores the string form's old FILTER intent for this shape (measured; see task-3-report.md)", async () => {
+      // Under the dimension form this DENIED: the graft was by FIELD NAME
+      // (`authorized`), and `internal` blocked exactly the external
+      // reference a query-source pipeline stage would need to carry it
+      // forward. Under the source-line form the condition's note is
+      // struct-level, not a droppable field, and travels via Malloy's
+      // by-reference note-copy mechanism through the query-source
+      // derivation same as it does through `extend {}`; since `Z`'s own
+      // `group_by: id, org_id, val` keeps the `org_id` column the condition
+      // reads, the load-time probe resolves cleanly and the graft lifts —
+      // confirmed empirically: this now filters instead of denying.
+      const { model, duckdb, dir } = await createModel(ENTRY);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: Z -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [1] },
+         );
+         // org_id=1 rows: ids 1,2.
+         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
+            2,
+         );
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("W_accept (extend drops the COLUMN the gate condition reads, via an allow-list): load succeeds, warns, and request time DENIES — corrects the dimension form's KNOWN GAP (measured; see task-3-report.md)", async () => {
+      // Under the dimension form this was a KNOWN GAP: `accept: id, val, n`
+      // excluded the `authorized` FIELD entirely, so `validateGateDimension`
+      // found no candidate at all on `W_accept` — silently "not gated" — and
+      // request time served every row unfiltered. The source-line form has
+      // no field to silently lose: the note is struct-level and survives the
+      // allow-list by reference, so `W_accept` is still recognized as gated.
+      // What it loses is the COLUMN the condition reads (`org_id`, also
+      // excluded by the allow-list) — the load-time probe fails to resolve
+      // it, `W_accept` is flagged "not expressible at this entry point," and
+      // every request against it denies. Confirmed empirically: this is now
+      // a fail-CLOSED deny, not a fail-OPEN unfiltered serve. (No longer a
+      // "KNOWN GAP" — do not grep this string expecting the old finding.)
       const { model, duckdb, dir } = await createModel(ENTRY);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -546,47 +577,14 @@ describe("row-level authorize — load-time scoping", () => {
             model.getQueryResults(
                undefined,
                undefined,
-               "run: Z -> { aggregate: n is count() }",
+               "run: W_accept -> { aggregate: n is count() }",
                {},
                true,
-               { GROUPS: [1] },
+               { GROUPS: [] },
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-
-   it("W_accept (extend drops the gate dimension via an allow-list): load succeeds, warns — but KNOWN GAP: request time serves every row UNFILTERED rather than denying", async () => {
-      // `accept: id, val, n` excludes `authorized` entirely, so
-      // `findGateDimensionCandidates(W_accept)` finds no candidate at all —
-      // `validateGateDimension` returns `undefined` for it (not gated), the
-      // same "silently shed" hazard `gate_dimension_integration.spec.ts`'s own
-      // "KNOWN GAP: except: + unannotated redefinition" test documents for a
-      // sibling shape. This is the confirmed, unfixable-in-this-repo
-      // fail-OPEN limitation the task brief calls out — the STRING form
-      // denied this shape (its re-parse of "org_id in $GROUPS" failed since
-      // `org_id` wasn't in `W_accept`'s field space either); the DIMENSION
-      // form cannot even discover that `W_accept` was ever meant to be gated.
-      // Pinned here as a KNOWN GAP, not silently passed as a deny.
-      const { model, duckdb, dir } = await createModel(ENTRY);
-      try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: W_accept -> { aggregate: n is count() }",
-            {},
-            true,
-            { GROUPS: [] },
-         );
-         // GROUPS is empty — a gated read would deny/return zero; this KNOWN
-         // GAP instead returns every seed row unfiltered.
-         const rows = result.compactResult as unknown as { n: number }[];
-         expect(rows[0].n).toBe(4);
          // The rest of the model — including the source that declares the
-         // gate — is unaffected by this one derivation's gap.
+         // gate — is unaffected by this one derivation's denial.
          const gated = await model.getQueryResults(
             undefined,
             undefined,
@@ -604,6 +602,19 @@ describe("row-level authorize — load-time scoping", () => {
    });
 
    it("CRITICAL — renaming or excepting a COLUMN the gate dimension's own expression depends on (not the dimension field itself) aborts the WHOLE model load, not just that one entry point", async () => {
+      // Left on the DIMENSION form deliberately (not migrated with the rest
+      // of this describe block — see task-3-report.md): the subject here is
+      // `validateGateDimensionsForModel`'s own unconditional whole-source
+      // walk, which is dimension-form-only machinery with no analogue under
+      // the source-line form. Measured directly: the identical shape under
+      // the source-line form does NOT abort the whole model's load — `W`
+      // denies at its own entry point (per-entry warn+deny, the load-time
+      // probe failing to resolve `org_id` on `W`'s renamed/excepted struct)
+      // while the rest of the model, including `Y`, loads and serves
+      // normally. That is a real, better-scoped outcome, but a DIFFERENT
+      // guarantee than the one this test pins; migrating it would silently
+      // swap what it asserts rather than just changing its syntax.
+      //
       // Different shape from `W_accept` above: here the derivation keeps the
       // gate dimension `authorized` itself (Malloy flattens it forward
       // unchanged), but renames/excepts `org_id`, the column `authorized`'s
@@ -644,6 +655,14 @@ source: W is X extend { ${extend} }
    });
 
    it("a negated membership gate (W2) now loads and warns rather than failing the whole model — the STRING form's grammar refusal does not exist for the dimension form", async () => {
+      // Left on the DIMENSION form deliberately (see task-3-report.md): W2
+      // is `validateGateDimension`'s own warning cause
+      // (`containsNegatedMembership`), dimension-form-only machinery that
+      // does not run for a source-line gate at all. There is no equivalent
+      // warning to pin under the source-line form; migrating this fixture
+      // would not be testing the same mechanism under new syntax, it would
+      // be testing nothing.
+      //
       // Under the STRING form, `not (x in $Y)` was refused outright at load
       // (`array_given_needs_in`/negated-membership grammar check). The
       // dimension form's `validateGateDimension` demotes this to W2 — a
@@ -776,36 +795,32 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("CRITICAL — two sources independently declaring the same gate-dimension name/expression: the one whose field does not resolve FAILS the load, not downgraded by its neighbor (fix2's guarantee, re-grounded for the dimension form)", async () => {
+   it("CRITICAL — two sources independently declaring the same gate expression: the one whose field does not resolve FAILS the load, not downgraded by its neighbor (fix2's guarantee, re-grounded for the source-line form)", async () => {
       // The STRING form's original point: two SEPARATELY-PARSED annotations
       // with identical TEXT are two distinct note objects, and a TEXT-keyed
       // escape would let a broken one off because an unrelated source's
       // identical string validated elsewhere — the fix required an
-      // OBJECT-identity discriminator instead. That specific failure mode is
-      // now categorically impossible: the dimension form never re-parses
-      // text or discriminates by note identity at all — each source's own
-      // `authorized` dimension is validated entirely on its OWN compiled
-      // expression tree, independent of any other source. What survives of
-      // the original guarantee is the OUTCOME it was protecting: `A`
-      // (backed by `parent`, which has `org_id`) loads and enforces; `B`
-      // (backed by `childtable`, which does not) fails — as an ordinary
-      // "org_id is not defined" compile error on `B`'s own dimension, not
-      // something `A`'s success can paper over.
+      // OBJECT-identity discriminator instead. That specific failure mode
+      // stays categorically impossible under the source-line form too: each
+      // source's own probe is validated entirely against its OWN compiled
+      // expression, independent of any other source with the same text.
+      // `A` (backed by `parent`, which has `org_id`) loads and enforces; `B`
+      // (backed by `childtable`, which does not) fails — as its own
+      // "org_id is not defined" load-time probe failure, not something `A`'s
+      // success can paper over.
       const { model, duckdb, dir } = await createModel(
          `##! experimental.givens
 
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: A is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
+#(authorize) org_id in $GROUPS
 source: B is duckdb.table('childtable') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `,
@@ -839,9 +854,8 @@ describe("row-level authorize — misplaced-annotation scan (Task C)", () => {
     *  of its own — docs/authorize.md's own worked example shape. */
    const JOIN_OF_GATED_SOURCE = `##! experimental.givens
 
+#(authorize) false
 source: salaries is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is false
    measure: n is count()
 }
 
@@ -894,9 +908,8 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
             path.join(dir, "m.malloy"),
             `##! experimental.givens
 
+#(authorize) false
 source: salaries is duckdb.sql("select 1 as id") extend {
-   #(authorize)
-   internal dimension: authorized is false
    measure: n is count()
 }
 
@@ -1084,9 +1097,8 @@ describe("row-level authorize — cross-file join false positive (fix1)", () => 
    // a file the importing model does not fully see.
    const A_WITH_JOINER = `##! experimental.givens
 
+#(authorize) false
 source: sal is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is false
    measure: n is count()
 }
 
@@ -1123,9 +1135,8 @@ source: top is mid extend {}
       // carries a join field whose `referenceID` names it.
       const A_SAL_ONLY = `##! experimental.givens
 
+#(authorize) false
 source: sal is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is false
    measure: n is count()
 }
 `;
@@ -1195,9 +1206,8 @@ describe("row-level authorize — authored annotation on a join line of a gated 
 
    const GATED_SALARIES = `##! experimental.givens
 
+#(authorize) false
 source: salaries is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is false
    measure: n is count()
 }
 `;
@@ -1239,10 +1249,8 @@ source: headcount is duckdb.table('childtable') extend {
 describe("row-level authorize — P0 join scoping", () => {
    it("CRITICAL — P0: a child's OWN gate does not fire when the ungated parent joins it", async () => {
       const { internals, mm, duckdb } = await buildGatedModel(`
-source: childtable is duckdb.table('childtable') extend {
-   #(authorize)
-   internal dimension: authorized is false
-}
+#(authorize) false
+source: childtable is duckdb.table('childtable') extend {}
 source: parent is duckdb.table('parent') extend {
    join_one: childtable on child_id = childtable.id
    measure: n is count()
@@ -1269,10 +1277,9 @@ given:
   BOB :: string
 
 source: childtable is duckdb.table('childtable') extend {}
+#(authorize) childtable.name = $BOB
 source: parent is duckdb.table('parent') extend {
    join_one: childtable on child_id = childtable.id
-   #(authorize)
-   internal dimension: authorized is childtable.name = $BOB
    measure: n is count()
 }
 `);
@@ -1299,19 +1306,15 @@ given:
   GROUPS :: number[]
   VAL :: string
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
 source: Y is X extend {}
 
-source: Z is X extend {
-   except: authorized
-   #(authorize)
-   internal dimension: authorized is val = $VAL
-}
+#(authorize) val = $VAL
+source: Z is X extend {}
 `;
 
    it("Y is X extend {} inherits X's gate and filters", async () => {
@@ -1365,27 +1368,28 @@ describe("row-level authorize — entry-point matrix", () => {
       return buildGatedModel(ENTRY);
    }
 
-   it("W_rename / W_except (renaming/excepting the COLUMN the gate dimension reads, at REQUEST time only — buildGatedModel bypasses the load-time abort `Model.create` would apply to this shape): the graft still cannot lift, and resolves to an empty result rather than throwing", async () => {
-      // A different fixture from the shared `ENTRY` above, on purpose: through
-      // the REAL `Model.create` (see "load-time scoping"), this shape aborts
-      // the WHOLE model's load — `buildGatedModel` deliberately bypasses that
-      // pre-flight check (see the file header) to isolate what the GRAFT
-      // itself does when reached directly. Confirmed empirically: unlike `Z`/
-      // `Z2` above (which reject with `AccessDeniedError` through this exact
-      // `boundRows` path), a lift failure against `W_rename`/`W_except` here
-      // resolves to a live `WHERE (false)` — a successful, EMPTY result
-      // rather than a thrown error. Still safe (no row ever leaks), but a
-      // different observable surface than the query-source shapes; pinned as
-      // its own case rather than assumed to match them.
+   it("W_rename / W_except (renaming/excepting the COLUMN the gate condition reads, at REQUEST time): the graft still cannot lift, and DENIES rather than serving an unfiltered or silently-empty result (measured; see task-3-report.md)", async () => {
+      // A different fixture from the shared `ENTRY` above, on purpose: under
+      // the dimension form, `buildGatedModel` deliberately bypassed
+      // `Model.create`'s own pre-flight abort for this shape (see the file
+      // header) to isolate what the GRAFT itself does when reached directly
+      // — reaching it resolved to a live `WHERE (false)`, a successful EMPTY
+      // result rather than a thrown error. Under the source-line form there
+      // is no load-time abort to bypass in the first place (see the "load-
+      // time scoping" describe block's identical test), so the isolation
+      // this harness exists for is moot here — but the REQUEST-time outcome
+      // still differs from the old one: confirmed empirically, a lift
+      // failure against `W_rename`/`W_except` now REJECTS with
+      // `AccessDeniedError`, the same fail-closed shape `Z`/`Z2` above use,
+      // not a silently-empty result.
       const { internals, mm, duckdb } =
          await buildGatedModel(`##! experimental.givens
 
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -1394,13 +1398,14 @@ source: W_except is X extend { except: org_id }
 `);
       try {
          for (const name of ["W_rename", "W_except"]) {
-            const rows = await boundRows(
-               internals,
-               mm,
-               `run: ${name} -> { aggregate: n is count() }`,
-               { GROUPS: [1] },
-            );
-            expect(rows[0].n).toBe(0);
+            await expect(
+               boundRows(
+                  internals,
+                  mm,
+                  `run: ${name} -> { aggregate: n is count() }`,
+                  { GROUPS: [1] },
+               ),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
          }
       } finally {
          await duckdb.close();
@@ -1437,26 +1442,25 @@ source: W_except is X extend { except: org_id }
       }
    });
 
-   it("Z is X -> {...}: even keeping every column the gate reads, the gate DIMENSION itself is `internal` and cannot be selected forward, so this DENIES (corrects the string form's old FILTER intent for this shape)", async () => {
-      // Under the STRING form, `Z` "filtered" because `org_id` (the COLUMN
-      // the expression text mentioned) survived the projection, and a fresh
-      // re-parse only needed that column reachable by name. Under the
-      // dimension form the graft is by FIELD NAME (`authorized`), and
-      // `internal` blocks exactly the external reference a query-source
-      // pipeline stage needs to carry it forward — confirmed empirically:
-      // `group_by: ..., authorized` fails to compile with `'authorized' is
-      // internal`. `Z`'s own field space can therefore never contain the
-      // gate dimension, so there is nothing for the graft to attach to. This
-      // is the "one confirmed limitation" from the task brief, and it now
-      // applies even to an author who tries to keep every column the gate
-      // reads.
+   it("Z is X -> {...}, keeping every column the gate reads: FILTERS correctly — restores the string form's old FILTER intent for this shape (measured; see task-3-report.md)", async () => {
+      // Under the dimension form this DENIED: the graft was by FIELD NAME
+      // (`authorized`), and `internal` blocked exactly the external
+      // reference a query-source pipeline stage needed to carry it forward.
+      // Under the source-line form the condition's note is struct-level and
+      // survives the query-source derivation by reference, same as it
+      // survives `extend {}`; since `Z`'s own `group_by: id, org_id, val`
+      // keeps the `org_id` column the condition reads, the graft lifts and
+      // filters — confirmed empirically.
       const { internals, mm, duckdb } = await harness();
       try {
-         await expect(
-            boundRows(internals, mm, "run: Z -> { aggregate: n is count() }", {
-               GROUPS: [1],
-            }),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         const rows = await boundRows(
+            internals,
+            mm,
+            "run: Z -> { aggregate: n is count() }",
+            { GROUPS: [1] },
+         );
+         // org_id=1 rows: ids 1,2.
+         expect(rows[0].n).toBe(2);
       } finally {
          await duckdb.close();
       }
@@ -1486,31 +1490,34 @@ source: W_except is X extend { except: org_id }
       }
    });
 
-   // W_rename / W_except are no longer members of ENTRY (see its doc comment)
-   // and are covered by their own dedicated test above instead, since through
-   // the REAL `Model.create` this shape aborts the whole model's load — a
-   // guarantee `buildGatedModel`'s bypass-load-validation harness cannot
-   // exercise faithfully as an ENTRY member without misrepresenting it.
+   // W_rename / W_except are still not members of ENTRY (see its doc comment
+   // for why — the reasoning changed once ENTRY moved to the source-line
+   // form) and are covered by their own dedicated test above instead.
 
-   it("W_accept (the gate dimension itself dropped via an allow-list): KNOWN GAP — resolves to an unfiltered, EMPTY-graft pass-through rather than a deny", async () => {
-      // `accept: id, val, n` excludes `authorized` entirely — there is no
-      // candidate at all on `W_accept`'s own struct, so `resolveGraftTarget`/
-      // discovery find nothing to graft, and the request proceeds with NO
-      // filter appended (not even a `WHERE false` fallback, since there was
-      // never a condition to fail lifting in the first place). Same confirmed
-      // fail-OPEN limitation as the "load-time scoping" describe block's own
-      // `W_accept` KNOWN GAP test above — restated here because
+   it("W_accept (the COLUMN the gate condition reads dropped via an allow-list): DENIES — corrects the dimension form's KNOWN GAP (measured; see task-3-report.md)", async () => {
+      // Under the dimension form this was a KNOWN GAP: `accept: id, val, n`
+      // excluded the `authorized` FIELD entirely, so there was no candidate
+      // at all on `W_accept`'s own struct — nothing for the graft to attach
+      // to, and the request proceeded unfiltered. The source-line form's
+      // note is struct-level and survives the allow-list by reference, so
+      // `W_accept` is still recognized as gated; what the allow-list drops
+      // is `org_id`, the COLUMN the condition reads, which fails the
+      // load-time probe and denies every request against this entry point.
+      // Same confirmed fail-CLOSED correction as the "load-time scoping"
+      // describe block's own `W_accept` test above — restated here because
       // `entry-point matrix` is this file's other, request-time-focused home
-      // for the full W_rename/W_except/W_accept trio.
+      // for the full W_rename/W_except/W_accept trio. (No longer a "KNOWN
+      // GAP" — do not grep this string expecting the old finding.)
       const { internals, mm, duckdb } = await harness();
       try {
-         const rows = await boundRows(
-            internals,
-            mm,
-            "run: W_accept -> { aggregate: n is count() }",
-            { GROUPS: [] },
-         );
-         expect(rows[0].n).toBe(4);
+         await expect(
+            boundRows(
+               internals,
+               mm,
+               "run: W_accept -> { aggregate: n is count() }",
+               { GROUPS: [] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
          await duckdb.close();
       }
@@ -1530,32 +1537,28 @@ source: W_except is X extend { except: org_id }
       }
    });
 
-   it("KNOWN GAP — a caller-declared ad-hoc derivation (`source: mine is X extend {}` + `run: mine`) now DENIES rather than filtering (corrects the string form's old FILTER intent)", async () => {
-      // Under the STRING form, this filtered: `resolveGraftTarget`'s "direct"
-      // check is evaluated against the STABLE `graftModelDef`, not the
-      // ephemeral ad-hoc modelDef the caller's inline `source: mine is X
-      // extend {}` compiled into, so "mine" never matched there directly —
-      // but `findSourceByOwnAnnotationIdentity` could still trace "mine"'s
-      // COPIED source-level `#(authorize)` note object back to "X" in the
-      // stable model, landing the graft there. That trace-back is keyed on a
-      // STRUCT-level annotation note; the dimension form's annotation lives
-      // on the FIELD (`authorized`), not the struct, so there is no
-      // analogous identity to trace even though "mine" (a trivial `extend
-      // {}`) does flatten the `authorized` field itself in unchanged.
-      // Confirmed empirically: this now denies. Not one of the task brief's
-      // six named categories, but the same shape of gap — a caller-declared
-      // ad-hoc derivation of a gated source can no longer be queried through
-      // this graft mechanism, even though it is a safe, harmless shape.
+   it("a caller-declared ad-hoc derivation (`source: mine is X extend {}` + `run: mine`) FILTERS correctly (matches the string form's old FILTER intent; measured, see task-3-report.md)", async () => {
+      // Under the dimension form this was a KNOWN GAP (denied): the graft
+      // was resolved by tracing "mine"'s COPIED source-level annotation note
+      // object back to "X" — a STRUCT-level identity trace — but the
+      // dimension form's own annotation lived on the FIELD (`authorized`),
+      // not the struct, so there was no analogous identity for that trace to
+      // key on even though "mine" (a trivial `extend {}`) did flatten the
+      // `authorized` field forward unchanged. Under the source-line form the
+      // note itself IS struct-level, so the same identity trace this
+      // mechanism already used for the STRING form applies directly, no
+      // separate mechanism required. Confirmed empirically: this now
+      // filters, the way the string form always did.
       const { internals, mm, duckdb } = await harness();
       try {
-         await expect(
-            boundRows(
-               internals,
-               mm,
-               "source: mine is X extend {}\nrun: mine -> { aggregate: n is count() }",
-               { GROUPS: [1] },
-            ),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         const rows = await boundRows(
+            internals,
+            mm,
+            "source: mine is X extend {}\nrun: mine -> { aggregate: n is count() }",
+            { GROUPS: [1] },
+         );
+         // org_id=1 rows: ids 1,2.
+         expect(rows[0].n).toBe(2);
       } finally {
          await duckdb.close();
       }
@@ -1610,22 +1613,15 @@ source: W_except is X extend { except: org_id }
 
 describe("row-level authorize — fail-closed (CRITICAL)", () => {
    it("gate column absent from the entry shape denies with a 403, not a 400/500", async () => {
-      // `W` is a query-source projection that drops the gate DIMENSION
-      // itself (`authorized` is `internal`, so it can never be selected
-      // forward — see the "entry-point matrix" block's `Z`/`Z2` findings).
-      // An `extend { except: org_id }` was the original shape, but under the
-      // dimension form that resolves to a live, empty `WHERE (false)`
-      // result rather than a thrown error (confirmed empirically; see the
-      // "entry-point matrix" block's W_rename/W_except test) — this shape is
-      // the one that reproduces the literal `AccessDeniedError` this test
-      // asserts.
+      // `W` is a query-source projection that drops `org_id`, the COLUMN the
+      // gate's condition reads — see the "entry-point matrix" block's `Z`/
+      // `Z2` findings for the general shape.
       const { internals, mm, duckdb } = await buildGatedModel(`
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 source: W is X -> { group_by: id, val; aggregate: n is count() }
@@ -1653,7 +1649,7 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
       const files = new Map<string, string>([
          [
             `${ROOT}deep.malloy`,
-            `##! experimental.givens\n\ngiven:\n  FAR :: number[]\n\nsource: Deep is duckdb.table('parent') extend {\n   #(authorize)\n   internal dimension: authorized is org_id in $FAR\n   measure: n is count()\n}\n`,
+            `##! experimental.givens\n\ngiven:\n  FAR :: number[]\n\n#(authorize) org_id in $FAR\nsource: Deep is duckdb.table('parent') extend {\n   measure: n is count()\n}\n`,
          ],
          [
             `${ROOT}mid.malloy`,
@@ -1728,9 +1724,8 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -1769,9 +1764,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -1826,9 +1820,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -1894,9 +1887,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -1971,9 +1963,8 @@ describe("row-level authorize — runnable identity (CRITICAL)", () => {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    where: val != 'd'
    measure: n is count()
 }
@@ -2008,9 +1999,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2054,9 +2044,8 @@ describe("row-level authorize — posture", () => {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2078,9 +2067,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2111,9 +2099,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `;
@@ -2137,9 +2124,8 @@ source: X is duckdb.table('parent') extend {
       // one given with every one supplied — a no-given gate satisfied
       // neither. Fixed by deciding directly on `givenNames.length === 0`.)
       const text = `
+#(authorize) true
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is true
    measure: n is count()
 }
 `;
@@ -2170,9 +2156,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `;
@@ -2198,18 +2183,16 @@ source: X is duckdb.table('parent') extend {
       // `resolveGraftTarget` never gets a target to classify against —
       // rejected before `resolveGateShape` ever sees the literal "true".
       const { model, duckdb } = await buildGatedModel(`
+#(authorize) true
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is true
    measure: n is count()
 }
 `);
       try {
          const stubRunnable = await buildEphemeralRunnable(
             `
+#(authorize) true
 source: solo is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is true
    measure: n is count()
 }
 `,
@@ -2233,9 +2216,8 @@ source: solo is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `;
@@ -2266,9 +2248,8 @@ source: X is duckdb.table('parent') extend {
 given:
   ROLE :: string
 
+#(authorize) $ROLE = 'analyst'
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is $ROLE = 'analyst'
    measure: n is count()
 }
 `,
@@ -2305,9 +2286,8 @@ source: X is duckdb.table('parent') extend {
       // false` and gets zero rows), not a `/compile` one — `/compile` never
       // runs the query, so there is no row-truth to check here either way.
       const { model, duckdb } = await buildGatedModel(`
+#(authorize) false
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is false
    measure: n is count()
 }
 `);
@@ -2334,9 +2314,8 @@ describe("row-level authorize — state (no shared-state mutation)", () => {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2371,9 +2350,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2406,9 +2384,8 @@ describe("row-level authorize — givens", () => {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2435,9 +2412,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2492,9 +2468,8 @@ describe("row-level authorize — grammar (STRING form's restrictions do not car
 given:
   ${givenDecl}
 
+#(authorize) ${gate}
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is ${gate}
    measure: n is count()
 }
 `,
@@ -2636,9 +2611,8 @@ describe("row-level authorize — other", () => {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 source: W is X -> { group_by: id, val; aggregate: n is count() }
@@ -2665,9 +2639,8 @@ source: W is X -> { group_by: id, val; aggregate: n is count() }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -2715,9 +2688,8 @@ given:
   GROUPS :: number[]
   VAL :: string
 
+#(authorize) (org_id in $GROUPS) or (val = $VAL)
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is (org_id in $GROUPS) or (val = $VAL)
    measure: n is count()
 }
 `);
@@ -2747,9 +2719,8 @@ given:
   ROLE :: string
   GROUPS :: number[]
 
+#(authorize) ($ROLE = 'admin') or (org_id in $GROUPS)
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is ($ROLE = 'admin') or (org_id in $GROUPS)
    measure: n is count()
 }
 `);
@@ -2811,9 +2782,8 @@ describe("row-level authorize — notebook cells", () => {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -2869,9 +2839,8 @@ given:
   ROLE :: string
 
 #(filter) dimension=nonexistent_field type=equal
+#(authorize) $ROLE = 'admin'
 source: gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is $ROLE = 'admin'
    measure: n is count()
 }
 
@@ -2924,9 +2893,8 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -2968,9 +2936,8 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3013,9 +2980,8 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3058,9 +3024,8 @@ source: unrelated is duckdb.table('childtable') extend { primary_key: id }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3100,9 +3065,8 @@ run: gated -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3142,9 +3106,8 @@ run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
    view: byorg is { aggregate: n is count() }
 }
@@ -3187,9 +3150,8 @@ given:
 
 source: childtable is duckdb.table('childtable') extend { primary_key: id }
 
+#(authorize) childtable.name in $GROUPS
 source: gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is childtable.name in $GROUPS
    join_one: childtable with child_id
    measure: n is count()
 }
@@ -3237,9 +3199,8 @@ run: gated -> { group_by: id, org_id, childtable.name }
          fs.writeFileSync(
             path.join(dir, "nb.malloynb"),
             `>>>malloy
+#(authorize) false
 source: childtable is duckdb.table('childtable') extend {
-   #(authorize)
-   internal dimension: authorized is false
 }
 
 source: joiner is duckdb.table('parent') extend {
@@ -3306,9 +3267,8 @@ describe("row-level authorize — storage routing", () => {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `,
@@ -3391,9 +3351,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -3469,9 +3428,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3555,9 +3513,8 @@ source: W_except is X -> { group_by: id, val; aggregate: n is count() }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 
@@ -3596,9 +3553,8 @@ source: W_except is X extend { except: org_id }
 given:
   ROLE :: string
 
+#(authorize) $ROLE = 'analyst'
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is $ROLE = 'analyst'
    measure: n is count()
 }
 `,
@@ -3670,9 +3626,8 @@ source: X is duckdb.table('parent') extend {
 // ---------------------------------------------------------------------------
 
 describe("row-level authorize — constant gate dimensions", () => {
-   const CONSTANT_FALSE_MODEL = `source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is false
+   const CONSTANT_FALSE_MODEL = `#(authorize) false
+source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 `;
@@ -3717,9 +3672,8 @@ describe("row-level authorize — constant gate dimensions", () => {
       try {
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
-            `source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is 1 = 1
+            `#(authorize) 1 = 1
+source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 `,
@@ -3796,9 +3750,8 @@ describe("row-level authorize — constant gate dimensions", () => {
 given:
   ROLE :: string
 
+#(authorize) $ROLE = 'admin'
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is $ROLE = 'admin'
    measure: n is count()
 }
 `);
@@ -3837,6 +3790,12 @@ source: X is duckdb.table('parent') extend {
 // refused for the SAME reason (G4), including the admin-override idiom that
 // used to load and work correctly. This is a real, confirmed, INTENDED
 // narrowing (G4 is by design unconditional), not a regression to paper over.
+// Left on the DIMENSION form deliberately, whole block (see task-3-report.md):
+// every test here pins G4, `validateGateDimension`'s (`gate_dimension.ts`)
+// unconditional defaulted-given refusal — dimension-form-only machinery with
+// no equivalent under the source-line form (see the "G4 gap" finding).
+// Migrating any of these would silently start testing that a real capability
+// gap is absent, not the guarantee the title names.
 describe("row-level authorize — vacuous default atom (superseded by G4's unconditional defaulted-given refusal)", () => {
    async function createModel(
       text: string,
@@ -3981,15 +3940,22 @@ describe("row-level authorize — field comparison against a defaulted given", (
    }
 
    it("CRITICAL — `amount > $FLOOR`, FLOOR defaulting to 0, is refused at load (a caller supplying nothing admits ~every row)", async () => {
+      // Left on the DIMENSION form deliberately (see task-3-report.md): the
+      // refusal this test pins is `validateGateDimension`'s (`gate_dimension.
+      // ts`) own G4 check, dimension-form-only machinery — see the "G4 gap"
+      // finding: the source-line form has no equivalent check at all, so
+      // this exact shape loads and USES the default under it, with no
+      // refusal. Migrating this fixture would not test the same guarantee
+      // under new syntax, it would test that a real gap is absent.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
   FLOOR :: number is 0
 
 source: X is duckdb.table('parent') extend {
+   dimension: amount is id
    #(authorize)
    internal dimension: authorized is amount > $FLOOR
-   dimension: amount is id
    measure: n is count()
 }
 `);
@@ -4005,15 +3971,17 @@ source: X is duckdb.table('parent') extend {
    });
 
    it("CRITICAL — `tenant != $EXCLUDED`, EXCLUDED defaulting to '', is refused at load", async () => {
+      // Left on the DIMENSION form deliberately (see task-3-report.md) — same
+      // G4-is-dimension-form-only reason as `amount > $FLOOR` above.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
   EXCLUDED :: string is ''
 
 source: X is duckdb.table('parent') extend {
+   dimension: tenant is val
    #(authorize)
    internal dimension: authorized is tenant != $EXCLUDED
-   dimension: tenant is val
    measure: n is count()
 }
 `);
@@ -4034,9 +4002,8 @@ source: X is duckdb.table('parent') extend {
 given:
   MAXLVL :: number
 
+#(authorize) clearance <= $MAXLVL
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is clearance <= $MAXLVL
    dimension: clearance is org_id
    measure: n is count()
 }
@@ -4086,9 +4053,8 @@ source: X is duckdb.table('parent') extend {
 given:
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
    measure: n is count()
 }
 `);
@@ -4131,6 +4097,16 @@ source: X is duckdb.table('parent') extend {
 // used to prove.
 // ---------------------------------------------------------------------------
 
+// Left on the DIMENSION form deliberately, whole block (see task-3-report.md):
+// both tests below depend on `combo`'s composite resolution copying a MEMBER's
+// gate-dimension FIELD onto `combo`'s own struct (G1's "more than one
+// candidate" check, and the enforcement path that reaches it as a field) —
+// dimension-form-only mechanics with no analogue for a struct-level
+// source-line note, which composite resolution does not fold into a field at
+// all. Migrating `member_a`'s gate to the source-line form (as the rest of
+// this file's plain sites were) measurably breaks the FIRST test here — G1
+// no longer fires, because there is no second field-level candidate for it to
+// see — which is exactly why both stay as dimension-form fixtures together.
 describe("row-level authorize — composite + gate dimension (superseded: the dimension form's G1 refuses the construct this block used to exercise)", () => {
    async function createModel(
       text: string,
@@ -4248,9 +4224,8 @@ describe("row-level authorize — grafted materializer cache is bounded", () => 
 
 given: GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS
 source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
   measure: c is count()
 }
 `;
@@ -4388,6 +4363,29 @@ given:
   ROLE :: string
   ROLE_D :: string is 'x'
 
+#(authorize) ${gate}
+source: Gated is duckdb.table('parent') extend {
+   measure: n is count()
+}
+
+source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
+`;
+   }
+
+   /** DIMENSION-form twin of `modelText`, used only by the two G4 tests below
+    *  (see task-3-report.md): G4 is `validateGateDimension`'s own
+    *  (`gate_dimension.ts`) unconditional defaulted-given refusal —
+    *  dimension-form-only machinery with no equivalent under the
+    *  source-line form `modelText` builds (confirmed: the identical gate
+    *  text loads cleanly and USES the default under it, no refusal at all —
+    *  see the "G4 gap" finding). */
+   function modelTextDimensionForm(gate: string): string {
+      return `##! experimental.givens
+
+given:
+  ROLE :: string
+  ROLE_D :: string is 'x'
+
 source: Gated is duckdb.table('parent') extend {
    #(authorize)
    internal dimension: authorized is ${gate}
@@ -4450,7 +4448,7 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
       try {
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
-            modelText("$ROLE = $ROLE_D"),
+            modelTextDimensionForm("$ROLE = $ROLE_D"),
          );
          const model = await Model.create(
             "test-pkg",
@@ -4478,7 +4476,7 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
       try {
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
-            modelText("$ROLE_D != 'blocked'"),
+            modelTextDimensionForm("$ROLE_D != 'blocked'"),
          );
          const model = await Model.create(
             "test-pkg",
@@ -4507,9 +4505,8 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
 given:
   GROUPS :: number[]
 
+#(authorize) org_id = $GROUPS
 source: Gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $GROUPS
    measure: n is count()
 }
 `,
