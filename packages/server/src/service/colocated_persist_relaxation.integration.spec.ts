@@ -142,11 +142,9 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (1, 20), (2, 30), (2, 40)) AS t(org_id, amount)
 """)
 
+#(authorize) org_id = $ORG
 #@ persist name="orders"
-source: orders is base -> { select: org_id, amount } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+source: orders is base -> { select: org_id, amount } extend {}
 `,
          });
          // Materialized data is DISTINCT from the live SQL above, so a
@@ -182,62 +180,60 @@ source: orders is base -> { select: org_id, amount } extend {
    );
 
    it(
-      "a gate inherited (not re-declared) through a projecting query-source derivation: never builds, and denies live rather than serving unfiltered (guarantee changed from the string form — see task-3b-report.md)",
+      "a gate inherited (not re-declared) through a projecting query-source derivation: builds and filters correctly (this used to fail closed under the DIMENSION form — see git history / task-3b-report.md)",
       async () => {
-         // Under the STRING form this shape ("derived" carries no annotation
-         // of its own; its base "locked" does) built and filtered correctly —
-         // the graft re-parses the expression TEXT fresh against whichever
-         // entry point runs. The DIMENSION form grafts by the field's NAME
-         // instead, and `derived`'s own query-source projection
-         // (`-> { select: org_id, amount }`) does not carry `locked`'s
-         // "authorized" field forward, so no name exists on `derived`'s own
-         // struct to graft onto. This is the SAME root cause the brief's
-         // "except:"/"accept:" KNOWN GAP names (a derivation that drops the
-         // gate field), just reached via a projecting pipeline instead — and
-         // it is NOT fixable by selecting the field into the projection
-         // either (that hits the build-time-evaluation wrinkle the dimension
-         // -form test below documents; `internal` also refuses a direct
-         // `select:` of it here). Unlike the KNOWN GAP shape, this fails
-         // CLOSED, not open: the persist source is excluded from the build
-         // plan entirely (never gets a bound artifact), and a live query
-         // against it denies rather than serving a wrong or unfiltered
-         // answer. The guarantee that does NOT survive is "the persisted
-         // extend still filters correctly" — it now cannot be queried at
-         // all.
+         // Under the DIMENSION form this shape used to fail closed: the graft
+         // there names the gate FIELD, and `derived`'s own query-source
+         // projection (`-> { select: org_id, amount }`) did not carry
+         // `locked`'s "authorized" field forward, so no name existed on
+         // `derived`'s own struct to graft onto — `derived` was excluded from
+         // the build plan and a live query against it denied. The
+         // source-line form's note lives on `locked` itself, not on a
+         // droppable field, so it survives the projection by the same
+         // by-reference note-copy mechanism the STRING form always relied
+         // on: `derived` inherits the gate, builds normally, and a live
+         // query is filtered exactly as a direct gate on `locked` would be.
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
 
 given: ORG :: number
 
+#(authorize) org_id = $ORG
 source: locked is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
-""") extend {
-  #(authorize)
-  internal dimension: authorized is org_id = $ORG
-}
+""") extend {}
 
 #@ persist name="derived"
 source: derived is locked extend {} -> { select: org_id, amount }
 `,
          });
 
-         // Excluded from the build plan — never eligible for the colocated
-         // relaxation, same posture the file's header describes for an
-         // unproven/rejected gate.
+         // Unlike the DIMENSION form (see git history / task-3b-report.md for
+         // the prior version of this test), the source-line form's note lives
+         // on `locked` itself, not on a field `derived`'s projection has to
+         // carry forward — so `derived` inherits it the same way the STRING
+         // form always did, and the persist source builds normally.
          const plan = pkg.getBuildPlan();
          expect(
             Object.values(plan?.sources ?? {}).some(
                (s) => s.name === "derived",
             ),
-         ).toBe(false);
+         ).toBe(true);
 
-         // Fail-closed at the live layer too — never silently unfiltered.
-         await expect(
-            run(pkg, "run: derived -> { select: org_id, amount }", {
-               ORG: 1,
-            }),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         await buildAndBindColocated(
+            pkg,
+            "derived",
+            "derived_materialized",
+            `SELECT * FROM (VALUES (1, 1000), (2, 2000)) AS t(org_id, amount)`,
+         );
+
+         const org1 = await run(
+            pkg,
+            "run: derived -> { select: org_id, amount }",
+            { ORG: 1 },
+         );
+         expect(org1).toEqual([{ org_id: 1, amount: 1000 }]);
       },
       { timeout: 60000 },
    );
@@ -252,11 +248,9 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
+#(authorize) false
 #@ persist name="locked_out"
-source: locked_out is base -> { select: org_id, amount } extend {
-   #(authorize)
-   internal dimension: authorized is false
-}
+source: locked_out is base -> { select: org_id, amount } extend {}
 `,
          });
          await buildAndBindColocated(
@@ -288,11 +282,9 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
+#(authorize) org_id = $ORG
 #@ persist name="orders"
-source: orders is base -> { select: org_id, amount } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+source: orders is base -> { select: org_id, amount } extend {}
 `,
          });
          await buildAndBindColocated(
@@ -326,17 +318,17 @@ source: orders is base -> { select: org_id, amount } extend {
    );
 
    it(
-      "a chained persist over a gated persist: the downstream never builds and denies live — the upstream's gate is inherited, not re-declared (guarantee changed — see task-3b-report.md)",
+      "a chained persist over a gated persist: the downstream builds and filters — the upstream's gate is inherited, not re-declared (this used to fail closed under the DIMENSION form — see git history / task-3b-report.md)",
       async () => {
-         // `base_orders` declares its OWN gate dimension (extend AFTER its
-         // own pipeline, same shape as the "direct entry-point gate" test
-         // above) and still builds and filters correctly. `rollup`, one hop
-         // further, does NOT re-declare it — it only inherits `base_orders`'s
-         // gate via the query-source derivation, the same "name doesn't
-         // survive a projecting pipeline" gap the test above documents. The
-         // STRING form's re-parsed-text graft did not care which struct
-         // declared the gate; the DIMENSION form's by-name graft does, and
-         // `rollup`'s own projection carries no "authorized" field forward.
+         // `base_orders` declares its OWN gate. `rollup`, one hop further,
+         // does NOT re-declare it — it only inherits `base_orders`'s gate via
+         // the query-source derivation. Under the DIMENSION form this used to
+         // fail closed (the by-name graft found no "authorized" field on
+         // `rollup`'s own projection); the source-line form's note lives on
+         // `base_orders` itself, so `rollup` inherits it by the same
+         // by-reference note-copy mechanism the STRING form always relied on
+         // (see the "projecting query-source derivation" test above), and
+         // both `base_orders` and `rollup` build and filter normally.
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental.persistence
 ##! experimental.givens
@@ -347,11 +339,9 @@ source: raw is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
+#(authorize) org_id = $ORG
 #@ persist name="base_orders"
-source: base_orders is raw -> { select: org_id, amount } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+source: base_orders is raw -> { select: org_id, amount }
 
 #@ persist name="rollup"
 source: rollup is base_orders -> { select: org_id, amount }
@@ -359,42 +349,42 @@ source: rollup is base_orders -> { select: org_id, amount }
          });
          await buildAndBindColocated(
             pkg,
-            "base_orders",
-            "base_materialized",
+            "rollup",
+            "rollup_materialized",
             `SELECT * FROM (VALUES (1, 1000), (2, 2000)) AS t(org_id, amount)`,
          );
 
          const plan = pkg.getBuildPlan();
          expect(
             Object.values(plan?.sources ?? {}).some((s) => s.name === "rollup"),
-         ).toBe(false);
+         ).toBe(true);
 
-         await expect(
-            run(pkg, "run: rollup -> { select: org_id, amount }", {
-               ORG: 1,
-            }),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         const org1 = await run(
+            pkg,
+            "run: rollup -> { select: org_id, amount }",
+            { ORG: 1 },
+         );
+         expect(org1).toEqual([{ org_id: 1, amount: 1000 }]);
       },
       { timeout: 60000 },
    );
 
    it(
-      "a persist source over a composite entry point, gated on one member: never builds and denies live (guarantee changed — see task-3b-report.md)",
+      "a persist source over a composite entry point, gated on one member: builds and filters correctly (this used to fail closed under the DIMENSION form — see git history / task-3b-report.md)",
       async () => {
          // `comp` is a query_source over `compose(member_a, member_b)`. Only
-         // `member_a` carries the gate. Under the STRING form Malloy resolves
-         // the composite to ONE concrete member per query and copies that
-         // member's own gate note onto `comp`'s entry point, so
-         // `classifyPersistSourceGate` read it as `row_level` + `attributed`
-         // with no join or deep walk involved (see
-         // `build_plan_gate_classification.spec.ts`'s unit-level pin of that
-         // classification for the string form, still valid there). For the
-         // DIMENSION form the same by-name-graft gap the two tests above
-         // document applies here too: `comp`'s own projection
-         // (`-> { select: org_id, amount }`) does not carry `member_a`'s
-         // "authorized" field forward, so the name can't be grafted onto
-         // `comp`. Same safe failure mode as the other two: excluded from the
-         // build plan, denies live rather than serving unfiltered.
+         // `member_a` carries the gate. Malloy resolves the composite to ONE
+         // concrete member per query and copies that member's own gate note
+         // onto `comp`'s entry point (see
+         // `build_plan_gate_classification.spec.ts`'s unit-level pin of this
+         // classification), so `comp` reads as `row_level` + `attributed`
+         // with no join or deep walk involved. Under the DIMENSION form this
+         // used to fail closed instead — the same by-name-graft gap the two
+         // tests above document: `comp`'s own projection
+         // (`-> { select: org_id, amount }`) did not carry `member_a`'s
+         // "authorized" field forward. The source-line form's note is a
+         // struct-level copy, not a droppable field, so it survives the
+         // composite resolution and the projection intact.
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental { persistence composite_sources givens }
 
@@ -404,12 +394,10 @@ given:
 // Members carry DISTINGUISHABLE amounts so the assertion can tell WHICH
 // member the composite resolved to; identical member data would pass even
 // if the ungated member_b won.
+#(authorize) org_id in $GROUPS
 source: member_a is duckdb.sql("""
   SELECT * FROM (VALUES (7, 1), (8, 2)) AS t(org_id, amount)
-""") extend {
-  #(authorize)
-  internal dimension: authorized is org_id in $GROUPS
-}
+""") extend {}
 
 source: member_b is duckdb.sql("""
   SELECT * FROM (VALUES (7, 51), (8, 52)) AS t(org_id, amount)
@@ -424,17 +412,21 @@ source: comp is combo -> { select: org_id, amount }
          const plan = pkg.getBuildPlan();
          expect(
             Object.values(plan?.sources ?? {}).some((s) => s.name === "comp"),
-         ).toBe(false);
+         ).toBe(true);
 
-         await expect(
-            run(
-               pkg,
-               "run: comp -> { select: org_id, amount; order_by: org_id }",
-               {
-                  GROUPS: [7],
-               },
-            ),
-         ).rejects.toBeInstanceOf(AccessDeniedError);
+         await buildAndBindColocated(
+            pkg,
+            "comp",
+            "comp_materialized",
+            `SELECT * FROM (VALUES (7, 1000), (8, 2000)) AS t(org_id, amount)`,
+         );
+
+         const rows = await run(
+            pkg,
+            "run: comp -> { select: org_id, amount; order_by: org_id }",
+            { GROUPS: [7] },
+         );
+         expect(rows).toEqual([{ org_id: 7, amount: 1000 }]);
       },
       { timeout: 60000 },
    );
@@ -466,6 +458,13 @@ source: comp is combo -> { select: org_id, amount }
          // limitation of one specific shape (dimension SELECTED into a
          // persist source's own projection), not a defect in this task's
          // fix — flagged in the report.
+         //
+         // Left on the DIMENSION form deliberately (not migrated with the
+         // rest of this file — see task-3-report.md): the wrinkle pinned
+         // here (a gate dimension selectable as an output column, forcing
+         // BUILD-time evaluation) is specific to the gate being a field. A
+         // source-line annotation is never a selectable column, so this
+         // shape has no equivalent under the surviving form.
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental.persistence
 
@@ -497,7 +496,7 @@ source: orders is base -> { select: id, org_id, amount } extend {
    );
 
    it(
-      "the DIMENSION form, $GROUPS-based: two different callers reading the SAME bound artifact get two DIFFERENT row sets — the gate is re-evaluated per query, never baked into the shared build",
+      "$GROUPS-based: two different callers reading the SAME bound artifact get two DIFFERENT row sets — the gate is re-evaluated per query, never baked into the shared build",
       async () => {
          // The test above proves the classification/graft machinery with a
          // givenless static predicate — itself a W1 shape, which cannot
@@ -518,11 +517,9 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 'org1', 10), (2, 'org2', 20)) AS t(id, org_id, amount)
 """)
 
+#(authorize) org_id in $GROUPS
 #@ persist name="orders"
-source: orders is base -> { select: id, org_id, amount } extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
-}
+source: orders is base -> { select: id, org_id, amount }
 `,
          });
          // Materialized data is DISTINCT from the live SQL above, so a
@@ -572,11 +569,9 @@ source: base is duckdb.sql("""
   SELECT * FROM (VALUES (1, 10), (2, 20)) AS t(org_id, amount)
 """)
 
+#(authorize) org_id = $ORG
 #@ persist name="orders"
-source: orders is base -> { select: amount } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+source: orders is base -> { select: amount }
 `,
             }),
          ).rejects.toThrow(/org_id/);
