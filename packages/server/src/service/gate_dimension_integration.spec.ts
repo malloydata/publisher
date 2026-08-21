@@ -1228,6 +1228,39 @@ describe("caller-submitted derivations cannot launder the gate away", () => {
          "a forged declaration inside a string literal cannot relabel the real base",
          "source: mine is X extend { except: authorized }\nrun: mine -> { where: org_id != 'source: mine is Open'; select: id; order_by: id }",
       ],
+      // Round 3. The first five put a character the stripper treats as
+      // opening a comment or a literal INSIDE a backtick-quoted identifier,
+      // which Malloy lexes as one token — so the stripper blanked real
+      // syntax the compiler still read. The last two are grammar the
+      // declaration pattern could not read at all.
+      [
+         "an apostrophe inside a backtick-quoted alias name",
+         "source: `a'` is X extend { except: authorized }\nrun: `a'` -> { select: id; order_by: id }",
+      ],
+      [
+         "a `--` inside a backtick-quoted alias name",
+         "source: `z--q` is X extend { except: authorized }\nrun: `z--q` -> { select: id; order_by: id }",
+      ],
+      [
+         "a `//` inside a backtick-quoted alias name",
+         "source: `z//q` is X extend { except: authorized }\nrun: `z//q` -> { select: id; order_by: id }",
+      ],
+      [
+         "a block-comment opener inside a backtick-quoted alias name",
+         "source: `z/*q` is X extend { except: authorized }\nrun: `z/*q` -> { select: id; order_by: id }",
+      ],
+      [
+         "an innocuous earlier backticked FIELD name erases every declaration after it — plain laundering, no unusual alias",
+         "source: probe is Open extend { dimension: `q'` is 1 }\nsource: mine is X extend { except: authorized }\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "a parenthesised base",
+         "source: mine is (X extend { except: authorized })\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "a non-ASCII alias name",
+         "source: café is X extend { except: authorized }\nrun: café -> { select: id; order_by: id }",
+      ],
    ];
 
    for (const [label, text] of LAUNDERING_SHAPES) {
@@ -1285,6 +1318,35 @@ describe("caller-submitted derivations cannot launder the gate away", () => {
             expect(await idsForText(model, text, { GROUPS: ["org1"] })).toEqual(
                [1, 2, 3, 4],
             );
+         } finally {
+            await cleanup(duckdb, dir);
+         }
+      });
+   }
+
+   /** The admits the round-3 inversion could most easily break: a derivation
+    *  over an UNGATED model source must still serve. Pinned as a pair —
+    *  plain and non-ASCII — so the blast radius is bounded by tests. */
+   const UNGATED_DERIVATIONS: ReadonlyArray<[string, string]> = [
+      [
+         "an `accept:` derivation over the author's ungated source",
+         "source: mine is Open extend { accept: id, org_id }\nrun: mine -> { select: id; order_by: id }",
+      ],
+      [
+         "a non-ASCII alias over the author's ungated source",
+         "source: café is Open extend { accept: id, org_id }\nrun: café -> { select: id; order_by: id }",
+      ],
+      [
+         "a two-hop derivation over the author's ungated source",
+         "source: a is Open extend {}\nsource: b is a extend { accept: id, org_id }\nrun: b -> { select: id; order_by: id }",
+      ],
+   ];
+
+   for (const [label, text] of UNGATED_DERIVATIONS) {
+      it(`still serves a request-declared derivation over an UNGATED source — ${label}`, async () => {
+         const { model, duckdb, dir } = await createModel(GATED_MODEL);
+         try {
+            expect(await idsForText(model, text, {})).toEqual([1, 2, 3, 4]);
          } finally {
             await cleanup(duckdb, dir);
          }

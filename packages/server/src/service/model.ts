@@ -308,6 +308,13 @@ function isGivenBindingFailure(err: unknown): boolean {
    );
 }
 
+/**
+ * Name budget for {@link Model.requestChainProvesUngated}'s walk over a
+ * request's own derivation declarations. Exceeding it fails the proof (and so
+ * denies), which is why it only has to be larger than any real chain.
+ */
+const REQUEST_CHAIN_MAX_NAMES = 64;
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -1656,6 +1663,27 @@ export class Model {
     * executed target being some ungated source) — a false positive on text the
     * author published. The compiled target has neither failure mode.
     *
+    * ## The default is DENY
+    *
+    * When the compiled entry point is not a `modelDef.contents` key — the
+    * request declared it — this denies unless the scan POSITIVELY establishes a
+    * complete chain to model-declared ungated sources
+    * ({@link requestChainProvesUngated}). It does not ask "did I find a
+    * derivation reaching a gated source"; it asks "did I prove this reaches
+    * only ungated ones", and treats every other answer as a denial.
+    *
+    * That inversion is the substance of this defence, and it is what three
+    * earlier rounds got wrong. Asking the question the other way round meant an
+    * UNREADABLE declaration read as "not a request-declared derivation" and was
+    * admitted, so every divergence between the scan and Malloy's grammar was a
+    * full bypass rather than a false positive — and they kept coming: a
+    * declaration hidden in a comment or forged in a string literal, then a
+    * backtick-quoted name whose contents blanked every declaration after it
+    * (an innocuous `` dimension: `q'` is 1 `` was enough), then a parenthesised
+    * base, then a non-ASCII name. Each was found after the previous round
+    * shipped. With the default inverted, the same class of miss costs an
+    * over-denial on a legitimate derivation instead.
+    *
     * ## Why the DERIVATION chain is still read from the text
     *
     * Because Malloy does not keep one. Measured against `@malloydata/malloy`:
@@ -1679,14 +1707,21 @@ export class Model {
     * `authorize_integration.spec.ts`. So the defence is text-shaped by
     * necessity, not by preference.
     *
-    * What that costs is a residual, and it is named rather than papered over:
-    * a spelling of `source: A is B` that {@link buildDerivationBaseMap} cannot
-    * read, but Malloy can, would slip through. The two ways to make a scan
-    * misread text — hiding syntax in a comment and forging it inside a string
-    * literal — are removed before the scan
-    * ({@link stripMalloyCommentsAndLiterals}), and the map over-collects
-    * (every base per name, `query:` included) so an added edge can only widen
-    * denial. What remains is the grammar itself.
+    * The scan is still hardened, because a miss now costs a legitimate
+    * derivation rather than a leak and that is worth minimising too: comments
+    * and string-literal bodies are blanked and backtick spans skipped whole
+    * before the scan ({@link stripMalloyCommentsAndLiterals}), the pattern
+    * reads Unicode identifiers, an optional parameter list and a parenthesised
+    * base, and the map over-collects (every base per name, `query:` included)
+    * — which is safe in the same direction, since an extra edge adds a name
+    * that must also be proven.
+    *
+    * Known over-denials, all of the safe kind: a derivation over
+    * `compose(...)` or a parameterised source resolves to a base name the walk
+    * cannot place, so it denies. Both need an experimental flag to compile at
+    * all. A request-declared source over a raw `connection.table(...)` /
+    * `.sql(...)` never reaches here — restricted-mode compilation refuses it
+    * first.
     *
     * ## The line, and what it costs
     *
@@ -1708,8 +1743,8 @@ export class Model {
       runnable: QueryMaterializer,
       query: string,
    ): Promise<void> {
-      // Cheap exits first: a model with no gate has nothing to launder.
-      if (this.entryPointGatesBySource.size === 0) return;
+      // Nothing to launder unless this model actually declares a gate.
+      if (!this.declaresAnyGate()) return;
       const entryPoint =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
       // An unresolvable target is a query that did not compile: it returns no
@@ -1718,43 +1753,123 @@ export class Model {
       // protecting nothing — a caller naming the `internal` gate dimension, or
       // redefining it, lands exactly here.
       if (!entryPoint) return;
-      const basesOf = buildDerivationBaseMap(
-         stripMalloyCommentsAndLiterals(query),
+      // A MODEL-declared entry point. `entryPointGatesBySource` is keyed by
+      // `as ?? name` over every source in `modelDef.contents`, so having a key
+      // at all IS "the author declared this source" — and its gates were folded
+      // in by name, which makes the empty walk result that brought us here
+      // authoritative for it.
+      if (this.entryPointGatesBySource.has(entryPoint)) return;
+      // Ephemeral: an entry point THIS REQUEST declared. Denied unless the scan
+      // POSITIVELY establishes a complete chain to model-declared ungated
+      // sources — see this method's doc for why the default is deny.
+      const proof = this.requestChainProvesUngated(
+         entryPoint,
+         buildDerivationBaseMap(stripMalloyCommentsAndLiterals(query)),
       );
-      // Not a derivation THIS REQUEST declared: a model-declared entry point,
-      // whose gates `entryPointGatesBySource` already folded in by name, so the
-      // empty walk result that brought us here is authoritative for it.
-      if (!basesOf.has(entryPoint)) return;
-      // Breadth-first over every base declared for every name reached, so a
-      // chain of any depth is covered and a second declaration of a name can
-      // only add a base to check.
-      const seen = new Set<string>([entryPoint]);
+      if (proof.proven) return;
+      recordRowLevelGateDecision("denied_by_gate");
+      logger.debug(
+         "Request-declared entry point in a gated model is not provably ungated; denying",
+         {
+            modelPath: this.modelPath,
+            entryPoint,
+            reason: proof.reason,
+            at: proof.at,
+         },
+      );
+      // Names the compiled entry point the request itself declared — never the
+      // gate's column, nor which gated source it may have reached.
+      throw new AccessDeniedError(`Access denied for source "${entryPoint}".`);
+   }
+
+   /** Memo for {@link declaresAnyGate}. */
+   private declaresAnyGateMemo?: boolean;
+
+   /**
+    * Whether ANY source in this model carries an entry-point gate.
+    *
+    * Read off {@link entryPointGatesBySource}, not {@link hasAuthorize}: that
+    * one reads top-level sources' OWN gates off the extracted `sources` list
+    * and so misses a gate a source only inherits. Note also that
+    * `entryPointGatesBySource.size > 0` is NOT this predicate — it is keyed for
+    * every declared source, gated or not.
+    */
+   private declaresAnyGate(): boolean {
+      this.declaresAnyGateMemo ??= Array.from(
+         this.entryPointGatesBySource.values(),
+      ).some((gates) => gates.length > 0);
+      return this.declaresAnyGateMemo;
+   }
+
+   /**
+    * Whether the request's own declarations establish that `entryPoint` — an
+    * EPHEMERAL entry point, already known not to be a model-declared source —
+    * derives only from model-declared UNGATED sources.
+    *
+    * This is a PROOF, and its absence denies. Every name reached must resolve
+    * either to a model-declared source (the terminal this is looking for:
+    * ungated proves that branch, gated disproves the whole chain) or to a
+    * declaration the scan could read and can keep following. A name that is
+    * neither — because the declaration used grammar the pattern cannot read,
+    * or because the text never declared it at all — ends the walk with nothing
+    * proven, which denies.
+    *
+    * That direction is the entire point of this function, and it is what makes
+    * the pattern pair in `./query_text` non-critical: a divergence between
+    * those patterns and Malloy's grammar now costs an over-denial on a
+    * legitimate derivation, instead of admitting a laundered read of a gated
+    * source. Three rounds of this defence were lost to exactly such
+    * divergences — a comment or a literal that hid a declaration, a
+    * backtick-quoted name whose contents blanked the declarations after it, a
+    * parenthesised base, a non-ASCII name — each of which read as "no
+    * derivation declared here" and was therefore admitted.
+    *
+    * Over-collection in the base map is safe in the same direction: an extra
+    * edge adds a name that must also be proven, so a false edge can only deny.
+    */
+   private requestChainProvesUngated(
+      entryPoint: string,
+      basesOf: Map<string, Set<string>>,
+   ):
+      | { proven: true; reason?: undefined; at?: undefined }
+      | {
+           proven: false;
+           reason: "reaches_gated_source" | "chain_not_established";
+           at: string;
+        } {
+      const seen = new Set<string>();
       const worklist = [entryPoint];
       for (let i = 0; i < worklist.length; i++) {
          const name = worklist[i];
-         if ((this.entryPointGatesBySource.get(name)?.length ?? 0) > 0) {
-            recordRowLevelGateDecision("denied_by_gate");
-            logger.debug(
-               "Request-declared derivation reaches a gated source with no gate on the compiled entry point; denying",
-               {
-                  modelPath: this.modelPath,
-                  entryPoint,
-                  gatedBase: name,
-               },
-            );
-            // Names the compiled entry point the request itself declared —
-            // never the gate's column, nor which gated source it reached.
-            throw new AccessDeniedError(
-               `Access denied for source "${entryPoint}".`,
-            );
+         if (seen.has(name)) continue;
+         seen.add(name);
+         // A chain this long is not a real derivation; stop rather than walk a
+         // caller-sized graph, and stop on the deny side.
+         if (seen.size > REQUEST_CHAIN_MAX_NAMES) {
+            return { proven: false, reason: "chain_not_established", at: name };
          }
-         for (const base of basesOf.get(name) ?? []) {
-            if (!seen.has(base)) {
-               seen.add(base);
-               worklist.push(base);
+         const modelGates = this.entryPointGatesBySource.get(name);
+         if (modelGates !== undefined) {
+            if (modelGates.length > 0) {
+               return {
+                  proven: false,
+                  reason: "reaches_gated_source",
+                  at: name,
+               };
             }
+            // A model-declared ungated source: this branch is proven, and the
+            // walk stops here rather than following the AUTHOR's own
+            // derivations, which is what keeps the documented model-authored
+            // fail-open intact.
+            continue;
          }
+         const bases = basesOf.get(name);
+         if (!bases || bases.size === 0) {
+            return { proven: false, reason: "chain_not_established", at: name };
+         }
+         for (const base of bases) worklist.push(base);
       }
+      return { proven: true };
    }
 
    /**

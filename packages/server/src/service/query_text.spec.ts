@@ -121,6 +121,26 @@ describe("service/query_text", () => {
          expect(strip("source: `my-src` is X")).toBe("source: `my-src` is X");
       });
 
+      it("skips a backtick span WHOLE — a comment or quote character inside a legal identifier is not syntax", () => {
+         // Malloy lexes a backticked identifier as one token. Scanning inside
+         // one let each of these blank the declarations that follow, which was
+         // a bypass; the whole tail must survive untouched.
+         for (const name of ["a'", 'a"', "z--q", "z//q", "z/*q"]) {
+            const t = `source: \`${name}\` is X\nrun: mine -> { select: id }`;
+            expect(strip(t)).toBe(t);
+         }
+      });
+
+      it("does not let a backticked FIELD name erase later declarations", () => {
+         const t =
+            "source: probe is Open extend { dimension: `q'` is 1 }\nsource: mine is X extend { except: authorized }";
+         expect(strip(t)).toBe(t);
+      });
+
+      it("stops at an unterminated backtick rather than blanking the rest", () => {
+         expect(strip("source: `oops is X")).toBe("source: `oops is X");
+      });
+
       it("does not shift any offset — output length always matches input", () => {
          for (const t of [
             "run: a -- c\nrun: b",
@@ -169,6 +189,21 @@ describe("service/query_text", () => {
                "mine",
             ),
          ).toEqual(new Set(["X"]));
+      });
+
+      it("reads a non-ASCII identifier", () => {
+         expect(buildDerivationBaseMap("source: café is X")).toEqual(
+            new Map([["café", new Set(["X"])]]),
+         );
+      });
+
+      it("reads a parenthesised base and a parameter list on the name", () => {
+         expect(
+            buildDerivationBaseMap("source: mine is (X extend { except: g })"),
+         ).toEqual(new Map([["mine", new Set(["X"])]]));
+         expect(
+            buildDerivationBaseMap("source: mine(p::string) is Open"),
+         ).toEqual(new Map([["mine", new Set(["Open"])]]));
       });
 
       it("does not read a forged declaration out of a string literal", () => {
