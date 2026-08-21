@@ -45,24 +45,20 @@ jobs:
 
           PKGS="packages/sdk/package.json packages/app/package.json packages/server/package.json"
 
-          # Rewrite the top-level "version" field in each workspace package.json.
-          # We can't use `npm version --workspaces` here: this repo uses Bun's
-          # `workspace:*` dependency protocol, which npm rejects with
-          # EUNSUPPORTEDPROTOCOL. A direct, format-preserving replace avoids npm
-          # entirely.
-          set_version() {
-            local ver="$1" f
-            for f in $PKGS; do
-              node -e '
-                const fs = require("fs");
-                const [p, ver] = process.argv.slice(1);
-                const s = fs
-                  .readFileSync(p, "utf8")
-                  .replace(/("version"\s*:\s*")[^"]*(")/, `$1${ver}$2`);
-                fs.writeFileSync(p, s);
-              ' "$f" "$ver"
-            done
-          }
+          # Rewriting the top-level "version" field in each workspace
+          # package.json now lives in scripts/set-version.mjs, because
+          # `gh-release` needs the same thing on the post-release stamp branch
+          # and a shell function cannot be shared between jobs. It kept this
+          # function's reasoning with it — the short version being that
+          # `npm version --workspaces` rejects this repo's `workspace:*`
+          # protocol with EUNSUPPORTEDPROTOCOL, so the replace is hand-rolled
+          # and format-preserving — and gained the two assertions this function
+          # was missing: it refuses a version that would corrupt the JSON, and
+          # it fails rather than rewriting a file whose "version" field it could
+          # not find. That second one mattered: this function wrote such a file
+          # back byte-identical and exited 0, so the release published the OLD
+          # version under the new tag. scripts/set-version.spec.ts covers it,
+          # and `build.yml`'s lint_format runs that on every PR.
 
           # Refuses anything that is not a plain major.minor.patch, rather than
           # bumping it into nonsense. Splitting "0.0.250-rc.1" on "." gives
@@ -160,7 +156,32 @@ jobs:
             done
           fi
 
-          set_version "$NEW_VERSION"
+          # Unquoted $PKGS, as the `git add` below is: the word splitting is the
+          # point. The script exits non-zero on anything it could not set, and
+          # `set -euo pipefail` is in force, so a failure stops here rather than
+          # pushing a branch that still declares the old version.
+          # shellcheck disable=SC2086
+          node scripts/set-version.mjs "$NEW_VERSION" $PKGS >/dev/null
+
+          # Annotate the no-diff case, which used to be unreachable and is not
+          # any more. `main` permanently lagged npm, so these three files always
+          # differed from the version being released; now the post-release stamp
+          # PR resets them, and `main` declaring a real version is ordinary. If it
+          # declares THIS one, `git add` stages nothing and `git commit` exits
+          # non-zero, killing the step under `set -euo pipefail` with a bare
+          # "nothing to commit" and no annotation — the only failure path in this
+          # step without one.
+          #
+          # It fails closed either way, so this only buys a readable message. It
+          # is reachable when `main` declares the requested version and neither
+          # `release/sdk-<v>` nor `v<v>` exists: a hand-edit of those three files,
+          # or a release branch AND its tag both deleted. `version_taken` above
+          # catches every other route here.
+          # shellcheck disable=SC2086
+          if git diff --quiet -- $PKGS; then
+            echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those three package.json files were edited by hand. Pick the next free version instead."
+            exit 1
+          fi
 
           BRANCH_NAME="release/sdk-${NEW_VERSION}"
           git checkout -b "$BRANCH_NAME"
@@ -831,8 +852,18 @@ jobs:
       # that guard watches. Adding a watched path that RELEASE_NOTES.md matches,
       # without re-reading this comment, would turn every narrative release into
       # an aborted package dispatch.
-      - name: Push a branch stamping the shipped sections
-        if: ${{ !contains(needs.prepare.outputs.new_version, '-') }}
+      # `+` as well as `-`, because the two guards otherwise disagree about what
+      # counts as a prerelease. `scripts/set-version.mjs` accepts a `+build`
+      # suffix (it is valid semver and nothing is computed from it), so
+      # `-f version=0.4.0+ci` is not "a prerelease" to a `-`-only test and the
+      # reset would write `0.4.0+ci` into main's three manifests. `prepare`'s
+      # floor guard then requires a plain major.minor.patch, and `sort -V` ranks
+      # `0.4.0+ci` above `0.4.0`, so it wins the max and is immediately refused —
+      # wedging every derived dispatch until someone hand-edits main. Nobody
+      # dispatches a `+build` version, which is exactly why this would be
+      # discovered the hard way.
+      - name: Push a branch stamping the shipped sections and version
+        if: ${{ !contains(needs.prepare.outputs.new_version, '-') && !contains(needs.prepare.outputs.new_version, '+') }}
         # A backstop, not the error handling: every failure below is reported
         # explicitly, as a ::warning and a job-summary line, because a stamp that
         # silently did not happen is re-shipped as narrative on the next release.
@@ -850,10 +881,20 @@ jobs:
           git config --local user.email "${{ github.actor }}@users.noreply.github.com"
           git config --local user.name "${{ github.actor }}"
 
+          # The same three files `prepare` bumps on the release branch. Reset
+          # here so `main` ends the release declaring what shipped.
+          PKGS="packages/sdk/package.json packages/app/package.json packages/server/package.json"
+
+          # The branch name is unchanged even though the branch now carries the
+          # version reset as well. It is the identifier the publisher-release
+          # skill and CONTEXT.md both tell a releaser to look for
+          # (`git ls-remote --heads origin 'refs/heads/release-notes-stamp-*'`),
+          # and renaming it would break that recovery path to buy nothing.
           BRANCH="release-notes-stamp-${VERSION}"
           STAMP_LOG="$(mktemp)"
           FAILURE=""
           STAMPED=0
+          VERSIONED=0
           OUTCOME=""
 
           # This step prepares a branch and hands a human a link. It deliberately
@@ -924,13 +965,56 @@ jobs:
               sed 's/^/[release-notes] /' "$STAMP_LOG"
               echo "::warning title=Release notes::a section on the release page is no longer in RELEASE_NOTES.md on main (logged above) and was not stamped"
             fi
-            if [ "$STAMPED" = "0" ]; then
-              # Two different states, and conflating them is how a summary line
-              # ends up contradicting a warning the same run already wrote. A
-              # non-empty titles file means narrative DID reach the release page
-              # and none of it could be stamped here; empty means there was none
-              # to begin with — or that `extract` failed, since that path
-              # deliberately truncates the file.
+            # Reset main's declared sdk/app/server version to what just shipped,
+            # on this same branch. `main` has never carried the released version:
+            # release branches are never merged back, so packages/sdk/package.json
+            # sat 41 patches behind npm and could not be read by anything.
+            #
+            # Here and not in `prepare`, for a reason that is easy to undo by
+            # accident. `prepare` stages exactly these three files and commits
+            # them; if `main` already declared the version being released there
+            # would be no diff, `git commit` would exit non-zero, and that step
+            # would die under `set -euo pipefail` before pushing anything — and
+            # once this reset works, `main` declaring the released version is the
+            # NORMAL state. So the reset has to happen after the release, where a
+            # no-op is allowed.
+            #
+            # Which is exactly why VERSIONED is read and not ignored: on this
+            # branch a zero is ordinary (a re-run, or main already reset) and must
+            # not commit, while the notes may have nothing to stamp either. Every
+            # combination of the two has to be a valid outcome, including both
+            # zero.
+            # A warning, NOT a `continue`. This half must never be able to lose
+            # the other: `stamp` has already run and may have rewritten headings,
+            # so abandoning the iteration here throws away a successful stamp and
+            # leaves main's headings reading [Unreleased] — the exact state this
+            # whole step exists to prevent, and the one the summary below calls
+            # the expensive half. Measured, with a version field missing from
+            # main's app manifest: the stamp succeeded, this returned non-zero,
+            # and the step pushed nothing at all. The retry was pure waste too,
+            # since a malformed manifest fails identically on the second pass.
+            #
+            # VERSIONED=0 is safe rather than merely convenient: the staging
+            # below is conditional on it, so a partial write is left unstaged and
+            # the `checkout -f -B` at the top of the next iteration discards it.
+            #
+            # Unquoted $PKGS, as the `git add` below is: the word splitting is
+            # the point.
+            # shellcheck disable=SC2086
+            if ! VERSIONED="$(node scripts/set-version.mjs "$VERSION" $PKGS 2>"$STAMP_LOG")"; then
+              sed 's/^/[set-version] /' "$STAMP_LOG"
+              echo "::warning title=Release notes::could not reset main's declared version (logged above); continuing with the release notes only. main will keep declaring its previous version, which prepare's max(npm, declared) floor tolerates."
+              VERSIONED=0
+            fi
+
+            if [ "$STAMPED" = "0" ] && [ "$VERSIONED" = "0" ]; then
+              # Nothing to stamp and nothing to reset. Two different states for
+              # the notes half, and conflating them is how a summary line ends up
+              # contradicting a warning the same run already wrote. A non-empty
+              # titles file means narrative DID reach the release page and none of
+              # it could be stamped here; empty means there was none to begin with
+              # — or that `extract` failed, since that path deliberately truncates
+              # the file.
               if [ -s "$TITLES_FILE" ]; then
                 OUTCOME="unstamped"
               else
@@ -939,13 +1023,28 @@ jobs:
               break
             fi
 
-            git add RELEASE_NOTES.md || { FAILURE="could not stage RELEASE_NOTES.md"; continue; }
-            # No "already stamped" short-circuit here. `stamp` reports a non-zero
-            # count only when it rewrote a heading, so at this point the tree
-            # always differs from origin/main and such a check could never fire.
-            # If that ever stops holding, `git commit` fails on an empty diff and
-            # is reported as a failure, which is the honest outcome.
-            git commit -s -m "docs: stamp the release notes shipped in ${VERSION}" \
+            # Stage only what changed, so the commit's contents match what the
+            # summary below claims. Staging an unchanged file is harmless, but
+            # staging RELEASE_NOTES.md when nothing was stamped would make a
+            # version-only commit read as a notes commit in `git show --stat`.
+            if [ "$STAMPED" != "0" ]; then
+              git add RELEASE_NOTES.md || { FAILURE="could not stage RELEASE_NOTES.md"; continue; }
+            fi
+            if [ "$VERSIONED" != "0" ]; then
+              # shellcheck disable=SC2086
+              git add $PKGS || { FAILURE="could not stage the version files"; continue; }
+            fi
+
+            # One stable title whatever the branch carries, with the detail in
+            # the body. The publisher-release skill's optional PR search matches
+            # on it; its primary check is `git ls-remote` for the branch name,
+            # which is title-independent. At least one of the two counts is
+            # non-zero by the break above, so `git commit` cannot be handed an
+            # empty diff here — and if that ever stops holding it fails and is
+            # reported as a failure, which is the honest outcome.
+            git commit -s \
+              -m "chore(release): stamp ${VERSION} on main" \
+              -m "${STAMPED} release-note section(s) stamped, ${VERSIONED} version file(s) reset." \
               || { FAILURE="could not commit the stamp"; continue; }
 
             # NOT forced. A stamp branch already on the remote may carry a
@@ -971,14 +1070,51 @@ jobs:
           # step dying before it wrote anything, and the whole point of the
           # annotations is that a skipped stamp is visible without opening logs.
           COMPARE_URL="${COMPARE_BASE}/main...${BRANCH}?expand=1"
-          echo "## 📝 Release notes" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 📝 Release notes and version" >> "$GITHUB_STEP_SUMMARY"
+
+          # Any OTHER stamp branch still on the remote, which is now a much more
+          # likely and much more costly situation than it was.
+          #
+          # Before the version reset, a release with no narrative pushed no branch
+          # at all, so an outstanding stamp branch meant someone had skipped a
+          # narrative release. Now VERSIONED is 3 on essentially every release, so
+          # EVERY release pushes one — and two outstanding branches both cut from
+          # origin/main edit the same three version lines, which is an
+          # unavoidable 3-way conflict on whichever is merged second. Measured in
+          # both merge orders.
+          #
+          # That matters beyond tidiness: faced with "conflicted, and its version
+          # is stale anyway", the natural move is to CLOSE it — which silently
+          # discards the notes half, the half that re-appends this release's
+          # narrative to every subsequent release page. So name it here rather
+          # than leaving a releaser to work it out from a conflict marker.
+          STALE_BRANCHES=""
+          if ! STALE_BRANCHES="$(git ls-remote --heads origin 'refs/heads/release-notes-stamp-*' 2>/dev/null \
+                | sed 's#.*refs/heads/##' | grep -vx "$BRANCH" || true)"; then
+            STALE_BRANCHES=""
+          fi
+          if [ -n "$STALE_BRANCHES" ]; then
+            echo "::warning title=Release notes::an earlier stamp branch is still unmerged ($(tr '\n' ' ' <<<"$STALE_BRANCHES")); merge the OLDEST first or the newer one conflicts in the three version files"
+            {
+              echo "⚠️ **An earlier stamp PR is still open.** These branches are still on the remote:"
+              echo
+              while IFS= read -r stale; do echo "- \`${stale}\`"; done <<<"$STALE_BRANCHES"
+              echo
+              echo "**Merge them oldest-first, before this release's.** Each stamp branch is cut from \`origin/main\` and rewrites the same three \`package.json\` version lines, so whichever is merged second will conflict there. Resolve in favour of the **newer** version and keep both sets of \`RELEASE_NOTES.md\` edits."
+              echo
+              echo "Do not close a conflicted stamp PR to clear it. The version half is recoverable — \`prepare\` derives its floor from \`max(npm latest, main declared)\` either way — but the notes half is not: those headings still read \`[Unreleased]\`, so every later release re-appends that release's narrative to its own page."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           if [ -n "$FAILURE" ]; then
-            echo "::warning title=Release notes::${FAILURE}, so RELEASE_NOTES.md on main is NOT stamped. Its heading still reads [Unreleased], which means the NEXT release re-appends this release's narrative to its own page, and so does every release after it. Recovery is in the publisher-release skill, step 3 — do NOT run an unscoped stamp, it rewrites every [Unreleased] section including ones this release did not ship."
+            echo "::warning title=Release notes::${FAILURE}, so RELEASE_NOTES.md on main is NOT stamped and main's declared version is NOT reset. The heading still reads [Unreleased], which means the NEXT release re-appends this release's narrative to its own page, and so does every release after it. Recovery is in the publisher-release skill, step 3 — do NOT run an unscoped stamp, it rewrites every [Unreleased] section including ones this release did not ship."
             {
               echo "⚠️ **Not stamped on \`main\`** — ${FAILURE}."
               echo
-              echo "\`RELEASE_NOTES.md\` still reads \`[Unreleased]\`, so the next release will re-append this release's narrative to its page."
+              echo "\`RELEASE_NOTES.md\` still reads \`[Unreleased]\`, so the next release will re-append this release's narrative to its page. \`main\`'s \`packages/{sdk,app,server}/package.json\` were not reset either, so they still declare whatever they did before this release."
+              echo
+              echo "The version half is the cheaper of the two to leave: nothing reads it at runtime, and \`prepare\` derives its floor from \`max(npm latest, main declared)\`, so it is correct whether or not this landed. The notes half is not — see below."
               echo
               echo "Check whether the branch reached the remote anyway — if \`release-notes-stamp-${VERSION}\` is there, the stamp is computed correctly and only needs a PR: [open it](${COMPARE_URL}). If it is not, follow step 3 of the \`publisher-release\` skill. **Do not run \`release-notes.mjs stamp\` without \`--titles\`**: unscoped it stamps every \`[Unreleased]\` section, including ones this release did not ship."
             } >> "$GITHUB_STEP_SUMMARY"
@@ -995,15 +1131,24 @@ jobs:
                 echo "::notice title=Release notes::${BRANCH} was already on the remote and was left untouched; open ${COMPARE_URL}"
                 LEAD="Branch \`${BRANCH}\` was **already on the remote** and has been left exactly as it was, in case it carries a fix someone pushed. Check it, then open the PR."
               else
-                echo "::notice title=Release notes::pushed ${BRANCH} stamping ${STAMPED} section(s) as ${VERSION}; open ${COMPARE_URL}"
-                LEAD="Pushed \`${BRANCH}\`, stamping ${STAMPED} section(s) as \`${VERSION}\`."
+                echo "::notice title=Release notes::pushed ${BRANCH} stamping ${STAMPED} section(s) and resetting ${VERSIONED} version file(s) as ${VERSION}; open ${COMPARE_URL}"
+                LEAD="Pushed \`${BRANCH}\`, stamping ${STAMPED} release-note section(s) and resetting ${VERSIONED} version file(s) to \`${VERSION}\`."
               fi
               {
                 echo "$LEAD"
                 echo
                 echo "👉 **[Open the pull request](${COMPARE_URL}) and merge it before the next release.**"
                 echo
-                echo "This last step is a human's on purpose. A PR opened by a person triggers \`pull_request\`, so its checks run and any maintainer can merge it; one opened by this workflow would never trigger them, leaving required checks at \`expected\` and an admin as the only person who could merge. Left unopened, the headings on \`main\` still read \`[Unreleased]\` — which is exactly what the next release's \`extract\` matches, so ${VERSION}'s narrative lands on the next release's page too, and on every one after that."
+                echo "This last step is a human's on purpose. A PR opened by a person triggers \`pull_request\`, so its checks run and any maintainer can merge it; one opened by this workflow would never trigger them, leaving required checks at \`expected\` and an admin as the only person who could merge. Left unopened, the headings on \`main\` still read \`[Unreleased]\` — which is exactly what the next release's \`extract\` matches, so ${VERSION}'s narrative lands on the next release's page too, and on every one after that. \`main\` also keeps declaring the pre-release version, which is the state this reset exists to end."
+                # The `unstamped` case below cannot be reached when there is also
+                # a version to reset: a non-zero VERSIONED carries the commit, so
+                # the outcome is `pushed` and that whole block is skipped. Say it
+                # here instead, or a branch that stamped NO narrative reads as an
+                # unqualified success and the ::warning above it looks incidental.
+                if [ "$STAMPED" = "0" ] && [ -s "$TITLES_FILE" ]; then
+                  echo
+                  echo "⚠️ **Note: this branch resets the version but stamps no narrative.** This release's page carries hand-written sections, yet none of the headings it recorded are still \`[Unreleased]\` on \`main\` — they were edited or removed while the release ran. See the warning above for which. Merging this PR does not fix that; check those sections on \`main\` say what they should and carry the version that shipped them."
+                fi
               } >> "$GITHUB_STEP_SUMMARY"
               ;;
             unstamped)
@@ -1016,15 +1161,15 @@ jobs:
               {
                 echo "⚠️ **Narrative shipped, nothing stamped.** This release's page carries hand-written sections, but none of the headings it recorded are still \`[Unreleased]\` on \`main\` — they were edited or removed while the release ran. See the warning above for which."
                 echo
-                echo "No branch was pushed. Check that those sections on \`main\` say what they should, and carry the version that actually shipped them."
+                echo "No branch was pushed, and \`main\` already declared \`${VERSION}\` so there was no version to reset either. Check that those sections on \`main\` say what they should, and carry the version that actually shipped them."
               } >> "$GITHUB_STEP_SUMMARY"
               ;;
             nothing)
-              echo "::notice title=Release notes::nothing to stamp on main"
+              echo "::notice title=Release notes::nothing to stamp and no version to reset on main"
               {
-                echo "Nothing to stamp — no \`[Unreleased]\` headings were recorded as shipping in this release, so its page carries the generated PR list only."
+                echo "Nothing to stamp — no \`[Unreleased]\` headings were recorded as shipping in this release, so its page carries the generated PR list only. \`main\` already declared \`${VERSION}\`, so there was no version to reset either, and no branch was pushed."
                 echo
-                echo "If the step above warned that it could not read \`RELEASE_NOTES.md\`, that is the reason, and the narrative did not reach the release page either — this line does not rule that out."
+                echo "If the step above warned that it could not read \`RELEASE_NOTES.md\`, that is the reason for the first half, and the narrative did not reach the release page either — this line does not rule that out."
               } >> "$GITHUB_STEP_SUMMARY"
               ;;
           esac
