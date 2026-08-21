@@ -238,7 +238,24 @@ jobs:
         run: packages/python-client/scripts/build-python-sdk.sh
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/sdk-python-')
+    name: Publish to PyPI
+    # The same gate skills-npm.yml and create-malloy-package-npm.yml carry, and
+    # for the same reason: workflow_dispatch offers every branch in the ref
+    # dropdown, and the definition that runs is the one on the ref you pick, so
+    # `needs: build` is no protection — that job would build the same branch.
+    # release.yml's publish-packages dispatches this workflow on main, so the
+    # guard holds on that path too.
+    #
+    # This REPLACED `startsWith(github.ref, 'refs/tags/sdk-python-')`, which had
+    # never run once: `on: push` named `branches: [main]` and no `tags:`, so a
+    # tag push did not trigger this workflow at all and the job was unreachable.
+    # It is not repaired as a tag trigger, it is replaced, because a tag push
+    # cannot be made to work here without giving up the `paths:` filter above —
+    # a tag pointed at a commit already on main pushes no new commits, so a
+    # `paths` filter has no changed files to match and would filter the run out.
+    # Publishing now goes the same way the other two trains go: dispatched on
+    # main by publish-packages, or dispatched on main by hand.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -248,6 +265,55 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      # The sibling of skills-npm.yml's "Verify this version is not already
+      # published", and the reason is stronger here, not weaker: a PyPI filename
+      # can never be reused even after a delete, so a second upload of a version
+      # is refused for good rather than overwritten.
+      #
+      # This is for the human path. release.yml asks the same question before it
+      # dispatches and simply does not dispatch a version already on PyPI. First
+      # publish of a project answers 404 here and proceeds, which is correct and
+      # is the one run where nothing has been proven end to end before — see
+      # CONTEXT.md on the first publish.
+      - name: Verify this version is not already published
+        run: |
+          read -r NAME DECLARED SLUG <<<"$(python -c '
+          import re, tomllib
+          with open("packages/python-client/pyproject.toml", "rb") as f:
+              p = tomllib.load(f)["project"]
+          print(p["name"], p["version"], re.sub(r"[-_.]+", "-", p["name"]).lower())
+          ')"
+          if [ -z "$NAME" ] || [ -z "$DECLARED" ] || [ -z "$SLUG" ]; then
+            echo "::error title=Version::could not read name and version from packages/python-client/pyproject.toml"
+            exit 1
+          fi
+          # Same pattern as the bump check above and as the npm siblings, so what
+          # counts as a version has one answer across all three trains.
+          if [[ ! "$DECLARED" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            printf '%s\n' "$DECLARED" | sed 's/^/[pyproject] /'
+            echo "::error title=Version::the version in packages/python-client/pyproject.toml (logged above) is not a plain major.minor.patch with an optional -prerelease or +build"
+            exit 1
+          fi
+          # The STATUS is the answer; no --fail, because a 404 is an answer and
+          # not a failure. A transport failure makes curl print 000, which falls
+          # through to "did not answer" rather than to a green light.
+          STATUS="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+            "https://pypi.org/pypi/${SLUG}/${DECLARED}/json" 2>&1)" || STATUS=000
+          case "$STATUS" in
+            404)
+              echo "::notice title=Version::$NAME $DECLARED is not on PyPI; publishing"
+              ;;
+            200)
+              echo "::error title=Version::$NAME $DECLARED is already on PyPI, and a PyPI filename can never be reused. Bump the version in packages/python-client/pyproject.toml."
+              exit 1
+              ;;
+            *)
+              printf '%s\n' "$STATUS" | sed 's/^/[pypi] /'
+              echo "::error title=Version::PyPI answered ${STATUS} for $NAME $DECLARED; an unanswered registry is not a green light"
+              exit 1
+              ;;
+          esac
 
       - name: Build wheel and sdist
         run: |
@@ -262,4 +328,4 @@ jobs:
         run: |
           pip install twine
           cd packages/python-client
-          twine upload dist/* --non-interactive 
+          twine upload dist/* --non-interactive

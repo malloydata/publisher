@@ -178,17 +178,23 @@ live in step 2 below is mostly gone.
 
 Two caveats on that:
 
-- The **Python** check has nothing to catch today, because `malloy-publisher-sdk`
-  is not on PyPI at all: a project-level 404 is its pass. (It can still go red on
-  an unreadable `pyproject.toml` or a registry that answers neither 200 nor 404 —
-  it just cannot currently catch a missing bump.) `python-sdk.yml`'s `publish` job
-  is gated on a `refs/tags/sdk-python-*` ref while its `on: push` names
-  `branches:` and no `tags:`, so a tag push never triggers the workflow and that
-  job has never run. Note it is *reachable*, not sealed: the workflow has a
-  `workflow_dispatch`, and `gh workflow run python-sdk.yml --ref
-  sdk-python-0.1.0` names a tag ref, satisfies the gate, and would publish to
-  PyPI for the first time. Treat the Python version as unenforced, and that
-  command as a decision rather than a check.
+- The **Python** check has nothing to *catch* until the first publish lands,
+  because `malloy-publisher-sdk` is not on PyPI at all and a project-level 404 is
+  its pass. (It can still go red on an unreadable `pyproject.toml`, a version
+  that is not `major.minor.patch`, or a registry that answers neither 200 nor
+  404.) It starts enforcing like the npm checks the moment a version is up there,
+  so treat the Python version as unenforced only until then.
+
+  **And the release now publishes it.** `python-client` is the third package
+  `publish-packages` dispatches, so the next ordinary release is the first one
+  that would upload to PyPI. Read *The first PyPI publish* in
+  `.github/workflows/CONTEXT.md` before cutting it: `PYPI_TOKEN` has to be
+  account-scoped for a first upload (a project-scoped token cannot exist for a
+  project that does not), the name has to still be free, and `0.1.0` is what
+  ships — PyPI filenames can never be reused, so move the version before that
+  run if it is going to move at all. A failure there is cheap: it is dispatched
+  last, nothing depends on it, and re-running the job skips whatever already
+  published.
 - `bun.lock` and the root `package.json` change what `skills` publishes (its
   `dist/` is emitted by `tsc`, whose version bun resolves from the lockfile) but
   are **not** in `skills-npm.yml`'s trigger, so a lockfile-only PR never reaches

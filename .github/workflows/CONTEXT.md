@@ -26,7 +26,9 @@ published, because a PR run proves nothing about the ref a dispatch actually tar
 not repeat is the server suites and the Linux-only e2e suite.
 
 `app-playwright.yml` runs the browser suite on PRs. `python-sdk.yml` builds the Python client on PRs
-and pushes; its publish job has never run, see the gap note below.
+and pushes, and now publishes it too: it is the third train `publish-packages` dispatches. Its publish
+job has never actually run yet, so read *The first PyPI publish* below before cutting the release that
+would be its first.
 
 **None of the three publish workflows is purely a publish workflow any more, so a red check on a PR
 that touches one package can come from its own file rather than from `build.yml`.** Know which job:
@@ -157,15 +159,18 @@ Two gaps in that coverage, both named rather than assumed:
   check. Widening the trigger would run a full install, build and test suite on
   every dependency bump. The `publisher-release` skill's step 2 covers this case
   by hand.
-- The **PyPI** check has nothing to enforce yet, because nothing is published: a
-  project-level 404 is the pass. It is not *incapable* of failing — an
-  unreadable `pyproject.toml`, a version that is not `major.minor.patch`, or a
-  registry that answers neither 200 nor 404 all redden it — it just cannot
-  currently catch a missing bump. See the `python-sdk.yml` gap below.
+- The **PyPI** check has nothing to *catch* until the first publish lands,
+  because nothing is on PyPI and a project-level 404 is the pass. It is not
+  incapable of failing — an unreadable `pyproject.toml`, a version that is not
+  `major.minor.patch`, or a registry that answers neither 200 nor 404 all redden
+  it. **This is the one entry here with an expiry date**: the moment
+  `malloy-publisher-sdk` has a version on PyPI, this check starts enforcing
+  exactly like its npm siblings, and the 404 branch stops being the path every
+  run takes. See *The first PyPI publish* below.
 
 `release.yml` is `workflow_dispatch`-only and is the single place a release starts. Its `prepare` job
 bumps sdk/app/server, commits to a fresh `release/sdk-<version>` branch, and pushes it; `npm-sdk.yml`
-and `docker-image.yml` are then called with that ref. `publish-packages` triggers the other two
+and `docker-image.yml` are then called with that ref. `publish-packages` triggers the other three
 trains (see below). `gh-release` cuts the tag, and only after npm and Docker have both succeeded.
 
 `gh-release` also owns the release notes. It appends every `## [Unreleased]` section of
@@ -306,12 +311,25 @@ everything in this file that follows from them changes with it.
   This is why `@malloy-publisher/sdk`, `app`, and
   `server` have entries naming `release.yml` even though the `npm publish` calls live in
   `npm-sdk.yml`.
-- **`release.yml` dispatches the two independently-versioned packages, it does not call them.**
-  `publish-packages` triggers `skills-npm.yml` and `create-malloy-package-npm.yml` through the
-  Actions API, so each runs as its own top-level run and keeps its own npm entry naming its own file.
-  Converting either to `workflow_call` would force its npm entry to be re-pointed at `release.yml`
-  and would immediately break its manual dispatch. That is a one-way door, because there is only one
-  entry per package.
+- **`release.yml` dispatches the three independently-versioned packages, it does not call them.**
+  `publish-packages` triggers `skills-npm.yml`, `create-malloy-package-npm.yml` and `python-sdk.yml`
+  through the Actions API, so each runs as its own top-level run and keeps its own npm entry naming
+  its own file. Converting either npm one to `workflow_call` would force its npm entry to be
+  re-pointed at `release.yml` and would immediately break its manual dispatch. That is a one-way
+  door, because there is only one entry per package. `python-sdk.yml` uploads with a token rather
+  than OIDC, so it is not subject to that constraint — which is a reason not to rely on it, not a
+  reason to treat it differently: it is dispatched the same way so there is one mechanism to reason
+  about.
+- **The two registries differ in exactly two places.** `publish_pkg` is parameterised on how a
+  manifest is read (`read_manifest`) and how the registry is asked (`registry_has`, three-way:
+  published / free / did not answer). Everything else — the watched-path guard, the "main moved"
+  compare, the dispatch, the poll loop, the summary lines — is registry-agnostic and must stay that
+  way. A second copy of that function for PyPI is how the two would drift, and the npm one carries a
+  dozen fail-closed decisions that were each paid for.
+- **`timeout-minutes` on `publish-packages` tracks the package count.** It is three poll budgets plus
+  margin now. Keep it above N x `POLL_BUDGET_SECONDS`, or the LAST package timing out gets killed by
+  the job cap before it can print which package failed — the one diagnostic that says whether a
+  publish happened.
 - **Dispatch the children on `main`, never on the release branch.** `prepare` bumps only sdk/app/
   server, so a release branch's copies of these two packages are identical to `main`, and both
   children guard on `github.ref == 'refs/heads/main'`. Dispatched on a release branch their publish
@@ -339,23 +357,47 @@ everything in this file that follows from them changes with it.
   scripts-disabled would ship no `dist/` at all rather than an old pin, which is why this is a footnote
   and not a check.
 
-### Two packages that look publishable and are not
+### The first PyPI publish
 
-Both are recorded here rather than fixed, because each is a decision rather than a repair.
+`python-client` is the third train `publish-packages` dispatches, and it got there by replacing a
+publish gate that had never run rather than by repairing it. The old job was gated
+`if: startsWith(github.ref, 'refs/tags/sdk-python-')` while `on: push` named `branches: [main]` and no
+`tags:`, so a tag push did not trigger the workflow at all and the job was unreachable. It now carries
+the same gate as its two siblings, `workflow_dispatch` on `refs/heads/main`.
 
-**`python-sdk.yml`'s `publish` job has never run, and no push can reach it.** Its `on: push` names
-`branches: [main]` and no `tags:`, while the job is gated `if: startsWith(github.ref,
-'refs/tags/sdk-python-')`. A tag push therefore does not trigger the workflow at all, so that job has
-never fired and `malloy-publisher-sdk` is not on PyPI — the project URL 404s.
+**The tag trigger was not restored, and that is not tidiness.** A tag pointed at a commit already on
+`main` pushes no new commits, so the `paths:` filter on that `push` has no changed files to match and
+would filter the run out — the trigger would look repaired and still not fire, which is the exact bug
+being fixed. Restoring it for real means giving up the `paths:` filter and running the uv install and
+client regeneration on every push to `main`. One mechanism is the better trade, and it is the point of
+this whole file.
 
-**It is not sealed, though, and do not read it as an invariant the machinery enforces.** The workflow
-also carries a `workflow_dispatch`, and a dispatch may name any ref including a tag, so
-`gh workflow run python-sdk.yml --ref sdk-python-0.1.0` satisfies that gate and would publish
-`malloy-publisher-sdk` to PyPI today, for the first time, with no other change. Nothing is off by
-default here beyond nobody having run that command. That is also why the PyPI bump check has nothing
-to enforce yet, and why its job comment says so rather than letting a green check imply coverage.
-Repairing the trigger means deciding to publish the Python client deliberately, and exercising the
-`PYPI_TOKEN` path for real — which that one dispatch would do accidentally.
+**Nothing has been published yet, so the first release that reaches this step is the one run where the
+path has never been proven end to end.** Three preconditions, none of which CI can check for you:
+
+- **`PYPI_TOKEN` has to be an ACCOUNT-scoped token for the first upload.** A project-scoped token
+  cannot exist for a project that does not exist. After the first publish, mint a project-scoped one
+  and replace the secret — the account-scoped token can upload to every project the owner has, which
+  is not a permission this workflow needs twice.
+- **The name has to still be free.** `malloy-publisher-sdk` 404s today, and PyPI names are
+  first-come; nothing reserves it in the meantime.
+- **`0.1.0` is what would ship**, because that is what `packages/python-client/pyproject.toml`
+  declares. Note it shares its minor with `@malloy-publisher/skills`' `0.1.x` — different registries,
+  so not a collision, but see the versioning policy above on why the sdk train skips `0.1.x`. If it is
+  going to move, move it *before* the first publish: PyPI filenames can never be reused, so `0.1.0`
+  is spent the moment it uploads.
+
+The failure is cheap and recoverable, which is why this is a note and not a gate. `python-client` is
+dispatched last, and nothing depends on it; a failure there leaves the two npm packages already
+published, says so in the job summary, and re-running `publish-packages` skips whatever landed.
+
+`publish-packages` is also the only job that reads `pyproject.toml`, and it installs nothing on
+purpose because it holds `actions: write`. So it uses the runner's own `python3` for `tomllib`
+(stdlib from 3.11; ubuntu-24.04 ships 3.12) and asserts that rather than provisioning it — without the
+assertion, an image that moved `python3` back below 3.11 would report "could not read its manifest",
+which reads as a corrupt file and sends you to the wrong place.
+
+### One package that looks publishable and is not
 
 **`@malloydata/publisher-cli` at `0.0.1` is unpublished but not `private`.** It is in a different npm
 scope (`@malloydata`, not `@malloy-publisher`) and no workflow publishes it, so it looks shippable

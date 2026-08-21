@@ -331,16 +331,19 @@ jobs:
     # poll budget.
     needs: [ prepare, publish-npm ]
     runs-on: ubuntu-latest
-    # Two full poll budgets (25m each, below) plus checkout and setup, with
-    # margin. Keep this above 2 x POLL_BUDGET_SECONDS or a second package timing
-    # out is killed by the job cap before it can print which package failed.
-    timeout-minutes: 60
+    # THREE full poll budgets (25m each, below) plus checkout and setup, with
+    # margin. Keep this above N x POLL_BUDGET_SECONDS for the N packages
+    # dispatched at the bottom of this job, or the LAST one timing out is killed
+    # by the job cap before it can print which package failed — which is the one
+    # diagnostic that says whether a publish happened. A fourth package means
+    # raising this too.
+    timeout-minutes: 90
     permissions:
       contents: read
       # For the workflow-dispatch API. Not id-token: this job never publishes,
       # it only asks the registry and triggers the children.
       #
-      # actions: write cannot be narrowed to "dispatch these two workflows"; it
+      # actions: write cannot be narrowed to "dispatch these three workflows"; it
       # also covers cancelling runs and deleting run logs repo-wide. Keep this
       # job dependency-free for that reason: checkout and setup-node only, no
       # bun install and no third-party actions, so there is nothing here for a
@@ -350,11 +353,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # main, never needs.prepare.outputs.branch_name. prepare bumps only
-          # sdk/app/server, so the release branch's copies of these two packages
-          # are identical to main, and both children guard on
+          # sdk/app/server, so the release branch's copies of these three
+          # packages are identical to main, and all three children guard on
           # github.ref == 'refs/heads/main'. Dispatched on a release branch their
           # publish jobs SKIP, and a skipped job reports success, so the release
-          # would go green having published nothing.
+          # would go green having published nothing. python-sdk.yml gained that
+          # guard when it joined this job; its old gate was an unreachable tag
+          # ref, which would have skipped here too, and just as silently.
           ref: main
           # Nothing here authenticates to git: the only local git call is
           # rev-parse, and the live sha comes over the API. Without this,
@@ -367,7 +372,7 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Publish skills, then create-malloy-package
+      - name: Publish skills, create-malloy-package, then python-client
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Through env, not interpolated into the script body.
@@ -387,7 +392,7 @@ jobs:
           # skipped job still reports success, so gating it that way would make
           # a green release that published nothing completely invisible.
           if [[ "$NEW_VERSION" == *-* ]]; then
-            echo "::notice title=Independently-versioned packages::Skipped for prerelease version ${NEW_VERSION}. Publish these from an ordinary release, or dispatch skills-npm.yml and then create-malloy-package-npm.yml on main."
+            echo "::notice title=Independently-versioned packages::Skipped for prerelease version ${NEW_VERSION}. Publish these from an ordinary release, or dispatch skills-npm.yml, then create-malloy-package-npm.yml, then python-sdk.yml on main."
             echo "Skipped for prerelease version \`${NEW_VERSION}\`. Publish these from an ordinary release, or dispatch their workflows on main." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -404,8 +409,8 @@ jobs:
           # job itself, with no cache in either. Add dispatch queue time and npm
           # CDN visibility lag. Timing out early is expensive in the wrong way:
           # the release goes red for a publish that in fact succeeded, and
-          # because the failure stops the sequence the second package is never
-          # dispatched at all.
+          # because the failure stops the sequence the packages after it are
+          # never dispatched at all.
           #
           # A wall-clock deadline rather than an attempt count, so npm latency
           # cannot stretch the budget past the job's timeout-minutes and cost us
@@ -416,7 +421,7 @@ jobs:
           # is not enough: a single 5xx or DNS blip says almost nothing about
           # whether the child published, and giving up on it would reintroduce
           # exactly the failure the budget comment above is about, with the
-          # second package never dispatched.
+          # remaining packages never dispatched.
           POLL_MAX_REGISTRY_ERRORS=3
 
           # Registry and API output can contain anything, including a line starting with
@@ -434,13 +439,103 @@ jobs:
           # problem is solved by scoping the comparison (below) rather than by
           # moving this line.
           if ! CHECKOUT_SHA="$(git rev-parse HEAD)"; then
-            echo "::error title=Independently-versioned packages::could not read this checkout's sha, so nothing can be verified against main. Neither package was dispatched."
+            echo "::error title=Independently-versioned packages::could not read this checkout's sha, so nothing can be verified against main. No package was dispatched."
             echo "- nothing dispatched: could not read the checkout's sha" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
+          # The two registries differ in exactly two places — how a manifest is
+          # read and how the registry is asked — so those are the only two things
+          # parameterised. Everything else in publish_pkg below (the watched-path
+          # guard, the "main moved" compare, the dispatch, the poll loop, the
+          # summary lines) is registry-agnostic and must stay that way: a second
+          # copy of this function for PyPI is how the two would drift.
+          #
+          # Prints "<name> <version> <slug>" on success, nothing on failure.
+          # The slug is what goes in a URL; for npm it is unused and echoes the
+          # name back so both kinds print three fields.
+          read_manifest() {
+            local kind="$1" dir="$2"
+            case "$kind" in
+              npm)
+                # `node -p` prints the string "undefined" with exit 0 for a
+                # missing field; the caller checks for it, which is why this
+                # does not try to.
+                node -p "const p=require('./packages/${dir}/package.json'); \
+                         [p.name, p.version, p.name].join(' ')" 2>&1
+                ;;
+              pypi)
+                # tomllib, the same read build-python-sdk.sh and the bump check
+                # use, so the three cannot disagree about where the version
+                # lives. The slug is PEP 503 normalisation.
+                #
+                # tomllib is stdlib from Python 3.11, and this job installs
+                # NOTHING on purpose — it holds actions: write, so the fewer
+                # third-party actions and downloads in it the better. That makes
+                # the interpreter an assumption, so assert it instead of
+                # provisioning it: ubuntu-24.04 ships 3.12 as python3 today, and
+                # without this check a runner image that moved back below 3.11
+                # would report "could not read its manifest", which reads as a
+                # corrupt pyproject.toml and sends someone to the wrong file.
+                #
+                # Failing here rather than up front is deliberate. It costs the
+                # npm packages nothing: they are dispatched before this and
+                # re-running the job skips whatever already published, so the
+                # blast radius is one undispatched package with an accurate
+                # message, not two blocked publishes.
+                if ! python3 -c 'import tomllib' 2>/dev/null; then
+                  echo "python3 reports $(python3 -V 2>&1) and has no tomllib; reading pyproject.toml needs Python 3.11 or newer on the runner"
+                  return 1
+                fi
+                # One line on purpose. A multi-line `python3 -c '...'` has to sit
+                # at this run: block's BASE indentation for YAML to strip it back
+                # to column 0, which inside a nested shell function means source
+                # lines dedented out of the block that contains them — it reads as
+                # a mistake and one wrong space either ends the block scalar early
+                # or hands Python an IndentationError. python-sdk.yml can indent
+                # its copy because that one is at the top level of its step.
+                python3 -c 'import re, tomllib; p = tomllib.load(open("packages/python-client/pyproject.toml", "rb"))["project"]; print(p["name"], p["version"], re.sub(r"[-_.]+", "-", p["name"]).lower())' 2>&1
+                ;;
+            esac
+          }
+
+          # Three-way, and the three ways are the whole point: published, free,
+          # and "the registry did not answer" — which is not a green light. Both
+          # branches echo the raw registry answer for echo_untrusted_output.
+          #   0 = this version is published
+          #   1 = this version is free
+          #   2 = no usable answer
+          registry_has() {
+            local kind="$1" name="$2" version="$3" slug="$4" answer
+            case "$kind" in
+              npm)
+                # Exit 0 AND non-empty output. npm answers some queries with exit
+                # 0 and nothing on stdout, which is not a yes.
+                if answer="$(npm view "${name}@${version}" version --prefer-online 2>&1)" \
+                   && [ -n "$answer" ]; then
+                  printf '%s' "$answer"; return 0
+                fi
+                printf '%s' "$answer"
+                case "$answer" in *E404*) return 1 ;; *) return 2 ;; esac
+                ;;
+              pypi)
+                # PyPI has no `npm view`; the JSON endpoint's STATUS CODE is the
+                # answer, so the code is read rather than the exit status and
+                # there is no --fail (a 404 is an answer, not a failure). A
+                # transport failure makes curl print 000, which lands in the
+                # "did not answer" branch, and `|| answer=000` catches the case
+                # where curl fails before printing anything at all.
+                answer="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+                  "https://pypi.org/pypi/${slug}/${version}/json" 2>&1)" || answer=000
+                printf 'HTTP %s' "$answer"
+                case "$answer" in 200) return 0 ;; 404) return 1 ;; *) return 2 ;; esac
+                ;;
+            esac
+          }
+
           publish_pkg() {
-            local dir="$1" wf="$2" name version spec out deadline live_sha errors
+            local dir="$1" wf="$2" reg="$3" name version slug spec out rc
+            local deadline live_sha errors
             local changed file_count relevant file path
             local -a paths
             # Read through `if !`, and validate. A bare assignment under set -e
@@ -450,19 +545,29 @@ jobs:
             # for a missing field, so a manifest that lost its name would build
             # the spec `undefined@0.1.3`; the package named `undefined` exists on
             # npm, so that spec can resolve and be read as "already published".
-            if ! name="$(node -p "require('./packages/${dir}/package.json').name" 2>&1)" \
-               || ! version="$(node -p "require('./packages/${dir}/package.json').version" 2>&1)"; then
-              echo_untrusted_output "${name}${version}"
-              echo "::error title=${dir}::could not read packages/${dir}/package.json, so ${wf} was not dispatched"
-              echo "- \`${dir}\` NOT dispatched: could not read its package.json" >> "$GITHUB_STEP_SUMMARY"
+            if ! out="$(read_manifest "$reg" "$dir")" || [ -z "$out" ]; then
+              echo_untrusted_output "$out"
+              echo "::error title=${dir}::could not read the ${reg} manifest for packages/${dir}, so ${wf} was not dispatched"
+              echo "- \`${dir}\` NOT dispatched: could not read its manifest" >> "$GITHUB_STEP_SUMMARY"
               return 1
             fi
-            if [ -z "$name" ] || [ "$name" = "undefined" ] || [ -z "$version" ] || [ "$version" = "undefined" ]; then
-              echo "::error title=${dir}::packages/${dir}/package.json declares name='${name}' version='${version}'; refusing to publish an unnamed or unversioned package. ${wf} was not dispatched."
-              echo "- \`${dir}\` NOT dispatched: its package.json has no usable name or version" >> "$GITHUB_STEP_SUMMARY"
+            read -r name version slug <<<"$out"
+            # "undefined" is checked because `node -p` prints exactly that, with
+            # exit 0, for a missing field — and the package literally named
+            # `undefined` exists on npm, so that spec can resolve and be read as
+            # "already published".
+            if [ -z "$name" ] || [ "$name" = "undefined" ] \
+               || [ -z "$version" ] || [ "$version" = "undefined" ] || [ -z "$slug" ]; then
+              echo "::error title=${dir}::the ${reg} manifest for packages/${dir} declares name='${name}' version='${version}'; refusing to publish an unnamed or unversioned package. ${wf} was not dispatched."
+              echo "- \`${dir}\` NOT dispatched: its manifest has no usable name or version" >> "$GITHUB_STEP_SUMMARY"
               return 1
             fi
-            spec="${name}@${version}"
+            # Written the way someone would paste it into the matching installer,
+            # so a summary line is directly actionable.
+            case "$reg" in
+              npm) spec="${name}@${version}" ;;
+              pypi) spec="${name}==${version}" ;;
+            esac
 
             # The paths this package's PUBLISHED content is built from, which is
             # not the same as the paths it lives in.
@@ -488,9 +593,15 @@ jobs:
             # dist/ comes from `bun build --packages external`, where the bun
             # version is pinned by BUN_VERSION in its own (watched) workflow file
             # and nothing from node_modules enters the bundle.
+            # python-client is GENERATED from api-doc.yaml by build-python-sdk.sh,
+            # so the OpenAPI spec is a published-content input exactly the way the
+            # skills tree is for skills: an api-doc.yaml-only commit changes the
+            # wheel with nothing in packages/python-client/ touched. Its own bump
+            # check watches the same two paths.
             case "$dir" in
               skills) paths=("skills/" "packages/skills/" "bun.lock" "package.json") ;;
               create-malloy-package) paths=("packages/${dir}/" "packages/skills/package.json") ;;
+              python-client) paths=("packages/${dir}/" "api-doc.yaml") ;;
               *) paths=("packages/${dir}/") ;;
             esac
             paths+=(".github/workflows/${wf}")
@@ -511,29 +622,26 @@ jobs:
               return 1
             done
 
-            # Three outcomes, matching create-malloy-package-npm.yml: published
-            # means there is nothing to do; E404 means the version is free;
-            # anything else means the registry did not answer, which is not the
-            # same as a green light.
-            # Exit 0 AND non-empty output. npm answers some queries with exit 0
-            # and nothing on stdout, which is not a yes: this repo already says
-            # so in two places, `create-malloy-package-npm.yml`'s pinned-skills
-            # check and `check-pack.ts` ("an empty stdout is a no, not a yes"),
-            # and this was the one caller that took exit 0 alone as definitive.
-            # Empty output now falls through to "the registry did not answer",
-            # which is the only honest reading of it.
-            if out="$(npm view "$spec" version --prefer-online 2>&1)" && [ -n "$out" ]; then
-              echo "::notice title=${name}::${spec} is already published; nothing to do"
-              echo "- \`${spec}\` was already on npm, skipped" >> "$GITHUB_STEP_SUMMARY"
-              return 0
-            elif [[ "$out" == *E404* ]]; then
-              : # the version is free, carry on
-            else
-              echo_untrusted_output "$out"
-              echo "::error title=${name}::could not ask npm whether ${spec} is taken (no E404, and no version in the answer)"
-              echo "- \`${spec}\` NOT dispatched: npm did not answer whether it is already published" >> "$GITHUB_STEP_SUMMARY"
-              return 1
-            fi
+            # Three outcomes, and the third is why this is not a boolean:
+            # published means there is nothing to do, free means carry on, and
+            # "the registry did not answer" is NOT a green light. `|| rc=$?`
+            # rather than a bare call, because a non-zero return under set -e
+            # would kill the step before the case below could read it.
+            out="$(registry_has "$reg" "$name" "$version" "$slug")" && rc=0 || rc=$?
+            case "$rc" in
+              0)
+                echo "::notice title=${name}::${spec} is already published; nothing to do"
+                echo "- \`${spec}\` was already published, skipped" >> "$GITHUB_STEP_SUMMARY"
+                return 0
+                ;;
+              1) : ;; # the version is free, carry on
+              *)
+                echo_untrusted_output "$out"
+                echo "::error title=${name}::could not ask the ${reg} registry whether ${spec} is taken"
+                echo "- \`${spec}\` NOT dispatched: the ${reg} registry did not answer whether it is already published" >> "$GITHUB_STEP_SUMMARY"
+                return 1
+                ;;
+            esac
 
             # Fail closed on a content change, not just a version change: skills
             # publishes the repo-root skills/ tree, so a commit that leaves the
@@ -541,7 +649,7 @@ jobs:
             # versions are immutable.
             #
             # Scoped to this package's paths rather than to any movement at all.
-            # The second package's check runs after the first has finished a full
+            # A later package's check runs after the earlier ones finished a full
             # dispatch-and-wait, up to POLL_BUDGET_SECONDS, so comparing bare shas
             # failed the scaffolder whenever anything at all merged inside that
             # window, including changes that could not affect it. That is a
@@ -695,42 +803,51 @@ jobs:
               # not publish, and reporting it as the latter would send the
               # operator to a child run they will find green. Require the
               # condition to persist, though: a single blip is not evidence, and
-              # giving up on one would strand the second package undispatched.
-              # Exit 0 AND non-empty, for the reason given on the check above.
-              # This is the more dangerous of the two sites: an empty answer read
-              # as success would print "published", write "published" to the job
-              # summary, and return 0, so on the second package the release ends
-              # GREEN asserting a publish that never happened. An empty answer is
-              # counted as a registry that did not answer, not as a yes and not
-              # as a no.
-              if out="$(npm view "$spec" version --prefer-online 2>&1)" && [ -n "$out" ]; then
-                echo "::notice title=${name}::${spec} published"
-                echo "- \`${spec}\` published" >> "$GITHUB_STEP_SUMMARY"
-                return 0
-              elif [[ "$out" == *E404* ]]; then
-                errors=0
-              else
-                errors=$((errors + 1))
-                echo_untrusted_output "$out"
-                if [ "$errors" -ge "$POLL_MAX_REGISTRY_ERRORS" ]; then
-                  echo "::error title=${name}::npm stopped answering while waiting for ${spec} (${errors} consecutive answers that were neither a version nor an E404); the ${wf} run may have published it. Check ${runs_url} and npm before re-dispatching."
-                  echo "- \`${spec}\` dispatched, then npm stopped answering; check ${runs_url} and npm" >> "$GITHUB_STEP_SUMMARY"
-                  return 1
-                fi
-              fi
+              # giving up on one would strand the later packages undispatched.
+              # This is the more dangerous of the two query sites: an
+              # unanswered registry read as success would print "published",
+              # write "published" to the job summary, and return 0, so on a later
+              # package the release ends GREEN asserting a publish that never
+              # happened. rc=2 is counted as "did not answer", not as a yes and
+              # not as a no.
+              out="$(registry_has "$reg" "$name" "$version" "$slug")" && rc=0 || rc=$?
+              case "$rc" in
+                0)
+                  echo "::notice title=${name}::${spec} published"
+                  echo "- \`${spec}\` published" >> "$GITHUB_STEP_SUMMARY"
+                  return 0
+                  ;;
+                1) errors=0 ;;
+                *)
+                  errors=$((errors + 1))
+                  echo_untrusted_output "$out"
+                  if [ "$errors" -ge "$POLL_MAX_REGISTRY_ERRORS" ]; then
+                    echo "::error title=${name}::the ${reg} registry stopped answering while waiting for ${spec} (${errors} consecutive unusable answers); the ${wf} run may have published it. Check ${runs_url} and the registry before re-dispatching."
+                    echo "- \`${spec}\` dispatched, then the ${reg} registry stopped answering; check ${runs_url}" >> "$GITHUB_STEP_SUMMARY"
+                    return 1
+                  fi
+                  ;;
+              esac
             done
 
-            echo "::error title=${name}::${spec} did not appear on npm within $((POLL_BUDGET_SECONDS / 60))m. Check ${runs_url}. If that run failed, fix it and dispatch ${wf} on main; do not re-run the whole release, which bumps and republishes sdk/app/server."
-            echo "- \`${spec}\` dispatched but did not appear on npm, see ${runs_url}" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=${name}::${spec} did not appear on ${reg} within $((POLL_BUDGET_SECONDS / 60))m. Check ${runs_url}. If that run failed, fix it and dispatch ${wf} on main; do not re-run the whole release, which bumps and republishes sdk/app/server."
+            echo "- \`${spec}\` dispatched but did not appear on ${reg}, see ${runs_url}" >> "$GITHUB_STEP_SUMMARY"
             return 1
           }
 
-          # Order is not optional. create-malloy-package pins its skills
-          # dependency from the monorepo and then asks the registry whether that
-          # range resolves, so skills has to be ON NPM before the scaffolder is
-          # dispatched. Dispatching both at once races and fails the scaffolder.
-          publish_pkg skills skills-npm.yml
-          publish_pkg create-malloy-package create-malloy-package-npm.yml
+          # Order is not optional for the first two. create-malloy-package pins
+          # its skills dependency from the monorepo and then asks the registry
+          # whether that range resolves, so skills has to be ON NPM before the
+          # scaffolder is dispatched. Dispatching both at once races and fails the
+          # scaffolder.
+          #
+          # python-client has no such coupling — nothing depends on it and it
+          # depends on nothing here — so it is last only because it is the one
+          # whose first publish is still unproven. A failure there leaves the two
+          # npm packages already published, which the job summary records.
+          publish_pkg skills skills-npm.yml npm
+          publish_pkg create-malloy-package create-malloy-package-npm.yml npm
+          publish_pkg python-client python-sdk.yml pypi
 
   gh-release:
     needs: [ prepare, publish-npm, publish-docker ]
