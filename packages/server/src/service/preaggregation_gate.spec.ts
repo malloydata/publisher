@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The pre-aggregation publish/load gate, end to end over a real package.
 //
 // preaggregation_validation.spec.ts covers the RULES against compiled IR. This

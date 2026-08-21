@@ -3,6 +3,10 @@ id: strict-upstreams-refused
 tags: orchestration, chained, build-control
 package: su
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # strictUpstreams: refuse the recompute-from-raw fallback
 

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * A user-facing error: the message is printed as-is, with no stack trace, and the
  * process exits non-zero. Use it for every "you did something we can't do" case

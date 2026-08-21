@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";

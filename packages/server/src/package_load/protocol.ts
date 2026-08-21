@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Wire protocol between the main thread (`PackageLoadPool`) and a
  * package-load worker thread.

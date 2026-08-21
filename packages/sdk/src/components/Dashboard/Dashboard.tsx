@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Alert, Box, Stack, Typography } from "@mui/material";
 import { useCallback, useMemo } from "react";
 import type { DashboardManifest } from "../../client";

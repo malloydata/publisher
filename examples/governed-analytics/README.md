@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # governed-analytics — one package, the whole governance story
 
 A tiny Malloy package that shows how **[givens](../../docs/givens.md)** — one runtime-parameter

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { MalloyError } from "@malloydata/malloy";
 import { PUBLISHER_CONFIG_NAME } from "./constants";
 

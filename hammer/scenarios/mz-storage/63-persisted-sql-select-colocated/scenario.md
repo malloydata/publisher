@@ -3,6 +3,10 @@ id: persisted-sql-select-colocated
 tags: serve-correctness, sql-select, needs-attention
 package: sc
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A persisted `sql_select` is built but never read on the COLOCATED path
 

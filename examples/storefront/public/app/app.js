@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Entry point: state, URL, and the render loop.
 //
 // State is the current tab plus a value per given, and it lives in the URL:

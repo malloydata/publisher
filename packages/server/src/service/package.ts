@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import * as fs from "fs/promises";
 import * as path from "path";
 
@@ -863,7 +866,7 @@ export class Package {
    }
 
    /**
-    * The package-level `materialization` config (from malloy-publisher.json),
+    * The package-level `materialization` config (from publisher.json),
     * the least-specific layer for resolving per-source freshness/schedule in the
     * build plan. Null when the package declares no policy.
     */

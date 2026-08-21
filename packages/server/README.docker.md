@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Publisher in Docker
 
 The canonical build is the root [`Dockerfile`](../../Dockerfile) and the CI smoke test (`docker_smoke_test` in `.github/workflows/build.yml`) builds and runs that exact image. The two-port REST + MCP server, the Snowflake ADBC driver, the DuckDB CLI, and the production app bundle all ship in it.

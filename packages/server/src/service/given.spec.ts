@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
 import { describe, expect, it } from "bun:test";
 import { readGivenControlSpec } from "./given";

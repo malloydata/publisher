@@ -2,6 +2,11 @@
 name: malloy-phrase-detection
 description: How to construct search targets for the get_context tool. Covers target-type classification and non-obvious decomposition patterns. Read the tool description for field definitions and the end-to-end workflow.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Search Target Construction for `get_context`
 
 The `get_context` tool description defines each field and the two-phase workflow (source discovery, then per-source entity drill-down). This skill focuses on the parts you won't get right by default: classifying concepts into target types and splitting ambiguous phrases.

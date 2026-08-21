@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The control row, built from the model rather than written by hand.
 //
 // This is the one thing a dashboard gets for free that a hand-authored page has

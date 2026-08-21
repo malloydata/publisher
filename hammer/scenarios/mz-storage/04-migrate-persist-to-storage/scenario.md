@@ -3,6 +3,10 @@ id: migrate-persist-to-storage
 tags: migration, serve-correctness
 package: emig
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Adding `storage=` migrates a built source to the new destination without a model rewrite
 

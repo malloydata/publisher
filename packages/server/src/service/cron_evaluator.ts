@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Evaluate a 5-field UNIX cron expression, in UTC, for the standalone
  * materialization scheduler. Mirrors the control plane's `CronEvaluator`

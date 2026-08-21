@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Publisher documentation
 
 > Start at the [project README](../README.md) for the 60-second quick start. This folder holds the
@@ -23,6 +28,7 @@ every doc below points back to one of them, and each example's README points bac
 | [architecture.md](architecture.md) | Understand how Malloy, Render, Publisher, and the SDK fit together.                                 |
 | [api-overview.md](api-overview.md) | Understand the REST + MCP surfaces and the resource hierarchy.                                      |
 | [packages.md](packages.md)         | Understand the package format: `publisher.json`, models, data files, and how a package gets served. |
+| [dbt-roadmap.md](dbt-roadmap.md)   | See how Malloy and dbt fit together, where the gaps are, and the plan to close them.                |
 
 ## Use it
 

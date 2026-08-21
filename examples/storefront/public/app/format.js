@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Pure functions: no DOM, no globals, no Publisher. Everything here is a value
 // in and a value out, which is what makes it the one file `node --test` covers
 // directly (../../tests/format.test.mjs).

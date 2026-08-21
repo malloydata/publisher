@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Box, Popover, Stack, TextField, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { HexColorPicker } from "react-colorful";

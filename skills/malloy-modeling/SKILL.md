@@ -2,6 +2,10 @@
 name: malloy-modeling
 description: Build semantic models with Malloy for the Malloy Publisher. Read this skill whenever the user asks about modeling data or specifically mentions Malloy.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # STOP - READ BEFORE WRITING ANY MALLOY CODE
 

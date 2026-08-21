@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 export interface ErrorDetails {
    message: string;
    suggestions: string[];

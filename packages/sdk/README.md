@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Malloy Publisher SDK
 
 The Publisher SDK (`@malloy-publisher/sdk`) is a comprehensive React component library for building data applications that interact with Publisher's REST API. It provides everything you need to browse semantic models, execute queries, visualize results, and build interactive data experiences.

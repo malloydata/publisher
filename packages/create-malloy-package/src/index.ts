@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";

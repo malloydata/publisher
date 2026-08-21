@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Real-compiler tests for the additivity classifier. Every measure below is
 // COMPILED by the pinned @malloydata/malloy and classified from the IR it
 // actually emits — not from a hand-built node — because the whole risk this

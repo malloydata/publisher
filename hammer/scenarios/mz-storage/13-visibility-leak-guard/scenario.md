@@ -3,6 +3,10 @@ id: visibility-leak-guard
 tags: security, visibility
 package: vis
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Visibility: an `except:`-hidden column must not be reachable over storage
 

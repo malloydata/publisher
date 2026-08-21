@@ -3,6 +3,10 @@ id: chained-write-only-orchestrated-strict
 tags: orchestration, chained, kill-switch
 package: cwos
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # strictUpstreams must not change what an orchestrated chained build can resolve
 

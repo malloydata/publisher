@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Rubric: Correctness (Semantic Hazards Only)
 
 **Dimension:** `correctness-join | correctness-aggregation | correctness-type | correctness-filter`

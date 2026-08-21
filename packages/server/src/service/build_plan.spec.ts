@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { PersistSource } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import * as sinon from "sinon";

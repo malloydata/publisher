@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The filter controls, driven against a real DOM.
 //
 // `format.test.mjs` covers the pure encoding module, and that turned out not to

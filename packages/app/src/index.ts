@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Main App exports
 export { createMalloyRouter, MalloyPublisherApp } from "./App";
 export type { MalloyPublisherAppProps } from "./App";

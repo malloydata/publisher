@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // What a GRAIN may contain, established by experiment rather than by reading.
 //
 // This file exists because the obvious way to build a time-grain rollup returns

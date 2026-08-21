@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { Tag } from "@malloydata/malloy-tag";
 import { PER_MODE_COLOR_KEYS } from "./keys";
 import type { Theme } from "./types";

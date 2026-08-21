@@ -3,6 +3,10 @@ id: nested-data-roundtrip
 tags: serve-correctness, data-fidelity
 package: nd
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Nested (repeated-record) output builds, and its traversal falls back to live
 

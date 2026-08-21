@@ -3,6 +3,10 @@ id: persisted-sql-select-storage
 tags: serve-correctness, sql-select
 package: ss
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A persisted `sql_select` is served from storage
 

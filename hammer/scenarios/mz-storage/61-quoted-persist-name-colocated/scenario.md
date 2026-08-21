@@ -3,6 +3,10 @@ id: quoted-persist-name-colocated
 tags: serve-correctness, naming, known-red
 package: cq
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # An author-quoted `#@ persist name=` must round-trip — COLOCATED
 

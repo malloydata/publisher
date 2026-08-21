@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML → Malloy Concept Mapping
 
 Reference table for translating LookML constructs to Malloy. Referenced by multiple reference files.

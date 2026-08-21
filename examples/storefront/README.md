@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # storefront — the flagship sample package
 
 A small but complete ecommerce semantic model. It's the default package Publisher
