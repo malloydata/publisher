@@ -13,6 +13,24 @@ import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 
 type ApiTable = components["schemas"]["Table"];
 type CloudStorageType = "gcs" | "s3";
+type ApiS3Connection = components["schemas"]["S3Connection"];
+type ApiAttachedDatabase = components["schemas"]["AttachedDatabase"];
+
+// The providers `S3Connection.provider` admits. Canonical here rather than in
+// connection.ts, which imports this module, so the config-load validator and the
+// connect-time builder derive from one list. Mirrors the enum in api-doc.yaml.
+const S3_PROVIDERS = ["config", "credential_chain"] as const;
+
+// The provider order Publisher supplies when a chain-auth S3 connection names
+// none. DuckDB's own default is `config` alone — a shared credentials file,
+// which is the one source a container does not have — so leaving it unset is not
+// an option. `env` first so an explicit credential in the environment wins,
+// then `web_identity` for a projected service-account token (EKS IRSA, GKE
+// Workload Identity), then `instance` for a node's own profile.
+// Deliberately excluded: `config` (no credentials file in an image), `sts`
+// (needs ASSUME_ROLE_ARN, which this schema has no field for), and `sso` and
+// `process` (workstation flows).
+export const DEFAULT_S3_CREDENTIAL_CHAIN = "env;web_identity;instance";
 
 export interface CloudStorageCredentials {
    type: CloudStorageType;
@@ -21,6 +39,12 @@ export interface CloudStorageCredentials {
    region?: string;
    endpoint?: string;
    sessionToken?: string;
+   // S3 only. `credential_chain` means the host supplies the credentials, so
+   // accessKeyId and secretAccessKey are empty and must not be signed with;
+   // `chain` is the provider order to try. GCS has no chain equivalent through
+   // this path — its secret is HMAC-only.
+   provider?: "config" | "credential_chain";
+   chain?: string;
 }
 
 interface CloudStorageBucket {
@@ -51,6 +75,8 @@ export function s3ConnectionToCredentials(s3Connection: {
    region?: string;
    endpoint?: string;
    sessionToken?: string;
+   provider?: "config" | "credential_chain";
+   chain?: string;
 }): CloudStorageCredentials {
    return {
       type: "s3",
@@ -59,22 +85,173 @@ export function s3ConnectionToCredentials(s3Connection: {
       region: s3Connection.region,
       endpoint: s3Connection.endpoint,
       sessionToken: s3Connection.sessionToken,
+      provider: s3Connection.provider,
+      chain: s3Connection.chain,
    };
 }
 
-function createCloudStorageClient(
+/**
+ * Checks the parts of an S3 connection's credential *shape* that are wrong on their
+ * face, independent of whether a key pair is required.
+ *
+ * Separate from {@link resolveCloudStorageCredentials} because of where each is safe
+ * to call. These checks reject only configurations that no path ever accepted, so a
+ * config that loads today still loads; the key-pair requirement is a longer-standing
+ * rule whose enforcement point is load-bearing (see the callers in
+ * connection_config.ts).
+ *
+ * The typeof checks are load-bearing rather than defensive: the values arrive from
+ * untyped JSON, so `provider: true` would otherwise slip past a string comparison
+ * into the `config` path and be reported as a missing access key, and a non-string
+ * `chain` would reach `.trim()` as a TypeError at the first attach.
+ */
+export function validateS3ProviderShape(
+   s3Connection: ApiS3Connection,
+   connectionName: string | undefined,
+): void {
+   const provider = s3Connection.provider as unknown;
+   if (provider !== undefined) {
+      if (
+         typeof provider !== "string" ||
+         !S3_PROVIDERS.includes(provider as (typeof S3_PROVIDERS)[number])
+      ) {
+         throw new Error(
+            `S3 provider must be one of ${S3_PROVIDERS.join(", ")} for: ${connectionName}`,
+         );
+      }
+   }
+   const chain = s3Connection.chain as unknown;
+   if (chain !== undefined && typeof chain !== "string") {
+      throw new Error(`S3 chain must be a string for: ${connectionName}`);
+   }
+
+   if (provider === "credential_chain") {
+      // A static credential supplied alongside chain auth is rejected rather than
+      // ignored: it would sit unused in the config, reading as the thing granting
+      // access while something else actually does.
+      if (
+         s3Connection.accessKeyId ||
+         s3Connection.secretAccessKey ||
+         s3Connection.sessionToken
+      ) {
+         throw new Error(
+            `S3 accessKeyId, secretAccessKey, and sessionToken must not be set when provider is 'credential_chain' for: ${connectionName}`,
+         );
+      }
+   } else if (s3Connection.chain) {
+      // The mirror argument: a chain named under key-based auth reads as though the
+      // host supplies the credentials when the key pair beside it is what does.
+      throw new Error(
+         `S3 chain is only valid when provider is 'credential_chain' for: ${connectionName}`,
+      );
+   }
+}
+
+/**
+ * Validates a GCS or S3 attachment's credential configuration and reduces it to the
+ * shape both the DuckDB secret and Publisher's own storage client read.
+ *
+ * Lives here rather than in connection.ts so the config-load validator can reach it
+ * without importing that module, which imports this one. Each guard is therefore
+ * assertable directly: whether a key pair is required depends on the S3 provider, and
+ * a guard only reachable through a live DuckDB session is a guard nothing pins.
+ */
+export function resolveCloudStorageCredentials(
+   attachedDb: ApiAttachedDatabase,
+): CloudStorageCredentials {
+   if (attachedDb.type === "gcs") {
+      if (!attachedDb.gcsConnection) {
+         throw new Error(
+            `GCS connection configuration missing for: ${attachedDb.name}`,
+         );
+      }
+      if (!attachedDb.gcsConnection.keyId || !attachedDb.gcsConnection.secret) {
+         throw new Error(
+            `GCS keyId and secret are required for: ${attachedDb.name}`,
+         );
+      }
+      return {
+         type: "gcs",
+         accessKeyId: attachedDb.gcsConnection.keyId,
+         secretAccessKey: attachedDb.gcsConnection.secret,
+      };
+   }
+
+   if (attachedDb.type !== "s3") {
+      throw new Error(`Invalid cloud storage type: ${attachedDb.type}`);
+   }
+
+   if (!attachedDb.s3Connection) {
+      throw new Error(
+         `S3 connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+   const s3 = attachedDb.s3Connection;
+   validateS3ProviderShape(s3, attachedDb.name);
+   if (
+      s3.provider !== "credential_chain" &&
+      (!s3.accessKeyId || !s3.secretAccessKey)
+   ) {
+      throw new Error(
+         `S3 accessKeyId and secretAccessKey are required for: ${attachedDb.name}`,
+      );
+   }
+   return {
+      type: "s3",
+      accessKeyId: s3.accessKeyId || "",
+      secretAccessKey: s3.secretAccessKey || "",
+      region: s3.region,
+      endpoint: s3.endpoint,
+      sessionToken: s3.sessionToken,
+      provider: s3.provider,
+      chain: s3.chain,
+   };
+}
+
+// Exported for tests: whether the client signs with the configured key pair or
+// leaves resolution to the AWS SDK is the whole of the chain-auth behaviour on
+// this path, and it is not observable through the listing functions below
+// without reaching a real bucket.
+export function createCloudStorageClient(
    credentials: CloudStorageCredentials,
 ): S3Client {
    const isGCS = credentials.type === "gcs";
 
+   // Under `credential_chain` there is no key pair to sign with, so the
+   // `credentials` key is omitted entirely and the AWS SDK resolves its own
+   // default chain. Passing the empty strings through instead would sign every
+   // request with an empty key and fail on signature rather than on configuration.
+   //
+   // KNOWN DIVERGENCE, and it runs both ways. The SDK's default chain covers a
+   // web-identity token natively, which is why the DuckDB secret must name
+   // `web_identity` and this need not. But it ALSO covers sources DuckDB's chain
+   // does not — the shared credentials file, AWS_PROFILE, SSO, process — and it
+   // ignores `chain` entirely. So on a host that has one of those, this path can
+   // browse as one principal while the query path resolves another: a mounted
+   // credentials file is invisible to DuckDB and wins here.
+   //
+   // Not corrected by narrowing this to `chain`, deliberately: doing so needs a
+   // DuckDB-provider-to-SDK-provider mapping for all seven of DuckDB's names, plus
+   // direct dependencies on providers that are currently only transitive, and the
+   // table would drift against both sides. The divergence cannot arise in the
+   // deployment this exists for — a container image has no credentials file,
+   // profile, or SSO cache — and where it can arise the query path is the
+   // authoritative one and fails visibly.
+   const useHostCredentials =
+      !isGCS && credentials.provider === "credential_chain";
+
    const client = new S3Client({
       endpoint: isGCS ? "https://storage.googleapis.com" : credentials.endpoint,
       region: isGCS ? "auto" : credentials.region || "us-east-1",
-      credentials: {
-         accessKeyId: credentials.accessKeyId,
-         secretAccessKey: credentials.secretAccessKey,
-         sessionToken: credentials.sessionToken,
-      },
+      ...(useHostCredentials
+         ? {}
+         : {
+              credentials: {
+                 accessKeyId: credentials.accessKeyId,
+                 secretAccessKey: credentials.secretAccessKey,
+                 sessionToken: credentials.sessionToken,
+              },
+           }),
       forcePathStyle: isGCS || !!credentials.endpoint,
    });
 

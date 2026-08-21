@@ -17,11 +17,17 @@ import sinon from "sinon";
 import { components } from "../api";
 import {
    attachDuckLakeReadWrite,
+   buildCloudStorageSecretSQL,
+   buildEnvironmentMalloyConfig,
    buildProxiedSslQuery,
    createEnvironmentConnections,
    resolveProxiedTls,
    testConnectionConfig,
 } from "./connection";
+import {
+   DEFAULT_S3_CREDENTIAL_CHAIN,
+   resolveCloudStorageCredentials,
+} from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
 import { UnsupportedCatalogFormatError } from "../errors";
 import { EnvironmentStore } from "./environment_store";
@@ -2420,5 +2426,290 @@ describe("resolveProxiedTls", () => {
          servername: "db.internal.example.com",
          rejectUnauthorized: true,
       });
+   });
+});
+
+describe("resolveCloudStorageCredentials", () => {
+   const s3 = (
+      s3Connection: components["schemas"]["S3Connection"],
+   ): AttachedDatabase => ({ name: "root", type: "s3", s3Connection });
+
+   it("requires a key pair when no provider is given", () => {
+      expect(() =>
+         resolveCloudStorageCredentials(s3({ region: "us-east-1" })),
+      ).toThrow(/accessKeyId and secretAccessKey are required for: root/);
+   });
+
+   it("requires a key pair under provider 'config'", () => {
+      expect(() =>
+         resolveCloudStorageCredentials(
+            s3({ provider: "config", accessKeyId: "AKIA" }),
+         ),
+      ).toThrow(/accessKeyId and secretAccessKey are required for: root/);
+   });
+
+   it("accepts a keyless connection under provider 'credential_chain'", () => {
+      const credentials = resolveCloudStorageCredentials(
+         s3({ provider: "credential_chain", region: "eu-west-2" }),
+      );
+      expect(credentials.provider).toBe("credential_chain");
+      expect(credentials.accessKeyId).toBe("");
+      expect(credentials.secretAccessKey).toBe("");
+      expect(credentials.region).toBe("eu-west-2");
+   });
+
+   // A key that is present and unused is a misconfiguration: it reads as the
+   // thing granting access while the host role actually does.
+   it.each([
+      ["accessKeyId", { accessKeyId: "AKIA" }],
+      ["secretAccessKey", { secretAccessKey: "shhh" }],
+      ["sessionToken", { sessionToken: "token" }],
+   ])("rejects a %s supplied alongside 'credential_chain'", (_field, extra) => {
+      expect(() =>
+         resolveCloudStorageCredentials(
+            s3({ provider: "credential_chain", ...extra }),
+         ),
+      ).toThrow(
+         /must not be set when provider is 'credential_chain' for: root/,
+      );
+   });
+
+   it("rejects a chain named under key-based auth", () => {
+      expect(() =>
+         resolveCloudStorageCredentials(
+            s3({
+               accessKeyId: "AKIA",
+               secretAccessKey: "shhh",
+               chain: "env;instance",
+            }),
+         ),
+      ).toThrow(
+         /chain is only valid when provider is 'credential_chain' for: root/,
+      );
+   });
+
+   it("carries an explicit chain through", () => {
+      const credentials = resolveCloudStorageCredentials(
+         s3({ provider: "credential_chain", chain: "env;instance" }),
+      );
+      expect(credentials.chain).toBe("env;instance");
+   });
+
+   it("still rejects a missing s3Connection", () => {
+      expect(() =>
+         resolveCloudStorageCredentials({ name: "root", type: "s3" }),
+      ).toThrow(/S3 connection configuration missing for: root/);
+   });
+});
+
+describe("buildCloudStorageSecretSQL", () => {
+   const chainSQL = (
+      s3Connection: components["schemas"]["S3Connection"],
+   ): string =>
+      buildCloudStorageSecretSQL(
+         "s3_root",
+         resolveCloudStorageCredentials({
+            name: "root",
+            type: "s3",
+            s3Connection,
+         }),
+      );
+
+   describe("provider 'credential_chain'", () => {
+      it("emits PROVIDER credential_chain and no static credential", () => {
+         const sql = chainSQL({ provider: "credential_chain" });
+         expect(sql).toContain("PROVIDER credential_chain");
+         expect(sql).not.toContain("KEY_ID");
+         expect(sql).not.toContain("SECRET '");
+         expect(sql).not.toContain("SESSION_TOKEN");
+      });
+
+      // Omitting CHAIN is not neutral: DuckDB then resolves against `config`
+      // alone, a credentials file no container image has.
+      it("names Publisher's default chain when the caller gives none", () => {
+         expect(chainSQL({ provider: "credential_chain" })).toContain(
+            `CHAIN '${DEFAULT_S3_CREDENTIAL_CHAIN}'`,
+         );
+      });
+
+      it("covers a projected service-account token by default", () => {
+         expect(DEFAULT_S3_CREDENTIAL_CHAIN.split(";")).toContain(
+            "web_identity",
+         );
+      });
+
+      it("honours an explicit chain", () => {
+         const sql = chainSQL({
+            provider: "credential_chain",
+            chain: "env;sso",
+         });
+         expect(sql).toContain("CHAIN 'env;sso'");
+         expect(sql).not.toContain(DEFAULT_S3_CREDENTIAL_CHAIN);
+      });
+
+      it("falls back to the default chain for a blank one", () => {
+         expect(
+            chainSQL({ provider: "credential_chain", chain: "   " }),
+         ).toContain(`CHAIN '${DEFAULT_S3_CREDENTIAL_CHAIN}'`);
+      });
+
+      // The secret holds the credentials the chain resolved, not a live
+      // reference to the provider, so without REFRESH a serve attach stops
+      // reading about an hour after it was created.
+      it("emits REFRESH so a temporary credential is re-resolved", () => {
+         expect(chainSQL({ provider: "credential_chain" })).toContain(
+            "REFRESH true",
+         );
+      });
+
+      it("composes with a custom endpoint", () => {
+         const sql = chainSQL({
+            provider: "credential_chain",
+            endpoint: "https://minio.internal:9000",
+         });
+         expect(sql).toContain("PROVIDER credential_chain");
+         expect(sql).toContain("ENDPOINT 'https://minio.internal:9000'");
+         expect(sql).toContain("URL_STYLE 'path'");
+         expect(sql).not.toContain("KEY_ID");
+      });
+
+      it("escapes a chain containing a quote", () => {
+         expect(
+            chainSQL({ provider: "credential_chain", chain: "en'v" }),
+         ).toContain("CHAIN 'en''v'");
+      });
+   });
+
+   // The regression guard for the three pre-existing shapes. Asserted as whole
+   // statements, not substrings: chain auth added a branch ahead of these, and
+   // the point is that nothing downstream of it moved.
+   describe("key-based shapes are unchanged", () => {
+      const keys = { accessKeyId: "AKIA", secretAccessKey: "shhh" };
+
+      it("plain", () => {
+         expect(chainSQL({ ...keys, region: "us-west-2" })).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2'
+            );
+         `);
+      });
+
+      it("custom endpoint", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "https://mi.no",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'https://mi.no',
+               URL_STYLE 'path'
+            );
+         `);
+      });
+
+      it("session token", () => {
+         expect(chainSQL({ ...keys, region: "us-west-2", sessionToken: "tok" }))
+            .toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               SESSION_TOKEN 'tok'
+            );
+         `);
+      });
+
+      it("omitted provider takes the plain shape, not the chain one", () => {
+         const sql = chainSQL({ ...keys });
+         expect(sql).not.toContain("PROVIDER");
+         expect(sql).toContain("KEY_ID 'AKIA'");
+      });
+
+      it("gcs is untouched by the S3 provider selector", () => {
+         const sql = buildCloudStorageSecretSQL(
+            "gcs_root",
+            resolveCloudStorageCredentials({
+               name: "root",
+               type: "gcs",
+               gcsConnection: { keyId: "GOOG", secret: "shhh" },
+            }),
+         );
+         expect(sql).toBe(`
+         CREATE OR REPLACE SECRET gcs_root (
+            TYPE gcs,
+            KEY_ID 'GOOG',
+            SECRET 'shhh'
+         );
+      `);
+      });
+   });
+});
+
+// The attach run is cached per connection object so concurrent lookups share one
+// ATTACH. Caching a REJECTED run is different: every attach handler reaches the
+// network, so one blip would otherwise be replayed for the life of the process.
+describe("attach retry after a transient failure", () => {
+   const envPath = path.join(process.cwd(), "test-attach-retry");
+
+   beforeEach(async () => {
+      await fs.mkdir(envPath, { recursive: true });
+   });
+   afterEach(async () => {
+      sinon.restore();
+      await fs.rm(envPath, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("retries the attach on a later lookup instead of replaying the error", async () => {
+      let secretAttempts = 0;
+      sinon
+         .stub(DuckDBConnection.prototype, "runSQL")
+         .callsFake(async (sql: string) => {
+            if (/CREATE OR REPLACE SECRET/i.test(String(sql))) {
+               secretAttempts += 1;
+               if (secretAttempts === 1) {
+                  throw new Error("temporary failure in name resolution");
+               }
+            }
+            return { rows: [] } as never;
+         });
+
+      const config = buildEnvironmentMalloyConfig(
+         [
+            {
+               name: "duckdb_retry",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "root",
+                        type: "s3",
+                        s3Connection: { provider: "credential_chain" },
+                     },
+                  ],
+               },
+            },
+         ] as never,
+         envPath,
+      );
+
+      await expect(
+         config.malloyConfig.connections.lookupConnection("duckdb_retry"),
+      ).rejects.toThrow(/temporary failure in name resolution/);
+
+      // The retry is the point: a second lookup must run the attach again.
+      await config.malloyConfig.connections.lookupConnection("duckdb_retry");
+      expect(secretAttempts).toBe(2);
+
+      await config.releaseConnections().catch(() => {});
    });
 });

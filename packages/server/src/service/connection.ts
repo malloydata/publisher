@@ -56,7 +56,11 @@ import {
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
 } from "./connection_config";
-import { CloudStorageCredentials } from "./gcs_s3_utils";
+import {
+   CloudStorageCredentials,
+   DEFAULT_S3_CREDENTIAL_CHAIN,
+   resolveCloudStorageCredentials,
+} from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
 
@@ -1025,65 +1029,19 @@ async function federatePostgres(
    return { handle: alias, sourceType: "postgres" };
 }
 
-async function attachCloudStorage(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   const isGCS = attachedDb.type === "gcs";
-   const isS3 = attachedDb.type === "s3";
-
-   if (!isGCS && !isS3) {
-      throw new Error(`Invalid cloud storage type: ${attachedDb.type}`);
-   }
-
-   const storageType = attachedDb.type?.toUpperCase() || "";
-   let credentials: CloudStorageCredentials;
-
-   if (isGCS) {
-      if (!attachedDb.gcsConnection) {
-         throw new Error(
-            `GCS connection configuration missing for: ${attachedDb.name}`,
-         );
-      }
-      if (!attachedDb.gcsConnection.keyId || !attachedDb.gcsConnection.secret) {
-         throw new Error(
-            `GCS keyId and secret are required for: ${attachedDb.name}`,
-         );
-      }
-      credentials = {
-         type: "gcs",
-         accessKeyId: attachedDb.gcsConnection.keyId,
-         secretAccessKey: attachedDb.gcsConnection.secret,
-      };
-   } else {
-      if (!attachedDb.s3Connection) {
-         throw new Error(
-            `S3 connection configuration missing for: ${attachedDb.name}`,
-         );
-      }
-      if (
-         !attachedDb.s3Connection.accessKeyId ||
-         !attachedDb.s3Connection.secretAccessKey
-      ) {
-         throw new Error(
-            `S3 accessKeyId and secretAccessKey are required for: ${attachedDb.name}`,
-         );
-      }
-      credentials = {
-         type: "s3",
-         accessKeyId: attachedDb.s3Connection.accessKeyId,
-         secretAccessKey: attachedDb.s3Connection.secretAccessKey,
-         region: attachedDb.s3Connection.region,
-         endpoint: attachedDb.s3Connection.endpoint,
-         sessionToken: attachedDb.s3Connection.sessionToken,
-      };
-   }
-
-   await installAndLoadExtension(connection, "httpfs");
-
-   const secretName = sanitizeSecretName(
-      `${attachedDb.type}_${attachedDb.name}`,
-   );
+/**
+ * Assembles the CREATE OR REPLACE SECRET for a GCS or S3 storage root.
+ *
+ * Split out from `attachCloudStorage` so the emitted statement can be asserted
+ * without a live DuckDB: the S3 arm now picks between four shapes, and the three
+ * key-based ones have to stay byte-identical to what they were before chain auth
+ * existed.
+ */
+export function buildCloudStorageSecretSQL(
+   secretName: string,
+   credentials: CloudStorageCredentials,
+): string {
+   const isGCS = credentials.type === "gcs";
    const escapedKeyId = escapeSQL(credentials.accessKeyId);
    const escapedSecret = escapeSQL(credentials.secretAccessKey);
 
@@ -1100,7 +1058,44 @@ async function attachCloudStorage(
    } else {
       const region = credentials.region || "us-east-1";
 
-      if (credentials.endpoint) {
+      if (credentials.provider === "credential_chain") {
+         // CHAIN is load-bearing, not decorative: with it omitted DuckDB
+         // resolves against `config` alone, which is the one provider that
+         // cannot work in a container. So Publisher names an order rather than
+         // passing through only what the caller set.
+         const chain = escapeSQL(
+            credentials.chain?.trim() || DEFAULT_S3_CREDENTIAL_CHAIN,
+         );
+         // A chain secret stores the credentials it resolved, not a reference to
+         // the provider that resolved them, so a temporary credential (a
+         // web-identity token yields about an hour) expires while the secret
+         // lives on. That is invisible on the build path, where the session
+         // lasts one build, and fatal on the serve path, where the attach is
+         // idempotent and the secret lives as long as the connection. REFRESH
+         // re-resolves it. It is not caller-configurable because a frozen
+         // snapshot of an expiring credential has no use.
+         const clauses = [
+            "TYPE s3",
+            "PROVIDER credential_chain",
+            `CHAIN '${chain}'`,
+            "REFRESH true",
+            `REGION '${region}'`,
+         ];
+         // Additive, not an alternative: an S3-compatible endpoint behind a host
+         // role is a real combination, and the key-based branches below can only
+         // express one modifier at a time.
+         if (credentials.endpoint) {
+            clauses.push(
+               `ENDPOINT '${escapeSQL(credentials.endpoint)}'`,
+               "URL_STYLE 'path'",
+            );
+         }
+         createSecretCommand = `
+            CREATE OR REPLACE SECRET ${secretName} (
+               ${clauses.join(",\n               ")}
+            );
+         `;
+      } else if (credentials.endpoint) {
          const escapedEndpoint = escapeSQL(credentials.endpoint);
          createSecretCommand = `
             CREATE OR REPLACE SECRET ${secretName} (
@@ -1134,6 +1129,34 @@ async function attachCloudStorage(
          `;
       }
    }
+
+   return createSecretCommand;
+}
+
+async function attachCloudStorage(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   const storageType = attachedDb.type?.toUpperCase() || "";
+   const credentials = resolveCloudStorageCredentials(attachedDb);
+
+   await installAndLoadExtension(connection, "httpfs");
+   // `credential_chain` is implemented by the `aws` extension and resolves when
+   // the secret is created, so the extension has to be loaded first. The
+   // DuckLake attach path already loads it, but the generic attach path reaches
+   // this same function through the handler table and does not. `aws` is baked
+   // into the image, so this stays within EXTENSION_FETCH_POLICY=local-only.
+   if (credentials.provider === "credential_chain") {
+      await installAndLoadExtension(connection, "aws");
+   }
+
+   const secretName = sanitizeSecretName(
+      `${attachedDb.type}_${attachedDb.name}`,
+   );
+   const createSecretCommand = buildCloudStorageSecretSQL(
+      secretName,
+      credentials,
+   );
 
    if (await doesSecretExistInDuckDB(connection, secretName)) {
       // Force refresh attachments using this storage
@@ -1832,6 +1855,19 @@ export function buildEnvironmentMalloyConfig(
             connection,
             metadata.attachedDatabases,
          );
+         // Drop a rejected run from the cache so a later lookup can retry, rather
+         // than replaying one transient failure for the life of the process. Every
+         // attach handler reaches the network — postgres opens a real connection,
+         // bigquery and snowflake authenticate, and a cloud-storage secret under
+         // `credential_chain` resolves credentials at CREATE — and the loop in
+         // attachDatabasesToDuckDB rethrows, so without this the first blip is
+         // permanent and only rebuilding the environment clears it. Mirrors the
+         // eviction on proxyConnectionCache below.
+         attachPromise.catch(() => {
+            if (attachPromises.get(connection) === attachPromise) {
+               attachPromises.delete(connection);
+            }
+         });
          attachPromises.set(connection, attachPromise);
       }
       await attachPromise;
