@@ -229,6 +229,57 @@ A `storage=` build reads its source through DuckDB's native query-passthrough, w
 
 ---
 
+## [Unreleased]: an incremental refresh can advance a `storage=` table
+
+`refresh="incremental"` alongside `storage=` was a publish rejection. It is now supported, with the
+same declarations and the same guarantees as a colocated incremental source: the table is advanced by
+a bounded `[covered_through, frontier)` delta instead of being rebuilt.
+
+### What changed
+
+- **The delta spans the two engines the tier already spans.** The source warehouse computes the
+  bounded range — the predicate is pushed into its own query, so it never streams rows that will be
+  discarded — and the `DELETE`+`INSERT` (or `MERGE`, for a `merge_key=` source) is applied in one
+  DuckLake transaction against the stored table. The table is either at the old snapshot or the new
+  one; the read-only serving attach sees the new one on its next query, with no re-attach.
+- **A delta's warehouse read is attributed and costed** exactly as a full build's is, through the same
+  call: a `queryMetadata` bag reaches it as a BigQuery `@@query_label` or a Snowflake `QUERY_TAG`, and
+  `ManifestEntry.queryCostBytes` reports what a tagged read cost. Refresh spend on this tier was
+  otherwise the one kind of warehouse work a deployment could not account for.
+- **`LedgerEntry` gains `storageDestinationName`.** A boundary belongs to a table, and where a stored
+  table LIVES is not implied by the connection whose SQL computes it — `storage=` enters neither the
+  content address nor the physical name, so nothing else distinguishes a boundary measured on the
+  stored table from one measured on a colocated table of the same name. A caller holding the ledger
+  should store and return it like every other field. One that does not yet: an entry without it, for a
+  source this run materializes into a destination, is treated as stale and the source seeds — it is
+  not rejected.
+- **A CHAINED stored source still rebuilds** every refresh, reported under its own reason code
+  (`chained_storage`) rather than silently. Its parent's own delta can restate rows below the child's
+  frontier, where no delta of the child's would revisit them.
+- **`publisher_source_build_duration_seconds` gains a `delta_storage` engine label**, kept apart from
+  `delta` for the same reason `storage` is kept apart from `in_warehouse`: the two have different cost
+  profiles and pooling them averages one into the other.
+
+### Upgrading
+
+**Every incremental source rebuilds once.** A boundary is now keyed by the store its table lives in
+as well as by the connection and the name, because a source persisted colocated and one persisted
+into a destination under the same name are two different tables that coexist legitimately — sharing
+one row made both seed forever, each overwriting the other. `publisher.db` re-keys the ledger on
+boot and discards the recorded boundaries with it, so each incremental source takes one full rebuild
+and then resumes advancing by delta. Same mechanism, and the same one-time cost, as the re-key in
+0.0.240.
+
+**If you hold the ledger yourself, store the new field before you upgrade.** An entry returned
+without `storageDestinationName` for a source materialized into a destination describes a different
+table, so that source seeds — every run, not once, until the caller round-trips it. That is
+deliberate (an entry from a caller that predates the field is stale, not wrong, so it is not
+rejected) but the only signal is a repeating `no_boundary`. Update the caller's ledger storage first,
+or accept full rebuilds until you do.
+
+**A source that was rejected for declaring both keys now publishes**, and takes the same one rebuild
+as any other incremental source before it starts advancing.
+
 ## [Unreleased]: a given's control contract is read off its own tags
 
 The `Given` control contract shipped in 0.0.242 as a schema with no reader: the fields were declared and no endpoint populated them. The server now derives them from the declaration's own tags, so they are populated wherever a `Given` is returned.

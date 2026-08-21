@@ -96,6 +96,14 @@ Neither mode ever sets `AUTOMATIC_MIGRATION`: a catalog whose recorded format is
 supported range fails the attach rather than being migrated in place by whichever server happened
 to reach it first.
 
+**An incremental refresh mutates a stored table in place**, rather than writing a new one: a source
+declaring `refresh="incremental"` alongside `storage=` has its delta applied as a `DELETE`+`INSERT`
+or a `MERGE` inside one DuckLake transaction, so the table is either at the old snapshot or the new
+one and never between them. The read-only serving attach observes the new snapshot on its next query,
+with no re-attach and no package reload — the catalog is consulted per transaction rather than pinned
+at attach time. Note that this is a property of a **Postgres-backed** catalog, which is the supported
+configuration; a DuckDB-file catalog attached read-only does not behave this way.
+
 **Lazy, and never on the startup path.** The catalog is attached on the _first query_ that uses the
 connection — not when the server boots and not when the environment config is built. This is a
 deliberate isolation boundary: **a slow or unreachable catalog degrades only that connection's

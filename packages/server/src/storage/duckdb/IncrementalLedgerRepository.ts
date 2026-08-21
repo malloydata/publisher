@@ -4,6 +4,7 @@
 import {
    IncrementalLedgerEntry,
    IncrementalStrategy,
+   LedgerTableIdentity,
 } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 
@@ -17,6 +18,11 @@ import { DuckDBConnection } from "./DuckDBConnection";
  * Keyed on the table because that is what the boundary is a fact about. The source
  * address and the package name are recorded but NOT keys — see the schema comment
  * for why keying on them broke a table shared across package versions.
+ *
+ * The key includes the STORE, because a table persisted colocated and one
+ * persisted into a destination under the same name are two different tables that
+ * coexist legitimately. Keyed without it they would share one row and both would
+ * seed forever, each overwriting the other on the way out.
  *
  * Deliberately has NO locking of its own. The single writer is already
  * guaranteed one level up, by the `active_key` unique index on
@@ -33,14 +39,20 @@ export class IncrementalLedgerRepository {
 
    async get(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<IncrementalLedgerEntry | null> {
       const row = await this.db.get<Record<string, unknown>>(
          `SELECT * FROM incremental_ledger
            WHERE environment_id = ? AND connection_name = ?
-             AND physical_table_name = ?`,
-         [environmentId, connectionName, physicalTableName],
+             AND storage_destination_name = ? AND physical_table_name = ?`,
+         [
+            environmentId,
+            table.connectionName,
+            // '' is the colocated sentinel the key stores; see the schema comment
+            // for why the key cannot carry a NULL.
+            table.storageDestinationName ?? "",
+            table.physicalTableName,
+         ],
       );
       return row ? mapRow(row) : null;
    }
@@ -63,10 +75,11 @@ export class IncrementalLedgerRepository {
              environment_id, package_name, source_entity_id,
              covered_through_value, covered_through_type,
              watermark_dimension, merge_key_dimensions, derived_strategy,
-             physical_table_name, connection_name,
+             physical_table_name, connection_name, storage_destination_name,
              advanced_by_materialization_id, advanced_at, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (environment_id, connection_name, physical_table_name)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (environment_id, connection_name,
+                       storage_destination_name, physical_table_name)
           DO UPDATE SET
              package_name = EXCLUDED.package_name,
              source_entity_id = EXCLUDED.source_entity_id,
@@ -75,6 +88,7 @@ export class IncrementalLedgerRepository {
              watermark_dimension = EXCLUDED.watermark_dimension,
              merge_key_dimensions = EXCLUDED.merge_key_dimensions,
              derived_strategy = EXCLUDED.derived_strategy,
+             storage_destination_name = EXCLUDED.storage_destination_name,
              advanced_by_materialization_id = EXCLUDED.advanced_by_materialization_id,
              advanced_at = EXCLUDED.advanced_at
           RETURNING *`,
@@ -89,6 +103,7 @@ export class IncrementalLedgerRepository {
             entry.derivedStrategy,
             entry.physicalTableName,
             entry.connectionName,
+            entry.storageDestinationName ?? "",
             entry.advancedByMaterializationId,
             now,
             now,
@@ -104,14 +119,21 @@ export class IncrementalLedgerRepository {
     */
    async deleteEntry(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<void> {
+      // Exactly the row this table owns. The key carries the store, so a rebuild
+      // of one table cannot clear a boundary measured on another that happens to
+      // share its connection and name.
       await this.db.run(
          `DELETE FROM incremental_ledger
            WHERE environment_id = ? AND connection_name = ?
-             AND physical_table_name = ?`,
-         [environmentId, connectionName, physicalTableName],
+             AND storage_destination_name = ? AND physical_table_name = ?`,
+         [
+            environmentId,
+            table.connectionName,
+            table.storageDestinationName ?? "",
+            table.physicalTableName,
+         ],
       );
    }
 
@@ -152,6 +174,11 @@ function mapRow(row: Record<string, unknown>): IncrementalLedgerEntry {
       derivedStrategy: row.derived_strategy as IncrementalStrategy,
       physicalTableName: row.physical_table_name as string,
       connectionName: row.connection_name as string,
+      storageDestinationName:
+         typeof row.storage_destination_name === "string" &&
+         row.storage_destination_name.length > 0
+            ? row.storage_destination_name
+            : undefined,
       advancedByMaterializationId:
          row.advanced_by_materialization_id != null
             ? (row.advanced_by_materialization_id as string)
