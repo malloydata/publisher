@@ -3,6 +3,10 @@ id: runtime-fallback-reads-the-served-shape
 tags: serve-correctness, orchestration, needs-attention
 package: rfs
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A source's `freshnessFallback` must be decided by what is serving it
 

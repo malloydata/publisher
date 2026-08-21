@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The two pre-aggregation seams, over a real package: the BUILD PLAN (rollups get
 // planned and reported with their provenance) and the SERVE path (a covered query
 // routes through the composite and still answers correctly).
@@ -55,17 +58,51 @@ source: orders is duckdb.sql("""
 // which is what makes it a usable control for "routing changes no answer".
 const MODEL_UNANNOTATED = MODEL.replace(/^\s*#@ preaggregate.*\n/gm, "");
 
-async function loadPackage(model = MODEL): Promise<Package> {
+async function loadPackageFiles(
+   files: Record<string, string>,
+): Promise<Package> {
    const dir = path.join(envPath, "pkg");
    await fs.mkdir(dir, { recursive: true });
    await fs.writeFile(
       path.join(dir, "publisher.json"),
       JSON.stringify({ name: "pkg", description: "fixture" }),
    );
-   await fs.writeFile(path.join(dir, "model.malloy"), model);
+   for (const [name, contents] of Object.entries(files)) {
+      await fs.writeFile(path.join(dir, name), contents);
+   }
    const env = await Environment.create("testEnv", envPath, []);
    await env.addPackage("pkg");
    return env.getPackage("pkg", false);
+}
+
+async function loadPackage(model = MODEL): Promise<Package> {
+   return loadPackageFiles({ "model.malloy": model });
+}
+
+/** Run `query` and return its rows as plain objects. */
+async function runGatedQuery(
+   pkg: Package,
+   query: string,
+   givens: Record<string, unknown>,
+) {
+   const model = pkg.getModel("model.malloy");
+   if (!model) throw new Error("model.malloy did not load");
+   const { compactResult } = await model.getQueryResults(
+      undefined,
+      undefined,
+      query,
+      undefined,
+      undefined,
+      givens as never,
+   );
+   return (compactResult as Record<string, unknown>[]).map((row) =>
+      Object.fromEntries(
+         Object.entries(row).map(([k, v]) => [
+            k,
+            typeof v === "bigint" ? Number(v) : v,
+         ]),
+      ),
+   );
 }
 
 function planSources(pkg: Package) {
@@ -221,13 +258,20 @@ source: orders is raw -> { group_by: category; aggregate: amount_sum is amount.s
 
 describe("the serve seam", () => {
    /** Run `query` and return its rows as plain objects. */
-   async function run(pkg: Package, query: string) {
+   async function run(
+      pkg: Package,
+      query: string,
+      givens?: Record<string, unknown>,
+   ) {
       const model = pkg.getModel("model.malloy");
       if (!model) throw new Error("model.malloy did not load");
       const { compactResult } = await model.getQueryResults(
          undefined,
          undefined,
          query,
+         undefined,
+         undefined,
+         givens as never,
       );
       // Numbers arrive as bigint from DuckDB sums; normalize so the assertions
       // read as the numbers an author would expect.
@@ -494,6 +538,197 @@ source: regions is duckdb.sql("""
             { region: "north", region_count: 2 },
             { region: "south", region_count: 1 },
          ]);
+      },
+      { timeout: 60000 },
+   );
+});
+
+// ---------------------------------------------------------------------------
+// Pre-aggregation x row-level `#(authorize)`. Nothing covered the combination,
+// and the two tiers guard differently: `routingBlockedByRowLevelGate` was
+// `&&`-ed with `storageRoutingPossible` and guarded only the storage branch,
+// while the pre-aggregation branch had no gate check and `preaggRouted` is never
+// reset.
+// ---------------------------------------------------------------------------
+
+describe("pre-aggregation and a row-level gate", () => {
+   const GATED = `##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+
+   it(
+      "plans the rollup — the gate stops materialization, not synthesis",
+      async () => {
+         // Worth pinning both halves separately. Synthesis is unaffected by the
+         // gate, so the rollup reaches the plan; what keeps the combination safe
+         // is that MATERIALIZING it is then refused, which is asserted directly
+         // against the build gate in `materialization_eligibility.spec.ts` (a
+         // rollup-shaped `#@ persist` over a gated base). A frozen rollup
+         // pre-aggregates ACROSS org_id, so it could not be filtered by org_id
+         // afterwards at all.
+         const pkg = await loadPackage(GATED);
+         expect(planSources(pkg)).toHaveLength(1);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "answers a covered query with the gate's row filter applied, not the unfiltered rollup",
+      async () => {
+         // `category` IS the rollup's grain, so this is the query a rollup covers
+         // — the one that would read a frozen table if one could exist. `org_id`
+         // is not in the grain, so an unfiltered answer is unmistakable: A would
+         // total 30 rather than 10.
+         const pkg = await loadPackage(GATED);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([
+            { category: "A", total: 10 },
+            { category: "B", total: 30 },
+         ]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "answers an uncovered query with the gate's row filter applied",
+      async () => {
+         // `org_id` is not in any rollup's grain, so the composite falls back to
+         // the base member. This is the path on which `effectiveBuildManifest`
+         // would hand a rollup manifest to a runnable rebuilt against the live
+         // model if the tier were not blocked for a gated entry point.
+         const pkg = await loadPackage(GATED);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: org_id; aggregate: total; order_by: org_id }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([{ org_id: 1, total: 40 }]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "denies when the caller supplies no value for the gate's given",
+      async () => {
+         const pkg = await loadPackage(GATED);
+         await expect(
+            runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total }",
+               {},
+            ),
+         ).rejects.toThrow();
+      },
+      { timeout: 60000 },
+   );
+});
+
+// ---------------------------------------------------------------------------
+// The routing pre-check's own reachability. Blocking a gated entry point from
+// the storage / pre-aggregation tiers is guarded by a model-wide "is there an
+// authorize note ANYWHERE" sweep, so a deployment with rollups and no gates
+// doesn't pay a live compile per query. A sweep that misses a gate un-guards
+// the tier: this is the shape that missed.
+// ---------------------------------------------------------------------------
+
+describe("a gate reached only through a derivation hop", () => {
+   // Three files, because two import hops is what it takes: the gate is
+   // declared in `base`, `mid` derives a `query_source` from it, and `model`
+   // imports only the derivation. `model`'s `contents` therefore holds `qs`
+   // alone — `gated` is an INLINE struct hanging off `qs.query.structRef`, in
+   // neither `contents` nor `sourceRegistry`. `ungated` is what turns the
+   // pre-aggregation serve tier on, so the routing pre-check actually runs.
+   const LAYERED = {
+      "base.malloy": `##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: gated is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""")
+`,
+      "mid.malloy": `##! experimental { persistence composite_sources givens }
+import { gated } from "base.malloy"
+
+given:
+  GROUPS :: number[]
+
+source: qs is gated -> { select: * }
+`,
+      "model.malloy": `##! experimental { persistence composite_sources givens }
+import { qs } from "mid.malloy"
+
+given:
+  GROUPS :: number[]
+
+source: ungated is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'A')) AS t(amount, category)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+   };
+
+   it(
+      "is found by the routing pre-check's model-wide sweep",
+      async () => {
+         // Asserted on the predicate rather than on an answer, because a miss
+         // here is not (yet) a wrong answer: it un-guards the tier, and what
+         // catches the query after that is the authoritative gate. The
+         // predicate's contract is what has to hold — a superset of every gate
+         // the entry-point walks can reach — so that is what this pins.
+         const pkg = await loadPackageFiles(LAYERED);
+         const model = pkg.getModel("model.malloy");
+         if (!model) throw new Error("model.malloy did not load");
+         expect(
+            (
+               model as unknown as { hasAnyAuthorizeNote(): boolean }
+            ).hasAnyAuthorizeNote(),
+         ).toBe(true);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "is still enforced on the gated entry point",
+      async () => {
+         // The other half: two import hops do not lose the gate. `org_id` 2 is
+         // outside `GROUPS`, so an unfiltered answer is unmistakable.
+         const pkg = await loadPackageFiles(LAYERED);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: qs -> { group_by: org_id; aggregate: t is amount.sum(); order_by: org_id }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([{ org_id: 1, t: 40 }]);
       },
       { timeout: 60000 },
    );

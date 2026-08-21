@@ -1,10 +1,15 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Row-level access
 
 > What this is: how to restrict **which rows** a caller sees, using [givens](givens.md). This is one
 > application of givens; for allowing/denying a whole source see [authorize.md](authorize.md), and for
 > the base mechanism see [givens.md](givens.md).
 
-Two related but distinct things live here — keep them apart:
+Three related but distinct things live here — keep them apart:
 
 - **Row-level filtering** — a source scopes its own rows by a caller-supplied given. This is a
   convenience and a performance/UX tool (each caller sees only their slice). It is *not*, by itself,
@@ -12,6 +17,8 @@ Two related but distinct things live here — keep them apart:
 - **Row-level access control** — the same row scoping, made **mandatory** and validated with an
   `#(authorize)` gate, behind a trusted tier. Now a caller *cannot* opt out of their slice, and the
   scoping value is one the trusted tier asserts from verified identity.
+- **Row-level authorize** — the gate itself does the row scoping, instead of pairing it with a
+  separate `where:`. See [Row-level authorize](#row-level-authorize) below.
 
 ## Row-level filtering
 
@@ -67,6 +74,48 @@ source: orders is duckdb.table('orders.parquet') extend {
 Used together, callers can only reach `orders` with a recognized tenant, and only ever see that
 tenant's rows.
 
+## Row-level authorize
+
+The pairing above uses two expressions: `#(authorize)` decides **whether** the caller may enter the
+source at all, and `where:` decides **which rows** they get once admitted. A gate that references a
+row field (see [authorize.md § Row-level gates](authorize.md#row-level-gates)) folds both jobs into
+one: instead of a whole-source 403/200 decision, the gate itself becomes the row filter.
+
+```malloy
+##! experimental.givens
+
+given: GROUPS :: string[]
+
+#(authorize) "org_id in $GROUPS"
+source: orders is duckdb.table('orders.parquet') extend {
+  measure: order_count is count()
+}
+```
+
+A caller with `GROUPS: [7, 8]` sees only rows where `org_id` is 7 or 8; a caller with no groups (or
+an empty array) sees zero rows — filtered rather than denied, and there is no separate `where:` to
+write or to keep in sync.
+
+### Which to reach for
+
+- **`where: field in $GIVEN` alone** — a convenience filter, not access control. A caller who omits
+  the given sees everything. Use it when scoping is a UX nicety, not a boundary.
+- **`where:` paired with `#(authorize)`** (the pattern above) — the gate is a whole-source boolean
+  (admit, or 403); `where:` does the row scoping. Reach for this when the "may enter, but only sees
+  their rows" logic genuinely needs two independent expressions — an admin-override gate
+  (`$ROLE = 'admin'`) whose row scoping differs from a tenant's (`tenant = $TENANT`), for example —
+  or when the row scoping needs a shape (`filter<T>`, a range, a join-based lookup) the row-level
+  gate's [restricted grammar](authorize.md#row-level-gates) doesn't accept.
+- **A row-level `#(authorize)` gate alone** — when the whole-source decision and the row scope are
+  the *same* comparison (`org_id in $GROUPS` is both "may they enter" and "which rows"), write it
+  once as a gate. An unset or empty given fails closed to zero rows, with no matching pair of
+  expressions that could drift apart.
+
+The row-level gate's grammar is narrower than a `where:` clause on purpose — see
+[authorize.md § Row-level gates](authorize.md#row-level-gates) for exactly what it accepts (a
+boolean combination of `<field> <operator> $GIVEN`, `in` for an array given) and refuses (function
+calls, arithmetic, `like`, a comparison against a constant).
+
 > **Trusted-tier requirement.** Givens are **caller-asserted** — anyone who can reach the query API
 > can send `{"TENANT":"acme"}`. Row-level access control is a real boundary only when Publisher sits
 > behind a trusted tier that authenticates the end user and sets `TENANT` from its own verified
@@ -96,8 +145,11 @@ curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
 ## Locking the base source
 
 Neither `where:` nor `#(authorize)` is walked through joins — both apply to the source a query
-enters through. `#(authorize)` _is_ carried to an extension that declares no gate of its own, but an
-extension declaring its OWN gate replaces it. So two things are yours to get right: which sources a
+enters through. (A row-level gate on the entry point may *reference* a field on a joined source —
+see [authorize.md § entry point](authorize.md#the-entry-point-and-only-the-entry-point) — but that
+is not the same as a joined source's own gate firing; the rule here is unchanged.) `#(authorize)`
+_is_ carried to an extension that declares no gate of its own, but an extension declaring its OWN
+gate replaces it. So two things are yours to get right: which sources a
 caller can enter through (anything ungated that joins the base hands the base over), and what each
 extension re-exposes. Lock the base with `#(authorize) "false"`, re-expose curated, separately-gated
 extensions with [access modifiers](https://docs.malloydata.dev/documentation/experiments/include),

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -9,6 +12,7 @@ import {
    type QuerySlotHandle,
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
+import { filterPublisherOwnedRenderLogs } from "../../service/dashboard";
 import { EnvironmentStore } from "../../service/environment_store";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
@@ -168,7 +172,7 @@ export function registerExecuteQueryTool(
          }
 
          // --- Execute Query ---
-         const { model, environment } = modelResult;
+         const { model, environment, pkg } = modelResult;
          logger.info(
             `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
          );
@@ -190,6 +194,10 @@ export function registerExecuteQueryTool(
                environment: environmentName,
                // Minted here because the envelope below returns it.
                correlationId: mintCorrelationId(),
+               // The package owns its manifest, so the least-specific
+               // author-declared layer is read here; the model knows only its
+               // own file and its package's NAME.
+               packageDeclaration: pkg.getDeclaredQueryMetadata(),
                // The environment owns the connection configs, so the default
                // and enforced layers are read here rather than from the model.
                connectionMetadata: (connectionName: string) => {
@@ -260,7 +268,9 @@ export function registerExecuteQueryTool(
             const { validateRenderTags } = await import(
                "@malloydata/render-validator"
             );
-            const renderLogs = validateRenderTags(result);
+            const renderLogs = filterPublisherOwnedRenderLogs(
+               validateRenderTags(result),
+            );
 
             const resultUri = buildMalloyUri(
                {

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Delete } from "@mui/icons-material";
 import CloseIcon from "@mui/icons-material/Close";
 import Button from "@mui/material/Button";

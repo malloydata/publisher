@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Connection } from "@malloydata/malloy";
 import { logger } from "../logger";
 

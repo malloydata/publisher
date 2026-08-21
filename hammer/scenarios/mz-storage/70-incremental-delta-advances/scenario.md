@@ -3,6 +3,10 @@ id: incremental-delta-advances
 tags: build-control, incremental
 package: iv
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # An incremental refresh advances the table by a bounded delta
 

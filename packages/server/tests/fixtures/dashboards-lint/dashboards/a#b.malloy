@@ -1,0 +1,11 @@
+// A name that is legal on disk and hostile in a URL. It IS served, because the
+// route matches it, but the published `resource` must be percent-encoded: a raw
+// `#` opens a fragment, so a client following the link asks for a different URL
+// and gets a 404.
+import { orders } from '../orders.malloy'
+
+# artifact { title="Hash In Name" }
+query: hash_in_name is orders -> {
+   group_by: brand_name
+   aggregate: total_amount
+}

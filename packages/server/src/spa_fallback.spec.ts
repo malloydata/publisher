@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 
 import { classifySpaFallback } from "./spa_fallback";
@@ -42,6 +45,26 @@ describe("classifySpaFallback", () => {
          // `data-apps/<file>`, and ModelPage iframes it. Diverting this would
          // break that list.
          expect(classify("/examples/storefront/data-apps/index.html")).toEqual({
+            kind: "spa",
+         });
+      });
+
+      it("keeps a dashboard whose slug ends in an asset extension", () => {
+         // A slug is a FILENAME with `.malloy` removed, so
+         // `dashboards/report.csv.malloy` publishes the slug `report.csv`
+         // through no choice of the reader's. Measured before this entry
+         // existed: that dashboard was listed on the package page, served by
+         // the API, and reachable by in-app navigation, while a deep link or a
+         // refresh 302d to the static route and answered 404.
+         expect(classify("/examples/storefront/dashboards/report.csv")).toEqual(
+            {
+               kind: "spa",
+            },
+         );
+         // The ordinary shape reaches the app without needing this set at all,
+         // asserted so a regression that removes the entry is distinguishable
+         // from one that breaks the whole route.
+         expect(classify("/examples/storefront/dashboards/overview")).toEqual({
             kind: "spa",
          });
       });

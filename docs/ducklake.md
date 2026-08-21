@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # DuckLake connections
 
 > What this is: how Publisher attaches a [DuckLake](https://ducklake.select) catalog, the

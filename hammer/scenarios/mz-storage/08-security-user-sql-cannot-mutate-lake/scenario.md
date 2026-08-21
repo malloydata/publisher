@@ -3,6 +3,10 @@ id: security-user-sql-cannot-mutate-lake
 tags: security
 package: sec1
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Security: user Malloy/SQL cannot reach the DuckLake destination
 

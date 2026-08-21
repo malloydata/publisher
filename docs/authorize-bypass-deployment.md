@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Deploying with the authorize bypass
 
 Publisher accepts a request header that **skips `#(authorize)` gate evaluation**:
@@ -77,6 +82,15 @@ finding. Two cautions:
 
 Neither signal records *who* sent the header — Publisher does not know. If you need caller
 attribution, log it at the hop that sets the header, and join on package + model.
+
+Three other counters are not bypass signals — they cover gate outcomes on requests that did *not*
+bypass — but are worth knowing apart from `publisher_authorize_bypass_total` when reading a
+dashboard: `publisher_authorize_row_level_total` (labelled `decision`: `denied_by_gate` |
+`empty_after_filter`) and `publisher_authorize_row_level_rejected_total` (labelled `cause`) cover
+row-level gates; `publisher_authorize_guard_rejected_total` (labelled `field`) counts 400s for a
+caller-declared `#(authorize)` annotation. See
+[authorize.md § Row-level gate metrics](authorize.md#row-level-gate-metrics) for the full label
+values.
 
 ## If you do not need it
 

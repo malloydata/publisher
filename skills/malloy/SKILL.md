@@ -2,6 +2,10 @@
 name: malloy
 description: Index of all Malloy skills. Use when user asks "malloy help", "what malloy skills are available", "how do I use malloy", or needs guidance on which Malloy skill to use.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Malloy Skills Index
 
@@ -62,6 +66,7 @@ Every skill in this deployment, by what it is for. Start at a driver; it routes 
 | Skill | Use when... |
 |-------|-------------|
 | `skill:malloy-publish` | Moving a finished model into a served package (local-to-served handoff) |
+| `skill:malloy-dashboards` | Building a dashboard: a tagged `.malloy` file in a package's `dashboards/` directory, with filter controls and drill-through |
 | `skill:malloy-html-data-apps` | Building an in-package HTML data app (a `public/` directory the package serves) |
 | `skill:malloy-html-data-app-runtime` | Writing the JavaScript that drives that app |
 | `skill:malloy-html-data-app-embedding` | Embedding a served page into a host application |

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import * as fs from "fs/promises";
@@ -6,7 +9,7 @@ import { components } from "../api";
 import { logger } from "../logger";
 import {
    FreshnessManifest,
-   isFailedEntry,
+   isLegacyFailedEntry,
    ManifestEntry,
 } from "../storage/DatabaseInterface";
 
@@ -133,10 +136,15 @@ export function splitManifestEntries(
    const tableNameManifest: FreshnessManifest = {};
    const storageEntries: Record<string, ManifestEntry> = {};
    for (const [sourceEntityId, entry] of Object.entries(entries)) {
-      // An entry that records a failure names no table that was built, so it must
-      // not reach a serve binding: the name either resolves to nothing or, on a
-      // rebuild, to the generation this run failed to replace.
-      if (isFailedEntry(entry)) {
+      // Legacy tolerance, removable with `ManifestEntry.error`: a manifest written
+      // by 0.0.245-0.0.246 records a failed source here, carrying the name of a
+      // table that was never created. Binding it serves the prior generation as
+      // though it were fresh, so it is dropped before either half of the split.
+      if (isLegacyFailedEntry(entry)) {
+         logger.warn("Manifest entry records a failed source; skipping", {
+            source,
+            sourceEntityId,
+         });
          continue;
       }
       const physicalTableName = entry?.physicalTableName;

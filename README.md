@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 <h1 align="center">Malloy Publisher</h1>
 
 <p align="center"><b>The open-source semantic model server for <a href="https://malloydata.dev">Malloy</a></b><br>

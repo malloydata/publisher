@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Storefront — a small but complete ecommerce semantic model.
 //
 // A classic star schema: an `order_items` fact joined to `customers` and
@@ -47,58 +50,100 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
     #(doc) Sales region for the customer's home state
     regions with customers.state
 
+  // Every field a view groups by or aggregates carries a `# label`, because the
+  // renderer titles a column, an axis and a KPI card with `# label` when there
+  // is one and the field's name when there is not — so an unlabelled model
+  // shows `total_sales` on the y axis of every chart and `percent_of_sales`
+  // over a column of percentages. One label per field is the cheapest polish
+  // in a Malloy model, and it applies everywhere the field is rendered,
+  // including the tables and cards in public/index.html.
   dimension:
     #(doc) Gross margin on this line (sale price minus product cost)
     # currency=usd
+    # label="Gross margin"
     gross_margin is sale_price - products.cost
+
+    // Named dimensions over the joined columns, so a view groups by `category`
+    // rather than by `products.category`. Same output field name and the same
+    // numbers, but the label lives in one place instead of on every view.
+    #(doc) Product category of the item sold
+    # label="Category"
+    category is products.category
+    #(doc) Brand of the item sold
+    # label="Brand"
+    brand is products.brand
+    #(doc) Sales region for the customer's home state
+    # label="Region"
+    region is regions.region
 
   measure:
     #(doc) Distinct orders
+    # label="Orders"
     order_count is count(order_id)
     #(doc) Line items sold
+    # label="Line items"
     order_item_count is count()
     #(doc) Total revenue
     # currency
+    # label="Revenue"
     total_sales is sale_price.sum()
     #(doc) Total gross margin (revenue minus cost of goods sold), summed per line
     # currency
+    # label="Gross margin"
     total_margin is gross_margin.sum()
     #(doc) Gross margin as a share of revenue
     # percent
+    # label="Margin rate"
     margin_rate is total_margin / nullif(total_sales, 0)
     #(doc) Average order value
     # currency
+    # label="Avg order value"
     avg_order_value is total_sales / nullif(order_count, 0)
     #(doc) Distinct customers
+    # label="Customers"
     customer_count is customers.count()
     #(doc) Average orders placed per customer
-    # number=auto
+    // A ratio of two counts is a long decimal by default (11.2936), which reads
+    // as noise on a KPI card. One decimal place is the precision the number
+    // actually carries.
+    # number="#,##0.0"
+    # label="Orders / customer"
     orders_per_customer is order_count / nullif(customer_count, 0)
     #(doc) Share of line items that were returned
     # percent
+    # label="Return rate"
     return_rate is order_item_count { where: status = 'Returned' } / nullif(order_item_count, 0)
     #(doc) Share of total sales
     # percent
+    # label="Share of sales"
     percent_of_sales is total_sales / nullif(all(total_sales), 0)
 
   // ── Reusable views (one idea each; chart tag lives on the view) ──────
   #(doc) Top products by revenue
   view: top_products is {
     top: 10
-    group_by: products.name
+    group_by:
+      # label="Product"
+      products.name
     aggregate: total_sales, total_margin, order_item_count
   }
   #(doc) Revenue by product category
   # bar_chart
   view: by_category is {
-    group_by: products.category
+    group_by: category
     aggregate: total_sales
+    order_by: total_sales desc
+  }
+  #(doc) Category performance: revenue, margin, and share of the total
+  view: category_performance is {
+    group_by: category
+    aggregate: total_sales, total_margin, margin_rate, percent_of_sales
     order_by: total_sales desc
   }
   #(doc) Gross margin by product category
   # bar_chart
   view: margin_by_category is {
-    group_by: products.category
+    group_by: category
     aggregate: total_margin
     order_by: total_margin desc
   }
@@ -106,33 +151,58 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   # bar_chart
   view: top_brands is {
     top: 8
-    group_by: products.brand
+    group_by: brand
     aggregate: total_sales
+    order_by: total_sales desc
+  }
+  // The brand equivalent of `category_performance`: a table because the ranking
+  // is the least of it. Margin rate and share are what separate brands that sit
+  // within a few thousand dollars of each other, and `top_brands` above already
+  // answers the ranking.
+  #(doc) Brand performance: revenue, margin, and share of the total
+  view: brand_performance is {
+    group_by: brand
+    aggregate: total_sales, total_margin, margin_rate, percent_of_sales
     order_by: total_sales desc
   }
   #(doc) Top customers by spend
   view: top_customers is {
     top: 10
-    group_by: customers.full_name, customer_id
+    group_by:
+      # label="Customer"
+      customers.full_name
+      # number=id
+      # label="Customer ID"
+      customer_id
     aggregate: total_sales, order_count
   }
   #(doc) Revenue by customer state (US choropleth)
   # shape_map
   view: sales_by_state is {
-    group_by: customers.state
-    aggregate: total_sales
+    group_by:
+      # label="State"
+      customers.state
+    // Renamed, not labelled: a shape_map titles its color legend with the
+    // measure's *name*, so `# label` alone leaves `total_sales` over the
+    // scale. The label still titles it everywhere else.
+    aggregate:
+      # currency
+      # label="Revenue"
+      revenue is total_sales
   }
   #(doc) Revenue by sales region (states rolled up via the regions lookup)
   # bar_chart
   view: sales_by_region is {
-    group_by: regions.region
+    group_by: region
     aggregate: total_sales
     order_by: total_sales desc
   }
   #(doc) Monthly revenue trend
   # line_chart
   view: sales_by_month is {
-    group_by: order_month is created_at.month
+    group_by:
+      # label="Month"
+      order_month is created_at.month
     aggregate: total_sales
     order_by: order_month
   }
@@ -141,6 +211,7 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   view: sales_by_year is {
     group_by:
       # number=id
+      # label="Year"
       order_year is year(created_at)
     aggregate: total_sales
     order_by: order_year
@@ -148,9 +219,15 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   #(doc) Seasonality: monthly revenue with one line per year (holiday spikes)
   # line_chart
   view: seasonality is {
-    group_by: month_of_year is month(created_at)
+    group_by:
+      # label="Month of year"
+      month_of_year is month(created_at)
+    // "Order year", not "Year": the legend reserves room from the longer of
+    // the series label and its widest value, so a 4-character label and
+    // 4-digit years leave a column too narrow for either and both clip.
     group_by:
       # number=id
+      # label="Order year"
       order_year is year(created_at)
     aggregate: total_sales
     order_by: month_of_year
@@ -158,7 +235,9 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   #(doc) Order counts by fulfillment status
   # bar_chart
   view: by_status is {
-    group_by: status
+    group_by:
+      # label="Status"
+      status
     aggregate: order_count
     order_by: order_count desc
   }
@@ -191,4 +270,13 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
       by_category
       top_products
   }
+}
+
+// A control that offers a list of choices gets them from a query like this one.
+// `BRAND`'s declaration in givens.malloy names it, and the data app's control
+// row reads that declaration to know which query to run for its options.
+#(doc) Distinct brands, for the Brand filter control's option list
+query: brand_suggest is order_items -> {
+  group_by: brand
+  order_by: brand
 }

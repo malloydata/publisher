@@ -3,6 +3,10 @@ id: schema-qualified-name
 tags: serve-correctness, naming
 package: sq
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A schema-qualified `name=` builds and serves there — but the schema must already exist
 

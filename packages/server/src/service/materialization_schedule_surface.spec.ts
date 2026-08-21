@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
@@ -230,9 +233,13 @@ describe("materialization schedule surfacing", () => {
    );
 
    it(
-      "still lets an explicit null clear queryMetadata",
+      "treats an explicit null as omitted, at the deprecated home too",
       async () => {
-         // Preserved-on-omission must not make it unclearable.
+         // Null used to clear HERE while null on the canonical field preserved.
+         // That asymmetry protected a client which serializes unset fields as
+         // null only once it had migrated off this home — precisely the client
+         // that has not. One rule at both homes now: null preserves, an empty
+         // bag clears.
          const env = await Environment.create("testEnv", envPath, []);
          await writePackageDir({
             materialization: {
@@ -249,7 +256,269 @@ describe("materialization schedule surfacing", () => {
 
          expect(
             (await readManifest()).materialization as Record<string, unknown>,
-         ).toMatchObject({ schedule: "0 6 * * *", queryMetadata: null });
+         ).toMatchObject({
+            schedule: "0 6 * * *",
+            queryMetadata: { team: "finance" },
+         });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "surfaces a manifest's queryMetadata in both wire homes",
+      async () => {
+         // The canonical field is the one a client should read; the block is
+         // populated alongside it only so an un-migrated client keeps working.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({ queryMetadata: { team: "fin" } });
+         await env.addPackage("pkg");
+
+         const pkg = await env.getPackage("pkg", false);
+         const metadata = pkg.getPackageMetadata();
+         expect(metadata.queryMetadata).toEqual({ team: "fin" });
+         expect(metadata.materialization).toMatchObject({
+            queryMetadata: { team: "fin" },
+         });
+         expect(pkg.getDeclaredQueryMetadata()).toEqual({ team: "fin" });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "preserves queryMetadata across a metadata PATCH",
+      async () => {
+         // Same failure mode as the schedule above: the whole metadata object is
+         // replaced, so a description-only PATCH would silently untag every
+         // query the package emits until the next reload.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({ queryMetadata: { team: "fin" } });
+         await env.addPackage("pkg");
+
+         const updated = await env.updatePackage("pkg", {
+            name: "pkg",
+            description: "updated",
+         });
+         expect(updated.queryMetadata).toEqual({ team: "fin" });
+
+         const pkg = await env.getPackage("pkg", false);
+         expect(pkg.getDeclaredQueryMetadata()).toEqual({ team: "fin" });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "accepts queryMetadata at either wire home on a PATCH",
+      async () => {
+         // A migrated client sends the canonical field; an un-migrated one sends
+         // the block. Both have to reach the manifest, and both homes have to
+         // agree in what is written — the manifest this authors is loaded again
+         // on the next restart.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({});
+         await env.addPackage("pkg");
+
+         await env.updatePackage("pkg", {
+            name: "pkg",
+            queryMetadata: { team: "fin" },
+         });
+         // Canonical home only. The deprecated block is mirrored into when it
+         // already exists or the caller wrote to it — synthesizing one here
+         // would introduce the shape being migrated AWAY from into a manifest
+         // whose author only ever used the canonical field.
+         const afterCanonical = await readManifest();
+         expect(afterCanonical.queryMetadata).toEqual({ team: "fin" });
+         expect(afterCanonical.materialization).toBeUndefined();
+
+         await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { queryMetadata: { team: "ops" } },
+         });
+         expect(await readManifest()).toMatchObject({
+            queryMetadata: { team: "ops" },
+            materialization: { queryMetadata: { team: "ops" } },
+         });
+
+         const reloaded = await Environment.create("testEnv", envPath, []);
+         await reloaded.addPackage("pkg");
+         expect(
+            (
+               await reloaded.getPackage("pkg", false)
+            ).getDeclaredQueryMetadata(),
+         ).toEqual({ team: "ops" });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "clears a canonically-declared bag through the deprecated home, with an empty one",
+      async () => {
+         // The clear has to reach the root, not just the block it was sent in:
+         // a manifest written in the canonical form carries the bag at the root,
+         // so a PATCH that cleared only the block would leave the package tagged
+         // by the very field the loader prefers.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({ queryMetadata: { team: "finance" } });
+         await env.addPackage("pkg");
+
+         await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { queryMetadata: {} },
+         });
+
+         const manifest = await readManifest();
+         expect(manifest.queryMetadata).toEqual({});
+         expect(manifest.materialization).toMatchObject({
+            queryMetadata: {},
+         });
+
+         const reloaded = await Environment.create("testEnv", envPath, []);
+         await reloaded.addPackage("pkg");
+         expect(
+            (
+               await reloaded.getPackage("pkg", false)
+            ).getDeclaredQueryMetadata(),
+         ).toBeNull();
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "clears a bag through the canonical home with an empty one",
+      async () => {
+         // A null is preserve-on-absent here, like scope, so a client that
+         // serializes unset fields as null cannot untag a package by accident.
+         // An empty bag is the unambiguous clear, and no such client produces
+         // one.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({ queryMetadata: { team: "finance" } });
+         await env.addPackage("pkg");
+
+         await env.updatePackage("pkg", { name: "pkg", queryMetadata: null });
+         expect((await readManifest()).queryMetadata).toEqual({
+            team: "finance",
+         });
+
+         await env.updatePackage("pkg", { name: "pkg", queryMetadata: {} });
+         expect((await readManifest()).queryMetadata).toEqual({});
+
+         // An empty bag parses to "no tags", so the cleared package declares
+         // nothing rather than an empty layer that merges to the same thing.
+         const reloaded = await Environment.create("testEnv", envPath, []);
+         await reloaded.addPackage("pkg");
+         expect(
+            (
+               await reloaded.getPackage("pkg", false)
+            ).getDeclaredQueryMetadata(),
+         ).toBeNull();
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "keeps BOTH in-memory homes agreeing after a PATCH",
+      async () => {
+         // The two homes are read by different paths — the serve path takes the
+         // canonical field through `getDeclaredQueryMetadata`, the build path
+         // takes the block — so setting them independently made a PATCH that
+         // touched one tag served queries with the new bag and builds with the
+         // old one. Asserted against the SAME env, not a fresh one: a reload
+         // resolves the manifest and would hide the divergence under test.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({
+            materialization: { queryMetadata: { team: "finance" } },
+         });
+         await env.addPackage("pkg");
+
+         const updated = await env.updatePackage("pkg", {
+            name: "pkg",
+            queryMetadata: { team: "platform" },
+         });
+
+         expect(updated.queryMetadata).toEqual({ team: "platform" });
+         expect(updated.materialization).toMatchObject({
+            queryMetadata: { team: "platform" },
+         });
+
+         const pkg = await env.getPackage("pkg", false);
+         expect(pkg.getDeclaredQueryMetadata()).toEqual({ team: "platform" });
+         expect(pkg.getMaterializationConfig()?.queryMetadata).toEqual({
+            team: "platform",
+         });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "does not untag the package when a PATCH edits only the schedule",
+      async () => {
+         // A materialization PATCH replaces the block wholesale, and the block
+         // is what the BUILD path reads. Resolving the bag from the body alone
+         // would drop it, so the next build's statements go out untagged for a
+         // package that asked to be tagged.
+         const env = await Environment.create("testEnv", envPath, []);
+         await writePackageDir({
+            scope: "version",
+            queryMetadata: { team: "finance" },
+         });
+         await env.addPackage("pkg");
+
+         await env.updatePackage("pkg", {
+            name: "pkg",
+            materialization: { schedule: "0 6 * * *" },
+         });
+
+         const pkg = await env.getPackage("pkg", false);
+         expect(pkg.getDeclaredQueryMetadata()).toEqual({ team: "finance" });
+         expect(pkg.getMaterializationConfig()).toMatchObject({
+            schedule: "0 6 * * *",
+            queryMetadata: { team: "finance" },
+         });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "warns about a package+model tag overflow with no source declaring one",
+      async () => {
+         // End-to-end over a real Environment: the floor has to be SIZED, not
+         // just checkable. Sizing only the sources that declare their own bag
+         // meant this package published clean while every query it serves shed
+         // context properties.
+         const env = await Environment.create("testEnv", envPath, []);
+         const six = (prefix: string) =>
+            Object.fromEntries(
+               Array.from({ length: 6 }, (_, i) => [`${prefix}${i}`, "v"]),
+            );
+         const dir = path.join(envPath, "pkg");
+         await fs.mkdir(dir, { recursive: true });
+         await fs.writeFile(
+            path.join(dir, "publisher.json"),
+            JSON.stringify({
+               name: "pkg",
+               description: "fixture",
+               queryMetadata: six("p"),
+            }),
+         );
+         // Six more at the model file, and no `#@` on the source at all.
+         await fs.writeFile(
+            path.join(dir, "model.malloy"),
+            Object.entries(six("m"))
+               .map(([name, value]) => `## queryMetadata.${name}="${value}"`)
+               .join("\n") +
+               "\n" +
+               MODEL,
+         );
+         await env.addPackage("pkg");
+
+         const warnings =
+            (await env.getPackage("pkg", false)).getPackageMetadata()
+               .warnings ?? [];
+         const overflow = warnings.filter((w) =>
+            w.message?.includes("package + model file, merged"),
+         );
+         expect(overflow).toHaveLength(1);
+         expect(overflow[0].model).toBe("model.malloy");
+         expect(overflow[0].subject).toBeUndefined();
       },
       { timeout: 20000 },
    );

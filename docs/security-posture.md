@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Security posture
 
 What Publisher does and does not defend against, stated once so individual features can be
@@ -49,6 +54,45 @@ worth building when it closes a boundary, not when it decorates one of several o
 is why the custom JSX dashboard sandbox was cut after it was built and working — see
 [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md#custom-jsx-components-cut).
 
+## Row-level authorize: rows are protected, the schema is not
+
+An `#(authorize)` gate that reads a row field (see
+[authorize.md § Row-level gates](authorize.md#row-level-gates)) filters rows instead of admitting
+or rejecting the whole source. It is a deliberate trade, stated plainly rather than left to be
+discovered:
+
+- **Rows are protected; the schema is not.** A row-gated source is readable-but-empty rather than
+  403 for a caller the gate admits nowhere. Any caller with package read can therefore name a
+  gated source, compile against it, and enumerate its columns through compile errors. That is
+  accepted on purpose — resolving a gate out of untrusted text before compiling it is exactly the
+  resolution-from-text this design already refuses elsewhere (see
+  [authorize.md § Security model](authorize.md#security-model)).
+- **403 becomes 200-with-zero-rows.** A caller a whole-source gate would have rejected outright
+  now gets a successful, empty response from a row-level gate instead. That is wire-visible: a
+  consumer keying its own logic on the 403 status must be checked and updated before upgrading a
+  deployment it serves to a version carrying row-level gates.
+- **Fail-closed is the only backstop.** A row filter has no boolean admission to fall back on the
+  way a whole-source gate does, so every path that cannot *apply* the filter denies instead — a
+  gate whose column doesn't resolve at the entry point, an unresolved given, a compile that
+  throws. There is no "serve unfiltered" failure mode.
+- **The gate's own structure is still scrubbed.** Accepting schema disclosure above is not
+  accepting ACL-model disclosure: a gate reading `childtable.name` names a relationship the caller
+  may not otherwise see, so a failure to attach the gate returns an opaque error naming no column,
+  join, or expression — only the source.
+- **A row-level gate's given values land in the warehouse query log.** The filter is inlined
+  (`WHERE org_id IN (7, 8)`), not parameterized, so every caller's group set appears verbatim in
+  the warehouse's own query logging. Weigh that when deciding what a given carries — a group set
+  is a smaller disclosure than the rows themselves, but it is still a disclosure to whoever reads
+  that log.
+- **`/compile` returns a row-gated source's compile errors without evaluating the gate.** There is
+  nothing to filter on a request that returns no rows, so a row-level gate on that door denies
+  outright whenever the submitted text has a runnable query — including under `includeSql`, which
+  would otherwise be a SQL oracle. But text that compiles only source DEFINITIONS has no run target
+  to resolve, so no gate is evaluated and the caller gets `problems` back. That is the first bullet
+  applied to `/compile` rather than a separate hole: it discloses schema, not rows. It is called out
+  because the row-level change is what made it reachable — a whole-source gate denied on the source
+  name before compiling anything.
+
 ## Where author code executes today
 
 One surface runs author-written JavaScript, and it runs it with everything the viewer has.
@@ -65,10 +109,11 @@ same origin as the REST API. The consequences follow from that and are all inten
 - The routes are unauthenticated, and only `public/` is reachable. Path traversal is blocked
   lexically and again through `realpath`, and a symlink escaping the directory returns 403.
 
-**Notebooks and dashboards execute no author code.** A `.malloynb` is markdown and Malloy cells;
-a `dashboards/*.malloy` is Malloy plus renderer tags. Both are declarative, which is what makes
-them reviewable in a pull request and safely agent-authorable. Keeping them that way is a
-deliberate property, not an accident of scope.
+**Notebooks and dashboards carry no author-written JavaScript file.** A `.malloynb` is markdown
+and Malloy cells; a `dashboards/*.malloy` is Malloy plus renderer tags. Both are declarative, which
+is what makes them reviewable in a pull request and agent-authorable. Keeping them that way is a
+deliberate property, not an accident of scope. It is not absolute today: gap 3 below is where a
+declarative artifact still carries author-controlled HTML.
 
 ## Known gaps
 

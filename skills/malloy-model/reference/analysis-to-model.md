@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Starting from Analysis
 
 When you've been doing analysis, writing queries, building views, creating notebooks, and want to formalize the work into a reusable semantic model, follow this process.

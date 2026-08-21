@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import {

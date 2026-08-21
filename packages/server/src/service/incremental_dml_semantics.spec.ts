@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // What the generated delta DML actually DOES, proven by executing it.
 //
 // The statement TEXT is pinned in incremental_apply.spec.ts; this file runs it.

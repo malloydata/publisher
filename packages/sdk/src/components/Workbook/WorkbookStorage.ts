@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 export interface Workspace {
    name: string;
    writeable: boolean;

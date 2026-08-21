@@ -3,6 +3,10 @@ id: off-must-not-build-into-the-warehouse
 tags: orchestration, kill-switch, security
 package: osw
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # `off` must refuse an instructed destination, not redirect the write into the warehouse
 

@@ -1,27 +1,54 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Design: Malloyyo dashboards in Publisher
 
-**Status: designed and implemented, not yet on `main`.** The implementation this describes was
-built and reviewed on the dashboards branch
-([#935](https://github.com/malloydata/publisher/pull/935)), which is a handoff rather than a merge
-candidate. It is being landed as a sequence of smaller pull requests, and this document goes first
-so the later ones have a single reference to build against.
+**Status: a design landed incrementally. Check before you trust it.** The implementation this
+describes was built and reviewed on the dashboards branch
+([#935](https://github.com/malloydata/publisher/pull/935)), which was a handoff rather than a merge
+candidate. It was landed as a sequence of smaller pull requests, and this document went first so the
+later ones had a single reference to build against.
 
-Read every "shipped", "is in", and "Have" below as **true of that branch, not of `main`**. Nothing
-here has landed yet: there is no `dashboards/` discovery, no `Dashboard` component, and no
-dashboard REST surface in a release. Phases 1 to 3 (discovery and REST, the tag-only viewer,
-`# drill`) and phase 5 (the `storefront` dashboards, `docs/dashboards.md`, the skill) were built;
-phase 4 (custom JSX components) was built and then **cut**, and that cut is a real decision that
-survives the split. Per-item detail is in [Phasing](#phasing).
+Read every "shipped", "is in", and "Have" below as **true of that branch, not necessarily of
+`main`**. This page deliberately does not say which parts have merged. Such a list is wrong within
+days of being written and wrong in the most expensive direction, because it still reads as
+authoritative. The authority is the pull requests themselves.
+
+The design also lands **by halves** in places, so "has it merged" is often not a yes or no, and you
+have to check both halves rather than one. The given control contract is the clearest case: the
+control fields it puts on `Given` in the spec and the server code that derives them from a
+declaration's tags are separate changes that need not arrive together. The dashboard REST surface is
+another, being two endpoints, and discovery is a third: the server side can arrive before the
+package-page section that surfaces it. Before building on any part of this design, read the open
+and merged dashboard pull requests and look in the tree, rather than trusting a sentence here.
+For the parts most often mistaken for one another, these are the files and symbols to look in. It is
+a shortcut for those, not an inventory of the design:
+
+| Part of the design                       | Lives in                                                        |
+| ---------------------------------------- | --------------------------------------------------------------- |
+| Given control contract, wire half        | the control fields on `Given` in `api-doc.yaml`                 |
+| Given control contract, derived from tags | `readGivenControlSpec` in `packages/server/src/service/given.ts` |
+| `dashboards/` discovery and the manifest | `packages/server/src/service/dashboard.ts`                      |
+| The artifact / MOTLY tag primitives      | `packages/server/src/service/motly.ts`                          |
+| The dashboard REST surface               | `packages/server/src/controller/dashboard.controller.ts`, plus its `dashboards` paths in `api-doc.yaml` |
+| The viewer                               | `packages/sdk/src/components/Dashboard/`                        |
+
+Phases 1 to 3 (discovery and REST, the tag-only viewer, `# drill`) and phase 5 (the `storefront`
+dashboards, `docs/dashboards.md`, the skill) were built on that branch; phase 4 (custom JSX
+components) was built and then **cut**, and that cut is a real decision that survives the split.
+Per-item detail is in [Phasing](#phasing).
 
 Paths, component names, and UI section labels describe the **end state** of the sequence. The rename
-this document was written ahead of has landed, so its Data Apps and Notebooks naming now matches
-`main`. The dashboard-specific names do not, per the paragraph above: `dashboard.ts`, the `Dashboard`
-export, and the Dashboards section are still ahead of `main`. Written July 2026, revised against the
-implementation.
+this document was written ahead of has since landed, so its Data Apps and Notebooks naming is the
+tree's naming too. The dashboard-specific names are the ones still worth checking, and the table
+above says where to look. Written July 2026, revised against the implementation.
 
 **Related:** [security-posture.md](security-posture.md) (the trust boundary the JSX cut turns on),
-and, once they land, `docs/choosing-a-surface.md` (when to reach for a dashboard over a notebook or
-an HTML data app) and `docs/dashboards.md` (how to use the feature rather than read its design).
+[choosing-a-surface.md](choosing-a-surface.md) (when to reach for a dashboard over a notebook or an
+HTML data app) and [dashboards.md](dashboards.md) (how to use the feature rather than read its
+design).
 Externally, Malloyyo's `docs/creating-dashboards.md`, `docs/composite-dashboards.md`, and
 `docs/dashboard-iframe-security.md` are the format and security posture this design adopts.
 
@@ -77,7 +104,7 @@ The grammar, in brief (full reference: Malloyyo's `creating-dashboards.md`):
 | `## artifact { title tiles=["src -> view", …] dashboard_columns=N }` (model-level)                                       | Declares a **composite** dashboard: named existing views run separately and combined into one grid.                                                                                                                                                                    |
 | `# dashboard {columns=N}` + `# colspan=K` + `# break`                                                                    | The renderer grid. Standard `@malloydata/render` tags — a layout tag above an `aggregate:`/`nest:` block applies to every item in the block.                                                                                                                           |
 | `given:` declarations with `# label=`, `control=select\|multiselect`, `range_min/max`, `suggest { query=… dimension=… }` | Typed filter inputs (`filter<string\|number\|timestamp\|date>`). Each given a dashboard's query references auto-renders as a control; the dashboard applies it via `where: field ~ $NAME`. Declarations are a model concern; each dashboard decides its own filtering. |
-| `# drill { to=[slug\|self] given=… }` on a source `dimension:`                                                           | Clickable cells: navigate to another dashboard seeding the clicked value into its given (dimension name upper-cased unless `given=` overrides), or `self` to filter in place. Multiple destinations pop a menu.                                                        |
+| `# drill { to=[slug\|self] given=… }` on a source `dimension:`                                                           | Clickable cells: navigate to another dashboard seeding the clicked value into its given (the given is the dimension name verbatim unless `given=` overrides), or `self` to filter in place. Multiple destinations pop a menu.                                                        |
 | `dashboards/<name>.jsx` / `.tsx`                                                                                         | Malloyyo's custom React component. **Not supported** — ignored, with a load-time warning (§Custom JSX components: cut).                                                                                                                                                |
 | A `dashboards/*.malloy` with **no** artifact tag                                                                         | A shared include (skipped by discovery).                                                                                                                                                                                                                               |
 
@@ -170,7 +197,9 @@ notebook side of 2; 9 is documentation, not code):
    parameters beat the document's own starting values, which beat the declaration's defaults.
    Starting values are a tag on both surfaces, read through the same `readStartingGivens` —
    `# artifact { givens {…} }` on a dashboard, file-level `## givens {…}` on a notebook — and
-   arrive as one field with one name (`givens` on `DashboardManifest` and on `RawNotebook`).
+   arrive as one field with one name (`startingGivens` on `DashboardManifest` and on
+   `RawNotebook`). `DashboardManifest.givens` is a different field: the control-row declarations
+   described below.
    Encoding is shared too, which matters more than it sounds:
    a `date` given has to go over the wire as a bare `YYYY-MM-DD` while a `timestamptz` needs a
    full ISO string, and getting that wrong is a 400 rather than a wrong answer — so
@@ -200,11 +229,11 @@ notebook side of 2; 9 is documentation, not code):
    a dashboard has none to read — and it is what makes existing notebooks stop showing
    filenames without anyone editing them, the same bargain a `DataApp` makes by reading its
    `<title>`.
-9. **Positioning guidance.** `docs/choosing-a-surface.md` carries the
+9. **Positioning guidance.** [choosing-a-surface.md](choosing-a-surface.md) carries the
    "notebook, dashboard, or HTML data app?" decision guide, and now says outright that
    interactivity is _not_ the axis to choose on, because these two surfaces behave the same;
-   what differs is the shape of the document. `docs/dashboards.md`, when written, links to it
-   rather than restating it. Cross-linking covers the seams: a notebook's markdown can link to
+   what differs is the shape of the document. [dashboards.md](dashboards.md) links to it rather
+   than restating it. Cross-linking covers the seams: a notebook's markdown can link to
    a dashboard (both are URL-addressable), and a drill can jump from a notebook cell to a
    dashboard.
 
@@ -466,7 +495,7 @@ per-route ones. So:
 
 - **Apply** sits in the control row when `autorun=false` (otherwise controls re-run live),
   which is also where it sits on a notebook.
-- **Copy link** and **View Malloy** are dashboard-header actions, still to add.
+- **Copy link** and **View Malloy** are dashboard-header actions.
 
 **Controls presentation.** Notebooks render givens as the vertical **Parameters** panel; a
 dashboard wants Malloyyo's horizontal filter bar above the grid. `GivensPanel` therefore takes a
@@ -491,8 +520,9 @@ model repo with an agent).
 ### `# drill` navigation
 
 Click handling attaches to rendered cells carrying a `# drill` tag. `to=<slug>` navigates to that
-dashboard's route with `?GIVEN=value` seeded (dimension name upper-cased unless `given=`
-overrides); `to=self` sets the given on the current document; two-plus destinations pop a menu.
+dashboard's route with the given seeded from the clicked value (the given is the dimension name
+verbatim unless `given=` overrides); `to=self` sets the given on the current document; two-plus
+destinations pop a menu.
 It wires the renderer's `onClick` in `RenderedResult` — the same `@malloydata/render` Malloyyo
 drives, so the event surface exists. Drill targets are validated at load (see lint above), never
 dead-ended at click time. Navigation itself is always delegated to the host's `onNavigate`
@@ -582,11 +612,11 @@ real when it covers the surface that actually runs author code — see
 [security-posture.md](security-posture.md).
 
 **It duplicated a shipped surface, at a scope nobody agreed to.**
-`docs/choosing-a-surface.md` sold this as an escape hatch for a _tile_ that
-needs bespoke rendering, _"without giving up the rest"_. What was built replaced the entire
+This was argued as an escape hatch for a _tile_ that needs bespoke
+rendering, without giving up the rest. What was built replaced the entire
 page — the control row and every tile — because a component that draws its own visuals has no
-use for the grid around it. That is the whole-page custom UI job, which is the job that doc
-already assigns to HTML data apps.
+use for the grid around it. That is the whole-page custom UI job, which
+[choosing-a-surface.md](choosing-a-surface.md) already assigns to HTML data apps.
 
 **It cost two things to maintain.** A second widget library beside the SDK
 (`packages/dashboard-runtime`, its own hooks, controls, and `<VegaChart>`), and a compiler in

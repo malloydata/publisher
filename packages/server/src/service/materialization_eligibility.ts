@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { PersistSource } from "@malloydata/malloy";
 import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
@@ -121,6 +124,88 @@ export function assertMaterializationEligible(
             `a materialized-once table served frozen carries no gate, so it would ` +
             `be served to everyone, bypassing authorization. This is refused for ` +
             `safety. Serve this source live (drop 'storage=').`,
+      });
+   }
+}
+
+/**
+ * Compile-time eligibility gate for the COLOCATED persist path (a plain
+ * `#@ persist` with no `storage=`, which builds a CTAS into the source's own
+ * warehouse). Deliberately narrow: it checks ONLY the `#(authorize)` condition
+ * from {@link assertMaterializationEligible}, reusing the same `referencesAuthorize`
+ * walk rather than duplicating it, and does NOT apply that function's other
+ * rules (`referencesGiven`, unbound parameters). Those other rules exist
+ * because a *storage destination* — a separate DuckDB/DuckLake table — cannot
+ * represent a per-query given or a free parameter; a colocated build has no
+ * such constraint (it is still one relation per source, computed once, in the
+ * source's own warehouse), so applying them here would refuse a large set of
+ * packages that build and serve correctly today. Only the authorize gate is a
+ * problem on this path: it is evaluated per request, and a colocated build is
+ * just as frozen as a storage build, so the same leak applies.
+ *
+ * This gate carries a SECOND job that its own justification above does not
+ * mention, and narrowing it on the strength of that justification alone would
+ * open a hole. Pre-aggregation (`#@ preaggregate`) synthesizes each rollup as a
+ * colocated `#@ persist` over an import of the annotated base, and none of the
+ * `preaggregation_*` modules has any authorize awareness of its own — so this
+ * refusal is also the only thing standing between an `#(authorize)`-gated source
+ * and the pre-aggregation tier. `referencesAuthorize` finds the gate through the
+ * import → rename → `query_source` chain, which is why it holds. See
+ * `docs/materialization.md`, and the rollup-shaped test in this module's spec.
+ *
+ * `origin` names the annotation the AUTHOR wrote, so the refusal can be
+ * actionable for a source they never typed. A rollup's name is synthesized
+ * (`orders__preagg__category__<hash>`) and appears nowhere in their model, and
+ * telling them to "drop `#@ persist`" when what they wrote is `#@ preaggregate`
+ * sends them looking for a line that does not exist. Callers pass
+ * `"preaggregate"` when `CompiledBuildPlan.preaggregatePlans` has an entry for
+ * the source — the same signal `build_plan.ts` reports as `origin`.
+ *
+ * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
+ *   annotation to remove, and the alternative of moving the gate to a source
+ *   that is not materialized.
+ */
+export function assertColocatedPersistNotAuthorizeGated(
+   persistSource: PersistSource,
+   sourceName: string = persistSource.name,
+   origin: "persist" | "preaggregate" = "persist",
+): void {
+   if (referencesAuthorize(persistSource)) {
+      // Reuses the "authorize" reason: this is the same underlying refusal
+      // (a frozen table serving an authorize-gated relation to everyone) as
+      // the storage-destination case, just reached via the colocated path.
+      recordEligibilityRefused("authorize");
+      const gated =
+         origin === "preaggregate"
+            ? `the source '${sourceName}' rolls up is protected by an ` +
+              `#(authorize) gate (its own or a joined source's)`
+            : `it is protected by an #(authorize) gate (its own or a joined ` +
+              `source's)`;
+      const remedy =
+         origin === "preaggregate"
+            ? `Remove the '#@ preaggregate' annotation from the gated source's ` +
+              `measure(s), or move the gate to a source that is not ` +
+              `pre-aggregated.`
+            : `Drop '#@ persist' from this source, or move the gate to a source ` +
+              `that is not materialized.`;
+      const what =
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}' cannot be built`
+            : `Source '${sourceName}' cannot be materialized (colocated ` +
+              `'#@ persist')`;
+      // Only true of a rollup: it GROUPS, so the gated column is not even
+      // present to filter on afterwards.
+      const alsoRollup =
+         origin === "preaggregate"
+            ? ` A rollup also groups ACROSS the gated column, so it could not ` +
+              `be row-filtered afterwards even in principle.`
+            : "";
+      throw new MaterializationEligibilityError({
+         message:
+            `${what}: ${gated}. An authorize expression is evaluated per ` +
+            `request; a materialized-once table served frozen carries no gate, ` +
+            `so it would be served to everyone, bypassing authorization.` +
+            `${alsoRollup} This is refused for safety. ${remedy}`,
       });
    }
 }
@@ -269,7 +354,14 @@ function referencesAuthorize(persistSource: PersistSource): boolean {
    }
 }
 
-/** True if an annotation string is an `#(authorize)`/`##(authorize)` gate. */
+/**
+ * True if an annotation note is an authorize gate — by Malloy's own routing, via
+ * {@link parseAuthorizeAnnotation}. Sharing the parser's classification is what
+ * keeps this refusal in step with enforcement: a spelling the query path gates on
+ * but this one does not is a gated source that can be frozen into an artifact and
+ * served to everyone. The block form `#|(authorize)` was exactly that gap while
+ * the classification was a prefix regex.
+ */
 function isAuthorizeAnnotation(text: string): boolean {
    try {
       return parseAuthorizeAnnotation(text) !== null;

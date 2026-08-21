@@ -1,14 +1,20 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Authorize (Source Access Gates)
 
-> What this is: how `#(authorize)` annotations gate *who* may query a source (HTTP 403 otherwise).
+> What this is: how `#(authorize)` annotations gate *who* may query a source (HTTP 403), and — when
+> the gate reads a row field — *which rows* they see once admitted, instead.
 > Runnable example: [examples/governed-analytics](../examples/governed-analytics). For the base
 > mechanism, see [givens.md](givens.md); for row scoping, see [row-level-access.md](row-level-access.md).
 
-`#(authorize)` is the **source-authorization** application of [givens](givens.md): it allows or denies access to an *entire* source. (To scope *which rows* a caller sees within an allowed source, see [Row-level access](row-level-access.md).)
+`#(authorize)` is the **source-authorization** application of [givens](givens.md). Most gates reference only givens, and for those nothing here has changed: the gate allows or denies access to an *entire* source. A gate whose expression reads a row field — its own source's, or one reached through a join — is instead enforced as a **row filter**; see [Row-level gates](#row-level-gates) below. Either way, to scope *which rows* a caller sees using a plain `where:` rather than the gate itself, see [Row-level access](row-level-access.md).
 
-`#(authorize)` annotations gate query access to a Malloy source based on the request's [givens](givens.md). Before Publisher runs any query that reads a gated source, it evaluates the source's in-scope authorize expressions against the supplied givens; if **at least one** returns `true` the request proceeds, otherwise it is rejected with **HTTP 403**. A source with no in-scope annotations is unrestricted.
+`#(authorize)` annotations gate query access to a Malloy source based on the request's [givens](givens.md). Before Publisher runs any query that reads a gated source, it evaluates the source's in-scope authorize expressions against the supplied givens; if **at least one** returns `true` the request proceeds, otherwise it is rejected with **HTTP 403**. A source with no in-scope annotations is unrestricted. That is the whole-source decision; a row-level gate (below) replaces the 403 with a filter instead.
 
-Authorize is evaluated by Publisher (not core Malloy) using a synthetic probe query against bundled DuckDB (a one-row `SELECT 1`), so the expression language is Malloy's, but the gate runs entirely over `given:` values — it never touches your warehouse data.
+A gate that references only givens is evaluated by Publisher (not core Malloy) using a synthetic probe query against bundled DuckDB (a one-row `SELECT 1`), so the expression language is Malloy's, but the gate runs entirely over `given:` values — it never touches your warehouse data. A row-level gate is compiled into the query itself instead — see [Row-level gates](#row-level-gates).
 
 > ⚠️ **Read [Security model](#security-model) before deploying this as an access control.** Givens are **caller-asserted**: anyone who can reach the query API can claim a favorable given. `#(authorize)` is only a real boundary when the API sits behind a trusted tier that sets givens from its own verified context. It is not, on its own, end-user authentication.
 
@@ -16,7 +22,7 @@ For the Malloy expression reference, see [Malloy: Expressions](https://docs.mall
 
 ## Declaring Gates
 
-Authorize annotations attach to a source (`#(authorize)`) or to the whole file (`##(authorize)`). The body is a quoted Malloy boolean expression over declared givens (`$NAME`):
+Authorize annotations attach to a source: `#(authorize) "<expr>"`. The body is a quoted Malloy boolean expression over declared givens (`$NAME`):
 
 ```malloy
 ##! experimental.givens
@@ -31,8 +37,16 @@ source: orders is duckdb.table('orders.parquet') extend {
 ```
 
 - **Source-level** `#(authorize) "<expr>"` — gates that one source. Stack multiple on a source; see [OR semantics](#or-semantics).
-- **File-level** `##(authorize) "<expr>"` — applies to every query in the file; folded into the same disjunction as each source's own gates. A permissive file-level gate is a **model-wide override** (see [file-level override](#file-level-is-a-model-wide-override)).
 - A source with no in-scope annotations is **unrestricted**.
+
+> **`##(authorize)` (file-level) is deprecated and refused at load.** An earlier version of this
+> feature let an annotation written above the file, rather than a `source:`, apply to every source in
+> it as a model-wide override. That capability was withdrawn — the raw-warehouse path it existed to
+> close is already closed unconditionally by restricted mode (any caller-submitted `duckdb.sql(...)`/
+> `duckdb.table(...)` is rejected before any gate runs), so the model-wide reach bought no additional
+> protection and was easy to reason about incorrectly. A `##(authorize)` annotation anywhere in the
+> model — including one folded in from an imported file — now fails the load with a message naming
+> the remedy: declare `#(authorize)` on each `source:` it was meant to protect.
 
 ### Expression Language
 
@@ -45,15 +59,39 @@ The expression is any Malloy boolean expression over `$given` references and lit
 #(authorize) "$TENANT = 'acme'"
 ```
 
-**No source-field references.** The probe evaluates your expression against its own synthetic one-column row, not against your source, so an expression may reference only givens and literals — a column of the gated source isn't in scope and fails at model load (see [Validation](#validation)).
+**No source-field references, unless the expression is a row-level gate.** The probe above evaluates your expression against its own synthetic one-column row, not against your source, so an expression may reference only givens and literals — a column of the gated source isn't in scope and fails at model load. A field reference is accepted only when it fits the [row-level gate](#row-level-gates) grammar below; otherwise it fails at model load (see [Validation](#validation)).
 
 Embedded quotes follow Malloy string rules: write inner string literals with single quotes inside the double-quoted annotation, e.g. `#(authorize) "$ROLE = 'analyst'"`.
+
+## Row-level gates
+
+A gate expression may reference a row field — its own source's, or one reached through a join — instead of only givens and literals. Malloy's own reference tracking on the compiled condition decides which mechanism a gate gets: an expression that references no row field keeps the one-row probe above, exactly as it always has. **Most existing gates are this kind.** An expression that references at least one field is enforced as a **row filter** on the entry-point source instead of a whole-source boolean — see [Row-level access](row-level-access.md#row-level-authorize) for what that means for the caller, and [security-posture.md](security-posture.md#row-level-authorize-rows-are-protected-the-schema-is-not) for the trade it makes.
+
+The accepted shape is a positive allowlist — a boolean combination (`and`/`or`, parentheses) of `<field> <operator> $GIVEN` comparisons:
+
+```malloy
+#(authorize) "org_id in $GROUPS"
+#(authorize) "childtable.name = $BOB"
+#(authorize) "region = $REGION and tier != $EXCLUDED_TIER"
+```
+
+- **`in` is required for an array-typed given** (`org_id in $GROUPS`); `=`, `!=`, `>`, `>=`, `<`, `<=` for a scalar one. A scalar comparison against an array-typed given is refused at load, and note that `org_id = $GROUPS` and `org_id ? $GROUPS` are the SAME thing here — they compile to one comparison node, so neither spelling escapes the refusal. The refusal is on the given's declared type, because without it the query compiles clean and then fails in the warehouse with a cast error. `in` also has the behaviour you want for an empty array: no rows, which is correct for a caller who was given no groups.
+- **A comparison against a constant is refused** (`region = 'us-west'`) — that is a fixed filter and belongs in the source's own `where:`, not in an access gate.
+- **Function calls, arithmetic, `like`, and `not in` are refused.** `not in` specifically: a row-level gate expresses the set of rows a caller MAY read, not a set to exclude.
+
+All of the above is refused **at package load**, naming the cause — a broken gate never serves.
+
+**The given a row-level gate compares against must be on the gating model's own given surface** — declared there, or reachable through one `import` hop, the same reach [givens.md](givens.md) describes for the ambient namespace. Malloy does not flatten a `given:` declaration past that one hop, so a gate whose given lives further away would otherwise silently bind that given's own declaration DEFAULT rather than the caller's value. Rather than risk that, it is refused at load instead, naming the fix: import the given (`import { GROUPS } from "…"`).
+
+> **A gate on a joined field turns a `join_one` LEFT JOIN into an INNER JOIN.** The filter is applied inside the entry source's own build, before any aggregation, so a parent row with no matching child — and so no value to satisfy the gate — drops out of the result entirely rather than surviving with nulls. That is fail-closed (a row the gate cannot evaluate is a row it does not admit), but it changes cardinality invisibly if you expected the join's usual left-join behavior.
+
+**A row-level gate never produces a 403 from the whole-source check.** That check runs before there is a compiled query to filter, so a gate it finds to be row-level is neither granted nor denied there — the decision waits until the filter can actually be applied. Denying earlier would refuse every row-level-gated query outright.
 
 ## Semantics
 
 ### OR semantics
 
-Multiple in-scope expressions (source-level + file-level) are evaluated as a single **disjunction** — access is granted if **any one** returns `true`.
+Multiple in-scope expressions on one source are evaluated as a single **disjunction** — access is granted if **any one** returns `true`.
 
 ```malloy
 given:
@@ -67,28 +105,18 @@ source: orders is duckdb.table('orders.parquet')
 
 `orders` is queryable by an admin **or** by an acme-tenant caller. Stacking gates **widens** access — if you expect AND, this will surprise you. Express conjunction within a single expression instead: `#(authorize) "$ROLE = 'admin' and $TENANT = 'acme'"`.
 
-### File-level is a model-wide override
-
-A `##(authorize)` expression is in scope for **every** source in the file and joins the disjunction for each. Because the disjunction grants on any `true`, a permissive file-level gate **unlocks every source in the file**, regardless of stricter source-level gates:
-
-```malloy
-##(authorize) "$ROLE = 'admin'"      // admins can query ANY source in this file
-
-#(authorize) "$ROLE = 'analyst'"     // analysts can ALSO query `orders`
-source: orders is duckdb.table('orders.parquet')
-```
-
-This is the intended admin-override idiom — use it deliberately.
+To give one role access to every source in a file, declare the same admin-override expression on each source's own `#(authorize)` rather than reaching for a model-wide gate — a file-level override existed for this once; it is deprecated (see [Declaring Gates](#declaring-gates)).
 
 ### The entry point, and only the entry point
 
 Authorize is checked on the source the query **enters through** — the run target. A gate answers "who may query this source", not "who may read everything reachable beneath it".
 
 - **Joins are not gated.** A gate on a source reached only via `join_*` **does not fire** — at any depth (A→B→C), aliased, across files, declared in a query-local `join_one` inside a `-> { … }` refinement, or as a member of a joined composite. `run: joiner -> { … }` where `joiner` joins a base locked with `#(authorize) "false"` returns rows. **This is the rule authors have to design around:** joining sensitive data into an ungated source publishes it. Put the gate on the source callers enter through, and use [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) (`include { public: …, private: * }`) to control what an extension re-exposes.
+- **A gate MAY reference a field on a joined source — that is not the same as the joined source's own gate firing.** `#(authorize) "childtable.name = $BOB"` declared on the entry point itself is enforced (with [row-level gates](#row-level-gates) on): the join it needs is emitted as part of the entry point's own build. The rule above is unchanged — a gate declared ON `childtable` still does not fire when `childtable` is only reached via a join from an ungated entry point. Referencing a joined field from the entry point's *own* gate, and a joined source's *own* gate firing, are two different things; only the first is supported.
 - **Extend: own gate replaces, otherwise the base's carries.** `source: b is a extend { … }` is governed by `b`'s own `#(authorize)` when it declares one — that replacement is the [curated-extension idiom](#recommended-pattern-locked-base-and-curated-extensions). When `b` declares none it is gated by `a`'s. That holds however `b` is decorated: a render tag or doc comment on `b` moves `a`'s annotations off `b`'s own notes (Malloy files them under `annotations.inherits`), so resolution follows both the inherits chain and the source registry to the declaration `b` derives from.
 - **Query-source derivation carries the gate too.** `source: laundered is locked_src -> { … }` is gated by `locked_src`'s gate when it declares none of its own — the compiled `QuerySourceDef` keeps the base reachable via `query.structRef`, and a chained derivation resolves through it as well. Derivation is treated like `extend`; reaching the same derived source via a *join* is still not gated.
 - **A composite run target resolves precisely.** When the run target is `compose(a, b)`, Malloy resolves it to exactly one member branch per query and that branch's gate applies.
-- **Caller-submitted text may not declare a gate at all.** An `#(authorize)` / `##(authorize)` annotation in the `query` text of a query request, or in the `source` text submitted to `/compile`, is rejected with a 400: the override above is the model author's to make. Notebook cells are package content, so an author's gate there works normally.
+- **Caller-submitted text may not declare a gate at all.** An `#(authorize)` annotation (the deprecated `##(authorize)` spelling included) in the `query` text of a query request, or in the `source` text submitted to `/compile`, is rejected with a 400: a gate is the model author's to declare. Notebook cells are package content, so an author's gate there works normally.
 
 ### Worked example
 
@@ -196,12 +224,16 @@ The `include { … private: * }` layer is what controls which base columns each 
 
 ## Enforcement
 
-The gate runs, fail-closed, on every query entry point — **before** any filter injection or compilation, so a denial is a clean 403 and never masked by a later error. There is one documented exception, [the authorize bypass](#authorize-bypass-for-trusted-data-management-callers), which applies to `POST /…/query` only:
+The gate runs, fail-closed, on every query entry point — **before** any filter injection or compilation, so a denial is never masked by a later error.
+
+**What a denial looks like on the wire depends on the kind of gate, and the two differ.** A given-only gate is a whole-source decision and denies with a clean **403**, as it always has. A [row-level gate](#row-level-gates) is a filter, so a caller it admits nowhere gets **200 with zero rows** — the request succeeds and returns nothing. Both are denials and neither returns a row the caller may not read, but only one is visible as a status code. Anything keying on 403 to mean "denied" — an alert, a retry rule, a client branch — will not see a row-level denial at all. The table below reads `deny` in that sense: 403 for a whole-source gate, an empty result for a row-level one.
+
+There is one documented exception, [the authorize bypass](#authorize-bypass-for-trusted-data-management-callers), which applies to `POST /…/query` only:
 
 | Entry point | Behavior |
 | --- | --- |
-| `POST /…/query` | Gate the run-target source; deny → 403. Skipped entirely when the request carries `x-publisher-bypass-authorize: true`. |
-| `POST /…/projects/…/query` (legacy alias) | Gate as above. Accepts no bypass — it exists for pre-rename SDK compatibility and passes no `givens` either, so a gated source is 403 there regardless. Use the `/environments/…` route. |
+| `POST /…/query` | Gate the run-target source; deny → 403 (whole-source) or zero rows (row-level). Skipped entirely when the request carries `x-publisher-bypass-authorize: true`. |
+| `POST /…/projects/…/query` (legacy alias) | Gate as above. Accepts no bypass — it exists for pre-rename SDK compatibility and passes no `givens` either, so a gated source is denied there regardless. Use the `/environments/…` route. |
 | Notebook cell `GET` | Gate each cell that runs a query. Accepts no bypass. |
 | `POST /…/compile` | Gate the named source the submitted text targets (early, before compiling — so compile errors can't be used as a schema oracle — plus a compiled-source backstop). Accepts no bypass. |
 | MCP `malloy_executeQuery` | Routes through the query path; a denial surfaces as `isError: true` naming the source. Sends no bypass. |
@@ -210,9 +242,13 @@ The gate runs, fail-closed, on every query entry point — **before** any filter
 
 ### Validation
 
-Authorize expressions are validated at **model load** (compile-only, no execution). A malformed annotation (missing quotes), an unknown given, or a source-field reference fails the load with **HTTP 424** (`ModelCompilationError`), naming the source and the underlying reason. Fix the model before it serves.
+Authorize expressions are validated at **model load** (compile-only, no execution). A malformed annotation (missing quotes), an unknown given, or a source-field reference that isn't a valid [row-level gate](#row-level-gates) fails the load with **HTTP 424** (`ModelCompilationError`), naming the source and the underlying reason. Fix the model before it serves.
 
-Validation covers the gates each source **declares** — its own `#(authorize)` plus the file-level `##(authorize)` — and deliberately stops there. A gate a source only *inherits* is authored in its base's given namespace, and Malloy merges one level of `import`, so a base two or more hops away can reference a given the extending model cannot see. Probing it from here would fail the load with a 424 blaming an annotation that is perfectly valid where it was written. Inherited gates are still enforced at request time, fail-closed: an expression that cannot be parsed becomes a single unsatisfiable `false`.
+**A gate must resolve at every entry point through which the source declaring it is reached, and an entry point where it cannot is closed rather than opened.** `rename:`, `except:`, and `accept:` on an extending source can remove the field a gate was written against. Which way that fails depends on *who wrote the gate*. Where the entry point declares its **own** `#(authorize)`, the annotation is the author's own mistake and package load fails with a 424 naming the source. Where the entry point only **inherits** the gate — `W is X extend { except: org_id }`, whose `extend` dropped the field X's gate needs — load succeeds with a warning and **that entry point denies every request**; the rest of the model still serves. The split exists so one unreachable derived entry point cannot take down a whole package, and neither branch can serve a silently unfiltered or wrongly filtered result. This is distinct from *inheriting* a gate that still resolves (see the worked example below and [row-level-access.md](row-level-access.md#row-level-authorize)): there, the filter runs inside the base's own build, before the deriving source's projection ever applies, so a derived source that projects the gated column away still serves correctly filtered — there is no need to keep an inherited gate's column in the projection.
+
+Validation probes every entry point, but it does not re-derive an inherited gate's *given* reachability. A gate a source only *inherits* is authored in its base's given namespace, and Malloy merges one level of `import`, so a base two or more hops away can reference a given the extending model cannot see. Probing that from here would fail the load with a 424 blaming an annotation that is perfectly valid where it was written. Inherited gates are still enforced at request time, fail-closed: an expression that cannot be parsed becomes a single unsatisfiable `false`.
+
+> ⚠️ **An inherited gate's givens bind in the ENTRY model, not the model that declared the gate.** The filter is compiled against the model the query enters through, and Malloy mints a fresh identity per `given:` declaration — so a model that imports a gated source and re-declares one of the base's given names re-points that gate to its own declaration, including its default. A base gated `#(authorize) "tenant_id = $TENANT"` with no default for `TENANT`, imported into a model declaring `given: TENANT :: number is 99`, serves tenant-99 rows to a caller who supplied nothing. This is an authoring hazard, not a caller-reachable bypass — a caller cannot introduce a declaration — but it means importing a locked source does not carry its gate's given namespace with it. Do not re-declare a base's given names in a model that imports its gated sources.
 
 ### Error contract & redaction
 
@@ -235,7 +271,7 @@ A `POST /…/query` request carrying the header `x-publisher-bypass-authorize: t
 
 What it does and does not touch:
 
-- **Only** expressions collected from `#(authorize)` / `##(authorize)` are skipped. The author's own `where:` clauses still narrow the scan, row and byte caps still apply, restricted mode still bans raw SQL, and a gate declared in caller-submitted text is still rejected with a 400.
+- **Only** expressions collected from `#(authorize)` annotations are skipped. The author's own `where:` clauses still narrow the scan, row and byte caps still apply, restricted mode still bans raw SQL, and a gate declared in caller-submitted text is still rejected with a 400.
 - It is **not** `bypassFilters`, a separate deprecated `#(filter)`-only control in the request body. Neither reads or writes the other.
 - Notebook cells, `/compile`, and MCP accept no bypass at all.
 
@@ -244,6 +280,15 @@ What it does and does not touch:
 Note what the residual case is if the strip is missing. Publisher has no tenant boundary of its own, so a fronting application's own authorization still decides which packages a caller reaches; what the header removes is the **in-model** gating — role- or row-level policy *within* data that caller is otherwise entitled to reach.
 
 Every use is counted (`publisher_authorize_bypass_total`, labelled `entry_point`) and logged (`authorize bypass`, with source / model / package). The counter is the rate signal; the log line is what an investigation reads. Read the two carefully: `runnable` fires on every bypassed query, `source` only when a run target was resolvable before compilation, so they are not always paired.
+
+### Row-level gate metrics
+
+Two more counters cover row-level gates specifically:
+
+- `publisher_authorize_row_level_total`, labelled `decision` (`denied_by_gate` | `empty_after_filter`). `denied_by_gate` is the fail-closed refusal when a row-level gate could not be applied; `empty_after_filter` is a normal 200 with zero rows after the filter matched none, which is not an error.
+- `publisher_authorize_row_level_rejected_total`, labelled `cause` (`array_given_needs_in` | `scalar_given_rejects_in` | `field_given_has_default` | `unsupported_node` | `no_given_reference` | `unreachable_given` | `entry_point_unexpressible`). Fires at package load — alert on any nonzero value since the last publish, not on a rate. The first six mean the gate's compiled condition is not an allowed shape, and each fails the whole model load. `entry_point_unexpressible` is the exception in both respects: the gate is a valid shape, but one derived entry point (an `extend` that renamed/excluded/projected away the gated field, or a `query_source` projection) cannot express it. That does **not** fail the load — the rest of the model serves normally, and every request against that one entry point is denied.
+
+`publisher_authorize_guard_rejected_total`, labelled `field` (`query` | `source_name` | `query_name` | `compile_source`), counts requests rejected with 400 for declaring an `#(authorize)` annotation in caller-submitted Malloy text.
 
 **This is an interim answer, not the intended one.** The shape that keeps the decision with the model author is identity-bound givens (above) — a reserved system given the caller cannot set, so an author writes `#(authorize) "$ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'"` and a source they never opted in stays gated. This header removes the gate globally instead, for callers the deployment trusts wholesale. When identity-bound givens land, this should narrow or go.
 
@@ -256,6 +301,15 @@ Every use is counted (`publisher_authorize_bypass_total`, labelled `entry_point`
 - **`/compile` raw SQL is not gated.** The gate covers named Malloy sources; `/compile` still compiles unrestricted, so a caller could read a gated table's schema/SQL via raw `duckdb.sql(...)`. Closing this (restricted compilation on `/compile`, as on `/query`) is tracked as a follow-up; until then keep `/compile` behind the trusted tier.
 - **No per-request caching.** Each gate runs a fresh probe against bundled DuckDB (microseconds); a security decision is intentionally not memoized.
 - **A gate inherited from a base in another file only ever sees caller-supplied given values, never that base's own `given:` defaults.** The isolated probe (`bindProbeGivens`) declares a given only when the caller actually supplied a value for it. This is intentionally conservative: a probe compiled from name-only identity (see [Security model](#security-model)) has no reliable way to attribute a `given:` default to the *specific* source it's gating rather than to an ambient/entry-model given of the same name — so an unsupplied given always denies rather than risk resolving someone else's default. Practical effect: to pass such a gate the caller must supply every given the expression references; a permissive default on the base does not open it up.
+- **A row-level gate's given, unlike an inherited given-only gate's, gets no runtime fallback.** The two limitations above describe an inherited *given-only* gate reaching a given through caller-supplied values at request time; a [row-level gate](#row-level-gates)'s given is instead checked once, at load.
+- **A notebook cell that both declares a gated source and runs it in the same cell, with a
+  joined-field gate, needs the run query to reference the joined field.** A cell's row-level gate
+  filters correctly whether it declares the gated source itself or inherits one declared earlier
+  — with one narrow exception: when the
+  gate is on a JOINED field (`#(authorize) "childtable.name in $GROUPS"`) and the cell's own `run:`
+  query never itself references that joined field, the cell denies with a 400 rather than serving
+  filtered rows (never a leak — no rows are returned either way). Reference the joined field
+  somewhere in the run query's own projection or grouping to avoid it.
 - **A given the entry model does not surface is usually refused, not ignored.** Malloy's given-namespace merge covers only one level of `import`, so a value for a given the entry model doesn't surface reaches Malloy's own resolution and errors (`unknown given`) rather than being silently dropped and falling back to a default. The one exception is a name some reachable gate actually references: that value is forwarded to the gate and withheld from the query (`filterGivensToModelSurface`, `model.ts`), which is what lets a gate carried in from a base in another file evaluate at all. Author-side implication: for a caller to supply a given the query itself reads, some source or file within one import hop of the entry model must declare (or import) it.
 
 ## Runnable example

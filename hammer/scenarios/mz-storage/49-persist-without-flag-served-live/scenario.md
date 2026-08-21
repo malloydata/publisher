@@ -3,6 +3,10 @@ id: persist-without-flag-served-live
 tags: eligibility, build-control, needs-attention
 package: pwf
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Without `##! experimental.persistence`, a `#@ persist` source is served live and the package still loads
 

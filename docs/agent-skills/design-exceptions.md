@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Design exceptions
 
 This file records deliberate divergences from [design principles](./design-principles.md).

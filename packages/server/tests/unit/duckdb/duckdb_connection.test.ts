@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /// <reference types="bun-types" />
 
 // Direct unit tests for the storage-layer DuckDBConnection -- the embedded

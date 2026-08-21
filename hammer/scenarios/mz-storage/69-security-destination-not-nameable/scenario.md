@@ -3,6 +3,10 @@ id: security-destination-not-nameable
 tags: security
 package: dnn
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Security: a published model cannot name a storage destination
 

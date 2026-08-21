@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -17,6 +20,7 @@ import {
    BuildInstruction,
    LedgerEntry,
    MaterializationStatus,
+   MaterializationUpdate,
    ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { indexCallerLedger } from "./incremental_build";
@@ -1232,11 +1236,12 @@ describe("autoLoadManifest", () => {
       ctx = createMocks();
    });
 
-   it("does not bind a failed source's table into the package models", () => {
-      // This is the path that rewrites a query's FROM. Binding a failed source
-      // points it either at a table that was never created, or -- on a rebuild,
-      // where auto-run names are stable -- at the generation this run failed to
-      // replace, served as though it were fresh.
+   it("binds every entry it is given, since a failed source is not one", () => {
+      // This is the path that rewrites a query's FROM. It binds what `entries`
+      // holds without asking whether each one built, which is only safe because
+      // a failed source is reported in `failures` and never reaches here -- so
+      // the coverage that matters is the producer's split (below), not a filter
+      // on this side.
       const reload = sinon.stub().resolves();
       const environment = {
          reloadAllModelsForPackage: reload,
@@ -1257,20 +1262,10 @@ describe("autoLoadManifest", () => {
             sourceName: "healthy",
             physicalTableName: "ok_v1",
          },
-         bad: {
-            sourceEntityId: "bad",
-            sourceName: "broken",
-            physicalTableName: "bad_v1",
-            error: "Permission denied while writing to dataset analytics",
-         },
       });
 
       const bound = reload.firstCall?.args[1] ?? {};
       expect(Object.keys(bound)).toContain("ok");
-      expect(
-         Object.keys(bound),
-         "a failed source must not reach the serve manifest",
-      ).not.toContain("bad");
    });
 });
 
@@ -1286,11 +1281,13 @@ describe("tallySources", () => {
                sourceName: "healthy",
                physicalTableName: "ok_v1",
             },
+         },
+         {
             bad: {
                sourceEntityId: "bad",
                sourceName: "broken",
                physicalTableName: "bad_v1",
-               error: "Permission denied while writing to dataset analytics",
+               reason: "Permission denied while writing to dataset analytics",
             },
          },
          {},
@@ -1319,6 +1316,7 @@ describe("tallySources", () => {
                physicalTableName: "new_v1",
             },
          },
+         {},
          carried,
       );
 
@@ -1328,58 +1326,171 @@ describe("tallySources", () => {
    });
 });
 
+describe("commitManifest", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+      // commitManifest makes TWO transitions (PENDING -> MANIFEST_ROWS_READY ->
+      // MANIFEST_FILE_READY) and each validates against the row's CURRENT status,
+      // so the read has to advance as the writes land or the second hop is
+      // rejected as invalid.
+      let status: MaterializationStatus = "PENDING";
+      ctx.repository.getMaterializationById.callsFake(async () =>
+         makeMaterialization({ status }),
+      );
+      ctx.repository.updateMaterialization.callsFake(
+         async (_id: string, update: MaterializationUpdate) => {
+            if (update.status) status = update.status;
+            return makeMaterialization({ status });
+         },
+      );
+   });
+
+   type CommitFn = (
+      id: string,
+      entries: Record<string, unknown>,
+      failures: Record<string, unknown>,
+      metadata: Record<string, unknown>,
+   ) => Promise<void>;
+
+   /** The manifest the run PERSISTED, read off the repository write. */
+   function persistedManifest(): { entries?: unknown; failures?: unknown } {
+      const call = ctx.repository.updateMaterialization
+         .getCalls()
+         .find((c) => c.args[1]?.manifest);
+      return (call?.args[1] as { manifest: Record<string, unknown> }).manifest;
+   }
+
+   it("persists a failed source's reason on the manifest the control plane reads", async () => {
+      // The reason only reaches a consumer if it is written into the stored
+      // manifest. Everything upstream of this can be correct while the field is
+      // dropped on the way to the store, which would leave a consumer inferring a
+      // partial failure from an absent entry -- exactly the state this replaces.
+      await (
+         ctx.service as unknown as { commitManifest: CommitFn }
+      ).commitManifest(
+         "mat-1",
+         {
+            ok: {
+               sourceEntityId: "ok",
+               sourceName: "healthy",
+               physicalTableName: "ok_v1",
+            },
+         },
+         {
+            bad: {
+               sourceEntityId: "bad",
+               sourceName: "broken",
+               physicalTableName: "bad_v1",
+               reason: "Permission denied while writing to dataset analytics",
+            },
+         },
+         { mode: "auto" },
+      );
+
+      const manifest = persistedManifest();
+      expect(Object.keys(manifest.entries as object)).toEqual(["ok"]);
+      expect(
+         manifest.failures,
+         "the persisted manifest must carry the failure, or the reason never " +
+            "reaches a consumer",
+      ).toMatchObject({
+         bad: {
+            reason: "Permission denied while writing to dataset analytics",
+         },
+      });
+   });
+
+   it("omits the failures key entirely on a run where every source built", async () => {
+      // A manifest recording no failures and one recording an empty set state the
+      // same fact, and the absent key is the shape every manifest written before
+      // this change has. Writing `{}` instead would make a clean run's manifest
+      // differ from its own history for no gain.
+      await (
+         ctx.service as unknown as { commitManifest: CommitFn }
+      ).commitManifest(
+         "mat-1",
+         {
+            ok: {
+               sourceEntityId: "ok",
+               sourceName: "healthy",
+               physicalTableName: "ok_v1",
+            },
+         },
+         {},
+         { mode: "auto" },
+      );
+
+      expect(persistedManifest()).not.toHaveProperty("failures");
+   });
+});
+
+describe("getMostRecentManifestEntries (legacy tolerance)", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   it("does not return a legacy failed entry from a persisted manifest", async () => {
+      // This is the read boundary for reuse (skip-if-unchanged) and for reference
+      // resolution. A manifest written by 0.0.245-0.0.246 records a failed source
+      // among its entries, and returning one has two distinct consequences: it is
+      // carried forward as a reused table, which retires the source from every
+      // later run so a transient warehouse error is never retried; and it seeds a
+      // downstream FROM against a table that was never created. Delete this test
+      // with the field it tolerates.
+      ctx.repository.listMaterializations.resolves([
+         makeMaterialization({
+            id: "mat-prior",
+            status: "MANIFEST_FILE_READY",
+            manifest: {
+               entries: {
+                  healthy: {
+                     sourceEntityId: "healthy",
+                     sourceName: "good",
+                     physicalTableName: "good_v1",
+                     connectionName: "duckdb",
+                  },
+                  legacyFailed: {
+                     sourceEntityId: "legacyFailed",
+                     sourceName: "broken",
+                     physicalTableName: "broken_v1_prior_generation",
+                     connectionName: "duckdb",
+                     error: "Permission denied while writing to dataset analytics",
+                  },
+               },
+            },
+         }),
+      ]);
+
+      const entries = await (
+         ctx.service as unknown as {
+            getMostRecentManifestEntries: (
+               envId: string,
+               pkg: string,
+               excludeId: string,
+            ) => Promise<Record<string, unknown>>;
+         }
+      ).getMostRecentManifestEntries("env-1", "pkg", "mat-current");
+
+      expect(Object.keys(entries)).toEqual(["healthy"]);
+   });
+});
+
 describe("deriveSelfInstructions", () => {
    let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
       ctx = createMocks();
    });
 
-   it("rebuilds a source whose prior entry recorded a failure", () => {
-      // A prior entry that carries a reason names no table that was built. Reusing
-      // it would retire the source from every later run, so a warehouse error that
-      // clears on its own -- an expired grant, a dataset created a minute later --
-      // would never be retried and the source would stay unbuilt indefinitely.
-      const compiled = compiledWith(
-         {
-            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
-         },
-         [["s1"]],
-      );
-      const priorEntries = {
-         b1aaaaaaaaaaaaaa: {
-            sourceEntityId: "b1aaaaaaaaaaaaaa",
-            sourceName: "s1",
-            physicalTableName: "s1_prev",
-            error: "Permission denied while writing to dataset analytics",
-         },
-      };
-
-      const { instructions, carried } = (
-         ctx.service as unknown as {
-            deriveSelfInstructions: (
-               c: unknown,
-               n: string[] | undefined,
-               p: unknown,
-            ) => { instructions: BuildInstruction[]; carried: unknown };
-         }
-      ).deriveSelfInstructions(compiled, undefined, priorEntries);
-
-      expect(
-         (carried as Record<string, unknown>)["b1aaaaaaaaaaaaaa"],
-         "a failed source must not be carried forward as a reused table",
-      ).toBeUndefined();
-      expect(
-         instructions.map((i) => i.sourceEntityId),
-         "a failed source must be instructed to build again",
-      ).toContain("b1aaaaaaaaaaaaaa");
-   });
-
-   it("keeps a failed prior entry out of the carried set the failure count reads", () => {
-      // The failed-source count is taken over the entries a build returns, which
-      // include the ones carried from a previous run. That count is only right
-      // while a failed entry cannot be carried: if one were, every later run
-      // would inherit it and report a failure that already happened. The two
-      // rules hold each other up, so this pins them together.
+   it("rebuilds a source the prior run failed on, and reuses the one it built", () => {
+      // Reuse reads a prior manifest's `entries`, and a source that failed is not
+      // in it -- so the source has nothing to carry and is instructed to build
+      // again. That is what keeps a warehouse error that clears on its own (an
+      // expired grant, a dataset created a minute later) from retiring the source
+      // from every later run. Asserted through the shape a real prior manifest
+      // has, so it holds for the reason the code holds rather than by construction
+      // of the fixture: `s2` is absent from `entries` because it failed.
       const compiled = compiledWith(
          {
             s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
@@ -1393,15 +1504,9 @@ describe("deriveSelfInstructions", () => {
             physicalTableName: "s1_prev",
             connectionName: "duckdb",
          },
-         b2bbbbbbbbbbbbbb: {
-            sourceEntityId: "b2bbbbbbbbbbbbbb",
-            physicalTableName: "s2_prev",
-            connectionName: "duckdb",
-            error: "Permission denied while writing to dataset analytics",
-         },
       };
 
-      const { carried } = (
+      const { instructions, carried } = (
          ctx.service as unknown as {
             deriveSelfInstructions: (
                c: unknown,
@@ -1411,14 +1516,17 @@ describe("deriveSelfInstructions", () => {
          }
       ).deriveSelfInstructions(compiled, undefined, priorEntries);
 
-      const carriedMap = carried as Record<string, { error?: string }>;
+      const carriedMap = carried as Record<string, unknown>;
       expect(
-         Object.values(carriedMap).filter((e) => e.error),
-         "no carried entry may record a failure, or the count of failed " +
-            "sources would rise on every later run",
-      ).toHaveLength(0);
-      // The healthy one is still reused, so the guard is not simply refusing to
-      // carry anything.
+         carriedMap["b2bbbbbbbbbbbbbb"],
+         "a source the prior run failed on must not be carried forward",
+      ).toBeUndefined();
+      expect(
+         instructions.map((i) => i.sourceEntityId),
+         "a source the prior run failed on must be instructed to build again",
+      ).toContain("b2bbbbbbbbbbbbbb");
+      // The healthy one is still reused, so this is not simply refusing to carry
+      // anything.
       expect(carriedMap["b1aaaaaaaaaaaaaa"]).toBeDefined();
    });
 
@@ -1499,6 +1607,71 @@ describe("deriveSelfInstructions", () => {
       } finally {
          delete process.env.PERSIST_STORAGE_MODE;
       }
+   });
+
+   /** deriveSelfInstructions with defaults, for the row-level-authorize tests below. */
+   function derive(compiled: unknown): { instructions: BuildInstruction[] } {
+      return (
+         ctx.service as unknown as {
+            deriveSelfInstructions: (
+               c: unknown,
+               n: string[] | undefined,
+               p: unknown,
+            ) => { instructions: BuildInstruction[] };
+         }
+      ).deriveSelfInstructions(compiled, undefined, {});
+   }
+
+   /** A colocated (no `storage=`) fakeSource carrying an #(authorize) gate. */
+   const authorizeGatedColocated = fakeSource({
+      name: "s1",
+      sourceEntityId: "c1c1c1c1c1c1c1c1",
+      sourceDef: { blockNotes: ['#(authorize) "true"'] },
+   });
+
+   describe("colocated #(authorize) gate", () => {
+      afterEach(() => {
+         delete process.env.PERSIST_STORAGE_MODE;
+      });
+
+      it("refuses a colocated authorize-gated source", () => {
+         const compiled = compiledWith({ s1: authorizeGatedColocated }, [
+            ["s1"],
+         ]);
+         expect(() => derive(compiled)).toThrow(
+            MaterializationEligibilityError,
+         );
+         expect(() => derive(compiled)).toThrow(/authorize/i);
+      });
+
+      it("leaves an ungated colocated source unaffected", () => {
+         const compiled = compiledWith(
+            {
+               s1: fakeSource({
+                  name: "s1",
+                  sourceEntityId: "d1d1d1d1d1d1d1d1",
+               }),
+            },
+            [["s1"]],
+         );
+         expect(() => derive(compiled)).not.toThrow();
+      });
+
+      it("still refuses a storage= authorize-gated source via the existing path, unchanged", () => {
+         process.env.PERSIST_STORAGE_MODE = "on";
+         const storageGated = fakeSource({
+            name: "s1",
+            sourceEntityId: "f1f1f1f1f1f1f1f1",
+            annotationFields: { storage: "lake" },
+            sourceDef: { blockNotes: ['#(authorize) "true"'] },
+         });
+         const compiled = compiledWith({ s1: storageGated }, [["s1"]]);
+         // Same message as assertMaterializationEligible's storage-destination
+         // refusal (no double-refusal, no changed message from the colocated path).
+         expect(() => derive(compiled)).toThrow(
+            /cannot be materialized into a storage destination/,
+         );
+      });
    });
 
    // An incremental source is the one case where an unchanged content address
@@ -1753,11 +1926,19 @@ describe("executeInstructedBuild", () => {
       ctx = createMocks();
    });
 
+   type ExecuteResult = {
+      entries: Record<string, { physicalTableName?: string }>;
+      failures: Record<
+         string,
+         { reason?: string; physicalTableName?: string; sourceName?: string }
+      >;
+   };
+
    function callExecute(
       compiled: unknown,
       instructions: BuildInstruction[],
       seed: Record<string, unknown>,
-   ): Promise<Record<string, { physicalTableName?: string }>> {
+   ): Promise<ExecuteResult> {
       // A stub BuildEnvironment: only the `storage=` branch touches it, and
       // these tests exercise the default in-warehouse path, so it is never read.
       const environment = {
@@ -1774,7 +1955,7 @@ describe("executeInstructedBuild", () => {
                i: BuildInstruction[],
                s: Record<string, unknown>,
                sig: AbortSignal,
-            ) => Promise<Record<string, { physicalTableName?: string }>>;
+            ) => Promise<ExecuteResult>;
          }
       ).executeInstructedBuild(
          compiled,
@@ -1796,7 +1977,7 @@ describe("executeInstructedBuild", () => {
          new Map([["duckdb", connection]]),
       );
 
-      const entries = await callExecute(
+      const { entries } = await callExecute(
          compiled,
          [
             {
@@ -1827,12 +2008,12 @@ describe("executeInstructedBuild", () => {
       expect(entries["carried0"].physicalTableName).toBe("carried_tbl");
    });
 
-   it("does not seed a downstream build from a failed source's table", async () => {
+   it("does not seed a downstream build from a seed with no table name", async () => {
       // The seed feeds a downstream persist's FROM through the in-memory build
-      // Manifest. A carried entry that records a failure names a table that was
-      // never built, so seeding it would compile a dependent source against a
-      // table that does not exist. The entry is still returned in the manifest --
-      // its reason is what the control plane reads -- it just must not be bound.
+      // Manifest, so a seed that names no table would compile a dependent source
+      // against a table that does not exist. A source that FAILED cannot arrive
+      // here -- seeds come from a prior manifest's `entries`, which holds only
+      // sources that built -- so what remains to guard is a malformed seed.
       const runSQL = sinon.stub().resolves();
       const connection = { runSQL } as unknown as MalloyConnection;
       const only = fakeSource({
@@ -1869,11 +2050,9 @@ describe("executeInstructedBuild", () => {
                },
             ],
             {
-               seedFailed: {
-                  sourceEntityId: "seedFailed",
+               seedNameless: {
+                  sourceEntityId: "seedNameless",
                   sourceName: "upstream",
-                  physicalTableName: "upstream_v1",
-                  error: "Permission denied while writing to dataset analytics",
                },
                seedOk: {
                   sourceEntityId: "seedOk",
@@ -1893,8 +2072,8 @@ describe("executeInstructedBuild", () => {
       ).toContain("seedOk");
       expect(
          updates,
-         "a failed seed must not be bound into the build manifest",
-      ).not.toContain("seedFailed");
+         "a seed with no table name must not be bound into the build manifest",
+      ).not.toContain("seedNameless");
    });
 
    it("keeps healthy sources when one of several fails, and records why it failed", async () => {
@@ -1934,7 +2113,7 @@ describe("executeInstructedBuild", () => {
          connections: new Map([["duckdb", connection]]),
       };
 
-      const entries = await callExecute(
+      const { entries, failures } = await callExecute(
          compiled,
          [
             {
@@ -1953,25 +2132,34 @@ describe("executeInstructedBuild", () => {
          {},
       );
 
-      const healthy = entries["bgoodaaaaaaaaaa"] as {
-         physicalTableName?: string;
-      };
       expect(
-         healthy?.physicalTableName,
+         entries["bgoodaaaaaaaaaa"]?.physicalTableName,
          "a source that built must still be usable when a sibling failed",
       ).toBe("good_v1");
 
-      const failed = entries["bbadbbbbbbbbbbb"] as {
-         error?: string;
-         physicalTableName?: string;
-      };
+      const failed = failures["bbadbbbbbbbbbbb"];
       expect(
          failed,
-         "a failed source must still appear in the manifest, carrying its reason",
+         "a failed source must be reported in failures, carrying its reason",
       ).toBeDefined();
-      expect(failed?.error).toContain(
+      expect(failed?.reason).toContain(
          "Permission denied while writing to dataset analytics",
       );
+      expect(
+         failed?.physicalTableName,
+         "the failure names the table the source was headed for",
+      ).toBe("bad_v1");
+
+      // Mirrored into `entries` carrying `error`, for the deprecation window only.
+      // A consumer built against 0.0.245-0.0.246 reads the failure from there, and
+      // would otherwise see this source as merely ABSENT -- indistinguishable from
+      // a source nobody asked about, which is the fail-dangerous reading. Delete
+      // this assertion with the field.
+      const mirrored = entries["bbadbbbbbbbbbbb"] as { error?: string };
+      expect(
+         mirrored?.error,
+         "the deprecated entry must carry the same reason while it exists",
+      ).toContain("Permission denied while writing to dataset analytics");
    });
 
    it("redacts a failed source's reason before recording it", async () => {
@@ -2014,7 +2202,7 @@ describe("executeInstructedBuild", () => {
          connections: new Map([["duckdb", connection]]),
       };
 
-      const entries = await callExecute(
+      const { failures } = await callExecute(
          compiled,
          [
             {
@@ -2033,9 +2221,8 @@ describe("executeInstructedBuild", () => {
          {},
       );
 
-      const failed = entries["cbadbbbbbbbbbbb"] as { error?: string };
       expect(
-         failed?.error,
+         failures["cbadbbbbbbbbbbb"]?.reason,
          "a per-source reason must not echo the connection's secrets",
       ).not.toContain(secret);
    });
@@ -2074,7 +2261,7 @@ describe("executeInstructedBuild", () => {
          connections: new Map([["duckdb", connection]]),
       };
 
-      const entries = await callExecute(
+      const { entries, failures } = await callExecute(
          compiled,
          [
             {
@@ -2095,18 +2282,12 @@ describe("executeInstructedBuild", () => {
 
       // The healthy table is named by the manifest this build returns, so
       // manifest-driven collection can reach it: the build did not abandon it.
-      expect(
-         (entries["dgoodaaaaaaaaaa"] as { physicalTableName?: string })
-            ?.physicalTableName,
-      ).toBe("good_v1");
-      // And the failed source is recorded rather than dropped from the result, so
+      expect(entries["dgoodaaaaaaaaaa"]?.physicalTableName).toBe("good_v1");
+      // And the failed source is reported rather than dropped from the result, so
       // a consumer sees which one failed instead of an entry that is simply absent.
-      const failed = entries["dbadbbbbbbbbbbb"] as {
-         error?: string;
-         sourceName?: string;
-      };
+      const failed = failures["dbadbbbbbbbbbbb"];
       expect(failed?.sourceName).toBe("bad");
-      expect(failed?.error).toContain("write rejected");
+      expect(failed?.reason).toContain("write rejected");
       // The build returned normally, so the run is a partial success rather than a
       // total failure -- that is what keeps the healthy table's manifest committed
       // and therefore reachable, instead of reclaimed as an orphan.
@@ -2114,6 +2295,81 @@ describe("executeInstructedBuild", () => {
          "dbadbbbbbbbbbbb",
          "dgoodaaaaaaaaaa",
       ]);
+      expect(Object.keys(failures)).toEqual(["dbadbbbbbbbbbbb"]);
+   });
+
+   it("overwrites a seeded entry when the same source is instructed and fails", async () => {
+      // A source can be BOTH seeded and instructed: a reference manifest applies no
+      // exclusion for instructed sources, and the bound-manifest seed excludes on
+      // the caller's `instruction.sourceEntityId` while a failure keys on the
+      // content address the publisher computes -- which the build treats as an
+      // opaque caller-assigned value, so the two can differ by design.
+      //
+      // The seed names the PRIOR generation's table, which for a stable auto-run
+      // name is a table that really exists. Leaving it in `entries` beside the
+      // failure would let a serve binding resolve it and serve last generation's
+      // data as though this run had produced it -- the failure mode that is worse
+      // than a missing table, because nothing reports it.
+      // A healthy sibling keeps this a PARTIAL failure: an all-failed build throws
+      // rather than returning a manifest, so the overlap would never be observable.
+      const runSQL = sinon.stub().callsFake(async (sql: string) => {
+         if (String(sql).includes("bad_v2")) throw new Error("boom");
+      });
+      const connection = { runSQL } as unknown as MalloyConnection;
+      const bad = fakeSource({
+         name: "bad",
+         sourceEntityId: "bsameaaaaaaaaaa",
+      });
+      const good = fakeSource({
+         name: "good",
+         sourceEntityId: "bfineaaaaaaaaaa",
+      });
+      const compiled = compiledWith(
+         { bad, good },
+         [["bad", "good"]],
+         new Map([["duckdb", connection]]),
+      );
+
+      const { entries, failures } = await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bsameaaaaaaaaaa",
+               materializedTableId: "mt-b",
+               physicalTableName: "bad_v2",
+               realization: "COPY",
+            },
+            {
+               sourceEntityId: "bfineaaaaaaaaaa",
+               materializedTableId: "mt-g",
+               physicalTableName: "good_v1",
+               realization: "COPY",
+            },
+         ],
+         {
+            // Same source, seeded with the generation a previous run built.
+            bsameaaaaaaaaaa: {
+               sourceEntityId: "bsameaaaaaaaaaa",
+               sourceName: "bad",
+               physicalTableName: "bad_v1_prior_generation",
+               connectionName: "duckdb",
+            },
+         },
+      );
+
+      expect(failures["bsameaaaaaaaaaa"]?.reason).toContain("boom");
+      const entry = entries["bsameaaaaaaaaaa"] as {
+         error?: string;
+         physicalTableName?: string;
+      };
+      expect(
+         entry?.error,
+         "the seeded entry must be replaced by the failure, not left beside it",
+      ).toContain("boom");
+      expect(
+         entry?.physicalTableName,
+         "the prior generation's table name must not survive on the entry",
+      ).not.toBe("bad_v1_prior_generation");
    });
 
    it("fails the build when every source fails", async () => {
@@ -2188,7 +2444,7 @@ describe("executeInstructedBuild", () => {
          connections: new Map([["duckdb", connection]]),
       };
 
-      const entries = await callExecute(
+      const { entries } = await callExecute(
          compiled,
          [
             {
@@ -2945,7 +3201,9 @@ describe("runBuild (branch behavior)", () => {
          },
       };
       const svc = ctx.service as unknown as RunBuildInternals;
-      svc.executeInstructedBuild = sinon.stub().resolves(entries);
+      svc.executeInstructedBuild = sinon
+         .stub()
+         .resolves({ entries, failures: {} });
       svc.commitManifest = sinon.stub().resolves();
       svc.autoLoadManifest = sinon.stub().resolves();
       return svc;
@@ -2974,7 +3232,12 @@ describe("runBuild (branch behavior)", () => {
          instructions,
       );
       expect(svc.executeInstructedBuild.firstCall.args[3]).toEqual({});
-      expect(svc.commitManifest.firstCall.args[2]).toMatchObject({
+      // The manifest is committed with both collections: entries (arg 1) and
+      // failures (arg 2), metadata last. Pinned positionally because these are
+      // sinon args -- asserting the metadata alone would keep passing if a later
+      // signature change fed the wrong collection into the persisted manifest.
+      expect(svc.commitManifest.firstCall.args[2]).toEqual({});
+      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "orchestrated",
          sourcesBuilt: 1,
          sourcesReused: 0,
@@ -3022,7 +3285,7 @@ describe("runBuild (branch behavior)", () => {
       // strictUpstreams flows through as the strict flag (6th arg).
       expect(svc.executeInstructedBuild.firstCall.args[5]).toBe(true);
       // Reused upstreams are counted as carried, not built.
-      expect(svc.commitManifest.firstCall.args[2]).toMatchObject({
+      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "orchestrated",
          sourcesBuilt: 1,
          sourcesReused: 1,
@@ -3044,7 +3307,7 @@ describe("runBuild (branch behavior)", () => {
          new AbortController().signal,
       );
 
-      expect(svc.commitManifest.firstCall.args[2]).toMatchObject({
+      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
          mode: "auto",
       });
       // Auto-run owns distribution: it loads the fresh manifest into the models.

@@ -1,0 +1,35 @@
+##! experimental.givens
+import { REGION } from './givens.malloy'
+
+source: orders is duckdb.table('data/orders.csv') extend {
+   // Drill is declared on the dimension, so these targets are a package-wide
+   // concern: one points at a dashboard that exists, one at nothing.
+   # drill { to=["overview"] }
+   dimension: brand_name is brand
+
+   // Points at `dashboards/v1.2.malloy`, whose name is outside the documented
+   // pattern but which IS served, so this drill resolves and must NOT be
+   // reported. It is here to pin that the advisory naming warning does not
+   // leak into the drill lint.
+   # drill { to=["v1.2"] }
+   dimension: unconventional_target is brand
+
+   # drill { to=["no_such_dashboard"] }
+   dimension: region_name is region
+
+   measure: order_count is count()
+   measure: total_amount is sum(amount)
+
+   view: by_brand is {
+      group_by: brand_name
+      aggregate: total_amount
+   }
+
+   // Filters by a given, so a dashboard that runs it without importing REGION
+   // shows no control for it.
+   view: by_region is {
+      where: region_name ~ $REGION
+      group_by: region_name
+      aggregate: order_count
+   }
+}

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Markdown scenario interpreter (FitNesse-style). A scenario is a folder with a
 // `scenario.md` that reads like a story — starting data as tables, Malloy in code
 // blocks, a publish step, and query/expect pairs — plus an optional `hooks.ts`
@@ -170,7 +173,13 @@ type Step =
      }
    | { kind: "mutate"; conn: string; table: string; rows?: Table; sql?: string }
    | { kind: "sql"; label: string; sql: string; expect: Table }
-   | { kind: "operator"; conn: string; mode: PersistStorageMode; sql: string }
+   | {
+        kind: "operator";
+        conn: string;
+        mode: PersistStorageMode;
+        sql: string;
+        expect?: Table;
+     }
    | {
         kind: "connection";
         pub?: string;
@@ -725,7 +734,14 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             const sql = extractCode(sec.body, "sql");
             if (!sql)
                throw new Error(`## Operator ${arg}: missing a \`\`\`sql block`);
-            steps.push({ kind: "operator", conn: arg.trim(), mode, sql });
+            steps.push({
+               kind: "operator",
+               conn: arg.trim(),
+               mode,
+               sql,
+               // Optional: provisioning DDL asserts nothing, a read asserts rows.
+               expect: parseExpectTable(sec.body),
+            });
             break;
          }
          case "connection": {
@@ -1995,7 +2011,15 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                // one running), then run the operator's read-write DDL out-of-band
                // (via the operator's OWN DuckLake client, not the publisher).
                await active();
-               await ctx.operatorSql(step.conn, step.sql);
+               const operatorRows = await ctx.operatorSql(step.conn, step.sql);
+               if (step.expect) {
+                  compareRows(
+                     assert,
+                     `operator ${step.conn}`,
+                     step.expect,
+                     operatorRows,
+                  );
+               }
                break;
             }
             case "connection": {

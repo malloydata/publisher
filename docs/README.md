@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Publisher documentation
 
 > Start at the [project README](../README.md) for the 60-second quick start. This folder holds the
@@ -31,6 +36,8 @@ every doc below points back to one of them, and each example's README points bac
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
 | [console.md](console.md)                       | Navigate the Publisher Console, the built-in web UI, and see how constructs surface.   |
 | [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                   |
+| [choosing-a-surface.md](choosing-a-surface.md) | Pick between a notebook, a dashboard, and an HTML data app.                            |
+| [dashboards.md](dashboards.md)                 | Write a `dashboards/*.malloy` file: a filterable, clickable dashboard declared in tags. |
 | [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models. |
 | [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.              |
 | [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the Console is built from.                          |

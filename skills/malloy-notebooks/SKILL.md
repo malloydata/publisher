@@ -2,6 +2,10 @@
 name: malloy-notebooks
 description: Create Malloy notebooks (.malloynb) for interactive dashboards and data stories. Use when user asks to "create a notebook", "make a dashboard notebook", "write a malloynb", "data story", or needs to build reports/visualizations.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Malloy Notebooks
 

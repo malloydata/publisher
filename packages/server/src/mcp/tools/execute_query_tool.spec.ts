@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { MalloyError } from "@malloydata/malloy";
 import { registerExecuteQueryTool } from "./execute_query_tool";
@@ -53,6 +56,9 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
          ({
             assertCanAdmitQuery: () => undefined,
             getPackage: async () => ({
+               // The tool reads the package's own declared bag as the
+               // least-specific author layer.
+               getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),
@@ -95,6 +101,9 @@ function storeCapturingMetadata(
                return connection;
             },
             getPackage: async () => ({
+               // The tool reads the package's own declared bag as the
+               // least-specific author layer.
+               getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),

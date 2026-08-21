@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Per-query metadata: the publisher's side of Malloy's
  * `RunSQLOptions.queryMetadata` — a flat bag of string properties each connector
@@ -154,6 +157,26 @@ export function queryMetadataAdvisoryWarnings(meta: QueryMetadata): string[] {
       }
    }
    return warnings;
+}
+
+/**
+ * Declared properties whose names the server owns, and which
+ * {@link mergeQueryMetadata} therefore drops from a declaration.
+ *
+ * Separate from {@link queryMetadataAdvisoryWarnings} because the failure is a
+ * different one: an advisory property is attached and then discarded by ONE
+ * backend, while a reserved one is never attached at all. Both belong at a
+ * declaration boundary rather than in a metric — a `queryMetadata` block naming
+ * `model` publishes clean, vanishes on every statement, and reports it only as a
+ * counter tick, which is the shape of thing an author cannot debug.
+ */
+export function queryMetadataReservedWarnings(meta: QueryMetadata): string[] {
+   return Object.keys(meta)
+      .filter((name) => RESERVED_NAMES.has(name))
+      .map(
+         (name) =>
+            `queryMetadata property '${name}' is a name the server sets itself, so it is dropped rather than attached; rename it (for example '${name}_label')`,
+      );
 }
 
 /**
@@ -321,8 +344,18 @@ export interface QueryMetadataLayers {
 export type QueryMetadataDropReason =
    | "invalid_name"
    | "invalid_value"
+   | "reserved_name"
    | "property_cap"
    | "serialized_cap";
+
+/**
+ * Index of the author-declared layer in the merge order below — the layer whose
+ * properties come from a package manifest, a model file or a source annotation.
+ */
+const DECLARED_LAYER_INDEX = 1;
+
+/** Context names, which an author may not declare. See the merge loop. */
+const RESERVED_NAMES = new Set(CONTEXT_SHED_ORDER);
 
 export interface ResolvedQueryMetadata {
    /** The bag to hand to Malloy; undefined when there is nothing to attach. */
@@ -399,6 +432,22 @@ export function mergeQueryMetadata(
             name.length > MAX_PROPERTY_NAME_LENGTH
          ) {
             drops.push({ name, reason: "invalid_name" });
+            continue;
+         }
+         // A DECLARED property may not take a context name. Context only
+         // overwrites names it has a VALUE for, and a served query has no
+         // `source`, `trigger` or `run_id` — so without this a model file's
+         // `queryMetadata.source="orders_daily"` would ride an interactive
+         // statement and read, in the warehouse's own history, exactly like a
+         // build of that source. Reserving the whole context vocabulary rather
+         // than the three that leak today keeps the rule statable: context names
+         // describe what the server did, and are never an author's to set.
+         //
+         // Scoped to the declared layer deliberately. The connection and request
+         // layers can do the same thing and always could; widening to them is a
+         // separate decision with its own compatibility question.
+         if (index === DECLARED_LAYER_INDEX && RESERVED_NAMES.has(name)) {
+            drops.push({ name, reason: "reserved_name" });
             continue;
          }
          if (typeof value !== "string") {

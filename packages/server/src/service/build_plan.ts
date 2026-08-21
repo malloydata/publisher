@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type {
    AtomicField,
    BuildGraph as MalloyBuildGraph,
@@ -31,7 +34,7 @@ type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 type WireColumn = components["schemas"]["Column"];
 type BuildPlan = components["schemas"]["BuildPlan"];
 type WireFreshness = components["schemas"]["Freshness"];
-type WirePackageMaterialization =
+export type WirePackageMaterialization =
    components["schemas"]["PackageMaterializationConfig"];
 type QueryMetadata = components["schemas"]["QueryMetadata"];
 
@@ -50,7 +53,7 @@ interface FreshnessLayer {
  * reads by path, plus the subtree read that a property collection like
  * `queryMetadata { … }` needs.
  */
-interface ReadableTag {
+export interface ReadableTag {
    text(...path: string[]): string | undefined;
    tag(...path: string[]): ReadableTag | undefined;
    entries?(): Iterable<[string, { text(): string | undefined }]>;
@@ -67,7 +70,7 @@ export interface BuildPlanPackage {
    getMalloyConfig(): MalloyConfig;
    getMalloyConnection(name: string): Promise<MalloyConnection>;
    /**
-    * The package-level `materialization` config (from malloy-publisher.json),
+    * The package-level `materialization` config (from publisher.json),
     * used as the least-specific layer when resolving per-source freshness /
     * schedule. Optional so existing fixtures/callers that don't track it still
     * typecheck (they resolve without a package default).
@@ -400,16 +403,63 @@ export function resolveQueryMetadata(
    source: PersistSource,
    packageMaterialization: WirePackageMaterialization | null | undefined,
 ): QueryMetadata | null {
+   return composeDeclaredQueryMetadata({
+      packageDeclaration: packageMaterialization?.queryMetadata ?? null,
+      modelTag: safeModelTag(source),
+      sourceTag: safeSourceTag(source),
+   });
+}
+
+/**
+ * The author-declared layers of one statement's metadata, composed
+ * most-specific-wins PER PROPERTY: source `#@ queryMetadata.*` > model-file
+ * `## queryMetadata.*` > package `queryMetadata`.
+ *
+ * The package and model-file layers each have a deprecated
+ * `materialization.`-prefixed spelling, still read, sitting UNDERNEATH its
+ * canonical form — so a file declaring both resolves to the canonical one. That
+ * is the OPPOSITE of freshness, where the prefixed spelling IS canonical; the
+ * ordering note in the body is where that trap is spelled out.
+ *
+ * Takes tags rather than a {@link PersistSource} so the SERVE path can compose
+ * the same layers from a loaded model, where no `PersistSource` exists. A
+ * declaration describes the source's traffic, not only its build, so a served
+ * query carries it too; {@link resolveQueryMetadata} is the build-path caller,
+ * which still reads both tags off the persist source it is building.
+ *
+ * A layer whose tag is absent contributes nothing rather than clearing what a
+ * less specific layer set — so a package-wide `team` survives a source that only
+ * overrides `workload`, and a model with no `##` tag does not erase the package
+ * default. Null when no layer declares anything, so absence always means
+ * "declared nowhere" rather than "declared empty".
+ */
+export function composeDeclaredQueryMetadata(layers: {
+   /**
+    * The package's declared bag — a bag, not the materialization policy that
+    * carries it on the wire. Nothing here needs a schedule or a freshness
+    * window, and threading the policy object through would say this layer is
+    * about materialization when it is not.
+    */
+   packageDeclaration?: QueryMetadata | null;
+   modelTag?: ReadableTag;
+   sourceTag?: ReadableTag;
+}): QueryMetadata | null {
    // Least specific first, so a more specific layer overwrites property by
    // property.
-   const layers: QueryMetadata[] = [
-      packageMaterialization?.queryMetadata ?? {},
-      ...modelTagLayers(safeModelTag(source))
-         .map(tagQueryMetadataLayer)
-         .reverse(),
-      tagQueryMetadataLayer(safeSourceTag(source)),
+   //
+   // `modelTagLayers` yields [envelope, bare], which is most-specific-first for
+   // freshness — there the envelope is the canonical spelling and the bare form
+   // is the legacy one. Query metadata migrates the other way: the bare `##
+   // queryMetadata.*` is canonical and `## materialization.queryMetadata.*` is
+   // deprecated. So the list is consumed as-is rather than reversed, putting the
+   // deprecated spelling underneath. Reversing it let the spelling we tell
+   // authors to stop writing silently override the one we tell them to write.
+   const ordered: QueryMetadata[] = [
+      layers.packageDeclaration ?? {},
+      ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer),
+      tagQueryMetadataLayer(layers.sourceTag),
    ];
-   const resolved: QueryMetadata = Object.assign({}, ...layers);
+   const resolved: QueryMetadata = Object.assign({}, ...ordered);
    return Object.keys(resolved).length > 0 ? resolved : null;
 }
 
