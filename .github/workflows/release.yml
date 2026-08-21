@@ -7,10 +7,29 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (optional — defaults to npm patch bump of
-          current sdk version)"
+        description: "Version to release (optional — defaults to bumping npm's
+          current latest by the `bump` level below)"
         required: false
         type: string
+      # Which part of npm's current `latest` to increment when `version` is
+      # empty. `version` wins outright if given, so this only ever chooses
+      # between patch and minor on the derived path.
+      #
+      # There is deliberately no `major`. Publisher is pre-1.0 by policy
+      # (0.MINOR.PATCH, minor = breaking) and 1.0.0 and 1.0.1 are already
+      # published and immutable, so a 1.x line could not start below 1.0.2 —
+      # which makes a major a deliberate decision to be made with an explicit
+      # `version`, not a dropdown choice. `.github/workflows/CONTEXT.md` and the
+      # publisher-release skill both carry the policy.
+      bump:
+        description: "How to bump when no version is given: patch, or minor for a
+          breaking release"
+        required: false
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -40,6 +59,17 @@ jobs:
 
       - name: Bump version and create branch
         id: bump
+        env:
+          # Through env, not interpolated into the script body. `version` a few
+          # lines below still is, which is pre-existing and is why this one is
+          # not: an `inputs.*` expression is substituted before bash parses the
+          # line, so it belongs here.
+          #
+          # `|| 'patch'` because a `workflow_dispatch` fired through the API
+          # without this field sends no value at all, and the input default only
+          # fills the UI form. Without it BUMP would be empty and the case guard
+          # below would fail a release that asked for nothing unusual.
+          BUMP: ${{ inputs.bump || 'patch' }}
         run: |
           set -euo pipefail
 
@@ -60,6 +90,8 @@ jobs:
           # version under the new tag. scripts/set-version.spec.ts covers it,
           # and `build.yml`'s lint_format runs that on every PR.
 
+          # bump_version <patch|minor> <version>
+          #
           # Refuses anything that is not a plain major.minor.patch, rather than
           # bumping it into nonsense. Splitting "0.0.250-rc.1" on "." gives
           # ["0","0","250-rc","1"], and Number("250-rc") is NaN, so the naive
@@ -69,18 +101,31 @@ jobs:
           # becomes `latest` — but the floor is now read from the registry rather
           # than from a file in this repo, and the registry is not ours to
           # constrain.
-          bump_patch() {
+          #
+          # One function taking the level, rather than a bump_patch beside a
+          # bump_minor: the guard above is the whole substance of it, and a second
+          # copy is a second thing to forget to fix.
+          #
+          # A minor resets the patch to 0 — that is what makes `^0.MINOR.0` a
+          # usable range for a consumer, which is the point of the policy in
+          # CONTEXT.md.
+          bump_version() {
             node -e '
-              const v = process.argv[1];
+              const [level, v] = process.argv.slice(1);
               const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
               if (!m) {
                 console.error(
-                  `cannot patch-bump "${v}": expected exactly major.minor.patch`,
+                  `cannot ${level}-bump "${v}": expected exactly major.minor.patch`,
                 );
                 process.exit(1);
               }
-              console.log(`${m[1]}.${m[2]}.${Number(m[3]) + 1}`);
-            ' "$1"
+              const [major, minor, patch] = m.slice(1).map(Number);
+              if (level === "minor") {
+                console.log(`${major}.${minor + 1}.0`);
+              } else {
+                console.log(`${major}.${minor}.${patch + 1}`);
+              }
+            ' "$1" "$2"
           }
 
           # A version is taken once its release branch or release tag exists, so
@@ -106,7 +151,18 @@ jobs:
               exit 1
             fi
           else
-            echo "::notice title=Version::No version provided — performing patch bump"
+            # Read through env below, but validated here rather than trusted: a
+            # `type: choice` input is enforced by the dispatch UI and the API,
+            # and this is the one place that assumption would turn into an
+            # unintended release if it were ever wrong.
+            case "$BUMP" in
+              patch|minor) ;;
+              *)
+                echo "::error title=Version::bump input is '${BUMP}'; expected 'patch' or 'minor'. For anything else, pass an explicit version."
+                exit 1
+                ;;
+            esac
+            echo "::notice title=Version::No version provided — performing ${BUMP} bump"
 
             # The floor is what npm holds, not what main declares. Release
             # branches are never merged back, so packages/sdk/package.json lags
@@ -139,20 +195,26 @@ jobs:
             fi
             DECLARED="$(node -p "require('./packages/sdk/package.json').version")"
             CURRENT="$(printf '%s\n%s\n' "$PUBLISHED" "$DECLARED" | sort -V | tail -1)"
-            # Annotate before bump_patch refuses it. A failing command
+            # Annotate before bump_version refuses it. A failing command
             # substitution under `set -e` kills the step where it stands, so the
             # function's own guard would abort with a bare stack trace and no
             # annotation to read. Only the floor needs this: every later
-            # bump_patch input is a previous bump_patch output.
+            # bump_version input is a previous bump_version output.
             if [[ ! "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error title=Version::the floor resolved to '${CURRENT}' (npm ${PUBLISHED}, main ${DECLARED}), which is not a plain major.minor.patch, so patch-bumping it is meaningless. Re-run with an explicit version input."
+              echo "::error title=Version::the floor resolved to '${CURRENT}' (npm ${PUBLISHED}, main ${DECLARED}), which is not a plain major.minor.patch, so ${BUMP}-bumping it is meaningless. Re-run with an explicit version input."
               exit 1
             fi
             echo "::notice title=Version::floor is ${CURRENT} (npm ${PUBLISHED}, main ${DECLARED})"
-            NEW_VERSION="$(bump_patch "$CURRENT")"
+            NEW_VERSION="$(bump_version "$BUMP" "$CURRENT")"
+            # The chosen level is applied ONCE, and the walk past taken versions
+            # is always by patch. The walk's job is to find a free number above
+            # the floor, not to keep asserting "breaking": with bump=minor and
+            # 0.3.0 already taken, 0.3.1 is free and above the floor, while
+            # bumping the minor again would abandon the whole 0.3.x line and
+            # burn a minor per collision.
             while version_taken "$NEW_VERSION"; do
-              echo "::notice title=Version::release/sdk-${NEW_VERSION} already exists — bumping again"
-              NEW_VERSION="$(bump_patch "$NEW_VERSION")"
+              echo "::notice title=Version::release/sdk-${NEW_VERSION} already exists — bumping the patch again"
+              NEW_VERSION="$(bump_version patch "$NEW_VERSION")"
             done
           fi
 
@@ -250,16 +312,23 @@ jobs:
     # release branch (see the checkout below).
     #
     # `publish-npm` is in here for create-malloy-package's sake, and dropping it
-    # silently breaks that package's release. Its publish workflow refuses to
-    # ship unless the SERVER_VERSION it pins equals @malloy-publisher/server's
-    # npm `latest` — and on `needs: prepare` alone this job races publish-npm, so
-    # in 0.0.250 the scaffolder's guard ran at 15:07:55 against a `latest` that
-    # did not become 0.0.250 until 15:09:13. That is unwinnable rather than
-    # unlucky: pin the outgoing version and the guard fails because npm is still
-    # a release behind; pin the previous one and it fails once npm catches up. So
-    # the scaffolder could never publish in a release that bumped the server.
-    # Waiting for npm costs this job the few minutes publish-npm takes, against
-    # its own 25m-per-package poll budget.
+    # silently breaks that package's release. Its publish workflow DERIVES the
+    # SERVER_VERSION it pins from @malloy-publisher/server's npm `latest` at
+    # publish time — and on `needs: prepare` alone this job races publish-npm, so
+    # that `latest` would still be the previous release and every workspace the
+    # published scaffolder generates would pin the previous server. Nothing would
+    # go red; it is a silent wrong answer.
+    #
+    # It was worse before the pin was derived, and the history is why this
+    # `needs:` exists at all: the pin was hand-maintained and the publish job
+    # refused to ship unless it EQUALLED npm's `latest`, which under the race was
+    # unwinnable rather than unlucky — pin the outgoing version and the guard
+    # failed because npm was still a release behind; pin the previous one and it
+    # failed once npm caught up. In 0.0.250 the guard ran at 15:07:55 against a
+    # `latest` that did not become 0.0.250 until 15:09:13, so the scaffolder could
+    # never publish in a release that bumped the server. Waiting for npm costs
+    # this job the few minutes publish-npm takes, against its own 25m-per-package
+    # poll budget.
     needs: [ prepare, publish-npm ]
     runs-on: ubuntu-latest
     # Two full poll budgets (25m each, below) plus checkout and setup, with
