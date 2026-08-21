@@ -55,11 +55,19 @@ export function retrievalConfigHash(options?: {
       .slice(0, 16);
 }
 
-export function compactRankedSummary(results: unknown[]): {
+export interface RankedSummary {
    entityIds: string[];
    ranks: number[];
    resultCount: number;
-} {
+   targets?: Array<{
+      targetType: string;
+      searchText: string | null;
+      entityIds: string[];
+      ranks: number[];
+   }>;
+}
+
+export function compactRankedSummary(results: unknown[]): RankedSummary {
    const entityIds: string[] = [];
    const ranks: number[] = [];
    for (const [index, result] of results.entries()) {
@@ -68,6 +76,7 @@ export function compactRankedSummary(results: unknown[]): {
          kind?: string;
          name?: string;
          source?: string;
+         rank?: number;
       };
       const typedId = (row as { entityId?: string }).entityId;
       const id =
@@ -75,7 +84,45 @@ export function compactRankedSummary(results: unknown[]): {
          [row.kind, row.source, row.name].filter(Boolean).join(":");
       if (id.length === 0) continue;
       entityIds.push(id);
-      ranks.push(index + 1);
+      // A typed entity carries its rank within its own target's list;
+      // positional fallback covers the legacy (single-list) surface.
+      ranks.push(typeof row.rank === "number" ? row.rank : index + 1);
    }
    return { entityIds, ranks, resultCount: entityIds.length };
+}
+
+/**
+ * Typed calls rank each search target independently, so flattening the
+ * targets into one list and numbering by position would inflate every
+ * rank after the first target. Summarize per target instead; the
+ * top-level entityIds/ranks are the concatenation, each entry keeping
+ * its within-target rank.
+ */
+export function compactRankedSummaryForTargets(
+   targets: Array<{
+      target_type?: string;
+      search_text?: string | null;
+      results?: unknown[];
+   }>,
+): RankedSummary {
+   const entityIds: string[] = [];
+   const ranks: number[] = [];
+   const targetSummaries: NonNullable<RankedSummary["targets"]> = [];
+   for (const target of targets) {
+      const summary = compactRankedSummary(target.results ?? []);
+      targetSummaries.push({
+         targetType: target.target_type ?? "unknown",
+         searchText: target.search_text ?? null,
+         entityIds: summary.entityIds,
+         ranks: summary.ranks,
+      });
+      entityIds.push(...summary.entityIds);
+      ranks.push(...summary.ranks);
+   }
+   return {
+      entityIds,
+      ranks,
+      resultCount: entityIds.length,
+      targets: targetSummaries,
+   };
 }

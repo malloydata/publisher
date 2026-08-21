@@ -16,6 +16,7 @@ import { getDimensionValueIndexMode, getMcpTraceMode } from "../../config";
 import { McpTraceStore } from "../../service/mcp_trace_store";
 import {
    compactRankedSummary,
+   compactRankedSummaryForTargets,
    RETRIEVAL_VERSION,
    TYPED_RETRIEVAL_VERSION,
    retrievalConfigHash,
@@ -759,14 +760,17 @@ async function packageScopedResource(
    const includeEvidence =
       typeof pkg.getServedRevision === "function" ||
       getMcpTraceMode() !== "off";
-   const results = Array.isArray(payload.results)
-      ? payload.results
+   const rankedSummary = Array.isArray(payload.results)
+      ? compactRankedSummary(payload.results)
       : Array.isArray(payload.targets)
-        ? (payload.targets as Array<{ results?: unknown[] }>).flatMap(
-             (target) => target.results ?? [],
+        ? compactRankedSummaryForTargets(
+             payload.targets as Array<{
+                target_type?: string;
+                search_text?: string | null;
+                results?: unknown[];
+             }>,
           )
-        : [];
-   const rankedSummary = compactRankedSummary(results);
+        : compactRankedSummary([]);
    let traceId: string | undefined;
    if (getMcpTraceMode() !== "off") {
       try {
