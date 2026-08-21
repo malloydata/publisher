@@ -140,14 +140,16 @@ type GroupBResult = {
       | "load-time"
       | "request-time-denied"
       | "unexpectedly-admitted"
-      // The DIMENSION form does not classify a gate's expression shape at
-      // load time the way the string form's `classifyAuthorizeGate` did —
-      // see `./gate_dimension`'s doc. A shape the string form refused
-      // outright at load can now compile and graft, only to crash Malloy's
-      // own SQL generation at REQUEST time (a genuine Malloy limitation for
-      // that shape, orthogonal to authorize). Neither a clean admit nor a
-      // graceful `AccessDeniedError` — recorded distinctly so this gap is
-      // visible in the report rather than silently swallowed as either.
+      // The source-line form does not statically classify a gate
+      // expression's shape at load time — it compiles the annotation text
+      // as a real filter probe (`resolveGateShape` / `buildRowLevelProbe`,
+      // `authorize.ts`) and trusts Malloy's own compiler, the same way the
+      // now-retired string form did. A shape that compiles and grafts can
+      // still crash Malloy's own SQL generation at REQUEST time (a genuine
+      // Malloy limitation for that shape, orthogonal to authorize). Neither
+      // a clean admit nor a graceful `AccessDeniedError` — recorded
+      // distinctly so this gap is visible in the report rather than
+      // silently swallowed as either.
       | "request-time-execution-error";
    message: string;
    namesConstruct: boolean;
@@ -255,26 +257,27 @@ afterAll(() => {
    }
    lines.push(
       "- Case B3 (`owner in $ROLE`, a scalar given used with `in`) fails the load with a CLEAR " +
-         "message under the dimension form: Malloy's own compiler rejects `in $ROLE` outright " +
-         "(`` `in $ROLE` requires `ROLE` to be an array, but it is `string` ``) before any " +
-         "row-level probe runs — the dimension form's gate is a real compiled dimension, so a " +
-         "type mismatch in its own expression is an ordinary compile error, not something a " +
-         "probe has to diagnose after the fact. (Under the now-deleted string form this same " +
+         "message: Malloy's own compiler rejects `in $ROLE` outright " +
+         "(`` `in $ROLE` requires `ROLE` to be an array, but it is `string` ``) before the " +
+         "row-level probe's result is even used — the source-line form's annotation text is " +
+         "compiled as a real Malloy expression (`resolveGateShape` / `buildRowLevelProbe`, " +
+         "`authorize.ts`), so a type mismatch in it is an ordinary compile error, not something " +
+         "publisher has to diagnose after the fact. (Under the now-retired string form this same " +
          "shape surfaced a misleading `'owner' is not defined` instead, from a fallback " +
-         "single-row synthetic probe with no real columns — see task-4-report.md for the trail; " +
-         "that fallback no longer exists.)",
+         "single-row synthetic probe with no real columns; that fallback no longer exists.)",
    );
    lines.push(
-      "- Case B5 (`1 = 1`, a gate dimension that reads no row field and no given) is now " +
-         "OBSERVED-ADMITTED, not a silent runtime deny: it loads cleanly with an operator-only " +
-         "warning (`gate_dimension_no_given_reference` — a fixed predicate, not an access rule " +
-         "keyed on the caller), and then serves every row to every caller, since `authorized is " +
-         "1 = 1` is `decidable` with no given to withhold on (Task 4's routed finding (a) fix to " +
-         "`Model.authorizeAndBindRunnable`'s `decidable` check, pinned in " +
-         "`compile_authorize.spec.ts`). This reverses the shape this case used to name: a bare " +
-         "`1 = 1` no longer denies every request forever — it is the KILL-SWITCH's admit-everyone " +
-         "counterpart (`authorized is false` is the deny-everyone one) working as designed, not " +
-         "an arbitrary-boundary trap.",
+      "- Case B5 (`1 = 1`, a gate that reads no row field and no given) is now " +
+         "OBSERVED-ADMITTED, not a silent runtime deny: it loads cleanly — MEASURED with NO " +
+         "warning at all under the source-line form (the dimension form's operator-only " +
+         "`gate_dimension_no_given_reference` warning is `gate_dimension.ts`-only machinery, " +
+         "which does not run for a source-line annotation) — and serves every row to every " +
+         "caller, since `authorized is 1 = 1` is `decidable` with no given to withhold on " +
+         "(pinned in `compile_authorize.spec.ts`). A bare `1 = 1` does not deny every request " +
+         "forever; it is the KILL-SWITCH's admit-everyone counterpart (`authorized is false` is " +
+         "the deny-everyone one) working as designed, not an arbitrary-boundary trap — but an " +
+         "author writing this fixed-predicate shape now gets no load-time nudge that they " +
+         "probably meant to key it on a given.",
    );
    lines.push(
       "- Of the three cases still genuinely refused with a message (B2, B3, B9), only B9's " +
@@ -304,10 +307,8 @@ describe("authorize syntax conformance — Group A (accepted spellings)", () => 
 given:
   GROUPS :: string[]
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is org_id in $GROUPS
-}
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -331,10 +332,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   GROUPS :: string[]
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is \`cost center\` in $GROUPS
-}
+#(authorize) \`cost center\` in $GROUPS
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -358,10 +357,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   REGION :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is region = $REGION
-}
+#(authorize) region = $REGION
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -385,10 +382,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   REGION :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is region != $REGION
-}
+#(authorize) region != $REGION
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -419,10 +414,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   AMOUNTMIN :: number
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is amount ${op} $AMOUNTMIN
-}
+#(authorize) amount ${op} $AMOUNTMIN
+source: X is duckdb.table('accounts') extend {}
 `);
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
@@ -445,10 +438,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   ROLE :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is $ROLE = 'admin'
-}
+#(authorize) $ROLE = 'admin'
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -476,10 +467,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   UNUSED :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is ${lit}
-}
+#(authorize) ${lit}
+source: X is duckdb.table('accounts') extend {}
 `);
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
@@ -498,10 +487,8 @@ given:
   TENANT :: number
   ALLOWED :: number[]
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is $TENANT in $ALLOWED
-}
+#(authorize) $TENANT in $ALLOWED
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -531,10 +518,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   ROLE :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is not ($ROLE = 'blocked')
-}
+#(authorize) not ($ROLE = 'blocked')
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -559,10 +544,8 @@ given:
   GROUPS :: string[]
   REGION :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is org_id in $GROUPS or region = $REGION
-}
+#(authorize) org_id in $GROUPS or region = $REGION
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -593,10 +576,8 @@ given:
   GROUPS :: string[]
   AMOUNTMIN :: number
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is org_id in $GROUPS and amount > $AMOUNTMIN
-}
+#(authorize) org_id in $GROUPS and amount > $AMOUNTMIN
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -628,10 +609,8 @@ given:
   REGION :: string
   AMOUNTMIN :: number
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is (org_id in $GROUPS or region = $REGION) and amount > $AMOUNTMIN
-}
+#(authorize) (org_id in $GROUPS or region = $REGION) and amount > $AMOUNTMIN
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -663,10 +642,9 @@ source: X is duckdb.table('accounts') extend {
 given:
   GROUPS :: string[]
 
+#(authorize) child.name in $GROUPS
 source: X is duckdb.table('accounts') extend {
    join_one: child is duckdb.table('child') on child_id = child.id
-   #(authorize)
-   internal dimension: authorized is child.name in $GROUPS
 }
 `);
       try {
@@ -701,10 +679,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   GROUPS :: string[]
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is org_id in $GROUPS
-}
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('accounts') extend {}
 
 source: Y is X extend {}
 `);
@@ -730,10 +706,8 @@ source: Y is X extend {}
 given:
   GROUPS :: string[]
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is org_id in $GROUPS
-}
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('accounts') extend {}
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
@@ -807,17 +781,17 @@ describe("authorize syntax conformance — Group B (refused spellings)", () => {
       }
    }
 
-   it("1. `not (org_id in $GROUPS)` — negated membership — no longer refused at load under the DIMENSION form, and it actually filters (guarantee changed — see task-3b-report.md)", async () => {
-      // The STRING form's `classifyAuthorizeGate` refused this shape outright
-      // at load. The DIMENSION form does not classify the expression's shape
-      // at all (`./gate_dimension`'s doc: validation reads the compiled
-      // `FieldDef`, not a parsed comparison/`inGiven` node) — G1 only checks
-      // "scalar boolean dimension", which `not (a in b)` satisfies, so this
-      // loads and correctly filters (W2-warned: negated membership is a
-      // KNOWN GAP for the EMPTY-given case specifically — an empty array
-      // then matches every row instead of none — see
-      // `gate_dimension_integration.spec.ts` — but a non-empty given, as
-      // exercised here, filters correctly).
+   it("1. `not (org_id in $GROUPS)` — negated membership — not refused at load, and it actually filters", async () => {
+      // The now-retired string form's `classifyAuthorizeGate` refused this
+      // shape outright at load by static shape analysis. The source-line
+      // form does no such static classification: `resolveGateShape` /
+      // `buildRowLevelProbe` (`authorize.ts`) compile the annotation text as
+      // a real filter probe and trust Malloy's own compiler, which accepts
+      // `not (a in b)` as an ordinary boolean — so this loads and correctly
+      // filters (negated membership over an EMPTY given is a separate,
+      // still-open concern: an empty array then matches every row instead
+      // of none — see `row_level_authorize.integration.spec.ts` — but a
+      // non-empty given, as exercised here, filters correctly).
       const rows = await observe(
          1,
          "not (org_id in $GROUPS)",
@@ -825,10 +799,8 @@ describe("authorize syntax conformance — Group B (refused spellings)", () => {
 given:
   GROUPS :: string[]
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is not (org_id in $GROUPS)
-}
+#(authorize) not (org_id in $GROUPS)
+source: X is duckdb.table('accounts') extend {}
 `,
          { GROUPS: ["org1"] },
       );
@@ -841,13 +813,13 @@ source: X is duckdb.table('accounts') extend {
       expect(ids(rows ?? [])).toEqual([4, 5, 6]);
    });
 
-   it("2. `org_id = $GROUPS` — array given, scalar operator — no longer refused at load under the DIMENSION form (guarantee changed — see task-3b-report.md)", async () => {
-      // Same root cause as case 1: the DIMENSION form does not statically
+   it("2. `org_id = $GROUPS` — array given, scalar operator — not refused at load", async () => {
+      // Same root cause as case 1: the source-line form does no static
       // check that a scalar comparison's given operand is scalar-typed (the
-      // string form's classification refused this on the given's DECLARED
-      // type). G1 only asks "is this a scalar boolean dimension" — Malloy
-      // itself accepts `org_id = $GROUPS` at compile time, and only crashes
-      // generating SQL for it at REQUEST time.
+      // now-retired string form's classification refused this on the
+      // given's DECLARED type). Malloy itself accepts `org_id = $GROUPS` at
+      // compile time, and only crashes generating SQL for it at REQUEST
+      // time.
       await observe(
          2,
          "org_id = $GROUPS",
@@ -855,10 +827,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   GROUPS :: string[]
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is org_id = $GROUPS
-}
+#(authorize) org_id = $GROUPS
+source: X is duckdb.table('accounts') extend {}
 `,
          { GROUPS: ["org1"] },
       );
@@ -881,10 +851,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   ROLE :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is owner in $ROLE
-}
+#(authorize) owner in $ROLE
+source: X is duckdb.table('accounts') extend {}
 `,
          { ROLE: "alice" },
       );
@@ -912,10 +880,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   REGION :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is upper(region) = $REGION
-}
+#(authorize) upper(region) = $REGION
+source: X is duckdb.table('accounts') extend {}
 `,
          { REGION: "EAST" },
       );
@@ -932,10 +898,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   UNUSED :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is 1 = 1
-}
+#(authorize) 1 = 1
+source: X is duckdb.table('accounts') extend {}
 `,
          {},
       );
@@ -952,10 +916,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   PAT :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is region like $PAT
-}
+#(authorize) region like $PAT
+source: X is duckdb.table('accounts') extend {}
 `,
          { PAT: "east" },
       );
@@ -972,10 +934,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   UNUSED :: string
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is region is not null
-}
+#(authorize) region is not null
+source: X is duckdb.table('accounts') extend {}
 `,
          {},
       );
@@ -992,10 +952,8 @@ source: X is duckdb.table('accounts') extend {
 given:
   AMOUNTMIN :: number
 
-source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is amount + 1 > $AMOUNTMIN
-}
+#(authorize) amount + 1 > $AMOUNTMIN
+source: X is duckdb.table('accounts') extend {}
 `,
          { AMOUNTMIN: 100 },
       );
@@ -1005,6 +963,16 @@ source: X is duckdb.table('accounts') extend {
    });
 
    it("9. `region = $REGION` where $REGION HAS a declared default", async () => {
+      // Left on the DIMENSION form deliberately (not migrated with the rest
+      // of this file — see task-3-report.md): G4 (refuse a gate referencing
+      // a given with a declared default) is `gate_dimension.ts`-only
+      // machinery. MEASURED: the source-line form's `resolveGateShape` has
+      // no equivalent check — the same shape below, rewritten to
+      // `#(authorize) region = $REGION` on the source line, loads cleanly
+      // and serves correctly-filtered rows (using the declared default when
+      // the caller omits `REGION`). That is a genuine gap relative to this
+      // form, not a migration artifact — flagged in the report rather than
+      // silently weakened here.
       await observe(
          9,
          "region = $REGION (REGION has a default)",
