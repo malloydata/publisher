@@ -80,11 +80,9 @@ given:
 
 source: base is duckdb.sql("select 1 as org_id")
 
+#(authorize) org_id = $ORG
 #@ persist name="gated"
-source: gated is base -> { select: org_id } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+source: gated is base -> { select: org_id } extend {}
 `,
       );
       const outcome = await classifyPersistSourceGate(
@@ -122,10 +120,8 @@ source: gated is base -> { select: org_id } extend {
 given:
   ORG :: number
 
-source: base is duckdb.sql("select 1 as org_id") extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+#(authorize) org_id = $ORG
+source: base is duckdb.sql("select 1 as org_id") extend {}
 
 #@ persist name="derived"
 source: derived is base extend {}
@@ -189,15 +185,12 @@ given:
   ORG :: number
   DEPT :: number
 
-source: locked is duckdb.sql("select 1 as dept_id") extend {
-   #(authorize)
-   internal dimension: authorized is dept_id = $DEPT
-}
+#(authorize) dept_id = $DEPT
+source: locked is duckdb.sql("select 1 as dept_id") extend {}
 
+#(authorize) org_id = $ORG
 #@ persist name="joiner"
 source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
    join_one: locked on x = locked.dept_id
 }
 `,
@@ -251,10 +244,8 @@ source: joiner is duckdb.sql("select 1 as x, 1 as org_id") extend {
 given:
   ORG :: number
 
-source: locked is duckdb.sql("select 1 as org_id, 1 as x") extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+#(authorize) org_id = $ORG
+source: locked is duckdb.sql("select 1 as org_id, 1 as x") extend {}
 
 #@ persist name="derived"
 source: derived is locked extend {
@@ -308,6 +299,12 @@ source: derived is locked extend {
       // than guessing — fails CLOSED, not open, so this is a coverage gap
       // (a composite entry point narrowed by `select:` cannot be classified
       // row-level and so cannot be colocated-served), not a security one.
+      //
+      // Left on the DIMENSION form deliberately (not migrated with the rest
+      // of this file — see task-3-report.md): the gap pinned here is that
+      // form's own field-drop behavior. The source-line form's annotation
+      // lives on the source, not a droppable field, so this shape does not
+      // reproduce under it — migrating would silently stop testing anything.
       const { modelDef, materializer, deps, sources } = await compileModel(
          `##! experimental { persistence composite_sources givens }
 
@@ -358,11 +355,9 @@ given:
 
 source: base is duckdb.sql("select 1 as org_id")
 
+#(authorize) org_id = $ORG
 #@ persist name="gated"
-source: gated is base -> { select: org_id } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+source: gated is base -> { select: org_id } extend {}
 `,
       );
       const source = sources.gated;
