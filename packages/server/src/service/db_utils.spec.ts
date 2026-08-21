@@ -1523,7 +1523,9 @@ describe("an unclassified dialect fails loudly", () => {
          resolve(import.meta.dir, "../../../../api-doc.yaml"),
          "utf8",
       );
-      const start = apiDoc.indexOf("      description: Database connection");
+      // Anchor on the schema key rather than its description prose, which is
+      // free text and has been reworded under this test.
+      const start = apiDoc.indexOf("\n    Connection:\n");
       expect(start).toBeGreaterThan(-1);
       const enumAt = apiDoc.indexOf("enum:", start);
       const types = [

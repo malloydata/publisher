@@ -4321,7 +4321,17 @@ components:
 
     Connection:
       type: object
-      description: Database connection configuration and metadata
+      description: >
+        Database connection configuration and metadata.
+
+        Credential fields are WRITE-ONLY. They are accepted on create and
+        update and no read returns them, so this one schema describes a
+        request body in full and a response body with its credentials
+        omitted. Omitted rather than masked, so a client cannot round-trip a
+        placeholder back into stored config as a real credential. An update
+        does not have to resend a credential it could not read; a field left
+        out keeps its stored value, a field sent replaces it, and a field sent
+        empty clears it.
       properties:
         resource:
           type: string
@@ -4352,6 +4362,20 @@ components:
               ducklake,
               publisher,
             ]
+        withheldFields:
+          type: array
+          items:
+            type: string
+          description: >
+            Read-only. Dotted paths of the fields this connection has stored
+            that the response does not return, which is to say its credentials.
+            Names only, never a value.
+
+            It exists because a client otherwise cannot tell a credential that
+            is set from one that is absent, and so cannot tell whether leaving a
+            box empty keeps something or leaves the connection without a
+            credential. An editor should read it to label the boxes that are
+            already filled. Ignored on write.
         fingerprint:
           type: string
           description: >

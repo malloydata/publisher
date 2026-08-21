@@ -18,6 +18,10 @@ import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
 import { testConnectionConfig } from "../service/connection";
+import {
+   toPublicConnection,
+   toPublicConnections,
+} from "../service/connection_public_view";
 import { validateDuckdbApiSurface } from "../service/connection_config";
 import { ConnectionService } from "../service/connection_service";
 import {
@@ -322,7 +326,7 @@ export class ConnectionController {
          environmentName,
          false,
       );
-      return environment.getApiConnection(connectionName);
+      return toPublicConnection(environment.getApiConnection(connectionName));
    }
 
    public async listConnections(
@@ -332,7 +336,7 @@ export class ConnectionController {
          environmentName,
          false,
       );
-      return environment.listApiConnections();
+      return toPublicConnections(environment.listApiConnections());
    }
 
    // Lists schemas (namespaces) available in a connection.
