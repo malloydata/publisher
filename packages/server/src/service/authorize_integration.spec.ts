@@ -1625,6 +1625,57 @@ source: combo is compose(open_src, locked_src) extend {
          /more than one #\(authorize\) gate dimension/,
       );
    });
+
+   it("a query source over a composite reports TWO authorize elements for one gate — the base and the resolved member each contribute one", async () => {
+      // `collectEntryPointGates` walks a query_source's own base AND its
+      // `query.compositeResolvedSourceDef` separately. A composite's struct
+      // transparently carries its members' fields, so the member's annotated
+      // gate dimension is a candidate on BOTH — and the base's
+      // `excludeNotes` identity-subtraction only covers STRUCT-level notes,
+      // not a field annotation. So one authored gate yields two carried-in
+      // entries, and `Model`'s introspection override flatMaps both.
+      // Documented in api-doc.yaml's `authorize` description: the field is
+      // not a per-source-count of one, and its elements can be the opaque
+      // graft identifier rather than the author's expression text.
+      await writeModel(
+         "c_composite_qs_two_elements.malloy",
+         `##! experimental { composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+source: member_a is duckdb.sql("select 7 as org_id, 1 as amount") extend {
+   #(authorize)
+   internal dimension: authorized is org_id in $GROUPS
+}
+
+source: member_b is duckdb.sql("select 99 as org_id, 2 as amount")
+
+source: combo is compose(member_a, member_b)
+
+source: qs is combo -> { group_by: org_id }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "c_composite_qs_two_elements.malloy",
+         getConnections(),
+      );
+      expect(model.getNotebookError()).toBeUndefined();
+      expect(model.getAuthorize("qs")).toEqual([
+         "`authorized`",
+         "`authorized`",
+      ]);
+      expect(sourceNamed(model, "qs")?.authorize).toEqual([
+         "`authorized`",
+         "`authorized`",
+      ]);
+      // The source that DECLARED the gate still reports the authored text.
+      expect(sourceNamed(model, "member_a")?.authorize).toEqual([
+         "org_id in $GROUPS",
+      ]);
+   });
 });
 
 // The sharpest consequence of entry-point-only evaluation, pinned deliberately
