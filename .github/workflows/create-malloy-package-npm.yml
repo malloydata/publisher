@@ -322,6 +322,94 @@ jobs:
       - name: Test
         run: bun run --cwd packages/create-malloy-package test
 
+      # The old hand-policed server pin's error message ended with "and confirm
+      # the new server still honours --host", and a human did that. Deriving the
+      # pin (see the publish job) removes the prompt, so this became automatic or
+      # it was simply gone.
+      #
+      # Why --host specifically, out of every flag: the server accepts an unknown
+      # flag without a word and falls back to binding 0.0.0.0. So the release that
+      # renames or drops it does not fail a generated workspace, it silently makes
+      # it serve an unauthenticated REST API and MCP endpoint on every interface,
+      # while its own package.json, AGENTS.md and README all still say 127.0.0.1.
+      # scaffold.ts carries the long version.
+      #
+      # THIS IS A DOCUMENTATION CHECK, NOT A PARSING ONE, and the step name says
+      # so. It proves --host is still in `--help`; it cannot prove `parseArgs`
+      # still handles it, so a rename inside parseArgs that left the usage line
+      # alone would pass here. The parsing IS covered for the repo's own build —
+      # packages/create-malloy-package/tests/e2e/scaffold.e2e.spec.ts boots a real
+      # server with `--host 127.0.0.1` and asserts neither port answers on the
+      # machine's LAN address, and cross-platform-tests.yml runs that on Linux
+      # every PR. What is uncovered, and what this step is for, is the PUBLISHED
+      # pin: a version resolved from the registry at publish time that no test in
+      # this repo has ever run.
+      #
+      # IN check_pack, NOT the publish job, and that placement is the point. `npx`
+      # here resolves a MUTABLE dist-tag with no lockfile behind it and installs
+      # ~40 transitive dependencies with lifecycle scripts enabled. The publish
+      # job holds `id-token: write`, and GitHub injects the OIDC request token
+      # into every step of such a job, so anything executing there can mint a
+      # publish token for @malloy-publisher/*. This job has `contents: read` and
+      # nothing else. Do not move it back for convenience.
+      #
+      # `--help` is deliberately not a boot: it prints usage and process.exit(0)s
+      # before anything binds a port or touches storage. It is not cheap, though —
+      # ESM evaluates the server's whole import graph (native duckdb bindings, the
+      # OTel stack, the cloud SDKs) before parseArgs runs, so measured cold it is
+      # ~30s and ~1.1 GB of npx cache, and any top-level failure anywhere in that
+      # graph fails this step.
+      - name: Verify the pinned server still documents --host
+        run: |
+          set -euo pipefail
+
+          if ! NPM_OUTPUT="$(npm view @malloy-publisher/server dist-tags.latest 2>&1)" || [ -z "$NPM_OUTPUT" ]; then
+            printf '%s\n' "$NPM_OUTPUT" | sed 's/^/[npm] /'
+            echo "::error title=Server pin::could not ask npm for @malloy-publisher/server dist-tags.latest"
+            exit 1
+          fi
+          SERVER_VERSION="$(printf '%s\n' "$NPM_OUTPUT" | tail -n 1)"
+          # Resolved independently of the publish job's substitution, so this and
+          # that can in principle disagree if `latest` moves in between. That is
+          # fine and is not worth coordinating: this asks a question about the
+          # server, and the publish job re-reads and re-verifies its own value.
+          if [[ ! "$SERVER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Server pin::@malloy-publisher/server latest reads '${SERVER_VERSION}', which is not a plain major.minor.patch"
+            exit 1
+          fi
+
+          if ! USAGE="$(npx -y "@malloy-publisher/server@${SERVER_VERSION}" --help 2>&1)"; then
+            printf '%s\n' "$USAGE" | sed 's/^/[server] /'
+            # assertSupportedNodeVersion() runs at server.ts:100, BEFORE
+            # parseArgs at :212, so `--help` exits non-zero on a Node below the
+            # server's floor. Today this job pins Node 24 and the floor is 20, so
+            # it cannot fire — but when the floor rises past the pinned Node the
+            # failure looks nothing like its cause, and "cannot confirm --host"
+            # would send someone to the wrong file.
+            if grep -q 'PUBLISHER_UNSUPPORTED_NODE' <<<"$USAGE"; then
+              echo "::error title=Server pin::@malloy-publisher/server@${SERVER_VERSION} requires a newer Node than this job pins (see the PUBLISHER_UNSUPPORTED_NODE line above). This is a Node floor problem, not a --host problem: raise node-version in this workflow."
+              exit 1
+            fi
+            echo "::error title=Server pin::@malloy-publisher/server@${SERVER_VERSION} --help failed, so it cannot be confirmed to document --host"
+            exit 1
+          fi
+
+          # Anchored on the DESCRIPTION column, not merely on the line start.
+          # `^[[:space:]]+--host[[:space:]]` looked stricter than it is: it also
+          # matches a continuation line such as
+          #     "        --host is deprecated; use --bind"
+          # which is exactly the shape this server's own help printer emits for a
+          # wrapped description, so a server that replaced the flag and explained
+          # itself in prose would have passed. Requiring the `<value>` placeholder
+          # and a run of spaces before the description matches the real option
+          # line (`  --host <string>        Host to bind ...`) and not prose.
+          if ! grep -qE '^[[:space:]]+--host[[:space:]]+<[^>]+>[[:space:]]{2,}[^[:space:]]' <<<"$USAGE"; then
+            printf '%s\n' "$USAGE" | sed 's/^/[server] /'
+            echo "::error title=Server pin::@malloy-publisher/server@${SERVER_VERSION} no longer documents --host as an option taking a value (usage above). Every workspace this scaffolder generates passes --host, and the server binds 0.0.0.0 on an unknown flag without a word — so publishing this would silently expose generated workspaces on every interface. Fix startCommandFor in scaffold.ts before releasing."
+            exit 1
+          fi
+          echo "::notice title=Server pin::@malloy-publisher/server@${SERVER_VERSION} still documents --host"
+
   publish:
     name: Publish to NPM
     # workflow_dispatch offers every branch in the ref dropdown, and the
@@ -446,20 +534,32 @@ jobs:
           fi
           echo "::notice title=Version::$SPEC is not on npm yet"
 
-      # SERVER_VERSION is bumped by hand and nothing else validates it, which is
-      # how the latest scaffolder came to hand every new workspace a server six
-      # patches stale (QA CR-11), and how a scaffolder published AHEAD of its
-      # pinned server would generate workspaces whose `npm start` cannot resolve
-      # at all — under a version that can never be replaced. Two checks: the pin
-      # must exist on npm, and it must be the current `latest`, so a release
-      # that forgot the bump fails here with the exact edit to make.
-      - name: Verify the pinned server version is current on npm
+      # SERVER_VERSION pins the server every generated workspace boots, and it
+      # used to be bumped by hand with nothing but the guard below to catch a
+      # miss. That is how the scaffolder came to hand every new workspace a
+      # server six patches stale (QA CR-11), and how 0.0.250 went red 25 minutes
+      # into a release, after skills had already published.
+      #
+      # So derive it here instead, exactly as the skills dep above is derived:
+      # read npm's current `latest`, substitute it into the runner's working tree
+      # ONLY (never committed), and assert the substitution took. The value in
+      # the repo becomes a dev default — what a `bun run` from a clone boots —
+      # rather than published truth.
+      #
+      # This is only correct because release.yml's `publish-packages` waits for
+      # `publish-npm`. On `needs: prepare` alone this job races the server
+      # publish, and `latest` here would be a release behind, so every generated
+      # workspace would pin the previous server. Narrowing that `needs:` back
+      # re-breaks this silently rather than loudly.
+      - name: Resolve SERVER_VERSION for publishing
+        id: server_pin
         run: |
-          SERVER_VERSION="$(sed -n 's/^export const SERVER_VERSION = "\(.*\)";$/\1/p' packages/create-malloy-package/src/scaffold.ts)"
-          if [ -z "$SERVER_VERSION" ]; then
-            echo "::error title=Server pin::could not read SERVER_VERSION from packages/create-malloy-package/src/scaffold.ts"
-            exit 1
-          fi
+          # Explicit, rather than relying on the runner's default `bash -e {0}`,
+          # so the body behaves the same when it is extracted and run directly.
+          # Note this does NOT cover the substitution below — see the assertion
+          # after it.
+          set -euo pipefail
+
           if ! NPM_OUTPUT="$(npm view @malloy-publisher/server dist-tags.latest 2>&1)" || [ -z "$NPM_OUTPUT" ]; then
             # Prefixed, not indented: registry output is untrusted text and the
             # runner trims leading whitespace before matching "::" as a command.
@@ -470,11 +570,86 @@ jobs:
           # tail -n 1, as the skills step above does: the capture folds stderr
           # in so a failure has something to show, and npm writes routine
           # warnings there on a successful run too (unknown env config, update
-          # notices, retries). Comparing the raw capture would fail a correct
-          # release reporting `latest is npm warn ...`.
+          # notices, retries). Using the raw capture would substitute
+          # `npm warn ...` into the source.
+          LATEST="$(printf '%s\n' "$NPM_OUTPUT" | tail -n 1)"
+
+          # Validate before it reaches `sed`, and refuse anything that is not a
+          # plain major.minor.patch. Two reasons, and the second is the one that
+          # is easy to miss:
+          #
+          # - This value is interpolated into a sed replacement in a job holding
+          #   id-token: write. A `latest` carrying `|`, `&` or a newline would
+          #   otherwise be substituted as sed syntax.
+          # - A prerelease must never become the pin. `latest` should never hold
+          #   one — this repo routes hyphenated versions to `next` — but the
+          #   registry is not ours to constrain, and a generated workspace
+          #   pinning an rc is not something a user can be expected to notice.
+          if [[ ! "$LATEST" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Server pin::@malloy-publisher/server latest reads '${LATEST}', which is not a plain major.minor.patch, so it will not be pinned into a generated workspace"
+            exit 1
+          fi
+
+          FILE=packages/create-malloy-package/src/scaffold.ts
+          PREVIOUS="$(sed -n 's/^export const SERVER_VERSION = "\(.*\)";$/\1/p' "$FILE")"
+          sed -i "s|^export const SERVER_VERSION = \".*\";\$|export const SERVER_VERSION = \"${LATEST}\";|" "$FILE"
+
+          # sed exits 0 when it matches nothing, so `set -e` above does NOT catch
+          # a substitution that did not apply — the same trap the skills-dep step
+          # names ("sed exits 0 when it matches nothing, so without this the
+          # notice below would announce a rewrite that never happened"). Assert it
+          # here rather than leaning on the verify step below, which is meant to be
+          # an independent second read and not the only assertion. Measured: with
+          # the declaration removed from the file this step otherwise exits 0 and
+          # announces `SERVER_VERSION <unreadable> -> <latest>`.
+          if ! grep -qxF "export const SERVER_VERSION = \"${LATEST}\";" "$FILE"; then
+            echo "::error title=Server pin::the SERVER_VERSION substitution did not apply to ${FILE}, so this would publish a scaffolder pinning the wrong server"
+            grep -n "SERVER_VERSION" "$FILE" || true
+            exit 1
+          fi
+
+          echo "server_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Server pin::SERVER_VERSION ${PREVIOUS:-<unreadable>} -> ${LATEST} (npm latest), in this runner's tree only"
+
+      # Kept as its own step, and it is not the tautology it looks like. The
+      # substitution above writes; this READS the file back with the same
+      # expression the old hand-policing guard used, and re-asks the registry. So
+      # it still catches everything it caught before — plus a substitution that
+      # silently matched nothing (`sed` exits 0 either way), a file that grew a
+      # second SERVER_VERSION line, and a `latest` that moved between the two
+      # steps.
+      #
+      # The protection is the same one it always was, and it must survive any
+      # rewrite of this pair: a scaffolder published AHEAD of its pinned server
+      # generates workspaces whose `npm start` cannot resolve at all, under a
+      # version that can never be replaced.
+      - name: Verify the pinned server version is current on npm
+        env:
+          # Through env rather than interpolated into the script body: a ${{ }}
+          # expression is substituted before bash parses the line.
+          EXPECTED: ${{ steps.server_pin.outputs.server_version }}
+        run: |
+          set -euo pipefail
+
+          FILE=packages/create-malloy-package/src/scaffold.ts
+          MATCHES="$(grep -c '^export const SERVER_VERSION = ".*";$' "$FILE" || true)"
+          if [ "$MATCHES" != "1" ]; then
+            echo "::error title=Server pin::${FILE} has ${MATCHES} SERVER_VERSION declarations; expected exactly 1, so the substitution cannot be verified"
+            exit 1
+          fi
+          SERVER_VERSION="$(sed -n 's/^export const SERVER_VERSION = "\(.*\)";$/\1/p' "$FILE")"
+          if [ "$SERVER_VERSION" != "$EXPECTED" ]; then
+            echo "::error title=Server pin::the substitution did not apply — ${FILE} reads '${SERVER_VERSION}' but npm latest resolved to '${EXPECTED}'. This would publish a scaffolder pinning the wrong server."
+            exit 1
+          fi
+          if ! NPM_OUTPUT="$(npm view @malloy-publisher/server dist-tags.latest 2>&1)" || [ -z "$NPM_OUTPUT" ]; then
+            printf '%s\n' "$NPM_OUTPUT" | sed 's/^/[npm] /'
+            echo "::error title=Server pin::could not re-ask npm for @malloy-publisher/server dist-tags.latest"
+            exit 1
+          fi
           LATEST="$(printf '%s\n' "$NPM_OUTPUT" | tail -n 1)"
           if [ "$SERVER_VERSION" != "$LATEST" ]; then
-            echo "::error title=Server pin::SERVER_VERSION is $SERVER_VERSION but @malloy-publisher/server latest is $LATEST. Bump SERVER_VERSION in packages/create-malloy-package/src/scaffold.ts (and confirm the new server still honours --host) before publishing."
+            echo "::error title=Server pin::SERVER_VERSION is $SERVER_VERSION but @malloy-publisher/server latest is now $LATEST — it moved while this job ran. Re-run rather than publishing a stale pin."
             exit 1
           fi
           echo "::notice title=Server pin::SERVER_VERSION $SERVER_VERSION matches npm latest"
