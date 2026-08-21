@@ -67,6 +67,13 @@ pilot's 11 accepted edits, 4 of 5 wrong ones died to a single
 Compile-check the edit before saving (scope `file` for an edit), then reload
 the package. Confirm it is not serving a stale model.
 
+This step needs a target you control: a local server, or a host that can
+execute a draft. A run whose answerers queried a published model cannot be
+improved in place, because publishing to score an edit is not something this
+loop does. `skill:eval-loop` picks the target before the run starts, so if you
+have arrived here against a published target, stop and say so rather than
+publishing.
+
 Know which copy of the file the server actually reads. Hosts commonly serve a
 copy of the package rather than your working tree, so editing the model repo
 and reloading recompiles the unchanged copy: the reload succeeds, nothing

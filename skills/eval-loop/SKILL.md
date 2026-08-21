@@ -104,6 +104,48 @@ gold path for it. Blindness is prevention plus detection, not a guarantee:
 `eval-answer` runs the contamination checklist on every attempt, which is
 why you keep a host-side tool-use log per answerer.
 
+## Pick the target first
+
+Both a local model server and a hosted platform expose the same two tools the
+answerer needs, `get_context` and `execute_query`, so the loop runs against
+either. What differs is which model is answering and whose data it reads, and
+those are two separate axes:
+
+| Target | Model under test | Data | Can edit and re-test? |
+|---|---|---|---|
+| **Local, own data** | your working files | local (for example duckdb) | yes |
+| **Local, proxied** | your working files | the platform's connection, through a proxy connection type | yes |
+| **Platform direct** | the published version | the platform's | no, publishing is not an eval action |
+
+The middle row is the one worth knowing about: it decouples the two axes, so you
+can evaluate a model you are still editing against the customer's real data. It
+is a connection configuration, not a feature.
+
+Two rules follow, and both are the kind of mistake that produces confident
+nonsense rather than an error:
+
+- **The answerer and the conductor must hit the same target.** If the answerer
+  queries the published model and you re-execute its query against your edited
+  local copy, the score describes neither. Decide the target before the first
+  question and record it.
+- **Pin the version the target actually served, not the one you happen to have.**
+  A local target pins a commit; a platform target pins the published version.
+  Recording a local commit for a run that queried a published model is a pin
+  that means nothing.
+
+Which target for which job:
+
+- **Baseline what customers experience:** platform direct. It is the deployed
+  model, which is the thing they actually hit.
+- **Improve and gate:** local, because the gate needs compile, reload, and a
+  fresh re-answer between edits. Publishing to a customer environment to score
+  an edit is not something this loop does. Where the host offers draft
+  execution, that counts as local for this purpose.
+- **Measure real data without touching production:** local proxied.
+
+So a measure-only run can use any target; a run that includes **improve** needs
+a local one.
+
 ## Before you start
 
 1. The model package under evaluation must live in a git repository, with
@@ -135,11 +177,12 @@ why you keep a host-side tool-use log per answerer.
    are the golden side door below, not improve, and not a sixth step.
 
 6. Create `runs/<runId>/run.json` with the attribution pins
-   (`reference/ledger-schema.md`): mode, dataset version, **model git sha**
-   (commit or stash the model state first; answer from a dirty tree and the
-   run pins nothing), Publisher version, judge version and rubric sha,
-   answerer model, call budget, trace mode. Freeze those for the whole run.
-   Raising a call budget mid-run moved mean outcomes on an unchanged model.
+   (`reference/ledger-schema.md`): mode, dataset version, **the target and the
+   version it served** (a local target pins a commit, so commit or stash first;
+   answering from a dirty tree pins nothing), server version, judge version and
+   rubric sha, answerer model, call budget, trace mode. Freeze those for the
+   whole run. Raising a call budget mid-run moved mean outcomes on an unchanged
+   model.
 
 7. Generate every answerer prompt from the stored case in `cases.jsonl`.
    Never retype the question. A truncated retype is indistinguishable from a

@@ -82,14 +82,18 @@ the model changes.
 ## `run.json`
 
 The attribution pins. Two runs are comparable only when these match where it
-matters:
+matters. Two runs with different `target` values are comparable on answer
+verdicts only if the same model version reached both, which is rarely worth
+assuming:
 
 | Field | Notes |
 |---|---|
 | `runId` | Directory name. |
 | `mode` | Steps or alias this run walks (see `skill:eval-loop`). |
 | `setName` / `datasetVersion` | What was scored. |
-| `modelGitSha` | Commit of the model repo the answerers ran against. Frozen for the run. |
+| `target` | Which server answered, and how it reached the data: `local`, `local-proxied`, or `platform`. Decides what an improve step is even allowed to do (see `skill:eval-loop`). |
+| `targetVersion` | The version the target actually served: a commit for a local target, a published version for a platform one. Whichever does not apply is omitted rather than guessed. |
+| `modelGitSha` | Commit of the model repo, when the target served working files. Frozen for the run. Omit for a platform target, where the served model is a published version and a local commit pins nothing. |
 | `serverVersion` | Version of whatever serves the model (Publisher build, platform release). |
 | `judgeVersion` / `rubricSha` | From `reference/judge.md` and its git blob sha. |
 | `answererModel` | |
