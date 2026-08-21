@@ -143,6 +143,89 @@ function joinFieldNamesUnresolvableDeclaration(
 }
 
 /**
+ * Whether `a` sits strictly before `b` in a document (line first, then
+ * character) — the tie-break `considerAuthorizeNoteOwner` uses to keep the
+ * EARLIEST candidate rather than the last one visited (iteration order over
+ * `modelDef.contents`/`sourceRegistry` is not guaranteed to be declaration
+ * order).
+ */
+function isEarlierPosition(
+   a: { line: number; character: number },
+   b: { line: number; character: number },
+): boolean {
+   return a.line < b.line || (a.line === b.line && a.character < b.character);
+}
+
+/**
+ * Resolve which top-level struct actually WROTE a shared `#(authorize)` note
+ * object, keyed by the note itself, so `authorizeOwnNotes` can stop
+ * mistaking "this struct's `annotations` carries the note" for "this struct
+ * declared the note" — see `validateAuthorizeProbes`'s doc for why that
+ * distinction is the one thing standing between a bad `except:`/`accept:`
+ * derivation denying only itself versus aborting the whole package load.
+ *
+ * Why location, not identity or a backlink: `gateExprsForOwnAnnotations`'s
+ * `excludeNotes` identity-subtraction (`gate_classification.ts`) only works
+ * where the caller already independently knows the base struct's own notes
+ * (the composite-member recursion in `collectEntryPointGates`, which gets
+ * that from `query.compositeResolvedSourceDef`) — there is no equivalent
+ * "already known base" for a plain `extend {}`/`except:`/`accept:`
+ * derivation, so nothing to subtract against exists at this call site.
+ * `resolveDeclaredSource` (`./gate_registry_walk`) does not help either: it
+ * resolves no ancestor at all for ANY extend-based derivation, plain
+ * `extend {}` included — confirmed empirically (`referenceID`/`sourceID` are
+ * `undefined` on every one of a gated base, its `except:` derivation, and its
+ * plain `extend {}` derivation). And `struct.fields` are not shared by
+ * reference between a base and its extend for this shape either, so a
+ * field-identity heuristic has nothing to key on. A future reader tempted to
+ * "simplify" this back into a bare presence check should re-read
+ * `validateAuthorizeProbes`'s doc first — presence is exactly the bug.
+ *
+ * What DOES work, confirmed empirically against `@malloydata/malloy`: Malloy
+ * copies a base's ENTIRE `struct.annotations` object by reference onto a
+ * derivation that adds no annotation of its own — not just the note text,
+ * the whole `AnnotationsDef` wrapper and every `AnnotationNote` inside it
+ * (`parent.annotations === wExcept.annotations` is `true`). Every
+ * `AnnotationNote` carries `at: DocumentLocation` (required, never
+ * optional) recording where it was PARSED — that position moves with the
+ * note wherever Malloy copies it, so it always points at the original
+ * `source:` line, never at a derivation's. Every top-level `SourceDef` also
+ * carries its own `location?: DocumentLocation` (from Malloy's
+ * `HasLocation`) recording where THAT STRUCT was declared — confirmed
+ * populated for an ordinary source (`gated_parent.location.range.start.line
+ * === 6` while its own note's `at.range` sat on line 5, directly above it;
+ * `w_except.location.range.start.line === 10` while the SAME,
+ * reference-identical note's `at` was STILL line 5). So among every struct
+ * that shares a note object by reference, the one whose OWN `.location` is in
+ * the SAME file as the note's `.at.url` and sits NO LATER than the note is
+ * the struct that wrote it — Malloy requires a source to already exist before
+ * it can be extended, so the true declarer is never positioned after any of
+ * its derivations in the same file. Filtering to `location.url === at.url`
+ * alone already excludes a cross-file derivation of an imported gated
+ * source, since the note's `at.url` always names the original file.
+ *
+ * `candidate.location` absent (should not happen for a top-level source, but
+ * not guaranteed by the type) skips the candidate rather than crashing —
+ * see the call sites' doc for why an unresolved note then behaves as
+ * "inherited everywhere it's found", which stays fail-closed either way.
+ */
+function considerAuthorizeNoteOwner(
+   declaredBy: Map<AnnotationNote, StructDef>,
+   note: AnnotationNote,
+   candidate: StructDef,
+): void {
+   const location = candidate.location;
+   if (!location || location.url !== note.at.url) return;
+   const currentLocation = declaredBy.get(note)?.location;
+   if (
+      !currentLocation ||
+      isEarlierPosition(location.range.start, currentLocation.range.start)
+   ) {
+      declaredBy.set(note, candidate);
+   }
+}
+
+/**
  * Extract every source from a compiled model, parsing `#(filter)` annotations
  * along the way.
  *
@@ -278,6 +361,13 @@ export function extractSourcesFromModelDef(
    // source the field happens to live on — a join field's copied note names
    // the JOINED source, not the joiner.
    const gatedSourceOwnAuthorizeNotes = new Set<AnnotationNote>();
+   // Every `#(authorize)`-tagged note object seen above, resolved to the ONE
+   // top-level struct whose OWN `source:` line actually wrote it — see
+   // `considerAuthorizeNoteOwner`'s doc. Feeds `authorizeOwnNotes` below so a
+   // struct that merely CARRIES a copied note (every plain `extend {}` /
+   // `except:` / `accept:` derivation of a gated base) is no longer
+   // mistaken for one that DECLARED it.
+   const authorizeNoteDeclaredBy = new Map<AnnotationNote, StructDef>();
    // Every annotation position this function reads for authorize purposes is
    // also swept for a NEAR-MISS spelling — one that reads as an attempt at a
    // gate but that Malloy routes elsewhere, so nothing would ever enforce it.
@@ -295,6 +385,7 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes(struct.annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
+            considerAuthorizeNoteOwner(authorizeNoteDeclaredBy, note, struct);
          }
       }
       nearMissAuthorize.push(
@@ -328,6 +419,11 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes((entry as StructDef).annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
+            considerAuthorizeNoteOwner(
+               authorizeNoteDeclaredBy,
+               note,
+               entry as StructDef,
+            );
          }
       }
       nearMissAuthorize.push(
@@ -448,10 +544,24 @@ export function extractSourcesFromModelDef(
          // rather than silently dropping the gate.
          const ownNotes = ownLevelNoteTexts(struct.annotations);
          const ownGates = collectAuthorizeExprs(ownNotes);
+         // `authorizeOwnNotes` feeds `validateAuthorizeProbes`'s own-vs-
+         // inherited decision, so presence on `struct.annotations` is NOT
+         // enough here (a plain `extend {}`/`except:`/`accept:` derivation of
+         // a gated base carries the base's note object by reference, with no
+         // annotation of its own) — a note only counts as this struct's OWN
+         // when `authorizeNoteDeclaredBy` resolved THIS struct as the one
+         // that wrote it. `ownGates`/`authorize`/`authorizeMap` below keep
+         // reading by TEXT regardless of who declared it: the effective gate
+         // genuinely applies to an inheriting entry point, only the
+         // own-vs-inherited SIGNAL changes here. See
+         // `considerAuthorizeNoteOwner`'s doc for the mechanism and why
+         // simpler alternatives don't work.
          authorizeOwnNotes.set(
             sourceName,
-            ownLevelNotes(struct.annotations).filter((note) =>
-               containsAuthorizeAnnotationTag([note.text]),
+            ownLevelNotes(struct.annotations).filter(
+               (note) =>
+                  containsAuthorizeAnnotationTag([note.text]) &&
+                  authorizeNoteDeclaredBy.get(note) === struct,
             ),
          );
          // Shared with `./gate_classification`'s `gateExprsForOwnAnnotations`

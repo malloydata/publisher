@@ -16,28 +16,35 @@
  *
  * `buildGatedModel` (copied from `row_level_authorize.integration.spec.ts`,
  * which owns the canonical version — see ITS doc comment for what it is and
- * isn't bypassing) is used ONLY for the fail-closed-reversal / misbinding
- * cases below, which deliberately construct a derivation whose gate is
- * genuinely unexpressible at that one entry point. Going through
- * `Model.create` for those does not reach request time at all: `except:`ing
- * or `accept:`-dropping the column a source-line gate reads leaves Malloy's
- * BY-REFERENCE copy of the base's own annotation note sitting on the
- * deriving struct's OWN annotations (same mechanism documented in
- * `gate_registry_walk.ts`'s header) — `validateAuthorizeProbes`'s load-time
- * own-vs-inherited check reads that copied note as "declared here" (it tests
- * presence, not identity against an ancestor), so an unexpressible probe
- * there throws and aborts the WHOLE model's load rather than warning and
- * denying only that entry point. See the "load-time abort" describe block
- * below, which pins that (surprising, pre-existing, NOT introduced by this
- * form) behavior directly, empirically, rather than assuming it.
+ * isn't bypassing) is used for the fail-closed-reversal / misbinding cases
+ * below, which deliberately construct a derivation whose gate is genuinely
+ * unexpressible at that one entry point and predate the fix described next
+ * (kept as-is rather than migrated to `createModel`, since both now load
+ * cleanly and the point of those tests is the GRAFT's own behavior, not the
+ * load path).
  *
- * Scope is Task 1 of the source-line migration: prove the spine (compile,
- * enforce, override, join non-propagation, query-source inheritance,
- * at-most-one-gate) and pin two known edge cases (the except:+rename:
- * misbinding hole; a bare `false` literal, confirmed to compile and deny
- * like `1 = 1`/`1 = 0` do). It does not migrate the existing dimension-form
- * corpus (Task 2), touch `gate_dimension.ts`'s validation (Task 3/4), or fix
- * `validateAuthorizeProbes`'s own-vs-inherited heuristic.
+ * `except:`ing or `accept:`-dropping the column a source-line gate reads
+ * leaves Malloy's BY-REFERENCE copy of the base's own annotation note
+ * sitting on the deriving struct's OWN `annotations` (same mechanism
+ * documented in `gate_registry_walk.ts`'s header). This USED TO make
+ * `validateAuthorizeProbes`'s load-time own-vs-inherited check read that
+ * copied note as "declared here" (it tested presence, not who actually wrote
+ * it) and abort the WHOLE model's load on an unexpressible probe, instead of
+ * warning and denying only that one entry point.
+ * `source_extraction.ts`'s `authorizeNoteDeclaredBy` (location-based note
+ * ownership — see its doc for the mechanism and why simpler alternatives
+ * don't work) fixed this: see the "an inheriting derivation's unexpressible
+ * gate scopes to that entry point, not the whole load" describe block below,
+ * which proves the load succeeds, the warning names the RIGHT entry point,
+ * that entry point denies at request time, siblings and the declaring
+ * source are unaffected, and a genuinely broken gate at the DECLARING
+ * source still aborts the load as it always has.
+ *
+ * Scope is Task 1 (spine: compile, enforce, override, join non-propagation,
+ * query-source inheritance, at-most-one-gate; two known edge cases: the
+ * except:+rename: misbinding hole, a bare `false` literal) plus Task 2 (the
+ * load-abort fix above). It does not migrate the existing dimension-form
+ * corpus (Task 3) or touch `gate_dimension.ts`'s validation (Task 4).
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -48,11 +55,12 @@ import {
    type Connection,
    type ModelDef,
 } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { AccessDeniedError, ModelCompilationError } from "../errors";
+import { logger } from "../logger";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
 import { Model } from "./model";
 
@@ -405,15 +413,15 @@ source: dual is duckdb.table('orgtable') extend {}
 // Fail-closed reversal + the misbinding hole.
 //
 // Each of these derives `gated_parent` in a way that breaks its OWN field
-// space's ability to express the inherited gate. Malloy's by-reference copy
-// of the base's own annotation note lands on the deriving struct's OWN
-// annotations regardless (see this file's header), which makes
-// `validateAuthorizeProbes`'s load-time preflight treat the probe failure as
-// "declared here" and throw, aborting the WHOLE model load rather than
-// denying just this one entry point — see the "load-time abort" describe
-// block below, which pins that directly. `buildGatedModel` skips that
-// preflight so these tests can reach request time and prove the GRAFT's own
-// behavior, which is what the task is actually about.
+// space's ability to express the inherited gate. Written against
+// `buildGatedModel` (which skips the `validateAuthorizeProbes` preflight)
+// before the load-abort fix described in this file's header existed — the
+// preflight now correctly classifies these as inherited-and-unexpressible
+// rather than aborting, so `createModel` would reach request time too (see
+// the "an inheriting derivation's unexpressible gate scopes to that entry
+// point" describe block below for the same shapes through the real
+// `Model.create`). Kept on `buildGatedModel` since these tests are about the
+// GRAFT's own behavior at request time, not the load path.
 // ---------------------------------------------------------------------------
 
 describe("source-line #(authorize) — fail-closed reversal", () => {
@@ -513,22 +521,21 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
    });
 });
 
-describe("source-line #(authorize) — load-time abort (pre-existing validateAuthorizeProbes gap, not introduced by this form)", () => {
-   it("PINNED FINDING — an except:'d derivation of a source-line-gated base aborts the WHOLE model load, not just that entry point", async () => {
-      // `validateAuthorizeProbes`'s own-vs-inherited check
-      // (`authorize.ts`'s `ownNotesOf.get(sourceName) ?? []`) tests
-      // PRESENCE, not identity against an ancestor — Malloy's by-reference
-      // copy of `gated_parent`'s own note lands on `w_except`'s own
-      // `annotations` (same mechanism as a plain `extend {}`, documented in
-      // `gate_registry_walk.ts`'s header), so this reads as "w_except
-      // declares its own gate" and throws when the probe can't resolve
-      // `org_id` there — instead of the "inherited, unexpressible, warn and
-      // deny at request time" outcome the dimension form's equivalent shape
-      // gets via its own separate machinery (`gate_dimension.ts`). This is
-      // NOT something Task 1 fixes (it predates the source-line form
-      // entirely — `validateAuthorizeProbes` is unchanged by it); pinned
-      // here so it is a documented, empirically-verified finding rather
-      // than a surprise for whoever writes real models against this form.
+describe("source-line #(authorize) — an inheriting derivation's unexpressible gate scopes to that entry point, not the whole load", () => {
+   it("`except:`-ing the gated column: package loads, warns naming the derivation, and gated_parent itself is unaffected", async () => {
+      // `validateAuthorizeProbes`'s own-vs-inherited check used to test
+      // PRESENCE on `struct.annotations`, not who actually WROTE the note —
+      // Malloy's by-reference copy of `gated_parent`'s own note lands on
+      // `w_except`'s own `annotations` too (same mechanism as a plain
+      // `extend {}`, documented in `gate_registry_walk.ts`'s header), which
+      // used to read as "w_except declares its own gate" and throw when the
+      // probe couldn't resolve `org_id` there, aborting the WHOLE package
+      // load. `source_extraction.ts`'s `authorizeNoteDeclaredBy` (location-
+      // based note ownership — see its doc) now resolves the note back to
+      // `gated_parent`, so `w_except` reads as INHERITED-and-unexpressible:
+      // the load succeeds, `onRowLevelGateUnexpressible` warns naming
+      // `w_except`, and `w_except` alone denies at request time.
+      const warnSpy = spyOn(logger, "warn");
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -542,16 +549,195 @@ source: gated_parent is duckdb.table('orgtable') extend {
 source: w_except is gated_parent extend { except: org_id }
 `);
       try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const warnings = warnSpy.mock.calls.map((c) =>
+            String(
+               (c as unknown as [string, { sourceName?: string }?])[1]
+                  ?.sourceName ?? "",
+            ),
+         );
+         expect(warnings).toContain("w_except");
+
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: w_except -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+
+         // `gated_parent` itself still serves correctly with a matching given.
+         const gated = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: gated_parent -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [1] },
+         );
+         expect((gated.compactResult as unknown as { n: number }[])[0].n).toBe(
+            2,
+         );
+      } finally {
+         warnSpy.mockRestore();
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("an `accept:` list omitting the gated column: package loads, warns naming the derivation, and denies at request time", async () => {
+      const warnSpy = spyOn(logger, "warn");
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+source: gated_parent is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+
+source: w_accept is gated_parent extend { accept: id, val, n }
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const warnings = warnSpy.mock.calls.map((c) =>
+            String(
+               (c as unknown as [string, { sourceName?: string }?])[1]
+                  ?.sourceName ?? "",
+            ),
+         );
+         expect(warnings).toContain("w_accept");
+
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: w_accept -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         warnSpy.mockRestore();
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("a plain `extend {}` derivation of a gated base loads with NO warning at all — the probe never fails for this shape", async () => {
+      const warnSpy = spyOn(logger, "warn");
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+source: gated_parent is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+
+source: w_plain is gated_parent extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const unexpressibleWarnings = warnSpy.mock.calls.filter((c) =>
+            String(c[0]).includes("not expressible at this entry point"),
+         );
+         expect(unexpressibleWarnings).toHaveLength(0);
+
+         const result = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: w_plain -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [1] },
+         );
+         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
+            2,
+         );
+      } finally {
+         warnSpy.mockRestore();
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("two siblings independently `except:`-ing the gated column each get their OWN warning and each independently deny", async () => {
+      const warnSpy = spyOn(logger, "warn");
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+source: gated_parent is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+
+source: w_except_a is gated_parent extend { except: org_id }
+source: w_except_b is gated_parent extend { except: org_id }
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const warnedSources = warnSpy.mock.calls.map((c) =>
+            String(
+               (c as unknown as [string, { sourceName?: string }?])[1]
+                  ?.sourceName ?? "",
+            ),
+         );
+         expect(warnedSources).toContain("w_except_a");
+         expect(warnedSources).toContain("w_except_b");
+
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: w_except_a -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: w_except_b -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         warnSpy.mockRestore();
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("the DECLARING source's own broken gate still aborts the whole load — this fix must not swallow a genuine authoring mistake at the site it was written", async () => {
+      // `gated_parent` here references `nonexistent_column`, which it does
+      // not have — its OWN probe fails, and `authorizeNoteDeclaredBy`
+      // resolves the note back to `gated_parent` ITSELF (the earliest, and
+      // only, candidate in this file), so this must still throw rather than
+      // being waved through as "inherited".
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) nonexistent_column in $GROUPS
+source: gated_parent is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+`);
+      try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         // Specifically the `validateAuthorizeProbes` "declared here" throw
-         // this test documents — not merely any error mentioning `org_id`.
-         // Before the source-line parsing fix, the OLD parse-error message
-         // (`authorize annotation expression must be a double-quoted string,
-         // got: org_id in $GROUPS`) also matched `/org_id/`, so that regex
-         // alone didn't pin the mechanism.
          expect(err?.message).toContain(
-            'Invalid #(authorize) annotation on source "w_except"',
+            'Invalid #(authorize) annotation on source "gated_parent"',
          );
       } finally {
          await cleanup(duckdb, dir);
