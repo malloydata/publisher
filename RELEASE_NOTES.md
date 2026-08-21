@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — opt-in request rate limiting
+## [0.0.250] — opt-in request rate limiting
 
 The REST server can now cap how many requests one client makes per minute: set `PUBLISHER_RATE_LIMIT=<n>` and the `n+1`th request in a minute from the same peer address gets a `429` with standard `RateLimit-*` headers. It is off unless set, so nothing changes for an existing deployment. Health probes and `/metrics` are exempt, and the MCP port is not covered. Behind a reverse proxy every client arrives from the proxy's address and would share one bucket, so rate-limit at the proxy in that deployment instead. See [docs/configuration.md](docs/configuration.md).
 
@@ -231,7 +231,7 @@ A `storage=` build reads its source through DuckDB's native query-passthrough, w
 
 ---
 
-## [Unreleased]: an incremental refresh can advance a `storage=` table
+## [0.0.250]: an incremental refresh can advance a `storage=` table
 
 `refresh="incremental"` alongside `storage=` was a publish rejection. It is now supported, with the
 same declarations and the same guarantees as a colocated incremental source: the table is advanced by
