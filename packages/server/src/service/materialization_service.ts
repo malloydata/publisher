@@ -503,6 +503,27 @@ function reportRetainedStorageTables(
  * correctly. `entry.refresh` is present exactly for such a source, so its presence
  * is the test.
  *
+ * A source whose upstream is itself stored is retained on the same terms, even though
+ * it can never be advanced by a delta and so has no boundary of its own to protect.
+ * Which name it is built at is the HOST's choice, and the host cannot see that this
+ * source is chained: what it reads is `refresh="incremental"`, which this source
+ * carries. So it is handed a stable serving name like any other incremental source,
+ * and reclaiming that name would take the source off its table for the reason above.
+ *
+ * That makes this test conservative rather than exact, in one direction. An
+ * incremental source's FIRST build, or one an operator forced, is written at a fresh
+ * name that no manifest binds, and `entry.refresh` cannot tell that from a refresh in
+ * place — so such a table is retained and leaks. What does separate them is the
+ * per-instruction reseed a host sets for any build it gave a fresh name; that is a
+ * host convention this code cannot check, which is why the entry alone does not
+ * decide it.
+ *
+ * The premise the retain rests on — that a source declaring an incremental refresh is
+ * built at the name it is already served from — is likewise the host's to keep. A host
+ * that mints a generation per SOURCE rather than per content address breaks it wherever
+ * two sources compile to one address, and a retained table may then be one that was
+ * never serving.
+ *
  * The cost is a leaked table, and it is worth being exact about who does NOT clean
  * it up. A build at a FRESH name whose run then failed is recorded by no manifest,
  * so this reclaim was the only thing that could have dropped it — and the host's
