@@ -28,6 +28,56 @@ Two escape hatches worth knowing:
 
 When a user is present, do not route around it by calling the REST API with curl. It appears to work, so the user never learns their session is missing the tools, and you lose what they are for: grounded discovery instead of guessed names, `malloy_compile` instead of throwaway queries, and `malloy_reloadPackage` instead of a restart. Say the tools are missing and let the user fix it in five seconds. Running unattended, with nobody who can reconnect you, is different: there the REST API is the supported interface, not a workaround. Discovery, query, compile, and reload all have REST equivalents (`malloy_searchDocs` and `malloy_getContext`'s plain-English ranking do not; read the bundled skills for syntax and ground from model metadata instead); the running server serves the full spec at `http://localhost:4000/api-doc.yaml`, and AGENTS.md carries the endpoint map.
 
+## 0.5 Ask whether they also use the CLI or the VS Code extension
+
+Publisher is often not the only thing reading the model. The Malloy CLI (`malloy-cli`) and the VS
+Code extension compile the same files, and they do **not** get their connections from
+`publisher.config.json` - they read `malloy-config.json`, found by walking up from the file being
+compiled. So a package that Publisher serves correctly can fail to compile in the editor, on the
+same machine, from the same files.
+
+Ask before the user finds out the hard way:
+
+> Are you also using the Malloy CLI or the VS Code extension on this package?
+
+If yes, and the package reads **local data files**, it needs a `malloy-config.json`. Publisher
+resolves a relative `duckdb.table('data/x.csv')` against the package root on its own, so nothing is
+configured for it; the other two hosts resolve it against the DuckDB connection's
+`workingDirectory`, which has to be set.
+
+**Make that path absolute.** A relative `workingDirectory` is resolved against the process's current
+directory, not the config file's directory and not the VS Code workspace root, so the same config
+compiles from one directory and fails from another:
+
+```json
+// malloy-config.json, beside the model
+{
+  "connections": {
+    "duckdb": {
+      "is": "duckdb",
+      "workingDirectory": "/abs/path/to/package",
+      "securityPolicy": "none"
+    }
+  }
+}
+```
+
+Point it at the directory the model's table paths are written relative to - the one holding `data/`.
+Leave the model's own paths relative so Publisher still serves it; only the config carries the
+absolute path. When this is wrong the editor reports `IO Error: No files found that match the
+pattern "data/x.csv"` on the `source:` line, followed by a "not defined" error for every field of
+that source; those are cascade, not real. `skill:malloy-gotchas-modeling` § Relative Data-File Paths
+has the mechanism.
+
+**Remote Credible connections are a different case.** With the Credible extension running and signed
+in, the data is reached through a `publisher` proxy connection - the connection type that forwards
+SQL to a remote Publisher dataplane, and the same type the CLI and the VS Code extensions use - and
+the extension supplies it, so there is nothing to hand-write and no `workingDirectory` involved.
+`workingDirectory` only ever matters for local files that DuckDB opens itself. Worth knowing: those
+access tokens are user-scoped and short-lived, and nothing refreshes them mid-session, so queries
+that start failing auth after a long session mean the token expired, not that the model broke. See
+`docs/connections.md` § Publisher proxy connections.
+
 ## 1. Discover what exists (never guess names)
 
 `malloy_getContext` is progressive. Call it with as much as you know:
