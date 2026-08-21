@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The storage delta path executed against a real DuckDB destination, in DuckDB's
 // OWN dialect — the engine a `storage=` destination's DML is actually issued in.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { describe, expect, it } from "bun:test";
 
