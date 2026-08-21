@@ -167,10 +167,8 @@ export { customers }`,
       writeManifest({ explores: ["index.malloy"] });
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
-         `source: base_source is duckdb.sql("select 1 as id") extend {
-  #(authorize)
-  internal dimension: authorized is true
-}`,
+         `#(authorize) true
+source: base_source is duckdb.sql("select 1 as id") extend {}`,
       );
       fs.writeFileSync(
          path.join(tempDir, "index.malloy"),

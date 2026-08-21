@@ -181,10 +181,8 @@ describe("Package.create via worker pool", () => {
 given:
   ROLE :: string
 
-source: gated is duckdb.sql("select 1 as id") extend {
-  #(authorize)
-  internal dimension: authorized is $ROLE = 'analyst'
-}`,
+#(authorize) $ROLE = 'analyst'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
@@ -214,10 +212,8 @@ source: gated is duckdb.sql("select 1 as id") extend {
 given:
   ROLE :: string
 
-source: gated is duckdb.sql("select 1 as id") extend {
-  #(authorize)
-  internal dimension: authorized is $NOPE = 'x'
-}`,
+#(authorize) $NOPE = 'x'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { ModelCompilationError } = await import("../errors");
@@ -247,10 +243,8 @@ source: gated is duckdb.sql("select 1 as id") extend {
 given:
   ROLE :: string
 
-source: gated is duckdb.sql("select 1 as id") extend {
-  #(authorize)
-  internal dimension: authorized is $ROLE = 'analyst'
-}`,
+#(authorize) $ROLE = 'analyst'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
@@ -276,10 +270,8 @@ source: gated is duckdb.sql("select 1 as id") extend {
 given:
   ROLE :: string
 
-source: gated is duckdb.sql("select 1 as id") extend {
-  #(authorize)
-  internal dimension: authorized is $NOPE = 'x'
-}`,
+#(authorize) $NOPE = 'x'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { ModelCompilationError } = await import("../errors");

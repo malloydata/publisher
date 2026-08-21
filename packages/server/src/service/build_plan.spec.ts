@@ -738,11 +738,9 @@ given:
 
 source: base is duckdb.sql("select 1 as org_id")
 
+#(authorize) org_id = $ORG
 #@ persist name="gated"
-source: gated is base -> { select: org_id } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+source: gated is base -> { select: org_id } extend {}
 `);
 
          const compiled = await compilePackageBuildPlan(pkg);
@@ -915,11 +913,9 @@ given:
 
 source: base_a is duckdb.sql("select 1 as org_id")
 
+#(authorize) org_id = $ORG
 #@ persist name="s"
-source: s is base_a -> { select: org_id } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+source: s is base_a -> { select: org_id } extend {}
 `,
                "model_b.malloy": `##! experimental.persistence
 ##! experimental.givens
@@ -1233,11 +1229,9 @@ given: ORG :: number
 
 source: base is duckdb.sql("select 1 as org_id")
 
+#(authorize) org_id = $ORG
 #@ persist name="gated"
-source: gated is base -> { select: org_id } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = $ORG
-}
+source: gated is base -> { select: org_id } extend {}
 `);
 
          const { plan } = await computePackageBuildPlan(pkg);
