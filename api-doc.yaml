@@ -3908,19 +3908,18 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expression gating this source: the `code` of
-            the source's own `#(authorize)`-tagged gate dimension, as the
-            author wrote it, or, when the source declares none of its own,
-            the nearest source it extends that does. (File-level
-            `##(authorize)` and the retired string-form `#(authorize)
-            "<expr>"` annotation are both refused at model load, so no
-            expression here ever comes from either.) A source may declare at
-            most one gate dimension, so a dimension-form source contributes
-            exactly one element; the field stays typed as an array so existing
-            introspection consumers keep parsing it as one, and see the
-            caution below before reading more than one. Enforced at query time
-            by grafting the gate dimension onto the source by name. An empty or
-            absent list means unrestricted.
+            Effective authorize expression gating this source. When the source
+            declares its OWN gate dimension, this is that dimension's `code` —
+            the expression as the author wrote it. When the gate is carried in
+            from elsewhere (the source it extends, a query-source base, a
+            composite member), the value is the GRAFT text instead: the gate
+            dimension's quoted identifier (e.g. `` `authorized` ``), not the
+            author's expression. Both are the effective gate; only the first is
+            human-readable. (File-level `##(authorize)` and the retired
+            string-form `#(authorize) "<expr>"` annotation are both refused at
+            model load, so no expression here ever comes from either.) Enforced
+            at query time by grafting the gate dimension onto the source by
+            name. An empty or absent list means unrestricted.
 
             Every gate is enforced as a row filter, whether or not its
             expression reads a row field: the gate dimension is grafted onto the
@@ -3933,15 +3932,19 @@ components:
             visible as a status code.
 
             IMPORTANT for anything re-implementing the decision: this flat
-            list is not a predicate you can evaluate. A dimension-form source
-            contributes exactly one expression, but a package still carrying a
-            retired string-form gate beyond the load-time refusal's reach (that
-            refusal sees only one import hop) can flatten to several, and
-            expressions that came from different declaring sources are AND-ed
-            rather than OR-ed. Treat the list as "at least these constraints
-            apply": use it to decide THAT a source is gated, not to recompute
-            WHETHER a given caller passes. Reading it as a pure disjunction
-            grants where Publisher denies.
+            list is not a predicate you can evaluate, and it is not a count of
+            one. A source may declare at most one gate dimension of its OWN,
+            but the list flattens every gate carried in, so several elements
+            are normal — a query source over a composite reports the same
+            authored gate twice, once from its base and once from the resolved
+            member, and a package still carrying a retired string-form gate
+            beyond the load-time refusal's reach (that refusal sees only one
+            import hop) can flatten to several as well. Expressions that came
+            from different declaring sources are AND-ed rather than OR-ed.
+            Treat the list as "at least these constraints apply": use it to
+            decide THAT a source is gated, not to recompute WHETHER a given
+            caller passes. Reading it as a pure disjunction grants where
+            Publisher denies.
 
             Givens are caller-asserted, so this is a boundary only behind a
             trusted tier — see docs/authorize.md.
@@ -5375,10 +5378,14 @@ components:
               public_surface_unknown,
             ]
           description: >-
-            The bounded refusal reason. `not_duckdb_portable` cannot appear
-            here — it is decided against the post-build captured schema, which
-            does not exist at compile time — and is listed only because it
-            shares the enum the runtime eligibility metric uses.
+            The bounded refusal reason. Only `free_parameter`, `given` and
+            `authorize` can appear here — those are the only reasons the two
+            compile-time eligibility asserts this collection is computed from
+            produce. `not_duckdb_portable` is decided against the post-build
+            captured schema, which does not exist at compile time, and
+            `public_surface_unknown` is raised by the build-time narrowing of a
+            stored table to the source's public columns; both are listed only
+            because they share the enum the runtime eligibility metric uses.
         message:
           type: string
           description: >-
