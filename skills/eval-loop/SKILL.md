@@ -54,8 +54,18 @@ ledger shapes. While importing:
 - Later, each diagnosed-and-fixed failure becomes a new frozen dev case, so a
   fixed bug cannot silently return.
 
-Other scrape adapters (chat logs, production traces) are out of scope for
-this version of the loop.
+Scraping from production logs (chat transcripts, retrieval traces) is the
+other supported source, and usually the better one: real traffic asks what
+people actually ask. `reference/log-scrape.md` is the adapter contract, and
+it is where the archetypes, the session-stitching rules, and the constraints
+that decide what a log-derived set can claim are written down. Where your
+logs physically live is a host concern; look for a host-specific
+log-fetching skill.
+
+Prefer variety over volume when you sample, from either source. Cases that
+differ in grain, source, filter shape, and phrasing are what move a
+measurement; a second sample of the same case is nearly free of new
+information.
 
 ### Mode aliases
 
@@ -236,9 +246,10 @@ Acceptance rules (replacing any vague "results improve"):
   blind answerers before acceptance. A delta that appears once and vanishes
   on re-run was answerer or judge variance, not a fix.
 - Documentation / discoverability edits may accept on a deterministic
-  `get_context` probe now returning the entity, one sample, provided no
-  replay regresses. Measure, join, or definition edits need the full rules
-  above with three or more samples on affected cases.
+  `get_context` probe now returning the entity, provided no replay
+  regresses. Measure, join, or definition edits need the full rules above,
+  including the flip-count bar in Measurement, which means enough affected
+  cases to clear it.
 - Independent deterministic justification (a probed-wrong definition
   corrected) may accept without a measured win. Record that as the gate
   `reason`.
@@ -276,11 +287,32 @@ install location and may have overwritten the restored files. Prefer in-place
 
 ## Measurement
 
-A single pass is a look, not a claim. If you will report a before/after
-delta, use three or more samples per compared case and say so. Do not gate an
-edit on one binary flip: the same model and question has scored pass / pass /
-fail. Do not quote a set-level coverage, recall, or precision before the
-intents have been judged for THIS model version.
+**Sample each case once. Spend the budget on more and more varied cases
+instead.** Repeats past the first buy very little: variance decompositions of
+LLM evaluation put the reduction from extra repeats at a small fraction of
+what extra items buy, and a set of five cases run three times cannot support
+a claim that fifteen distinct cases can. If a case is genuinely borderline,
+re-run that case, not the whole set.
+
+Because a single sample cannot carry a mean, do not report before/after as a
+score delta. **Count the cases whose verdict changed** between the baseline
+and the post-edit run, discard the unchanged ones, and read the result off
+this table:
+
+| Cases that got worse | Cases that must get better to accept |
+|---|---|
+| 0 | 5 |
+| 1 | 7 |
+| 2 | 9 |
+| 3 | 10 |
+
+Below that bar the change is **unresolved**, not an improvement, and saying
+so is the honest report. Note the consequence before you scope a run: a set
+of six cases can essentially never clear this bar, so a set that small can
+measure a baseline and diagnose failures but cannot defend an edit.
+
+Do not quote a set-level coverage, recall, or precision before the intents
+have been judged for THIS model version.
 
 Retrieval metrics come from `retrieval_score` events (coverage, recall,
 precision by counting; definitions in `reference/ledger-schema.md`). They are
