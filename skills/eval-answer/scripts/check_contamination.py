@@ -71,6 +71,17 @@ def _is_host_file_tool(name: str) -> bool:
     return any(n == t or n.endswith(f"_{t}") or n.endswith(f"-{t}") for t in HOST_FILE_TOOLS)
 
 
+def _is_mcp_transport(haystack: str) -> bool:
+    """A shell command that is itself an MCP call (curl JSON-RPC to /mcp).
+
+    The modelPath argument on an MCP execute_query is required, not a file
+    read, and that stays true when the MCP call rides over Shell instead of
+    a native tool. Gold and eval-path needles still apply to these entries;
+    only the model-path needle is exempted.
+    """
+    return "tools/call" in haystack and "/mcp" in haystack
+
+
 def _flatten_input(value: Any) -> str:
     if value is None:
         return ""
@@ -130,8 +141,9 @@ def check(
         name = _tool_name(entry) or f"use[{i}]"
         hay = _haystack(entry)
         hits = _matches(hay, needles)
-        # modelPath on malloy_executeQuery is required, not a file read.
-        if model_needles and _is_host_file_tool(name):
+        # modelPath on malloy_executeQuery is required, not a file read --
+        # including when the MCP call rides over Shell as a curl JSON-RPC.
+        if model_needles and _is_host_file_tool(name) and not _is_mcp_transport(hay):
             hits.extend(_matches(hay, model_needles))
         if hits:
             reasons.append(f"{name} touched {hits[0]}")

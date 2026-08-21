@@ -63,6 +63,32 @@ class ContaminationTests(unittest.TestCase):
         out = check(log, model_path="/tmp/pkg/storefront.malloy")
         self.assertFalse(out["contaminated"])
 
+    def test_mcp_over_shell_model_path_is_not_contamination(self):
+        # An answerer that reaches MCP with curl JSON-RPC carries modelPath
+        # inside a Bash command; that is transport, not a file read. Found
+        # live: every clean attempt in a run was flagged before this rule.
+        log = {
+            "toolUses": [
+                {
+                    "name": "Bash",
+                    "input": {
+                        "command": "curl -s -X POST http://localhost:4040/mcp -d '{\"method\":\"tools/call\",\"params\":{\"name\":\"malloy_executeQuery\",\"arguments\":{\"modelPath\":\"storefront.malloy\"}}}'"
+                    },
+                }
+            ],
+        }
+        out = check(log, model_path="/tmp/pkg/storefront.malloy")
+        self.assertFalse(out["contaminated"])
+
+    def test_shell_cat_of_model_file_is_contamination(self):
+        log = {
+            "toolUses": [
+                {"name": "Bash", "input": {"command": "cat /tmp/pkg/storefront.malloy"}},
+            ],
+        }
+        out = check(log, model_path="/tmp/pkg/storefront.malloy")
+        self.assertTrue(out["contaminated"])
+
     def test_custom_gold_paths_extend_defaults(self):
         # The historical bug: passing glob patterns REPLACED the default
         # needles, and since matching is substring-only, the gold check
