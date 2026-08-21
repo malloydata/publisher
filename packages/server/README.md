@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Malloy Publisher Server
 
 The Malloy Publisher Server is an Express.js server that provides an API for managing and accessing Malloy data models, packages, and queries

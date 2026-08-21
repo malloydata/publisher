@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Rehydrates compact JSON rows + Malloy schema into a full Malloy Result
  * that @malloydata/render can consume.

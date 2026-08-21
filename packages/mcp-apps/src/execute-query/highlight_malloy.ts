@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Lightweight, dependency-free Malloy syntax highlighter for the execute-query
 // MCP app. Shiki is deliberately avoided: its Oniguruma wasm would be a large
 // bump on a bundle that is inlined into the widget HTML, for a small query

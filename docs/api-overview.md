@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # API overview
 
 > What this is: the shape of Publisher's programmatic surfaces — the resource hierarchy, the REST and

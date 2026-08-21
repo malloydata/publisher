@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import fs from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";

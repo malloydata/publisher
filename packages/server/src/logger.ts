@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { AxiosError } from "axios";
 import { RequestHandler } from "express";
 import winston from "winston";

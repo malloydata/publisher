@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The `/app-with-deps` entry, not the bare package, and not by preference.
 //
 // The bare entry imports `@modelcontextprotocol/sdk` and `zod/v4` as peer

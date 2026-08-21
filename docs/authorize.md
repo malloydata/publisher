@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Authorize (Source Access Gates)
 
 > What this is: how `#(authorize)` annotations gate *who* may query a source (HTTP 403), and — when

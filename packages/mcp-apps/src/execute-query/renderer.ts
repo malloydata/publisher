@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { Result } from "@malloydata/malloy-interfaces";
 import { MalloyRenderer } from "@malloydata/render";
 import { buildCollapseWrapper } from "../shared/collapse_wrapper";

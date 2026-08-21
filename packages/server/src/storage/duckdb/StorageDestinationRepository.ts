@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { StorageDestination } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
 

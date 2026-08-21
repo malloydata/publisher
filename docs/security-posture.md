@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Security posture
 
 What Publisher does and does not defend against, stated once so individual features can be

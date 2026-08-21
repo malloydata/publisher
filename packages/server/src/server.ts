@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Refuse to run on an unsupported Node. Imported first, and importing nothing
 // but node:fs itself, so the check pulls no application code into the graph.
 // It does not run before that graph: ESM evaluates every import ahead of this
@@ -81,6 +84,11 @@ import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 import { classifySpaFallback } from "./spa_fallback";
+import {
+   RATE_LIMIT_ENV,
+   parseRateLimit,
+   rateLimitMiddleware,
+} from "./rate_limit";
 
 // The first statement this module runs. On an unsupported Node this exits
 // non-zero here, before any argument parsing, any storage init, and any
@@ -245,6 +253,10 @@ const isDevelopment = process.env["NODE_ENV"] === "development";
 export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
+// Opt-in per-client rate limiting (PUBLISHER_RATE_LIMIT). Mounted before any
+// route so the static-file, query, and SPA-fallback handlers are all behind
+// it; probes and /metrics are exempt inside the middleware.
+app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
 // Probe the V8 heap ceiling once at startup and warn if it's below
 // the recommended floor. The row/byte caps from Steps 1–3 still
 // bound per-request memory; this is a "your --max-old-space-size

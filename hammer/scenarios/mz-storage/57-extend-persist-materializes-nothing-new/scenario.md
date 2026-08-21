@@ -3,6 +3,10 @@ id: extend-persist-materializes-nothing-new
 tags: serve-correctness, build-control, needs-attention
 package: xpn
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Persisting an `extend` of a persisted source materializes nothing new
 

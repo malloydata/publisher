@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # data-app — the React SDK example
 
 A Vite + React app built on the [`@malloy-publisher/sdk`](../../packages/sdk). It

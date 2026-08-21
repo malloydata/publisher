@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Generates the publisher.config.json the spawned server boots from: one
 // environment, its connections (a Postgres source warehouse + a DuckLake
 // destination, both on the harness Postgres), and the package locations.

@@ -2,6 +2,10 @@
 name: malloy-html-data-apps
 description: Build or modify an in-package HTML data app for a Malloy Publisher package (a public/ directory the package serves). Use when the user wants a hand-authored HTML dashboard or web page backed by a package's Malloy models, with no build step.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # In-Package HTML Data Apps
 

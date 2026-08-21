@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { initMcpApp } from "../shared/mcp_app_init";
 import {
    NO_PAYLOAD_AGENT,

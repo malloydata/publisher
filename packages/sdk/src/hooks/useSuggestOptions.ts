@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { Given } from "../client";

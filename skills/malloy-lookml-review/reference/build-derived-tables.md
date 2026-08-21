@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML Derived Table Conversion (Step 5)
 
 > Classify LookML derived tables and convert them to Malloy patterns. Reference `_concepts.md` for syntax translation. This runs during Step 5 (BUILD) when the prior-art notes flag derived tables.

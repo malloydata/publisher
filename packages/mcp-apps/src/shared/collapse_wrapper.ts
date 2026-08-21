@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Collapsible chrome around a widget card: the chevron, the "Show / Hide X"
 // header, the border, and the toggle behaviour.
 //

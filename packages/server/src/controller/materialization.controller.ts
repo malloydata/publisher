@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import {
@@ -347,6 +350,15 @@ export class MaterializationController {
             "Ledger entry 'mergeKeys' must be an array of strings",
          );
       }
+      if (
+         entry.storageDestinationName !== undefined &&
+         (typeof entry.storageDestinationName !== "string" ||
+            entry.storageDestinationName === "")
+      ) {
+         throw new BadRequestError(
+            "Ledger entry 'storageDestinationName' must be a non-empty string when present",
+         );
+      }
       return {
          connectionName: entry.connectionName as string,
          physicalTableName: entry.physicalTableName as string,
@@ -360,6 +372,14 @@ export class MaterializationController {
          // comparison reads both as no merge keys.
          ...(Array.isArray(entry.mergeKeys)
             ? { mergeKeys: entry.mergeKeys as string[] }
+            : {}),
+         // Absent means the table is colocated in its own warehouse. Part of the
+         // boundary's table identity, so it has to survive this boundary: an
+         // entry that arrives naming a destination and is indexed without one is
+         // never found by the source that owns it, which rebuilds in full on
+         // every refresh instead of advancing.
+         ...(typeof entry.storageDestinationName === "string"
+            ? { storageDestinationName: entry.storageDestinationName }
             : {}),
       };
    }

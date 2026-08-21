@@ -3,6 +3,10 @@ id: quoted-persist-name
 tags: serve-correctness, naming
 package: qn
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # An author-quoted `#@ persist name=` must round-trip write-to-read
 

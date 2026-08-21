@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { MALLOY_ACCENT } from "../styles";
 import { CONTENT_TINT, type ContentType } from "./ContentTypeIcon";

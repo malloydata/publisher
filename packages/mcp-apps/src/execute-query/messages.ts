@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // User- and agent-facing copy for the cases where a query result cannot be
 // displayed. Kept in its own side-effect-free module so it is unit-testable
 // without pulling in the DOM or @malloydata/render.

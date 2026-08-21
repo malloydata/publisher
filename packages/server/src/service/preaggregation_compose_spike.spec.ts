@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // E2.1 SPIKE — does manifest substitution fire for a persist source that is a
 // compose() member?
 //

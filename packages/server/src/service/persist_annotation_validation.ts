@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { ModelCompilationError } from "../errors";
 
 /** A line whose first non-whitespace content is a `#@ persist` directive. */

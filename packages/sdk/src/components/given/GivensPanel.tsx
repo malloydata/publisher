@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { Given } from "../../client";
 import { GivenValue } from "../../hooks/givenValue";

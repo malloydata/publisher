@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Design: Malloyyo dashboards in Publisher
 
 **Status: a design landed incrementally. Check before you trust it.** The implementation this

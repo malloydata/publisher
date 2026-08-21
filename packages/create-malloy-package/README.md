@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # create-malloy-package
 
 Scaffold a [Malloy Publisher](https://github.com/malloydata/publisher) package and a

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";

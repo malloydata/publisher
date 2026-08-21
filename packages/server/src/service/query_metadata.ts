@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Per-query metadata: the publisher's side of Malloy's
  * `RunSQLOptions.queryMetadata` — a flat bag of string properties each connector

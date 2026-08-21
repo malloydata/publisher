@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The scenario contract + a tiny assertion recorder. A scenario declares the
 // Postgres source tables and packages it needs (so the orchestrator can seed +
 // register them before booting a server), then drives the server itself via

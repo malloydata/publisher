@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
 import { mkdtempSync } from "node:fs";
@@ -170,30 +173,43 @@ describe.skipIf(!hasPublicDataBigQueryCredentials())(
                defaultProjectId: process.env.BIGQUERY_PUBLIC_DATA_PROJECT_ID!,
             },
          };
-         const service = Object.create(
-            MaterializationService.prototype,
-         ) as Record<
-            string,
-            (...a: unknown[]) => Promise<Record<string, unknown>>
-         >;
-         const entry = await service.buildOneSourceIntoStorage(
-            { name: "orders", connectionName: "bq_src" },
-            {
+         // Typed on the ONE parameter it passes rather than as a variadic
+         // `unknown[]`. This spec only runs with live BigQuery credentials, so
+         // `tsc` is the only thing standing between a signature change and a red
+         // CI job nobody can reproduce locally — and a variadic cast tells it
+         // nothing. Keep it shaped like the method.
+         const service = Object.create(MaterializationService.prototype) as {
+            buildOneSourceIntoStorage: (p: {
+               persistSource: unknown;
+               instruction: unknown;
+               manifest: unknown;
+               environment: unknown;
+               publicBuildSQL: string;
+               buildSQL: string;
+               builtEntries: Record<string, unknown>;
+               dependsOnStorageUpstream: boolean;
+               queryMetadata?: Record<string, string>;
+            }) => Promise<Record<string, unknown>>;
+         };
+         const entry = await service.buildOneSourceIntoStorage({
+            persistSource: { name: "orders", connectionName: "bq_src" },
+            instruction: {
                sourceEntityId: `sid-${nonce}`,
                physicalTableName: `orders_${nonce}`,
                destination: "lake",
             },
-            { strict: false, update: () => {} },
-            {
+            manifest: { strict: false, update: () => {} },
+            environment: {
                getApiConnection: () => sourceConnection,
                getStorageDestination: () => ({ name: "lake", type: "duckdb" }),
                getEnvironmentPath: () => environmentPath,
             },
-            buildSQLFor(nonce),
-            {},
-            false,
-            { cred_run: nonce, cred_class: "ops" },
-         );
+            publicBuildSQL: buildSQLFor(nonce),
+            buildSQL: buildSQLFor(nonce),
+            builtEntries: {},
+            dependsOnStorageUpstream: false,
+            queryMetadata: { cred_run: nonce, cred_class: "ops" },
+         });
 
          const billed = 10_485_760;
          expect(entry.queryCostBytes).toBeGreaterThan(0);

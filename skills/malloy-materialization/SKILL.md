@@ -2,6 +2,10 @@
 name: malloy-materialization
 description: Add and debug Malloy Persistence materializations in a package - persist an expensive source so queries read a pre-built table. Read this whenever the user wants to materialize a source, add a persist annotation, speed up a slow source, or asks why a persist source isn't building.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Materialization (Malloy Persistence)
 

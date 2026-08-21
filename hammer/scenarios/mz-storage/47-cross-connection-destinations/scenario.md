@@ -3,6 +3,10 @@ id: cross-connection-destinations
 tags: serve-correctness, build-control
 package: xc
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Each source routes to its own destination when a package targets several
 

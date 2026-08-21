@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Real-compiler tests for the `#@ preaggregate` reader. Every annotation below
 // is COMPILED, because the facts that shaped this module are MOTLY parse
 // behaviors, not choices: that the documented `grain="…"` lands as a sibling

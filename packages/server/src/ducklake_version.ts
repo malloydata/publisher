@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // DuckLake catalog-format version contract.
 //
 // A DuckLake catalog records the on-disk format version it was written at. The
