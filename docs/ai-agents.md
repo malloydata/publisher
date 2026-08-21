@@ -119,13 +119,13 @@ Clients such as Cursor and VS Code connect straight to the HTTP endpoint. The ex
 }
 ```
 
-Add or drop the `"type": "http"` field to match your client. Clients that speak only stdio (for example older Claude Desktop builds) connect through `mcp-remote`, below.
+Add or drop the `"type": "http"` field to match your client. Clients that speak only stdio (for example Claude Desktop) connect through `mcp-remote`, below.
 
 If a client cannot reach `localhost:4040`, another local process may be holding that loopback port (some editor and MCP extensions bind it). Move Publisher's MCP server to another port with `--mcp_port`, or point the client at the machine's network address. Note that a client which *can* reach the port is not proof it reached Publisher: if the wrong process holds it, the client connects to that instead. `malloy_getContext` names the environment and packages it is actually talking to, which is the quickest way to tell.
 
 ### With a stdio-only client through mcp-remote
 
-Some clients (for example older Claude Desktop builds) speak only stdio MCP, not HTTP. Bridge them to the HTTP endpoint with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote), which needs no extra script. In the client's MCP config (for Claude Desktop, Settings > Developer > Edit Config) add:
+Some clients (for example Claude Desktop) speak only stdio MCP, not HTTP. Bridge them to the HTTP endpoint with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote), which needs no extra script. In the client's MCP config (for Claude Desktop, Settings > Developer > Edit Config) add:
 
 ```json
 {
