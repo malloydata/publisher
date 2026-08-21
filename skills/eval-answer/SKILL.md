@@ -50,7 +50,7 @@ attempt and its score event, and do not treat the attempt as a clean pass.
 ## Step 2: Re-run the submitted query yourself
 
 Never score the agent's reported rows. Take its final query, execute it with
-`malloy_executeQuery`, and write a prediction CSV under the run's
+`execute_query`, and write a prediction CSV under the run's
 `artifacts/` directory.
 
 `submitted: false` when there is no final query. That is not a wrong answer.
@@ -85,7 +85,7 @@ Retrieval is scored per intent row (`evals/<set>/intents.jsonl`), not per
 case, and needs no golden entity ids. For each valid intent this run covers:
 
 1. Get the ranked entities for the term: reuse the answerer's `get_context`
-   call via `malloy_getTrace` when one matches the intent, otherwise issue
+   call from its stored trace when one matches the intent, otherwise issue
    the call yourself with the intent's `term` and `entityType`.
 2. Spawn a retrieval judge per `reference/judge.md`: it decides `in_scope`
    for this model version and judges each returned entity match, near match,
@@ -117,7 +117,7 @@ live in `reference/ledger-schema.md`.
    served revision, call counts, contamination verdict, transcript path.
 2. `tool_call`: one per MCP `get_context` / `execute_query`, with `traceId`
    and the `rankedSummary` copied from the trace (per-target ranks included).
-   Do not copy full traces into the event; `malloy_getTrace` holds the body.
+   Do not copy full traces into the event; the trace store holds the body.
 3. `score`: the judge's verdict object plus `judge_version`, `rubric_sha`,
    `golden_revision`, `contaminated`, `gold_status`, and the judge output's
    artifact path.
@@ -126,8 +126,9 @@ live in `reference/ledger-schema.md`.
 A stage never rewrites another stage's fields. End-of-run numbers come from
 counting events, not from your arithmetic in prose.
 
-One sample is fine for a loop look. A measurement you will quote needs three
-or more samples per case (see `skill:eval-loop`).
+Sample each case once. Breadth across cases beats repeats of one case; the
+comparison rule for a before/after is the flip count in `skill:eval-loop`
+Measurement, not a mean over samples.
 
 ## Re-score after a golden repair
 

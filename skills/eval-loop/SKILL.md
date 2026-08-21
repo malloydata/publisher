@@ -111,11 +111,11 @@ why you keep a host-side tool-use log per answerer.
    rollback and no run can include improve.
 
 2. Publisher must be up with retrieval tracing on: `PUBLISHER_MCP_TRACE=retrieval`.
-   Confirm `malloy_getTrace` is registered (absent means tracing is off).
+   Confirm a trace lookup is available (absent means tracing is off).
    Refuse to start a scored run without it: failures without traces cannot be
    attributed.
 
-3. Health-check: `malloy_getStatus` until `serving`, and inspect
+3. Health-check: your host's status check until it reports serving, and inspect
    `loadErrors`. A dead database that still answers HTTP is an environment
    failure, not a model failure. Stop and fix it. Four consecutive
    environment or no-result attempts means stop the run.
@@ -172,7 +172,7 @@ This is **your** job as conductor, after `eval-diagnose` writes
 change the model.
 
 1. **Replay, yourself.** Take the stored `final_query` (or a query you can
-   justify from the model) and run it with `malloy_executeQuery`. Write the
+   justify from the model) and run it with `execute_query`. Write the
    rows to a gold artifact under `evals/<set>/` (never under the served
    package tree). If you cannot produce a trusted key, follow **Hold an
    ambiguous golden** (or mark the golden `invalid` if the question itself is
@@ -221,9 +221,9 @@ You own the gate. The improver does not accept its own edit.
 
 Cheap and deterministic, every edit:
 
-1. `malloy_compile` (scope `file` for an edit, `package` if importers must
+1. A compile check (scope `file` for an edit, `package` if importers must
    survive).
-2. Save, then `malloy_reloadPackage`. Confirm the package is not `stale`.
+2. Save, then reload the package. Confirm it is not serving a stale model.
 3. Replay stored final queries from previously-passing cases. They must still
    execute, and a judge must still call them a match.
 4. A *fresh* blind re-answer of the affected question. The fix must be
@@ -274,7 +274,7 @@ and it is not a remote publish.
 3. Confirm `git status` is clean for the model files.
 
 **Restore**: `git checkout <sha> -- <model files>` (or `git revert` the
-checkpoint commits), then `malloy_reloadPackage`, then append a `checkpoint`
+checkpoint commits), then reload the package, then append a `checkpoint`
 event with `action: restored` and the sha. Readers return to the model that
 existed before the bad direction.
 

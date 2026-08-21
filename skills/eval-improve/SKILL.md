@@ -64,8 +64,8 @@ A false `primary_key` compiles and silently corrupts every aggregate. Of one
 pilot's 11 accepted edits, 4 of 5 wrong ones died to a single
 `COUNT(*)` vs `COUNT(DISTINCT …)` probe that was never run.
 
-Use `malloy_compile` (scope `file` for an edit) before save, then
-`malloy_reloadPackage`. Confirm the package is not `stale`.
+Compile-check the edit before saving (scope `file` for an edit), then reload
+the package. Confirm it is not serving a stale model.
 
 Know which file the server actually serves. Unless the environment is
 watch-mounted, Publisher serves a COPY of the package under

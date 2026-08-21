@@ -130,7 +130,7 @@ One event per MCP `get_context` or `execute_query` the attempt made.
 | Field | Type | Notes |
 |---|---|---|
 | `tool` | string | `get_context` or `execute_query`. |
-| `traceId` | string or null | `get_context` only; look up via `malloy_getTrace`. |
+| `traceId` | string or null | `get_context` only; look up in your host's trace store. |
 | `rankedSummary` | object | Copied at capture from the trace so evidence survives trace eviction: `entityIds`, `ranks`, `resultCount`, and per-target `targets` with within-target ranks. |
 | `error` | string or null | |
 

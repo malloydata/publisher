@@ -44,7 +44,7 @@ diagnostic conditional, not a causal comparison.
 
 ## Step 1: Extract facts from traces, not from memory
 
-For each `get_context` call, load `malloy_getTrace` by the `traceId` on the
+For each `get_context` call, load the stored retrieval trace by the `traceId` on the
 `tool_call` event. Write down, before you interpret anything:
 
 - **Asked:** every retrieval utterance, target types, scopes, and result counts,
@@ -52,7 +52,8 @@ For each `get_context` call, load `malloy_getTrace` by the `traceId` on the
 - **Returned:** for each needed entity, whether it appeared, its best
   within-target rank, and under which utterance. Read this off the
   `rankedSummary` on the attempt's `tool_call` events (its `targets` list
-  carries per-target ranks); the trace body is behind `malloy_getTrace`.
+  carries per-target ranks); the full trace body is behind your host's
+  trace lookup.
   Count from the trace, never from recollection.
 - **Used:** sources and fields the final query referenced, and needed entities
   that were returned and then unused.
