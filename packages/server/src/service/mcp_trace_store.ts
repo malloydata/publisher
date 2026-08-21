@@ -65,8 +65,8 @@ export class McpTraceStore {
             trace_id, tool_name, mode, request_json, response_json,
             request_hash, response_hash, ranked_summary_json, result_count,
             environment_name, package_name, retrieval_config_hash,
-            referenced, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+            created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
          [
             traceId,
             input.toolName,
@@ -137,16 +137,6 @@ export class McpTraceStore {
       return rows.map((row) => this.toRecord(row));
    }
 
-   async markReferenced(traceIds: string[]): Promise<void> {
-      if (traceIds.length === 0) return;
-      for (const traceId of traceIds) {
-         await this.db.run(
-            `UPDATE mcp_traces SET referenced = 1 WHERE trace_id = ?`,
-            [traceId],
-         );
-      }
-   }
-
    async clear(): Promise<void> {
       await this.db.run(`DELETE FROM mcp_traces`);
    }
@@ -162,7 +152,6 @@ export class McpTraceStore {
       await this.db.run(
          `DELETE FROM mcp_traces WHERE trace_id IN (
             SELECT trace_id FROM mcp_traces
-            WHERE referenced = 0
             ORDER BY created_at ASC
             LIMIT ?
           )`,

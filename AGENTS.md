@@ -9,7 +9,7 @@ Publisher is the open-source semantic model server for [Malloy](https://malloyda
 - Build and change Malloy models: validate an edit with `malloy_compile`, save it, then `malloy_reloadPackage` to run it by name. The `malloy-modeling` skill covers the workflow.
 - Build a data app: a hand-authored HTML page in a package's `public/` directory, backed by that package's models and served by Publisher with no build step. The `malloy-html-data-apps` skill covers it.
 - Review Malloy for correctness with the `malloy-review` skill.
-- Evaluate a model with the `eval-loop` skill: you conduct scrape/run, eval, diagnose, improve, and checkpoint. Publisher stores cases, events, and restore points at `/api/v0/evals`. There is no eval orchestrator to start.
+- Evaluate a model with the `eval-loop` skill: you conduct scrape/run, eval, diagnose, improve, and checkpoint. Cases, runs, and events live as files under the model package's `evals/` directory, and checkpoints are git commits of the model repo. There is no eval orchestrator to start and no eval API.
 
 All of it runs against a local server you start in step 1 and reach over MCP in step 2, or over REST when you work unattended (section 7).
 

@@ -713,17 +713,6 @@ export const getMcpTraceRetention = (): number => {
 };
 
 /**
- * Local evaluation workspace. Off by default. When on, Publisher exposes
- * `/api/v0/evals` and persists eval sets, cases, runs, events, and named
- * checkpoints in `publisher.db`. No eval MCP tools are registered: the
- * store is REST-only so a blind answerer does not see goldens in its
- * tool list.
- */
-export const getEvalStoreEnabled = (): boolean => {
-   return parseBoolEnv("PUBLISHER_EVAL_STORE") ?? false;
-};
-
-/**
  * Local dimensional-value index for typed `get_context`. Off by default.
  * `lexical` indexes distinct values for dimensions tagged `#(index)` on
  * sources with no authorize/filter visibility, and ranks them by substring

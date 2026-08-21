@@ -67,15 +67,15 @@ The server also serves the bundled agent [skills](../skills/) as MCP prompts. A 
 
 ### Local evaluation loop
 
-The evaluation loop is agent-conducted. The five steps are scrape/run, eval, diagnose, improve, and checkpoint. `eval-loop` conducts; `eval-answer` / `eval-diagnose` / `eval-improve` are the per-step skills. Publisher stores sets, cases, runs, events, and named checkpoints at `/api/v0/evals` when `PUBLISHER_EVAL_STORE=on`. There are no eval MCP tools: the answerer inherits Shell and Read, and a convenience tool would also be a gold path. Checkpoint is a local restore point after an accepted gate, not a report and not a publish to remote Credible. Bad or ambiguous goldens are repaired or held outside improve. Python is not an orchestrator: there is no `loop.py` to start.
+The evaluation loop is agent-conducted. The five steps are scrape/run, eval, diagnose, improve, and checkpoint. `eval-loop` conducts; `eval-answer` / `eval-diagnose` / `eval-improve` are the per-step skills. Cases, runs, and events are plain files under the model package's `evals/` directory, and checkpoints are git commits of the model repo — there is no eval API and no eval MCP tools: the answerer inherits Shell and Read, and a convenience tool would also be a gold path. Checkpoint is a local restore point after an accepted gate, not a report and not a publish to remote Credible. Bad or ambiguous goldens are repaired or held outside improve. Python is not an orchestrator: there is no `loop.py` to start.
 
-A scored run also needs `PUBLISHER_MCP_TRACE=retrieval` so `malloy_getTrace` exists. Start:
+A scored run needs `PUBLISHER_MCP_TRACE=retrieval` so `malloy_getTrace` exists. Start:
 
 ```bash
-PUBLISHER_EVAL_STORE=on PUBLISHER_MCP_TRACE=retrieval bun run start
+PUBLISHER_MCP_TRACE=retrieval bun run start
 ```
 
-Python in this tree is only the mechanical bits: `skills/eval-answer/scripts/match_rows.py` for row comparison, `skills/eval-answer/scripts/score_retrieval.py` for get_context MRR / context recall, and `skills/eval-answer/scripts/check_contamination.py` for the score-time contamination check. Do not score rows or ranks by eye or by asking a model, do not quote a set-level coverage percentage before `n_samples>=3`, and do not trust an attempt that touched gold, the eval store, or the model file. A holdout gold set is not a prerequisite for the loop.
+Python in this tree is reference aids only (`skills/eval-answer/scripts/`): scoring is done by an LLM judge, per the eval skills. Do not trust an attempt that touched gold, the `evals/` files, or the model file. A holdout gold set is not a prerequisite for the loop.
 
 MCP also defines resources (for example links to a data dictionary). These are a newer part of the standard and many clients do not use them yet; a tool like the MCP Inspector lets you explore them.
 

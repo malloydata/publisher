@@ -72,7 +72,7 @@ describe("McpTraceStore", () => {
       });
    });
 
-   it("does not evict a referenced trace", async () => {
+   it("evicts the oldest trace past the retention cap", async () => {
       process.env.PUBLISHER_MCP_TRACE = "retrieval";
       process.env.PUBLISHER_MCP_TRACE_RETENTION = "1";
       const first = await store.record({
@@ -80,12 +80,12 @@ describe("McpTraceStore", () => {
          request: { n: 1 },
          response: {},
       });
-      await store.markReferenced([first!]);
-      await store.record({
+      const second = await store.record({
          toolName: "malloy_getContext",
          request: { n: 2 },
          response: {},
       });
-      expect(await store.get(first!)).not.toBeNull();
+      expect(await store.get(first!)).toBeNull();
+      expect(await store.get(second!)).not.toBeNull();
    });
 });
