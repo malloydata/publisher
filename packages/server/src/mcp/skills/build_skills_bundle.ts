@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Build a bundled JSON of the agent skills so the MCP server can expose them as
  * MCP prompts (dual-channel): skill-aware hosts read the skill files directly, while

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The delta SELECT composer and its literal rendering. The compiler behaviors
 // these rest on (getSQL() returns the source's unfinalized SQL; a rename diverges
 // the table's columns from the source's schema) are pinned in

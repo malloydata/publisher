@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Configuration
 
 > What this is: the complete runtime configuration reference — the config file, every environment

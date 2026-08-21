@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useCallback, useMemo, useState } from "react";
 import { createEmbeddedQueryResult } from "../components/QueryResult";
 import { encodeResourceUri } from "../utils/formatting";

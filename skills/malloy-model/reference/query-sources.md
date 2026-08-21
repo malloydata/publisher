@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Query-Based Sources (Derived/Pre-Aggregated)
 
 When you need a pre-aggregated or windowed source, use a Malloy query as the source definition. **Do NOT use `conn.sql()` unless there is no Malloy equivalent.**

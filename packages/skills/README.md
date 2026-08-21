@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # @malloy-publisher/skills
 
 The agent skills that ship with [Malloy Publisher](https://github.com/malloydata/publisher), as

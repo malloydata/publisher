@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Typography } from "@mui/material";
 
 export interface ApiError extends Error {

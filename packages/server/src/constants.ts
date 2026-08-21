@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import os from "os";
 export const API_PREFIX = "/api/v0";
 export const README_NAME = "README.md";

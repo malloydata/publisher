@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Reading a Malloy result envelope: the rows, and the field metadata that says
 // how to present them.
 //

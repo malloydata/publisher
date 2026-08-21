@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Pins the undocumented `@malloydata/malloy` IR behaviors the row-level
  * `#(authorize)` enforcement design depends on.

@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Lazy-Loading Tiles Below the Fold
 
 > Defer off-screen tile queries until they scroll into view, so a dashboard with many tiles doesn't fire every query on load. Referenced from `SKILL.md`. Add this once a page has enough tiles that loading them all at once is wasteful or slow.

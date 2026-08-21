@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Box, Paper, Typography } from "@mui/material";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import type { GivenValue } from "../../hooks/givenValue";

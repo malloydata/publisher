@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Dashboards
 
 > **What this is:** how to write a `dashboards/*.malloy` file (a filterable, clickable, grid-laid-out

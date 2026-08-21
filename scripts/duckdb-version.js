@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
 
 /**
  * Single source of truth for the DuckDB version the publisher builds against.

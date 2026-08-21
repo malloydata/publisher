@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Refuse to run on an unsupported Node. Imported first, and importing nothing
 // but node:fs itself, so the check pulls no application code into the graph.
 // It does not run before that graph: ESM evaluates every import ahead of this

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import * as path from "path";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";

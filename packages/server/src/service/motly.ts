@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * MOTLY (Malloy Object Tag Language) parsing primitives.
  *

@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Architecture — how the pieces fit together
 
 > What this is: the mental model for Publisher and the Malloy stack it sits on. Read it when you

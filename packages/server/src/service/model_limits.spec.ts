@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it, spyOn } from "bun:test";
 
 import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";

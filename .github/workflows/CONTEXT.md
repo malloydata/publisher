@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # GitHub Actions Workflows, AI Guide
 
 CI and release machinery. Read the YAML for mechanics; this covers what is not visible there: which

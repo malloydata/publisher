@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Address stability for the covered_through ledger, against the real compiler.
 //
 // The ledger is keyed by a source's CONTENT ADDRESS (computeSourceEntityId), and

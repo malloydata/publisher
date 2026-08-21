@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useNavigate } from "react-router-dom";
 import { MouseEvent } from "react";
 

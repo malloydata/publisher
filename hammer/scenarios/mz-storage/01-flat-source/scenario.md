@@ -3,6 +3,10 @@ id: flat-source
 tags: serve-correctness
 package: d0
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A persisted source is served from its snapshot, not recomputed live
 

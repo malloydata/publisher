@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { createTheme } from '@mui/material/styles';
 import { red } from '@mui/material/colors';
 

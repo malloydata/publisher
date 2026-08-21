@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Markdown scenario interpreter (FitNesse-style). A scenario is a folder with a
 // `scenario.md` that reads like a story — starting data as tables, Malloy in code
 // blocks, a publish step, and query/expect pairs — plus an optional `hooks.ts`

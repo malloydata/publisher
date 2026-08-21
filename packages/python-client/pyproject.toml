@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

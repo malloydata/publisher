@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useCallback, useEffect, useState } from "react";
 import {
    DimensionSpec,

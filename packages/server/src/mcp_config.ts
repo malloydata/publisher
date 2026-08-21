@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Put this server in the host's MCP config, so an agent opened here finds the
  * `malloy_*` tools without being told how.

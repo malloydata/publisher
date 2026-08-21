@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Reader for the `#@ preaggregate` measure annotation — the authoring surface
  * for pre-aggregation (docs/preaggregation.md).

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { components } from "../api";
 import { DashboardNotFoundError } from "../errors";
 import { EnvironmentStore } from "../service/environment_store";

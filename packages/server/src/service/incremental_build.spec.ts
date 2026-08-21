@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The run-level predicate that decides whether a build touches the delta path at
 // all. `incrementalLineage` is read from more than one place — it gates the
 // skip-if-unchanged exemption in deriveSelfInstructions AND the dispatch in

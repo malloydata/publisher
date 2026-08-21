@@ -2,6 +2,10 @@
 name: malloy-publish
 description: Package Malloy models for serving by Malloy Publisher. Use when user asks to "publish", "package", "deploy", or wants to share models with others.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Packaging Malloy models for Publisher
 

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import Dashboard from "./Dashboard";
 
 export default function DynamicDashboard({

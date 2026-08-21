@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Publisher runtime helper for in-package HTML dashboards.
 // Served by the Publisher server at /sdk/publisher.js. Hand-authored vanilla
 // JS — no bundler. Loaded via <script src="/sdk/publisher.js">.

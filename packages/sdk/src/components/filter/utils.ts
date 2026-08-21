@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
    DimensionSpec,

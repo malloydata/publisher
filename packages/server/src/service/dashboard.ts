@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Dashboard discovery: the Malloyyo `# artifact` grammar, read out of a
  * package's `dashboards/*.malloy` files into the manifest the REST surface

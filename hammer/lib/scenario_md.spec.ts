@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Negative tests for the markdown grammar's strict parse.
 //
 // These exist because the bug they guard against is invisible by construction: a

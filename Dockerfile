@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1.4
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
 
 # Java for generate-api-types scripts
 FROM amazoncorretto:21.0.8 AS java-base

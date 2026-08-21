@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
 // Stub the missing optional dependency so db_utils.ts can be imported

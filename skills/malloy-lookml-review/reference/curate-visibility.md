@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML Visibility → Malloy Access Modifiers (Step 8)
 
 > Classify LookML visibility mechanisms and map them to Malloy access modifiers. This runs during Step 8 (CURATE) when the prior-art notes have a Visibility Seeds section.

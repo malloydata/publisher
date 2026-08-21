@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Synthesis: turn validated `#@ preaggregate` declarations into a rollup plan and
  * the Malloy text that implements it (handoff Work item 3).

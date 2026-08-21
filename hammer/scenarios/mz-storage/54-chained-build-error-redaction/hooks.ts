@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Operator-style fault injection: drop the isolated DuckLake catalog DB
 // out-of-band (no role/creds change — safe for other scenarios and the harness's
 // own Postgres client), so the next build fails. The redaction assertion itself is

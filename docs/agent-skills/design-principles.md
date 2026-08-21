@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # MCP tools and skills: design principles
 
 This is the directional framing for how tools, skills, and agents relate in the Malloy
