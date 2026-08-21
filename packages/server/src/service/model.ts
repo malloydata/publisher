@@ -2572,7 +2572,7 @@ export class Model {
             // validation — see its doc comment.
             await validateAuthorizeProbes(modelMaterializer, {
                authorizeMap: sourceResult.authorizeMap,
-               authorizeOwnNotes: sourceResult.authorizeOwnNotes,
+               authorizeOwnNotes: sourceResult.attributedAuthorizeOwnNotes,
                onRowLevelGateRejected: recordRowLevelGateRejected,
                // A gate genuinely inherited (not declared) at this entry
                // point — its own gate note objects are shared, by
@@ -5727,6 +5727,7 @@ export class Model {
       authorizeMap: AuthorizeMap;
       misplacedAuthorize: MisplacedAuthorizeAnnotation[];
       authorizeOwnNotes: Map<string, AnnotationNote[]>;
+      attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
    } {
       // Shared with the package-load worker — see service/source_extraction.ts.
       // The service path logs filter parse failures; the worker stays silent.
@@ -5736,6 +5737,7 @@ export class Model {
          authorizeMap,
          misplacedAuthorize,
          authorizeOwnNotes,
+         attributedAuthorizeOwnNotes,
       } = extractSourcesFromModelDef(modelDef, givens, (sourceName, err) =>
          logger.warn(
             `Failed to parse filter annotations on source "${sourceName}"`,
@@ -5748,6 +5750,7 @@ export class Model {
          authorizeMap,
          misplacedAuthorize,
          authorizeOwnNotes,
+         attributedAuthorizeOwnNotes,
       };
    }
 

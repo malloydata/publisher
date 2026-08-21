@@ -611,6 +611,7 @@ function extractSources(
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
    authorizeOwnNotes: Map<string, AnnotationNote[]>;
+   attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
 } {
    const {
       sources,
@@ -618,6 +619,7 @@ function extractSources(
       authorizeMap,
       misplacedAuthorize,
       authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
    } = extractSourcesFromModelDef(modelDef, givens);
    return {
       sources: sources as unknown as ApiSourceWire[],
@@ -625,6 +627,7 @@ function extractSources(
       authorizeMap,
       misplacedAuthorize,
       authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
    };
 }
 
@@ -719,6 +722,7 @@ async function compileMalloyModel(
       authorizeMap,
       misplacedAuthorize,
       authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
    } = extractSources(modelDef, givens);
    const queryResult = extractQueries(modelDef);
    const queries = queryResult.queries;
@@ -733,13 +737,15 @@ async function compileMalloyModel(
    ]);
    // The string form is refused outright — see `findLegacyStringGates`'s doc.
    // Checked before `validateAuthorizeProbes`, same order as `Model.create`.
+   // Presence-based `authorizeOwnNotes` (not the attributed map) — see
+   // `extractSourcesFromModelDef`'s doc for why this refusal must not narrow.
    const legacyStringGates = findLegacyStringGates(authorizeOwnNotes);
    legacyStringGates.forEach(() =>
       recordRowLevelGateRejected("legacy_string_gate"),
    );
    assertNoLegacyStringGate(legacyStringGates);
    // A source may declare at most one `#(authorize)` block — see
-   // `findMultipleAuthorizeGates`'s doc.
+   // `findMultipleAuthorizeGates`'s doc. Presence-based, same reason as above.
    assertAtMostOneAuthorizeGate(findMultipleAuthorizeGates(authorizeOwnNotes));
    // Validate #(authorize) at compile time (shared with Model.create). Throws
    // on an unknown given / source-field reference or a rejected row-level
@@ -750,7 +756,7 @@ async function compileMalloyModel(
    const authorizeWarningCollection = authorizeWarningCollector();
    await validateAuthorizeProbes(mm, {
       authorizeMap,
-      authorizeOwnNotes,
+      authorizeOwnNotes: attributedAuthorizeOwnNotes,
       onRowLevelGateRejected: recordRowLevelGateRejected,
       onRowLevelGateUnexpressible:
          authorizeWarningCollection.onRowLevelGateUnexpressible,
@@ -981,7 +987,7 @@ async function compileNotebookModel(
       // `validateAuthorizeProbes`'s doc comment for what it validates.
       await validateAuthorizeProbes(mm, {
          authorizeMap: extracted.authorizeMap,
-         authorizeOwnNotes: extracted.authorizeOwnNotes,
+         authorizeOwnNotes: extracted.attributedAuthorizeOwnNotes,
          onRowLevelGateRejected: recordRowLevelGateRejected,
          onRowLevelGateUnexpressible:
             authorizeWarningCollection.onRowLevelGateUnexpressible,

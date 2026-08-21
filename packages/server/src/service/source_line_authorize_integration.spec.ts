@@ -95,13 +95,31 @@ async function createModel(
    text: string,
    fileName = "m.malloy",
 ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+   return createModelWithFiles({ [fileName]: text }, fileName);
+}
+
+/**
+ * Multi-file sibling of `createModel`, for exercising the
+ * `location.url !== note.at.url` cross-file half of
+ * `considerAuthorizeNoteOwner`'s attribution — `createModel` writes exactly
+ * one file, so it can never exercise that comparison. `files` maps each
+ * relative filename to its contents; `entryFileName` is the one loaded as the
+ * package's model. Caller is responsible for `duckdb.close()` /
+ * `fs.rmSync(dir)`, same as `createModel`.
+ */
+async function createModelWithFiles(
+   files: Record<string, string>,
+   entryFileName: string,
+): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
    const duckdb = await newDuckdb();
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "source-line-authz-"));
-   fs.writeFileSync(path.join(dir, fileName), text);
+   for (const [fileName, text] of Object.entries(files)) {
+      fs.writeFileSync(path.join(dir, fileName), text);
+   }
    const model = await Model.create(
       "test-pkg",
       dir,
-      fileName,
+      entryFileName,
       new Map<string, Connection>([["duckdb", duckdb]]),
    );
    return { model, duckdb, dir };
@@ -387,6 +405,15 @@ describe("source-line #(authorize) — spine", () => {
       }
    });
 
+   // The legacy quoted-string form's own load-time refusal
+   // (`findLegacyStringGates`/`assertNoLegacyStringGate`) for a single-file,
+   // top-level source is covered in `authorize_integration.spec.ts`'s "the
+   // legacy quoted-string #(authorize) form" describe block ("still refuses
+   // to load a genuinely top-level gate, naming the expression as authored")
+   // — not duplicated here. This file's own cross-file describe block below
+   // adds the two-hop-import variant of that same refusal, which was
+   // previously untested anywhere.
+
    it("at most ONE gate per source: two #(authorize) notes on one source is a load error naming both", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
@@ -403,6 +430,65 @@ source: dual is duckdb.table('orgtable') extend {}
          expect(err?.message).toMatch(/"dual"/);
          expect(err?.message).toMatch(/org_id in \$GROUPS/);
          expect(err?.message).toMatch(/org_id = 1/);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("at most ONE gate per source: a block-list source with no derivation at all still refuses (sanity, single candidate)", async () => {
+      // Same rule as above, through the block-list `source: a is ..., b is
+      // ...` syntax instead of two separate `source:` statements — no
+      // derivation anywhere in this model, so there is exactly one candidate
+      // for `authorizeNoteDeclaredBy` and this must refuse under both the old
+      // presence check and the new attribution-based one.
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+#(authorize) org_id = 1
+source:
+  solo is duckdb.table('orgtable') extend {}
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/"solo"/);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("at most ONE gate per source: a block-list source list where the shared block note attributes to a SIBLING still refuses for its OWN second gate", async () => {
+      // Regression for the fail-open finding 1 opened: Malloy puts the block
+      // note `#(authorize) org_id in $GROUPS` AND `b`'s own item note
+      // `#(authorize) owner in $GROUPS` both at `b`'s own annotation level,
+      // and the block note is reference-identical to `a`'s. The
+      // attribution-based `authorizeNoteDeclaredBy` correctly attributes the
+      // block note to `a` (earliest, same file) — but that must narrow only
+      // `validateAuthorizeProbes`'s own-vs-inherited signal, NOT this load
+      // refusal: `b` still, by TEXT, carries two of its own `#(authorize)`
+      // notes (the inherited block note plus its own item note), and a
+      // source declaring two gates must be refused at load regardless of
+      // which of the two the attribution heuristic thinks it "owns".
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+source:
+  a is duckdb.table('orgtable') extend { measure: n is count() },
+  #(authorize) owner in $GROUPS
+  b is a extend {}
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/"b"/);
+         expect(err?.message).toMatch(/org_id in \$GROUPS/);
+         expect(err?.message).toMatch(/owner in \$GROUPS/);
       } finally {
          await cleanup(duckdb, dir);
       }
@@ -550,12 +636,20 @@ source: w_except is gated_parent extend { except: org_id }
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const warnings = warnSpy.mock.calls.map((c) =>
-            String(
-               (c as unknown as [string, { sourceName?: string }?])[1]
-                  ?.sourceName ?? "",
-            ),
-         );
+         // Match on the message text, not just a `sourceName` metadata key —
+         // two DIFFERENT `logger.warn` call sites in `model.ts` carry a
+         // `sourceName` (this one, and the separate gate-dimension warning),
+         // so filtering on the key alone would accept a warning from either.
+         const warnings = warnSpy.mock.calls
+            .filter((c) =>
+               String(c[0]).includes("not expressible at this entry point"),
+            )
+            .map((c) =>
+               String(
+                  (c as unknown as [string, { sourceName?: string }?])[1]
+                     ?.sourceName ?? "",
+               ),
+            );
          expect(warnings).toContain("w_except");
 
          await expect(
@@ -603,12 +697,16 @@ source: w_accept is gated_parent extend { accept: id, val, n }
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const warnings = warnSpy.mock.calls.map((c) =>
-            String(
-               (c as unknown as [string, { sourceName?: string }?])[1]
-                  ?.sourceName ?? "",
-            ),
-         );
+         const warnings = warnSpy.mock.calls
+            .filter((c) =>
+               String(c[0]).includes("not expressible at this entry point"),
+            )
+            .map((c) =>
+               String(
+                  (c as unknown as [string, { sourceName?: string }?])[1]
+                     ?.sourceName ?? "",
+               ),
+            );
          expect(warnings).toContain("w_accept");
 
          await expect(
@@ -682,12 +780,16 @@ source: w_except_b is gated_parent extend { except: org_id }
 `);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         const warnedSources = warnSpy.mock.calls.map((c) =>
-            String(
-               (c as unknown as [string, { sourceName?: string }?])[1]
-                  ?.sourceName ?? "",
-            ),
-         );
+         const warnedSources = warnSpy.mock.calls
+            .filter((c) =>
+               String(c[0]).includes("not expressible at this entry point"),
+            )
+            .map((c) =>
+               String(
+                  (c as unknown as [string, { sourceName?: string }?])[1]
+                     ?.sourceName ?? "",
+               ),
+            );
          expect(warnedSources).toContain("w_except_a");
          expect(warnedSources).toContain("w_except_b");
 
@@ -723,6 +825,13 @@ source: w_except_b is gated_parent extend { except: org_id }
       // resolves the note back to `gated_parent` ITSELF (the earliest, and
       // only, candidate in this file), so this must still throw rather than
       // being waved through as "inherited".
+      //
+      // NOTE: this model has no derivation of `gated_parent` at all, so
+      // there is exactly one candidate for `authorizeNoteDeclaredBy` and this
+      // passes identically under the old presence check and the new
+      // attribution check — it does not, by itself, exercise attribution.
+      // See the two variants directly below, which add a derivation
+      // alongside the broken gate.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -732,6 +841,65 @@ given:
 source: gated_parent is duckdb.table('orgtable') extend {
    measure: n is count()
 }
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toContain(
+            'Invalid #(authorize) annotation on source "gated_parent"',
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("the DECLARING source's own broken gate still aborts naming ITSELF, not a plain `extend {}` derivation present in the same model", async () => {
+      // Unlike the test above, `child` (a plain `extend {}`) is ALSO present
+      // — now there are TWO candidates sharing the by-reference-copied note,
+      // and `authorizeNoteDeclaredBy` must resolve it back to `gated_parent`
+      // (earliest position, same file), not to `child`. If attribution ever
+      // picked the wrong candidate here, the error would name "child" instead
+      // of "gated_parent", or the probe's own genuine authoring mistake would
+      // get misclassified as "inherited-and-unexpressible" (a warning) rather
+      // than aborting the load.
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) nonexistent_column in $GROUPS
+source: gated_parent is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+
+source: child is gated_parent extend {}
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toContain(
+            'Invalid #(authorize) annotation on source "gated_parent"',
+         );
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("the DECLARING source's own broken gate still aborts naming ITSELF, not an `except:` derivation present in the same model", async () => {
+      // Same discrimination as above, through an `except:` derivation
+      // instead of a plain `extend {}` — a different shape that also carries
+      // the base's by-reference-copied note.
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) nonexistent_column in $GROUPS
+source: gated_parent is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+
+source: w_except is gated_parent extend { except: org_id }
 `);
       try {
          const err = compilationErrorOf(model);
@@ -901,6 +1069,209 @@ source: gated_by_field_ref is field_ref_gated extend {}
          }
          expect(caught).toBeInstanceOf(AccessDeniedError);
          expect((caught as Error).message).not.toContain("GROUPS");
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-file coverage. Every test above builds a single-file model, so
+// `considerAuthorizeNoteOwner`'s `location.url !== note.at.url` comparison —
+// the one thing the location heuristic does that a bare presence check
+// doesn't — was previously never exercised anywhere in this suite.
+// ---------------------------------------------------------------------------
+
+describe("source-line #(authorize) — cross-file attribution", () => {
+   it("one import hop: a derivation with no annotation of its own attributes correctly to the IMPORTED base, not to itself", async () => {
+      // `gated_base` is declared and gated in `base.malloy`. `m.malloy`
+      // imports it and derives `derived` via `except:`, which breaks
+      // `derived`'s own field space's ability to express the inherited gate.
+      // `derived`'s own struct carries the SAME note object as `gated_base`
+      // by reference (the by-reference-copy mechanism, same as the
+      // single-file case) — but `derived.location` is in `m.malloy` while
+      // `note.at.url` names `base.malloy`, so `considerAuthorizeNoteOwner`
+      // never even considers `derived` a candidate. `gated_base` (same file
+      // as the note) IS a candidate and is the one `authorizeNoteDeclaredBy`
+      // resolves to. This proves the cross-file comparison does real work:
+      // it is what keeps a plain same-file presence check from crediting
+      // `derived` with declaring a gate it merely inherited.
+      const BASE = `##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+source: gated_base is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+`;
+      const M = `##! experimental.givens
+import { gated_base, GROUPS } from "base.malloy"
+
+source: derived is gated_base extend { except: org_id }
+`;
+      const warnSpy = spyOn(logger, "warn");
+      const { model, duckdb, dir } = await createModelWithFiles(
+         { "base.malloy": BASE, "m.malloy": M },
+         "m.malloy",
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const warnings = warnSpy.mock.calls
+            .filter((c) => String(c[0]).includes("not expressible"))
+            .map((c) =>
+               String(
+                  (c as unknown as [string, { sourceName?: string }?])[1]
+                     ?.sourceName ?? "",
+               ),
+            );
+         expect(warnings).toContain("derived");
+         expect(warnings).not.toContain("gated_base");
+
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: derived -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+
+         // `gated_base` itself is unaffected — still serves correctly.
+         const gated = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: gated_base -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [1] },
+         );
+         expect((gated.compactResult as unknown as { n: number }[])[0].n).toBe(
+            2,
+         );
+      } finally {
+         warnSpy.mockRestore();
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("KNOWN LIMITATION — a derivation two import hops from the declaring source gets no attribution at all, but still denies (fail-closed, less precise)", async () => {
+      // `gated_base` is declared in `base.malloy`. `mid.malloy` imports it
+      // and derives `mid_src` (a plain `extend {}`, itself one hop from
+      // `gated_base`). `m.malloy` imports `mid.malloy` and derives `m_src`
+      // (an `except:`, TWO hops from `gated_base`).
+      //
+      // Malloy merges only ONE import level into a model's own
+      // `modelDef.contents`/`sourceRegistry`, so `gated_base` never appears
+      // in `m.malloy`'s own compile as a full `SourceDef` — only as a
+      // `source_registry_reference`, which the attribution sweep skips (see
+      // `extractSourcesFromModelDef`'s doc). No candidate's `location.url`
+      // can ever match the note's `at.url` (`base.malloy`) for `m.malloy`'s
+      // own compile, so `authorizeNoteDeclaredBy` gets NO entry for this note
+      // at all — not `gated_base`, not `mid_src`, not `m_src`.
+      //
+      // This is a real precision gap (documented, not fixed this round): a
+      // GENUINELY BROKEN gate on `gated_base` would, at this import depth,
+      // be classified here as "inherited-and-unexpressible" (warn + deny
+      // just this entry point) rather than aborting the whole load, purely
+      // because attribution couldn't reach far enough to blame the true
+      // declarer. It is mitigated, not a live hole: `base.malloy` (and
+      // `mid.malloy`) still compile ON THEIR OWN elsewhere, and a genuinely
+      // broken gate aborts THERE. What this test pins is the OBSERVED
+      // behavior for `m.malloy`'s own compile: the load still succeeds, and
+      // the entry point that cannot express the gate still DENIES at request
+      // time — fail-closed overall, just not attribution-precise beyond one
+      // import hop.
+      const BASE = `##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+source: gated_base is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+`;
+      const MID = `##! experimental.givens
+import { gated_base, GROUPS } from "base.malloy"
+
+source: mid_src is gated_base extend {}
+`;
+      const M = `##! experimental.givens
+import { mid_src, GROUPS } from "mid.malloy"
+
+source: m_src is mid_src extend { except: org_id }
+`;
+      const { model, duckdb, dir } = await createModelWithFiles(
+         { "base.malloy": BASE, "mid.malloy": MID, "m.malloy": M },
+         "m.malloy",
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: m_src -> { aggregate: n is count() }",
+               {},
+               true,
+               { GROUPS: [1] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("the legacy string form at the same two-hop shape is STILL refused at LOAD time — unlike the non-legacy limitation above, presence-based detection does not depend on import depth", async () => {
+      // Same two-hop shape as the "KNOWN LIMITATION" test above, but
+      // `gated_base` uses the legacy quoted-string form. One might expect the
+      // same import-depth blindness to apply here too — but it does not:
+      // `findLegacyStringGates`/`assertNoLegacyStringGate` read the
+      // PRESENCE-based `authorizeOwnNotes` (see `extractSourcesFromModelDef`'s
+      // doc for why finding 1's fix keeps that map presence-only), which
+      // checks only whether a struct's OWN annotations literally carry an
+      // `#(authorize)`-tagged note — with no reference to WHERE that note was
+      // declared or how many import hops away. Malloy's by-reference copy
+      // carries the note onto `mid_src` and then `m_src` regardless of import
+      // depth, so both are still caught and the load is refused, naming both,
+      // exactly as the single-file case is (see
+      // `authorize_integration.spec.ts`'s "still refuses to load a genuinely
+      // top-level gate" test). MEASURED: this is a byproduct of finding 1's
+      // fix, not something this round set out to fix — the presence-based
+      // refusal was never attribution-limited to begin with, only the
+      // now-separate `validateAuthorizeProbes` diagnostic is.
+      const BASE = `##! experimental.givens
+
+#(authorize) "org_id = 999"
+source: gated_base is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+`;
+      const MID = `##! experimental.givens
+import { gated_base } from "base.malloy"
+
+source: mid_src is gated_base extend {}
+`;
+      const M = `##! experimental.givens
+import { mid_src } from "mid.malloy"
+
+source: m_src is mid_src extend {}
+`;
+      const { model, duckdb, dir } = await createModelWithFiles(
+         { "base.malloy": BASE, "mid.malloy": MID, "m.malloy": M },
+         "m.malloy",
+      );
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toContain("no longer accepted");
+         expect(err?.message).toContain('"mid_src"');
+         expect(err?.message).toContain('"m_src"');
       } finally {
          await cleanup(duckdb, dir);
       }
