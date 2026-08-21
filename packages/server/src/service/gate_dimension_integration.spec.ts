@@ -28,11 +28,7 @@ import * as os from "os";
 import * as path from "path";
 import { AccessDeniedError, ModelCompilationError } from "../errors";
 import { assertNoLegacyStringGate } from "./authorize";
-import {
-   findGateDimensionCandidates,
-   gateFieldName,
-   validateGateDimension,
-} from "./gate_dimension";
+import { validateGateDimension } from "./gate_dimension";
 import { Model } from "./model";
 
 const ROOT = "file:///gate-dimension-tests/";
@@ -271,7 +267,7 @@ describe("validateGateDimension — pure rules", () => {
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/string form.*DIMENSION form/i);
+         expect(err?.message).toMatch(/string form.*unquoted expression/i);
       } finally {
          await cleanup(duckdb, dir);
       }
@@ -292,7 +288,7 @@ describe("validateGateDimension — pure rules", () => {
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/string form.*DIMENSION form/i);
+         expect(err?.message).toMatch(/string form.*unquoted expression/i);
       } finally {
          await cleanup(duckdb, dir);
       }
@@ -549,6 +545,13 @@ describe("C2 — a function call in the gate expression must not abort the whole
 
 describe("C1 — the legacy-string-gate refusal message must itself load-and-gate (round trip)", () => {
    it("the exact remediation text emitted by assertNoLegacyStringGate compiles into a working gate — regression guard for the one-line message bug", async () => {
+      // `assertNoLegacyStringGate` (authorize.ts) now points authors at the
+      // SOURCE-LINE form (task-3-fix-brief.md C1's remediation moved off the
+      // DIMENSION form this file otherwise verifies), so this round-trip
+      // check follows it there. The regression it guards against is
+      // unchanged: a one-line remediation would put the expression on the
+      // SAME line as `#(authorize)`, where Malloy swallows it as annotation
+      // text and the source loads with NO gate at all.
       let message: string | undefined;
       try {
          assertNoLegacyStringGate([
@@ -564,34 +567,24 @@ describe("C1 — the legacy-string-gate refusal message must itself load-and-gat
       // this is what makes the test a regression guard: it feeds back
       // whatever text authorize.ts actually emits, not a hand-typed guess
       // of it. A one-line remediation (the bug this test exists to catch)
-      // would make this regex fail to match at all, since the dimension
-      // declaration would be on the SAME line as `#(authorize)`.
+      // would fold the annotation and expression onto one line together
+      // with the `- source "accounts":` marker instead of its own indented
+      // line, and this regex would fail to match at all.
       const match = message.match(/- source "accounts":\n(( {6}.+\n?)+)/);
       if (!match) {
          throw new Error(
-            `could not extract a two-line remediation block from: ${message}`,
+            `could not extract a remediation block from: ${message}`,
          );
       }
       const remediation = match[1];
-      expect(remediation).toMatch(
-         /^ {6}#\(authorize\)\n {6}internal dimension:/,
-      );
+      expect(remediation).toMatch(/^ {6}#\(authorize\) org_id in \$GROUPS\n?$/);
 
       const { model, duckdb, dir } = await createModel(
-         `given:\n  GROUPS :: string[]\n\nsource: accounts is duckdb.table('accounts') extend {\n${remediation}}\n`,
+         `given:\n  GROUPS :: string[]\n\n${remediation}source: accounts is duckdb.table('accounts') extend {}\n`,
       );
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
-         // A gate candidate exists...
-         const candidates = findGateDimensionCandidates(
-            (model as unknown as { modelDef: ModelDef }).modelDef.contents[
-               "accounts"
-            ] as unknown as SourceDef,
-         );
-         expect(candidates.map((f) => gateFieldName(f))).toEqual([
-            "authorized",
-         ]);
-         // ...and it actually filters.
+         // The gate actually filters.
          expect(await ids(model, "accounts", { GROUPS: ["org1"] })).toEqual([
             1, 2,
          ]);

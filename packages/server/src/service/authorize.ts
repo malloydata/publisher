@@ -951,26 +951,26 @@ export function findLegacyStringGates(
  * Refuse a model load carrying any {@link findLegacyStringGates} finding.
  *
  * The string form (`#(authorize) "<expr>"` on the `source:` line) is no
- * longer accepted — every gate must be the DIMENSION form, a boolean
- * dimension annotated in field position. The message writes the rewrite
- * back to the author rather than pointing at docs: this function already
- * holds the exact expression text, so it emits the exact replacement
- * annotation the author can paste in, one per finding, and the `run:`
- * statement that tests it — the same shape the dimension form's own graft
- * expects (a source-level `where:` naming the gate dimension by name).
+ * longer accepted — every gate must be the SOURCE-LINE form, an unquoted
+ * Malloy expression carried by an `#(authorize)` annotation on its own line
+ * directly above the `source:` line it gates. The message writes the
+ * rewrite back to the author rather than pointing at docs: this function
+ * already holds the exact expression text, so it emits the exact
+ * replacement annotation the author can paste in, one per finding.
  *
  * Named `legacy_string_gate` on {@link RowLevelGateRejectionCause} / the
  * `recordRowLevelGateRejected` metric channel — callers record that cause
  * once per finding before calling this, so an operator can count affected
  * packages across the deployed (uninventoried) corpus during rollout.
  *
- * The rewrite is emitted with `#(authorize)` and the dimension on SEPARATE
- * lines. A one-line `#(authorize) internal dimension: authorized is ...`
- * looks equivalent but is not: Malloy consumes everything after
- * `#(authorize)` on that same line as annotation text, so the dimension
- * never compiles and the source silently loads with NO gate at all — an
- * operator pasting a one-line remediation would delete their own access
- * control with no error or warning. See task-3-fix-brief.md C1.
+ * The emitted rewrite puts `#(authorize)` and the expression it gates on
+ * their own line above `source:` — the only legal shape for this form, so
+ * there is no one-line trap to fall into here. That trap (Malloy consuming
+ * everything after `#(authorize)` on the SAME line as annotation text, so
+ * a one-line `#(authorize) internal dimension: authorized is ...` never
+ * compiles and the source silently loads with NO gate at all) still exists
+ * for anyone hand-writing the deprecated DIMENSION form. See
+ * task-3-fix-brief.md C1.
  */
 export function assertNoLegacyStringGate(
    found: readonly LegacyStringGateFinding[],
@@ -979,8 +979,7 @@ export function assertNoLegacyStringGate(
    const rewrites = found
       .flatMap(({ sourceName, exprs }) =>
          exprs.map(
-            (expr) =>
-               `  - source "${sourceName}":\n      #(authorize)\n      internal dimension: authorized is ${expr}`,
+            (expr) => `  - source "${sourceName}":\n      #(authorize) ${expr}`,
          ),
       )
       .join("\n");
@@ -988,11 +987,9 @@ export function assertNoLegacyStringGate(
       message:
          `The string form of \`#(authorize)\` (a Malloy-quoted expression on ` +
          `the \`source:\` line) is no longer accepted. Replace it with the ` +
-         `DIMENSION form — a boolean dimension annotated in field position, ` +
-         `declared inside the source's own body:\n${rewrites}\n` +
-         `Test that the rewrite gates the same rows with ` +
-         "`run: costs -> { where: authorized; ... }`" +
-         ` (substituting your own source and field names) and check the row ` +
-         `count matches what the string form served.`,
+         `unquoted expression, carried by an \`#(authorize)\` annotation on ` +
+         `its own line directly above the \`source:\` line:\n${rewrites}\n` +
+         `Test that the rewrite gates the same rows and check the row count ` +
+         `matches what the string form served.`,
    });
 }
