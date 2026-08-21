@@ -67,6 +67,14 @@ pilot's 11 accepted edits, 4 of 5 wrong ones died to a single
 Use `malloy_compile` (scope `file` for an edit) before save, then
 `malloy_reloadPackage`. Confirm the package is not `stale`.
 
+Know which file the server actually serves. Unless the environment is
+watch-mounted, Publisher serves a COPY of the package under
+`publisher_data/<env>/<pkg>/`, so editing the model repo and reloading
+recompiles the unchanged copy: the reload succeeds, nothing changes, and a
+verification probe quietly tests the old model. Sync the edit into the
+served copy (or watch-mount the package) before reload, and keep the model
+repo the source of truth that gets committed.
+
 ## Step 3: One smallest edit
 
 Prefer edits that add no entities. New sources compete for retrieval and
