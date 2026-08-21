@@ -27,14 +27,12 @@ const sourceDir = path.join(
 
 /**
  * Codepoint order, matching the builder's own sort. Both sides are sorted before
- * comparing so this test stays about membership and content, and the separate
- * order test below is what holds the builder to a locale-independent order.
+ * comparing so the sync test stays about membership and content rather than order;
+ * the order test below covers order separately.
  */
-const byName = (a: SkillEntry, b: SkillEntry) =>
-   a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** The same codepoint comparator, on bare names. */
-const byName2 = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const byName = (a: SkillEntry, b: SkillEntry) => byCodepoint(a.name, b.name);
 
 describe("skills_bundle.json (generated dual-channel asset)", () => {
    it("is in sync with skills/", () => {
@@ -77,19 +75,23 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
    });
 
    /**
-    * Entry order has to be reproducible on every contributor's machine, because
-    * it decides line positions in a committed file. The builder sorts by
-    * codepoint for that reason: localeCompare follows the runtime's locale, and
-    * under cs-CZ the `ch` digraph sorts after `h`, which moves malloy-charts and
-    * makes a regeneration emit a reordering diff unrelated to the skill that
-    * actually changed.
+    * Entry order decides line positions in a committed file, so it has to be the
+    * same on every contributor's machine. The builder sorts by codepoint for that
+    * reason: localeCompare follows the runtime's locale, and under cs-CZ the `ch`
+    * digraph sorts after `h`, which moves malloy-charts and makes a regeneration
+    * emit a reordering diff unrelated to the skill that actually changed.
     *
-    * The sync test above cannot catch this, since it sorts both sides before
-    * comparing.
+    * Both halves are about the committed file, not the comparator: no test can
+    * catch a localeCompare revert on a machine whose locale agrees with codepoint
+    * order, which includes en-US and therefore CI. The second assertion is the
+    * one that narrows it, by failing as soon as the builder's order and the
+    * committed order disagree. The sync test cannot see either problem, because
+    * it sorts both sides before comparing.
     */
-   it("is committed in codepoint order, so any locale regenerates it the same", () => {
+   it("is committed in codepoint order, and in the order the builder emits", () => {
       const names = skills.map((s) => s.name);
-      expect(names).toEqual([...names].sort(byName2));
+      expect(names).toEqual([...names].sort(byCodepoint));
+      expect(names).toEqual(buildSkills(sourceDir).map((s) => s.name));
    });
 
    it("every skill has a nonempty name, description, and body", () => {
