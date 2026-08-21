@@ -7,6 +7,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, Option } from "commander";
+import {
+   buildConnection,
+   connectionFlags,
+   WAREHOUSE_TYPES,
+   type BuiltConnection,
+   type ConnectionFlags,
+} from "./connection";
 import { ScaffoldError } from "./errors";
 import * as log from "./log";
 import { preview, printable } from "./names";
@@ -22,7 +29,7 @@ import {
    type ScaffoldResult,
 } from "./scaffold";
 
-interface CliOptions {
+interface CliOptions extends Partial<ConnectionFlags> {
    data?: string;
    client: string;
    force?: boolean;
@@ -71,6 +78,65 @@ function resolveDataFile(cwd: string, data?: string): string | undefined {
    return path.resolve(cwd, data);
 }
 
+/**
+ * Build the connection from the flags, or refuse the combination.
+ *
+ * The two refusals are separate on purpose. Passing --data with --connection is
+ * asking for two different sources of rows in one package, and picking either
+ * one silently is how a run reports success over a package reading something the
+ * user did not name. Passing a dialect flag with no --connection at all is the
+ * likelier typo of the two, and reporting it as "unknown option" would be wrong:
+ * the option is known, it just has nothing to attach to.
+ */
+function resolveConnection(options: CliOptions): BuiltConnection | undefined {
+   if (options.connection === undefined) {
+      // Derived from the dialect table rather than listed again here: a flag
+      // that appears in one list and not the other is owned by nobody and gets
+      // dropped in silence, which is exactly how --pg-port used to slip past
+      // the wrong-dialect check.
+      const orphan = connectionFlags().find(
+         (candidate) => options[candidate.from] !== undefined,
+      );
+      if (orphan) {
+         throw new ScaffoldError(
+            `${orphan.flag} only means something with --connection, which was ` +
+               `not passed. Nothing was written.\n\n` +
+               `Add --connection with one of: ` +
+               `${WAREHOUSE_TYPES.join(", ")}.`,
+         );
+      }
+      return undefined;
+   }
+
+   if (options.data !== undefined) {
+      throw new ScaffoldError(
+         `--data and --connection cannot be used together: a package reads its ` +
+            `rows from a local file or from a warehouse, not both. Nothing was ` +
+            `written.\n\n` +
+            `Drop --data to model the warehouse, or drop --connection to model ` +
+            `the file.`,
+      );
+   }
+
+   return buildConnection({
+      connection: options.connection,
+      connectionName: options.connectionName,
+      table: options.table,
+      pgHost: options.pgHost,
+      pgPort: options.pgPort,
+      pgDatabase: options.pgDatabase,
+      pgUser: options.pgUser,
+      bqProject: options.bqProject,
+      bqLocation: options.bqLocation,
+      sfAccount: options.sfAccount,
+      sfUser: options.sfUser,
+      sfWarehouse: options.sfWarehouse,
+      sfDatabase: options.sfDatabase,
+      sfSchema: options.sfSchema,
+      sfRole: options.sfRole,
+   });
+}
+
 async function run(
    name: string | undefined,
    options: CliOptions,
@@ -91,6 +157,7 @@ async function run(
          name,
          cwd,
          dataFile: resolveDataFile(cwd, options.data),
+         connection: resolveConnection(options),
          host: asClient(options.client),
          force: Boolean(options.force),
       });
@@ -141,6 +208,7 @@ function artifactCandidates(name: string | undefined): string[] {
       ".mcp.json",
       path.join(".cursor", "mcp.json"),
       ".gitignore",
+      ".env.example",
       "AGENTS.md",
       "CLAUDE.md",
       path.join(".claude", "skills"),
@@ -835,6 +903,91 @@ export function formatSuccess(result: ScaffoldResult): string {
       );
    }
 
+   // The connection, and what it still needs. This goes BEFORE "Next steps"
+   // because the first of those steps is `npm start`, and on a dialect with a
+   // ${VAR} in its config an unset variable does not degrade the server, it
+   // stops it booting. A user who reads top to bottom has to meet the export
+   // before the command that requires it.
+   if (result.connectionName !== undefined) {
+      lines.push("");
+      lines.push(log.bold("Your warehouse connection:"));
+      lines.push(
+         `  ${log.cyan(result.connectionName)} ${log.dim(
+            `(${result.connectionType})`,
+         )}, defined in publisher.config.json`,
+      );
+      if (result.connectionTable !== undefined) {
+         lines.push(
+            `  The starter model reads ${log.cyan(result.connectionTable)}.`,
+         );
+      } else {
+         // Said plainly, because the package genuinely has no source in it and
+         // an agent that calls get_context will find nothing. That reads as a
+         // broken scaffold unless it was named as a choice.
+         lines.push(
+            `  No table was named, so ${printable(
+               result.modelFile ?? "the model",
+            )} has no source in it yet.`,
+         );
+         lines.push(
+            `  Ask your agent to find one: it has ${log.cyan(
+               "malloy_searchDatabaseSchema",
+            )} for this.`,
+         );
+      }
+      if (result.connectionCredentialNote !== undefined) {
+         lines.push(`  ${result.connectionCredentialNote}`);
+      }
+      if (result.connectionEnvVars.length > 0) {
+         lines.push("");
+         lines.push(
+            `  ${log.bold("Export these before starting the server:")}`,
+         );
+         for (const variable of result.connectionEnvVars) {
+            lines.push(`    ${log.cyan(`export ${variable}=...`)}`);
+         }
+         lines.push(
+            `  ${log.dim(".env.example lists them too. The values are never written to disk by this tool.")}`,
+         );
+         if (result.connectionEnvVarsUnset.length > 0) {
+            // Reported, not treated as an error: scaffolding first and
+            // exporting afterwards is the ordinary order. It is worth a warning
+            // because the server does not share that view.
+            const many = result.connectionEnvVarsUnset.length > 1;
+            lines.push("");
+            lines.push(
+               log.yellow(
+                  `  ${result.connectionEnvVarsUnset.join(", ")} ${
+                     many ? "are" : "is"
+                  } not set in this shell.`,
+               ),
+            );
+            // Measured on 0.0.244, because the obvious guess is wrong and the
+            // truth is worse. Booting with the variable unset does NOT fail:
+            // the server starts, prints PUBLISHER_READY, and reports
+            // environments=0 packages=0 load_errors=0. Nothing anywhere names
+            // the variable — the underlying error reaches the log as an empty
+            // object. So the failure mode to warn about is a server that looks
+            // fine and serves nothing, not one that refuses to start.
+            lines.push(
+               log.yellow(
+                  `  Start the server without ${many ? "them" : "it"} and it does not fail: it comes up`,
+               ),
+            );
+            lines.push(
+               log.yellow(
+                  `  reporting ready, with no environments, no packages, and no load errors.`,
+               ),
+            );
+            lines.push(
+               log.yellow(
+                  `  Nothing names the variable, so export ${many ? "them" : "it"} before you start.`,
+               ),
+            );
+         }
+      }
+   }
+
    const url = `http://localhost:${result.publisherPort}`;
    // Counted by scaffold() out of the config it wrote, not inferred from what
    // this run did: whether the server has anything to serve and whether this run
@@ -1248,6 +1401,36 @@ program
       "--data <file>",
       "seed the package from a CSV, Parquet, JSON, NDJSON, or XLSX file",
    )
+   .addOption(
+      new Option(
+         "--connection <type>",
+         "point the package at a warehouse instead of a local file",
+      ).choices([...WAREHOUSE_TYPES]),
+   )
+   .option(
+      "--connection-name <name>",
+      "name for the connection; defaults to the warehouse type",
+   )
+   .option(
+      "--table <path>",
+      "table the starter model reads, e.g. public.orders; omit to scaffold a stub",
+   )
+   // Identity fields only. There is deliberately no flag for a password, a
+   // service-account key or a private key: a credential passed on a command line
+   // is in the shell history whatever the tool then does with it, and the config
+   // this writes refers to credentials by environment-variable name instead.
+   .option("--pg-host <host>", "postgres: server hostname")
+   .option("--pg-port <port>", "postgres: server port (default 5432)")
+   .option("--pg-database <name>", "postgres: database name")
+   .option("--pg-user <name>", "postgres: username")
+   .option("--bq-project <id>", "bigquery: default project id")
+   .option("--bq-location <region>", "bigquery: dataset location")
+   .option("--sf-account <id>", "snowflake: account identifier")
+   .option("--sf-user <name>", "snowflake: username")
+   .option("--sf-warehouse <name>", "snowflake: warehouse name")
+   .option("--sf-database <name>", "snowflake: database name")
+   .option("--sf-schema <name>", "snowflake: schema name")
+   .option("--sf-role <name>", "snowflake: role name")
    // Not --host: Publisher's own server takes `--host <address>` for the
    // interface it binds to, and the start command this tool writes now passes
    // one. Two meanings of --host in a single generated workspace is a trap, and

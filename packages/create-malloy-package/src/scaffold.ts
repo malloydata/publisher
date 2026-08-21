@@ -4,8 +4,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+   addConnection,
    addPackage,
    asJsonObject,
+   assertCanAddConnection,
    assertCanAddPackage,
    defaultConfig,
    describeJsonValue,
@@ -19,6 +21,7 @@ import {
    type PackageEntry,
    type PublisherConfig,
 } from "./config";
+import { renderEnvExample, type BuiltConnection } from "./connection";
 import { ScaffoldError } from "./errors";
 import { REQUIRED_NODE_RANGE } from "./node_version";
 import {
@@ -119,6 +122,12 @@ export interface ScaffoldOptions {
    cwd: string;
    /** A CSV, Parquet, JSON, NDJSON, or XLSX file to seed the package from instead of the sample. */
    dataFile?: string;
+   /**
+    * A warehouse to point the package at instead of a local file. Mutually
+    * exclusive with dataFile: a package reads one or the other, and a run that
+    * accepted both would have to pick one and silently drop the other.
+    */
+   connection?: BuiltConnection;
    host: Host;
    /** Overwrite existing workspace files instead of leaving them in place. */
    force: boolean;
@@ -138,6 +147,27 @@ export interface ScaffoldResult {
     * NOT include. Set only when there is at least one.
     */
    siblingDataFiles?: string[];
+   /** The connection this run added to the environment, when it added one. */
+   connectionName?: string;
+   /** Its type, for the closing output and the agent briefing. */
+   connectionType?: string;
+   /** The table the starter model reads, when --table named one. */
+   connectionTable?: string;
+   /**
+    * Environment variables the written config refers to and does not contain.
+    * Empty for a dialect that authenticates ambiently (BigQuery ADC).
+    */
+   connectionEnvVars: string[];
+   /**
+    * Which of those are NOT set in the environment this run saw. Reported rather
+    * than acted on: the recommended flow is to scaffold first and export the
+    * credentials afterwards, so an unset variable here is the ordinary case and
+    * not an error. It is worth saying out loud because the server does not treat
+    * it as ordinary — it refuses to start.
+    */
+   connectionEnvVarsUnset: string[];
+   /** How this dialect authenticates, for the closing output. */
+   connectionCredentialNote?: string;
    /** The environment the package is registered in, which may not be "default". */
    envName: string;
    /**
@@ -430,6 +460,13 @@ export function scaffold(options: ScaffoldOptions): ScaffoldResult {
             `create-malloy-package <name> --data ${options.dataFile}`,
       );
    }
+   if (options.name === undefined && options.connection !== undefined) {
+      throw new ScaffoldError(
+         `--connection seeds a new package, so it needs a package name: ` +
+            `create-malloy-package <name> --connection ` +
+            `${options.connection.entry.type}`,
+      );
+   }
    if (options.name !== undefined) {
       validatePackageName(options.name);
       assertNotReservedName(options.name);
@@ -445,6 +482,8 @@ export function scaffold(options: ScaffoldOptions): ScaffoldResult {
    const result: ScaffoldResult = {
       cwd: options.cwd,
       packageCreated: false,
+      connectionEnvVars: [],
+      connectionEnvVarsUnset: [],
       envName: ENV_NAME,
       envPackageCount: 0,
       publisherPort: PUBLISHER_PORT,
@@ -489,6 +528,12 @@ export function scaffold(options: ScaffoldOptions): ScaffoldResult {
    }
    result.envName = resolveEnvironmentName(config, ENV_NAME);
 
+   // Both registrations are checked before anything is created on disk, so a
+   // frozen config or a name collision leaves no orphaned package directory.
+   if (configExists && options.connection) {
+      assertCanAddConnection(config, ENV_NAME, options.connection.entry);
+   }
+
    let packageEntry: PackageEntry | undefined;
    if (options.name !== undefined) {
       packageEntry = { name: options.name, location: `./${options.name}` };
@@ -496,6 +541,20 @@ export function scaffold(options: ScaffoldOptions): ScaffoldResult {
          assertCanAddPackage(config, ENV_NAME, packageEntry);
       }
       createPackage(options, result);
+   }
+
+   if (options.connection) {
+      const { entry, envVars, table, credentialNote } = options.connection;
+      result.connectionName = entry.name;
+      result.connectionType = entry.type;
+      result.connectionTable = table;
+      result.connectionCredentialNote = credentialNote;
+      result.connectionEnvVars = envVars.map((variable) => variable.name);
+      // Read now rather than at boot, and reported rather than enforced: the
+      // recommended order is scaffold, then export, then start.
+      result.connectionEnvVarsUnset = result.connectionEnvVars.filter(
+         (name) => process.env[name] === undefined || process.env[name] === "",
+      );
    }
 
    wireWorkspace(
@@ -555,8 +614,16 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
    }
 
    const dataDir = path.join(packageDir, "data");
-   assertWithinWorkspace(dataDir, options.cwd, `${name}/data`);
-   fs.mkdirSync(dataDir, { recursive: true });
+   if (options.connection === undefined) {
+      assertWithinWorkspace(dataDir, options.cwd, `${name}/data`);
+      fs.mkdirSync(dataDir, { recursive: true });
+   } else {
+      // A warehouse package gets no data/ directory. Creating an empty one
+      // would suggest a local file belongs there, and the whole point of this
+      // path is that the rows live somewhere else.
+      assertWithinWorkspace(packageDir, options.cwd, name);
+      fs.mkdirSync(packageDir, { recursive: true });
+   }
 
    writeFile(
       path.join(packageDir, "publisher.json"),
@@ -578,25 +645,54 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
    // and its cwd is documented as a directory, not an absolute path, so a
    // relative one would write exactly the relative workingDirectory this is
    // absolute to avoid.
-   writeFile(
-      path.join(packageDir, "malloy-config.json"),
-      JSON.stringify(
-         {
-            connections: {
-               duckdb: {
-                  is: "duckdb",
-                  workingDirectory: path.resolve(packageDir),
+   //
+   // Not written for a warehouse package: this file exists solely to anchor a
+   // RELATIVE local path, and a warehouse model has none. The editor resolves
+   // such a model through its own connection settings, which this tool cannot
+   // write because doing so would mean putting the warehouse credentials in a
+   // second file.
+   if (options.connection === undefined) {
+      writeFile(
+         path.join(packageDir, "malloy-config.json"),
+         JSON.stringify(
+            {
+               connections: {
+                  duckdb: {
+                     is: "duckdb",
+                     workingDirectory: path.resolve(packageDir),
+                  },
                },
             },
-         },
-         null,
-         2,
-      ) + "\n",
-      options.cwd,
-   );
-
-   let dataPath: string;
-   if (options.dataFile !== undefined) {
+            null,
+            2,
+         ) + "\n",
+         options.cwd,
+      );
+   }
+   let dataPath: string | undefined;
+   if (options.connection !== undefined) {
+      const connectionName = options.connection.entry.name;
+      const tablePath = options.connection.table;
+      // With a table, a starter model over it. Without, a stub: the connection
+      // was scaffolded without one, and inventing a table name produces a model
+      // that compiles against nothing and fails at the first query. The stub
+      // points at malloy_searchDatabaseSchema, which answers "what is in here"
+      // from the agent side, where the credentials actually are.
+      writeFile(
+         path.join(packageDir, modelFile),
+         tablePath === undefined
+            ? renderTemplate("model.warehouse.stub.malloy", {
+                 sourceName,
+                 connectionName,
+              })
+            : renderTemplate("model.warehouse.malloy", {
+                 sourceName,
+                 connectionName,
+                 tablePath,
+              }),
+         options.cwd,
+      );
+   } else if (options.dataFile !== undefined) {
       const sourceBase = path.basename(options.dataFile);
       const destBase = sanitizeFileName(sourceBase);
       copyFile(
@@ -700,28 +796,61 @@ function wireWorkspace(
 ): void {
    const { cwd } = options;
 
-   // publisher.config.json: register the package in the config loaded up front
-   // (a fresh one, or the validated existing one), then write. Re-registering the
-   // same package (a --force re-run) leaves an existing config untouched.
+   // publisher.config.json: register the package, and any connection, in the
+   // config loaded up front (a fresh one, or the validated existing one), then
+   // write once. Re-registering identical entries (a --force re-run) leaves an
+   // existing config untouched.
+   //
+   // Both registrations run before the write is decided, rather than each
+   // writing for itself: a run that adds a connection to a config whose package
+   // was already registered still has to persist the connection.
+   let configChanged = !configExists;
    if (packageEntry) {
       const registration = addPackage(config, ENV_NAME, packageEntry);
       result.envName = registration.envName;
-      if (!configExists || registration.added) {
-         writeConfig(configPath, config);
-         result.configExtended = configExists;
-         result.written.push(
-            configExists
-               ? "publisher.config.json (extended)"
-               : "publisher.config.json",
-         );
-      } else {
-         result.skipped.push("publisher.config.json (already registered)");
-      }
-   } else if (!configExists) {
+      configChanged = registration.added || configChanged;
+   }
+   if (options.connection) {
+      const added = addConnection(config, ENV_NAME, options.connection.entry);
+      configChanged = added || configChanged;
+   }
+   if (configChanged) {
       writeConfig(configPath, config);
-      result.written.push("publisher.config.json");
+      result.configExtended = configExists;
+      result.written.push(
+         configExists
+            ? "publisher.config.json (extended)"
+            : "publisher.config.json",
+      );
    } else {
-      result.skipped.push("publisher.config.json");
+      result.skipped.push(
+         packageEntry
+            ? "publisher.config.json (already registered)"
+            : "publisher.config.json",
+      );
+   }
+
+   // .env.example: the names of the variables the config refers to, with no
+   // values. Only for a dialect that needs one — BigQuery authenticates through
+   // Application Default Credentials, so a file listing nothing would be a file
+   // implying a step that does not exist.
+   //
+   // An existing one is left alone without --force. A .env.example is a file
+   // real projects already have, it is the kind of file people hand-edit, and
+   // overwriting it would delete the names of every OTHER credential the project
+   // uses in order to add one.
+   if (options.connection && options.connection.envVars.length > 0) {
+      const envExample = path.join(cwd, ".env.example");
+      const envExampleExists = fs.existsSync(envExample);
+      if (envExampleExists && !options.force) {
+         result.skipped.push(".env.example");
+      } else {
+         writeFile(envExample, renderEnvExample(options.connection), cwd);
+         result.written.push(".env.example");
+         if (envExampleExists) {
+            result.replaced.push(".env.example");
+         }
+      }
    }
 
    // Whether the package this run created will actually be mounted by a plain
@@ -2004,24 +2133,56 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
    // would come out ragged for a name that is not the length we guessed.
    if (result.packageCreated) {
       const base = restBase(result.packageName as string);
-      lines.push(
-         `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over local data. Read it for the real source, field, and view names and use them verbatim; never guess them. The package's REST base is:`,
-         "",
-         "```",
-         base,
-         "```",
-         "",
-         "Run one of its views from a script:",
-         "",
-         "```bash",
-         `curl -s -X POST ${base}/models/${result.modelFile}/query \\`,
-         "  -H 'content-type: application/json' \\",
-         `  -d '{"query":"run: ${result.sourceName} -> overview"}'`,
-         "```",
-         "",
-         `The VS Code / Cursor Malloy extension resolves the model's relative \`duckdb.table('data/…')\` paths against the EDITOR WORKSPACE root, while Publisher resolves them against the package directory. \`${result.packageName}/malloy-config.json\` (generated, machine-specific absolute path) bridges that for an editor opened at this workspace root; without it, open the editor at \`${result.packageName}/\` itself, or a model Publisher serves fine shows unresolved-table errors in the editor.`,
-         "",
-      );
+      // Three different true sentences, because this package reads its rows
+      // from a local file, from a warehouse table, or from nothing yet. The
+      // local-data wording used to be unconditional, which made it a false
+      // claim on both warehouse paths, and the editor paragraph below it named
+      // a malloy-config.json that a warehouse package is not given.
+      const hasSource =
+         result.connectionName === undefined ||
+         result.connectionTable !== undefined;
+      if (result.connectionName === undefined) {
+         lines.push(
+            `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over local data. Read it for the real source, field, and view names and use them verbatim; never guess them. The package's REST base is:`,
+         );
+      } else if (result.connectionTable !== undefined) {
+         lines.push(
+            `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over \`${result.connectionTable}\`, read through the \`${result.connectionName}\` connection defined in \`publisher.config.json\`. Read it for the real source, field, and view names and use them verbatim; never guess them. The package's REST base is:`,
+         );
+      } else {
+         lines.push(
+            `\`${result.packageName}/${result.modelFile}\` has NO source in it yet, on purpose: the \`${result.connectionName}\` connection was scaffolded without a table name, and guessing one would produce a model that compiles against nothing. Find a real table with \`malloy_searchDatabaseSchema\`, which searches this connection's schema in plain language, then write the source into that file and call \`malloy_reloadPackage\`. Do not invent a table name. The package's REST base is:`,
+         );
+      }
+      lines.push("", "```", base, "```", "");
+      if (hasSource) {
+         lines.push(
+            "Run one of its views from a script:",
+            "",
+            "```bash",
+            `curl -s -X POST ${base}/models/${result.modelFile}/query \\`,
+            "  -H 'content-type: application/json' \\",
+            `  -d '{"query":"run: ${result.sourceName} -> overview"}'`,
+            "```",
+            "",
+         );
+      }
+      if (result.connectionEnvVars.length > 0) {
+         lines.push(
+            `The connection reads its credentials from the environment: ${result.connectionEnvVars
+               .map((name) => `\`${name}\``)
+               .join(
+                  ", ",
+               )}. These are NOT in \`publisher.config.json\`, which refers to them by name. If the server comes up reporting no environments and no packages, and \`loadErrors\` is empty, that is what an unset one looks like: it does not fail the boot and it does not name the variable. The \`malloy-connections\` skill covers this.`,
+            "",
+         );
+      }
+      if (result.connectionName === undefined) {
+         lines.push(
+            `The VS Code / Cursor Malloy extension resolves the model's relative \`duckdb.table('data/…')\` paths against the EDITOR WORKSPACE root, while Publisher resolves them against the package directory. \`${result.packageName}/malloy-config.json\` (generated, machine-specific absolute path) bridges that for an editor opened at this workspace root; without it, open the editor at \`${result.packageName}/\` itself, or a model Publisher serves fine shows unresolved-table errors in the editor.`,
+            "",
+         );
+      }
    }
    if (others.length > 0) {
       lines.push(otherPackagesParagraph(result, others, restBase), "");
@@ -2111,6 +2272,13 @@ function workspaceGitignoreEntries(): string[] {
       "publisher.db*",
       "*.log",
       ".DS_Store",
+      // The real credentials file, which the generated .env.example is a
+      // template for. Ignored unconditionally rather than only on a warehouse
+      // run: the entry costs nothing on a run that writes no .env.example, and
+      // getting it wrong once means committing a warehouse password.
+      // .env.example itself is deliberately NOT ignored — it holds names and no
+      // values, and is meant to be committed.
+      ".env",
       // Unanchored, so it matches at any depth: one per package. It carries an
       // absolute workingDirectory generated on this machine, so committing it
       // points a teammate's editor at a directory that does not exist on their
