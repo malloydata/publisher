@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // End-to-end proof for the colocated `#@ persist` authorize relaxation
 // (`assertColocatedPersistNotAuthorizeGated`'s `row_level` + `attributed`
 // branch, `materialization_eligibility.ts`). `materialization_eligibility.spec.ts`

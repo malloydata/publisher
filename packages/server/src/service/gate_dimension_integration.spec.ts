@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Verification suite for the DIMENSION form of `#(authorize)` — see
  * `./gate_dimension`'s doc for what this form is and why it is validated

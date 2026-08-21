@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Entry-point `#(authorize)` gate classification against a `{modelDef,
  * materializer}` pair, extracted out of `Model` (`service/model.ts`) so a
