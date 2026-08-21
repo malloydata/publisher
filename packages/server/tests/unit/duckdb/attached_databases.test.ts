@@ -1002,9 +1002,10 @@ describe("createEnvironmentConnections - DuckDB", () => {
          ).rejects.toThrow(/'duckdb' is reserved/);
       });
 
-      it("should throw when DuckDB connection has no attached databases", async () => {
-         // Env-level DuckDB requires at least one attached foreign db;
-         // the per-package "duckdb" sandbox covers the plain-in-memory case.
+      it("should throw when DuckDB connection has no data sources", async () => {
+         // Env-level DuckDB requires at least one data source -- an attached
+         // foreign db or a ClickHouse server; the per-package "duckdb" sandbox
+         // covers the plain-in-memory case.
          const connections: ApiConnection[] = [
             {
                name: "no_attached_db",
@@ -1017,7 +1018,33 @@ describe("createEnvironmentConnections - DuckDB", () => {
 
          await expect(
             createEnvironmentConnections(connections, PROJECT_TEST_DIR),
-         ).rejects.toThrow(/has no attached databases/);
+         ).rejects.toThrow(/has no data sources/);
+      });
+
+      it("should accept a DuckDB connection with only clickhouseServers", async () => {
+         const connections: ApiConnection[] = [
+            {
+               name: "clickhouse_only",
+               type: "duckdb",
+               duckdbConnection: {
+                  clickhouseServers: [
+                     { name: "events", host: "localhost", port: 8123 },
+                  ],
+               },
+            },
+         ];
+
+         const created = await createEnvironmentConnections(
+            connections,
+            PROJECT_TEST_DIR,
+         );
+         try {
+            expect(
+               created.malloyConnections.get("clickhouse_only"),
+            ).toBeDefined();
+         } finally {
+            await created.releaseConnections();
+         }
       });
 
       it("should throw on unsupported connection type", async () => {

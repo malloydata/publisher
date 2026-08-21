@@ -1,0 +1,92 @@
+// Malloy over a remote ClickHouse server.
+//
+// The `demo(...)` macro comes from the `clickhouseServers` entry on this
+// environment's DuckDB connection (see the environment's publisher.config.json).
+// Publisher registers one macro per configured server; the string you pass is
+// sent to ClickHouse as-is and the result set comes back as a DuckDB table.
+//
+// THE ONE RULE: nothing is pushed down. Malloy's filters and GROUP BY are
+// applied by DuckDB to whatever the macro returned, so aggregate or filter
+// inside the macro string and let Malloy roll up from there. A bare
+// `SELECT * FROM demo.orders` re-extracts the whole table on every query.
+
+// Pre-aggregated in ClickHouse to one row per region, day, and status. Malloy
+// sums those partials, so every view below is a rollup of a rollup.
+source: orders is clickhouse.sql("""
+  SELECT * FROM demo('
+    SELECT region, order_date, status,
+           count()      AS order_count,
+           sum(amount)  AS revenue,
+           sum(item_count) AS items
+    FROM demo.orders
+    GROUP BY region, order_date, status
+  ')
+""") extend {
+  # description = "Daily orders by region and status, pre-aggregated in ClickHouse."
+
+  measure:
+    total_orders is order_count.sum()
+    total_revenue is revenue.sum()
+    total_items is items.sum()
+    avg_order_value is total_revenue / nullif(total_orders, 0)
+
+  dimension:
+    order_year is order_date.year
+
+  # bar_chart
+  view: revenue_by_region is {
+    group_by: region
+    aggregate: total_orders, total_revenue
+    order_by: total_revenue desc
+  }
+
+  # line_chart
+  view: revenue_trend is {
+    group_by: order_month is order_date.month
+    aggregate: total_revenue
+    order_by: order_month asc
+  }
+
+  view: status_mix is {
+    group_by: status
+    aggregate: total_orders, total_revenue
+    order_by: total_orders desc
+  }
+
+  view: region_detail is {
+    group_by: region
+    aggregate: total_orders, total_revenue, avg_order_value
+    nest: status_mix
+    order_by: total_revenue desc
+  }
+}
+
+// Row grain, for the cases that genuinely need it. Fine at 50k rows; at 50M
+// this is the shape to avoid -- prefer aggregating inside the macro as above.
+source: order_rows is clickhouse.sql("""
+  SELECT * FROM demo('
+    SELECT order_id, customer_id, order_date, status, region, item_count, amount, discount
+    FROM demo.orders
+    WHERE order_date >= ''2025-06-01''
+  ')
+""") extend {
+  # description = "Individual orders from 2025-06-01 onward. Filtered in ClickHouse, not by Malloy."
+
+  measure:
+    order_count is count()
+    customer_count is count(customer_id)
+    total_revenue is amount.sum()
+    avg_order_value is amount.avg()
+
+  view: biggest_orders is {
+    select: order_id, order_date, region, status, amount
+    order_by: amount desc
+    limit: 20
+  }
+
+  view: by_region is {
+    group_by: region
+    aggregate: order_count, customer_count, avg_order_value
+    order_by: avg_order_value desc
+  }
+}

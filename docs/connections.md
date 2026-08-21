@@ -22,9 +22,12 @@ package format, see [packages.md](packages.md).
 
 ## Environment-level DuckDB connections
 
-You can also declare a top-level DuckDB connection at the environment level. Publisher intentionally exposes only data-source intent for these — database files, working directories, filesystem/network policy, extension loading, temp directories, and resource knobs are all owned by Publisher. The only configuration available is **attached databases**, where you declare foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) that the DuckDB instance should `ATTACH` so queries can reference them.
+You can also declare a top-level DuckDB connection at the environment level. Publisher intentionally exposes only data-source intent for these — database files, working directories, filesystem/network policy, extension loading, setup SQL, temp directories, and resource knobs are all owned by Publisher. Two kinds of data source are available:
 
-An env-level DuckDB connection must declare at least one attached database. If you don't need to attach any foreign databases, you don't need to declare an env-level DuckDB connection at all — each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+- **`attachedDatabases`** — foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) that the DuckDB instance should `ATTACH` so queries can reference them.
+- **`clickhouseServers`** — remote ClickHouse servers read over their HTTP interface. Each entry registers a table macro a model calls as `<name>('SELECT …')`. See **[clickhouse.md](clickhouse.md)**.
+
+An env-level DuckDB connection must declare at least one of the two. If you need neither, you don't need to declare an env-level DuckDB connection at all — each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
 
 ## DuckLake connections (`type: "ducklake"`)
 

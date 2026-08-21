@@ -16,6 +16,7 @@ import {
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
+type ClickhouseServer = components["schemas"]["ClickhouseServer"];
 
 // TLS modes accepted on a proxied postgres connection. Canonical here (rather
 // than in connection.ts, which imports this module) so both the config-load
@@ -40,6 +41,7 @@ export type CoreConnectionsPojo = {
 export type EnvironmentConnectionMetadata = {
    apiConnection: ApiConnection;
    attachedDatabases: AttachedDatabase[];
+   clickhouseServers: ClickhouseServer[];
    hasAzureAttachment: boolean;
    hasSnowflakePrivateKey: boolean;
    isDuckLake: boolean;
@@ -54,7 +56,10 @@ export type AssembledEnvironmentConnections = {
    apiConnections: ApiConnection[];
 };
 
-const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>(["attachedDatabases"]);
+const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>([
+   "attachedDatabases",
+   "clickhouseServers",
+]);
 
 /**
  * Collapse `null` to `undefined` for an optional connection field.
@@ -476,9 +481,11 @@ function validateConnectionShape(connection: ApiConnection): void {
          {
             const attached =
                connection.duckdbConnection.attachedDatabases ?? [];
-            if (attached.length === 0) {
+            const clickhouse =
+               connection.duckdbConnection.clickhouseServers ?? [];
+            if (attached.length === 0 && clickhouse.length === 0) {
                throw new Error(
-                  `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
+                  `DuckDB connection "${connection.name}" has no data sources. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or a ClickHouse server to clickhouseServers, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
                );
             }
          }
@@ -941,6 +948,8 @@ export function assembleEnvironmentConnections(
       apiConnection.attributes = getStaticConnectionAttributes(connection.type);
       const attachedDatabases =
          connection.duckdbConnection?.attachedDatabases ?? [];
+      const clickhouseServers =
+         connection.duckdbConnection?.clickhouseServers ?? [];
       const isDuckLake = connection.type === "ducklake";
       const isDuckdb = connection.type === "duckdb";
       const databasePath = isDuckLake
@@ -952,6 +961,7 @@ export function assembleEnvironmentConnections(
       metadata.set(connection.name, {
          apiConnection,
          attachedDatabases,
+         clickhouseServers,
          hasAzureAttachment: attachedDatabases.some(
             (database) => database.type === "azure",
          ),

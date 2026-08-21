@@ -4878,6 +4878,71 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AttachedDatabase"
+        clickhouseServers:
+          type: array
+          description: >
+            ClickHouse servers this DuckDB connection can read. Each entry
+            registers a table macro named after the server, so a model calls
+            `<name>('SELECT ...')` and gets the result set back as a DuckDB
+            table. Publisher owns the transport: it reads ClickHouse's HTTP
+            interface with `default_format=Parquet`, URL-encodes the query, and
+            keeps credentials in a scoped DuckDB secret rather than in the URL
+            or the macro body.
+
+            The macro argument is sent to ClickHouse verbatim and is NOT pushed
+            down or rewritten -- whatever it selects is what crosses the wire.
+            Aggregate inside the macro argument and let Malloy roll up from
+            there; a bare `SELECT * FROM tbl` extracts the whole table on every
+            query.
+          items:
+            $ref: "#/components/schemas/ClickhouseServer"
+
+    ClickhouseServer:
+      type: object
+      description: >
+        A remote ClickHouse server reachable over its HTTP interface, exposed to
+        Malloy models as a DuckDB table macro.
+      required: [name, host]
+      properties:
+        name:
+          type: string
+          description: >
+            Macro name models call, e.g. `events` makes `events('SELECT ...')`
+            resolvable. Must be a valid SQL identifier, and must not collide
+            with an existing DuckDB function.
+          pattern: "^[a-zA-Z_][a-zA-Z0-9_]*$"
+          example: "events"
+        host:
+          type: string
+          description: Hostname or IP of the ClickHouse HTTP interface.
+          example: "localhost"
+        port:
+          type: integer
+          description: Port of the ClickHouse HTTP interface.
+          default: 8123
+          example: 8123
+        database:
+          type: string
+          description: >
+            Default database for unqualified table names in the macro argument.
+            Omit to use the server's default.
+          example: "demo"
+        user:
+          type: string
+          description: ClickHouse user. Omit for a server that allows anonymous access.
+          example: "default"
+        password:
+          type: string
+          description: >
+            ClickHouse password. Supports `${ENV_VAR}` substitution so the
+            secret stays out of the config file. Sent as an HTTP Basic
+            Authorization header held in a scoped DuckDB secret, never in the
+            query URL.
+          example: "${CLICKHOUSE_PASSWORD}"
+        useSsl:
+          type: boolean
+          description: Use https instead of http for the HTTP interface.
+          default: false
 
     AttachedDatabase:
       type: object
