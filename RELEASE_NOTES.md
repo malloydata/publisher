@@ -11,7 +11,9 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does the rest**: `gh-release` appends every `[Unreleased]` section to the release page alongside the generated PR list, then commits the heading back to `main` stamped with the version that shipped it. Nothing to paste, nothing to remember.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `gh-release` appends every `[Unreleased]` section to the release page alongside the generated PR list, then pushes a `release-notes-stamp-<version>` branch restamping those headings with the version that shipped them. Nothing to paste, and nothing to remember while writing.
+
+One step is a human's, and it is the one that bites when it is skipped: someone has to open that branch as a PR and merge it. `main` requires a pull request, so the release cannot land the stamp itself, and the job summary prints the link. Until it merges the headings still read `[Unreleased]`, which is exactly what the *next* release matches — so the narrative here lands on that release's page too, and on every one after it. Whoever cuts the release owns that click; the `publisher-release` skill makes it a step.
 
 Both steps handle several sections, which matters because unrelated narratives accumulate between releases: they are separate entries in the same release rather than alternatives. That is precisely what the old manual process got wrong. It also simply stopped happening — 0.0.243 through 0.0.247 each shipped with none of their narrative, and the pages were backfilled by hand afterwards.
 
@@ -35,7 +37,7 @@ The REST server can now cap how many requests one client makes per minute: set `
 
 Also in this release, the SDK's filter UI escapes backslashes in string values before quotes rather than after, so a value containing a backslash no longer reaches Malloy double-escaped.
 
-## [Unreleased] — a filtered aggregate can be pre-aggregated
+## [0.0.249] — a filtered aggregate can be pre-aggregated
 
 Since 0.0.246, a measure filtering its aggregate — `paid is amount.sum() { where: is_paying }` — was refused at publish by `#@ preaggregate`, with the workaround of rewriting it as `amount.sum(pick amount when is_paying else null)`-style expressions or filtering in a view. The refusal was the fail-closed gate doing its job, not a soundness limit: the rollup computes each stored partial from the measure by name, so the filter rides into the build, and a row-level filter commutes with merging per-grain partials — filtering then merging equals filtering the whole, for every merge the feature hands out, including `count`'s (a filtered count stores a count of matching rows and still merges with `sum`).
 
@@ -280,7 +282,7 @@ or accept full rebuilds until you do.
 **A source that was rejected for declaring both keys now publishes**, and takes the same one rebuild
 as any other incremental source before it starts advancing.
 
-## [Unreleased]: a given's control contract is read off its own tags
+## [0.0.249]: a given's control contract is read off its own tags
 
 The `Given` control contract shipped in 0.0.242 as a schema with no reader: the fields were declared and no endpoint populated them. The server now derives them from the declaration's own tags, so they are populated wherever a `Given` is returned.
 
@@ -289,7 +291,7 @@ The `Given` control contract shipped in 0.0.242 as a schema with no reader: the 
 - **`label`, `control`, `rangeMin`, `rangeMax` and `suggest` are now populated,** read from the `given:` declaration's own plain-`#` tags. How a given should be presented belongs to the given rather than to any one surface, which is what lets a notebook, a dashboard and an SDK host render the same control without restating it. Those tags sit in Malloy's reserved namespace and are dropped from `annotations`, so deriving them server-side is what lets a client read them without shipping a MOTLY parser of its own. A declaration carrying none of the tags carries none of the fields, and a value the contract does not accept (`control=radio`, a non-numeric bound) is dropped the same way rather than reported.
 - **`Given` gains `description`,** helper text read from a `# description=` tag. This does not replace `#(description="…")`, which still works and is still what the notebook UI renders: that form stays on `annotations`, where the client that parses it today keeps finding it. The tag form is the one that compiles without a `malformed-route` warning, since Malloy reads an annotation's route up to the first whitespace and a multi-word `#(description="…")` therefore is not well formed. Nothing renders the new field yet.
 
-## [Unreleased]: the Console says what this server can do
+## [0.0.249]: the Console says what this server can do
 
 The home page described a three-feature Publisher, the package page gave four of its six kinds of
 content the same colour, and Publisher's in-repo reference docs had nothing linking to them.
@@ -403,7 +405,7 @@ A `#@ persist` source can now be materialized into a **storage destination** —
 - **Multi-replica serving via the manifest.** A `storage=` source can be served across a fleet by carrying its serve binding in the same manifest the publisher already fetches from a package's `manifestLocation`: a manifest entry that names a `storageDestinationName` (with the captured `schema` and `sourceName`) binds as a cross-connection serve binding applied to the already-compiled models (no recompile); entries without it remain same-connection `tableName` substitutions (which do recompile). A refresh is the usual manifest-rebind — rewrite the manifest and re-`PATCH` `manifestLocation` — and a storage-only refresh costs no recompile. Entries are keyed by the build's content `sourceEntityId` (= the serve handle), so a freshness refresh keeps the handle and only swaps the table path, while a schema-changing generation gets a new handle. Standalone (no `manifestLocation`), serve bindings are still re-derived per-replica from the local materialization store on package load; run that single-replica. When a `manifestLocation` is set the host is authoritative and the local-store rebind is skipped, so the two binding sources never fight.
 - **Roll back cleanly.** Deleting a package's materializations before rolling back to a publisher version without this tier avoids a wedge: an older build reuses/binds a persisted `storage=` manifest entry as a same-connection table it can't resolve. Building with `storage=` only ever affects deployments that turned the mode on.
 
-## [Unreleased]: shared given and drill controls, and the notebook adopts them
+## [0.0.249]: shared given and drill controls, and the notebook adopts them
 
 The control layer behind `given:` is now one implementation instead of one per surface: state, URL encoding, `suggest`-backed pickers, and `# drill` click handling all live in the SDK, and `Notebook` is the first surface built on them. A notebook's parameters are now part of its URL, so a filtered notebook is a link you can send.
 
@@ -491,7 +493,7 @@ Why the REST path breaks cleanly while the browser URL gets a grace period: the 
 
 One more consequence of the SPA route move, easy to miss: the app now claims the `data-apps` segment, so `/{env}/{pkg}/data-apps/<file>` is no longer redirected to the static route. Clicking a data app in the Console is unaffected, because the listing already includes the file's path relative to `public/`. What changes is a hand-written URL of that shape: it opens the embedded viewer one segment down, on `public/<file>`, rather than redirecting. A package that itself ships a `public/data-apps/` directory is the case to know about, since its files are addressed as `/{env}/{pkg}/data-apps/data-apps/<file>`; the standalone URL `/environments/{env}/packages/{pkg}/data-apps/<file>` serves them unchanged either way. This mirrors what `public/pages/` had before, so it is not a new class of collision, but `data-apps` is a likelier directory name than `pages` was.
 
-## [Unreleased]: dashboards render, and the Console serves them
+## [0.0.249]: dashboards render, and the Console serves them
 
 The server half of dashboards had no UI. It has one now: a package's dashboards are listed on its
 page and open at `/{env}/{package}/dashboards/{name}`, and `<Dashboard>` is a public SDK export so an
@@ -563,7 +565,7 @@ did.
 `docs/dashboards.md` is the guide. No bundled example ships a `dashboards/` directory yet; that
 arrives with the examples change that follows this one.
 
-## [Unreleased]: dashboards are discovered and served over REST
+## [0.0.249]: dashboards are discovered and served over REST
 
 A `.malloy` file in a package's `dashboards/` directory carrying an `# artifact` tag is now discovered at load and served over two read-only endpoints. This is the server half only: there is no UI for it yet.
 
