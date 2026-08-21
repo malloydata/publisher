@@ -2,7 +2,7 @@
 
 given: target_region :: string is 'US'
 given: min_amount :: number is 0
-given: role :: string is 'guest'
+given: role :: string
 
 #(filter) dimension=status type=equal
 source: orders is duckdb.table('data/orders.csv') extend {
@@ -19,8 +19,9 @@ source: orders is duckdb.table('data/orders.csv') extend {
 
 // Gated variant for authorize-interaction coverage: only $role = 'admin' may
 // read it. Shares the givens above so we can prove the name-vs-value-vs-authorize
-// status matrix on a gated source.
-#(authorize) "$role = 'admin'"
+// status matrix on a gated source. `role` carries no default — G4 refuses a
+// gate dimension referencing a given that has one — so every test below
+// asserts an explicit role rather than relying on a fallback.
 source: gated_orders is duckdb.table('data/orders.csv') extend {
    primary_key: id
 
@@ -31,4 +32,7 @@ source: gated_orders is duckdb.table('data/orders.csv') extend {
       where: region = $target_region and amount >= $min_amount
       aggregate: order_count
    }
+
+   #(authorize)
+   internal dimension: authorized is $role = 'admin'
 }

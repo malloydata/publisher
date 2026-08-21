@@ -1670,7 +1670,10 @@ describe("deriveSelfInstructions", () => {
          delete process.env.PERSIST_STORAGE_MODE;
       });
 
-      it("refuses a colocated authorize-gated source", () => {
+      it("refuses a colocated authorize-gated source with no compile-time gate outcome (fail-closed default)", () => {
+         // No `sourceGateOutcomes` supplied — the relaxation below requires a
+         // PROVEN row_level+attributed outcome, so an unclassified gate keeps
+         // refusing exactly as it always has.
          const compiled = compiledWith({ s1: authorizeGatedColocated }, [
             ["s1"],
          ]);
@@ -1678,6 +1681,44 @@ describe("deriveSelfInstructions", () => {
             MaterializationEligibilityError,
          );
          expect(() => derive(compiled)).toThrow(/authorize/i);
+      });
+
+      // A `row_level` + `attributed` compile-time gate outcome proves the
+      // entry point's own gate is a row filter and nothing else is reachable
+      // beneath it, so colocated serving grafts exactly what a live query
+      // would — see `assertColocatedPersistNotAuthorizeGated`'s doc.
+      it("admits a colocated authorize-gated source whose compile-time outcome is row_level and attributed", () => {
+         const compiled = compiledWith(
+            { s1: authorizeGatedColocated },
+            [["s1"]],
+            new Map(),
+            { s1: { classification: "row_level", attributed: true } },
+         );
+         expect(() => derive(compiled)).not.toThrow();
+      });
+
+      it("still refuses when the compile-time outcome is row_level but NOT attributed (a join-only gate outside identity reach)", () => {
+         const compiled = compiledWith(
+            { s1: authorizeGatedColocated },
+            [["s1"]],
+            new Map(),
+            { s1: { classification: "row_level", attributed: false } },
+         );
+         expect(() => derive(compiled)).toThrow(
+            MaterializationEligibilityError,
+         );
+      });
+
+      it("still refuses when the compile-time outcome is rejected", () => {
+         const compiled = compiledWith(
+            { s1: authorizeGatedColocated },
+            [["s1"]],
+            new Map(),
+            { s1: { classification: "rejected", attributed: true } },
+         );
+         expect(() => derive(compiled)).toThrow(
+            MaterializationEligibilityError,
+         );
       });
 
       it("leaves an ungated colocated source unaffected", () => {
@@ -2634,6 +2675,95 @@ describe("executeInstructedBuild", () => {
             {},
          ),
       ).rejects.toThrow(BadRequestError);
+   });
+
+   describe("a refused sibling with no compile-time gate outcome", () => {
+      // Colocated (no `storage=`) authorize-gated, and `compiledWith`'s default
+      // `sourceGateOutcomes` is undefined — the fail-closed default the
+      // colocated relaxation never admits, so this refuses unconditionally
+      // (see the "colocated #(authorize) gate" describe above).
+      function refusedColocated(sourceEntityId: string) {
+         return fakeSource({
+            name: "refused",
+            sourceEntityId,
+            sourceDef: { blockNotes: ['#(authorize) "true"'] },
+         });
+      }
+
+      it("is skipped, and the run completes, when the caller never instructed it", async () => {
+         // Before the reorder, the eligibility assert ran unconditionally on
+         // EVERY persist source in the graph — including one with no
+         // instruction at all — so this refused, uninstructed sibling threw
+         // and aborted the whole run, taking `ok`'s build down with it.
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const ok = fakeSource({
+            name: "ok",
+            sourceEntityId: "b0k0k0k0k0k0k0k0",
+         });
+         const refused = refusedColocated("bref1bref1bref1b");
+         const compiled = compiledWith(
+            { ok, refused },
+            [["ok"], ["refused"]],
+            new Map([["duckdb", connection]]),
+         );
+
+         const { entries, failures } = await callExecute(
+            compiled,
+            [
+               {
+                  sourceEntityId: "b0k0k0k0k0k0k0k0",
+                  materializedTableId: "mt-ok",
+                  physicalTableName: "ok_v1",
+                  realization: "COPY",
+               },
+               // No instruction for "refused" at all.
+            ],
+            {},
+         );
+
+         expect(entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe("ok_v1");
+         // Skipped, not failed: the caller never asked for it, so it is
+         // absent from both collections rather than reported as a failure.
+         expect(entries["bref1bref1bref1b"]).toBeUndefined();
+         expect(failures["bref1bref1bref1b"]).toBeUndefined();
+      });
+
+      it("still 422s when the caller DOES instruct the refused source", async () => {
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const ok = fakeSource({
+            name: "ok",
+            sourceEntityId: "b0k0k0k0k0k0k0k0",
+         });
+         const refused = refusedColocated("bref1bref1bref1b");
+         const compiled = compiledWith(
+            { ok, refused },
+            [["ok"], ["refused"]],
+            new Map([["duckdb", connection]]),
+         );
+
+         await expect(
+            callExecute(
+               compiled,
+               [
+                  {
+                     sourceEntityId: "b0k0k0k0k0k0k0k0",
+                     materializedTableId: "mt-ok",
+                     physicalTableName: "ok_v1",
+                     realization: "COPY",
+                  },
+                  {
+                     sourceEntityId: "bref1bref1bref1b",
+                     materializedTableId: "mt-ref",
+                     physicalTableName: "refused_v1",
+                     realization: "COPY",
+                  },
+               ],
+               {},
+            ),
+         ).rejects.toThrow(MaterializationEligibilityError);
+      });
    });
 });
 

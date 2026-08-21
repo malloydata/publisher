@@ -2,10 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "fs/promises";
+import * as os from "os";
+import * as path from "path";
 import * as sinon from "sinon";
 import type { BuildGraph as MalloyBuildGraph } from "@malloydata/malloy";
 import {
+   type BuildPlanPackage,
    compilePackageBuildPlan,
    computeSourceEntityId,
    computePackageBuildPlan,
@@ -680,6 +686,116 @@ describe("compilePackageBuildPlan", () => {
    });
 });
 
+// Real-compiler coverage of `compilePackageBuildPlan`'s gate-classification
+// wiring, over an actual temp-dir package (like `query_boundary.spec.ts`'s
+// `makeMalloyConfig` pattern), rather than the stubbed `Model.getModelRuntime`
+// above. `classifyPersistSourceGate` (`classifyPersistSourceGate.spec.ts`) is
+// otherwise only ever called directly; nothing else asserts that
+// `compilePackageBuildPlan`'s two call sites (the ordinary persist-source loop
+// and the pre-aggregation rollup branch) actually populate
+// `CompiledBuildPlan.sourceGateOutcomes`.
+describe("compilePackageBuildPlan populates sourceGateOutcomes", () => {
+   let rootDir: string;
+
+   beforeEach(async () => {
+      rootDir = await fs.mkdtemp(
+         path.join(os.tmpdir(), "publisher-buildplan-"),
+      );
+   });
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   async function realPackage(
+      modelText: string,
+      modelFile = "m.malloy",
+   ): Promise<BuildPlanPackage> {
+      await fs.writeFile(path.join(rootDir, modelFile), modelText);
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const connections = new FixedConnectionMap(
+         new Map([["duckdb", duckdb]]),
+         "duckdb",
+      );
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(() => connections);
+      return {
+         getModelPaths: () => [modelFile],
+         getPackagePath: () => rootDir,
+         getMalloyConfig: () => malloyConfig,
+         getMalloyConnection: async () => duckdb,
+      };
+   }
+
+   it(
+      "records a row_level/attributed outcome for an ordinary #@ persist source's own gate",
+      async () => {
+         const pkg = await realPackage(`##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+source: base is duckdb.sql("select 1 as org_id")
+
+#@ persist name="gated"
+source: gated is base -> { select: org_id } extend {
+   #(authorize)
+   internal dimension: authorized is org_id = $ORG
+}
+`);
+
+         const compiled = await compilePackageBuildPlan(pkg);
+
+         const [sourceID] = Object.keys(compiled.sources).filter(
+            (id) => compiled.sources[id].name === "gated",
+         );
+         expect(sourceID).toBeDefined();
+         expect(compiled.sourceGateOutcomes?.[sourceID]).toEqual({
+            classification: "row_level",
+            attributed: true,
+         });
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "records a row_level/attributed outcome for a synthesized #@ preaggregate rollup, from the DIFFERENT {model, materializer} pair the rollup was compiled with",
+      async () => {
+         // No `#(authorize)` gate anywhere in this fixture, so the vacuous
+         // (no entry-point gate) case applies: `row_level` because there is
+         // no group to reject, `attributed: true` because both the deep and
+         // no-join walks find nothing. This is still a real assertion, not a
+         // vacuous one — if the rollup branch classified against the wrong
+         // model/materializer pair (see `preaggregation_compile.ts:105-107`)
+         // or degraded to blanket refusal, this would come back `rejected`.
+         const pkg =
+            await realPackage(`##! experimental { persistence composite_sources }
+
+source: orders is duckdb.sql("""
+  SELECT 1 AS order_id, 10 AS amount, 'A' AS category
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+
+         const compiled = await compilePackageBuildPlan(pkg);
+
+         const rollupEntries = Object.entries(
+            compiled.sourceGateOutcomes ?? {},
+         );
+         expect(rollupEntries).toHaveLength(1);
+         const [, outcome] = rollupEntries[0];
+         expect(outcome).toEqual({
+            classification: "row_level",
+            attributed: true,
+         });
+      },
+      { timeout: 20000 },
+   );
+});
+
 describe("computePackageBuildPlan", () => {
    it("returns a null plan and no dropped sources when the package declares no persist sources", async () => {
       const pkg = {
@@ -694,4 +810,434 @@ describe("computePackageBuildPlan", () => {
       expect(plan).toBeNull();
       expect(droppedPersistSources).toEqual([]);
    });
+
+   describe("colocatedSourceEligibility", () => {
+      let rootDir: string;
+
+      beforeEach(async () => {
+         rootDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "publisher-buildplan-colocated-"),
+         );
+      });
+
+      afterEach(async () => {
+         await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+      });
+
+      async function realPackageMulti(
+         files: Record<string, string>,
+      ): Promise<BuildPlanPackage> {
+         for (const [modelFile, modelText] of Object.entries(files)) {
+            await fs.writeFile(path.join(rootDir, modelFile), modelText);
+         }
+         const duckdb = new DuckDBConnection("duckdb", ":memory:");
+         const connections = new FixedConnectionMap(
+            new Map([["duckdb", duckdb]]),
+            "duckdb",
+         );
+         const malloyConfig = new MalloyConfig({ connections: {} });
+         malloyConfig.wrapConnections(() => connections);
+         return {
+            getModelPaths: () => Object.keys(files),
+            getPackagePath: () => rootDir,
+            getMalloyConfig: () => malloyConfig,
+            getMalloyConnection: async () => duckdb,
+         };
+      }
+
+      it(
+         "keys eligibility so a same-NAMED source in a DIFFERENT model is judged independently — one eligible, one refused",
+         async () => {
+            // Two models each declare a persist source named "s". model_a's is
+            // row-level and attributed (colocated-eligible); model_b's carries a
+            // gate that classifies REJECTED (a literal-vs-field comparison). A
+            // name-keyed positive check ("is `s` eligible anywhere in the
+            // package?") would incorrectly authorize model_b's binding off
+            // model_a's eligibility. Keying by each source's own sourceEntityId
+            // (computed from ITS OWN connection digest + SQL, never looked up by
+            // name) cannot make that mistake — the two sources are examined,
+            // and recorded, independently.
+            const pkg = await realPackageMulti({
+               "model_a.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+source: base_a is duckdb.sql("select 1 as org_id")
+
+#@ persist name="s"
+source: s is base_a -> { select: org_id } extend {
+   #(authorize)
+   internal dimension: authorized is org_id = $ORG
+}
+`,
+               "model_b.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG2 :: number
+
+#(authorize) "org_id = 999"
+source: base_b is duckdb.sql("select 2 as org_id")
+
+#@ persist name="s"
+source: s is base_b -> { select: org_id }
+`,
+            });
+
+            const compiled = await compilePackageBuildPlan(pkg);
+            const { colocatedSourceEligibility } =
+               await computePackageBuildPlan(pkg);
+
+            const sourceIDA = Object.keys(compiled.sources).find(
+               (id) =>
+                  compiled.sources[id].name === "s" && id.includes("model_a"),
+            );
+            const sourceIDB = Object.keys(compiled.sources).find(
+               (id) =>
+                  compiled.sources[id].name === "s" && id.includes("model_b"),
+            );
+            expect(sourceIDA).toBeDefined();
+            expect(sourceIDB).toBeDefined();
+
+            const idA = computeSourceEntityId(
+               compiled.sources[sourceIDA as string],
+               compiled.connectionDigests,
+            );
+            const idB = computeSourceEntityId(
+               compiled.sources[sourceIDB as string],
+               compiled.connectionDigests,
+            );
+            // Distinct content ⇒ distinct entity ids, which is what makes this a
+            // real collision-avoidance test rather than a tautology.
+            expect(idA).not.toBe(idB);
+            expect(colocatedSourceEligibility.eligibleEntityIds.has(idA)).toBe(
+               true,
+            );
+            expect(colocatedSourceEligibility.eligibleEntityIds.has(idB)).toBe(
+               false,
+            );
+         },
+         { timeout: 20000 },
+      );
+
+      it(
+         "a refusal wins a real sourceEntityId collision — identical compiled SQL, different gates",
+         async () => {
+            // `sourceEntityId` is `makeBuildId(connectionDigest, getSQL())`,
+            // which excludes annotation bytes: model_a's `s` and model_b's `s`
+            // compile to the exact same SQL on the same connection, so they
+            // collide on the same id despite model_a's gate being eligible
+            // (row-level, attributed to the entry point) and model_b's being
+            // refused (the gate is reachable only through a join, so it is
+            // unattributed). A positive-eligibility check that lets either
+            // source's outcome win nondeterministically is fail-open; the
+            // refusal must win regardless of iteration order.
+            const pkg = await realPackageMulti({
+               "model_a.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+source: base is duckdb.sql("select 1 as x")
+
+#@ persist name="s"
+#(authorize) "x = $ORG"
+source: s is base -> { select: x }
+`,
+               "model_b.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+
+#(authorize) "x = 1"
+source: locked is duckdb.sql("select 1 as x")
+
+#@ persist name="s"
+source: s is duckdb.sql("select 1 as x") extend {
+   join_one: locked on 1 = 1
+} -> { select: x }
+`,
+            });
+
+            const compiled = await compilePackageBuildPlan(pkg);
+            const { colocatedSourceEligibility } =
+               await computePackageBuildPlan(pkg);
+
+            const sourceIDA = Object.keys(compiled.sources).find(
+               (id) =>
+                  compiled.sources[id].name === "s" && id.includes("model_a"),
+            );
+            const sourceIDB = Object.keys(compiled.sources).find(
+               (id) =>
+                  compiled.sources[id].name === "s" && id.includes("model_b"),
+            );
+            expect(sourceIDA).toBeDefined();
+            expect(sourceIDB).toBeDefined();
+
+            const idA = computeSourceEntityId(
+               compiled.sources[sourceIDA as string],
+               compiled.connectionDigests,
+            );
+            const idB = computeSourceEntityId(
+               compiled.sources[sourceIDB as string],
+               compiled.connectionDigests,
+            );
+            // Same id: this is the real collision, not a tautology.
+            expect(idA).toBe(idB);
+            expect(colocatedSourceEligibility.refused[idA]).toBeDefined();
+            expect(colocatedSourceEligibility.eligibleEntityIds.has(idA)).toBe(
+               false,
+            );
+         },
+         { timeout: 20000 },
+      );
+
+      it(
+         "one unreadable source costs the package that source's binding, not its whole colocated tier",
+         async () => {
+            // The colocated gate deliberately admits a given-referencing source
+            // (materialization_eligibility.spec.ts's mz_colocated_given), and
+            // `bad`'s given has no default, so getSQL() — and every content
+            // address derived from it — throws. An escaping throw would leave
+            // colocatedSourceEligibility undefined, and colocated is the default
+            // tier: bindColocatedServeManifest would then drop EVERY binding for
+            // the package, reverting `good` to live recompute too.
+            const pkg = await realPackageMulti({
+               "m.malloy": `##! experimental.persistence
+##! experimental.givens
+
+given: ORG :: number
+
+source: base is duckdb.sql("select 1 as org_id, 2 as amount")
+
+#@ persist name="good"
+source: good is base -> { select: org_id, amount }
+
+#@ persist name="bad"
+source: bad is base -> { where: org_id = $ORG; select: org_id, amount }
+`,
+            });
+
+            const { plan, colocatedSourceEligibility } =
+               await computePackageBuildPlan(pkg);
+
+            expect(
+               Object.values(plan?.sources ?? {}).map((s) => s.name),
+            ).toEqual(["good"]);
+            // `good` keeps a usable binding; `bad` contributes neither an
+            // eligibility nor a refusal, since it has no id to key either under.
+            expect(colocatedSourceEligibility.eligibleEntityIds.size).toBe(1);
+            const [good] = Object.values(plan?.sources ?? {});
+            expect(
+               colocatedSourceEligibility.eligibleEntityIds.has(
+                  good.sourceEntityId,
+               ),
+            ).toBe(true);
+         },
+         { timeout: 20000 },
+      );
+   });
+});
+
+// `BuildPlan.refusedSources`: a SEPARATE collection from `PersistSourcePlan`,
+// computed from the tier-appropriate assert post-relaxation (see
+// `deriveBuildPlan`'s doc). Real-compiler coverage, like the describe blocks
+// above, because the whole point is the exact IR shape (getSQL() actually
+// throwing for a given with no default) rather than a stubbed approximation.
+describe("BuildPlan.refusedSources", () => {
+   let rootDir: string;
+
+   beforeEach(async () => {
+      rootDir = await fs.mkdtemp(
+         path.join(os.tmpdir(), "publisher-buildplan-refused-"),
+      );
+   });
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   async function realPackage(
+      modelText: string,
+      modelFile = "m.malloy",
+   ): Promise<BuildPlanPackage> {
+      await fs.writeFile(path.join(rootDir, modelFile), modelText);
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const connections = new FixedConnectionMap(
+         new Map([["duckdb", duckdb]]),
+         "duckdb",
+      );
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(() => connections);
+      return {
+         getModelPaths: () => [modelFile],
+         getPackagePath: () => rootDir,
+         getMalloyConfig: () => malloyConfig,
+         getMalloyConnection: async () => duckdb,
+      };
+   }
+
+   it(
+      "reports a package where EVERY persist source is refused as a completed plan carrying refusedSources, not a thrown error",
+      async () => {
+         // Both sources are storage-tier (declare `storage=`) and both are
+         // ineligible: `mz_given` references a given, `mz_free` declares an
+         // unbound parameter. Classified from the compiled source's IR alone
+         // (Parameter.value/refSummary.givenUsage), independent of whether
+         // `getSQL()` itself would succeed for this particular shape — see
+         // the next test for the shape where it demonstrably does not.
+         const pkg = await realPackage(`##! experimental.persistence
+##! experimental.parameters
+##! experimental.givens
+
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
+
+#@ persist name="mz_given" storage="dest"
+source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
+
+#@ persist name="mz_free" storage="dest"
+source: mz_free(threshold::number) is base -> { aggregate: c is count() }
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(plan).not.toBeNull();
+         expect(Object.keys(plan?.sources ?? {})).toHaveLength(0);
+         const refused = Object.values(plan?.refusedSources ?? {});
+         expect(refused).toHaveLength(2);
+         const byName = Object.fromEntries(refused.map((r) => [r.name, r]));
+         expect(byName.mz_given).toMatchObject({
+            tier: "storage",
+            reason: "given",
+         });
+         expect(byName.mz_given.message).toMatch(/given/i);
+         expect(byName.mz_free).toMatchObject({
+            tier: "storage",
+            reason: "free_parameter",
+         });
+         expect(byName.mz_free.message).toMatch(/unbound parameter/i);
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "represents a given-referencing refusal without SQL or a content address (the reason a separate collection exists)",
+      async () => {
+         // Refused on the compiled source's IR alone (a non-empty given-usage
+         // summary), BEFORE `getSQL()`/`computeSourceEntityId` are ever
+         // called — the codepath that constructs `PersistSourcePlan` (which
+         // requires both) is never reached for this source at all, which is
+         // the property a free-parameter or given-referencing source needs:
+         // neither is guaranteed to survive those calls in general.
+         const pkg = await realPackage(`##! experimental.persistence
+##! experimental.givens
+
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
+
+#@ persist name="mz_given" storage="dest"
+source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(plan).not.toBeNull();
+         expect(Object.keys(plan?.sources ?? {})).toHaveLength(0);
+         const [refused] = Object.values(plan?.refusedSources ?? {});
+         expect(refused).toMatchObject({
+            name: "mz_given",
+            tier: "storage",
+            reason: "given",
+         });
+         // No SQL/content-address fields leak onto the refused entry — it is
+         // a genuinely different wire shape, not `PersistSourcePlan` with two
+         // fields blanked out.
+         expect(refused).not.toHaveProperty("sql");
+         expect(refused).not.toHaveProperty("sourceEntityId");
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "does NOT report a colocated gated source as refused once the row-level relaxation admits it (the storage-rules SourceEligibility.refused trap)",
+      async () => {
+         // Plain `#@ persist` (no `storage=`): the entry point's own
+         // `#(authorize)` gate classifies row_level + attributed, so the
+         // colocated relaxation admits it. The OLD `SourceEligibility.refused`
+         // (computed with the unconditional storage-tier assert) would report
+         // this same source as `refused: authorize` — refusedSources must not
+         // repeat that mistake now that it can actually build.
+         const pkg = await realPackage(`##! experimental.persistence
+##! experimental.givens
+
+given: ORG :: number
+
+source: base is duckdb.sql("select 1 as org_id")
+
+#@ persist name="gated"
+source: gated is base -> { select: org_id } extend {
+   #(authorize)
+   internal dimension: authorized is org_id = $ORG
+}
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(plan).not.toBeNull();
+         expect(Object.keys(plan?.refusedSources ?? {})).toHaveLength(0);
+         const [entry] = Object.values(plan?.sources ?? {});
+         expect(entry).toMatchObject({ name: "gated" });
+         expect(entry.sourceEntityId).toBeTruthy();
+         expect(entry.sql).toBeTruthy();
+      },
+      { timeout: 20000 },
+   );
+
+   it(
+      "reports a gated preaggregate rollup as BOTH synthesized (sources) and refused (refusedSources, tier preaggregate)",
+      async () => {
+         // Rollups group away the gate column, so unlike colocated there is no
+         // row-level admission here: the pre-aggregation gate refuses this
+         // rollup unconditionally. Synthesis is unaffected by that refusal (see
+         // preaggregation_seams.spec.ts's "gate stops materialization, not
+         // synthesis" test), so the rollup still lands in `sources` — the plan
+         // now also has to say it will never materialize.
+         const pkg =
+            await realPackage(`##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(authorize) "org_id in $GROUPS"
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`);
+
+         const { plan } = await computePackageBuildPlan(pkg);
+
+         expect(plan).not.toBeNull();
+         const [source] = Object.values(plan?.sources ?? {});
+         expect(source).toMatchObject({ origin: "preaggregate" });
+         const [refused] = Object.values(plan?.refusedSources ?? {});
+         expect(refused).toMatchObject({
+            tier: "preaggregate",
+            reason: "authorize",
+            sourceID: source.sourceID,
+         });
+      },
+      { timeout: 20000 },
+   );
 });

@@ -89,41 +89,41 @@ describe("authorize_metrics", () => {
    });
 
    it("publisher_authorize_row_level_rejected_total ticks per call, labeled by cause", async () => {
-      recordRowLevelGateRejected("unsupported_node");
-      recordRowLevelGateRejected("unsupported_node");
-      recordRowLevelGateRejected("array_given_needs_in");
-      recordRowLevelGateRejected("scalar_given_rejects_in");
-      recordRowLevelGateRejected("no_given_reference");
       recordRowLevelGateRejected("unreachable_given");
+      recordRowLevelGateRejected("unreachable_given");
+      recordRowLevelGateRejected("entry_point_unexpressible");
+      recordRowLevelGateRejected("gate_dimension_no_given_reference");
+      recordRowLevelGateRejected("gate_dimension_negated_membership");
+      recordRowLevelGateRejected("legacy_string_gate");
 
       expect(
          await harness.collectCounter(
             "publisher_authorize_row_level_rejected_total",
-            { cause: "unsupported_node" },
+            { cause: "unreachable_given" },
          ),
       ).toBe(2);
       expect(
          await harness.collectCounter(
             "publisher_authorize_row_level_rejected_total",
-            { cause: "array_given_needs_in" },
+            { cause: "entry_point_unexpressible" },
          ),
       ).toBe(1);
       expect(
          await harness.collectCounter(
             "publisher_authorize_row_level_rejected_total",
-            { cause: "scalar_given_rejects_in" },
+            { cause: "gate_dimension_no_given_reference" },
          ),
       ).toBe(1);
       expect(
          await harness.collectCounter(
             "publisher_authorize_row_level_rejected_total",
-            { cause: "no_given_reference" },
+            { cause: "gate_dimension_negated_membership" },
          ),
       ).toBe(1);
       expect(
          await harness.collectCounter(
             "publisher_authorize_row_level_rejected_total",
-            { cause: "unreachable_given" },
+            { cause: "legacy_string_gate" },
          ),
       ).toBe(1);
    });

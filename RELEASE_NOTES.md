@@ -31,6 +31,267 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — `#(authorize)` is a boolean dimension inside the source now, not a string on the `source:` line (BREAKING)
+
+This is the headline change of this release, and it supersedes every earlier section on this page
+that shows `#(authorize) "<expr>"` on a `source:` line — including the `[0.0.248]` and `[0.0.205]`
+sections below, which describe the syntax as it was when they shipped. **That syntax no longer
+loads.** A gate is now an ordinary boolean **dimension**, declared in field position inside the
+source's own body and tagged `#(authorize)`:
+
+```malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+source: orders is duckdb.table('orders.parquet') extend {
+  measure: order_count is count()
+
+  #(authorize)
+  internal dimension: authorized is $ROLE = 'analyst'
+}
+```
+
+### What breaks
+
+- **The string form is refused at model load.** Any `#(authorize) "<expr>"` on a `source:` line
+  fails the load with **HTTP 424**, and the message carries the paste-ready rewrite — the exact
+  annotation and dimension lines to substitute, per finding. **Every existing gated package must be
+  rewritten**; there is no compatibility mode and no flag.
+- **`##(authorize)` (file-level) is refused at load** as well, including one folded in from an
+  imported file. Declare a gate dimension on each source it was meant to protect.
+- **A source may declare at most one gate dimension.** Stacking two `#(authorize)` annotations on
+  one source to mean OR is gone — a second annotated dimension fails the load naming both. Write
+  the disjunction out inside the single expression (`$ROLE = 'admin' or $TENANT = 'acme'`).
+- **The gate dimension must be `internal`, never `private`.** Enforcement grafts
+  `extend { where: (authorized) }` from outside the source, so `private` would compile and then be
+  unreachable by its own enforcement; Publisher refuses it at load, naming the fix. `internal` still
+  blocks a caller's own `select:`/`where:` reference to the field.
+- **A gate dimension's name is now a field no derivation may drop or redefine.** The gate is just a
+  field, so `extend { except: authorized }`, an `accept:` that does not re-list it, or an
+  `except:`-then-unannotated-redefinition all produce a source with **no gate at all** and serve
+  every row — no load error, no warning. The string form lived on the `source:` line and survived
+  those, failing closed. This is the one guarantee the migration loses; see
+  [docs/authorize.md](docs/authorize.md#the-entry-point-and-only-the-entry-point). A `rename:` is
+  safe: the annotation travels with the field and the graft follows the new name.
+
+### What is validated, and what only warns
+
+Refusals fail the whole model load (424, naming the source):
+
+- **G1** — the annotated field must be a scalar boolean dimension, and there must be at most one.
+- **G3** — every given the expression references must be on the gating model's own given surface
+  (declared there, or one `import` hop away). Further away, Malloy would silently bind that given's
+  *declaration default* instead of the caller's value, so it is refused instead. Fix:
+  `import { GROUPS } from "…"`.
+- **G4** — every given the expression references must be declared with **no default**, wherever it
+  appears in the expression. An unsupplied given would otherwise resolve to its default and admit or
+  exclude rows the gate did not mean to.
+
+Warnings load fine and are counted on `publisher_authorize_row_level_rejected_total`:
+
+- **W1** (`gate_dimension_no_given_reference`) — the expression references no given at all, so it is
+  a fixed predicate rather than a rule keyed on the caller. Deliberate for a locked base
+  (`internal dimension: authorized is false`); worth a look otherwise.
+- **W2** (`gate_dimension_negated_membership`) — a negated membership test
+  (`not (org_id in $GROUPS)`). It loads and filters correctly for a non-empty given, but an **empty**
+  given then matches every row instead of none. Best-effort shape match: other spellings of the same
+  inversion do not trigger it, so its absence is no evidence either way.
+
+There is no accepted-shape allowlist any more. The string form validated its expression against a
+small grammar of comparison shapes before it could be attached, so `upper(region) = $REGION`,
+`region like $PAT`, `region is not null` and `amount + 1 > $AMOUNTMIN` were all refused at load; all
+four are legal gate dimensions today. The trade is one case that used to be a named load-time
+refusal and is now a request-time warehouse error: comparing a row field to an array-typed given
+with `=`/`!=` (`org_id = $GROUPS`) loads and grafts cleanly and fails when the warehouse executes
+the cast. Use `in` for an array-typed given.
+
+### Migrating
+
+1. Find every `#(authorize) "<expr>"` and `##(authorize)` in your packages. Load the package — every
+   `.malloy` file in the tree compiles and any failure aborts the load, so the refusal will name
+   each declaring source and hand you the rewrite. The one case that escapes it is a declaring file
+   *outside* the package tree: nothing compiles it, so it loads and then denies every request,
+   counted as `legacy_string_gate` with no author-facing detail.
+2. Paste the rewrite **on two lines**. ⚠️ `#(authorize) internal dimension: authorized is …` on one
+   line looks equivalent and is not: Malloy consumes everything after `#(authorize)` on that line as
+   annotation text, so the dimension never compiles and the source loads with **no gate at all** —
+   no error, no warning. An operator collapsing the rewrite to one line deletes their own access
+   control silently. The annotation goes on its own line, the `internal dimension:` on the next.
+3. Collapse stacked annotations into one `or` expression, and check that no derivation of the gated
+   source `except:`s, non-relisting-`accept:`s, or redefines the new dimension's name.
+
+See [docs/authorize.md](docs/authorize.md) for the full reference, and
+[docs/authorize.md § Enforcement](docs/authorize.md#enforcement) for the per-route behaviour
+(notably: `/compile` admits any gate that references no given, whichever way it resolves, so a
+constant-`false` lock does not hold there and `includeSql` returns the ungrafted SQL).
+
+### Also fixed
+
+- **An unsupplied gate given no longer leaks its name.** A gate's givens bind with the query's, so
+  Malloy's own failure named the one that could not bind — "Given 'ROLE' has no value and no default.
+  To fix: supply it via `.run({givens: {ROLE: ...}})`" — reaching the caller as a 400. That is exactly
+  what `docs/authorize.md` promises never happens. It now maps back to the opaque `Access denied for
+  source "…"` 403.
+- **A membership test checks given reachability on both operands.** The membership *candidate*
+  position skipped the check every other operand position makes, so a gate naming a given two import
+  hops away bound that given's declaration **default** at request time instead of the caller's value.
+  It is now refused (`unreachable_given`, G3) like every other unreachable reference.
+- **A documented gate example was never valid Malloy.** `$ROLE in ['analyst', 'admin']` fails to
+  compile — a list literal is not valid in that position. Write the disjunction out
+  (`$ROLE = 'analyst' or $ROLE = 'admin'`), or compare a row field to an array-typed given with `in`.
+- **`/compile` no longer denies a gated source unconditionally.** Denying it made a gated source
+  un-authorable while protecting nothing, since the query path answers a gated source with *filtered
+  rows* rather than a 403. `/compile` never runs the query, so it now admits a gate it can decide
+  without running one. **"Decidable" is presence, not truth:** a gate referencing no given is
+  admitted whichever way it resolves — a constant `false` included — as is one whose every given the
+  caller supplied, right or wrong. Only an unsupplied given denies. `includeSql` then returns the
+  **ungrafted** SQL, without the gate's `where:`, so treat `/compile` as a schema/SQL surface that a
+  `false` lock does not close. `/compile` at scope `append` still denies a gated source outright: the
+  run target's `SourceDef` belongs to the virtual model, so there is no graft target there.
+
+`docs/authorize.md` is reconciled with all of the above.
+
+---
+
+## [Unreleased] — a proven row-level `#(authorize)` gate can now be colocated-persisted
+
+This supersedes the "A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED" bullet
+further down this file, before that section has even shipped: unconditional refusal is no longer the
+whole story. A colocated `#@ persist` (no `storage=`) is now ELIGIBLE when the compiler can prove the
+gate is the entry point's own row-level filter and nothing else is reachable beneath it
+(`classification: "row_level", attributed: true`) — every other shape (unattributed/join-only,
+`rejected`, or no outcome at all) still refuses exactly as before. `storage=` and `#@ preaggregate`
+are unaffected; they remain unconditionally refused for any `#(authorize)`-gated source regardless of
+classification. See [docs/materialization.md](docs/materialization.md#authorize-gated-sources-and-materialization).
+
+**This is not opt-in — read this before rolling out.** The refusal being relaxed never fired at
+package _load_; it fired inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`).
+A package with a colocated `#@ persist` on an `#(authorize)`-gated source therefore loads on the
+current release, appears in `plan.sources`, and serves live — what 422'd was its materialization run.
+So such packages already exist, and this release changes them: a run that used to fail now succeeds,
+and the next auto-run or scheduled build materializes the source and binds it for serving with no
+author action. A source that served live serves from a possibly-stale artifact afterwards, subject to
+the staleness below. `PERSIST_COLOCATED_RELAXATION_ENABLED=false` restores the unconditional refusal;
+it is read at package load, so an already-built artifact keeps serving until its package next loads.
+
+**What this does NOT make fresh: the row data the gate filters on, not the gate itself.** The gate
+expression and the querying principal's attributes are still evaluated live, every query, against the
+persisted table. Only the values in the gating column are frozen at build time, so a row whose access
+decision changes (say, it changes owner) keeps serving to its former owner until the next rebuild.
+Bound that with `materialization.freshness` `{ "window": …, "fallback": "live" }`: the serve path
+re-evaluates freshness per query, so a stale artifact drops out of the serving set and the query
+recomputes live whether or not a rebuild lands. A cadence alone is not a bound (a failed build or a
+stopped scheduler serves the old decisions indefinitely), and `refresh="incremental"` is not one
+either — its delta is bounded by the watermark, so a row that changes owner without its watermark
+advancing is never re-read. Only a full rebuild recomputes the gate column. See
+[docs/materialization.md § freshness contract](docs/materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source).
+
+## [Unreleased] — `BuildPlan.refusedSources`, and a materialization-ordering fix
+
+**`BuildPlan` gains a `refusedSources` collection**, alongside the existing `sources` map, so a host can tell
+"this package declares no persist source" from "every persist source was refused". It is a SEPARATE
+collection rather than a field on `PersistSourcePlan`: constructing that plan entry calls `getSQL()` and
+computes the source's content address, and a free-parameter or given-referencing source cannot reliably
+survive those calls, so a refused source needs a wire shape that requires neither. Each entry carries the
+source's name/sourceID/modelPath, which tier it was evaluated against (`storage` or `colocated` — the SAME
+tier the build path itself would use, post the colocated row-level relaxation; see below for the later-added
+`preaggregate` tier), the bounded refusal reason,
+and the full refusal message. No new reason was added to the existing `free_parameter | given | authorize |
+not_duckdb_portable | public_surface_unknown` enum; the two compile-time asserts this collection is computed
+from can only ever produce the first three.
+
+**Fixed: one refused, uninstructed persist source used to abort an entire orchestrated build.** The build
+loop checked a source's eligibility before checking whether the caller had actually instructed it, so a
+package with several persist sources — one refused, and never instructed, alongside others the caller DID
+instruct — threw on the refused one and lost every source in the run, not just the one that could not build.
+An uninstructed source is now skipped without an eligibility check; an instructed refused source still 422s
+exactly as before.
+
+**Also added: `SourceFailure.connectionName` / `SourceFailure.storageDestinationName`.** A consuming service
+resolving a failure-only source's destination (to release a destination-scoped claim) had no discriminator
+to key on and would default to colocated even for a `storage=` source that failed a rebuild — a live claim
+leak on a partially-successful run. Both fields mirror their `ManifestEntry` counterparts, so a consumer
+computes the same destination key (`storageDestinationName ?? connectionName`) whether the source built or
+failed. **This must land before the deprecated `ManifestEntry.error`/`entries`-mirror-for-failures removal**
+(see that field's own deprecation note) — a consumer still reading failures off the `entries` mirror gets
+neither field until it moves to `BuildManifest.failures`.
+
+Also added a routing-outcome label, `blocked_by_row_level_gate`, on `publisher_storage_serve_routing_total` —
+previously a row-level-gated entry point that vetoed both the storage and pre-aggregation tiers recorded no
+routing outcome at all.
+
+## [Unreleased] — a gated `#@ preaggregate` rollup now reports its own refusal
+
+`BuildPlan.refusedSources` gains a `preaggregate` tier. A gated rollup's pre-aggregation gate refuses
+unconditionally when its base is `#(authorize)`-gated (rollups group away the gate column, so there is
+no row-level admission the way colocated has), and that refusal was previously invisible: the rollup
+still appears in `sources` (synthesis is unaffected by the gate — see the `refusedSources` entry above),
+but nothing said it would never materialize. Such a rollup now also appears in `refusedSources` with
+`tier: "preaggregate"` and `reason: "authorize"`, alongside its `sources` entry — the one tier where
+appearing in both maps at once is the correct, intended state, unlike `storage`/`colocated` where a
+refusal means absence from `sources`. A host inspecting the plan can now tell a gated rollup will 422 on
+instruction before instructing it.
+
+---
+
+## [Unreleased] — every `#(authorize)` gate is a row filter now, not just a field-referencing one (BREAKING)
+
+This supersedes the "a gate that references only givens is unaffected" line in the section below, before
+that section has even shipped: there is no longer a separate given-only shape. A gate that reads no row
+field — `$ROLE = 'analyst'`, `$LEVEL > 3`, a bare `true`/`false` — used to be evaluated by a
+one-row DuckDB probe with a whole-source admit/deny answer. It now classifies and enforces exactly like a
+row-level gate: the condition becomes a constant `where:` (`true` admits every row, `false` matches none),
+and everything in between resolves the same as before this whole redesign started. Classification now has
+only two outcomes, `row_level` and `rejected` — `given_only` is gone.
+
+### The breaking change
+
+- **A gate whose verdict used to deny now returns 200 with zero rows, not 403** — for the query path. A
+  caller supplying `ROLE: 'intern'` against a gate of `$ROLE = 'analyst'` gets an empty result instead
+  of `AccessDeniedError`. Check any consumer that keys logic on the 403 status for this class of gate; the
+  correct row-level equivalent is checking for zero rows.
+- **Package-level FGA denials are unaffected — still 403.** `can_read_package` and every other
+  organization/workspace access check remain exactly as they were; only a gate's _own_ verdict moved to
+  filtering. Do not conflate the two: a package a caller cannot read at all still never reaches the gate.
+- **`/compile` now denies a row-level gate unconditionally, whether or not the given satisfies it.**
+  Superseded — see the `/compile` bullet in the dimension-form section at the top of this page. It now
+  admits any gate it can decide without running the query, which includes every gate that references
+  no given at all.
+- **A negated scalar comparison (`not ($ROLE = 'blocked')`) is now an accepted gate atom.** It was
+  previously reachable only because a field-less condition skipped the row-level grammar entirely; now that
+  every gate goes through it, negating a single comparison is explicitly supported (equivalent to
+  flipping the operator). A negated **membership test** (`not (x in $GROUPS)`) is **also** accepted
+  under the dimension form, with a **W2 load warning** rather than a refusal — the dimension form does
+  not classify expression shape at all. The emptying-the-set hazard is real and is what the warning is
+  for: an empty given makes the negation true for every row instead of none.
+
+### Known, accepted narrowing: the "no schema oracle" guarantee is smaller
+
+The early, pre-compile gate could previously deny a given-only mismatch synchronously, before the caller's
+own query ever compiled — so a bad field name on a locked source came back as 403, never as a Malloy
+compile error naming the field. Every gate is now enforced via a compiled backstop (a graft onto a
+recompiled query), so a caller's own malformed query (an unknown field, a type error) can surface its
+compile error before the gate ever gets a chance to deny. This is accepted, not fixed: no query ever
+executes either way, so no row data leaks — only whether a field name is recognized, which was already the
+case for a genuinely row-level gate before this change.
+
+### Fixed: `/compile` gate-stripping bypass
+
+`/compile`'s **`file`/`append`-scope backstop** used to discover a run target's own gate by walking the
+_caller's own compiled struct_, not the on-disk model's. A caller who submitted edited text with the
+`#(authorize)` annotation stripped could evade that backstop entirely for a row-level-classified gate — the
+early, best-effort check (`assertAuthorizedForText`) that DOES read the authoritative on-disk annotation
+only _deferred_ a row-level classification rather than denying, so nothing downstream re-checked it against
+the on-disk source of truth. This was closed for a given-only gate before the row-filter collapse above
+(the early check denied it synchronously, no struct needed); it was not closed for a row-level one.
+`Model.collectAuthorizeEntryPointGates` now folds `entryPointGatesBySource` — computed once from this
+model's own on-disk `modelDef`, which caller text cannot edit — into the struct walk's result, so a gate
+the caller stripped from submitted text is still found and still denies.
+
+---
+
 ## [Unreleased] — opt-in request rate limiting
 
 The REST server can now cap how many requests one client makes per minute: set `PUBLISHER_RATE_LIMIT=<n>` and the `n+1`th request in a minute from the same peer address gets a `429` with standard `RateLimit-*` headers. It is off unless set, so nothing changes for an existing deployment. Health probes and `/metrics` are exempt, and the MCP port is not covered. Behind a reverse proxy every client arrives from the proxy's address and would share one bucket, so rate-limit at the proxy in that deployment instead. See [docs/configuration.md](docs/configuration.md).
@@ -49,6 +310,10 @@ One caution in the rollback direction: the publish gate is also a load gate, and
 
 ## [0.0.248] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
 
+> **Syntax note (added later):** every `#(authorize) "<expr>"` sample below is the string form, which
+> is what shipped in 0.0.248. It is **retired and refused at model load** as of the dimension-form
+> section at the top of this page — read that for the current syntax before copying anything here.
+
 A gate whose expression reads no row field works exactly as before; a gate that reads one — its
 own source's, or a joined source's — now filters rows instead of only admitting or rejecting the
 whole source. This ships on, unconditionally — there is no flag to stage the rollout.
@@ -63,7 +328,9 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   columns for it to read), so no existing caller can be relying on the 403. It matters for gates
   authors write from now on — check any consumer that keys logic on the 403 status. See
   [docs/security-posture.md](docs/security-posture.md).
-- **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED.** This DOES break
+- **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED** — superseded by the
+  relaxation in the section above this one, which admits exactly the proven `row_level` + attributed
+  shape; every other shape still refuses as described below. This DOES break
   existing packages — one that has this will fail to build where it previously succeeded — so it is
   worth being precise about what it does and does not close. It is **not** closing an unfiltered
   leak: measured, a colocated substitution replaces only the source's relation SQL, while the gate
@@ -73,7 +340,7 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   old owner and stays hidden from its new one. Nor does adding a gate refresh anything — the
   content address does not include the annotation, so a pre-gate artifact stays addressable
   indefinitely while every rebuild is refused. Note also that the check's reach is deliberately
-  wider than that: it also refuses a source that merely *joins* a gated source, which entry-point
+  wider than that: it also refuses a source that merely _joins_ a gated source, which entry-point
   semantics never enforced anyway. Drop `#@ persist` from the source, or move the gate to a source
   that is not materialized. See [docs/materialization.md](docs/materialization.md).
 - **An `#(authorize)` in a position nothing enforces now fails the model load** — a top-level
@@ -108,7 +375,7 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   a filter on packages that served every row yesterday. In the same change, the block form
   `#|(authorize)` … `|#` and the other bracket pairs (`#[authorize]`, `#<authorize>`, `#{authorize}`)
   are now recognized as gates, because the compiler routes them there — the block form in particular
-  was previously a live fail-open, unenforced at query time *and* eligible to be frozen into a
+  was previously a live fail-open, unenforced at query time _and_ eligible to be frozen into a
   materialized artifact.
 
   **What is deliberately NOT refused:** another application's `authorize`-prefixed route.
@@ -117,6 +384,7 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   are valid distinct routes belonging to whoever declared them, and load untouched. An earlier draft
   of this refusal matched them as near misses and failed the whole model load with advice aimed at
   someone else.
+
 - **Known limitation — one notebook shape fails with a 400 instead of filtering.** A cell that both
   declares a gated source and runs it in the same cell, where the gate reads a JOINED field and the
   run query does not itself reference that field, is refused rather than answered. Reference the
@@ -144,7 +412,7 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   load fails with a 424 naming the source; where it only **inherits** one, load succeeds with a
   warning and that entry point denies every request, leaving the rest of the model serving.
 - Entry-point-only semantics are unchanged: a gate on a source reached only through a join still
-  does not fire. A gate may now *reference* a joined field from the entry point's own expression —
+  does not fire. A gate may now _reference_ a joined field from the entry point's own expression —
   that is not the same thing.
 
 ---
@@ -153,11 +421,11 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
 
 A build that failed on any source abandoned the whole command: it stopped at the first failure, reclaimed the tables already written, and reported one message for the entire run. A package where one source of five had a bad grant was indistinguishable from a package that was entirely broken, and the four tables that had already materialized were dropped on the way out.
 
-A source that fails is now recorded in the manifest with the reason it gave, and the build continues. The sources that materialized stay usable, and a consumer can tell which source failed rather than inferring it from an absent entry. A build that loses *every* source still fails — it produced nothing, so it must not report itself as a success with errors attached. A reuse-only run, which builds nothing of its own, is unaffected.
+A source that fails is now recorded in the manifest with the reason it gave, and the build continues. The sources that materialized stay usable, and a consumer can tell which source failed rather than inferring it from an absent entry. A build that loses _every_ source still fails — it produced nothing, so it must not report itself as a success with errors attached. A reuse-only run, which builds nothing of its own, is unaffected.
 
 **New response field.** `BuildManifest.failures` maps a sourceEntityId to a `SourceFailure` carrying `reason`, redacted against that source's own connection. A consumer generating a strict client from `api-doc.yaml` rejects the field until it regenerates; the key is absent on a run where every source built.
 
-Failures are reported *beside* `entries` rather than inside one, which is the part worth knowing if you consume a manifest. A failure carries the `physicalTableName` the source was headed for — useful for correlating with the request, and never a table to read: the build that would have created it is what failed, and a failed *rebuild* leaves the prior generation in place under that same name, so resolving it serves stale data rather than nothing.
+Failures are reported _beside_ `entries` rather than inside one, which is the part worth knowing if you consume a manifest. A failure carries the `physicalTableName` the source was headed for — useful for correlating with the request, and never a table to read: the build that would have created it is what failed, and a failed _rebuild_ leaves the prior generation in place under that same name, so resolving it serves stale data rather than nothing.
 
 **`ManifestEntry.error` is deprecated.** 0.0.245 and 0.0.246 report a failed source as an entry carrying `error`, and that remains true for one more deprecation cycle: a failure is written to **both** `failures` and a mirrored entry, so a consumer reading `error` keeps working unchanged. Move to `failures` — `error` will be removed, and once it is, `entries` holds only sources that built.
 
@@ -177,7 +445,7 @@ A measure annotated `#@ preaggregate grain="…"` is rolled up into a stored tab
 
 **The annotation is all it takes — there is no deployment flag to enable.** Writing one is the decision to build and serve a rollup, so a package that carries no `#@ preaggregate` is untouched: nothing extra is planned, built, or compiled for it. Worth knowing before adding your first annotation, because the build is not free: a rollup is materialized like any `#@ persist` source, and a grain whose cardinality approaches the base table's spends nearly as much as the base while saving little. `buildPlan.sources` with `origin: preaggregate` is where to see what a package will build before it builds it.
 
-**A measure may be declared at several grains, one annotation line each, and that is a cost decision.** A rollup also serves queries grouped by any *subset* of its grain, so one rollup at `category, order_day` correctly answers by-category, by-day and grand-total queries. But a combined grain has roughly the product of its dimensions' cardinalities, so `customer_id, order_day` can approach the base table's row count and save almost nothing where either grain alone is small. Declaring both separately gives each query a small table to read, at the price of two tables to build and refresh. Rollups are grouped by grain, not by measure: ten measures sharing a grain are one table and one `GROUP BY`. Note that where two declared grains both cover a query, the one used is the first in the composite's member order, which is by generated name rather than by size — so grains are worth declaring for queries they cover *differently*, not to offer the same query a choice.
+**A measure may be declared at several grains, one annotation line each, and that is a cost decision.** A rollup also serves queries grouped by any _subset_ of its grain, so one rollup at `category, order_day` correctly answers by-category, by-day and grand-total queries. But a combined grain has roughly the product of its dimensions' cardinalities, so `customer_id, order_day` can approach the base table's row count and save almost nothing where either grain alone is small. Declaring both separately gives each query a small table to read, at the price of two tables to build and refresh. Rollups are grouped by grain, not by measure: ten measures sharing a grain are one table and one `GROUP BY`. Note that where two declared grains both cover a query, the one used is the first in the composite's member order, which is by generated name rather than by size — so grains are worth declaring for queries they cover _differently_, not to offer the same query a choice.
 
 **Unusable annotations are refused at publish, and again at load.** Pre-aggregation's failure mode is an annotation that silently does nothing while the plan looks correct, so anything that cannot be built is a 400 rather than a warning. Refused: an annotation anywhere but on a measure; a measure whose aggregate cannot be re-aggregated from a stored partial (only `sum`, `count`, `min` and `max` can — pre-aggregate a sum and a count and divide them in a view instead); a grain naming anything but a dimension the source itself declares, which rules out an inline truncation like `grain="order_time.day"` (declare `dimension: order_day is order_time.day` and name that, after which coarser truncations of it route too); and a base source with a fan-out join, since `join_many` and `join_cross` can multiply rows. A `join_one` is permitted, and a measure that aggregates through one is served normally. Enforcing at load as well as at publish matters because re-aggregatability is derived from the compiled model: a Malloy version change can in principle reclassify a measure that published cleanly, and that surfaces as a package that stops loading (reported in `ServerStatus.loadErrors`) rather than one quietly paying for rollups that answer nothing.
 
@@ -614,6 +882,10 @@ A `.malloy` file in a package's `dashboards/` directory carrying an `# artifact`
 See [docs/configuration.md](docs/configuration.md) for the rule and the recommended layout.
 
 ## [0.0.205] — Source access gates (`#(authorize)`)
+
+> **Syntax note (added later):** the string and file-level forms described here, and the OR semantics
+> of stacked annotations, are all **retired and refused at model load** — see the dimension-form
+> section at the top of this page for the current syntax.
 
 **Sources can now gate query access on givens.** A `#(authorize) "<bool expr>"` annotation (source-level) or `##(authorize)` (file-level) is evaluated against the request's [givens](docs/givens.md) before any query that reads the source runs; access is denied with **HTTP 403** unless at least one in-scope expression is `true` (OR semantics). Enforced on `POST /…/query`, the notebook-cell `GET`, `POST /…/compile`, and the MCP `malloy_executeQuery` tool. Malformed or invalid annotations fail model load with **424**.
 

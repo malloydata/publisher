@@ -86,11 +86,14 @@ import { recordRowLevelGateRejected } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
 import {
+   assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
+   findLegacyStringGates,
    validateAuthorizeProbes,
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
+import { validateGateDimensionsForModel } from "../service/gate_dimension";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
@@ -645,33 +648,6 @@ function authorizeWarningCollector(): {
    };
 }
 
-/** Given name → declared Malloy type, from this model's own given surface.
- *  Mirrors `Model.givenDeclaredTypes()` — see its doc comment. */
-function givenDeclaredTypes(
-   givens: ApiGivenWire[] | undefined,
-): Map<string, string> {
-   return new Map(
-      (givens ?? [])
-         .filter((g) => g.name != null && g.type != null)
-         .map((g) => [g.name, g.type] as [string, string]),
-   );
-}
-
-/** Given name → declared default (rendered Malloy source text), from this
- *  model's own given surface. Feeds `validateAuthorizeProbes`'s
- *  `declaredDefaults`, which `classifyAuthorizeGate` uses to refuse a
- *  field-vs-given row-level comparison whose given carries one — see that
- *  function's doc in `authorize.ts`. */
-function givenDeclaredDefaults(
-   givens: ApiGivenWire[] | undefined,
-): Map<string, string> {
-   return new Map(
-      (givens ?? [])
-         .filter((g) => g.name != null && g.default != null)
-         .map((g) => [g.name, g.default as string] as [string, string]),
-   );
-}
-
 function extractQueries(modelDef: ModelDef): {
    queries: ApiQueryWire[];
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
@@ -753,6 +729,13 @@ async function compileMalloyModel(
       ...misplacedAuthorize,
       ...queryResult.misplacedAuthorize,
    ]);
+   // The string form is refused outright — see `findLegacyStringGates`'s doc.
+   // Checked before `validateAuthorizeProbes`, same order as `Model.create`.
+   const legacyStringGates = findLegacyStringGates(authorizeOwnNotes);
+   legacyStringGates.forEach(() =>
+      recordRowLevelGateRejected("legacy_string_gate"),
+   );
+   assertNoLegacyStringGate(legacyStringGates);
    // Validate #(authorize) at compile time (shared with Model.create). Throws
    // on an unknown given / source-field reference or a rejected row-level
    // shape; compileOneModel's catch turns it into this model's
@@ -762,13 +745,28 @@ async function compileMalloyModel(
    const authorizeWarningCollection = authorizeWarningCollector();
    await validateAuthorizeProbes(mm, {
       authorizeMap,
-      declaredTypes: givenDeclaredTypes(givens),
-      declaredDefaults: givenDeclaredDefaults(givens),
       authorizeOwnNotes,
       onRowLevelGateRejected: recordRowLevelGateRejected,
       onRowLevelGateUnexpressible:
          authorizeWarningCollection.onRowLevelGateUnexpressible,
    });
+   // Load-time validation for the DIMENSION form of `#(authorize)` — see
+   // `../service/gate_dimension`'s doc for why it is a separate check from
+   // `validateAuthorizeProbes` above. The worker has no logger (see this
+   // function's doc), so a warning rides the same wire channel as
+   // `onRowLevelGateUnexpressible` above.
+   validateGateDimensionsForModel(
+      modelDef,
+      new Set(
+         (givens ?? []).map((g) => g.name).filter((n): n is string => !!n),
+      ),
+      (sourceName, cause, detail) => {
+         recordRowLevelGateRejected(cause);
+         authorizeWarningCollection.warnings.push(
+            `Row-level #(authorize) gate dimension warning on "${sourceName}" (${cause}): ${detail}`,
+         );
+      },
+   );
 
    return {
       modelPath,
@@ -962,17 +960,38 @@ async function compileNotebookModel(
          ...extracted.misplacedAuthorize,
          ...finalQueryResult.misplacedAuthorize,
       ]);
+      // See the identical check in `compileMalloyModel` above.
+      const finalLegacyStringGates = findLegacyStringGates(
+         extracted.authorizeOwnNotes,
+      );
+      finalLegacyStringGates.forEach(() =>
+         recordRowLevelGateRejected("legacy_string_gate"),
+      );
+      assertNoLegacyStringGate(finalLegacyStringGates);
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.
       await validateAuthorizeProbes(mm, {
          authorizeMap: extracted.authorizeMap,
-         declaredTypes: givenDeclaredTypes(finalGivens),
-         declaredDefaults: givenDeclaredDefaults(finalGivens),
          authorizeOwnNotes: extracted.authorizeOwnNotes,
          onRowLevelGateRejected: recordRowLevelGateRejected,
          onRowLevelGateUnexpressible:
             authorizeWarningCollection.onRowLevelGateUnexpressible,
       });
+      // See the identical check in `compileMalloyModel` above.
+      validateGateDimensionsForModel(
+         finalModelDef,
+         new Set(
+            (finalGivens ?? [])
+               .map((g) => g.name)
+               .filter((n): n is string => !!n),
+         ),
+         (sourceName, cause, detail) => {
+            recordRowLevelGateRejected(cause);
+            authorizeWarningCollection.warnings.push(
+               `Row-level #(authorize) gate dimension warning on "${sourceName}" (${cause}): ${detail}`,
+            );
+         },
+      );
    }
 
    return {
