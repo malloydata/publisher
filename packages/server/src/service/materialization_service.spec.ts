@@ -41,7 +41,10 @@ import {
 } from "./materialization_service";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
-import { tallySources } from "./materialization_service";
+import {
+   isReclaimableStorageTable,
+   tallySources,
+} from "./materialization_service";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -164,20 +167,24 @@ describe("redactConnectionSecrets", () => {
             service as unknown as {
                buildOneSourceIntoStorage: (...a: unknown[]) => Promise<unknown>;
             }
-         ).buildOneSourceIntoStorage(
-            { name: "orders_by_month", connectionName: "orders_pg" },
-            {
+         ).buildOneSourceIntoStorage({
+            persistSource: {
+               name: "orders_by_month",
+               connectionName: "orders_pg",
+            },
+            instruction: {
                sourceEntityId: "sid-1",
                physicalTableName: "mz_orders_by_month",
                destination: "lake",
             },
             // strict: throw instead of falling through to recompute-from-raw.
-            { strict: true, update: () => {} },
+            manifest: { strict: true, update: () => {} },
             environment,
-            "SELECT 1",
-            {},
-            true, // dependsOnStorageUpstream — take the chained path
-         );
+            publicBuildSQL: "SELECT 1",
+            buildSQL: "SELECT 1",
+            builtEntries: {},
+            dependsOnStorageUpstream: true, // take the chained path
+         });
 
          // A failed ATTACH is infrastructure, not a shape limit: it must NOT
          // present as the strict-upstreams refusal (that message means "we could
@@ -835,6 +842,35 @@ describe("MaterializationService", () => {
             await expect(
                creating({
                   ledger: [entry({ physicalTableName: '"other_table"' })],
+               }),
+            ).rejects.toThrow(/do not build/);
+            expect(ctx.repository.createMaterialization.called).toBe(false);
+         });
+
+         it("seeds, rather than refusing, when an older caller omits the destination", async () => {
+            // A caller predating `storageDestinationName` echoes the entry
+            // without one. The table it names IS built by this run, just into a
+            // destination the entry cannot describe, so the entry is stale rather
+            // than wrong: the run proceeds and the source seeds, because the
+            // index the build reads keys on the destination too and finds no
+            // boundary there.
+            const created = await creating({
+               ledger: [entry({ storageDestinationName: undefined })],
+               instruction: makeInstruction({ destination: "lake" }),
+            });
+            expect(created.status).toBe("PENDING");
+         });
+
+         it("rejects an entry naming a destination this run does not write", async () => {
+            // Not the stale case above: the entry names a destination, and it is
+            // not the one instructed. Couriering that boundary would measure one
+            // table's coverage onto another, so it is a caller error.
+            await expect(
+               creating({
+                  ledger: [
+                     entry({ storageDestinationName: "some_other_lake" }),
+                  ],
+                  instruction: makeInstruction({ destination: "lake" }),
                }),
             ).rejects.toThrow(/do not build/);
             expect(ctx.repository.createMaterialization.called).toBe(false);
@@ -2935,15 +2971,16 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       });
       const svc = ctx.service as unknown as {
          buildDownstreamViaParents: unknown;
-         buildOneSourceIntoStorage: (
-            s: unknown,
-            i: BuildInstruction,
-            m: Manifest,
-            e: unknown,
-            sql: string,
-            built: Record<string, unknown>,
-            dep: boolean,
-         ) => Promise<{
+         buildOneSourceIntoStorage: (p: {
+            persistSource: unknown;
+            instruction: BuildInstruction;
+            manifest: Manifest;
+            environment: unknown;
+            publicBuildSQL: string;
+            buildSQL: string;
+            builtEntries: Record<string, unknown>;
+            dependsOnStorageUpstream: boolean;
+         }) => Promise<{
             physicalTableName: string;
             storageDestinationName?: string;
          }>;
@@ -2969,13 +3006,14 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                       message: "uncarried parent",
                    }),
                 );
-      return svc.buildOneSourceIntoStorage(
-         source,
+      return svc.buildOneSourceIntoStorage({
+         persistSource: source,
          instruction,
          manifest,
          environment,
-         "SELECT should_not_run",
-         {
+         publicBuildSQL: "SELECT should_not_run",
+         buildSQL: "SELECT should_not_run",
+         builtEntries: {
             up: {
                sourceEntityId: "up",
                sourceName: "daily",
@@ -2984,8 +3022,8 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
                schema: [{ name: "order_date", type: "DATE" }],
             },
          },
-         true, // dependsOnStorageUpstream
-      );
+         dependsOnStorageUpstream: true,
+      });
    }
 
    it("stacks on the parent: builds by reading it and returns the storage entry", async () => {
@@ -3070,33 +3108,35 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
       const run = () =>
          (
             ctx.service as unknown as {
-               buildOneSourceIntoStorage: (
-                  s: unknown,
-                  i: BuildInstruction,
-                  m: unknown,
-                  e: unknown,
-                  sql: string,
-                  built: Record<string, unknown>,
-                  dep: boolean,
-               ) => Promise<{ storageDestinationName?: string }>;
+               buildOneSourceIntoStorage: (p: {
+                  persistSource: unknown;
+                  instruction: BuildInstruction;
+                  manifest: unknown;
+                  environment: unknown;
+                  publicBuildSQL: string;
+                  buildSQL: string;
+                  builtEntries: Record<string, unknown>;
+                  dependsOnStorageUpstream: boolean;
+               }) => Promise<{ storageDestinationName?: string }>;
             }
-         ).buildOneSourceIntoStorage(
-            fakeSource({
+         ).buildOneSourceIntoStorage({
+            persistSource: fakeSource({
                name: "monthly",
                sourceEntityId: "abcdef1234567890",
                annotationFields: { storage: "shared" },
             }),
-            {
+            instruction: {
                sourceEntityId: "abcdef1234567890",
                materializedTableId: "mt",
                physicalTableName: "monthly__mabc",
                realization: "COPY",
                destination: "shared",
             },
-            new Manifest(),
+            manifest: new Manifest(),
             environment,
-            "SELECT should_not_run",
-            {
+            publicBuildSQL: "SELECT should_not_run",
+            buildSQL: "SELECT should_not_run",
+            builtEntries: {
                up: {
                   sourceEntityId: "up",
                   sourceName: "daily",
@@ -3105,8 +3145,8 @@ describe("buildOneSourceIntoStorage destination resolution", () => {
                   schema: [{ name: "order_date", type: "DATE" }],
                },
             },
-            true, // dependsOnStorageUpstream
-         );
+            dependsOnStorageUpstream: true,
+         });
 
       return { run, write };
    }
@@ -3575,6 +3615,46 @@ describe("transition (state machine)", () => {
 // guards get assertions rather than a trace. Scenario 64 covers it end to end,
 // but hammer does not run in CI — and the failure mode is silent data loss, not
 // a broken build.
+describe("isReclaimableStorageTable", () => {
+   type Entry = Parameters<typeof isReclaimableStorageTable>[0];
+   const entry = (over: Partial<Entry>) =>
+      ({
+         sourceEntityId: "eid",
+         physicalTableName: "daily_v1",
+         ...over,
+      }) as Entry;
+
+   it("reclaims a stored table from a source that is not refreshed incrementally", () => {
+      // A fresh generational name nothing else knows about: exactly what the
+      // reclaim exists for.
+      expect(
+         isReclaimableStorageTable(entry({ storageDestinationName: "lake" })),
+      ).toBe(true);
+   });
+
+   it("never reclaims a table an incremental source owns, whatever this run did", () => {
+      // Its name is stable across runs by contract, so it is not a fresh
+      // generation — a prior manifest may bind it, and a refresh writes it in
+      // place either way: a delta as DML, a re-seed as CREATE OR REPLACE. A later
+      // source failing the run must not take the source off its stored table, and
+      // `full` is as exposed as `delta` here.
+      for (const refresh of ["delta", "none", "full"] as const) {
+         expect(
+            isReclaimableStorageTable(
+               entry({ storageDestinationName: "lake", refresh }),
+            ),
+         ).toBe(false);
+      }
+   });
+
+   it("ignores a colocated entry, which this sweep does not own", () => {
+      expect(isReclaimableStorageTable(entry({}))).toBe(false);
+      expect(isReclaimableStorageTable(entry({ refresh: "delta" }))).toBe(
+         false,
+      );
+   });
+});
+
 describe("reclaimStorageTablesFromFailedRun", () => {
    let ctx: ReturnType<typeof createMocks>;
    let infoLog: sinon.SinonStub;

@@ -57,7 +57,12 @@ describe("IncrementalLedgerRepository", () => {
 
    it("returns null for a table with no boundary yet (which means SEED)", async () => {
       const { repo } = await freshRepo();
-      expect(await repo.get(ENV, CONN, TABLE)).toBeNull();
+      expect(
+         await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: TABLE,
+         }),
+      ).toBeNull();
    });
 
    it("round-trips a boundary, its declarations and its lineage identity", async () => {
@@ -72,7 +77,10 @@ describe("IncrementalLedgerRepository", () => {
       expect(written.mergeKeyDimensions).toEqual(["order_id", "region"]);
       expect(written.derivedStrategy).toBe("merge");
 
-      const read = await repo.get(ENV, CONN, TABLE);
+      const read = await repo.get(ENV, {
+         connectionName: CONN,
+         physicalTableName: TABLE,
+      });
       expect(read).not.toBeNull();
       expect(read!.watermarkDimension).toBe("order_date");
       expect(read!.mergeKeyDimensions).toEqual(["order_id", "region"]);
@@ -98,7 +106,10 @@ describe("IncrementalLedgerRepository", () => {
          "SELECT count(*) AS n FROM incremental_ledger",
       );
       expect(Number(count[0].n)).toBe(1);
-      const read = await repo.get(ENV, CONN, TABLE);
+      const read = await repo.get(ENV, {
+         connectionName: CONN,
+         physicalTableName: TABLE,
+      });
       expect(read!.coveredThroughValue).toBe("2024-07-01");
       expect(read!.advancedByMaterializationId).toBe("run-2");
    });
@@ -121,7 +132,10 @@ describe("IncrementalLedgerRepository", () => {
          "SELECT count(*) AS n FROM incremental_ledger",
       );
       expect(Number(count[0].n)).toBe(1);
-      const read = await repo.get(ENV, CONN, TABLE);
+      const read = await repo.get(ENV, {
+         connectionName: CONN,
+         physicalTableName: TABLE,
+      });
       expect(read!.coveredThroughValue).toBe("2024-07-01");
       // The tag names the last writer, which is the honest answer for a table
       // several versions refresh in turn.
@@ -163,17 +177,29 @@ describe("IncrementalLedgerRepository", () => {
          }),
       );
 
-      expect((await repo.get(ENV, CONN, TABLE))!.coveredThroughValue).toBe(
-         "2024-06-01",
-      );
-      expect((await repo.get("env-2", CONN, TABLE))!.coveredThroughValue).toBe(
-         "2024-01-01",
-      );
       expect(
-         (await repo.get(ENV, "other-wh", TABLE))!.coveredThroughValue,
+         (await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: TABLE,
+         }))!.coveredThroughValue,
+      ).toBe("2024-06-01");
+      expect(
+         (await repo.get("env-2", {
+            connectionName: CONN,
+            physicalTableName: TABLE,
+         }))!.coveredThroughValue,
+      ).toBe("2024-01-01");
+      expect(
+         (await repo.get(ENV, {
+            connectionName: "other-wh",
+            physicalTableName: TABLE,
+         }))!.coveredThroughValue,
       ).toBe("2024-02-01");
       expect(
-         (await repo.get(ENV, CONN, "analytics.other"))!.coveredThroughValue,
+         (await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: "analytics.other",
+         }))!.coveredThroughValue,
       ).toBe("2024-03-01");
    });
 
@@ -185,9 +211,12 @@ describe("IncrementalLedgerRepository", () => {
             coveredThroughValue: "9007199254740993",
          }),
       );
-      expect((await repo.get(ENV, CONN, TABLE))!.coveredThroughValue).toBe(
-         "9007199254740993",
-      );
+      expect(
+         (await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: TABLE,
+         }))!.coveredThroughValue,
+      ).toBe("9007199254740993");
 
       await repo.upsert(
          entry({
@@ -195,9 +224,12 @@ describe("IncrementalLedgerRepository", () => {
             coveredThroughValue: "us-east-1'; DROP TABLE x",
          }),
       );
-      expect((await repo.get(ENV, CONN, TABLE))!.coveredThroughValue).toBe(
-         "us-east-1'; DROP TABLE x",
-      );
+      expect(
+         (await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: TABLE,
+         }))!.coveredThroughValue,
+      ).toBe("us-east-1'; DROP TABLE x");
    });
 
    it("deletes one table's boundary, so the next run re-seeds it", async () => {
@@ -205,10 +237,23 @@ describe("IncrementalLedgerRepository", () => {
       await repo.upsert(entry());
       await repo.upsert(entry({ physicalTableName: "analytics.other" }));
 
-      await repo.deleteEntry(ENV, CONN, TABLE);
+      await repo.deleteEntry(ENV, {
+         connectionName: CONN,
+         physicalTableName: TABLE,
+      });
 
-      expect(await repo.get(ENV, CONN, TABLE)).toBeNull();
-      expect(await repo.get(ENV, CONN, "analytics.other")).not.toBeNull();
+      expect(
+         await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: TABLE,
+         }),
+      ).toBeNull();
+      expect(
+         await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: "analytics.other",
+         }),
+      ).not.toBeNull();
    });
 
    it("cascades by package and by environment", async () => {
@@ -221,19 +266,39 @@ describe("IncrementalLedgerRepository", () => {
       await repo.upsert(entry({ environmentId: "env-2" }));
 
       await repo.deleteByPackage(ENV, PKG);
-      expect(await repo.get(ENV, CONN, TABLE)).toBeNull();
-      expect(await repo.get(ENV, CONN, "analytics.b")).not.toBeNull();
+      expect(
+         await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: TABLE,
+         }),
+      ).toBeNull();
+      expect(
+         await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: "analytics.b",
+         }),
+      ).not.toBeNull();
 
       await repo.deleteByEnvironmentId(ENV);
-      expect(await repo.get(ENV, CONN, "analytics.b")).toBeNull();
-      expect(await repo.get("env-2", CONN, TABLE)).not.toBeNull();
+      expect(
+         await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: "analytics.b",
+         }),
+      ).toBeNull();
+      expect(
+         await repo.get("env-2", {
+            connectionName: CONN,
+            physicalTableName: TABLE,
+         }),
+      ).not.toBeNull();
    });
 
    describe("re-keying an existing database", () => {
       // The schema pass runs on every boot, so both halves matter: it has to
-      // replace a table still keyed on the package, and it must not touch one
-      // already keyed on the table — otherwise every restart would silently
-      // discard every boundary and re-seed every incremental source.
+      // replace a table keyed on anything older, and it must not touch one already
+      // keyed on the store — otherwise every restart would silently discard every
+      // boundary and re-seed every incremental source.
       const LEGACY_DDL = `
          CREATE TABLE incremental_ledger (
            environment_id VARCHAR NOT NULL,
@@ -294,7 +359,12 @@ describe("IncrementalLedgerRepository", () => {
 
          // Dropped, not migrated: the boundary is a cache whose miss path is a
          // seed, so each source rebuilds once and then advances by delta.
-         expect(await repo.get(ENV, CONN, TABLE)).toBeNull();
+         expect(
+            await repo.get(ENV, {
+               connectionName: CONN,
+               physicalTableName: TABLE,
+            }),
+         ).toBeNull();
          await repo.upsert(entry({ packageName: "orders|v1" }));
          await repo.upsert(entry({ packageName: "orders|v2" }));
          expect(
@@ -308,15 +378,96 @@ describe("IncrementalLedgerRepository", () => {
          ).toBe(1);
       });
 
-      it("leaves a table-keyed ledger and its boundaries alone", async () => {
+      /**
+       * The shape that shipped between the package re-key and the store re-key:
+       * keyed on the table but blind to WHICH STORE that table is in. Seeded
+       * verbatim, so it keeps describing the store that shipped.
+       */
+      const STORE_BLIND_DDL = `
+         CREATE TABLE incremental_ledger (
+           environment_id VARCHAR NOT NULL,
+           package_name VARCHAR NOT NULL,
+           source_entity_id VARCHAR NOT NULL,
+           covered_through_value VARCHAR NOT NULL,
+           covered_through_type VARCHAR NOT NULL,
+           watermark_dimension VARCHAR NOT NULL,
+           merge_key_dimensions JSON NOT NULL,
+           derived_strategy VARCHAR NOT NULL,
+           physical_table_name VARCHAR NOT NULL,
+           connection_name VARCHAR NOT NULL,
+           advanced_by_materialization_id VARCHAR,
+           advanced_at TIMESTAMP NOT NULL,
+           created_at TIMESTAMP NOT NULL,
+           PRIMARY KEY (environment_id, connection_name, physical_table_name)
+         )`;
+
+      it("replaces a store-blind ledger, and two stores then coexist", async () => {
+         const { repo, db } = await freshRepo();
+         await db.run("DROP TABLE incremental_ledger");
+         await db.run(STORE_BLIND_DDL);
+         const now = new Date().toISOString();
+         await db.run(
+            `INSERT INTO incremental_ledger VALUES
+              (?, 'orders', ?, '2024-06-01', 'date', 'order_date', '[]',
+               'range_replace', ?, ?, 'run-1', ?, ?)`,
+            [ENV, SOURCE, TABLE, CONN, now, now],
+         );
+
+         await initializeSchema(db);
+
+         // Dropped rather than migrated, on the same reasoning as the package
+         // re-key above: the boundary is a cache whose miss path is a seed.
+         expect(
+            await repo.get(ENV, {
+               connectionName: CONN,
+               physicalTableName: TABLE,
+            }),
+         ).toBeNull();
+
+         // And the point of the new key: one source persisted colocated and
+         // another persisted into a destination under the same name are two
+         // different tables. Under the old key these shared a row and both seeded
+         // forever, each overwriting the other on the way out.
+         await repo.upsert(entry({ coveredThroughValue: "2024-07-01" }));
+         await repo.upsert(
+            entry({
+               storageDestinationName: "lake",
+               coveredThroughValue: "2024-08-01",
+            }),
+         );
+         expect(
+            (
+               await repo.get(ENV, {
+                  connectionName: CONN,
+                  physicalTableName: TABLE,
+               })
+            )?.coveredThroughValue,
+         ).toBe("2024-07-01");
+         expect(
+            (
+               await repo.get(ENV, {
+                  connectionName: CONN,
+                  storageDestinationName: "lake",
+                  physicalTableName: TABLE,
+               })
+            )?.coveredThroughValue,
+         ).toBe("2024-08-01");
+      });
+
+      it("leaves a store-keyed ledger and its boundaries alone", async () => {
          const { repo, db } = await freshRepo();
          await repo.upsert(entry({ coveredThroughValue: "2024-07-01" }));
 
          await initializeSchema(db);
 
-         expect((await repo.get(ENV, CONN, TABLE))?.coveredThroughValue).toBe(
-            "2024-07-01",
-         );
+         expect(
+            (
+               await repo.get(ENV, {
+                  connectionName: CONN,
+                  physicalTableName: TABLE,
+               })
+            )?.coveredThroughValue,
+         ).toBe("2024-07-01");
       });
    });
 
@@ -331,8 +482,11 @@ describe("IncrementalLedgerRepository", () => {
            WHERE physical_table_name = ?`,
          [TABLE],
       );
-      expect((await repo.get(ENV, CONN, TABLE))!.mergeKeyDimensions).toEqual(
-         [],
-      );
+      expect(
+         (await repo.get(ENV, {
+            connectionName: CONN,
+            physicalTableName: TABLE,
+         }))!.mergeKeyDimensions,
+      ).toEqual([]);
    });
 });

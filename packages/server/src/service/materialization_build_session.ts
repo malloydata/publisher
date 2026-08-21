@@ -38,6 +38,7 @@ import {
    federateSourceForPassthrough,
    type FederatedSourceType,
 } from "./connection";
+import type { WatermarkBound } from "./incremental_apply";
 import { storageDestinationRoot } from "./connection_config";
 import {
    assertServesInDuckDB,
@@ -69,6 +70,15 @@ const PASSTHROUGH_SOURCE_TYPES: readonly FederatedSourceType[] = [
  * reachable from configuration today.
  */
 const STORAGE_DESTINATION_TYPES = ["ducklake", "duckdb"] as const;
+
+/**
+ * The Malloy `dialectName` every storage destination speaks, since both types it
+ * may be are DuckDB-family. Named because it is the dialect a stored table's DDL,
+ * DML and identifier quoting are all written in, which is NOT the source's — and
+ * a bare "duckdb" at each of those sites reads like a default rather than the one
+ * fact it is.
+ */
+export const STORAGE_TARGET_DIALECT = "duckdb";
 
 /**
  * Wrap a source-dialect SELECT as a native per-engine query-passthrough call so
@@ -564,7 +574,17 @@ export function createIsolatedBuildSession(sessionName: string): {
    // nothing left holding a reference to it.
    let session: DuckDBConnection;
    try {
-      session = new DuckDBConnection(sessionName, ":memory:", workDir);
+      // Row limit lifted off db-duckdb's `DEFAULT_QUERY_OPTIONS.rowLimit` of 10,
+      // which `runSQL` enforces by slicing the result. Every read this session
+      // makes is metadata about the table it just wrote — `duckdb_columns()` and
+      // `DESCRIBE` both return one row per COLUMN — so the default silently
+      // truncates an 11-column table's shape. Downstream that reads as columns
+      // missing from the table: the delta path calls it a shape mismatch and
+      // rebuilds in full forever, and the manifest declares a short schema for
+      // the serve transform to bind.
+      session = new DuckDBConnection(sessionName, ":memory:", workDir, {
+         rowLimit: Number.MAX_SAFE_INTEGER,
+      });
    } catch (err) {
       rmSync(workDir, { recursive: true, force: true });
       throw err;
@@ -617,6 +637,26 @@ export function createIsolatedBuildSession(sessionName: string): {
    return { session, dispose };
 }
 
+/**
+ * Pin a build session's timezone before any predicate is rendered against it.
+ *
+ * A `TIMESTAMP WITH TIME ZONE` column compared against a naive `TIMESTAMP`
+ * literal is resolved in the SESSION's zone, and every bound the incremental path
+ * renders is UTC text — so a session on the host's local zone selects a window
+ * offset by that host's offset. Silently: the delta commits, the rows are simply
+ * the wrong ones, and a boundary recorded from a host east of UTC would LEAD the
+ * table, the one direction the ledger must never move in.
+ *
+ * Malloy's DuckDB connector already sets UTC at setup, so this is insurance
+ * rather than a fix — issued anyway because a correctness property that lives in
+ * another package's setup path is one nothing here would notice losing.
+ */
+export async function pinSessionToUTC(
+   session: DuckDBConnection,
+): Promise<void> {
+   await session.runSQL("SET TimeZone='UTC'");
+}
+
 /** Result of building one source into a storage destination. */
 export interface StorageBuildResult {
    /** The connection the physical table now lives in (the destination). */
@@ -629,6 +669,70 @@ export interface StorageBuildResult {
     * which shapes report and which do not.
     */
    readCost: BuildReadCost | null;
+   /**
+    * Present only when the table was advanced IN PLACE rather than rebuilt, which
+    * is what makes the two outcomes distinguishable from the outside: both leave a
+    * correct table and a captured schema, and only this says which one ran.
+    */
+   refresh?: StorageRefreshOutcome;
+   /**
+    * Where the table a REBUILD wrote reaches, for an incremental source that was
+    * seeded rather than advanced. This is the boundary that turns the NEXT refresh
+    * into a delta, so it has to reach the manifest entry.
+    */
+   seededThrough?: WatermarkBound;
+}
+
+/** What an in-place refresh did, for the manifest entry to report. */
+export interface StorageRefreshOutcome {
+   /** Absent for a refresh that applied nothing (the watermark had not moved). */
+   durationMs?: number;
+   /** The boundary now in force — where the next refresh starts. */
+   coveredThrough?: WatermarkBound;
+   /** `delta` advanced the table; `none` found nothing to apply. */
+   refresh: "delta" | "none";
+   /** What the delta's own warehouse read cost, when its shape reported it. */
+   readCost: BuildReadCost | null;
+}
+
+/**
+ * A caller's chance to advance the table IN PLACE instead of rebuilding it,
+ * handed a session that already holds the destination read-write and the source
+ * federated.
+ *
+ * A callback rather than a parameter block because the decision belongs to the
+ * caller and the SESSION belongs here: the plan has to probe the destination
+ * before it can choose, and the probes need this session — while the credentials
+ * it holds must not outlive the one source's refresh. Returning undefined means
+ * "rebuild it", and the seed then proceeds on this same session rather than
+ * paying for a second attach and a second credential federation.
+ */
+export interface StorageIncrementalRefresh {
+   /**
+    * Advance the table in place, or return undefined to have it rebuilt. Runs
+    * after the attach and the federation, before the CTAS.
+    */
+   plan: (deps: {
+      session: DuckDBConnection;
+      sourceType: FederatedSourceType;
+      handle: string;
+      /** The destination-qualified, quoted path the DML must name. */
+      quotedTablePath: string;
+   }) => Promise<StorageRefreshOutcome | undefined>;
+   /**
+    * Record where the table a REBUILD just wrote reaches, so the next refresh can
+    * be a delta, and return that boundary for the manifest entry to report. Runs
+    * on the same session, after the CTAS, because the boundary is probed from the
+    * table itself — and the session holding the destination is gone by the time
+    * this function returns.
+    *
+    * Undefined when the rebuilt table has no boundary to record (an empty source),
+    * which leaves the next refresh to rebuild again.
+    */
+   afterSeed: (deps: {
+      session: DuckDBConnection;
+      quotedTablePath: string;
+   }) => Promise<WatermarkBound | undefined>;
 }
 
 /**
@@ -669,6 +773,12 @@ export async function buildSourceIntoStorage(params: {
     * warehouse work the deployment cannot attribute.
     */
    queryMetadata?: QueryMetadata;
+   /**
+    * Offered the chance to advance this table in place before the CTAS below
+    * runs. Absent for every non-incremental source, which is the common case and
+    * leaves this function exactly the full build it was.
+    */
+   incremental?: StorageIncrementalRefresh;
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -709,6 +819,10 @@ export async function buildSourceIntoStorage(params: {
          // mutate the shared catalog's persisted options.
          await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       }
+      // Before any predicate is rendered against this session. Matters only to an
+      // incremental refresh (a full CTAS issues none), but it is cheap and the
+      // session it protects is this one — see pinSessionToUTC.
+      await pinSessionToUTC(session);
 
       const federated = await federateSourceForPassthrough(
          session,
@@ -739,8 +853,36 @@ export async function buildSourceIntoStorage(params: {
       // unquoted name the two functions are identical, so nothing else moves.
       const target = quoteManifestTablePath(
          `${destinationName}.${physicalTableName}`,
-         "duckdb",
+         STORAGE_TARGET_DIALECT,
       );
+
+      // Advance in place, if the caller's plan says this refresh can be a bounded
+      // delta. Offered here — after the attach and the federation, before the
+      // CTAS — because the plan has to probe this destination to decide, and a
+      // seed then continues below on the same session.
+      if (params.incremental) {
+         const refreshed = await params.incremental.plan({
+            session,
+            sourceType,
+            handle: federated.handle,
+            quotedTablePath: target,
+         });
+         if (refreshed) {
+            return {
+               storageDestinationName: destinationName,
+               // Read back even though a delta cannot change the shape (a
+               // definitional change re-addresses the source, and a shape that
+               // drifted anyway forces a seed): the manifest entry declares this
+               // schema to the serve transform on every publication, so an entry
+               // that omitted it would leave the source unservable from the tier
+               // until its next full build.
+               schema: await describeTable(session, target),
+               readCost: refreshed.readCost,
+               refresh: refreshed,
+            };
+         }
+      }
+
       const read = await issuePassthroughRead(
          session,
          sourceType,
@@ -757,8 +899,17 @@ export async function buildSourceIntoStorage(params: {
          target,
          read.selectSQL,
       );
+      // The table now holds a full snapshot, so record where that snapshot
+      // reaches: this is what turns the NEXT refresh into a delta. On this
+      // session, because the boundary is probed from the table it just wrote and
+      // the destination attach does not outlive this function.
+      const seededThrough = await params.incremental?.afterSeed({
+         session,
+         quotedTablePath: target,
+      });
 
       return {
+         seededThrough,
          storageDestinationName: destinationName,
          schema,
          // BigQuery reported its cost while issuing the read, because the shape
@@ -849,6 +1000,12 @@ export async function buildDownstreamIntoStorage(params: {
          // of the shared catalog database.
          await session.runSQL("SET ducklake_default_data_inlining_row_limit=0");
       }
+      // Pinned here as well as on the non-chained path, which is the only other
+      // place a build session is created. No predicate or boundary probe runs on
+      // this one today — a chained source is excluded from the delta path — so
+      // this guards the case that lifting that exclusion creates, in the one
+      // function where its absence would not be obvious.
+      await pinSessionToUTC(session);
 
       // Compile the transient rebind model against the build session. Its only
       // connection is the attached destination; the upstream virtual sources
@@ -912,7 +1069,7 @@ export async function buildDownstreamIntoStorage(params: {
       // Same write/read mirror as the single-source build above.
       const target = quoteManifestTablePath(
          `${destinationName}.${physicalTableName}`,
-         "duckdb",
+         STORAGE_TARGET_DIALECT,
       );
       const schema = await createTableAndDescribe(session, target, sql);
 
@@ -995,7 +1152,7 @@ export function dropStorageTableSql(
    // Must name the table the way the build CREATEd it (see the CTAS sites).
    return `DROP TABLE IF EXISTS ${quoteManifestTablePath(
       `${destinationName}.${physicalTableName}`,
-      "duckdb",
+      STORAGE_TARGET_DIALECT,
    )}`;
 }
 
@@ -1072,7 +1229,7 @@ async function attachDestinationReadWrite(
    mkdirSync(destinationRoot, { recursive: true });
    const dbPath = path.join(destinationRoot, `${destinationName}.duckdb`);
    await session.runSQL(
-      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, "duckdb")}`,
+      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_TARGET_DIALECT)}`,
    );
 }
 
@@ -1157,7 +1314,7 @@ export async function createTableAndDescribe(
    }
 }
 
-async function describeTable(
+export async function describeTable(
    session: DuckDBConnection,
    quotedTablePath: string,
 ): Promise<WireColumn[]> {

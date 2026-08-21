@@ -37,17 +37,19 @@ function lineage(
    overrides: {
       declaration?: IncrementalDeclaration | undefined;
       dialect?: string;
-      isStorageBuild?: boolean;
+      targetDialect?: string;
+      storageDestinationName?: string;
    } = {},
 ) {
    return incrementalLineage({
       declaration:
          "declaration" in overrides ? overrides.declaration : declaration(),
       dialect: overrides.dialect ?? "postgres",
+      targetDialect: overrides.targetDialect ?? overrides.dialect ?? "postgres",
       physicalTableName: "orders_v1",
       connectionName: "wh",
+      storageDestinationName: overrides.storageDestinationName,
       sourceEntityId: "addr-1",
-      isStorageBuild: overrides.isStorageBuild ?? false,
    });
 }
 
@@ -93,8 +95,19 @@ describe("incrementalLineage", () => {
       expect(lineage({ dialect: "duckdb" })).toBeUndefined();
    });
 
-   it("declines a storage= build, whose table lives on another engine", () => {
-      expect(lineage({ isStorageBuild: true })).toBeUndefined();
+   it("describes a storage= build, whose table lives in the destination", () => {
+      // The destination is part of the boundary's table identity, so the same
+      // source materialized colocated and stored yields two distinct lineages.
+      const stored = lineage({
+         targetDialect: "duckdb",
+         storageDestinationName: "lake",
+      });
+      expect(stored?.storageDestinationName).toBe("lake");
+      expect(lineage()?.storageDestinationName).toBeUndefined();
+   });
+
+   it("declines a target engine whose transactional apply is unproven", () => {
+      expect(lineage({ targetDialect: "mysql" })).toBeUndefined();
    });
 
    it("declines a watermark that is not a materialized dimension", () => {

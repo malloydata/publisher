@@ -5,6 +5,7 @@ import {
    Connection,
    Environment,
    IncrementalLedgerEntry,
+   LedgerTableIdentity,
    Materialization,
    StorageDestination,
    MaterializationStatus,
@@ -256,14 +257,9 @@ export class DuckDBRepository implements ResourceRepository {
 
    async getIncrementalLedgerEntry(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<IncrementalLedgerEntry | null> {
-      return this.incrementalLedgerRepo.get(
-         environmentId,
-         connectionName,
-         physicalTableName,
-      );
+      return this.incrementalLedgerRepo.get(environmentId, table);
    }
 
    async upsertIncrementalLedgerEntry(
@@ -274,13 +270,8 @@ export class DuckDBRepository implements ResourceRepository {
 
    async deleteIncrementalLedgerEntry(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<void> {
-      return this.incrementalLedgerRepo.deleteEntry(
-         environmentId,
-         connectionName,
-         physicalTableName,
-      );
+      return this.incrementalLedgerRepo.deleteEntry(environmentId, table);
    }
 }

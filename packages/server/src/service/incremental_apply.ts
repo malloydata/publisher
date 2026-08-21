@@ -32,24 +32,54 @@ import { quoteIdentifier } from "./quoting";
  */
 
 /**
- * Dialects whose transactional delta apply the publisher has proven.
+ * The two dialect questions a delta asks, which are the same question only when
+ * the table is materialized into the source's own warehouse.
  *
- * Keyed by Malloy's `dialectName`, which is why BigQuery appears as
+ * Both sets are keyed by Malloy's `dialectName`, which is why BigQuery appears as
  * `standardsql` — the same key `quoting.ts` uses for its backtick set. Keying
  * these by the friendly name instead is a silent no-op: no source's
  * `dialectName` is ever "bigquery", so every BigQuery source would fail the
- * allowlist while the message claimed BigQuery was supported.
+ * check while the message claimed BigQuery was supported.
  *
- * Postgres and BigQuery accept the range replace as a multi-statement
+ * A `storage=` source is the case that separates them: its rows are computed by
+ * the SOURCE warehouse and its table lives in the DESTINATION engine, so the
+ * range predicate is rendered for one dialect and the DML issued in another.
+ * Colocated, a source's dialect satisfies both, which is why nothing about that
+ * path changes.
+ */
+
+/**
+ * Dialects a bounded watermark range can be rendered and probed FOR — the source
+ * side. A dialect here has literal spellings for every watermark type
+ * ({@link renderSqlBound}) and a decodable table path
+ * ({@link decodeTablePathSegments}).
+ */
+export const INCREMENTAL_SOURCE_RANGE_DIALECTS: ReadonlySet<string> = new Set([
+   "postgres",
+   "snowflake",
+   "standardsql",
+]);
+
+/**
+ * Dialects whose transactional delta apply the publisher has proven — the target
+ * side, where the DML lands.
+ *
+ * Postgres, BigQuery and DuckDB accept the range replace as a multi-statement
  * transactional script in one driver call. Snowflake does NOT — its driver
  * executes exactly one statement per call, each on a possibly different pooled
  * session — so its range replace is a single Snowflake Scripting block instead
  * (see {@link deltaStatements}).
+ *
+ * `duckdb` covers a `storage=` destination, whose table is a DuckLake or DuckDB
+ * one written from a build-scoped session. A DuckDB *source* is never
+ * materialized at all, so its presence here is about where a delta LANDS, never
+ * about where one is read from.
  */
-export const INCREMENTAL_DIALECT_ALLOWLIST: ReadonlySet<string> = new Set([
+export const INCREMENTAL_TARGET_DML_DIALECTS: ReadonlySet<string> = new Set([
    "postgres",
    "snowflake",
    "standardsql",
+   "duckdb",
 ]);
 
 /** Dialects with a `MERGE INTO` statement, required by `merge_key=`. */
@@ -57,6 +87,7 @@ export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> = new Set([
    "postgres",
    "snowflake",
    "standardsql",
+   "duckdb",
 ]);
 
 /** Malloy `dialectName` -> the name an author would recognize, for a message. */
@@ -119,12 +150,17 @@ function escapeSqlString(value: string, dialect?: string): string {
  * independence from how the compiler and each dialect spell fractional seconds.
  */
 function secondsPrecision(value: string): string {
+   // Anchored at BOTH ends. Fractional seconds are dropped on purpose (see above),
+   // but a zone offset is refused rather than dropped: truncating past `+05:30`
+   // would relabel a local bound as the UTC text every consumer of this value
+   // assumes, and east of UTC that moves `covered_through` AHEAD of the table,
+   // skipping rows permanently. A bare `Z` is accepted because it already says UTC.
    const match = value
       .trim()
-      .match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/);
+      .match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?$/);
    if (!match) {
       throw new Error(
-         `not an ISO-8601 timestamp: ${JSON.stringify(value)} (expected YYYY-MM-DDTHH:MM:SS)`,
+         `not a UTC ISO-8601 timestamp: ${JSON.stringify(value)} (expected YYYY-MM-DDTHH:MM:SS, with no zone offset)`,
       );
    }
    return `${match[1]} ${match[2]}`;
@@ -152,7 +188,11 @@ function datePrecision(value: string): string {
  * text (see canonicalBoundValue). Postgres and BigQuery read it as UTC outright;
  * Snowflake reads it as session time and its Malloy driver pins every session to
  * `TIMEZONE = 'UTC'`, so a comparison against a TIMESTAMP_LTZ column lands on
- * the same instant.
+ * the same instant. DuckDB — the target dialect for a `storage=` table — also
+ * resolves a naive literal against a TIMESTAMPTZ column in the session's zone,
+ * and the build session is pinned to UTC for exactly this reason (see
+ * `pinSessionToUTC`); on the host's own zone the range would silently land on the
+ * wrong rows.
  */
 export function renderSqlBound(
    bound: WatermarkBound,
@@ -326,6 +366,24 @@ const TABLE_PATH_OPTIONS: Record<
       escapeStyle: "doubled",
       bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_-]*/,
    },
+   // A `storage=` destination's own path — `<destination>.<name>`, or
+   // `<destination>.<schema>.<name>` for a schema-qualified persist name. No case
+   // folding: DuckDB resolves identifiers case-INSENSITIVELY but stores them as
+   // written, and the metadata read below compares against the stored text, so
+   // folding a bare segment would miss a table the build created from a
+   // mixed-case name.
+   //
+   // `-` is admitted, as it is for `standardsql` above. What is decoded here is a
+   // LOGICAL path the caller assembled from a destination name and a persist name,
+   // not SQL an author wrote, and neither of those is charset-validated — so
+   // rejecting a hyphen would leave `my-lake` (or `name="orders-v1"`) building and
+   // serving perfectly while only this probe failed, which reads as `table_
+   // unreadable` and seeds every run forever.
+   duckdb: {
+      quoteChar: '"',
+      escapeStyle: "doubled",
+      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$-]*/,
+   },
 };
 
 /**
@@ -410,7 +468,36 @@ export async function probeTargetColumns(
       };
    }
    let sql: string;
-   if (dialect === "postgres" || dialect === "snowflake") {
+   if (dialect === "duckdb") {
+      // `duckdb_columns()`, not `information_schema.columns`: an attached DuckLake
+      // catalog exposes no `information_schema` at all (the read fails with
+      // "schema information_schema does not exist"), and `DESCRIBE` THROWS on an
+      // absent table — which the caller would have to translate back into the
+      // empty result that means "seed". This function reports an absent table as
+      // `columns: []` with no error on every other dialect, and that contract is
+      // what the planner's `table_unreadable` vs. no-boundary distinction rests
+      // on, so the read has to be one that answers emptily.
+      const table = segments[segments.length - 1];
+      // A two-segment path is `<destination>.<table>`, which the CTAS created in
+      // the catalog's default schema. Named explicitly rather than left
+      // unconstrained for the same reason the Postgres branch pins
+      // `current_schema()`: two schemas in one catalog can hold the same table
+      // name, and probing the wrong one would describe a table this build never
+      // wrote.
+      const schema =
+         segments.length >= 3 ? segments[segments.length - 2] : "main";
+      // The destination catalog is the FIRST segment, because the caller builds
+      // this path as `<destination>.<name>` — counting back from the end instead
+      // would read a longer name's own container as the catalog and probe a
+      // database that is not this destination.
+      const database = segments[0];
+      sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
+              FROM duckdb_columns()
+              WHERE database_name = '${escapeSqlString(database, dialect)}'
+                AND schema_name = '${escapeSqlString(schema, dialect)}'
+                AND table_name = '${escapeSqlString(table, dialect)}'
+              ORDER BY column_index`;
+   } else if (dialect === "postgres" || dialect === "snowflake") {
       const table = segments[segments.length - 1];
       // An unqualified physical name lives in the session's default schema —
       // the same one the CTAS created it in. Do not widen this to "any schema
@@ -754,6 +841,20 @@ export function deltaScript(statements: string[]): string {
 }
 
 /**
+ * Dialects that abandon a failed script's transaction themselves, so the rollback
+ * below would be issued against a session that has nothing open.
+ *
+ * Empty on purpose. DuckDB is not one of them: a statement that fails after
+ * `BEGIN` has opened the transaction leaves the session refusing every
+ * subsequent statement with "Current transaction is aborted (please ROLLBACK)",
+ * so the rollback is what makes the session usable again. A statement that fails
+ * at BIND time never opens a transaction, which is the case that can look like
+ * self-recovery. The rollback is harmless there — DuckDB does not raise on it —
+ * so the unconditional path is correct for both.
+ */
+const SELF_ROLLING_BACK_DIALECTS: ReadonlySet<string> = new Set<string>();
+
+/**
  * Run a delta's statements, rolling back the session if they fail.
  *
  * The rollback is not belt-and-braces. A failed multi-statement script leaves the
@@ -777,7 +878,7 @@ export async function applyDeltaScript(
    try {
       await runner(deltaScript(statements));
    } catch (err) {
-      if (statements.length > 1) {
+      if (statements.length > 1 && !SELF_ROLLING_BACK_DIALECTS.has(dialect)) {
          try {
             await runner(transactionKeywords(dialect).rollback);
          } catch (rollbackErr) {
@@ -801,10 +902,22 @@ export async function applyDeltaScript(
 export interface IncrementalLineage {
    /**
     * Logical (unquoted) physical table name, as the manifest records it. With
-    * `connectionName`, the ledger row's key.
+    * `connectionName` and `storageDestinationName`, the table this boundary
+    * belongs to.
     */
    physicalTableName: string;
    connectionName: string;
+   /**
+    * The storage destination the table lives in, absent when it lives in
+    * `connectionName`'s own warehouse.
+    *
+    * Compared, not merely recorded, for the same reason the content address is: a
+    * source keeps its physical name AND its address when `storage=` is added or
+    * removed (an annotation enters neither), so nothing else distinguishes a
+    * boundary measured on the stored table from one measured on the colocated
+    * table of the same name.
+    */
+   storageDestinationName?: string;
    /**
     * The source's CONTENT address — a fingerprint of the build SQL, not the
     * caller-assigned `BuildInstruction.sourceEntityId`. Compared rather than keyed
@@ -843,6 +956,7 @@ export type RecordedBoundary = Pick<
    | "derivedStrategy"
    | "physicalTableName"
    | "connectionName"
+   | "storageDestinationName"
 >;
 
 /**
@@ -884,6 +998,26 @@ export function ledgerLineageMismatch(
             `either this table was renamed between runs, or another source ` +
             `shares this source's content address and advanced the boundary ` +
             `against its own table`,
+      };
+   }
+   // A different STORE is a different table, whatever the name says — so this
+   // reports `table_renamed` alongside the name check above rather than
+   // `lineage_changed`, which is about the source's definition having moved. The
+   // remedy is the same (seed), but an operator reading the reason code needs to
+   // know which of the two happened: a source that just gained or lost
+   // `storage=` keeps both its name and its content address, so nothing else in
+   // this function can tell.
+   if (
+      (entry.storageDestinationName ?? undefined) !==
+      (lineage.storageDestinationName ?? undefined)
+   ) {
+      return {
+         reasonCode: "table_renamed",
+         reason:
+            `the recorded boundary belongs to a table in ` +
+            `${entry.storageDestinationName ? `storage destination "${entry.storageDestinationName}"` : "the source warehouse"}` +
+            `, while this refresh writes to ` +
+            `${lineage.storageDestinationName ? `storage destination "${lineage.storageDestinationName}"` : "the source warehouse"}`,
       };
    }
    const changed = (reason: string) =>
@@ -961,6 +1095,7 @@ export type IncrementalStepReasonCode =
    | "shape_mismatch"
    | "ledger_unreadable"
    | "plan_error"
+   | "chained_storage"
    // Skips.
    | "frontier_unreadable"
    | "not_advanced";
@@ -1008,23 +1143,103 @@ export type IncrementalStep =
  * is why a date is the better choice when the data offers one.
  */
 async function resolveDeltaEnd(
-   runner: SqlRunner,
-   dialect: string,
+   target: DeltaTarget,
    lineage: IncrementalLineage,
-   sourceSQL: string,
    now: Date,
 ): Promise<{ bound?: WatermarkBound; error?: string }> {
    const type = lineage.watermarkType;
    if (type === "date" || type === "timestamp") {
       return { bound: snapshotBound(type, now) };
    }
-   return probeMaxWatermark(
-      runner,
+   return target.probeSourceFrontier();
+}
+
+/**
+ * Where a delta's DML lands, and how its rows are produced.
+ *
+ * These are the only two facts that differ between a table materialized into the
+ * source's own warehouse and one materialized into a `storage=` destination, and
+ * they are the reason this is an interface rather than a dialect argument: a
+ * stored table's rows are computed by the SOURCE warehouse while its DML is
+ * issued in the DESTINATION engine, so one dialect cannot answer both.
+ *
+ * Everything else about a refresh — the order of the checks, which fallbacks are
+ * a seed and which a skip, and the reason code each one reports — stays in
+ * {@link planIncrementalStep}, deliberately. Those codes are the only signal that
+ * a source declaring incremental refresh is quietly being rebuilt every run, so a
+ * second copy of that decision order for the second target would be a second
+ * place for it to drift.
+ */
+export interface DeltaTarget {
+   /** The dialect the DML is written in, and the probes are quoted for. */
+   dialect: string;
+   /** The connection holding the table: every probe and the DML run here. */
+   runner: SqlRunner;
+   /** The table as the CREATE quoted it, for the DML and the emptiness probe. */
+   quotedTablePath: string;
+   /**
+    * The same table as a LOGICAL (unquoted) path, for the metadata read that
+    * describes its columns. Carried rather than taken from the lineage because a
+    * stored table's metadata lives under its destination catalog, which the
+    * lineage's `physicalTableName` does not name.
+    */
+   logicalTablePath: string;
+   /**
+    * The rows-yielding SELECT for one bounded range, written so the TARGET can
+    * execute it. Asynchronous because producing it can mean issuing the source
+    * read (a stored table's rows arrive through a query passthrough, which is
+    * where the read is attributed and costed).
+    */
+   deltaRows(start: WatermarkBound, end: WatermarkBound): Promise<string>;
+   /**
+    * The SOURCE's watermark frontier, for a watermark that has no clock to take a
+    * range end from (a number or a string). Read from the source rather than the
+    * target because the target by definition stops at the last boundary.
+    */
+   probeSourceFrontier(): Promise<{ bound?: WatermarkBound; error?: string }>;
+}
+
+/**
+ * The delta target for a COLOCATED source: the table lives in the source's own
+ * warehouse, so one connection and one dialect answer everything, and the delta's
+ * rows are the seed's own SQL with a range predicate around it.
+ */
+export function warehouseDeltaTarget(params: {
+   dialect: string;
+   runner: SqlRunner;
+   quotedTablePath: string;
+   lineage: IncrementalLineage;
+   /**
+    * The source's own build SQL — `PersistSource.getSQL()` resolved against the
+    * build manifest, the exact string the seed's CTAS runs. The delta wraps and
+    * filters it (see {@link deltaSelect}), and the frontier probe for a non-time
+    * watermark reads it.
+    */
+   sourceSQL: string;
+}): DeltaTarget {
+   const { dialect, runner, lineage, sourceSQL } = params;
+   return {
       dialect,
-      sourceSQL,
-      lineage.watermarkName,
-      type,
-   );
+      runner,
+      quotedTablePath: params.quotedTablePath,
+      logicalTablePath: lineage.physicalTableName,
+      deltaRows: async (start, end) =>
+         deltaSelect({
+            dialect,
+            sourceSQL,
+            watermarkName: lineage.watermarkName,
+            start,
+            end,
+         }),
+      probeSourceFrontier: () =>
+         probeMaxWatermark(
+            runner,
+            dialect,
+            sourceSQL,
+            lineage.watermarkName,
+            lineage.watermarkType,
+         ),
+   };
 }
 
 /**
@@ -1034,13 +1249,11 @@ async function resolveDeltaEnd(
  *
  * The order of the checks is the order of increasing cost. `forceRefresh` and a
  * missing ledger row are free, the lineage comparison is free, and only then does
- * anything touch the warehouse.
+ * anything touch a warehouse.
  */
 export async function planIncrementalStep(inputs: {
-   runner: SqlRunner;
-   dialect: string;
-   /** The target as the CREATE quoted it, for the DML and the probes. */
-   quotedTablePath: string;
+   /** Where the DML lands and how its rows are produced. */
+   target: DeltaTarget;
    lineage: IncrementalLineage;
    /**
     * The recorded boundary this refresh may advance from: a row from the local
@@ -1050,19 +1263,13 @@ export async function planIncrementalStep(inputs: {
    forceRefresh: boolean;
    /** The run's start time, used as the range end for a time watermark. */
    now: Date;
-   /**
-    * The source's own build SQL — `PersistSource.getSQL()` resolved against the
-    * build manifest, the exact string the seed's CTAS runs. The delta wraps and
-    * filters it (see {@link deltaSelect}), and the frontier probe for a non-time
-    * watermark reads it.
-    */
-   sourceSQL: string;
    /** The source's compiled output columns, which the delta's DML names. */
    columns: string[];
    /** Postgres only: the server version, for the MERGE floor. */
    postgresVersionNum?: number;
 }): Promise<IncrementalStep> {
-   const { runner, dialect, lineage, ledgerEntry } = inputs;
+   const { target, lineage, ledgerEntry } = inputs;
+   const { runner, dialect } = target;
 
    if (inputs.forceRefresh) {
       return {
@@ -1103,7 +1310,7 @@ export async function planIncrementalStep(inputs: {
    const probe = await probeTargetColumns(
       runner,
       dialect,
-      lineage.physicalTableName,
+      target.logicalTablePath,
    );
    if (probe.columns.length === 0) {
       return {
@@ -1125,7 +1332,7 @@ export async function planIncrementalStep(inputs: {
    const rows = await probeTargetNonEmpty(
       runner,
       dialect,
-      inputs.quotedTablePath,
+      target.quotedTablePath,
    );
    if (!rows.nonEmpty) {
       return {
@@ -1143,13 +1350,7 @@ export async function planIncrementalStep(inputs: {
       malloyType: ledgerEntry.coveredThroughType,
       value: ledgerEntry.coveredThroughValue,
    };
-   const end = await resolveDeltaEnd(
-      runner,
-      dialect,
-      lineage,
-      inputs.sourceSQL,
-      inputs.now,
-   );
+   const end = await resolveDeltaEnd(target, lineage, inputs.now);
    if (!end.bound) {
       return {
          mode: "skip",
@@ -1187,16 +1388,13 @@ export async function planIncrementalStep(inputs: {
       };
    }
 
+   // Built LAST, after every check has passed, because producing it can issue the
+   // source read (see DeltaTarget.deltaRows): a read paid for and then discarded
+   // by a check below it would be the one avoidable cost on this path.
    const statements = deltaStatements({
       dialect,
-      quotedTablePath: inputs.quotedTablePath,
-      deltaSQL: deltaSelect({
-         dialect,
-         sourceSQL: inputs.sourceSQL,
-         watermarkName: lineage.watermarkName,
-         start,
-         end: end.bound,
-      }),
+      quotedTablePath: target.quotedTablePath,
+      deltaSQL: await target.deltaRows(start, end.bound),
       columns: inputs.columns,
       mergeKeys: lineage.mergeKeys,
       watermarkName: lineage.watermarkName,
