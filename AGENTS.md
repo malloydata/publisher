@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Working with Malloy Publisher
 
 Publisher is the open-source semantic model server for [Malloy](https://malloydata.dev). It serves one or more Malloy model packages over a REST API and a single MCP endpoint. If you are an AI agent working in this repo, here is what you can do with it and how to start.
@@ -168,6 +173,7 @@ If you started the server yourself and there is no user to reconnect your MCP cl
 - `GET …/models/{path}`: the discovery step. The response's `sources` (each with its `views`), `queries`, and `givens` are the names you can run. Use them verbatim; never guess.
 - `POST …/models/{path}/query`: run a query. The body is either `{"query": "run: …"}` (ad-hoc) or `{"queryName": "…", "sourceName": "…"}` (a named view; `queryName` alone runs a model-level named query). Add `"compactJson": true` and parse the `result` string to get plain row objects.
 - `POST …/models/{path}/compile`: body `{"source": "…", "scope": "append" | "file" | "package"}`; structured diagnostics without running anything. `"append"` (default) validates NEW definitions against the model; `"file"` compiles the source AS the file, which is how to validate an edit (append collides with "Cannot redefine"); `"package"` (source optional) runs reload's worker compiler over every `.malloy` and `.malloynb` file without touching the served model. Its diagnostics may name files hidden from discovery; a replacement path that does not exactly match a file is warned and treated as new.
+- `GET …/packages/{pkg}/dashboards`, then `…/dashboards/{name}`: a package's dashboards, and one dashboard's manifest. There is no run endpoint for a dashboard: run its queries through `…/models/{path}/query` with `givens`, the same governed path every other query takes. The two query fields take DIFFERENT request shapes and are not interchangeable: the manifest's `query` is a NAME, so send `{"queryName": "<it>"}`; a tile's `query` is an expression, so send `{"query": "run: <it>"}`. Use the manifest's `path` as the model in both.
 - `GET …/packages/{pkg}?reload=true`: recompile a package after editing its files (the REST form of `malloy_reloadPackage`).
 - `POST /api/v0/environments/{env}/packages` with `{"name": "…", "location": "/absolute/path"}`: serve a package of your own on a running server. [docs/packages.md](docs/packages.md) is the package format.
 

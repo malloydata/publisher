@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Authoring skills
 
 How skills are structured in this repository, how they reference each other, how manifests

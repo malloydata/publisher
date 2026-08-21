@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { validateRenderTags } from "@malloydata/render-validator";
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
@@ -12,6 +15,7 @@ import {
    type QueryMetadata,
 } from "../service/query_metadata";
 import { runWithQueryTimeout } from "../query_timeout";
+import { filterPublisherOwnedRenderLogs } from "../service/dashboard";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
@@ -145,7 +149,9 @@ export class QueryController {
                ),
             getQueryTimeoutMs(),
          );
-         const renderLogs = validateRenderTags(result);
+         const renderLogs = filterPublisherOwnedRenderLogs(
+            validateRenderTags(result),
+         );
          return {
             // Already serialized by the model, which was told which shape this
             // request sends. Stringifying here instead would build a second copy

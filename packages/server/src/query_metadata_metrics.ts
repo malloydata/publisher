@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Telemetry for per-query metadata (see `service/query_metadata.ts`).
  *

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import React from "react";
 import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";

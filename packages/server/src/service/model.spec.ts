@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { API, MalloyError, Runtime } from "@malloydata/malloy";
 import { afterEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Postgres / libpq helper shared between `service/` (user-facing connections)
 // and `storage/` (materialization-storage catalog). Lives at `src/` root so
 // neither layer takes a dependency on the other — see CLAUDE.md's "Two

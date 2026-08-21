@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * MOTLY (Malloy Object Tag Language) parsing primitives.
  *
@@ -32,19 +35,26 @@ import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
  * because `parseAsTag` would skip {@link quoteFilterLiterals} and reintroduce
  * the bare-filter-literal failure below. Take it together with a fix for that.
  */
+/**
+ * Whether an annotation is on the MOTLY route, separate from whether it should
+ * be read. One definition, because `parseMotly` needs to tell "not MOTLY" from
+ * "MOTLY but dropped for `@env.`" in order to report the second, and a second
+ * copy of the route rule is how these drift.
+ */
+function onMotlyRoute(text: string): boolean {
+   const afterSigil = text.replace(/^##?\|?/, "");
+   // `[ \t\r\n]` rather than `\s`, matching Malloy's separator class exactly.
+   // JS `\s` is wider (U+00A0, \f, \v, U+2000, U+3000 and more), so a stray
+   // non-breaking space from a copy-paste would be admitted here and then NOT
+   // stripped by the parser's own narrower prefix rule, which swallows
+   // `# label="Region"` as the route and reads only what follows. The given
+   // keeps its `control` and silently loses its `label`. Malloy classifies that
+   // line `malformed-route` and drops it, so dropping it here agrees.
+   return afterSigil === "" || /^[ \t\r\n]/.test(afterSigil);
+}
+
 export function motlyAnnotations(texts: readonly string[]): string[] {
-   return texts.filter((text) => {
-      const afterSigil = text.replace(/^##?\|?/, "");
-      // `[ \t\r\n]` rather than `\s`, matching Malloy's separator class exactly.
-      // JS `\s` is wider (U+00A0, \f, \v, U+2000, U+3000 and more), so a stray
-      // non-breaking space from a copy-paste would be admitted here and then
-      // NOT stripped by the parser's own narrower prefix rule, which swallows
-      // `# label="Region"` as the route and reads only what follows. The given
-      // keeps its `control` and silently loses its `label`. Malloy classifies
-      // that line `malformed-route` and drops it, so dropping it here agrees.
-      const onMotlyRoute = afterSigil === "" || /^[ \t\r\n]/.test(afterSigil);
-      return onMotlyRoute && !hasEnvReference(text);
-   });
+   return texts.filter((text) => onMotlyRoute(text) && !hasEnvReference(text));
 }
 
 /**
@@ -103,6 +113,15 @@ export function motlyAnnotations(texts: readonly string[]): string[] {
  * nothing in this repo writes `@env.` in a tag today. Detection is exact
  * (`@env.` is case-sensitive, and `@ENV.` or `@env .` are parse errors rather
  * than references), so this cannot silently miss the form it guards against.
+ *
+ * The drop is per LINE, not per file, and that is worth stating because the
+ * blast radius reads worse than it is. `## artifact { tiles=[…] }` on one line
+ * and `## note=@env.X` on another still produces the dashboard; only an `@env.`
+ * on the SAME line as the artifact tag removes it. Measured both ways.
+ *
+ * Reported since the dashboards slice: the drop is upstream of the parse, so
+ * without {@link ENV_REFERENCE_DROPPED} a dashboard whose tag carries one would
+ * simply not exist, with no finding anywhere.
  */
 export function hasEnvReference(annotation: string): boolean {
    return annotation.includes("@env.");
@@ -172,11 +191,13 @@ function pollutionTargets(): object[] | undefined {
          // `Object.prototype` itself, means this cannot know what a parse would
          // touch, and the annotation is refused. Fail closed. The cost is that a
          // deployment which extends `Object.prototype` with an accessor gets no
-         // control contracts at all. That is the safer failure, but be clear it is
-         // not a loud one: nothing calls {@link motlyParseErrors} yet, so the
-         // refusal shows up only as absent control fields. Wiring that reader is
-         // what would make it visible, and it belongs with the slice that owns
-         // package warnings.
+         // control contracts at all. That is the safer failure, and as of the
+         // dashboards slice it is no longer a silent one: {@link motlyParseErrors}
+         // now has callers, so a refusal surfaces as a package warning naming the
+         // file rather than only as absent control fields. Note the warning's
+         // wording says the tag does not parse, which is true of the annotation
+         // as presented to the parser but can mislead when the real cause is a
+         // process-wide refusal triggered by another package.
          // Fail closed if the reference is missing as well as if it differs. It
          // is `undefined` under `node --disable-proto=delete`, which a hardened
          // deployment may well set, and a setter-only accessor also has an
@@ -202,11 +223,66 @@ function pollutionTargets(): object[] | undefined {
 }
 
 /**
- * Message used when an annotation cannot be parsed without collateral damage.
- * Surfaced through {@link motlyParseErrors} so the reader a later slice builds
- * has something to report rather than a silent empty tag.
+ * Longest annotation this will hand to the parser, and the message for one that
+ * is refused.
+ *
+ * `parseAnnotation` is superlinear in the number of PROPERTIES, not in raw
+ * length, which is why this is a crude bound rather than a precise one.
+ * Measured in this worktree, one annotation:
+ *
+ *   one long quoted value   1.1ms at 63KB    (linear, harmless)
+ *   flat `k=v` run          194ms at 92KB    (quadratic)
+ *   nested braces           32ms at 9KB      (worst per byte)
+ *
+ * So bytes are a proxy for the thing that actually costs, and a generous one:
+ * the largest annotation across every fixture in this repo is 162 characters,
+ * so 8KB is roughly fifty times the real ceiling while capping the worst shape
+ * to tens of milliseconds.
+ *
+ * It matters because this slice moved MOTLY parsing onto paths that had none.
+ * `getNotebookListing` runs per request for every notebook in a package and
+ * `getNotebookModel` per request for one, both uncached, and discovery runs on
+ * the main process rather than in the load worker. Measured before this bound:
+ * 1.29s of uninterruptible event loop for a single notebook request carrying a
+ * 110KB annotation. Publisher is one event loop, so that is not a slow request,
+ * it is every tenant on the pod waiting.
+ *
+ * REFUSED, not truncated. A truncated annotation parses into something the
+ * author did not write, which is worse than not parsing at all.
+ *
+ * The underlying amplification is upstream and not fixed here: Malloy compiles
+ * the same 630KB source in 14ms while the tag parser takes 7.49s. Filed
+ * separately.
  */
-const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
+const MAX_ANNOTATION_CHARS = 8_192;
+
+export const ANNOTATION_TOO_LONG = `annotation exceeds ${MAX_ANNOTATION_CHARS} characters and was not parsed`;
+
+/**
+ * Message used when an annotation was dropped for carrying an `@env.` reference.
+ *
+ * Fixed text, like {@link UNSAFE_TO_PARSE}, because the annotation is never
+ * parsed and there is nothing else honest to say about it. Reported rather than
+ * dropped in silence: the guard is upstream of the parse, so without this a
+ * dashboard whose artifact tag carries one simply does not exist, with no
+ * finding anywhere. That was tolerable while the cost was a missing control; it
+ * is not once the cost is the whole dashboard.
+ */
+export const ENV_REFERENCE_DROPPED =
+   "annotation dropped for carrying an @env. reference";
+
+/**
+ * Message used when an annotation cannot be parsed without collateral damage.
+ * Surfaced through {@link motlyParseErrors} so a reader has something to report
+ * rather than a silent empty tag.
+ *
+ * Exported so that reader can tell a refusal apart from a genuine syntax error.
+ * The distinction matters to the author: a syntax error is in their file,
+ * whereas this refusal can be triggered by something entirely outside it,
+ * including another package on the same worker having already polluted the
+ * prototype through an unguarded parse elsewhere in the server.
+ */
+export const UNSAFE_TO_PARSE = "annotation could not be parsed safely";
 
 /**
  * `parseAnnotation`, with any damage it does to the shared prototypes undone.
@@ -343,6 +419,9 @@ function parseGuarded(texts: readonly string[]): {
       });
       return polluted || unreadable;
    };
+   if (texts.some((text) => text.length > MAX_ANNOTATION_CHARS)) {
+      return { tag: undefined, messages: [ANNOTATION_TOO_LONG] };
+   }
    try {
       const result = parseAnnotation([...texts]);
       if (undoPollution())
@@ -377,6 +456,73 @@ export function docCommentText(texts: readonly string[]): string | undefined {
    return lines.some((text) => text.trim().length > 0)
       ? lines.join("\n")
       : undefined;
+}
+
+/**
+ * A doc comment split where a title fallback would cut it: the first non-empty
+ * line, and whatever prose follows it.
+ *
+ * One function because the two halves have to agree about where the cut is. The
+ * rule "a title is the first non-empty line" lives here and nowhere else, so a
+ * caller that takes the title cannot disagree with a caller that takes the rest.
+ *
+ * Why a line rather than the whole comment: {@link docCommentText} joins with
+ * newlines on purpose, since that route carries markdown and authors write one
+ * line per source line, whereas a title is rendered on one line everywhere, so
+ * the whole comment as a title fallback published an embedded newline.
+ */
+function splitDocComment(texts: readonly string[]): {
+   title?: string;
+   body?: string;
+} {
+   const text = docCommentText(texts);
+   if (text === undefined) return {};
+   const lines = text.split("\n");
+   const titleLine = lines.findIndex((line) => line.trim().length > 0);
+   // `docCommentText` returns undefined when every line is blank, so a comment
+   // that got here has one. Guarded anyway rather than indexed with -1.
+   if (titleLine === -1) return {};
+   const body = lines
+      .slice(titleLine + 1)
+      .join("\n")
+      // Leading blank lines are the separator between the title line and the
+      // paragraph after it, and belong to neither.
+      .replace(/^[ \t\r\n]+/, "")
+      .trimEnd();
+   return {
+      title: lines[titleLine].trim(),
+      body: body.length > 0 ? body : undefined,
+   };
+}
+
+/**
+ * The title and description a document publishes, resolved together.
+ *
+ * Separately, they printed the same words twice. `description` was the whole doc
+ * comment and `title` fell back to its first line, so a one-line `#" Orders by
+ * region` with no `title=` produced a heading and a subtitle reading identically,
+ * which is what the dashboard page rendered. Deriving both here means the line
+ * the title took is the line the description does not repeat.
+ *
+ * An explicit `title=` changes that: it did not consume any of the comment, so
+ * the comment stays the description in full.
+ *
+ * Every title fallback in the codebase goes through this, so the two cannot
+ * drift: there are three of them (a notebook listing, a composite dashboard, a
+ * single-query dashboard) and fixing only the first is how this was a defect
+ * twice. Neither field gets a final fallback here, because the callers do not
+ * share one: a dashboard falls back to its slug, a notebook to its first
+ * markdown heading.
+ */
+export function docCommentTitleAndDescription(
+   texts: readonly string[],
+   explicitTitle: string | undefined,
+): { title?: string; description?: string } {
+   if (explicitTitle !== undefined) {
+      return { title: explicitTitle, description: docCommentText(texts) };
+   }
+   const { title, body } = splitDocComment(texts);
+   return { title, description: body };
 }
 
 /**
@@ -616,14 +762,21 @@ function parseMotly(texts: readonly string[]): {
    tag: Tag | undefined;
    errors: string[];
 } {
-   const motly = motlyAnnotations(texts);
-   if (motly.length === 0) return { tag: undefined, errors: [] };
+   // Split rather than filtered once, so the env drop can be REPORTED. The set
+   // handed to the parser is byte-identical to what `motlyAnnotations` returns;
+   // this only recovers which lines it removed, and why.
+   const onRoute = texts.filter(onMotlyRoute);
+   const motly = onRoute.filter((text) => !hasEnvReference(text));
+   const envDropped = onRoute.length - motly.length;
+   const envErrors: string[] = envDropped > 0 ? [ENV_REFERENCE_DROPPED] : [];
+   if (motly.length === 0) return { tag: undefined, errors: envErrors };
 
    // The common case is one parse of the whole set. Only a failure pays for the
    // per-line rescue below, so an entity whose annotations are all well formed
    // is not charged for a workaround it does not need.
    const direct = parseGuarded(motly);
-   if (direct.messages.length === 0) return { tag: direct.tag, errors: [] };
+   if (direct.messages.length === 0)
+      return { tag: direct.tag, errors: envErrors };
 
    const rescued = motly.map((text) => {
       if (parseGuarded([text]).messages.length === 0) return text;
@@ -631,7 +784,10 @@ function parseMotly(texts: readonly string[]): {
       return parseGuarded([rewritten]).messages.length === 0 ? rewritten : text;
    });
    const after = parseGuarded(rescued);
-   return { tag: after.tag, errors: after.messages };
+   // `envErrors` carried through here too. Returning only `after.messages` lost
+   // the env drop whenever a SIBLING line was malformed, so one bad annotation
+   // hid the fact that another had been dropped entirely.
+   return { tag: after.tag, errors: [...envErrors, ...after.messages] };
 }
 
 /**
@@ -762,6 +918,50 @@ export function readAutorun(tag: Tag | undefined): boolean {
 }
 
 /**
+ * A tag value's scalar type, or undefined. Guarded like {@link tagText}: this
+ * one does not stringify, so it cannot throw on a bad literal, but it is kept
+ * beside its sibling so every read of a tag goes through one shape.
+ */
+function scalarTypeOf(tag: Tag | undefined): string | undefined {
+   try {
+      return tag?.scalarType();
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * The calendar day a MOTLY `date` literal was written as, independent of the
+ * server's timezone.
+ *
+ * Which field set is authoritative depends on how the value was hydrated, and
+ * the two forms differ. A bare `@2024-03-01` is hydrated at UTC midnight in
+ * every zone, so its UTC fields carry the authored day. An ISO
+ * `@2024-03-01T23:30` is hydrated in LOCAL time, so its LOCAL fields do.
+ * Exact-UTC-midnight is what tells them apart.
+ *
+ * One residual, stated rather than hidden: an ISO literal that lands exactly on
+ * UTC midnight (`@2024-03-01T16:00` in America/Los_Angeles) is indistinguishable
+ * from a bare date at this layer, because the `Tag` keeps only the hydrated
+ * `Date` and not the source text, so it takes the UTC day and can be one day
+ * off. Closing that needs the literal, which means threading the annotation
+ * text down here. Every other case is exact.
+ */
+function authoredDay(isoText: string): string {
+   const value = new Date(isoText);
+   if (Number.isNaN(value.getTime())) return isoText.slice(0, 10);
+   const atUtcMidnight =
+      value.getUTCHours() === 0 &&
+      value.getUTCMinutes() === 0 &&
+      value.getUTCSeconds() === 0 &&
+      value.getUTCMilliseconds() === 0;
+   const year = atUtcMidnight ? value.getUTCFullYear() : value.getFullYear();
+   const month = atUtcMidnight ? value.getUTCMonth() : value.getMonth();
+   const day = atUtcMidnight ? value.getUTCDate() : value.getDate();
+   return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/**
  * Starting values for a document's controls, from a `givens { … }` block.
  *
  * Values come back in the shape the query endpoint takes, so a `filter<…>` is
@@ -775,13 +975,61 @@ export function readAutorun(tag: Tag | undefined): boolean {
  */
 export function readStartingGivens(
    tag: Tag | undefined,
+   /**
+    * The declared type of a given by name, so a `filter<…>` value can be
+    * unwrapped and nothing else touched. Required rather than optional: without
+    * it this cannot tell `NOTE :: string is f'x'`, where `f'x'` IS the value,
+    * from `REGION :: filter<string> is f'US'`, where it is a wrapper. Unwrapping
+    * blindly published `x` for the first and posted it back as a filter.
+    */
+   declaredType: (name: string) => string | undefined,
 ): Record<string, string> | undefined {
    const entries = tag?.tag("givens");
    if (!entries) return undefined;
    const collected: Record<string, string> = {};
    for (const [name, value] of entries.entries()) {
-      const text = tagText(value as Tag);
-      if (text !== undefined) collected[name] = unwrapFilterLiteral(text);
+      const tag = value as Tag;
+      const text = tagText(tag);
+      if (text === undefined) continue;
+      // A MOTLY date literal arrives here as a `Date`, and `Tag.text()` renders
+      // one with `toISOString()`. That is precisely the spelling the query
+      // endpoint REFUSES for a `date` given, with "…YYYY-MM-DD…", so publishing
+      // it would hand a caller a starting value that 400s when sent straight
+      // back. `# artifact { givens { SINCE=@2024-03-01 } }` is the natural
+      // spelling too, since it matches the declaration's own default.
+      //
+      // `scalarType` is the discriminator rather than a shape test on the
+      // string, so a caller who deliberately quoted a full timestamp keeps
+      // exactly what they wrote.
+      //
+      // Taking the first ten characters of that ISO string is NOT sufficient, and
+      // an earlier version of this comment claimed it was, on the grounds that
+      // `@2024-03-01 10:00` is a parse error so only a bare date can reach here.
+      // The space form is indeed refused, but the ISO form `@2024-03-01T23:30`
+      // is accepted, still reports `scalarType() === "date"`, and hydrates in
+      // LOCAL time before being rendered as UTC. Measured across three zones:
+      //
+      //   literal                 TZ                   rendered        sliced
+      //   @2024-03-01             any                  ...T00:00Z      2024-03-01  ok
+      //   @2024-03-01T23:30       America/Los_Angeles  2024-03-02T07:30Z  2024-03-02  WRONG DAY
+      //   @2024-03-01T00:30       Asia/Tokyo           2024-02-29T15:30Z  2024-02-29  WRONG DAY
+      //
+      // Nothing reports it, because the tag parses: a dashboard just opens on
+      // the wrong day depending on the worker's TZ. So the day is rebuilt from
+      // calendar fields rather than sliced off the UTC rendering.
+      // The DECLARED type decides, not the tag's scalar type. `scalarType()`
+      // reports "date" for `@2024-03-01T10:30:15` too, so keying on it dropped
+      // the time of day from a `timestamp` given's starting value, silently.
+      // `declaredType` is in hand, so use it and let a timestamp keep its text.
+      const declared = declaredType(name);
+      collected[name] =
+         scalarTypeOf(tag) === "date" &&
+         declared !== "timestamp" &&
+         declared !== "timestamptz"
+            ? authoredDay(text)
+            : declared?.startsWith("filter<")
+              ? unwrapFilterLiteral(text)
+              : text;
    }
    return Object.keys(collected).length > 0 ? collected : undefined;
 }

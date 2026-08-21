@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { NotebookCell as ClientNotebookCell } from "../../client";
 
 /**
@@ -21,4 +24,15 @@ export interface EnhancedNotebookCell extends ClientNotebookCell {
     * that become available in this cell (e.g., from imports or source definitions)
     */
    newSources?: string[];
+
+   /**
+    * Why this cell has no result, when the server refused to run it.
+    *
+    * A cell that throws used to be logged to the console and nothing else, so
+    * the reader got an empty space with no indication anything had happened.
+    * That was survivable while the only way to reach it was a server fault; it
+    * stopped being survivable once a model with a required `#(filter)` began
+    * failing every cell by design.
+    */
+   error?: string;
 }

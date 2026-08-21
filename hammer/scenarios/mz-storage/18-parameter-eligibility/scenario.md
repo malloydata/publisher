@@ -3,6 +3,10 @@ id: parameter-eligibility
 tags: eligibility
 package: f2
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Persisting a parameterized source: bind the argument, or it can't be persisted
 

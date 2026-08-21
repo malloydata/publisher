@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Publisher skills
 
 Task-specific guides for working with Malloy through this Publisher deployment. Claude Code auto-discovers them via the `.claude/skills/` symlinks; other hosts pull the same content as MCP prompts from the Publisher endpoint. Start with [`malloy-getting-started`](malloy-getting-started/SKILL.md); use `malloy-modeling` to build a model, `malloy-analysis` to answer questions, and `malloy-review` to check Malloy for correctness.
@@ -14,7 +19,7 @@ Most of these skills are **shared, open-source Malloy skills** kept in sync with
 ## Shared vs Publisher-specific
 
 - **Shared engine skills** (identical to upstream): `malloy-model`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
-- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI). These name Publisher's own tools directly and are never synced upstream to `ms2data/agent-skills`.
+- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI) and `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly and are never synced upstream to `ms2data/agent-skills`.
 
 ## Tool names in shared skills
 

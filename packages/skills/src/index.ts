@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * The skill files are this package's payload; these exports exist so a consumer
  * can find them without hardcoding a node_modules layout.

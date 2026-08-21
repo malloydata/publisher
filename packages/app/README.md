@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Publisher Server Development
 
 In development, there are 2 servers- the Node.JS API server and the React Dev server.

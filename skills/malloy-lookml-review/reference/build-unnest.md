@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML UNNEST & Struct Conversion (Step 5)
 
 > Convert LookML UNNEST joins and struct field access patterns to Malloy. This runs during Step 5 (BUILD) when the prior-art notes flag UNNEST joins or struct access.

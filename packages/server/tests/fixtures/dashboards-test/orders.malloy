@@ -1,0 +1,51 @@
+##! experimental.givens
+import { BRAND, REGION, SINCE } from './givens.malloy'
+
+source: orders is duckdb.table('data/orders.csv') extend {
+   primary_key: id
+
+   // Drill is declared on the dimension, so it fires from any dashboard (or
+   // notebook cell) that groups by it — no dashboard declares these.
+   //
+   // One destination acts on the click directly; two offer a menu. `given=`
+   // names the given to seed, which is needed here because upper-casing the
+   // dimension would give BRAND_NAME / REGION_NAME.
+   # drill { to=overview given=BRAND }
+   dimension: brand_name is brand
+
+   # drill { to=["regions", "self"] given=REGION }
+   dimension: region_name is region
+
+   measure: order_count is count()
+   measure: total_amount is sum(amount)
+
+   // Each view filters by a different given, so a composite dashboard built
+   // from both must show the union as its control row while running each tile
+   // with only its own given.
+   view: by_brand is {
+      where: brand_name ~ $BRAND
+      group_by: brand_name
+      aggregate: total_amount
+   }
+
+   view: by_region is {
+      where: region_name ~ $REGION
+      group_by: region_name
+      aggregate: order_count
+   }
+
+   // Filters by nothing, so it contributes no control.
+   view: totals is {
+      aggregate: order_count, total_amount
+   }
+
+   // The one view filtering by a scalar date given.
+   view: since_totals is {
+      where: ordered_at >= $SINCE
+      aggregate: order_count
+   }
+}
+
+query: region_suggest is orders -> {
+   group_by: region_name
+}

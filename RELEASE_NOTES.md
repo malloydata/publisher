@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Release Notes
 
 Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and `@malloy-publisher/server` (versioned in lockstep).
@@ -6,7 +11,13 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — copy every `## [Unreleased]` section below into the GitHub release page after CI publishes it, and stamp each one with the version that shipped it. There is regularly more than one, because unrelated narratives accumulate between releases: they are separate entries in the same release rather than alternatives, so reading "the relevant section" as singular ships one and silently drops the others. The future workflow change to read this file directly is documented in #2 of the May 2026 review.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does the rest**: `gh-release` appends every `[Unreleased]` section to the release page alongside the generated PR list, then commits the heading back to `main` stamped with the version that shipped it. Nothing to paste, nothing to remember.
+
+Both steps handle several sections, which matters because unrelated narratives accumulate between releases: they are separate entries in the same release rather than alternatives. That is precisely what the old manual process got wrong. It also simply stopped happening — 0.0.243 through 0.0.247 each shipped with none of their narrative, and the pages were backfilled by hand afterwards.
+
+Give the heading a title — `## [Unreleased] — what changed`, with an em dash, a colon or a hyphen. The version is already the release's own title, so the marker is stripped and the title is what appears on the page; a bare `## [Unreleased]` has nothing to put there and fails CI on the PR that writes it.
+
+Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
 ## Packages that version on their own line
 
@@ -234,7 +245,23 @@ the caller stripped from submitted text is still found and still denies.
 
 ---
 
-## [Unreleased] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
+## [Unreleased] — opt-in request rate limiting
+
+The REST server can now cap how many requests one client makes per minute: set `PUBLISHER_RATE_LIMIT=<n>` and the `n+1`th request in a minute from the same peer address gets a `429` with standard `RateLimit-*` headers. It is off unless set, so nothing changes for an existing deployment. Health probes and `/metrics` are exempt, and the MCP port is not covered. Behind a reverse proxy every client arrives from the proxy's address and would share one bucket, so rate-limit at the proxy in that deployment instead. See [docs/configuration.md](docs/configuration.md).
+
+Also in this release, the SDK's filter UI escapes backslashes in string values before quotes rather than after, so a value containing a backslash no longer reaches Malloy double-escaped.
+
+## [Unreleased] — a filtered aggregate can be pre-aggregated
+
+Since 0.0.246, a measure filtering its aggregate — `paid is amount.sum() { where: is_paying }` — was refused at publish by `#@ preaggregate`, with the workaround of rewriting it as `amount.sum(pick amount when is_paying else null)`-style expressions or filtering in a view. The refusal was the fail-closed gate doing its job, not a soundness limit: the rollup computes each stored partial from the measure by name, so the filter rides into the build, and a row-level filter commutes with merging per-grain partials — filtering then merging equals filtering the whole, for every merge the feature hands out, including `count`'s (a filtered count stores a count of matching rows and still merges with `sum`).
+
+So the gate now accepts a filter **written directly on the measure's single aggregate** (several conditions comma-separated in one `where:`), and nothing else changed shape: a filter refining a derived measure, an aggregate wrapped in a further expression (`coalesce(amount.sum() { where: … }, 0)`), a chained refinement (`{ where: a } { where: b }` — use the comma form instead), or a non-scalar condition is refused exactly as before. A filtered `avg` is still refused as `avg`. No action needed on existing packages — this only admits annotations that previously failed publish — but measures rewritten around the old refusal can return to the plain filtered form, which now also pre-aggregates.
+
+One caution in the rollback direction: the publish gate is also a load gate, and it is package-level. A package that adopts `#@ preaggregate` on a filtered aggregate loads only on servers carrying this change — roll a server back past it and that package does not merely lose its rollup, it fails to load entirely and drops into `loadErrors`. Inherent to any gate widening, but worth knowing before adopting the new shape in a fleet that pins older images.
+
+---
+
+## [0.0.248] — `#(authorize)` can gate rows, not just the whole source (BREAKING)
 
 A gate whose expression reads no row field works exactly as before; a gate that reads one — its
 own source's, or a joined source's — now filters rows instead of only admitting or rejecting the
@@ -421,6 +448,57 @@ A `storage=` build reads its source through DuckDB's native query-passthrough, w
 
 ---
 
+## [Unreleased]: an incremental refresh can advance a `storage=` table
+
+`refresh="incremental"` alongside `storage=` was a publish rejection. It is now supported, with the
+same declarations and the same guarantees as a colocated incremental source: the table is advanced by
+a bounded `[covered_through, frontier)` delta instead of being rebuilt.
+
+### What changed
+
+- **The delta spans the two engines the tier already spans.** The source warehouse computes the
+  bounded range — the predicate is pushed into its own query, so it never streams rows that will be
+  discarded — and the `DELETE`+`INSERT` (or `MERGE`, for a `merge_key=` source) is applied in one
+  DuckLake transaction against the stored table. The table is either at the old snapshot or the new
+  one; the read-only serving attach sees the new one on its next query, with no re-attach.
+- **A delta's warehouse read is attributed and costed** exactly as a full build's is, through the same
+  call: a `queryMetadata` bag reaches it as a BigQuery `@@query_label` or a Snowflake `QUERY_TAG`, and
+  `ManifestEntry.queryCostBytes` reports what a tagged read cost. Refresh spend on this tier was
+  otherwise the one kind of warehouse work a deployment could not account for.
+- **`LedgerEntry` gains `storageDestinationName`.** A boundary belongs to a table, and where a stored
+  table LIVES is not implied by the connection whose SQL computes it — `storage=` enters neither the
+  content address nor the physical name, so nothing else distinguishes a boundary measured on the
+  stored table from one measured on a colocated table of the same name. A caller holding the ledger
+  should store and return it like every other field. One that does not yet: an entry without it, for a
+  source this run materializes into a destination, is treated as stale and the source seeds — it is
+  not rejected.
+- **A CHAINED stored source still rebuilds** every refresh, reported under its own reason code
+  (`chained_storage`) rather than silently. Its parent's own delta can restate rows below the child's
+  frontier, where no delta of the child's would revisit them.
+- **`publisher_source_build_duration_seconds` gains a `delta_storage` engine label**, kept apart from
+  `delta` for the same reason `storage` is kept apart from `in_warehouse`: the two have different cost
+  profiles and pooling them averages one into the other.
+
+### Upgrading
+
+**Every incremental source rebuilds once.** A boundary is now keyed by the store its table lives in
+as well as by the connection and the name, because a source persisted colocated and one persisted
+into a destination under the same name are two different tables that coexist legitimately — sharing
+one row made both seed forever, each overwriting the other. `publisher.db` re-keys the ledger on
+boot and discards the recorded boundaries with it, so each incremental source takes one full rebuild
+and then resumes advancing by delta. Same mechanism, and the same one-time cost, as the re-key in
+0.0.240.
+
+**If you hold the ledger yourself, store the new field before you upgrade.** An entry returned
+without `storageDestinationName` for a source materialized into a destination describes a different
+table, so that source seeds — every run, not once, until the caller round-trips it. That is
+deliberate (an entry from a caller that predates the field is stale, not wrong, so it is not
+rejected) but the only signal is a repeating `no_boundary`. Update the caller's ledger storage first,
+or accept full rebuilds until you do.
+
+**A source that was rejected for declaring both keys now publishes**, and takes the same one rebuild
+as any other incremental source before it starts advancing.
+
 ## [Unreleased]: a given's control contract is read off its own tags
 
 The `Given` control contract shipped in 0.0.242 as a schema with no reader: the fields were declared and no endpoint populated them. The server now derives them from the declaration's own tags, so they are populated wherever a `Given` is returned.
@@ -429,6 +507,43 @@ The `Given` control contract shipped in 0.0.242 as a schema with no reader: the 
 
 - **`label`, `control`, `rangeMin`, `rangeMax` and `suggest` are now populated,** read from the `given:` declaration's own plain-`#` tags. How a given should be presented belongs to the given rather than to any one surface, which is what lets a notebook, a dashboard and an SDK host render the same control without restating it. Those tags sit in Malloy's reserved namespace and are dropped from `annotations`, so deriving them server-side is what lets a client read them without shipping a MOTLY parser of its own. A declaration carrying none of the tags carries none of the fields, and a value the contract does not accept (`control=radio`, a non-numeric bound) is dropped the same way rather than reported.
 - **`Given` gains `description`,** helper text read from a `# description=` tag. This does not replace `#(description="…")`, which still works and is still what the notebook UI renders: that form stays on `annotations`, where the client that parses it today keeps finding it. The tag form is the one that compiles without a `malformed-route` warning, since Malloy reads an annotation's route up to the first whitespace and a multi-word `#(description="…")` therefore is not well formed. Nothing renders the new field yet.
+
+## [Unreleased]: the Console says what this server can do
+
+The home page described a three-feature Publisher, the package page gave four of its six kinds of
+content the same colour, and Publisher's in-repo reference docs had nothing linking to them.
+
+### What changed
+
+- **Six feature cards on the home page instead of three**, covering notebooks, dashboards, data apps,
+  the MCP endpoint, ad-hoc analysis and the governance model, each linking the reference doc for it.
+  The card previously titled "Notebook dashboards" named a compound of the two surfaces it straddled rather than either of them, and
+  linked the publishing setup guide. A closing paragraph names connections, materialized tables and
+  the REST API, which have docs but do not earn a card.
+- **`DOC_LINKS` gains a `REPO_DOCS` block**, six links to Publisher's own reference docs, which live
+  in the repo rather than on the docs site and for several features are the only write-up there is.
+  A spec checks each target exists in the repo, case-sensitively, so a doc renamed, deleted or
+  mistyped fails the test suite rather than shipping a broken card. It cannot check that a target is
+  on `main` yet, which is a merge-ordering question: this change was sequenced behind the dashboards
+  slice for exactly that reason, and that slice has since landed.
+- **`docs/choosing-a-surface.md`**, a comparison of notebooks, dashboards and HTML data apps with a
+  decision guide. `docs/malloyyo-dashboards-design.md` has referenced it since it merged; it now
+  exists.
+- **Every content type on the package page has its own icon and its own colour.** Four of the six
+  rows had been passing the same teal from four separate call sites, so colour distinguished two
+  kinds out of six. The row now derives both from one `type` prop, which is why it cannot drift
+  again. The three added colours each clear WCAG's 3:1 against white, measured, since they sit behind
+  a white glyph.
+- **`Add Connection` is a contained button with an icon**, matching the add-triggers on the home
+  and environment screens. It was the only one of the three still outlined.
+
+### For SDK consumers
+
+Additive only. `DOC_LINKS` is a public export (`src/index.ts`) and gains six keys; none of the
+existing four changed. Everything else here is internal: `PackageItemRow` is a file-local function
+whose props changed, and `ContentTypeIcon`, `ContentType`, `CONTENT_TINT` and `MALLOY_ACCENT` are
+not re-exported from `components/index.ts` or `src/index.ts`, so they are not on the published
+surface at all.
 
 ## [0.0.244] — queries report how they were served, and what they cost
 
@@ -507,6 +622,35 @@ A `#@ persist` source can now be materialized into a **storage destination** —
 - **Multi-replica serving via the manifest.** A `storage=` source can be served across a fleet by carrying its serve binding in the same manifest the publisher already fetches from a package's `manifestLocation`: a manifest entry that names a `storageDestinationName` (with the captured `schema` and `sourceName`) binds as a cross-connection serve binding applied to the already-compiled models (no recompile); entries without it remain same-connection `tableName` substitutions (which do recompile). A refresh is the usual manifest-rebind — rewrite the manifest and re-`PATCH` `manifestLocation` — and a storage-only refresh costs no recompile. Entries are keyed by the build's content `sourceEntityId` (= the serve handle), so a freshness refresh keeps the handle and only swaps the table path, while a schema-changing generation gets a new handle. Standalone (no `manifestLocation`), serve bindings are still re-derived per-replica from the local materialization store on package load; run that single-replica. When a `manifestLocation` is set the host is authoritative and the local-store rebind is skipped, so the two binding sources never fight.
 - **Roll back cleanly.** Deleting a package's materializations before rolling back to a publisher version without this tier avoids a wedge: an older build reuses/binds a persisted `storage=` manifest entry as a same-connection table it can't resolve. Building with `storage=` only ever affects deployments that turned the mode on.
 
+## [Unreleased]: shared given and drill controls, and the notebook adopts them
+
+The control layer behind `given:` is now one implementation instead of one per surface: state, URL encoding, `suggest`-backed pickers, and `# drill` click handling all live in the SDK, and `Notebook` is the first surface built on them. A notebook's parameters are now part of its URL, so a filtered notebook is a link you can send.
+
+This is a **breaking release for SDK consumers**: five removals and one narrowed prop type, all listed under Migration.
+
+### What changed
+
+- **A notebook's parameters live in its URL.** `Notebook` takes `givens` and `onGivensChange`, and the Console wires them to the query string. Opening a notebook at `?REGION=West` runs every cell with that value on the first pass rather than running bare and running again. The host is handed the names the notebook manages alongside the values, so it can update its own query string without disturbing parameters that are not its business.
+- **`# drill { to=self }` works in a notebook cell.** A cell that groups by a dimension carrying the tag becomes clickable and filters the notebook in place with the clicked value, provided the notebook declares the given the tag names: one that names a given the document does not declare stays plain rather than offering a click that cannot be honoured. Drillable cells read as links on hover, via a new mode-keyed `drillLink` theme colour. Two cases are deliberately left unmarked: a blank cell, whose click is refused anyway (a blank value is far likelier a misclick than a request for the rows that are blank), and every cell of a `# transpose` table, because the renderer lays that layout out without the per-cell `grid-column` the marking matches on. A transposed table's drill still WORKS when clicked; it is undiscoverable, which is the one place on this surface where the affordance and the behaviour disagree. A drill naming a *dashboard* destination is honoured too, now that the dashboard route exists: the cell is marked, and clicking it opens that dashboard with the value seeded. On a host that has not wired the navigation the destination stays unmarked and inert rather than painting a cell as a link to a page that answers "Nothing to open at this path".
+- **`select` / `multiselect` controls backed by `suggest`.** The option list comes from an ordinary query on the governed query endpoint, so row caps and `#(authorize)` gates apply to a dropdown exactly as they do to the surface's own queries. A suggest query that fails now says so on the control instead of rendering as a dimension with no values, and the generated query carries an explicit `limit:` and ordering rather than relying on the server's default row cap to truncate it in whatever order the warehouse returned.
+- **Filter values are escaped by Malloy's own filter package.** A `filter<…>` value picked in a control is now printed with `@malloydata/malloy-filter`'s `StringFilterExpression.unparse`, and read back with its parser. The previous scheme wrapped values in double quotes, which Malloy's string-filter grammar has no notion of: backslash is its only escape, so the quoting escaped nothing and several ordinary values silently meant something else. Measured against the `storefront` model, filtering its `category` dimension: a picked `-Outerwear` ran as a negation and returned 22,821 of 25,356 rows instead of the 2,535 that category holds; `%` bypassed the filter and returned all 25,356; `null` hit the null operator and returned 0; and `Ben & Jerry, Inc` was read as two brands. All of these now match themselves, pinned by a round-trip test against the real parser.
+- **The notebook's controls are `given:` only.** The Filters panel that rendered `#(filter)` and `##(filters)` annotations is gone, and the notebook no longer sends `filterParams`. **This is a behaviour change for a model that uses `#(filter)`, and the deprecation note under 0.0.201 said otherwise.** Concretely: a cell fails when its run target is a source that declares a `required` filter, because the server still refuses one with no value and there is no longer a UI that can supply it. That is narrower than "every cell" in two ways worth knowing before you audit a model: enforcement is per run-target source, so cells querying a source with no filters are unaffected, and a **block-form** `#(filter) … required` is not collected at all, so it never raised the error in the first place (`source_extraction.ts` documents that gap deliberately). A model with only optional `#(filter)` annotations still runs, but is no longer filterable from the notebook. The REST parameters, the `Deprecation` header, and the server-side enforcement are all unchanged: this is the UI half of the migration landing ahead of the server half. Migrate to `given:`: [docs/givens.md](docs/givens.md) has a **"Coming from `#(filter)`"** section with a worked conversion and the three things that do not map across.
+- **A cell that cannot run says why.** A failed cell used to log to the console and render as blank space, which was survivable while only a server fault could reach it. The server's own message is now shown on the cell.
+- **A superseded run is cancelled, and a burst of edits only runs once.** Changing a control while a run is in flight starts a new one, and the old run's requests are aborted rather than left to complete and have their results discarded. A changed value also waits 400ms to settle before anything is dispatched, so typing into a text control runs the notebook once rather than once per keystroke. Aborting alone was not enough: it cancels the request, but cells already sent are still compiling and running on the warehouse, and their answers are thrown away.
+- **Reset means "back to where this document starts".** It restores the document's declared starting values and re-runs once. It previously cleared the controls to empty and, depending on `autorun`, either did nothing at all or ran the queries twice on the way back to the starting values.
+
+### Migration
+
+- **`useGivensForm` and `UseGivensFormResult` are removed.** Use `useGivensState`, which additionally covers URL round-tripping and Apply batching. `GivenValue` is still exported from the package root, but see the next entry.
+- **`GivenValue` no longer includes `string[]` or `number[]`.** It is now `string | number | boolean | Date | null`. The array members promised something the new URL codec cannot deliver: `givenToParam` joined a list on `,` with no escaping and `paramToGiven` never returns an array for any type, so a list did not survive the round trip, and a value containing a comma could not even be split back to the right number of entries (`["Ben & Jerry, Inc", "Nike"]` became the single string `Ben & Jerry, Inc,Nike`). Nothing in the SDK produced an array value, so this narrows a promise rather than removing a working feature. Multi-value parameters are expressed today with a `filter<…>` given, whose values are escaped by Malloy's own filter package. Code annotated `GivenValue` that holds a list will stop compiling; hold the filter string instead.
+- **`Notebook`'s `onNavigate` takes a narrower event.** The signature is now `(to: string, event?: NavigationClick) => void`, where `NavigationClick` is `Pick<MouseEvent, "metaKey" | "ctrlKey" | "shiftKey" | "button">`. A `# drill` click arrives from the Malloy renderer as a DOM event rather than a React synthetic one, and this is the subset both satisfy. Function parameters are contravariant under `strictFunctionTypes`, so **an existing handler annotated `(to: string, event?: React.MouseEvent)` stops compiling** with TS2322. Widen the annotation to `NavigationClick` (exported from the package root), or drop the annotation and let it be inferred.
+- **`Notebook`'s and `Package`'s `retrievalFn` props are removed**, along with the semantic-search filter they fed. `RetrievalFunction` and `DimensionFilter` are still exported for consumers rendering their own filter UI.
+- **`RenderedResult`'s `onDrill` prop is replaced by `drill`.** `onDrill` was an untyped `(element: unknown) => void` handed straight to the renderer's `onClick`; `drill` is a `DrillBinding` (`{onClick, canDrill}`), which is what lets a result both handle a `# drill` click and mark the cells it applies to. `RenderedResult` is exported from the package root, so a consumer passing `onDrill` loses drill handling silently: the prop is simply not read any more. Build the binding with `useDrill` and pass it as `drill`, or pass `{onClick: yourHandler, canDrill: () => false}` to keep the old click-only behaviour with no affordance.
+- **`@malloydata/malloy-filter` is a new peer dependency** (`^0.0.427`). It is already in the dependency tree of `@malloydata/malloy-explorer` and `@malloydata/malloy-query-builder`, both existing peers, so an install that satisfies the current peers already has it.
+- `GivensPanel` and `GivenInput` are now exported from the package root, and `GivensPanel`'s `onClearAll` prop is `onReset`: a rename with no compatibility concern, since neither component was reachable from the package root before this release.
+- **`ResolvedTheme` gains a required `drillLink` field.** It is the hover colour for a drillable cell, keyed by mode. `ResolvedTheme` is an output type: you get one from `resolveTheme` or from the theme context, so reading it is unaffected. Only code that hand-constructs a `ResolvedTheme` literal (a test fixture, say) needs the extra field. The input type, `Theme`, is unchanged.
+- **`ResultsDialog` accepts a `drill` prop.** Additive. A notebook cell now passes it, so a result stays clickable when it is expanded rather than only inline.
+
 ## [0.0.242]: one meaning for `givens` across the API
 
 `givens` had come to mean four different things: declarations, typed values, string-encoded values, and a bare list of names. It now always means a collection of `Given` declarations, and the other three have names of their own. Renames and spec corrections only; no endpoint changes what it does.
@@ -516,7 +660,7 @@ A `#@ persist` source can now be materialized into a **storage destination** —
 - **`Givens` is renamed `GivenValues`,** and the string-encoded form that survives a URL is a new named `EncodedGivenValues`. `Givens` read as the plural of `Given` and was not: `Given` describes what a model _accepts_ and is always carried in a plain array, while these two are the values a caller _sends_, decoded and string-encoded respectively. No field, shape, or wire format changed on any endpoint, but **the symbol rename is breaking for a generated client that names it**, so regenerate before upgrading. Which clients those are depends on the generator, and the two we run disagree: `openapi-typescript` (our server types) emits a named `Givens` and now emits `GivenValues` and `EncodedGivenValues` instead, and the Python generator likewise emits `given_values.py` and `encoded_given_values.py` in place of `givens.py`. The axios generator behind `@malloy-publisher/sdk` inlines the map and names nothing, so an SDK consumer is unaffected.
 - **`Given` now carries the control contract** wherever it is returned: `label`, `control`, `rangeMin`, `rangeMax`, and `suggest` (a new `GivenSuggest`), all optional. How a given should be presented belongs to the given rather than to any one surface, which is what lets two surfaces render the same control without restating it. The server does not populate them yet; this release lands the contract so the readers that follow have one place to write to.
 - **Package warnings name their subject `subject` rather than `target`.** `target` meant the opposite of a `# drill` target: it named where a finding sits, not where anything points. Every producer feeding `Package.warnings` now uses the new key, including the materialization-config findings, whose own `MaterializationConfigWarning` type carried the old one.
-- **`RawNotebook` declares what the notebook endpoint actually returns.** `type`, `modelPath`, `modelInfo`, and `queries` are on every response and were undeclared, which forced a blanket cast in the server that would have accepted a stale field name after a rename. `resource` and `path` were declared and have never been sent. It also gains `startingGivens` (`EncodedGivenValues`), the name for a document's declared starting values; nothing emits it yet.
+- **`RawNotebook` declares what the notebook endpoint actually returns.** `type`, `modelPath`, `modelInfo`, and `queries` are on every response and were undeclared, which forced a blanket cast in the server that would have accepted a stale field name after a rename. `resource` and `path` were declared and have never been sent. It also gains `startingGivens` (`EncodedGivenValues`), the name for a document's declared starting values.
 - **A `versionId` request answers 501, not 500.** Every route that declares the parameter has documented `501 Not Implemented` all along, but `NotImplementedError` had no mapping and fell through to the 500 default.
 
 ### Migration
@@ -566,6 +710,91 @@ Why the REST path breaks cleanly while the browser URL gets a grace period: the 
 
 One more consequence of the SPA route move, easy to miss: the app now claims the `data-apps` segment, so `/{env}/{pkg}/data-apps/<file>` is no longer redirected to the static route. Clicking a data app in the Console is unaffected, because the listing already includes the file's path relative to `public/`. What changes is a hand-written URL of that shape: it opens the embedded viewer one segment down, on `public/<file>`, rather than redirecting. A package that itself ships a `public/data-apps/` directory is the case to know about, since its files are addressed as `/{env}/{pkg}/data-apps/data-apps/<file>`; the standalone URL `/environments/{env}/packages/{pkg}/data-apps/<file>` serves them unchanged either way. This mirrors what `public/pages/` had before, so it is not a new class of collision, but `data-apps` is a likelier directory name than `pages` was.
 
+## [Unreleased]: dashboards render, and the Console serves them
+
+The server half of dashboards had no UI. It has one now: a package's dashboards are listed on its
+page and open at `/{env}/{package}/dashboards/{name}`, and `<Dashboard>` is a public SDK export so an
+embedding host renders the same component the Console does.
+
+### What changed
+
+- **A dashboard page.** `<Dashboard>` reads the manifest and renders either form: a single query
+  whose result is the page, or a composite whose tiles each run on their own and combine into one
+  `dashboardColumns` grid. A tile owning its own query is what lets one broken tile show its error in
+  place while the rest of the grid still renders. It takes props rather than reading a router, so the
+  Console and an external React app differ only in what they do with `onNavigate` and
+  `onGivensChange`.
+- **Control state is URL state.** Filtering replaces history so Back leaves the dashboard rather than
+  walking through every value tried; a `to=<slug>` drill pushes it, so Back returns to the dashboard the
+  drill started from. A `to=self` drill filters in place, so it takes the same replace as any other
+  control change and Back leaves the dashboard rather than undoing the drill.
+  A `# artifact { autorun=false }` dashboard batches changes behind Apply.
+- **A Dashboards section on the package page**, listed first because it is the at-a-glance artifact a
+  visitor most likely wants, and hidden when the package has none. A dashboard's own file is filtered
+  out of Semantic Models so it is listed once; untagged shared includes under `dashboards/` are not
+  dashboards and stay in the model list. Notebooks are now listed by title too, with the filename as
+  the secondary label.
+- **`## autorun=false` is honoured in notebooks**, which had hardcoded it true while nothing produced
+  the field. The server derives it now, so a notebook gets the same Apply batching a dashboard does.
+- **A `# drill` naming a dashboard navigates from a notebook cell**, which completes the primitive
+  that shipped inert. Where a tag offers two destinations, the click opens a menu naming the
+  dashboard and the current surface.
+- **Drill is reachable without a mouse.** Marked cells take `role="button"`, focus is styled the way
+  hover is, and Enter or Space activates. Previously the only signals a cell did anything were a
+  pointer cursor and a hover colour, neither of which a keyboard or touch user can produce. A
+  drillable column takes ONE tab stop rather than one per row, with ArrowUp/ArrowDown and Home/End
+  moving within it: tabbing through every cell of a result would have been its own accessibility
+  problem, since a result at the row cap would have stood between the reader and everything after
+  it. The stop is per drillable COLUMN within a table, so a table grouping by two drilled dimensions
+  carries two, and a drill inside a `nest:`, which the renderer draws as a table per parent row, still
+  contributes one stop per parent row.
+- **A `select` control looks like one.** MUI hides the dropdown arrow whenever a combobox accepts
+  free text, which it must here since a `suggest` returns the common values rather than every legal
+  one, so a picker rendered as a plain text box and its option list was undiscoverable.
+
+### Two things to know when authoring
+
+- **Write `given=` on a `# drill` tag whenever the dimension is not named after the given.**
+  Without it the given is the dimension name exactly as the model spells it, so
+  `dimension: brand_name` looks for a given called `brand_name` and a model declaring `BRAND` does
+  not match: the cell still reads as clickable and the click lands on an unfiltered page. A
+  difference of case alone is forgiven only for `to=self`, where the surface resolves the name
+  against the givens it declares and folds case doing it. A `to=<slug>` drill does no lookup: the
+  name goes into the destination's URL as the tag spells it and the destination binds only the
+  parameters it declares, spelled identically, so `given=brand` into a dashboard declaring `BRAND`
+  opens it unfiltered. A `to=self` drill seeding a given no model declares is reported at load.
+- **A file that does not compile fails the whole package.** Loading aborts on the first model error,
+  so the dashboards endpoint answers 424 and none of that package's dashboards are served, including
+  the ones that compiled. A failed `?reload=true` is refused the same way and leaves the previously
+  compiled package serving, which is the behaviour to rely on while editing.
+
+One consequence of the new route, the same one the `data-apps` rename had: the app now claims the
+`dashboards` segment, so `/{env}/{pkg}/dashboards/<file>` is no longer redirected to the static
+route. It has to be claimed, because a slug is a filename with `.malloy` removed and
+`dashboards/report.csv.malloy` therefore publishes the slug `report.csv`, which would otherwise be
+diverted as an asset and 404 on a deep link or a refresh. The case to know about is a package that
+itself ships a `public/dashboards/` directory. Unlike `data-apps`, there is no viewer one segment
+down to catch those: `/{env}/{pkg}/dashboards/<file>` now opens the dashboard viewer, which reports
+that the package has no dashboard by that name. Address them on the standalone URL,
+`/environments/{env}/packages/{pkg}/dashboards/<file>`, which serves them unchanged as it always
+did.
+
+`docs/dashboards.md` is the guide. No bundled example ships a `dashboards/` directory yet; that
+arrives with the examples change that follows this one.
+
+## [Unreleased]: dashboards are discovered and served over REST
+
+A `.malloy` file in a package's `dashboards/` directory carrying an `# artifact` tag is now discovered at load and served over two read-only endpoints. This is the server half only: there is no UI for it yet.
+
+### What changed
+
+- **Two new endpoints.** `GET …/packages/{packageName}/dashboards` lists a package's dashboards, and `GET …/packages/{packageName}/dashboards/{dashboardName}` returns one manifest: the artifact tag's declarations plus the control contract derived from the givens its query references, widened to the file's surfaced set when a tile is one discovery cannot resolve. New schemas `Dashboard`, `DashboardManifest`, and `DashboardTile`.
+- **There is deliberately no run endpoint.** A dashboard's query, each composite tile, and each control's suggest query all run through the ordinary `POST …/models/{path}/query` with `givens`, using the manifest's `path` as the model, so row caps, byte caps, authorize gates, and render-tag validation all apply unchanged.
+- **A dashboard whose entry file is not queryable is not listed.** When a package curates its query surface (`queryableSources: "declared"`), a dashboard whose entry file is not in `explores` is held back rather than published with a manifest whose every query and given name would 404, and the omission is reported in the package's `warnings`. Being listed is not always sufficient on its own: the queryable sources are the union of every listed file's `export {}` closure, so a tile reading a source that only an unlisted file exports is still refused, and the fix is to list that file too or re-export the source from one already listed.
+- **Load-time lint.** Findings for a `# artifact` tag that does not parse or does not describe a dashboard, a tile or suggest query that does not resolve, an invalid grid width, and a `# drill` naming a destination that is not a dashboard, all on the existing non-fatal `Package.warnings` surface.
+- **A notebook listing carries `title` and `description`,** resolved from its own `## title="…"`, then its `#"` doc comment, then its first markdown heading. `RawNotebook` gains `autorun`, the same flag with the same default that a dashboard's artifact tag carries.
+- **`Notebook` declares `environmentName`,** which the response has always sent, and drops `resource`, which it declared and never sent (issue #979).
+
 ## [0.0.208] — Single-call materialization (plan-as-artifact)
 
 **Breaking change to the materialization API.** Materialization moves from the two-round (compile-then-build) protocol to a single call. The build plan is now a compile-time property of the package, and a build is requested in one request.
@@ -612,6 +841,8 @@ See [docs/configuration.md](docs/configuration.md) for the rule and the recommen
 **Givens are now the recommended way to supply runtime parameters.** Models declare `given:` blocks (per [Malloy's experimental givens feature](https://docs.malloydata.dev/documentation/experiments/givens)); callers send values via the new `givens` body field on `POST /…/query` and `POST /…/compile`, the `givens` query parameter on the notebook-cell GET, or the `givens` argument on the MCP `malloy_executeQuery` tool. The notebook UI automatically renders a Parameters panel for any model that declares givens.
 
 `filterParams`, `bypassFilters`, the matching `filter_params` / `bypass_filters` query parameters, and `#(filter)` annotations are **deprecated** and will be removed in a future release after a coordinated migration with current users. Models that use `#(filter)` will continue to work unchanged during the deprecation window; affected responses now carry a `Deprecation: true` header (per RFC 8594) pointing at `docs/givens.md`, and the server logs a one-time migration notice when such a model is loaded. See [docs/givens.md](docs/givens.md) for the migration recipe.
+
+> **This paragraph no longer describes current behaviour.** It was accurate at 0.0.201 and stopped being so when the notebook's Filters panel was removed: the notebook no longer sends `filterParams` at all. See "the notebook's controls are `given:` only" under **"[Unreleased]: shared given and drill controls, and the notebook adopts them"** for what a `#(filter)` model does now. Named rather than described by position: there are several unreleased sections and that one is not the topmost. The REST parameters themselves are untouched.
 
 ## [0.0.197] — SDK and app UI redesign
 

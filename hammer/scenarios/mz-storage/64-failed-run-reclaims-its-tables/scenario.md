@@ -3,6 +3,10 @@ id: failed-run-reclaims-its-tables
 tags: lifecycle, build-control
 package: prt
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A part-way failed build reclaims the tables it created
 

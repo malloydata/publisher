@@ -3,6 +3,10 @@ id: chained-persist
 tags: serve-correctness, chained
 package: ch
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A downstream persist source is built by reading its upstream's table, not by recomputing it
 

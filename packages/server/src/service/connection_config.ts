@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";

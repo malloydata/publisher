@@ -2,6 +2,10 @@
 name: malloy-analysis
 description: Workflow for answering data questions against Malloy semantic models over MCP - structured discovery with get_context, query construction with execute_query, verification, and answer delivery. Use whenever the user asks a data question, wants a metric, a breakdown, a trend, or a chart over a model.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Malloy analysis workflow
 

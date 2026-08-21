@@ -3,6 +3,10 @@ id: cross-model-dag
 tags: serve-correctness, chained
 package: xm
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A persist source resolves and materializes across an `import`
 

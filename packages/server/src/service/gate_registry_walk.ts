@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * The `sourceRegistry`-following fallback for finding a struct's inherited
  * `#(authorize)` gate, shared between `Model` (`service/model.ts`, request

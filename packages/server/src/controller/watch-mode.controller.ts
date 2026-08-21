@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import chokidar, { FSWatcher } from "chokidar";
 import { EventEmitter } from "events";
 import { RequestHandler } from "express";

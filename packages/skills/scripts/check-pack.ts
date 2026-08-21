@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Verify what `npm pack` really publishes, by packing and reading the tarball.
  *

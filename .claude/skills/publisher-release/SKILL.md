@@ -2,6 +2,10 @@
 name: publisher-release
 description: Cut a Malloy Publisher release, and write the RELEASE_NOTES.md entries a release ships. Use when asked to release, cut a release, ship a version, or publish Publisher to npm/Docker — and when a change needs a release note, or you are deciding whether it does and what version to stamp on it.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Releasing Publisher
 
@@ -16,10 +20,11 @@ YAML, and it is the authority when this file and it disagree.
 ## Release notes: when to write one, and what number goes on it
 
 `RELEASE_NOTES.md` is not written at release time. **The PR that changes the
-behaviour writes the note**, in the same PR, as a `## [Unreleased]` section. The
-releaser only stamps a version on what is already there. Every section in that
-file arrived this way, and it is the only way the note gets written by someone
-who knows what changed.
+behaviour writes the note**, in the same PR, as a `## [Unreleased]` section —
+which is the only way it gets written by someone who knows what changed. The
+release then carries it to users on its own: `gh-release` appends every
+`[Unreleased]` section to the release page and stamps the heading back on
+`main`. Writing the section is the whole job.
 
 ### Does this change need one?
 
@@ -60,19 +65,19 @@ Three states, in order:
    ship together as one story, and the reader has never seen the first version.
    #1024 (pre-aggregation off by default) and #1030 (on by default) are one
    section for exactly this reason.
-3. **`## [<version>] — <what changed>`** once a release has shipped it. Stamped
-   by the releaser, in a PR to `main`, after the release succeeds — see step 6.
-   The number is the version that actually shipped it, which for a backlogged
-   section is *not* the release you are cutting.
+3. **`## [<version>] — <what changed>`** once a release has shipped it. **CI
+   does this** — `gh-release` commits the stamp to `main` after the release is
+   cut. You do not stamp by hand, and you do not guess the number in advance.
 
 Once a section is stamped, it is history and does not get rewritten. A follow-up
 that changes that behaviour opens a **new** `[Unreleased]` section referencing
 the shipped version by number, the way the build-failures section names 0.0.245
 and 0.0.246 when describing what 0.0.247 changed.
 
-Never write a version number into a note speculatively. Release numbers are
-assigned by `prepare` at dispatch time and a release can fail, so a section
-stamped in advance can name a version that does not exist.
+Never write a version number into a note yourself. Release numbers are assigned
+at dispatch time and a release can fail, so a section stamped in advance can name
+a version that does not exist — which is exactly why the stamp runs after
+`gh release create` succeeds and not before.
 
 ## Which number to bump
 
@@ -197,40 +202,26 @@ Do not skip the equality check and read the log alone. Anchored at the commit
 that set npm's version, the log still reports a bump that has already merged,
 and "any output means bump" then walks the version a second time for nothing.
 
-### 3. Stamp the release notes that already shipped
+### 3. Sanity-check the notes
 
-`RELEASE_NOTES.md` accumulates `## [Unreleased]` sections. Stamping them is a
-manual post-release step, so it is the step that gets dropped — and the sections
-then pile up silently across several releases, because nothing in CI reads this
-file. Before cutting, reconcile the backlog: for each `[Unreleased]` section,
-find the commit that introduced it and the first release tag containing that
-commit.
+`gh-release` reads `RELEASE_NOTES.md` itself: it appends every `## [Unreleased]`
+section to the release page and commits the heading back to `main` stamped with
+the version that shipped it. There is nothing to paste and nothing to stamp by
+hand, so this step is a read, not a task.
 
 ```bash
-grep '^## \[Unreleased\]' RELEASE_NOTES.md | while IFS= read -r h; do
-  body="${h#*— }"
-  c=$(git log --format=%h -S"$body" -- RELEASE_NOTES.md | tail -1)
-  t=$(git tag --contains "$c" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | head -1)
-  printf '%s\n  %s  first tag: %s\n' "$body" "$c" "${t:-NOT YET RELEASED}"
-done
+grep -n '^## \[Unreleased\]' RELEASE_NOTES.md
+node scripts/release-notes.mjs extract | head -40
 ```
 
-A tag means that section already shipped and belongs to that version, not to the
-release you are cutting. Two traps:
+What you are checking is that the sections listed are the ones this release
+actually ships. A section describes work merged to `main`, so anything sitting
+there goes out with this release whether or not it was written for it. Nothing
+listed is fine and common — the generated PR list carries a routine patch.
 
-- **A section is often edited after it lands.** Stamp the version whose behaviour
-  the section as currently written describes, not the one that created the file.
-  Re-run the loop over every commit that touched the section, not just the first.
-- **There is regularly more than one live section.** They are separate entries in
-  the same release, not alternatives. Shipping "the relevant one" drops the rest.
-
-Land the backfill stamps with the step-2 bump, in one PR. Leave the section for
-the work being released now as `[Unreleased]` — its number is not final until
-the release succeeds (see *What number goes on it*, above).
-
-A backlogged section also means its own release page never got the narrative.
-Backfilling those pages is step 6's job, not this one, but note which versions
-need it while you have the mapping in front of you.
+If a section is present that should **not** ship yet, the work behind it is
+already on `main` and the note is telling the truth; the fix is a release, not
+an edit.
 
 ### 4. Dispatch
 
@@ -258,30 +249,28 @@ npm view @malloy-publisher/skills version
 gh release view "v<version>" --repo malloydata/publisher
 ```
 
-### 6. Write the narrative onto the release page
+### 6. Confirm the notes landed
 
-`gh-release` writes a fixed header (npm links, Docker pull, branch) plus an
-auto-generated PR list. It does **not** read `RELEASE_NOTES.md`. Narrative —
-breaking changes, migration steps, new fields, changed metric labels — reaches
-users only if you paste it:
+`gh-release` does this now, so the step is verification rather than work. Two
+things it did, both visible without leaving the run:
+
+- The release page carries the narrative under the generated header. The job
+  logs `attached N narrative section(s)`, or `no [Unreleased] sections` when
+  there were none.
+- `main` carries a `docs: stamp the release notes shipped in <version>` commit.
 
 ```bash
-gh release edit "v<version>" --repo malloydata/publisher --notes-file <file>
+gh release view "v<version>" --repo malloydata/publisher --json body -q .body | head -40
+git fetch -q origin && git log --oneline -1 origin/main
 ```
 
-Keep the generated header and append the sections beneath it. Then open the
-post-release PR to `main`, carrying:
+The stamp step is `continue-on-error`, deliberately: the release is already
+public and correct by then, and reddening a finished release over a docs commit
+would send someone hunting a publishing problem that does not exist. So a
+missing stamp is a real possibility and costs one commit — check rather than
+assume. The next release stamps it anyway.
 
-- the section stamped `## [<version>] — …`;
-- for a **minor or major** release only, `packages/sdk`, `packages/app` and
-  `packages/server` set to the version that just shipped, resetting the floor.
-  Only now — doing it before the dispatch kills `prepare`'s commit.
-
-If step 3 turned up sections that shipped in *earlier* releases, those release
-pages are missing their narrative too. Edit each one with the sections that
-version actually shipped — the same `gh release edit` call, per tag. This is a
-public, already-published page, so show the body and get sign-off before
-editing.
+A **prerelease** skips the stamp, matching the rest of the job.
 
 ## If it fails
 

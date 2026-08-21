@@ -3,6 +3,10 @@ id: host-binding-of-unplanned-source
 tags: security, orchestration
 package: hbd
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A binding must not be honored for a source the build plan never planned
 

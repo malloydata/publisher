@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import {
    API,
    Connection,
@@ -94,6 +97,7 @@ import {
    type MisplacedAuthorizeAnnotation,
    type RowLevelGateRejectionCause,
 } from "./authorize";
+import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import { validateGateDimensionsForModel } from "./gate_dimension";
 import {
    buildFilterClause,
@@ -103,6 +107,13 @@ import {
    type FilterParams,
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   docCommentTitleAndDescription,
+   motlyTag,
+   readAutorun,
+   readStartingGivens,
+   tagText,
+} from "./motly";
 import {
    assertWithinModelByteLimit,
    assertWithinModelRowLimit,
@@ -156,6 +167,7 @@ import {
    type AuthorizeBypassEntryPoint,
    type AuthorizeGuardField,
 } from "../authorize_metrics";
+import { safeJoinUnderRoot } from "../path_safety";
 
 /**
  * What a request boundary contributes to a model query's per-query metadata: the
@@ -2881,6 +2893,32 @@ export class Model {
    }
 
    /**
+    * The facts dashboard discovery reads off this model, or undefined when the
+    * model failed to compile.
+    *
+    * Deliberately uncurated HERE: `explores` curation shapes the *discovery*
+    * surface agents see, and these facts are the raw material the manifest is
+    * built from, so filtering them at this level would lose information the
+    * lint needs. The curation decision is made by the caller instead:
+    * `Package.discoverDashboards` withholds a dashboard whose entry file is not
+    * a query entry point, because its manifest would advertise names the query
+    * boundary refuses. See `service/dashboard.ts`.
+    */
+   public getDashboardModelFacts(): DashboardModelFacts | undefined {
+      if (!this.modelDef) return undefined;
+      // `this.givens` is the model's surfaced given list — the same surface
+      // `filterGivensToModelSurface` enforces at query time, so a control the
+      // manifest advertises is one a query will accept.
+      return readDashboardModelFacts(
+         this.modelPath,
+         this.modelDef,
+         (this.givens ?? [])
+            .map((given) => given.name)
+            .filter((name): name is string => name !== undefined),
+      );
+   }
+
+   /**
     * True when this model's curated discovery surface is empty: its export
     * closure yields no sources and no named queries. The common cause is an
     * import-only model (imports other files, declares/re-exports nothing);
@@ -3330,8 +3368,73 @@ export class Model {
       }
    }
 
-   public getNotebookError(): MalloyError | Error | undefined {
+   /**
+    * The error this model failed to compile with, if any. A failed model is kept
+    * in the package (as a placeholder) so listings can show it as broken rather
+    * than omit it.
+    */
+   public getCompilationError(): MalloyError | Error | undefined {
       return this.compilationError;
+   }
+
+   public getNotebookError(): MalloyError | Error | undefined {
+      return this.getCompilationError();
+   }
+
+   /**
+    * The parts of a notebook a package listing shows: its human title and
+    * description, resolved the way a dashboard's are plus one step a notebook
+    * can afford.
+    *
+    * `## title="…"` then the `#"` doc comment are the dashboard's chain
+    * verbatim, so an author who learned one convention has learned both. The
+    * third step is the notebook's own: the first markdown heading. A notebook
+    * is prose by definition and almost always opens with its title already
+    * written, so reading it makes existing notebooks stop surfacing as
+    * filenames without anyone editing anything — the same bargain a `Page`
+    * makes by reading its `<title>`. A dashboard has no prose to read, which is
+    * why the step is here rather than in the shared chain.
+    *
+    * Returns no title when nothing resolves, leaving the filename to the
+    * caller; a title equal to the path would just be noise on the wire.
+    */
+   public getNotebookListing(): { title?: string; description?: string } {
+      if (this.modelType !== "notebook") return {};
+      // This notebook's own `##` only: a title belongs to one document, so an
+      // imported model's `## title=` or `#"` doc comment must not become it.
+      const annotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
+      // Both fields together, so the line the title falls back to is not also
+      // printed as the description; see `docCommentTitleAndDescription`.
+      const doc = docCommentTitleAndDescription(
+         annotations,
+         tagText(motlyTag(annotations), "title"),
+      );
+      return {
+         title: doc.title ?? this.firstMarkdownHeading(),
+         description: doc.description,
+      };
+   }
+
+   /**
+    * The text of the first markdown heading in the notebook, at any level.
+    *
+    * Any level, because a notebook that opens with `## Overview` means that as
+    * its title just as much as one that writes `# Overview`; heading depth is a
+    * typographic choice here, not a statement about what the document is
+    * called. Only the first heading is considered, and only if no prose
+    * precedes it — a notebook that opens with a paragraph is not naming itself.
+    */
+   private firstMarkdownHeading(): string | undefined {
+      for (const cell of this.runnableNotebookCells ?? []) {
+         if (cell.type !== "markdown") continue;
+         for (const line of cell.text.split("\n")) {
+            const trimmed = line.trim();
+            if (trimmed.length === 0) continue;
+            const heading = /^#{1,6}\s+(.+)$/.exec(trimmed);
+            return heading ? heading[1] : undefined;
+         }
+      }
+      return undefined;
    }
 
    public async getNotebook(): Promise<ApiRawNotebook> {
@@ -4929,6 +5032,13 @@ export class Model {
       // configure the filter panel of every notebook that imports it.
       const allAnnotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
 
+      // `allAnnotations` is already this notebook's own `##` only (see above),
+      // which is exactly the scope these three describe: `title`, `autorun` and
+      // the starting `givens` belong to one document, and reading them off the
+      // folded import lineage would let a shared include set them for every
+      // notebook importing it.
+      const notebookTag = motlyTag(allAnnotations);
+
       // No `as` cast. The literal used to carry `type`, `modelPath`,
       // `modelInfo`, and `queries`, which `RawNotebook` did not declare, so it
       // needed one — and a blanket cast over an object literal accepts a stale
@@ -4948,6 +5058,24 @@ export class Model {
          sources: this.modelDef && this.sources,
          queries: this.modelDef && this.queries,
          annotations: allAnnotations,
+         // Derived here rather than left to the client, so `## autorun=false`
+         // on a notebook and `# artifact { autorun=false }` on a dashboard
+         // arrive as the same field with the same default. Same for
+         // `## givens { … }` and the artifact tag's `givens { … }`.
+         // Known gap, measured: an `@env.` anywhere on the SAME line takes the
+         // whole tag, so `## title=@env.X autorun=false` arrives as
+         // `autorun=true`, the default, with the flag silently lost. The same
+         // holds for an ordinary malformed `##` line, because nothing calls
+         // `motlyParseErrors` on a notebook's model-level tags at all, so the
+         // parse error it already produces has no reader. Dashboards report both
+         // through the package lint; notebooks have no equivalent channel yet.
+         // Not closed here: it needs a notebook warnings surface, which is its
+         // own change. Filed as a follow-up.
+         autorun: readAutorun(notebookTag),
+         startingGivens: readStartingGivens(
+            notebookTag,
+            (name) => (this.givens ?? []).find((g) => g.name === name)?.type,
+         ),
          notebookCells,
       };
       return notebook;
@@ -5372,7 +5500,15 @@ export class Model {
       dataStyles: DataStyles;
       modelType: ModelType;
    }> {
-      const fullModelPath = path.join(packagePath, modelPath);
+      // Contain the caller-supplied model path inside the package directory;
+      // a path that resolves outside it is reported as a missing model, which
+      // is all a caller is entitled to learn.
+      let fullModelPath: string;
+      try {
+         fullModelPath = safeJoinUnderRoot(packagePath, modelPath);
+      } catch {
+         throw new ModelNotFoundError(`${modelPath} does not exist.`);
+      }
       try {
          if (!(await fs.stat(fullModelPath)).isFile()) {
             throw new ModelNotFoundError(`${modelPath} is not a file.`);

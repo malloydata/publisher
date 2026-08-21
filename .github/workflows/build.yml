@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 name: build
 
 on:
@@ -10,6 +13,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # self contained tests
+# The GITHUB_TOKEN is read-only for every job here; a job that needs more
+# declares it itself.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Typecheck
@@ -79,6 +87,20 @@ jobs:
       # sync-pg-version.js), not leave the resolution out of sync with it.
       - name: Check pg version consistency
         run: bun run validate-pg-sync
+      # The root `test` script is not run in CI, and `scripts/release-notes.mjs`
+      # is otherwise exercised only by a real release — on `main`, after npm and
+      # Docker have already published, where a bug is discovered by reading a
+      # wrong release page. Hence its own step here rather than a file alone.
+      #
+      # The smoke check is the half that catches an authoring mistake. `extract`
+      # fails on a heading it cannot read a title from, so running it against the
+      # repo's actual RELEASE_NOTES.md fails the PR that wrote the bad heading,
+      # rather than the release that would silently fall back to the PR list.
+      - name: Run script tests
+        run: |
+          set -euo pipefail
+          bun run test:scripts
+          node scripts/release-notes.mjs extract >/dev/null
   # Smoke-tests the built server under two invocation scenarios.
   #
   # Note on scope: the published `bin` entry uses `#!/usr/bin/env node`, so the

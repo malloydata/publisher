@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Loading } from "@malloy-publisher/sdk";
 import SidebarToggleIcon from "../Sidebar/SidebarToggleIcon";
 import Box from "@mui/material/Box";

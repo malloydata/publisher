@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Deploying with the authorize bypass
 
 Publisher accepts a request header that **skips `#(authorize)` gate evaluation**:

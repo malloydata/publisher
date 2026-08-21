@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { defineConfig, devices } from "@playwright/test";
 
 /**
@@ -21,6 +24,22 @@ export default defineConfig({
    timeout: 60_000,
    expect: { timeout: 15_000 },
    fullyParallel: false,
+   // One worker, because `fullyParallel: false` only serializes tests WITHIN a
+   // file; separate files still run concurrently, and several of these write to
+   // the same shared state. `notebook-givens`, `notebook-authorize` and
+   // `notebook-readme-links` each write fixture files into
+   // `publisher_data/examples/storefront` and POST `?reload=true` on that
+   // package; they are the only three specs that do either. A second kind of
+   // contention is environment churn: `packages.spec`, `environments.spec` and
+   // `package-dashboards.spec` each create and delete a whole environment,
+   // which appears and vanishes from the listings other specs navigate
+   // through. All three, not just the first: anyone relaxing `workers: 1`
+   // reads this comment to find out what contends, so a short list is worse
+   // than none. Observed: a `notebook-givens` navigation timed out
+   // waiting for the storefront tile while another file was mid-reload. It
+   // passes 9/9 in isolation, which is the tell that it is contention rather
+   // than a broken assertion.
+   workers: 1,
    retries: IS_CI ? 1 : 0,
    reporter: IS_CI
       ? [

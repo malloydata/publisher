@@ -3,6 +3,10 @@ id: reference-manifest-reuse
 tags: orchestration, chained
 package: rmr
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A downstream builds against a prior run's upstream table instead of rebuilding the chain
 

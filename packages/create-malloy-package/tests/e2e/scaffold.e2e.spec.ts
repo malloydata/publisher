@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * The real acceptance: scaffold a package, boot an actual Publisher server against
  * the generated config, and confirm it serves the package, compiles the model,

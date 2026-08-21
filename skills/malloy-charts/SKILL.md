@@ -2,6 +2,10 @@
 name: malloy-charts
 description: Chart selection guidance and renderer reference for Malloy views. Use when choosing visualization types, adding chart annotations, user asks "what chart should I use", "how should I visualize this", or when deciding between bar_chart, line_chart, scatter_chart, etc.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Chart Selection for Malloy
 

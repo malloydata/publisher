@@ -2,6 +2,10 @@
 name: malloy-html-data-app-runtime
 description: Write the JavaScript that drives an in-package HTML data app, calling Publisher.query, building queries from filter state, and handling results and errors. Read before writing the page's data code.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # HTML Data App Runtime
 
@@ -43,7 +47,7 @@ Declare each tile's source and view names once, in `tiles.js`, and have everythi
 
 ## Patterns that work
 
-These run against the example `html-data-app` package (source `subscriptions`; views `plan_mix`, `mrr_by_industry`, `kpis`). Swap in your own model and view names.
+These assume a `subscriptions.malloy` model whose `subscriptions` source defines the views `plan_mix`, `mrr_by_industry`, and `kpis`. The names are illustrative; swap in your own model and view names.
 
 Run a named view:
 
@@ -130,7 +134,7 @@ const el = document.querySelector("malloy-render");
 el.result = await Publisher.queryFull("subscriptions.malloy", "run: subscriptions -> plan_mix");
 ```
 
-Publisher does not serve or bundle `<malloy-render>`; you must obtain a built component bundle matched to your model's Malloy version and vendor it into `public/` yourself, then confirm it accepts the envelope as-is. The shipped example renders rows with a plain chart library instead, so this path is not exercised there. A view tagged in the model (for example `# bar_chart`) drives how it draws.
+Publisher does not serve or bundle `<malloy-render>`; you must obtain a built component bundle matched to your model's Malloy version and vendor it into `public/` yourself, then confirm it accepts the envelope as-is. The `storefront` example draws with Chart.js and has no `<malloy-render>` element in its pages, so the component itself is not exercised there. A view tagged in the model (for example `# bar_chart`) drives how it draws.
 
 Validate every query before wiring it into render code, using whatever query tool your environment provides, or by POSTing the query to a running Publisher at `/api/v0/environments/<env>/packages/<pkg>/models/<modelPath>/query` with body `{"compactJson":true,"query":"..."}`, or by running `Publisher.query` once and logging the rows. Malloy names result columns after the `group_by` / `aggregate` field names (`group_by: plan` gives a `plan` column; `aggregate: account_count` gives an `account_count` column), so confirm those names against real output before you read them.
 

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // A throwaway Postgres container for the harness: it is BOTH the DuckLake
 // catalog store AND a source warehouse (a `postgres` connection), mirroring the
 // tutorial. One server, several databases.
