@@ -12,6 +12,15 @@
  *   bun run packages/server/src/mcp/skills/build_skills_bundle.ts <skills-dir> [out.json]
  *
  * <skills-dir> points at the repo's top-level skills/ directory.
+ *
+ * Indented rather than minified, and that is load-bearing rather than cosmetic.
+ * One line per entry field gives git something to merge: two branches that edit
+ * different skills land on different lines and merge without a conflict, where a
+ * single-line bundle made every pair of concurrent skills edits collide on the
+ * one line the whole file consists of. A skill body stays on one line either
+ * way, since a JSON string cannot hold a raw newline, so what remains is a
+ * normal line-scoped conflict: the two branches touched the same region, either
+ * the same entry or two entries inserted at the same sorted position.
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -162,7 +171,14 @@ export function buildSkills(skillsDir: string): SkillEntry[] {
          );
       }
    }
-   return skills.sort((a, b) => a.name.localeCompare(b.name));
+   // Codepoint order, not localeCompare: entry order decides line positions in a
+   // committed artifact, so it has to be identical on every contributor's machine.
+   // localeCompare follows the runtime's locale (under cs-CZ the `ch` digraph sorts
+   // after `h`, moving malloy-charts), which made a regeneration produce a spurious
+   // reordering diff unrelated to the skill the contributor actually edited.
+   return skills.sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+   );
 }
 
 function main(): void {
@@ -178,7 +194,7 @@ function main(): void {
 
    const skills = buildSkills(skillsDir);
 
-   fs.writeFileSync(outFile, JSON.stringify({ skills }));
+   fs.writeFileSync(outFile, `${JSON.stringify({ skills }, null, 2)}\n`);
    console.log(
       `Wrote ${skills.length} entries (${skills.filter((s) => !s.name.includes("/")).length} skills plus ${skills.filter((s) => s.name.includes("/")).length} reference files) to ${outFile}`,
    );

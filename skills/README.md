@@ -28,6 +28,6 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 ## Adding or updating a skill
 
 - Update a shared skill **upstream first** (in `ms2data/agent-skills`), then copy it here, which keeps the two byte-identical. Editing only this copy makes the next sync a conflict.
-- **Any edit under `skills/` means regenerating the MCP bundle** (`cd packages/server && bun run src/mcp/skills/build_skills_bundle.ts ../../skills`) and committing the resulting `src/mcp/skills/skills_bundle.json`. It is a committed generated asset, and `skills_bundle.spec.ts` fails the build when it drifts from this tree.
+- **Any edit under `skills/` means regenerating the MCP bundle** (`cd packages/server && bun run src/mcp/skills/build_skills_bundle.ts ../../skills`) and committing the resulting `src/mcp/skills/skills_bundle.json`. It is a committed generated asset, and `skills_bundle.spec.ts` fails the build when it drifts from this tree. The bundle is committed indented so that two PRs touching different skills merge cleanly; if you do hit a conflict in it, resolve it by regenerating from the merged `skills/` tree, never by editing the JSON by hand.
 - A new skill directory needs a `.claude/skills/<name>` symlink (`ln -s ../../skills/<name> .claude/skills/<name>`) so Claude Code discovers it.
 - A shared skill may only `skill:`-reference other shared skills; refer to a host wrapper in neutral prose so a verbatim copy never leaves a dangling reference.
