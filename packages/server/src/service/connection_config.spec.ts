@@ -801,3 +801,94 @@ describe("ducklake shape validation", () => {
       }
    });
 });
+
+describe("assembleEnvironmentConnections — bigquery impersonation", () => {
+   const impersonated: ApiConnection = {
+      name: "bigquery",
+      type: "bigquery",
+      bigqueryConnection: {
+         defaultProjectId: "tenant-project",
+         billingProjectId: "tenant-project",
+         impersonateServiceAccount:
+            "sa-viewer@tenant-project.iam.gserviceaccount.com",
+      },
+   };
+
+   it("emits an authClient overlay reference and no key material", () => {
+      const { pojo } = assembleEnvironmentConnections([impersonated]);
+      const entry = pojo.connections["bigquery"];
+      expect(entry.is).toBe("bigquery");
+      expect(entry.authClient).toEqual({
+         gcpImpersonation: "sa-viewer@tenant-project.iam.gserviceaccount.com",
+      });
+      expect(entry.serviceAccountKey).toBeUndefined();
+      expect(entry.projectId).toBe("tenant-project");
+      expect(entry.billingProjectId).toBe("tenant-project");
+   });
+
+   it("emits no authClient when impersonation is not configured", () => {
+      const plain: ApiConnection = {
+         name: "bigquery",
+         type: "bigquery",
+         bigqueryConnection: { defaultProjectId: "tenant-project" },
+      };
+      const { pojo } = assembleEnvironmentConnections([plain]);
+      // The KEY must be absent, not merely undefined: authClient is
+      // mustHaveValue in core, and a present-but-undefined property fails the
+      // connection with "no value arrived".
+      expect("authClient" in pojo.connections["bigquery"]).toBe(false);
+   });
+
+   it("rejects impersonation combined with a service account key", () => {
+      const both: ApiConnection = {
+         ...impersonated,
+         bigqueryConnection: {
+            ...impersonated.bigqueryConnection,
+            serviceAccountKeyJson: JSON.stringify({
+               type: "service_account",
+               project_id: "tenant-project",
+            }),
+         },
+      };
+      expect(() => assembleEnvironmentConnections([both])).toThrow(
+         /impersonateServiceAccount and serviceAccountKeyJson/,
+      );
+   });
+
+   it("rejects impersonation without an explicit billingProjectId", () => {
+      const noBilling: ApiConnection = {
+         ...impersonated,
+         bigqueryConnection: {
+            defaultProjectId: "tenant-project",
+            impersonateServiceAccount:
+               "sa-viewer@tenant-project.iam.gserviceaccount.com",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([noBilling])).toThrow(
+         /no billingProjectId/,
+      );
+   });
+
+   it("rejects impersonation on a DuckDB attached database", () => {
+      const duckdb: ApiConnection = {
+         name: "duck",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [
+               {
+                  name: "bq_attached",
+                  type: "bigquery",
+                  bigqueryConnection: {
+                     defaultProjectId: "tenant-project",
+                     impersonateServiceAccount:
+                        "sa-viewer@tenant-project.iam.gserviceaccount.com",
+                  },
+               },
+            ],
+         },
+      };
+      expect(() => assembleEnvironmentConnections([duckdb])).toThrow(
+         /not supported on attached databases/,
+      );
+   });
+});

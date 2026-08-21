@@ -56,6 +56,7 @@ import {
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
 } from "./connection_config";
+import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { CloudStorageCredentials } from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
@@ -843,6 +844,20 @@ async function federateBigQuery(
       );
    }
 
+   // Config-load validation rejects impersonateServiceAccount on attached
+   // databases, but a materialization build federating from a BigQuery SOURCE
+   // connection arrives here with that connection's own config — which may
+   // legitimately carry impersonation for the serve path. The DuckDB BIGQUERY
+   // secret takes a key, not a token, so name the limitation instead of
+   // falling through to the generic "service account key required".
+   if (bq.impersonateServiceAccount) {
+      throw new Error(
+         `BigQuery connection '${config.name}' uses impersonateServiceAccount, ` +
+            `which cannot federate through DuckDB: the DuckDB BIGQUERY secret ` +
+            `authenticates with a service account key, not a token. Federated ` +
+            `builds from this source require serviceAccountKeyJson.`,
+      );
+   }
    let projectId = bq.defaultProjectId;
    let serviceAccountJson: string | undefined;
    if (bq.serviceAccountKeyJson) {
@@ -1812,6 +1827,11 @@ export function buildEnvironmentMalloyConfig(
 
    const malloyConfig = new MalloyConfig(assembled.pojo, {
       config: contextOverlay({ rootDirectory: environmentPath }),
+      // Resolves `authClient: {gcpImpersonation: "<sa-email>"}` references on
+      // bigquery connections to live Impersonated clients (see
+      // gcp_impersonation.ts). Registered unconditionally: the overlay is only
+      // consulted when a connection actually carries the reference.
+      gcpImpersonation: gcpImpersonationOverlay(),
    });
 
    async function attachOnce(

@@ -4366,7 +4366,12 @@ components:
             actually changes; consumers should treat it as an opaque token and
             use the supplied value verbatim rather than deriving their own. This
             field is optional — when omitted, a connection identity is derived
-            locally instead.
+            locally instead. Because the fingerprint replaces the derived digest
+            verbatim, it must vary with anything that changes which data the
+            connection can reach — including the impersonated identity: two
+            environments on the same project with different
+            impersonateServiceAccount values but the same fingerprint would
+            share persisted-table ids.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-
@@ -4730,6 +4735,19 @@ components:
         serviceAccountKeyJson:
           type: string
           description: JSON string containing Google Cloud service account credentials
+        impersonateServiceAccount:
+          type: string
+          description: >-
+            Email of a Google Cloud service account this connection impersonates
+            for every BigQuery call, via short-lived tokens from the IAM Service
+            Account Credentials API. The publisher's own credential (ADC) must
+            hold roles/iam.serviceAccountTokenCreator on the target service
+            account, and iamcredentials.googleapis.com must be enabled in the
+            calling project. Mutually exclusive with serviceAccountKeyJson; set
+            billingProjectId explicitly, since project auto-detection resolves
+            through the impersonated credential. Not supported on DuckDB
+            attachedDatabases entries or federated builds from a BigQuery
+            source through DuckDB, which require a service account key.
         maximumBytesBilled:
           type: string
           description: Maximum bytes to bill for query execution (prevents runaway costs)
