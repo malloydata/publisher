@@ -1666,9 +1666,12 @@ export class EnvironmentStore {
       logger.info(
          `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
       );
-      const unzippedEnvironmentPath = absoluteEnvironmentPath.replace(
-         ".zip",
-         "",
+      // The archive extracts to a sibling directory named for it, resolved
+      // through the containment helper so the target provably stays beside
+      // the archive rather than wherever a crafted name points.
+      const unzippedEnvironmentPath = safeJoinUnderRoot(
+         path.dirname(absoluteEnvironmentPath),
+         path.basename(absoluteEnvironmentPath, ".zip"),
       );
       await fs.promises.rm(unzippedEnvironmentPath, {
          recursive: true,

@@ -6,6 +6,7 @@ import {
    DimensionSpec,
    getDimensionKey,
 } from "./useDimensionalFilterRangeData";
+import { escapeMalloyString } from "../utils/malloyString";
 
 /**
  * Match types for filtering dimensions
@@ -76,13 +77,6 @@ export interface UseDimensionFiltersResult {
    getActiveFilters: () => FilterSelection[];
    /** Generate Malloy query fragment for active filters */
    generateWhereClause: () => string;
-}
-
-/**
- * Escapes special characters in strings for Malloy queries
- */
-function escapeMalloyString(value: string): string {
-   return value.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
 }
 
 /**

@@ -29,6 +29,12 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — opt-in request rate limiting
+
+The REST server can now cap how many requests one client makes per minute: set `PUBLISHER_RATE_LIMIT=<n>` and the `n+1`th request in a minute from the same peer address gets a `429` with standard `RateLimit-*` headers. It is off unless set, so nothing changes for an existing deployment. Health probes and `/metrics` are exempt, and the MCP port is not covered. Behind a reverse proxy every client arrives from the proxy's address and would share one bucket, so rate-limit at the proxy in that deployment instead. See [docs/configuration.md](docs/configuration.md).
+
+Also in this release, the SDK's filter UI escapes backslashes in string values before quotes rather than after, so a value containing a backslash no longer reaches Malloy double-escaped.
+
 ## [Unreleased] — a filtered aggregate can be pre-aggregated
 
 Since 0.0.246, a measure filtering its aggregate — `paid is amount.sum() { where: is_paying }` — was refused at publish by `#@ preaggregate`, with the workaround of rewriting it as `amount.sum(pick amount when is_paying else null)`-style expressions or filtering in a view. The refusal was the fail-closed gate doing its job, not a soundness limit: the rollup computes each stored partial from the measure by name, so the filter rides into the build, and a row-level filter commutes with merging per-grain partials — filtering then merging equals filtering the whole, for every merge the feature hands out, including `count`'s (a filtered count stores a count of matching rows and still merges with `sum`).

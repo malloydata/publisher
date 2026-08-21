@@ -18,6 +18,11 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# The GITHUB_TOKEN is read-only for every job here; a job that needs more
+# declares it itself.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
