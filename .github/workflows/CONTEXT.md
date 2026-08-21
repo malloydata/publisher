@@ -51,13 +51,14 @@ Two workflows hold real warehouse credentials, and both should be treated as suc
 
 ## Publishing
 
-There are three npm trains, and they do not share a version.
+There are three npm trains and one PyPI train, and they do not share a version.
 
-| Packages | Version | Published by | Missing bump caught by |
-|---|---|---|---|
-| `@malloy-publisher/sdk`, `app`, `server` | Lockstep, set by `release.yml` | `npm-sdk.yml`, called from `release.yml` | n/a — the release sets it |
-| `@malloy-publisher/skills` | Its own line | `skills-npm.yml` | a `pull_request` check in `skills-npm.yml` |
-| `@malloy-publisher/create-malloy-package` | Its own line | `create-malloy-package-npm.yml` | a `pull_request` check in the same file |
+| Packages | Registry | Version | Published by | Missing bump caught by |
+|---|---|---|---|---|
+| `@malloy-publisher/sdk`, `app`, `server` | npm | Lockstep, set by `release.yml` | `npm-sdk.yml`, called from `release.yml` | n/a — the release sets it |
+| `@malloy-publisher/skills` | npm | Its own line | `skills-npm.yml` | a `pull_request` check in `skills-npm.yml` |
+| `@malloy-publisher/create-malloy-package` | npm | Its own line | `create-malloy-package-npm.yml` | a `pull_request` check in the same file |
+| `malloy-publisher-sdk` | PyPI | Its own line | `python-sdk.yml` | a `pull_request` check in the same file |
 
 ### The versioning policy
 
@@ -372,8 +373,33 @@ being fixed. Restoring it for real means giving up the `paths:` filter and runni
 client regeneration on every push to `main`. One mechanism is the better trade, and it is the point of
 this whole file.
 
-**Nothing has been published yet, so the first release that reaches this step is the one run where the
-path has never been proven end to end.** Three preconditions, none of which CI can check for you:
+**The publish job did not build a usable package, and that was invisible because it could never run.**
+Two independent reasons, both now fixed, both worth knowing because either one alone ships a wheel that
+installs cleanly and cannot be imported:
+
+- The job did `pip install build && python -m build` on a checkout. Almost none of this package is in
+  git — `packages/python-client/.gitignore` is `malloy_publisher_sdk/*` with
+  `!malloy_publisher_sdk/__init__.py` — so a checkout holds exactly one tracked python file, and that
+  file's line 6 imports `.client`, which is generated from `api-doc.yaml` and never committed.
+  `needs: build` does not help: that job regenerates on its own runner and shares no artifact. The job
+  now runs `scripts/build-python-sdk.sh` with `BUILD_PACKAGE=true`, which is the one script that knows
+  how to produce this package.
+- **Running the generator is still not enough**, which is the part that is easy to miss. The build
+  backend is hatchling, and hatchling's default file selection *consults `.gitignore`* — so the
+  generated client was excluded from the artifacts even when sitting on disk. Measured: a build with
+  `client.py` and `api/` present shipped a wheel containing exactly `__init__.py`. `pyproject.toml` now
+  sets `[tool.hatch.build] ignore-vcs = true`, plus explicit `packages`/`include` for the wheel and
+  sdist targets so that switching the ignore rules off does not start packing `.venv/`, `dist/` and
+  `__pycache__`. An explicit `packages` **alone does not fix it** — the ignore rules still apply.
+
+The guard against both is `Verify the wheel is importable before uploading it`, which installs the
+built wheel into a throwaway venv and imports it, from `/tmp` so the source tree cannot satisfy the
+import. It asserts the artifact rather than the intent, because "we remembered to regenerate" is what
+failed, and it runs BEFORE twine — a check afterwards would only name the version you had burned.
+
+**Nothing has been published yet, so the first release that reaches this step is still the one run
+where the path has never been proven against the real registry.** Three preconditions, none of which
+CI can check for you:
 
 - **`PYPI_TOKEN` has to be an ACCOUNT-scoped token for the first upload.** A project-scoped token
   cannot exist for a project that does not exist. After the first publish, mint a project-scoped one

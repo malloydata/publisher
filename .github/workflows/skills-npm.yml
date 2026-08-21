@@ -181,7 +181,14 @@ jobs:
           #    confident comparison against it.
           if ! NAME="$(node -p "require('./${MANIFEST}').name" 2>&1)" \
              || ! DECLARED="$(node -p "require('./${MANIFEST}').version" 2>&1)"; then
-            printf '%s\n' "${NAME}${DECLARED}" | sed 's/^/[node] /'
+            # :- on both. `if ! A=... || ! B=...` SHORT-CIRCUITS, so when the
+            # first read fails the second assignment never runs and DECLARED is
+            # never bound — and this body runs under `set -euo pipefail`, so an
+            # unbound expansion aborts the step here, before the annotation. That
+            # is precisely the raw-stack-trace-no-annotation failure the comment
+            # above says this block prevents. Measured: "DECLARED: unbound
+            # variable", no ::error, no [node] log.
+            printf '%s\n' "${NAME:-}${DECLARED:-}" | sed 's/^/[node] /'
             echo "::error title=Version::could not read ${MANIFEST} (logged above)"
             exit 1
           fi
@@ -257,6 +264,21 @@ jobs:
           # update notices, retries). Comparing the raw capture would fail a
           # correct PR reporting `latest is npm warn ...`.
           LATEST="$(printf '%s\n' "$LATEST_OUTPUT" | tail -n 1)"
+          # `sort -V` ranks a PRERELEASE ABOVE its own release: verified,
+          # `printf '0.2.0\n0.2.0-rc.1\n' | sort -V | tail -1` is `0.2.0-rc.1`.
+          # The regex above deliberately accepts a -prerelease, so without this
+          # branch a declared `0.1.7-rc.1` against a latest of `0.1.7` passes the
+          # test below and reports "free and above latest (0.1.7)" for a version
+          # semver puts BELOW it. The test is skipped rather than repaired
+          # because it is asking the wrong question of a prerelease: the npm
+          # publish jobs route a hyphenated version to the `next` dist-tag, so it
+          # cannot move `latest` backwards at all, which is the failure this test
+          # names. Implementing real semver ordering in shell to reach the same
+          # answer is not worth it.
+          if [[ "$DECLARED" == *-* ]]; then
+            echo "::notice title=Version::$SPEC is free; skipping the above-latest test because it is a prerelease, which does not move the latest dist-tag"
+            exit 0
+          fi
           if [ "$DECLARED" != "$(printf '%s\n%s\n' "$LATEST" "$DECLARED" | sort -V | tail -1)" ]; then
             echo "::error title=Version::packages/skills/package.json declares $DECLARED, which is BELOW npm's latest ($LATEST). Publishing it would move the latest dist-tag backwards. Bump above $LATEST."
             exit 1

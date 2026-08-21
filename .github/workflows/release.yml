@@ -279,8 +279,9 @@ jobs:
       current_version: ${{ needs.prepare.outputs.new_version }}
       ref: ${{ needs.prepare.outputs.branch_name }}
 
-  # skills and create-malloy-package version on their own lines, so this job
-  # triggers them rather than versioning them.
+  # skills, create-malloy-package and python-client version on their own lines,
+  # so this job triggers them rather than versioning them. The first two publish
+  # to npm and the third to PyPI, through one parameterised publish_pkg.
   #
   # It triggers them but does NOT align their version numbers with sdk/app/
   # server, and that is not an omission to be tidied up later. malloydata/malloy
@@ -494,7 +495,7 @@ jobs:
                 # a mistake and one wrong space either ends the block scalar early
                 # or hands Python an IndentationError. python-sdk.yml can indent
                 # its copy because that one is at the top level of its step.
-                python3 -c 'import re, tomllib; p = tomllib.load(open("packages/python-client/pyproject.toml", "rb"))["project"]; print(p["name"], p["version"], re.sub(r"[-_.]+", "-", p["name"]).lower())' 2>&1
+                python3 -c 'import re, sys, tomllib; p = tomllib.load(open("packages/" + sys.argv[1] + "/pyproject.toml", "rb"))["project"]; print(p["name"], p["version"], re.sub(r"[-_.]+", "-", p["name"]).lower())' "$dir" 2>&1
                 ;;
             esac
           }
@@ -530,6 +531,18 @@ jobs:
                 printf 'HTTP %s' "$answer"
                 case "$answer" in 200) return 0 ;; 404) return 1 ;; *) return 2 ;; esac
                 ;;
+              # NOT optional, and not defensive. A `case` that matches nothing
+              # succeeds, so without this an unrecognised kind returns 0, which
+              # the caller reads as "already published": it prints the notice,
+              # writes "was already published, skipped" to the job summary, and
+              # returns 0. The package is silently never dispatched and the
+              # release goes green. That is the one fail-OPEN outcome this whole
+              # function is written to avoid, and a typo or a fourth package is
+              # all it takes.
+              *)
+                printf 'unknown registry kind: %s' "$kind"
+                return 2
+                ;;
             esac
           }
 
@@ -551,7 +564,17 @@ jobs:
               echo "- \`${dir}\` NOT dispatched: could not read its manifest" >> "$GITHUB_STEP_SUMMARY"
               return 1
             fi
-            read -r name version slug <<<"$out"
+            # `tail -n 1`, because both read_manifest arms end in `2>&1` so a
+            # failure has something to show — and node and python write warnings
+            # there on a SUCCESSFUL run too (ExperimentalWarning,
+            # DeprecationWarning). A bare `read` takes the FIRST line, so one
+            # warning becomes the name and version: both non-empty, neither the
+            # literal "undefined", so both guards below pass, the spec is
+            # nonsense, the registry 404s on it (reading as "free"), the child is
+            # dispatched and may publish correctly, and then the poll asks about
+            # the bogus spec for the full budget and reddens a release that
+            # worked. The npm steps in this repo use `tail -n 1` for exactly this.
+            read -r name version slug <<<"$(printf '%s\n' "$out" | tail -n 1)"
             # "undefined" is checked because `node -p` prints exactly that, with
             # exit 0, for a missing field — and the package literally named
             # `undefined` exists on npm, so that spec can resolve and be read as

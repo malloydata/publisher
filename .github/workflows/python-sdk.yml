@@ -55,6 +55,11 @@ jobs:
     name: Require a version bump when the published content changes
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # This job only asks a registry two questions. Every call it makes is
+    # --max-time bounded, but a bound per call is not a bound on the job, and
+    # without this a hung step would sit on a runner for GitHub's 6-hour default
+    # blocking a PR on a check that can neither pass nor fail.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -164,7 +169,12 @@ jobs:
           # 000, and `${code:-000}` covers a curl that printed nothing at all.
           pypi_status() {
             local code
-            code="$(curl -sS -o /dev/null -w '%{http_code}' \
+            # --max-time, like every other registry call in these workflows.
+            # Without it a PyPI edge that accepts the connection and never
+            # answers hangs this step, and a job-level timeout-minutes only
+            # caps the damage at 10 minutes rather than preventing it — a bound
+            # per call is what turns a hang into a diagnosable failure.
+            code="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' \
               "https://pypi.org/pypi/$1/json" 2>/dev/null)" || true
             printf '%s' "${code:-000}"
           }
@@ -205,12 +215,25 @@ jobs:
           # And is it above the latest release? A free version can still be below
           # it, and publishing that would leave `pip install malloy-publisher-sdk`
           # resolving something newer than what this repo declares.
-          if ! LATEST="$(curl -sS "https://pypi.org/pypi/$SLUG/json" \
+          if ! LATEST="$(curl -sS --max-time 20 "https://pypi.org/pypi/$SLUG/json" \
                  | python -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')" \
              || [ -z "$LATEST" ]; then
             echo "::error title=Version::could not read $NAME's latest version from PyPI"
             exit 1
           fi
+          # Same `sort -V` prerelease inversion as the npm siblings (it ranks
+          # 0.2.0-rc.1 above 0.2.0), and the same resolution — skip the test
+          # rather than implement semver ordering in shell. The reason it is safe
+          # differs, though, and is weaker: python-sdk.yml has NO dist-tag
+          # routing, so nothing here withholds a prerelease from being "latest"
+          # the way npm-sdk.yml does. What holds instead is on the consumer side:
+          # pip does not install a prerelease unless asked with --pre. If this
+          # package ever ships a prerelease, verify that assumption first.
+          if [[ "$DECLARED" == *-* ]]; then
+            echo "::notice title=Version::$NAME $DECLARED is free; skipping the above-latest test because it is a prerelease"
+            exit 0
+          fi
+
           if [ "$DECLARED" != "$(printf '%s\n%s\n' "$LATEST" "$DECLARED" | sort -V | tail -1)" ]; then
             echo "::error title=Version::packages/python-client/pyproject.toml declares $DECLARED, which is BELOW PyPI's latest ($LATEST). Bump above $LATEST."
             exit 1
@@ -315,11 +338,81 @@ jobs:
               ;;
           esac
 
-      - name: Build wheel and sdist
+      # `pip install build && python -m build` is NOT enough here, and got this
+      # wrong for as long as the job was unreachable. Almost none of this package
+      # is in git: packages/python-client/.gitignore is `malloy_publisher_sdk/*`
+      # with `!malloy_publisher_sdk/__init__.py`, so a checkout contains exactly
+      # ONE tracked python file, and that file's line 6 is
+      # `from .client import AuthenticatedClient, Client` — a module generated
+      # from api-doc.yaml and never committed. `needs: build` does not help: that
+      # job regenerates on its own runner and shares no artifact.
+      #
+      # Measured against a `git archive` of the tracked tree: `python -m build`
+      # SUCCEEDS, the wheel installs, and `import malloy_publisher_sdk` raises
+      # ModuleNotFoundError: No module named 'malloy_publisher_sdk.client'. So the
+      # first upload would have been a dead package under a filename PyPI can
+      # never reuse.
+      #
+      # Run the one script that knows how to produce this package instead, the
+      # same one the build job runs. BUILD_PACKAGE=true is what makes its step 9
+      # emit dist/, and it validates the spec, regenerates the client, formats it
+      # and runs the tests on the way.
+      - name: Install uv via pip
         run: |
-          pip install build
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          # Quoted, unlike the copy in `build` above. Same step otherwise: the
+          # two jobs run the same script and cannot share steps without a
+          # composite action.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Generate the client and build wheel and sdist
+        env:
+          BUILD_PACKAGE: "true"
+        run: packages/python-client/scripts/build-python-sdk.sh
+
+      # The guard that makes the above impossible to regress silently. Asserting
+      # "we remembered to regenerate" is what failed before; this asserts the
+      # artifact, by installing the actual wheel into a throwaway venv and
+      # importing it. That import is exactly what a user's first `pip install`
+      # does, it is the statement that was broken, and it costs seconds.
+      #
+      # Deliberately BEFORE twine, because a PyPI filename cannot be reused: a
+      # check afterwards would only tell you which version you had burned.
+      - name: Verify the wheel is importable before uploading it
+        run: |
+          set -euo pipefail
           cd packages/python-client
-          python -m build
+          # A glob array, not `ls`: shellcheck's SC2012, and it also makes the
+          # count and the chosen file come from one expansion so they cannot
+          # disagree.
+          shopt -s nullglob
+          WHEELS=(dist/*.whl)
+          if [ "${#WHEELS[@]}" -eq 0 ]; then
+            echo "::error title=Publish::no wheel in packages/python-client/dist/, so there is nothing to verify or upload"
+            exit 1
+          fi
+          # Exactly one, or the check attests to a file `twine upload dist/*` may
+          # not be uploading. build-python-sdk.sh does `rm -rf dist/` first, so
+          # more than one means something else put a wheel there.
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            printf '[dist] %s\n' "${WHEELS[@]}"
+            echo "::error title=Publish::expected exactly one wheel in dist/, found ${#WHEELS[@]}; it is not clear which one would be published"
+            exit 1
+          fi
+          WHEEL="${WHEELS[0]}"
+          python -m venv /tmp/wheelcheck
+          /tmp/wheelcheck/bin/pip install --quiet "$WHEEL"
+          # From /tmp, so the source tree on disk cannot satisfy the import and
+          # make an empty wheel look fine.
+          if ! (cd /tmp && /tmp/wheelcheck/bin/python -c '
+          import malloy_publisher_sdk as m
+          from malloy_publisher_sdk import AuthenticatedClient, Client
+          print("import ok:", m.__name__)
+          '); then
+            echo "::error title=Publish::the built wheel ${WHEEL} does not import. The generated client is almost certainly missing — packages/python-client/malloy_publisher_sdk/ is gitignored except __init__.py, so the wheel must be built by scripts/build-python-sdk.sh and not by a bare \`python -m build\` on a checkout. NOTHING was uploaded."
+            exit 1
+          fi
 
       - name: Publish to PyPI
         env:

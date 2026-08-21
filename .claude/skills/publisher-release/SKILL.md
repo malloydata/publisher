@@ -234,6 +234,16 @@ for p in skills create-malloy-package; do
     "$(npm view "@malloy-publisher/$p" version)" \
     "$(node -p "require('./packages/$p/package.json').version")"
 done
+
+# The Python client too, since the release now publishes it. Its version is in
+# pyproject.toml, not a package.json, and PyPI answers 404 for the whole project
+# until the first upload lands — so "PyPI: 404" here is the expected reading
+# today and NOT a reason to skip the comparison next time.
+printf 'python-client: PyPI %s, main %s\n' \
+  "$(curl -sS --max-time 20 https://pypi.org/pypi/malloy-publisher-sdk/json \
+     | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])' \
+     2>/dev/null || echo 404)" \
+  "$(python3 -c 'import tomllib; print(tomllib.load(open("packages/python-client/pyproject.toml","rb"))["project"]["version"])')"
 ```
 
 `main` ahead of npm is the normal, healthy state between a release-prep merge and

@@ -7,7 +7,8 @@ name: create-malloy-package
 # release.yml bumps sdk, app, and server in lockstep and is deliberately not used
 # here: a scaffolder change should not need a server release.
 
-# Publishing is on demand only. The package's tests run in build.yml on every
+# Publishing is on demand only. The package's tests run in cross-platform-tests.yml
+# (reached from build.yml, which is what runs on a PR) on every
 # PR, so publishing is all the dispatch path exists for and it should never
 # happen automatically on a push or a PR.
 #
@@ -54,6 +55,11 @@ jobs:
     name: Require a version bump when the published content changes
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # This job only asks a registry two questions. Every call it makes is
+    # --max-time bounded, but a bound per call is not a bound on the job, and
+    # without this a hung step would sit on a runner for GitHub's 6-hour default
+    # blocking a PR on a check that can neither pass nor fail.
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -165,7 +171,14 @@ jobs:
           #    confident comparison against it.
           if ! NAME="$(node -p "require('./${MANIFEST}').name" 2>&1)" \
              || ! DECLARED="$(node -p "require('./${MANIFEST}').version" 2>&1)"; then
-            printf '%s\n' "${NAME}${DECLARED}" | sed 's/^/[node] /'
+            # :- on both. `if ! A=... || ! B=...` SHORT-CIRCUITS, so when the
+            # first read fails the second assignment never runs and DECLARED is
+            # never bound — and this body runs under `set -euo pipefail`, so an
+            # unbound expansion aborts the step here, before the annotation. That
+            # is precisely the raw-stack-trace-no-annotation failure the comment
+            # above says this block prevents. Measured: "DECLARED: unbound
+            # variable", no ::error, no [node] log.
+            printf '%s\n' "${NAME:-}${DECLARED:-}" | sed 's/^/[node] /'
             echo "::error title=Version::could not read ${MANIFEST} (logged above)"
             exit 1
           fi
@@ -241,6 +254,21 @@ jobs:
           # notices, retries). Comparing the raw capture would fail a correct PR
           # reporting `latest is npm warn ...`.
           LATEST="$(printf '%s\n' "$LATEST_OUTPUT" | tail -n 1)"
+          # `sort -V` ranks a PRERELEASE ABOVE its own release: verified,
+          # `printf '0.2.0\n0.2.0-rc.1\n' | sort -V | tail -1` is `0.2.0-rc.1`.
+          # The regex above deliberately accepts a -prerelease, so without this
+          # branch a declared `0.1.7-rc.1` against a latest of `0.1.7` passes the
+          # test below and reports "free and above latest (0.1.7)" for a version
+          # semver puts BELOW it. The test is skipped rather than repaired
+          # because it is asking the wrong question of a prerelease: the npm
+          # publish jobs route a hyphenated version to the `next` dist-tag, so it
+          # cannot move `latest` backwards at all, which is the failure this test
+          # names. Implementing real semver ordering in shell to reach the same
+          # answer is not worth it.
+          if [[ "$DECLARED" == *-* ]]; then
+            echo "::notice title=Version::$SPEC is free; skipping the above-latest test because it is a prerelease, which does not move the latest dist-tag"
+            exit 0
+          fi
           if [ "$DECLARED" != "$(printf '%s\n%s\n' "$LATEST" "$DECLARED" | sort -V | tail -1)" ]; then
             echo "::error title=Version::packages/create-malloy-package/package.json declares $DECLARED, which is BELOW npm's latest ($LATEST). Publishing it would move the latest dist-tag backwards. Bump above $LATEST."
             exit 1
@@ -254,9 +282,20 @@ jobs:
 
   check_pack:
     name: Verify the published tarball
+    # A frozen-lockfile install, a build, the package's suite, and up to three
+    # cold `npx` installs of the pinned server. Generous, but bounded: `publish`
+    # needs this job, so a hang here withholds the publish for GitHub's 6-hour
+    # default and a release's poll budget expires long before that.
+    timeout-minutes: 45
     # Dispatch-only, as it was before this workflow gained a `pull_request`
     # trigger: these steps are a full frozen-lockfile install, a build and the
-    # package's suite, and build.yml already runs that suite on every PR. Only
+    # package's suite, and cross-platform-tests.yml already runs that suite on
+    # every PR (`Run create-malloy-package tests` at :169, plus the Linux-only
+    # e2e at :177) — reached through build.yml, which is the workflow that
+    # triggers, but NOT defined in it: grep build.yml for this package and you
+    # get nothing. Named precisely because the next person to trim
+    # cross-platform-tests.yml will otherwise check build.yml, find no reference,
+    # and conclude the coverage was never there. Only
     # `check_version` above is new PR work. `publish` needs this job, and a
     # skipped `needs` skips the dependent, which is correct here: `publish`
     # carries the same dispatch guard.
@@ -378,7 +417,39 @@ jobs:
             exit 1
           fi
 
-          if ! USAGE="$(npx -y "@malloy-publisher/server@${SERVER_VERSION}" --help 2>&1)"; then
+          # Retried, and that is not belt and braces. `publish` has
+          # `needs: check_pack`, and a skipped `needs` skips the dependent, so a
+          # single blip in this ~40-dependency cold install does not just fail a
+          # check — it silently withholds the scaffolder publish, and in a release
+          # `publish-packages` then sits out its full 25-minute poll budget before
+          # saying so. In a release this runs MINUTES after publish-npm pushed
+          # this exact version, so an npm CDN read-after-write lag is a likely
+          # transient, alongside a registry 5xx and a flaky native duckdb build.
+          #
+          # Three attempts with a backoff, and the LAST failure is the one
+          # reported, so the annotations below still name the real cause. A
+          # persistent problem still fails, which is the point: this is about not
+          # confusing "npm was briefly unavailable" with "the server dropped
+          # --host". --max-time is on npx's side via npm's own timeouts; the retry
+          # bounds the total.
+          USAGE=""
+          npx_ok=0
+          for attempt in 1 2 3; do
+            if USAGE="$(npx -y "@malloy-publisher/server@${SERVER_VERSION}" --help 2>&1)"; then
+              npx_ok=1
+              break
+            fi
+            # Do not retry a Node-floor failure: it is deterministic, and three
+            # cold installs to reach the same answer costs 90s for nothing.
+            if grep -q 'PUBLISHER_UNSUPPORTED_NODE' <<<"$USAGE"; then
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::notice title=Server pin::npx --help for @malloy-publisher/server@${SERVER_VERSION} failed on attempt ${attempt}; retrying"
+              sleep $((attempt * 15))
+            fi
+          done
+          if [ "$npx_ok" = 0 ]; then
             printf '%s\n' "$USAGE" | sed 's/^/[server] /'
             # assertSupportedNodeVersion() runs at server.ts:100, BEFORE
             # parseArgs at :212, so `--help` exits non-zero on a Node below the

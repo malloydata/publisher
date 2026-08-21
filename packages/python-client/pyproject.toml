@@ -100,3 +100,27 @@ typeCheckingMode = "strict"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+# Almost none of this package is in git. .gitignore here is
+# `malloy_publisher_sdk/*` with `!malloy_publisher_sdk/__init__.py`, because
+# everything else under that directory is generated from ../../api-doc.yaml by
+# scripts/build-python-sdk.sh and is not committed.
+#
+# Hatchling's default file selection CONSULTS .gitignore, so without ignore-vcs
+# the generated client is excluded from the artifacts even when it is sitting
+# right there on disk. Measured: a build with client.py and api/ present ships a
+# wheel containing exactly __init__.py — which then imports .client and raises
+# ModuleNotFoundError on the user's first import. `packages` alone does NOT fix
+# it; the ignore rules still apply. This mattered the moment release.yml started
+# publishing this package, because a PyPI filename can never be reused.
+[tool.hatch.build]
+ignore-vcs = true
+
+# ignore-vcs stops .gitignore from excluding anything, so both targets say
+# explicitly what to ship. Otherwise .venv/, dist/, __pycache__ and *.bak become
+# candidates. Verified against a tree containing all four.
+[tool.hatch.build.targets.wheel]
+packages = ["malloy_publisher_sdk"]
+
+[tool.hatch.build.targets.sdist]
+include = ["malloy_publisher_sdk", "pyproject.toml", "README.md", "LICENSE"]
