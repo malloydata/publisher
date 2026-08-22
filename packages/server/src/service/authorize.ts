@@ -843,6 +843,30 @@ function isLegacyQuotedPayload(payload: string): boolean {
 }
 
 /**
+ * The expression a legacy quoted-string gate MEANT: the payload's string
+ * literal decoded to its contents, which is what the author now writes
+ * unquoted. Only ever called on a payload {@link isLegacyQuotedPayload}
+ * accepted, so the outer quotes are known to be there.
+ *
+ * This exists because the refusal in {@link assertNoLegacyStringGate}
+ * promises a rewrite the author can paste in. Interpolating the payload
+ * straight from {@link parseAuthorizeAnnotation} — which returns it VERBATIM,
+ * quotes and all — emitted `#(authorize) "org_id = 999"` as the remedy for
+ * `#(authorize) "org_id = 999"`: byte-identical to what was refused, so
+ * pasting it reproduces the same load failure.
+ *
+ * Decodes the two escapes {@link WHOLE_BODY_QUOTED_STRING} recognizes (`\\"`
+ * and `\\\\`) and passes any other backslash sequence through untouched,
+ * backslash included. A `\\n` inside a gate expression was never a working
+ * gate in either form, and passing it through leaves the author looking at
+ * what they wrote rather than at a silently mangled version of it.
+ */
+function unquoteLegacyGatePayload(payload: string): string {
+   const inner = payload.trim().slice(1, -1);
+   return inner.replace(/\\(["\\])/g, "$1");
+}
+
+/**
  * Parse a single annotation string into its authorize expression.
  *
  * Returns the inner expression for a well-formed `#(authorize)` / `##(authorize)`
@@ -966,10 +990,11 @@ export function assertAtMostOneAuthorizeGate(
 
 /** A source found carrying the legacy STRING form of `#(authorize)` — a
  *  Malloy-quoted expression annotated on the `source:` line itself, now
- *  refused in favor of the dimension form. `exprs` is the parsed body of
- *  each such annotation the source declares OWN (not inherited), in
- *  declaration order — the exact text {@link assertNoLegacyStringGate}
- *  writes back into its rewrite. */
+ *  refused in favor of the source-line form (the same position, without the
+ *  quotes). `exprs` is the parsed body of each such annotation the source
+ *  declares OWN (not inherited), in declaration order — quotes and all, as
+ *  authored, which is what {@link assertNoLegacyStringGate} names as the
+ *  offending text before emitting its unquoted rewrite. */
 export interface LegacyStringGateFinding {
    sourceName: string;
    exprs: string[];
@@ -1043,7 +1068,9 @@ export function assertNoLegacyStringGate(
    const rewrites = found
       .flatMap(({ sourceName, exprs }) =>
          exprs.map(
-            (expr) => `  - source "${sourceName}":\n      #(authorize) ${expr}`,
+            (expr) =>
+               `  - source "${sourceName}": replace \`#(authorize) ${expr}\`` +
+               ` with\n      #(authorize) ${unquoteLegacyGatePayload(expr)}`,
          ),
       )
       .join("\n");

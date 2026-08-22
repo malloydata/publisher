@@ -487,9 +487,39 @@ source: locked is duckdb.table('customers') extend { measure: c is count() }
       const err = model.getNotebookError();
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toContain("no longer accepted");
-      // Quoted exactly as authored (not unwrapped) — still names the
-      // offending expression rather than degrading to something empty.
-      expect(err?.message).toContain('"org_id = 999"');
+      // The refusal promises a rewrite the author can paste in, so assert on
+      // the emitted rewrite LINE, not on the presence of a substring both a
+      // correct and a broken message contain. Interpolating the payload
+      // verbatim once emitted `#(authorize) "org_id = 999"` as the remedy for
+      // `#(authorize) "org_id = 999"` — byte-identical to what it refused —
+      // and `toContain('"org_id = 999"')` was satisfied by that too.
+      expect(err?.message).toContain("#(authorize) org_id = 999");
+      // Still names the offending annotation as authored, quotes and all, so
+      // the author can find the line.
+      expect(err?.message).toContain('replace `#(authorize) "org_id = 999"`');
+   });
+
+   it("decodes the payload's escapes into the rewrite it emits", async () => {
+      // The legacy payload was a Malloy STRING LITERAL whose contents were
+      // the expression, so a gate comparing against a quoted value had to
+      // escape its inner quotes. The rewrite is that literal's decoded
+      // contents — an escaped `\"` becomes a bare `"`, which is what the
+      // author now writes.
+      await writeModel(
+         "legacy_escaped.malloy",
+         `#(authorize) "region = \\"east\\""
+source: locked is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "legacy_escaped.malloy",
+         getConnections(),
+      );
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(ModelCompilationError);
+      expect(err?.message).toContain('#(authorize) region = "east"');
    });
 
    it("'\"admin\" = $ROLE' is a LEGAL current-form gate, not the legacy form — loads and filters", async () => {
@@ -570,18 +600,19 @@ source: gated is duckdb.table('customers') extend {
    });
 
    it("denies when the referenced given has no value (fail closed)", async () => {
-      // Every gate is a row filter now: the query recompiles with the filter
-      // grafted on, and the filter's own given has no bound value — Malloy
-      // fails the run itself (a `getPreparedQuery()` compile does not need a
-      // bound value, but actually executing the query does), not a
-      // `Model`-issued `AccessDeniedError`. Same "self-triggering" failure
-      // mode `row_level_authorize.integration.spec.ts` already pins for a
-      // genuinely row-level gate — a clean failure, just not this specific
-      // error class.
+      // Denies as an opaque `AccessDeniedError`, not as Malloy's raw compile
+      // error naming the given. `model.ts`'s "Gate given unbound; denying
+      // opaquely" backstop reads `authorizeReferencedGivenNames`, which
+      // `resolveGateShape` widens with whatever the lift resolved — for a
+      // source-line gate the referenced givens are only knowable post-lift.
+      // Asserting the CLASS is what makes this test discriminating: a bare
+      // `rejects.toThrow()` passed equally when the backstop did not fire
+      // and Malloy's own "Given 'ROLE' has no value" reached the caller as a
+      // 400, which is what `docs/authorize.md` promises never happens.
       await writeModel("rt_single.malloy", SINGLE_GATE);
       await expect(
          runGated("rt_single.malloy", "run: gated -> { aggregate: c }", {}),
-      ).rejects.toThrow();
+      ).rejects.toThrow(AccessDeniedError);
    });
 
    it("still enforces the gate when bypassFilters is true (authorize is not a filter)", async () => {
@@ -1839,8 +1870,13 @@ source: cp_joiner is duckdb.table('customers') extend {
 
    it("assertAuthorizedForRunnable does NOT gate a joined source on the /compile path", async () => {
       const model = await cpModel("cp_join.malloy", CP_JOIN);
-      // Same entry-point rule as the query path: `cp_joiner` declares no gate,
-      // so the locked source it joins is not gated here either.
+      // Discriminating, not merely "nothing threw": the gate on `cp_locked`
+      // must be REGISTERED (otherwise a model that failed to see any gate at
+      // all would satisfy the assertion below just as well) and must NOT
+      // reach `cp_joiner`, which declares none of its own. Same entry-point
+      // rule as the query path.
+      expect(model.getAuthorize("cp_locked")).not.toEqual([]);
+      expect(model.getAuthorize("cp_joiner")).toEqual([]);
       const joinerRunnable = {
          getPreparedQuery: async () => ({
             _query: { structRef: "cp_joiner" },
