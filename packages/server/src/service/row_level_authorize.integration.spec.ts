@@ -958,7 +958,9 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/never enforced.*field "arr" of source "s"/s);
+         expect(err?.message).toMatch(
+            /never enforced.*field "arr" of source "s"/s,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -986,7 +988,9 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/never enforced.*field "rec" of source "s"/s);
+         expect(err?.message).toMatch(
+            /never enforced.*field "rec" of source "s"/s,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
