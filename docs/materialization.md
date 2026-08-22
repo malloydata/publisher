@@ -129,7 +129,7 @@ on. An incremental source needs `reseed` to do the same.
 **`refresh="incremental"` does not bound revocation.** The [delta](#incremental-refresh) wraps the
 seed's own SQL in a predicate over `[covered_through, frontier)`, so a row whose access decision
 changes *without its watermark advancing* falls outside every future delta and is never re-read.
-Take `orders`, gated with `internal dimension: authorized is org_id = $ORG` and declared
+Take `orders`, gated with `#(authorize) org_id = $ORG` and declared
 `refresh="incremental" watermark="order_date"`: order 7 (`order_date` 2026-01-02) moves from org 1 to
 org 2, every later run advances past that date, and principal `ORG: 1` keeps reading it
 indefinitely — while the entry

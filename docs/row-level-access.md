@@ -52,26 +52,24 @@ To make the scoping a boundary, add a gate.
 ## Row-level access control
 
 Pair the scoping `where:` with an [`#(authorize)`](authorize.md) gate so the source is queryable only
-when a valid scoping value is asserted. An unset or unsatisfied given fails the gate with **HTTP 403**,
-so there is no "unscoped" path:
+when a valid scoping value is asserted, and there is no "unscoped" path. An **unset** `TENANT` is a
+**403** (a gate-referenced given may carry no default, so there is nothing to fall back to); a
+**recognized-but-unlisted** tenant is admitted nowhere and gets **200 with zero rows**:
 
 ```malloy
 ##! experimental.givens
 
 given: TENANT :: string
 
+// Deny unless the caller asserts a tenant on the allow-list.
+#(authorize) $TENANT = 'acme' or $TENANT = 'globex' or $TENANT = 'initech'
 source: orders is duckdb.table('orders.parquet') extend {
   where: tenant = $TENANT
   measure: order_count is count()
-
-  // Deny unless the caller asserts a tenant on the allow-list.
-  #(authorize)
-  internal dimension: authorized is
-    $TENANT = 'acme' or $TENANT = 'globex' or $TENANT = 'initech'
 }
 ```
 
-- `#(authorize)` decides **whether** the caller may query `orders` at all (unset/invalid `TENANT` → 403).
+- `#(authorize)` decides **whether** the caller may query `orders` at all.
 - `where: tenant = $TENANT` decides **which rows** they get once allowed.
 
 Used together, callers can only reach `orders` with a recognized tenant, and only ever see that
@@ -82,18 +80,16 @@ tenant's rows.
 The pairing above uses two expressions: `#(authorize)` decides **whether** the caller may enter the
 source at all, and `where:` decides **which rows** they get once admitted. A gate that references a
 row field (see [authorize.md § Row-level gates](authorize.md#row-level-gates)) folds both jobs into
-one: instead of a whole-source 403/200 decision, the gate itself becomes the row filter.
+one: instead of an all-or-nothing admit decision, the gate itself becomes the row filter.
 
 ```malloy
 ##! experimental.givens
 
 given: GROUPS :: string[]
 
+#(authorize) org_id in $GROUPS
 source: orders is duckdb.table('orders.parquet') extend {
   measure: order_count is count()
-
-  #(authorize)
-  internal dimension: authorized is org_id in $GROUPS
 }
 ```
 
@@ -106,18 +102,19 @@ write or to keep in sync.
 - **`where: field in $GIVEN` alone** — a convenience filter, not access control. A caller who omits
   the given sees everything. Use it when scoping is a UX nicety, not a boundary.
 - **`where:` paired with `#(authorize)`** (the pattern above) — the gate is a whole-source boolean
-  (admit, or 403); `where:` does the row scoping. Reach for this when the "may enter, but only sees
-  their rows" logic genuinely needs two independent expressions — an admin-override gate
-  (`$ROLE = 'admin'`) whose row scoping differs from a tenant's (`tenant = $TENANT`), for example —
-  or when the row scoping itself is more than a gate dimension can hold (a `filter<T>`, a range, a
-  join-based lookup composed across several fields): a gate is exactly one scalar boolean dimension,
-  so anything that needs its own named intermediate steps belongs in `where:` instead.
+  (it admits every row, or none); `where:` does the row scoping. Reach for this when the "may enter,
+  but only sees their rows" logic genuinely needs two independent expressions — an admin-override
+  gate (`$ROLE = 'admin'`) whose row scoping differs from a tenant's (`tenant = $TENANT`), for
+  example — or when the row scoping itself is more than a single gate expression can hold (a
+  `filter<T>`, a range, a join-based lookup composed across several fields): a gate is exactly one
+  scalar boolean expression, so anything that needs its own named intermediate steps belongs in
+  `where:` instead.
 - **A row-level `#(authorize)` gate alone** — when the whole-source decision and the row scope are
   the *same* comparison (`org_id in $GROUPS` is both "may they enter" and "which rows"), write it
   once as a gate. An unset or empty given fails closed to zero rows, with no matching pair of
   expressions that could drift apart.
 
-A gate dimension's expression is otherwise unrestricted — see
+A gate's expression is otherwise unrestricted — see
 [authorize.md § Row-level gates](authorize.md#row-level-gates) for what changed there (there is no
 longer a fixed allowlist of accepted comparison shapes) and for the one case where an unsupported
 combination now surfaces as a request-time failure instead of a load-time refusal.
@@ -161,7 +158,7 @@ is not the same as a joined source's own gate firing; the rule here is unchanged
 _is_ carried to an extension that declares no gate of its own, but an extension declaring its OWN
 gate replaces it. So two things are yours to get right: which sources a
 caller can enter through (anything ungated that joins the base hands the base over), and what each
-extension re-exposes. Lock the base with a `false` gate dimension, re-expose curated, separately-gated
+extension re-exposes. Lock the base with `#(authorize) false`, re-expose curated, separately-gated
 extensions with [access modifiers](https://docs.malloydata.dev/documentation/experiments/include),
 and do not rely on a join to carry the lock. See
 [authorize.md § The entry point, and only the entry point](authorize.md#the-entry-point-and-only-the-entry-point)

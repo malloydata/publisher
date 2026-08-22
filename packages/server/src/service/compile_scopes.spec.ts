@@ -251,11 +251,7 @@ source: broken is duckdb.sql("select 1 as id") extend {
       // At file scope the submitted text replaces the file, so a caller gate
       // would displace the author's — same rejection as append.
       await expect(
-         compile(
-            "tracks.malloy",
-            `#(authorize) "true"\n${TRACKS_MODEL}`,
-            "file",
-         ),
+         compile("tracks.malloy", `#(authorize) true\n${TRACKS_MODEL}`, "file"),
       ).rejects.toThrow(/authorize` annotation is not permitted/);
    });
 

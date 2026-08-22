@@ -150,7 +150,7 @@ source: derived is base extend {}
 given:
   ORG :: number
 
-#(authorize) "org_id = $ORG"
+#(authorize) org_id = $ORG
 source: locked is duckdb.sql("select 1 as org_id")
 
 #@ persist name="joiner"

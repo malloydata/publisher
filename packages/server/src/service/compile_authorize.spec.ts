@@ -191,7 +191,7 @@ describe("compile-path authorize gate (compileSource)", () => {
          env.compileSource(
             "pkg",
             "model.malloy",
-            `#(authorize) "true"
+            `#(authorize) true
              source: mine is gated extend {}
              run: mine -> { aggregate: c }`,
             true,

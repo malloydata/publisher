@@ -104,6 +104,6 @@ ever set it.
 The bypass is an interim answer. The shape that keeps the decision with the model author is
 identity-bound givens ([docs/authorize.md § Security
 model](authorize.md#security-model)) — a reserved system given the caller cannot set, so an author
-writes `internal dimension: authorized is $ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'` and a
-source they never opted in stays gated. This header instead removes gating globally for callers you trust wholesale.
+writes `#(authorize) $ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'` and a source they never opted
+in stays gated. This header instead removes gating globally for callers you trust wholesale.
 When identity-bound givens land, expect this to narrow or be withdrawn.

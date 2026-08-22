@@ -1662,7 +1662,7 @@ describe("deriveSelfInstructions", () => {
    const authorizeGatedColocated = fakeSource({
       name: "s1",
       sourceEntityId: "c1c1c1c1c1c1c1c1",
-      sourceDef: { blockNotes: ['#(authorize) "true"'] },
+      sourceDef: { blockNotes: ["#(authorize) true"] },
    });
 
    describe("colocated #(authorize) gate", () => {
@@ -1740,7 +1740,7 @@ describe("deriveSelfInstructions", () => {
             name: "s1",
             sourceEntityId: "f1f1f1f1f1f1f1f1",
             annotationFields: { storage: "lake" },
-            sourceDef: { blockNotes: ['#(authorize) "true"'] },
+            sourceDef: { blockNotes: ["#(authorize) true"] },
          });
          const compiled = compiledWith({ s1: storageGated }, [["s1"]]);
          // Same message as assertMaterializationEligible's storage-destination
@@ -2686,7 +2686,7 @@ describe("executeInstructedBuild", () => {
          return fakeSource({
             name: "refused",
             sourceEntityId,
-            sourceDef: { blockNotes: ['#(authorize) "true"'] },
+            sourceDef: { blockNotes: ["#(authorize) true"] },
          });
       }
 
