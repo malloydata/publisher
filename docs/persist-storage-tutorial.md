@@ -750,6 +750,19 @@ Everything you need is on the package status and the logs:
     The attribute is absent for a query that never routed, so an `off`
     deployment's histogram is unchanged.
 
+Two things to know before building a dashboard on these:
+
+- **All of it is scoped to the `storage=` tier.** A colocated `#@ persist` source
+  is served by manifest substitution, which never reaches the routing decision, so
+  a colocated hit lands in neither the numerator nor the denominator of the hit
+  rate, and `served_from` is absent for it — the same as for a fully live query.
+  No per-query signal separates those two today; `manifestBindingStatus` on
+  package status answers the related question at package grain.
+- **`live_fallback` means different things on the metric and on the response.**
+  The counter's `outcome=live_fallback` is the *ineligible* case, which
+  `QueryResult.servedFrom` reports as null; that field's `live_fallback` is the
+  counter's `runtime_live_fallback`. Correlating the two by name inverts them.
+
 `PERSIST_STORAGE_MODE` (`off` default | `write-only` | `on`) is read at startup;
 change it by restarting. It's a kill switch: moving it **down** never fails a
 loaded package — a `storage=` source just reverts to serving live and shows up

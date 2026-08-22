@@ -166,7 +166,10 @@ const scheduledFireCounter = lazyCounter(
 );
 const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
-   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|'runtime_live_fallback').",
+   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|" +
+      "'runtime_live_fallback'). NOTE: outcome='live_fallback' here means the transform " +
+      "was ineligible, which QueryResult.servedFrom reports as null; that field's " +
+      "'live_fallback' is this metric's 'runtime_live_fallback'.",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -420,6 +423,19 @@ export function recordServeShapeTypeFallback(
  * tier is broken while queries still succeed, which is invisible in the hit rate
  * alone. This hit rate is the headline KPI of the storage tier — otherwise the
  * fallback side is only a DEBUG log.
+ *
+ * **`live_fallback` does not mean here what it means on `QueryResult.servedFrom`.**
+ * This metric's `live_fallback` is the ineligible case, which that field reports as
+ * null; that field's `live_fallback` is this metric's `runtime_live_fallback`. Both
+ * surfaces are individually correct and were named independently, but a dashboard
+ * that joins them on the token is wrong in both directions. Neither name can move
+ * without breaking someone: the field's is a published enum value, and this one is a
+ * label existing dashboards already select on.
+ *
+ * Scope, since the KPI framing invites the wrong reading: every outcome here is a
+ * `storage=` routing decision. A colocated `#@ persist` source is served by manifest
+ * substitution and never reaches this counter, so a colocated hit is absent from both
+ * the numerator and the denominator rather than counted as a miss.
  */
 export function recordStorageServeRouting(
    outcome: "storage" | "live_fallback" | "runtime_live_fallback",

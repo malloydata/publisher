@@ -4195,12 +4195,31 @@ components:
             indistinguishable from a storage hit at the call site, and treating it
             as one would report a healthy hit rate for a broken store.
 
-            Null when the query never had a storage binding to consider — every
-            query on a deployment with no `storage=` sources, which is the default.
+            **Null is three states, not one.** It means (a) the query never had a
+            storage binding to consider — every query on a deployment with no
+            `storage=` sources, which is the default; (b) the query was answered
+            from a COLOCATED materialized table, which this field does not report
+            at all; or (c) the storage transform was ineligible for this
+            particular query, so it was served live. The field alone cannot tell
+            these apart.
 
-            A storage-served result is byte-identical to a live one by design, so
-            this field is the only way a caller can tell that materialization did
-            anything, or show a user which of their sources it applies to.
+            **Scope: this reports the `storage=` tier, not materialization in
+            general.** A colocated `#@ persist` source — one with no `storage=`,
+            the default persistence path — is served by substituting the
+            materialized table into the model, which never reaches the routing
+            decision this field records. Such a query reports null, the same value
+            a fully live query reports, so a storage-served answer being
+            byte-identical to a live one is only half the problem: for the
+            colocated tier there is no per-query signal here to read at all. At
+            package grain, `manifestBindingStatus` on package status reports
+            whether a manifest is currently bound.
+
+            **`live_fallback` here is not `live_fallback` in the routing metric.**
+            This value corresponds to
+            `publisher_storage_serve_routing_total{outcome=runtime_live_fallback}`.
+            That metric's own `outcome=live_fallback` is case (c) above, which
+            this field reports as null. The two surfaces use the same token for
+            different things; do not correlate them by name.
         executionTimeMs:
           type: integer
           description: >-
