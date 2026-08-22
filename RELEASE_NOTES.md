@@ -96,6 +96,25 @@ now a request-time warehouse error: comparing a row field to an array-typed give
 (`org_id = $GROUPS`) loads and grafts cleanly and fails when the warehouse executes the cast. Use
 `in` for an array-typed given.
 
+### A derivation can no longer silently shed a gate
+
+An intermediate form of this feature put the gate on an annotated boolean dimension inside the
+source's body. It is also refused at load, and this is why: a derivation could drop that dimension —
+`extend { except: authorized }`, or an `accept:` that just did not re-list it — and produce a source
+with **no gate at all**, serving **every row to every caller**, with no load error and no warning.
+Malloy's compiled IR keeps no link from an `extend`-derived struct back to its base, so nothing could
+refuse the load over it.
+
+A source-line expression has no field to shed. A derivation that drops a column the gate **reads**
+leaves the grafted filter unable to compile, so that entry point is **denied** rather than served
+ungated. The load succeeds, and a warning names the entry point whose gate is no longer expressible
+so you find out before a caller does.
+
+One narrower hole replaces it, and is worth knowing while you migrate: drop the gated column and then
+`rename:` a *different* column onto that exact name. That grafts successfully and binds the gate to
+the **wrong** column. It takes a drop, plus a rename onto the exact gated name, plus colliding data,
+and it fails closed unless the data collides — but do not recycle a gated column's name.
+
 ### Migrating
 
 1. Find every `#(authorize) "<expr>"` and `##(authorize)` in your packages. Load the package — every
@@ -105,8 +124,9 @@ now a request-time warehouse error: comparing a row field to an array-typed give
    counted as `legacy_string_gate` with no author-facing detail.
 2. Paste the rewrite: drop the quotes, and put the annotation and the `source:` line it gates
    directly adjacent, e.g. `#(authorize) $ROLE = 'analyst'` above `source: orders is …`.
-3. Collapse stacked annotations into one `or` expression, and check that no derivation of the gated
-   source drops the field a joined-field gate reads.
+3. Collapse stacked annotations into one `or` expression.
+4. Read the load warnings. A derivation that narrows away a column the gate reads now denies at that
+   entry point rather than leaking, and the warning is where that shows up.
 
 See [docs/authorize.md](docs/authorize.md) for the full reference, and
 [docs/authorize.md § Enforcement](docs/authorize.md#enforcement) for the per-route behaviour
