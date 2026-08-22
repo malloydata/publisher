@@ -92,8 +92,8 @@ describe("authorize_metrics", () => {
       recordRowLevelGateRejected("unreachable_given");
       recordRowLevelGateRejected("unreachable_given");
       recordRowLevelGateRejected("entry_point_unexpressible");
-      recordRowLevelGateRejected("gate_dimension_no_given_reference");
-      recordRowLevelGateRejected("gate_dimension_negated_membership");
+      recordRowLevelGateRejected("source_line_gate_no_given_reference");
+      recordRowLevelGateRejected("source_line_gate_negated_membership");
       recordRowLevelGateRejected("legacy_string_gate");
 
       expect(
@@ -111,13 +111,13 @@ describe("authorize_metrics", () => {
       expect(
          await harness.collectCounter(
             "publisher_authorize_row_level_rejected_total",
-            { cause: "gate_dimension_no_given_reference" },
+            { cause: "source_line_gate_no_given_reference" },
          ),
       ).toBe(1);
       expect(
          await harness.collectCounter(
             "publisher_authorize_row_level_rejected_total",
-            { cause: "gate_dimension_negated_membership" },
+            { cause: "source_line_gate_negated_membership" },
          ),
       ).toBe(1);
       expect(

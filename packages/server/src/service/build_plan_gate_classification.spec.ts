@@ -98,19 +98,19 @@ source: gated is base -> { select: org_id } extend {}
       });
    });
 
-   it("records rejected when a query-source derivation inherits an ancestor's gate dimension whose given is off THIS deps surface", async () => {
+   it("records rejected when a query-source derivation inherits an ancestor's gate whose given is off THIS deps surface", async () => {
       // Replaces the old string form's "two AND'd groups, one rejects" case:
       // that shape OR'd two independently-authored `#(authorize)` annotations
-      // on one source, which the dimension form cannot express at all — G4
-      // refuses a source declaring more than one gate dimension (see
-      // `gate_dimension_integration.spec.ts`'s "more than one annotated
-      // dimension" test). What still needs pinning under the dimension form
-      // is that `derived`'s inherited copy of `base`'s gate (carried in via
-      // the query-source derivation, same mechanism `collectEntryPointGates`
-      // uses for every other inheritance case in this file) is re-checked
-      // against THIS CALL's own given surface, not the compiling model's, and
-      // is rejected rather than silently admitted when the given the
-      // inherited gate references isn't on it (`unreachable_given` — see
+      // on one source — a source may declare at most one `#(authorize)` block
+      // (`findMultipleAuthorizeGates`/`assertAtMostOneAuthorizeGate`), so a
+      // second, differently-scoped gate can no longer be expressed on the
+      // same source at all. What still needs pinning here is that `derived`'s
+      // inherited copy of `base`'s gate (carried in via the query-source
+      // derivation, same mechanism `collectEntryPointGates` uses for every
+      // other inheritance case in this file) is re-checked against THIS
+      // CALL's own given surface, not the compiling model's, and is rejected
+      // rather than silently admitted when the given the inherited gate
+      // references isn't on it (`unreachable_given` — see
       // `resolveGateShape`'s doc for why the deps struct, not the compiled
       // model, is the actual given surface used at classification time).
       const { modelDef, materializer, sources } = await compileModel(
@@ -272,77 +272,6 @@ source: derived is locked extend {
             outcome,
          ),
       ).not.toThrow();
-   });
-
-   it("records rejected for a persist source over a composite entry point whose own `select:` projects the gated member's gate field away", async () => {
-      // `comp` is a query_source whose base is `compose(member_a, member_b)`.
-      // Only `member_a` carries the gate; Malloy resolves the composite to
-      // ONE concrete member per query and copies that member's own notes
-      // onto `query.compositeResolvedSourceDef` (see
-      // `malloy_annotation_invariants.spec.ts`), which `collectEntryPointGates`
-      // reads as the entry point's OWN gate — discovery finds it with no join
-      // or deep walk involved.
-      //
-      // Under the OLD string form this classified `row_level`/`attributed:
-      // true`: the gate was a source-level annotation carrying literal
-      // expression TEXT (`"org_id in $GROUPS"`), grafted independently of
-      // which fields `comp`'s own `-> { select: … }` happened to keep. The
-      // dimension form instead grafts a reference to the `authorized` FIELD
-      // itself (`where: (authorized)`) at the ENTRY POINT's own compiled
-      // struct — and `authorized` is `internal`, so a `select:` that does not
-      // name it (this one only keeps `org_id`/`amount`) drops it from
-      // `comp`'s own fields the same way any other unselected field is
-      // dropped; `internal` also makes it unselectable even from within
-      // `comp`'s own pipeline (confirmed: naming it explicitly in `select:`
-      // is a compile error, "'authorized' is internal"). The lift then fails
-      // ("'authorized' is not defined") and `resolveGateShape` rejects rather
-      // than guessing — fails CLOSED, not open, so this is a coverage gap
-      // (a composite entry point narrowed by `select:` cannot be classified
-      // row-level and so cannot be colocated-served), not a security one.
-      //
-      // Left on the DIMENSION form deliberately (not migrated with the rest
-      // of this file — see task-3-report.md): the gap pinned here is that
-      // form's own field-drop behavior. The source-line form's annotation
-      // lives on the source, not a droppable field, so this shape does not
-      // reproduce under it — migrating would silently stop testing anything.
-      const { modelDef, materializer, deps, sources } = await compileModel(
-         `##! experimental { persistence composite_sources givens }
-
-given:
-  GROUPS :: number[]
-
-source: member_a is duckdb.sql("select 7 as org_id, 1 as amount") extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
-}
-
-source: member_b is duckdb.sql("select 99 as org_id, 2 as amount")
-
-source: combo is compose(member_a, member_b)
-
-#@ persist name="comp"
-source: comp is combo -> { select: org_id, amount }
-`,
-      );
-      const outcome = await classifyPersistSourceGate(
-         sources.comp,
-         modelDef,
-         materializer,
-         deps,
-         "m.malloy",
-      );
-      expect(outcome).toEqual({
-         classification: "rejected",
-         attributed: true,
-      });
-      expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
-            sources.comp,
-            sources.comp.name,
-            "persist",
-            outcome,
-         ),
-      ).toThrow(/authorize/i);
    });
 
    it("records the fail-closed outcome when classification throws", async () => {

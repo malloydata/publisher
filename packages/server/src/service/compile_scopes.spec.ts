@@ -149,9 +149,9 @@ source: tracks is base_source extend {
 ##! experimental.givens
 given:
   ROLE :: string is 'x'
+
+#(authorize) id = 1 and $ROLE = 'x'
 source: broken is duckdb.sql("select 1 as id") extend {
-  #(authorize)
-  internal dimension: gated is id = 1 and $ROLE = 'x'
 }`,
       );
       const { problems } = await compile(

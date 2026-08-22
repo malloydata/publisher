@@ -1636,66 +1636,20 @@ source: combo_locked_first is compose(locked_src, open_src)
    // GUARANTEE LOST, structural (not a test-authoring choice): under the
    // string form, `combo`'s own note and `locked_src`'s note lived on two
    // DIFFERENT sources' annotation lists, so each classified independently
-   // and the two composed by AND. The dimension form cannot reproduce this
+   // and the two composed by AND. The source-line form cannot reproduce this
    // shape at all — a composite source's OWN `struct.fields` transparently
    // includes every member's fields (that is what lets a query reference a
-   // member's column through the composite in the first place), so
-   // `locked_src`'s annotated "authorized" dimension is ALREADY a candidate
-   // on `combo`'s own struct before `combo` declares anything of its own.
-   // Adding a second, independently-named annotated dimension directly on
-   // `combo` therefore always trips G1 ("at most one gate dimension per
-   // source") — there is no field name that avoids this, since the conflict
-   // is with the INHERITED member field, not with whatever name `combo`
-   // picks. A composite can carry AT MOST one gate total post-migration:
-   // either its own, or (by inheriting the sole candidate) a single
-   // member's — never both independently ANDed. Confirmed empirically
-   // (see the refusal test below); worth a human decision on whether
-   // composites need first-class multi-gate support, but that is a product
-   // question, not a test-authoring one.
-   //
-   // Left on the DIMENSION form deliberately (see task-3-report.md): G1's
-   // conflict here is with a member field INHERITED onto the composite's
-   // own struct, which only exists because the dimension form's gate is a
-   // FIELD. The source-line form has no field to inherit, so this shape has
-   // no equivalent under it.
-   it("G1 refuses a composite's own gate dimension when a member already carries one (structural — the AND-composition shape above no longer exists)", async () => {
-      await writeModel(
-         "c_composite_qs_refused.malloy",
-         `##! experimental.composite_sources
-##! experimental.givens
-
-given:
-  ROLE :: string
-  REGION :: string
-
-source: open_src is duckdb.table('customers') extend {
-  measure: c is count()
-  dimension: open_flag is 1
-}
-
-source: locked_src is duckdb.table('customers') extend {
-  measure: c is count()
-  dimension: locked_flag is 1
-  #(authorize)
-  internal dimension: authorized is region = $REGION
-}
-
-source: combo is compose(open_src, locked_src) extend {
-  #(authorize)
-  internal dimension: permitted is not ($ROLE = 'blocked')
-}
-`,
-      );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "c_composite_qs_refused.malloy",
-         getConnections(),
-      );
-      expect(model.getNotebookError()?.message).toMatch(
-         /more than one #\(authorize\) gate dimension/,
-      );
-   });
+   // member's column through the composite in the first place), so a
+   // member's own `#(authorize)` gate is inherited onto `combo` (via
+   // `ancestorGateExprs`) exactly as if `combo` had never declared its own —
+   // and `combo` may declare only ONE `#(authorize)` block of its own
+   // (`findMultipleAuthorizeGates`/`assertAtMostOneAuthorizeGate`), so there
+   // is no way to independently AND a member's gate with `combo`'s own on
+   // the same composite. A composite can carry AT MOST one gate total: either
+   // its own, or (by inheriting) a single member's — never both independently
+   // ANDed. Worth a human decision on whether composites need first-class
+   // multi-gate support, but that is a product question, not a test-authoring
+   // one.
 
    it("a query source over a composite reports ONE authorize element for one gate, with the authored expression text", async () => {
       // Under the DIMENSION form, `collectEntryPointGates` walked a
@@ -3319,10 +3273,9 @@ source:
       // `notes`/`blockNotes` are populated only by SOURCE-level (block-item)
       // annotations. A dimension- or view-level annotation never lands on the
       // source struct's own annotations at all, so `extractSourcesFromModelDef`
-      // cannot mistake it for a source gate. It IS now collected as a gate
-      // -dimension candidate (see `source_extraction.ts`), so this fails via
-      // `validateGateDimension`'s G1 instead: `region_copy` is a STRING
-      // dimension, not a scalar boolean one.
+      // cannot mistake it for a source gate — it fails as a misplaced
+      // annotation instead (`assertNoMisplacedAuthorizeAnnotations`'s
+      // `"field"` kind), the same as any other field-position `#(authorize)`.
       await writeModel(
          "block_field_level.malloy",
          `source: bf_field is duckdb.table('customers') extend {
@@ -3345,7 +3298,7 @@ source:
          ModelCompilationError,
       );
       await expect(model.getModel()).rejects.toThrow(
-         /"bf_field\.region_copy".*scalar boolean dimension/,
+         /never enforced.*field "region_copy" of source "bf_field"/s,
       );
    });
 

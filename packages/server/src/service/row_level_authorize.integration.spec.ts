@@ -601,77 +601,17 @@ describe("row-level authorize — load-time scoping", () => {
       }
    });
 
-   it("CRITICAL — renaming or excepting a COLUMN the gate dimension's own expression depends on (not the dimension field itself) aborts the WHOLE model load, not just that one entry point", async () => {
-      // Left on the DIMENSION form deliberately (not migrated with the rest
-      // of this describe block — see task-3-report.md): the subject here is
-      // `validateGateDimensionsForModel`'s own unconditional whole-source
-      // walk, which is dimension-form-only machinery with no analogue under
-      // the source-line form. Measured directly: the identical shape under
-      // the source-line form does NOT abort the whole model's load — `W`
-      // denies at its own entry point (per-entry warn+deny, the load-time
-      // probe failing to resolve `org_id` on `W`'s renamed/excepted struct)
-      // while the rest of the model, including `Y`, loads and serves
-      // normally. That is a real, better-scoped outcome, but a DIFFERENT
-      // guarantee than the one this test pins; migrating it would silently
-      // swap what it asserts rather than just changing its syntax.
-      //
-      // Different shape from `W_accept` above: here the derivation keeps the
-      // gate dimension `authorized` itself (Malloy flattens it forward
-      // unchanged), but renames/excepts `org_id`, the column `authorized`'s
-      // own expression reads. `validateGateDimensionsForModel` re-validates
-      // EVERY top-level source as its own candidate entry point — including
-      // `W`, which still carries `authorized` — and `expandGivenIds`'s
-      // `resolveFieldUsagePath` walk fails to find `org_id` BY NAME on `W`'s
-      // renamed/excepted struct, which throws unconditionally (no per-entry
-      // warn escape for this one, unlike the STRING form's scoped failure).
-      // The blast radius is therefore worse than the old per-entry-point
-      // warn+deny — one derived, out-of-scope source's rename takes down the
-      // WHOLE file — but it fails SAFE (nothing loads or serves at all)
-      // rather than open, so this is real, new coverage, not a weakened test.
-      for (const extend of ["rename: tenant is org_id", "except: org_id"]) {
-         const { model, duckdb, dir } =
-            await createModel(`##! experimental.givens
-
-given:
-  GROUPS :: number[]
-
-source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
-   measure: n is count()
-}
-
-source: W is X extend { ${extend} }
-`);
-         try {
-            const err = compilationErrorOf(model);
-            expect(err).toBeInstanceOf(ModelCompilationError);
-            expect(err?.message).toMatch(/"org_id".*could not be resolved/);
-         } finally {
-            await duckdb.close();
-            fs.rmSync(dir, { recursive: true, force: true });
-         }
-      }
-   });
-
-   it("a negated membership gate (W2) now loads and warns rather than failing the whole model — the STRING form's grammar refusal does not exist for the dimension form", async () => {
-      // Left on the DIMENSION form deliberately (see task-3-report.md): W2
-      // is `validateGateDimension`'s own warning cause
-      // (`containsNegatedMembership`), dimension-form-only machinery that
-      // does not run for a source-line gate at all. There is no equivalent
-      // warning to pin under the source-line form; migrating this fixture
-      // would not be testing the same mechanism under new syntax, it would
-      // be testing nothing.
-      //
+   it("a negated membership gate (W2) now loads and warns rather than failing the whole model — the STRING form's grammar refusal does not exist for the source-line form", async () => {
       // Under the STRING form, `not (x in $Y)` was refused outright at load
       // (`array_given_needs_in`/negated-membership grammar check). The
-      // dimension form's `validateGateDimension` demotes this to W2 — a
-      // non-fatal warning (`containsNegatedMembership`) — because it is only
-      // a hazard for the EMPTY-given case, not a reason to refuse the whole
-      // expression. This test's old intent (grammar refusal) no longer
-      // exists; it now pins the two real, opposite outcomes: an empty
-      // `GROUPS` matches every row (the W2 hazard, proven rather than
-      // assumed), and a non-empty one still filters correctly.
+      // source-line form's `validateSourceLineGateGivenUsage` demotes this to
+      // W2 (`source_line_gate_negated_membership`) — a non-fatal warning
+      // (`containsNegatedMembership`) — because it is only a hazard for the
+      // EMPTY-given case, not a reason to refuse the whole expression. This
+      // test's old intent (grammar refusal) no longer exists; it now pins
+      // the two real, opposite outcomes: an empty `GROUPS` matches every row
+      // (the W2 hazard, proven rather than assumed), and a non-empty one
+      // still filters correctly.
       const { model, duckdb, dir } = await createModel(
          `##! experimental.givens
 
@@ -767,11 +707,12 @@ query: q is X -> { aggregate: n is count() }
       }
    });
 
-   it("a #(authorize) annotation on a FIELD inside a source (not the source: line) fails the load unless the field is a legal gate dimension", async () => {
-      // A field-position `#(authorize)` is now COLLECTED as a gate-dimension
-      // candidate (see `source_extraction.ts`), not refused outright —
-      // `validateGateDimension`'s G1 is what fails this one: `n` is a
-      // MEASURE (`count()`, an aggregate), not a scalar boolean dimension.
+   it("a #(authorize) annotation on a FIELD inside a source (not the source: line) fails the load as misplaced", async () => {
+      // `#(authorize)` only gates from the `source:` line (Task 6 deleted the
+      // dimension form, which was the one thing that made a field-position
+      // annotation legal). A field-position annotation is therefore always
+      // misplaced — `assertNoMisplacedAuthorizeAnnotations`'s `"field"` kind —
+      // regardless of what kind of field it lands on.
       const { model, duckdb, dir } = await createModel(
          `##! experimental.givens
 
@@ -787,7 +728,9 @@ source: X is duckdb.table('parent') extend {
       try {
          const err = compilationErrorOf(model);
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/"X\.n".*scalar boolean dimension/);
+         expect(err?.message).toMatch(
+            /never enforced.*field "n" of source "X"/s,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -1015,7 +958,7 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/"s\.arr".*scalar boolean dimension/);
+         expect(err?.message).toMatch(/never enforced.*field "arr" of source "s"/s);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -1043,7 +986,7 @@ source: headcount_by_dept is duckdb.table('childtable') extend {
          const err = (model as unknown as { compilationError?: Error })
             .compilationError;
          expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/"s\.rec".*scalar boolean dimension/);
+         expect(err?.message).toMatch(/never enforced.*field "rec" of source "s"/s);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -2441,19 +2384,20 @@ source: X is duckdb.table('parent') extend {
 
 // ---------------------------------------------------------------------------
 // Grammar (end-to-end: each spelling exercised as a real request denial/admit
-// — there is no unit-level equivalent for the dimension form)
+// — there is no unit-level equivalent for the source-line form)
 // ---------------------------------------------------------------------------
 
-// `resolveGateShape` (`gate_classification.ts`) takes the
-// `entry.dimensionForm` branch unconditionally, which hardcodes
-// `literalAtoms: []` and skips every one of the STRING form's own grammar
-// restrictions (`array_given_needs_in`, `?`'s "same node as `=`" rejection,
-// a function-call operand). None of this describe block's original
+// `resolveGateShape`'s (`gate_classification.ts`) source-line branch
+// classifies a lifted condition by structure (`isBareFalseLiteral`, then
+// `expandRefSummaryGivenIds` against the condition's own `refSummary`) — it
+// never re-implements the STRING form's own grammar restrictions
+// (`array_given_needs_in`, `?`'s "same node as `=`" rejection, a
+// function-call operand). None of this describe block's original
 // grammar-refusal guarantees survive migration — confirmed empirically
 // below, not assumed. This is a real, unfixed gap this task does not correct
 // (out of scope — a product decision, flagged in the report).
-describe("row-level authorize — grammar (STRING form's restrictions do not carry over to the dimension form)", () => {
-   /** Load `gate` as a dimension-form expression through the REAL
+describe("row-level authorize — grammar (STRING form's restrictions do not carry over to the source-line form)", () => {
+   /** Load `gate` as a source-line expression through the REAL
     *  `Model.create`, since one of the cases below now fails at LOAD time
     *  rather than request time (unlike every other test in this file's
     *  "grammar" heritage, which used `buildGatedModel` throughout). */
@@ -3781,20 +3725,14 @@ source: X is duckdb.table('parent') extend {
 // `$ROLE != 'admin'` OR'd in, with ROLE defaulting to '', is REFUSED
 // (vacuously TRUE for a caller supplying nothing — admits everyone), while
 // `$ROLE = 'admin'` with the SAME default is fine (FALSE at the default, a
-// legitimate admin-override idiom). The dimension form's G4
-// (`validateGateDimension` in `gate_dimension.ts`) does not draw that
-// distinction at all: it refuses ANY referenced given carrying a declared
-// default, UNCONDITIONALLY — this is the permanent security rule the task
-// brief names, not a narrower vacuousness check. Both shapes below are now
-// refused for the SAME reason (G4), including the admin-override idiom that
-// used to load and work correctly. This is a real, confirmed, INTENDED
-// narrowing (G4 is by design unconditional), not a regression to paper over.
-// Left on the DIMENSION form deliberately, whole block (see task-3-report.md):
-// every test here pins G4, `validateGateDimension`'s (`gate_dimension.ts`)
-// unconditional defaulted-given refusal — dimension-form-only machinery with
-// no equivalent under the source-line form (see the "G4 gap" finding).
-// Migrating any of these would silently start testing that a real capability
-// gap is absent, not the guarantee the title names.
+// legitimate admin-override idiom). G4 (`validateSourceLineGateGivenUsage` in
+// `gate_dimension.ts`) does not draw that distinction at all: it refuses ANY
+// referenced given carrying a declared default, UNCONDITIONALLY — this is
+// the permanent security rule the task brief names, not a narrower
+// vacuousness check. Both shapes below are now refused for the SAME reason
+// (G4), including the admin-override idiom that used to load and work
+// correctly. This is a real, confirmed, INTENDED narrowing (G4 is by design
+// unconditional), not a regression to paper over.
 describe("row-level authorize — vacuous default atom (superseded by G4's unconditional defaulted-given refusal)", () => {
    async function createModel(
       text: string,
@@ -3840,11 +3778,11 @@ source: X is duckdb.table('parent') extend {
 
    it("G4 fires on the source that declares the gate dimension, regardless of any derivation reachable from it", async () => {
       // Different mechanic from the string form's own "which entry point
-      // probed first" concern: G4 runs once per top-level source inside
-      // `validateGateDimensionsForModel`'s loop, keyed on whichever source
-      // OWNS the gate-dimension candidate. `Derived` (a query-source
-      // projection) does not carry `authorized` in its own field space at
-      // all, so G4 only ever fires on `X`.
+      // probed first" concern: G4 (`validateSourceLineGateGivenUsage`) runs
+      // against the DECLARING source's own lifted condition
+      // (`validateAuthorizeProbes`'s `onOwnRowLevelConditionCompiled`), never
+      // an inheritor's. `Derived` (a query-source projection) inherits `X`'s
+      // gate rather than declaring its own, so G4 only ever fires on `X`.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -3903,13 +3841,13 @@ source: X is duckdb.table('parent') extend {
 // the documented default convention ('' / 0) and were previously accepted —
 // `assertNoVacuousDefaultAtom` only evaluates a `<given> <op> <literal>` atom,
 // never a `<field> <op> <given>` comparison, so it structurally cannot catch
-// these. `validateGateDimension` (`gate_dimension.ts`) now refuses a field
-// comparison outright at load time when its given carries ANY declared
-// default, regardless of operator — see its doc comment for why this is
-// about the DEFAULT, not the operator, and the
-// anti-narrowing test below for why narrowing to `=`/`in` instead would be
-// wrong (a `<=`/`>=` no-read-up gate against a given with NO default is
-// legitimate and stays accepted).
+// these. `validateSourceLineGateGivenUsage` (`gate_dimension.ts`) now refuses
+// a field comparison outright at load time when its given carries ANY
+// declared default, regardless of operator — see its doc comment for why
+// this is about the DEFAULT, not the operator, and the anti-narrowing test
+// below for why narrowing to `=`/`in` instead would be wrong (a `<=`/`>=`
+// no-read-up gate against a given with NO default is legitimate and stays
+// accepted).
 // ---------------------------------------------------------------------------
 
 describe("row-level authorize — field comparison against a defaulted given", () => {
@@ -3936,13 +3874,8 @@ describe("row-level authorize — field comparison against a defaulted given", (
    }
 
    it("CRITICAL — `amount > $FLOOR`, FLOOR defaulting to 0, is refused at load (a caller supplying nothing admits ~every row)", async () => {
-      // Left on the DIMENSION form deliberately (see task-3-report.md): the
-      // refusal this test pins is `validateGateDimension`'s (`gate_dimension.
-      // ts`) own G4 check, dimension-form-only machinery — see the "G4 gap"
-      // finding: the source-line form has no equivalent check at all, so
-      // this exact shape loads and USES the default under it, with no
-      // refusal. Migrating this fixture would not test the same guarantee
-      // under new syntax, it would test that a real gap is absent.
+      // The refusal this test pins is `validateSourceLineGateGivenUsage`'s
+      // (`gate_dimension.ts`) G4 check.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -3966,8 +3899,8 @@ source: X is duckdb.table('parent') extend {
    });
 
    it("CRITICAL — `tenant != $EXCLUDED`, EXCLUDED defaulting to '', is refused at load", async () => {
-      // Left on the DIMENSION form deliberately (see task-3-report.md) — same
-      // G4-is-dimension-form-only reason as `amount > $FLOOR` above.
+      // Same G4 check (`validateSourceLineGateGivenUsage`) as `amount >
+      // $FLOOR` above.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
@@ -4064,139 +3997,6 @@ source: X is duckdb.table('parent') extend {
          );
          const rows = result.compactResult as unknown as { n: number }[];
          expect(rows[0].n).toBe(0);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-});
-
-// ---------------------------------------------------------------------------
-// P0 (STRING form, fixed) — composite resolution copies a composite parent's
-// OWN #(authorize) note OBJECT onto the resolved member struct's own
-// blockNotes, alongside the member's own note, which (pre-fix) folded a
-// DIFFERENT declaring source's condition into this source's disjunction.
-//
-// KNOWN GAP — under the dimension form, the underlying CONSTRUCT this whole
-// block exercised (a gate dimension on a composite `combo` AND a different
-// gate dimension on one of its members, both meant to AND together) cannot
-// be built at all: Malloy's composite resolution copies a member's fields
-// (including its gate dimension) into the composite's OWN struct, so
-// `combo`'s struct ends up with BOTH its own annotated dimension and the
-// member's — and G1 ("a source may declare at most one #(authorize) gate
-// dimension") refuses the load outright. Confirmed empirically. There is no
-// way to re-express "parent gate AND member gate, ANDed not ORed" under the
-// dimension form's one-dimension-per-source rule, so this block is
-// repurposed to pin that refusal rather than the AND-not-OR guarantee it
-// used to prove.
-// ---------------------------------------------------------------------------
-
-// Left on the DIMENSION form deliberately, whole block (see task-3-report.md):
-// both tests below depend on `combo`'s composite resolution copying a MEMBER's
-// gate-dimension FIELD onto `combo`'s own struct (G1's "more than one
-// candidate" check, and the enforcement path that reaches it as a field) —
-// dimension-form-only mechanics with no analogue for a struct-level
-// source-line note, which composite resolution does not fold into a field at
-// all. Migrating `member_a`'s gate to the source-line form (as the rest of
-// this file's plain sites were) measurably breaks the FIRST test here — G1
-// no longer fires, because there is no second field-level candidate for it to
-// see — which is exactly why both stay as dimension-form fixtures together.
-describe("row-level authorize — composite + gate dimension (superseded: the dimension form's G1 refuses the construct this block used to exercise)", () => {
-   async function createModel(
-      text: string,
-   ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
-      const duckdb = await newDuckdb();
-      const dir = fs.mkdtempSync(
-         path.join(os.tmpdir(), "rla-composite-group-"),
-      );
-      fs.writeFileSync(path.join(dir, "m.malloy"), text);
-      const model = await Model.create(
-         "test-pkg",
-         dir,
-         "m.malloy",
-         new Map<string, Connection>([["duckdb", duckdb]]),
-      );
-      return { model, duckdb, dir };
-   }
-
-   function compilationErrorOf(model: Model): Error | undefined {
-      return (model as unknown as { compilationError?: Error })
-         .compilationError;
-   }
-
-   it("KNOWN GAP — a composite parent's own gate dimension PLUS its resolved member's gate dimension now REFUSES the load (G1), rather than composing (correctly, post-fix) or leaking (the pre-fix bug)", async () => {
-      // `combo`'s own struct ends up carrying BOTH `visible` (its own
-      // annotation) and `authorized` (copied in from `member_a` by Malloy's
-      // composite field resolution) as gate-dimension candidates — G1's
-      // "a source may declare at most one" fires on `combo` itself.
-      const { model, duckdb, dir } = await createModel(
-         `##! experimental.composite_sources
-##! experimental.givens
-
-given:
-  REGION :: string
-  GROUPS :: number[]
-
-source: member_a is duckdb.sql("SELECT 7 as org_id, 'us' as region UNION ALL SELECT 8, 'us'") extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
-}
-
-source: member_b is duckdb.sql("SELECT 99 as org_id, 'eu' as region") extend {}
-
-source: combo is compose(member_a, member_b) extend {
-   #(authorize)
-   internal dimension: visible is region = $REGION
-}
-`,
-      );
-      try {
-         const err = compilationErrorOf(model);
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/"combo".*more than one/);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
-   });
-
-   it("a gate dimension on a composite member ALONE (no gate on the composite itself) still resolves and enforces through the composite", async () => {
-      // The one composite shape that DOES survive: only ONE source in the
-      // whole compose() chain declares a gate dimension at all. Composite
-      // resolution copies `member_a`'s `authorized` field onto `combo`'s own
-      // struct, so `combo` itself is discovered as gated — queried directly,
-      // not through a further query-source derivation (which would drop the
-      // `internal` dimension the same way `Z`/`Z2` do elsewhere in this
-      // file).
-      const { model, duckdb, dir } = await createModel(
-         `##! experimental.composite_sources
-##! experimental.givens
-
-given:
-  GROUPS :: number[]
-
-source: member_a is duckdb.sql("SELECT 7 as org_id UNION ALL SELECT 8 as org_id") extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS
-}
-
-source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
-
-source: combo is compose(member_a, member_b)
-`,
-      );
-      try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: combo -> { select: org_id }",
-            {},
-            true,
-            { GROUPS: [7] },
-         );
-         const rows = result.compactResult as unknown as { org_id: number }[];
-         expect(rows).toEqual([{ org_id: 7 }]);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -4328,16 +4128,17 @@ source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
 // KNOWN GAP — the entire premise of this block (the row-level STRING form's
 // grammar refuses a gate that reads no ROW FIELD, since a field-less boolean
 // used to be a legitimate `given_only` gate under the pre-row-level design)
-// does not carry over to the dimension form AT ALL. None of G1/G3/G4/W1/W2
-// (`validateGateDimension`, `gate_dimension.ts`) refuse an expression merely
-// for not referencing a row field — a dimension-form gate is just a boolean
-// expression, and Malloy is perfectly happy to compile `1 = 1` or
-// `$ROLE like 'ana%'` as one. Confirmed empirically below: every one of the
-// STRING form's field-less refusals now LOADS and FUNCTIONS as an ordinary
-// (if unusual) fixed-or-given-keyed predicate, not a refused gate.
+// does not carry over to the source-line form AT ALL. Neither G4 (declared
+// default) nor W1/W2 (`validateSourceLineGateGivenUsage`, `gate_dimension.ts`)
+// refuse an expression merely for not referencing a row field — a
+// source-line gate is just a boolean expression, and Malloy is perfectly
+// happy to compile `1 = 1` or `$ROLE like 'ana%'` as one. Confirmed
+// empirically below: every one of the STRING form's field-less refusals now
+// LOADS and FUNCTIONS as an ordinary (if unusual) fixed-or-given-keyed
+// predicate, not a refused gate.
 // ---------------------------------------------------------------------------
 
-describe("row-level authorize — a field-less gate (KNOWN GAP: the STRING form's grammar refusal does not exist for the dimension form)", () => {
+describe("row-level authorize — a field-less gate (KNOWN GAP: the STRING form's grammar refusal does not exist for the source-line form)", () => {
    /** `gate` reads no ROW FIELD — some reference no given at all (W1, a fixed
     *  predicate), some reference `ROLE` (a given with no default) and work
     *  exactly as an author who wrote them would expect. */
