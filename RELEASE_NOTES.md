@@ -29,13 +29,13 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — `#(authorize)` is a boolean dimension inside the source now, not a string on the `source:` line (BREAKING)
+## [Unreleased] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
 
 This is the headline change of this release, and it supersedes every earlier section on this page
 that shows `#(authorize) "<expr>"` on a `source:` line — including the `[0.0.248]` and `[0.0.205]`
 sections below, which describe the syntax as it was when they shipped. **That syntax no longer
-loads.** A gate is now an ordinary boolean **dimension**, declared in field position inside the
-source's own body and tagged `#(authorize)`:
+loads.** A gate is now an unquoted, natural Malloy boolean expression, carried by an `#(authorize)`
+annotation on its own line directly above the `source:` line it gates:
 
 ```malloy
 ##! experimental.givens
@@ -43,11 +43,9 @@ source's own body and tagged `#(authorize)`:
 given:
   ROLE :: string
 
+#(authorize) $ROLE = 'analyst'
 source: orders is duckdb.table('orders.parquet') extend {
   measure: order_count is count()
-
-  #(authorize)
-  internal dimension: authorized is $ROLE = 'analyst'
 }
 ```
 
@@ -55,44 +53,37 @@ source: orders is duckdb.table('orders.parquet') extend {
 
 - **The string form is refused at model load.** Any `#(authorize) "<expr>"` on a `source:` line
   fails the load with **HTTP 424**, and the message carries the paste-ready rewrite — the exact
-  annotation and dimension lines to substitute, per finding. **Every existing gated package must be
-  rewritten**; there is no compatibility mode and no flag.
+  annotation to substitute, per finding. **Every existing gated package must be rewritten**; there
+  is no compatibility mode and no flag.
 - **`##(authorize)` (file-level) is refused at load** as well, including one folded in from an
-  imported file. Declare a gate dimension on each source it was meant to protect.
-- **A source may declare at most one gate dimension.** Stacking two `#(authorize)` annotations on
-  one source to mean OR is gone — a second annotated dimension fails the load naming both. Write
-  the disjunction out inside the single expression (`$ROLE = 'admin' or $TENANT = 'acme'`).
-- **The gate dimension must be `internal`, never `private`.** Enforcement grafts
-  `extend { where: (authorized) }` from outside the source, so `private` would compile and then be
-  unreachable by its own enforcement; Publisher refuses it at load, naming the fix. `internal` still
-  blocks a caller's own `select:`/`where:` reference to the field.
-- **A gate dimension's name is now a field no derivation may drop or redefine.** The gate is just a
-  field, so `extend { except: authorized }`, an `accept:` that does not re-list it, or an
-  `except:`-then-unannotated-redefinition all produce a source with **no gate at all** and serve
-  every row — no load error, no warning. The string form lived on the `source:` line and survived
-  those, failing closed. This is the one guarantee the migration loses; see
-  [docs/authorize.md](docs/authorize.md#the-entry-point-and-only-the-entry-point). A `rename:` is
-  safe: the annotation travels with the field and the graft follows the new name.
+  imported file. Declare `#(authorize)` on each source it was meant to protect.
+- **`#(authorize)` anywhere other than directly on a `source:` line is refused at load** — on a
+  `dimension:`/`measure:`/`join_*:`/`view:` line inside a source, or on a top-level `query:`. A gate
+  only applies where model load looks for one: a source's own annotation, or one it inherits from an
+  `extend`/query-source base.
+- **A source may declare at most one `#(authorize)` annotation.** Stacking two on one source to mean
+  OR is gone — a second annotation fails the load naming both. Write the disjunction out inside the
+  single expression (`$ROLE = 'admin' or $TENANT = 'acme'`).
 
 ### What is validated, and what only warns
 
 Refusals fail the whole model load (424, naming the source):
 
-- **G1** — the annotated field must be a scalar boolean dimension, and there must be at most one.
-- **G3** — every given the expression references must be on the gating model's own given surface
-  (declared there, or one `import` hop away). Further away, Malloy would silently bind that given's
-  *declaration default* instead of the caller's value, so it is refused instead. Fix:
-  `import { GROUPS } from "…"`.
+- **G1** — the annotation's payload must compile as a boolean expression.
 - **G4** — every given the expression references must be declared with **no default**, wherever it
-  appears in the expression. An unsupplied given would otherwise resolve to its default and admit or
-  exclude rows the gate did not mean to.
+  appears in the expression — including one reached through a bare field reference
+  (`#(authorize) authorized` over `dimension: authorized is $ROLE = 'analyst'`). An unsupplied given
+  would otherwise resolve to its default and admit or exclude rows the gate did not mean to.
+
+There is no separate G3 check: a given the expression references that is off the model's own given
+surface fails to compile the gate's own probe query, and Malloy's own error covers it.
 
 Warnings load fine and are counted on `publisher_authorize_row_level_rejected_total`:
 
-- **W1** (`gate_dimension_no_given_reference`) — the expression references no given at all, so it is
-  a fixed predicate rather than a rule keyed on the caller. Deliberate for a locked base
-  (`internal dimension: authorized is false`); worth a look otherwise.
-- **W2** (`gate_dimension_negated_membership`) — a negated membership test
+- **W1** (`source_line_gate_no_given_reference`) — the expression references no given at all, so it
+  is a fixed predicate rather than a rule keyed on the caller. Deliberate for a locked base
+  (`#(authorize) false`); worth a look otherwise.
+- **W2** (`source_line_gate_negated_membership`) — a negated membership test
   (`not (org_id in $GROUPS)`). It loads and filters correctly for a non-empty given, but an **empty**
   given then matches every row instead of none. Best-effort shape match: other spellings of the same
   inversion do not trigger it, so its absence is no evidence either way.
@@ -100,10 +91,10 @@ Warnings load fine and are counted on `publisher_authorize_row_level_rejected_to
 There is no accepted-shape allowlist any more. The string form validated its expression against a
 small grammar of comparison shapes before it could be attached, so `upper(region) = $REGION`,
 `region like $PAT`, `region is not null` and `amount + 1 > $AMOUNTMIN` were all refused at load; all
-four are legal gate dimensions today. The trade is one case that used to be a named load-time
-refusal and is now a request-time warehouse error: comparing a row field to an array-typed given
-with `=`/`!=` (`org_id = $GROUPS`) loads and grafts cleanly and fails when the warehouse executes
-the cast. Use `in` for an array-typed given.
+four are legal gates today. The trade is one case that used to be a named load-time refusal and is
+now a request-time warehouse error: comparing a row field to an array-typed given with `=`/`!=`
+(`org_id = $GROUPS`) loads and grafts cleanly and fails when the warehouse executes the cast. Use
+`in` for an array-typed given.
 
 ### Migrating
 
@@ -112,13 +103,10 @@ the cast. Use `in` for an array-typed given.
    each declaring source and hand you the rewrite. The one case that escapes it is a declaring file
    *outside* the package tree: nothing compiles it, so it loads and then denies every request,
    counted as `legacy_string_gate` with no author-facing detail.
-2. Paste the rewrite **on two lines**. ⚠️ `#(authorize) internal dimension: authorized is …` on one
-   line looks equivalent and is not: Malloy consumes everything after `#(authorize)` on that line as
-   annotation text, so the dimension never compiles and the source loads with **no gate at all** —
-   no error, no warning. An operator collapsing the rewrite to one line deletes their own access
-   control silently. The annotation goes on its own line, the `internal dimension:` on the next.
+2. Paste the rewrite: drop the quotes, and put the annotation and the `source:` line it gates
+   directly adjacent, e.g. `#(authorize) $ROLE = 'analyst'` above `source: orders is …`.
 3. Collapse stacked annotations into one `or` expression, and check that no derivation of the gated
-   source `except:`s, non-relisting-`accept:`s, or redefines the new dimension's name.
+   source drops the field a joined-field gate reads.
 
 See [docs/authorize.md](docs/authorize.md) for the full reference, and
 [docs/authorize.md § Enforcement](docs/authorize.md#enforcement) for the per-route behaviour
@@ -254,16 +242,16 @@ only two outcomes, `row_level` and `rejected` — `given_only` is gone.
   organization/workspace access check remain exactly as they were; only a gate's _own_ verdict moved to
   filtering. Do not conflate the two: a package a caller cannot read at all still never reaches the gate.
 - **`/compile` now denies a row-level gate unconditionally, whether or not the given satisfies it.**
-  Superseded — see the `/compile` bullet in the dimension-form section at the top of this page. It now
+  Superseded — see the `/compile` bullet in the section at the top of this page. It now
   admits any gate it can decide without running the query, which includes every gate that references
   no given at all.
 - **A negated scalar comparison (`not ($ROLE = 'blocked')`) is now an accepted gate atom.** It was
   previously reachable only because a field-less condition skipped the row-level grammar entirely; now that
   every gate goes through it, negating a single comparison is explicitly supported (equivalent to
-  flipping the operator). A negated **membership test** (`not (x in $GROUPS)`) is **also** accepted
-  under the dimension form, with a **W2 load warning** rather than a refusal — the dimension form does
-  not classify expression shape at all. The emptying-the-set hazard is real and is what the warning is
-  for: an empty given makes the negation true for every row instead of none.
+  flipping the operator). A negated **membership test** (`not (x in $GROUPS)`) is **also** accepted,
+  with a **W2 load warning** rather than a refusal — there is no accepted-shape grammar any more, so
+  nothing classifies expression shape at load time. The emptying-the-set hazard is real and is what
+  the warning is for: an empty given makes the negation true for every row instead of none.
 
 ### Known, accepted narrowing: the "no schema oracle" guarantee is smaller
 
