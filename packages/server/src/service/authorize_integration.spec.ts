@@ -980,7 +980,7 @@ source: top_join is duckdb.table('customers') extend {
 }
 `;
 
-   it('denies (zero rows) a direct query against a base locked with #(authorize) "false"', async () => {
+   it("denies (zero rows) a direct query against a base locked with #(authorize) false", async () => {
       // `false` is a constant row filter now — a bare literal is a legal
       // gate condition (see `gate_classification.ts`'s `resolveGateShape`),
       // so this admits the request into a query that matches zero rows (a
@@ -1104,7 +1104,7 @@ source: top_join is duckdb.table('customers') extend {
    //
    // Measured against @malloydata/* 0.0.427 by stubbing the guard out: FOUR of
    // the six shapes below then resolve and return every row of a base locked
-   // with `#(authorize) "false"` — the first three and the whitespace variant.
+   // with `#(authorize) false` — the first three and the whitespace variant.
    // The other two are already stopped by a DIFFERENT control, and the guard is
    // defense in depth for them rather than the only thing standing there:
    //   - "file-level annotation" denies on its own (`Access denied for source
@@ -1118,37 +1118,37 @@ source: top_join is duckdb.table('customers') extend {
       const attacks: [string, string][] = [
          [
             "extension declaring its own passing gate",
-            `#(authorize) "true"
+            `#(authorize) true
              source: mine is base_locked extend { measure: cc is count() }
              run: mine -> { aggregate: cc }`,
          ],
          [
             "bare rename declaring its own passing gate",
-            `#(authorize) "true"
+            `#(authorize) true
              source: mine is base_locked
              run: mine -> { aggregate: c }`,
          ],
          [
             "extension projecting row values, not just an aggregate",
-            `#(authorize) "true"
+            `#(authorize) true
              source: mine is base_locked extend {}
              run: mine -> { group_by: id }`,
          ],
          [
             "file-level annotation",
-            `##(authorize) "true"
+            `##(authorize) true
              source: mine is base_locked extend {}
              run: mine -> { aggregate: c }`,
          ],
          [
             "whitespace inside the parens",
-            `#( authorize ) "true"
+            `#( authorize ) true
              source: mine is base_locked extend {}
              run: mine -> { aggregate: c }`,
          ],
          [
             "laundering through a join of a self-gated extension",
-            `#(authorize) "true"
+            `#(authorize) true
              source: mine is base_locked extend {}
              source: j is duckdb.table('customers') extend {
                join_one: mine on id = mine.id
@@ -1385,6 +1385,14 @@ run: secret_join
 // "surely that still denies".
 describe("cross-file joins are not gated either (Q16)", () => {
    it("allows a query whose run target reaches a locked source only via a two-hop cross-file join", async () => {
+      // Deliberately the LEGACY quoted form: `base_locked` is two import hops
+      // from the entry file (Malloy merges only one import level), so it never
+      // enters `c_entry`'s `modelDef.contents` at all — the load-time legacy
+      // string sweep (`findLegacyStringGates`) never sees it, unlike the
+      // top-level and single-hop `extend {}` cases this file's other quoted
+      // fixtures cover (see the "still refuses to load" test above and
+      // `source_line_authorize_integration.spec.ts:1230`). Do not migrate this
+      // one to the unquoted form — it would stop exercising that boundary.
       await writeModel(
          "c_base.malloy",
          `#(authorize) "false"
@@ -1749,7 +1757,7 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
 `;
    const CP_JOIN = `##! experimental.givens
 
-#(authorize) "false"
+#(authorize) false
 source: cp_locked is duckdb.table('customers') extend { measure: c is count() }
 
 source: cp_joiner is duckdb.table('customers') extend {
@@ -2406,7 +2414,7 @@ describe("authorize tolerates record/array-typed columns (MUST-FIX 1)", () => {
 // constant/public gate like `#(authorize) "true"` — there's nothing ambient
 // to isolate from, so there's nothing wrong with running it with no decls).
 describe("authorize allows a givens-free joined gate (MUST-FIX 2)", () => {
-   it('allows a same-file `#(authorize) "true"` source joined by an ungated top', async () => {
+   it("allows a same-file `#(authorize) true` source joined by an ungated top", async () => {
       await writeModel(
          "rt_pub.malloy",
          `#(authorize) true
@@ -2435,7 +2443,7 @@ source: pub_joiner is duckdb.table('customers') extend {
 // through either one lands in the compiled text exactly as one in `query` does.
 // Verified against @malloydata/* 0.0.427: with the guard applied only to
 // `query`, the request below returned every row of a base locked with
-// `#(authorize) "false"`.
+// `#(authorize) false`.
 describe("the caller-text guard covers sourceName/queryName too", () => {
    const LOCKED = `#(authorize) false
 source: inj_locked is duckdb.table('customers') extend {
@@ -2456,7 +2464,7 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
       await expect(
          model.getQueryResults(
             `inj_plain -> { aggregate: c }
-             #(authorize) "true"
+             #(authorize) true
              source: mine is inj_locked extend { measure: cc is count() }
              run: mine`,
             "{ aggregate: cc }",
@@ -2480,7 +2488,7 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
          model.getQueryResults(
             undefined,
             `{ aggregate: c }
-             #(authorize) "true"
+             #(authorize) true
              source: mine is inj_locked extend { measure: cc is count() }
              run: mine -> { aggregate: cc }`,
             undefined,
@@ -2884,7 +2892,7 @@ describe("a rejected caller-declared gate is counted", () => {
 
    const COUNTER = "publisher_authorize_guard_rejected_total";
    const FORGED =
-      "#(authorize) \"true\"\nsource: forged is duckdb.table('customers') extend { measure: c is count() }\nrun: forged -> { aggregate: c }";
+      "#(authorize) true\nsource: forged is duckdb.table('customers') extend { measure: c is count() }\nrun: forged -> { aggregate: c }";
 
    beforeEach(async () => {
       harness = await startMetricsHarness();
@@ -2923,7 +2931,7 @@ describe("a rejected caller-declared gate is counted", () => {
       );
       await expect(
          model.getQueryResults(
-            '#(authorize) "true"\nsource: sneaky is gm_base extend {}\nrun: sneaky',
+            "#(authorize) true\nsource: sneaky is gm_base extend {}\nrun: sneaky",
             "v",
             undefined,
             undefined,
@@ -3279,7 +3287,7 @@ source:
       await writeModel(
          "block_field_level.malloy",
          `source: bf_field is duckdb.table('customers') extend {
-  #(authorize) "false"
+  #(authorize) false
   dimension: region_copy is region
   measure: c is count()
 }

@@ -1261,7 +1261,7 @@ source: gated is base -> { select: org_id } extend {}
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in $GROUPS"
+#(authorize) org_id in $GROUPS
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),

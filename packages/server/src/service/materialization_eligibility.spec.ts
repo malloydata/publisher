@@ -108,9 +108,9 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
    it("refuses a source protected by its own #(authorize) gate", async () => {
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
+given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) "$role = 'analyst'"
+#(authorize) $role = 'analyst'
 #@ persist name="mz_authz"
 source: mz_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_authz).toBeDefined();
@@ -149,8 +149,8 @@ source: mz_dim_authz is base -> { aggregate: c is count() }`);
       // must not launder an authorize-gated source into a frozen table.
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
-#(authorize) "$role = 'analyst'"
+given: role :: string
+#(authorize) $role = 'analyst'
 source: gated is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
 source: joiner is duckdb.sql("SELECT 2 AS n, 'acme' AS tenant")
 #@ persist name="mz_authz_joined"
@@ -171,10 +171,10 @@ source: mz_authz_joined is joiner extend {
       // served to everyone, with a clean load either way.
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
+given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
 #|(authorize)
-"$role = 'analyst'"
+$role = 'analyst'
 |#
 #@ persist name="mz_block_authz"
 source: mz_block_authz is base -> { aggregate: c is count() }`);
@@ -201,8 +201,8 @@ source: mz_block_authz is base -> { aggregate: c is count() }`);
       // that is the point.
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
-#(authorize) "$role = 'analyst'"
+given: role :: string
+#(authorize) $role = 'analyst'
 source: gated is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
 source: joiner is duckdb.sql("SELECT 2 AS n, 'acme' AS tenant")
 #@ persist name="mz_authz_annotated_join"
@@ -226,7 +226,7 @@ source: mz_authz_annotated_join is joiner extend {
       const sources =
          await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
-#(authorize) "org_id in $GROUPS"
+#(authorize) org_id in $GROUPS
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
 
 #@ persist
@@ -282,7 +282,7 @@ source: orders__preagg__dim_category is orders -> {
       const sources =
          await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
-#(authorize) "org_id in $GROUPS"
+#(authorize) org_id in $GROUPS
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
 
 #@ persist
@@ -332,9 +332,9 @@ describe("assertColocatedPersistNotAuthorizeGated", () => {
    it("refuses a colocated persist source protected by its own #(authorize) gate", async () => {
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
+given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) "$role = 'analyst'"
+#(authorize) $role = 'analyst'
 #@ persist name="mz_colocated_authz"
 source: mz_colocated_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_colocated_authz).toBeDefined();
@@ -379,9 +379,9 @@ source: mz_colocated_given is base -> { where: tenant = $tenant; aggregate: c is
       it("admits a gated colocated source given a proven row_level + attributed outcome", async () => {
          const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
+given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) "$role = 'analyst'"
+#(authorize) $role = 'analyst'
 #@ persist name="mz_relaxed"
 source: mz_relaxed is base -> { aggregate: c is count() }`);
          expect(sources.mz_relaxed).toBeDefined();
@@ -398,9 +398,9 @@ source: mz_relaxed is base -> { aggregate: c is count() }`);
       it("still refuses when the outcome is row_level but not attributed", async () => {
          const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
+given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) "$role = 'analyst'"
+#(authorize) $role = 'analyst'
 #@ persist name="mz_unattributed"
 source: mz_unattributed is base -> { aggregate: c is count() }`);
          expect(() =>
@@ -416,9 +416,9 @@ source: mz_unattributed is base -> { aggregate: c is count() }`);
       it("still refuses when the outcome classifies rejected", async () => {
          const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
+given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) "$role = 'analyst'"
+#(authorize) $role = 'analyst'
 #@ persist name="mz_rejected_outcome"
 source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
          expect(() =>
@@ -438,7 +438,7 @@ source: mz_rejected_outcome is base -> { aggregate: c is count() }`);
          const sources =
             await persistSources(`##! experimental { persistence composite_sources givens }
 given: GROUPS :: number[]
-#(authorize) "org_id in $GROUPS"
+#(authorize) org_id in $GROUPS
 source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id")
 
 #@ persist
@@ -471,9 +471,9 @@ source: orders__preagg__category is orders -> {
          delete process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
          const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
+given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) "$role = 'analyst'"
+#(authorize) $role = 'analyst'
 #@ persist name="mz_relaxed_default"
 source: mz_relaxed_default is base -> { aggregate: c is count() }`);
          expect(() =>
@@ -490,9 +490,9 @@ source: mz_relaxed_default is base -> { aggregate: c is count() }`);
          process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = "false";
          const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
-given: role :: string is 'analyst'
+given: role :: string
 source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) "$role = 'analyst'"
+#(authorize) $role = 'analyst'
 #@ persist name="mz_rolled_back"
 source: mz_rolled_back is base -> { aggregate: c is count() }`);
          expect(() =>

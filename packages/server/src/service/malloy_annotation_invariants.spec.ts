@@ -167,12 +167,12 @@ describe("Malloy IR annotation invariants (pins @malloydata/malloy behavior)", (
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in \\$GROUPS"
+#(authorize) org_id in $GROUPS
 source: member_a is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
 
-#(authorize) "region = 'us'"
+#(authorize) region = 'us'
 source: combo is compose(member_a, member_b)
 
 source: qs is combo -> { group_by: org_id }
@@ -217,12 +217,12 @@ source: qs is combo -> { group_by: org_id }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in \\$GROUPS"
+#(authorize) org_id in $GROUPS
 source: member_a is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
 
-#(authorize) "region = 'us'"
+#(authorize) region = 'us'
 source: combo is compose(member_a, member_b)
 
 source: qs is combo -> { group_by: org_id }
@@ -260,7 +260,7 @@ source: qs is combo -> { group_by: org_id }
    // -------------------------------------------------------------------
    it("extend {}: a trivial derivation shares the base's own note object by reference, at the TOP level (no .inherits demotion)", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: base is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: derived is base extend {}
@@ -290,10 +290,10 @@ source: derived is base extend {}
    // text. See the report for the pasted failing run.
    it("extend {}: two independently-declared sources with identical gate text are DISTINCT note objects (not shared)", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: indepA is duckdb.sql("SELECT 7 as org_id") extend {}
 
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: indepB is duckdb.sql("SELECT 8 as org_id") extend {}
 `);
       const indepA = modelDef.contents["indepA"] as StructDef;
@@ -325,10 +325,10 @@ source: indepB is duckdb.sql("SELECT 8 as org_id") extend {}
    // -------------------------------------------------------------------
    it("extend with its OWN #(authorize): the authored note is a distinct object, and the base's own note is demoted to .inherits", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: base3 is duckdb.sql("SELECT 7 as org_id") extend {}
 
-#(authorize) "org_id > 5"
+#(authorize) org_id > 5
 source: derived3 is base3 extend {}
 `);
       const base3 = modelDef.contents["base3"] as StructDef;
@@ -367,7 +367,7 @@ source: derived3 is base3 extend {}
    // -------------------------------------------------------------------
    it("query_source: the struct itself carries no annotations at all", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: base4 is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: z4 is base4 -> { group_by: org_id }
@@ -404,7 +404,7 @@ source: z4 is base4 -> { group_by: org_id }
    // -------------------------------------------------------------------
    it("join_one: an unannotated join copies the joined source's own gate note onto the join field, by reference", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: salaries is duckdb.sql("SELECT 7 as org_id, 1 as id") extend {}
 
 source: emp is duckdb.sql("SELECT 1 as id") extend {
