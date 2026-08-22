@@ -43,7 +43,6 @@ import {
    type MisplacedAuthorizeAnnotation,
 } from "./authorize";
 import { parseFilters, type FilterDefinition } from "./filter";
-import { findGateDimensionCandidates } from "./gate_dimension";
 import {
    derivedStructsReachable,
    effectiveAncestorGateExprs,
@@ -281,19 +280,15 @@ function considerAuthorizeNoteOwner(
  *
  * A separate list, `misplacedAuthorize`, is not about a source's gate at all:
  * it is every `#(authorize)` annotation this walk found attached to a
- * `join_one:`/`join_many:` FIELD (author-written directly on the join line,
- * never Malloy's by-reference copy of the joined source's own gate — see the
+ * `dimension:`/`measure:`/`view:`/`join_one:`/`join_many:` FIELD
+ * (author-written one line too low, or directly on the join line, never
+ * Malloy's by-reference copy of the joined source's own gate — see the
  * note-identity check just above the main loop) or to the MODEL itself
  * (`##(authorize)`, file-level, deprecated — folded in as a `"file"`-kind
- * finding, see the check ahead of the per-source walk below). Both are
+ * finding, see the check ahead of the per-source walk below). All are
  * positions nothing here, or anywhere else, ever reads for enforcement; see
  * `assertNoMisplacedAuthorizeAnnotations`'s doc for why that fails OPEN and
- * has to be refused at load rather than silently ignored. A `dimension:`/
- * `measure:`/`view:` field's OWN authorize note is no longer misplaced by
- * construction — it is simply left alone here (the dimension form of a
- * gate); `./gate_dimension`'s `findGateDimensionCandidates`/
- * `validateGateDimensionsForModel` re-derive candidates directly from
- * `modelDef.contents` at load time and decide whether one is actually legal.
+ * has to be refused at load rather than silently ignored.
  *
  * A `join_one:`/`join_many:` FIELD carrying a note this walk cannot identify
  * as that copy is routed by whether its declaration resolves INSIDE this
@@ -625,22 +620,6 @@ export function extractSourcesFromModelDef(
             // field re-derives enforcement from it; only `authorizeMap`
             // (kept internal) drives `validateAuthorizeProbes`.
             authorize = effectiveGroups.flat();
-         } else {
-            // Dimension-form gate: surface the gate dimension's own `code`
-            // (the expression as authored) so introspection keeps working —
-            // this is display/introspection ONLY. Enforcement still grafts
-            // by the dimension's NAME (`./gate_classification`), never by
-            // re-parsing this text. `validateGateDimensionsForModel` already
-            // refused a model with more than one candidate on this source
-            // (G1), so `[0]` is safe; own `fields` already includes an
-            // inherited-unchanged gate dimension (see `gate_dimension.ts`'s
-            // header note), so no separate ancestor walk is needed here.
-            const gateDimension = findGateDimensionCandidates(
-               struct as SourceDef,
-            )[0] as { code?: unknown } | undefined;
-            if (typeof gateDimension?.code === "string") {
-               authorize = [gateDimension.code];
-            }
          }
          const views: ExtractedView[] = struct.fields
             .filter((field) => field.type === "turtle")
@@ -656,15 +635,16 @@ export function extractSourcesFromModelDef(
             }));
 
          // Every field's OWN annotations, regardless of kind (dimension,
-         // measure, join, view). A non-join field's own authorize note is now
-         // COLLECTED, not refused — it is the dimension form of `#(authorize)`
-         // (see `gate_dimension.ts`'s `validateGateDimension`, which decides
-         // whether the annotated field is actually a legal gate: a scalar
-         // boolean dimension, not a measure/view/array/record). The join
+         // measure, join, view). `#(authorize)` only gates from the
+         // `source:` line now (the dimension form is gone — Task 6); a
+         // non-join field carrying its own authorize note is therefore
+         // always misplaced, the same fail-load protection this walk gave
+         // every field kind before the dimension form existed. The join
          // carve-out below is unchanged: an unannotated join's BY-REFERENCE
-         // copy of the joined source's own gate note is still never collected
-         // here (Constraint 3 — joins never carry a gate), and an author-typed
-         // annotation on the join line itself is still refused as misplaced.
+         // copy of the joined source's own gate note is still never
+         // misplaced (Constraint 3 — joins never carry a gate), and an
+         // author-typed annotation on the join line itself is still refused
+         // as misplaced.
          for (const field of struct.fields) {
             const fieldAuthorizeNotes = ownLevelNotes(field.annotations).filter(
                (note) => containsAuthorizeAnnotationTag([note.text]),
@@ -747,16 +727,18 @@ export function extractSourcesFromModelDef(
                });
                continue;
             }
-            // A non-join field carrying its OWN authorize note — the
-            // dimension form. Not collected here at all: `./gate_dimension`'s
-            // `findGateDimensionCandidates`/`validateGateDimensionsForModel`
-            // re-derive candidates directly from `modelDef.contents` (the
-            // same compiled `FieldDef`s this loop is already walking), so a
-            // second collection here would just be a candidate list that can
-            // drift from the one actually validated. Shape validation (is it
-            // actually a scalar boolean dimension, is there more than one,
-            // does it shadow an inherited one without re-annotating) belongs
-            // there, not here.
+            // A non-join field carrying its own authorize note that isn't
+            // Malloy's by-reference join copy: `#(authorize)` on a
+            // `dimension:`/`measure:`/`view:` line inside a `source:` block
+            // is never enforced (see `MisplacedAuthorizeAnnotation`'s
+            // `"field"` doc) now that the dimension form no longer exists to
+            // legitimize it — fail the load rather than let it silently
+            // protect nothing.
+            misplacedAuthorize.push({
+               kind: "field",
+               name: sourceName,
+               fieldName,
+            });
          }
 
          return {

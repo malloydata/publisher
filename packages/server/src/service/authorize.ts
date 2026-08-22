@@ -414,10 +414,7 @@ const STRING_LITERAL_PATTERN = /'(?:\\.|[^'\\])*'/g;
 /**
  * Given names an authorize expression references (`$NAME` tokens), deduped,
  * in first-seen order. Used by `Model.computeAuthorizeReferencedGivenNames`
- * to find which givens an entry's `exprs` reference — a no-op for the
- * dimension form, whose `exprs` is a backtick-quoted field name rather than
- * `$NAME` text (that form's given names come from discovery instead, see
- * `GateEntry.dimensionForm`).
+ * to find which givens an entry's `exprs` reference.
  */
 export function referencedGivenNames(expr: string): string[] {
    const scanned = expr.replace(STRING_LITERAL_PATTERN, "''");
@@ -464,14 +461,9 @@ export function referencedGivenNames(expr: string): string[] {
 export type RowLevelGateRejectionCause =
    | "unreachable_given"
    | "entry_point_unexpressible"
-   // Non-fatal — `./gate_dimension`'s `validateGateDimension` W1/W2, warned
-   // rather than refused; the model still loads. See that module's doc.
-   | "gate_dimension_no_given_reference"
-   | "gate_dimension_negated_membership"
-   // Non-fatal siblings of the two above, for the SOURCE-LINE form —
-   // `./gate_dimension`'s `validateSourceLineGateGivenUsage` W1/W2. Kept as
-   // distinct cause names (rather than reused) so an operator reading the
-   // metric knows which form triggered it; also warned, not refused.
+   // Non-fatal — `./gate_dimension`'s `validateSourceLineGateGivenUsage`
+   // W1/W2, warned rather than refused; the model still loads. See that
+   // module's doc.
    | "source_line_gate_no_given_reference"
    | "source_line_gate_negated_membership"
    // Task 3 (the mechanical migration off the string form) produces this —
@@ -504,8 +496,6 @@ export const ROW_LEVEL_GATE_REJECTION_CAUSES =
    everyMemberOf<RowLevelGateRejectionCause>()(
       "unreachable_given",
       "entry_point_unexpressible",
-      "gate_dimension_no_given_reference",
-      "gate_dimension_negated_membership",
       "source_line_gate_no_given_reference",
       "source_line_gate_negated_membership",
       "legacy_string_gate",
@@ -557,10 +547,8 @@ interface AuthorizeProbeCompiler {
  * contains an embedded backtick cannot break out of the quotes. `Model`
  * (`service/model.ts`) has its own independently-justified copy for its own
  * callers (mirroring Malloy's internal `identifierCode`/`escapeIdentifier`,
- * which is not exported); this one is exported for `./gate_classification`'s
- * dimension-form graft (Constraint 9 — a gate dimension is grafted by NAME,
- * never by re-parsing its `code`), which needs the identical escaping this
- * module already uses to build a row-level probe.
+ * which is not exported); this module uses it to quote the graft target in
+ * {@link buildRowLevelProbe} below.
  */
 export function quoteMalloyIdentifier(name: string): string {
    return "`" + name.replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
@@ -679,13 +667,11 @@ async function liftRowLevelCondition(
  * entry point in `options.authorizeMap` — the gate applied as a source-level
  * `where:` on that entry point itself — surfacing an unknown given or a
  * source-field reference this entry point cannot resolve at model-load
- * instead of first request.
- *
- * A successful compile needs no further classification: the dimension form's
- * lifted condition is just a field reference, already vetted at declaration
- * time by `./gate_dimension`'s `validateGateDimensionsForModel` (G1–G4,
- * private, redefinition); this only has to confirm the graft resolves at
- * THIS entry point.
+ * instead of first request. A successful compile at the DECLARING entry
+ * point still needs G4/W1/W2 against the lifted condition's own given usage
+ * — see `onOwnRowLevelConditionCompiled` below — since a compile succeeding
+ * says nothing about whether the gate references a defaulted given or
+ * negates a membership test.
  *
  * A compile failure is either a genuinely broken gate, or an entry point that
  * INHERITED a gate it cannot express — a derived source (an `extend` that
@@ -740,12 +726,12 @@ export async function validateAuthorizeProbes(
        * (see the module doc's bundling note), so it hands the compiled
        * condition back rather than running G4/W1/W2 itself; the caller (both
        * `Model.create` and the package-load worker already import
-       * `./gate_dimension` for the dimension form) runs
-       * `validateSourceLineGateGivenUsage` against it. "Own" is the same
-       * distinction the throw-vs-warn branch below already draws: only the
-       * DECLARING source's own condition is checked — an inheritor gets no
-       * second check, since the expression and its referenced givens are
-       * identical to what was already checked where it was declared.
+       * `./gate_dimension`) runs `validateSourceLineGateGivenUsage` against
+       * it. "Own" is the same distinction the throw-vs-warn branch below
+       * already draws: only the DECLARING source's own condition is checked —
+       * an inheritor gets no second check, since the expression and its
+       * referenced givens are identical to what was already checked where it
+       * was declared.
        */
       onOwnRowLevelConditionCompiled?: (
          sourceName: string,
@@ -889,11 +875,8 @@ export interface MultipleAuthorizeGateFinding {
 
 /**
  * Every top-level source that carries MORE THAN ONE `#(authorize)`-tagged
- * note of its own (source-line position). A source may declare at most one —
- * this mirrors the dimension form's identical "at most one gate dimension"
- * rule (G1 in `./gate_dimension`'s `validateGateDimension`), so the
- * constraint is the same regardless of which form a source uses. The
- * admin-override idiom this might look like it forecloses
+ * note of its own (source-line position). A source may declare at most one.
+ * The admin-override idiom this might look like it forecloses
  * (`#(authorize) "$ROLE = 'admin'"` OR'd with a second block) is still fully
  * expressible — as a single natural boolean, `#(authorize) $ROLE = 'admin'
  * or org_id in $GROUPS` — since the current form's payload is an ordinary
@@ -901,8 +884,9 @@ export interface MultipleAuthorizeGateFinding {
  *
  * Reads `authorizeOwnNotes` ({@link ../service/source_extraction.ts}'s
  * companion to `authorizeMap`, already own-level-only, struct-annotation-only)
- * so this only ever counts SOURCE-LINE notes — a dimension-form gate lives on
- * a FIELD's own annotations and never appears here.
+ * so this only ever counts SOURCE-LINE notes — a field's own annotation
+ * note (misplaced, since `#(authorize)` only gates from the `source:` line)
+ * never appears here.
  */
 export function findMultipleAuthorizeGates(
    authorizeOwnNotes: ReadonlyMap<string, AnnotationNote[]>,
@@ -1006,12 +990,15 @@ export function findLegacyStringGates(
  *
  * The emitted rewrite puts `#(authorize)` and the expression it gates on
  * their own line above `source:` — the only legal shape for this form, so
- * there is no one-line trap to fall into here. That trap (Malloy consuming
- * everything after `#(authorize)` on the SAME line as annotation text, so
- * a one-line `#(authorize) internal dimension: authorized is ...` never
- * compiles and the source silently loads with NO gate at all) still exists
- * for anyone hand-writing the deprecated DIMENSION form. See
- * task-3-fix-brief.md C1.
+ * there is no one-line trap to fall into here. That trap — Malloy consuming
+ * everything after `#(authorize)` on the SAME line as annotation text, so a
+ * one-line `#(authorize) internal dimension: authorized is ...` never
+ * declares an actual `dimension:` field at all (the whole line became
+ * annotation text) and the source silently loads with NO gate — still exists
+ * for anyone who writes that shape by hand; there is no `dimension:`-based
+ * gate spelling this rewrites to, and `internal dimension: authorized is
+ * ...` is not itself an authorize expression, so this class of mistake never
+ * reaches this function's rewrite at all. See task-3-fix-brief.md C1.
  */
 export function assertNoLegacyStringGate(
    found: readonly LegacyStringGateFinding[],

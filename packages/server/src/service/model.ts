@@ -101,7 +101,6 @@ import {
 } from "./authorize";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
-   validateGateDimensionsForModel,
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
 } from "./gate_dimension";
@@ -619,24 +618,11 @@ export class Model {
       // dangerous of the two possible errors. Mutating in place (rather than at
       // the API boundary) keeps getSources()/getAuthorize()/the early gate on one
       // answer instead of three.
-      //
-      // A dimension-form gate declared on the source's OWN struct
-      // (`dimensionForm` set, `selfContained: false`) is excluded from this
-      // override: `extractSourcesFromModelDef` already set `source.authorize`
-      // to the gate dimension's own `code` — the expression as authored — and
-      // this walk's `exprs` for that same gate is the GRAFT text
-      // (`quoteMalloyIdentifier`, e.g. `` `authorized` ``), which is correct
-      // for enforcement but would regress introspection to an opaque field
-      // reference. A dimension-form gate carried in from elsewhere
-      // (`selfContained: true` — a query-source base, a composite member) has
-      // no `code` extraction can see from this source's own struct, so the
-      // override still applies there, same as before this distinction existed.
       for (const source of this.sources ?? []) {
          if (!source.name) continue;
          const exprs = this.entryPointGatesBySource
             .get(source.name)
-            ?.filter((g) => !g.dimensionForm || g.selfContained)
-            .flatMap((g) => g.exprs);
+            ?.flatMap((g) => g.exprs);
          if (exprs && exprs.length > 0) source.authorize = exprs;
       }
       // Guarded defensively: a malformed gate reachable only through a
@@ -934,17 +920,7 @@ export class Model {
       };
       for (const gates of this.entryPointGatesBySource.values()) {
          for (const entry of gates) {
-            // The dimension form's `exprs` is a backtick-quoted identifier
-            // (`` `authorized` ``), not `$NAME` text — `referencedGivenNames`
-            // finds nothing in it. Its given names are known from discovery
-            // instead (`GateEntry.dimensionForm`); without this, a missing
-            // given behind a dimension gate falls through the "gate given
-            // unbound; deny opaquely" check below and leaks Malloy's raw
-            // compile error (naming the given) instead of an opaque 403.
             addExprs(entry.exprs);
-            for (const name of entry.dimensionForm?.givenNames ?? []) {
-               names.add(name);
-            }
          }
       }
       return names;
@@ -2594,10 +2570,9 @@ export class Model {
                      "Row-level #(authorize) gate not expressible at this entry point; every query against it will be denied",
                      { packageName, modelPath, sourceName, detail },
                   ),
-               // G4/W1/W2 for the SOURCE-LINE form — the counterpart to
-               // `validateGateDimensionsForModel` below for the dimension
-               // form. `sourceName` here is always the DECLARING source (see
-               // `validateAuthorizeProbes`'s doc on this callback), so
+               // G4/W1/W2 for the SOURCE-LINE form. `sourceName` here is
+               // always the DECLARING source (see `validateAuthorizeProbes`'s
+               // doc on this callback), so
                // `modelDef.contents[sourceName]` is the same struct the probe
                // was grafted onto and `refSummary` is already resolved
                // against it.
@@ -2623,29 +2598,6 @@ export class Model {
                   );
                },
             });
-            // Load-time validation for the DIMENSION form of `#(authorize)` —
-            // a separate check from `validateAuthorizeProbes` above (which
-            // only ever sees the string form's `authorizeMap`). See
-            // `./gate_dimension`'s doc for why the two forms cannot share one
-            // validator.
-            validateGateDimensionsForModel(
-               modelDef,
-               new Set(
-                  (givens ?? [])
-                     .map((g) => g.name)
-                     .filter((n): n is string => !!n),
-               ),
-               (sourceName, cause, detail) => {
-                  recordRowLevelGateRejected(cause);
-                  logger.warn("Row-level #(authorize) gate dimension warning", {
-                     packageName,
-                     modelPath,
-                     sourceName,
-                     cause,
-                     detail,
-                  });
-               },
-            );
 
             // Collect sourceInfos from imported models first
             // This follows the same pattern as notebook imports handling

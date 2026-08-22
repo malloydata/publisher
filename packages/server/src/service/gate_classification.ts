@@ -33,17 +33,11 @@ import {
    collectAuthorizeExprs,
    gateFilterText,
    liftProbeFilterCondition,
-   quoteMalloyIdentifier,
    referencedGivenNames,
    type RowLevelGateClassification,
    type RowLevelGateRejectionCause,
 } from "./authorize";
-import {
-   expandGivenIds,
-   expandRefSummaryGivenIds,
-   findGateDimensionCandidates,
-   gateFieldName,
-} from "./gate_dimension";
+import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
    ancestorGateExprs,
@@ -75,21 +69,6 @@ export type GateEntry = {
     * condition ({@link resolveGraftTarget}).
     */
    struct?: SourceDef;
-   /**
-    * Set for the DIMENSION form — see `./gate_dimension`'s doc. Absent only
-    * for the synthetic "unresolvable query-source base" deny entry (whose
-    * sole expression is the literal `"false"`, nothing to graft a dimension
-    * onto). Once grafted, the lifted filter condition's `.e` is a bare
-    * unresolved field-reference node (`{node: "field", path:
-    * ["authorized"]}`), not a comparison/`inGiven` tree — there is nothing
-    * left to classify once the probe compiles. `givenNames` is resolved at
-    * discovery time instead (`gateExprsForOwnAnnotations`), from the SAME
-    * struct/field the gate was found on — re-deriving it from `entry.struct`
-    * in `resolveGateShape` would read the wrong struct whenever the gate was
-    * carried in from a derivation base (`entry.struct` is the ENTRY POINT,
-    * not necessarily where the annotation lives).
-    */
-   dimensionForm?: { givenNames: readonly string[] };
 };
 
 /**
@@ -218,7 +197,6 @@ function gateExprsForOwnAnnotations(
 ): {
    exprs: string[];
    fromAncestor: boolean;
-   dimensionForm?: GateEntry["dimensionForm"];
 } {
    // Both note keys: which one a gate lands in is decided by the author's
    // syntax, not by scope. See {@link ownLevelNoteTexts}.
@@ -241,55 +219,6 @@ function gateExprsForOwnAnnotations(
       const own = collectAuthorizeExprs(ownNotes.map((note) => note.text));
       if (own.length > 0) {
          return { exprs: own, fromAncestor: false };
-      }
-      // The dimension form (see `./gate_dimension`'s doc): a boolean
-      // dimension annotated in FIELD position, graft by NAME
-      // (`quoteMalloyIdentifier`), never by re-parsing its `code` (Constraint
-      // 9). `struct.fields` already covers "own" and "inherited unchanged
-      // from an extend base" uniformly — Malloy flattens unchanged fields
-      // into the deriving struct's own `fields`, unlike annotations, which
-      // use the separate `inherits` chain the STRING form above (and
-      // `ancestorGateExprs` below) has to walk. More than one candidate
-      // means `validateGateDimension` was bypassed (load validation refuses
-      // that); fail closed rather than pick one arbitrarily.
-      const dimensionCandidates = findGateDimensionCandidates(struct);
-      if (dimensionCandidates.length === 1) {
-         const field = dimensionCandidates[0];
-         // Load-time `validateGateDimensionsForModel` already refuses an
-         // unresolvable given reference (see `./gate_dimension`'s CRITICAL 1
-         // finding), so `!expansion.ok` here means a graft target this
-         // package-load validation never saw (e.g. a caller-declared ad-hoc
-         // run target) — defense in depth, fail closed rather than read it as
-         // "no givens".
-         const expansion = expandGivenIds(struct, field);
-         if (!expansion.ok) {
-            return { exprs: ["false"], fromAncestor: false };
-         }
-         const givenIds = Array.from(expansion.givenIds);
-         const givenNames = givenIds
-            .map((id) => modelDef?.givens?.[id]?.name)
-            .filter((name): name is string => !!name);
-         // G3 (load-time `validateGateDimensionsForModel`) already refuses a
-         // gate dimension whose given id doesn't resolve to a NAME on this
-         // model, so this should be unreachable in practice — defense in
-         // depth, not a live path. Silently dropping an unresolvable id here
-         // instead would UNDER-count `givenNames`, and an empty result is
-         // `decidable` at `/compile` (`Model.authorizeAndBindRunnable`'s
-         // `givenNames.length === 0` branch) — the one shape this gate must
-         // never present as if it read no given at all. Fail closed with the
-         // same synthetic sentinel used elsewhere in this function rather
-         // than risk that.
-         if (givenNames.length !== givenIds.length) {
-            return { exprs: ["false"], fromAncestor: false };
-         }
-         return {
-            exprs: [quoteMalloyIdentifier(gateFieldName(field))],
-            fromAncestor: false,
-            dimensionForm: { givenNames },
-         };
-      }
-      if (dimensionCandidates.length > 1) {
-         return { exprs: ["false"], fromAncestor: false };
       }
       const ancestor = ancestorGateExprs(struct, modelDef);
       return { exprs: ancestor, fromAncestor: ancestor.length > 0 };
@@ -372,11 +301,11 @@ export function collectEntryPointGates(
 
    const results: GateEntry[] = [];
    const label = (struct as { as?: string }).as ?? struct.name;
-   const {
-      exprs: ownExprs,
-      fromAncestor,
-      dimensionForm,
-   } = gateExprsForOwnAnnotations(struct, modelDef, excludeNotes);
+   const { exprs: ownExprs, fromAncestor } = gateExprsForOwnAnnotations(
+      struct,
+      modelDef,
+      excludeNotes,
+   );
    if (ownExprs.length > 0) {
       results.push({
          label,
@@ -388,7 +317,6 @@ export function collectEntryPointGates(
          // above. Carried so a row-level classification of THIS entry knows
          // where to graft — see `resolveGraftTarget`.
          struct: entryPointStruct,
-         dimensionForm,
       });
    }
 
@@ -533,8 +461,7 @@ export async function resolveGateShape(
         graftTarget: string;
         filterText: string;
         condition: FilterCondition;
-        /** The givens the gate compares — resolved at discovery time for the
-         *  dimension form ({@link GateEntry.dimensionForm}). */
+        /** The givens the gate compares. */
         givenNames: readonly string[];
      }
    | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
@@ -606,56 +533,20 @@ export async function resolveGateShape(
          });
          return { shape: "rejected" };
       }
-      // The dimension form's lifted condition is a bare unresolved
-      // field-reference node once grafted, not a comparison/`inGiven` tree —
-      // there is nothing left to classify. Load-time `validateGateDimension`
-      // already vetted G1–G4/private/inheritance for this gate; what remains
-      // here is that the graft compiled at THIS entry point at all, which the
-      // `liftGateCondition` call above already confirmed by succeeding.
-      //
-      // `entry.dimensionForm` is unset in three cases, and they are NOT the
-      // same:
-      //  - the CURRENT source-line form — `gateExprsForOwnAnnotations` reads
-      //    the struct's own `#(authorize) <expr>` note and hands its raw,
-      //    unquoted expression text straight through as `entry.exprs`; this
-      //    is the live, expected case the `else` branch below classifies, via
-      //    the lifted condition's own `refSummary.givenUsage` rather than a
-      //    separately-validated `FieldDef` (there is no field here to
-      //    validate — the expression was compiled directly against the
-      //    graft target's real field scope by `liftGateCondition` above);
-      //  - the residual STRING-form discovery paths in
-      //    `gateExprsForOwnAnnotations`/`ancestorGateExprs`
-      //    (`./gate_registry_walk`) — unreachable for any model that loaded
-      //    successfully, since `assertNoLegacyStringGate` refuses the legacy
-      //    quoted string form at load;
-      //  - the bare `"false"` FAIL-CLOSED SENTINEL those same functions (and
-      //    `collectEntryPointGates`'s own unresolvable-query-source-base
-      //    case) synthesize when ancestry can't be confirmed one way or the
-      //    other — a real, still-live shape (`W_rename`/`W_except` in the
-      //    entry-point matrix exercise it, at `gateExprsForOwnAnnotations`
-      //    above). The real mechanism is NOT a missing gate-dimension
-      //    candidate — `findGateDimensionCandidates` still finds `authorized`
-      //    fine on `W_rename`/`W_except`'s own struct, since it is the SAME
-      //    field object carried through unchanged by Malloy's flattening
-      //    (confirmed by `malloy_annotation_invariants.spec.ts`'s field-level
-      //    rename/extend-flattening invariants). It is `expandGivenIds`
-      //    (`./gate_dimension`) that fails: the gate dimension's OWN
-      //    `refSummary.fieldUsage` still names the ORIGINAL column it reads
-      //    (`org_id`) by PATH, and `resolveFieldUsagePath` resolves that path
-      //    against THIS struct's current field list — which no longer has
-      //    `org_id` under that name (`W_rename` renamed it to `tenant`;
-      //    `W_except` dropped it) — so the path lookup fails
-      //    (`{ok: false, unresolvedPath: "org_id"}`), not the candidate scan.
-      //    That failure must still GRAFT (as `where: false`, a live
-      //    deny-everyone filter) rather than reject outright — rejecting
-      //    here throws `AccessDeniedError` before the graft is even
-      //    attempted, which is a harsher failure mode than the
-      //    empty-but-successful result a `WHERE false` graft produces
-      //    elsewhere. Told apart by the LIFTED condition's shape, not the
-      //    entry's raw `exprs` text: `liftGateCondition` above already
-      //    confirmed this exact filter text compiled, so reading
-      //    `condition.e` off that trusted result is what `classifyAuthorizeGate`
-      //    used to do for the identical bare-literal case.
+      // A bare `false` literal is the FAIL-CLOSED SENTINEL
+      // `gateExprsForOwnAnnotations`/`ancestorGateExprs`
+      // (`./gate_registry_walk`) synthesize when ancestry can't be confirmed
+      // one way or the other — an exhausted `annotations.inherits` walk, an
+      // unresolvable `sourceRegistry` link, or `collectEntryPointGates`'s own
+      // unresolvable-query-source-base case. That must still GRAFT (as
+      // `where: false`, a live deny-everyone filter) rather than reject
+      // outright — rejecting here throws `AccessDeniedError` before the graft
+      // is even attempted, which is a harsher failure mode than the
+      // empty-but-successful result a `WHERE false` graft produces elsewhere.
+      // Told apart by the LIFTED condition's shape, not the entry's raw
+      // `exprs` text: `liftGateCondition` above already confirmed this exact
+      // filter text compiled, so reading `condition.e` off that trusted
+      // result is what this branch relies on.
       let classification: RowLevelGateClassification;
       // `condition.e` is typed as always-present (`FilterCondition extends
       // ExprE`), but that is a compile-time promise about a shape
@@ -672,12 +563,7 @@ export async function resolveGateShape(
          condition.e !== null &&
          typeof condition.e === "object" &&
          typeof (condition.e as { node?: unknown }).node === "string";
-      if (entry.dimensionForm) {
-         classification = {
-            shape: "row_level",
-            givenNames: [...entry.dimensionForm.givenNames],
-         };
-      } else if (!hasUsableExpr) {
+      if (!hasUsableExpr) {
          classification = {
             shape: "rejected",
             cause: "unclassifiable_condition",
@@ -696,20 +582,19 @@ export async function resolveGateShape(
          // `#(authorize) authorized` over `dimension: authorized is org_id in
          // $GROUPS`) carries `refSummary.fieldUsage: [{path: ["authorized"]}]`
          // with NO `givenUsage` at all, the exact non-transitivity
-         // `./gate_dimension`'s `expandGivenIds` already documents and exists
-         // to walk around (confirmed empirically: `condition.refSummary` for
-         // that shape has no `givenUsage` key whatsoever, not an empty one).
-         // Reading `condition.refSummary.givenUsage` directly (as an earlier
-         // version of this branch did) under-counts `givenNames` for exactly
-         // that shape — the gate still grafts and enforces correctly (Malloy
-         // resolved the reference fine), but the classifier reports it as
-         // reading no givens, which is the ONE shape `model.ts`'s
-         // `authorizeReferencedGivenNames` / "gate given unbound; deny
-         // opaquely" backstop must never see: an unsupplied `$GROUPS` then
-         // surfaces as Malloy's raw compile error naming the given, instead
-         // of an opaque 403. So this runs the SAME `fieldUsage`-following
-         // expansion `expandGivenIds` already implements
-         // ({@link expandRefSummaryGivenIds}), resolved against the graft
+         // `./gate_dimension`'s {@link expandRefSummaryGivenIds} already
+         // documents and exists to walk around (confirmed empirically:
+         // `condition.refSummary` for that shape has no `givenUsage` key
+         // whatsoever, not an empty one). Reading `condition.refSummary
+         // .givenUsage` directly (as an earlier version of this branch did)
+         // under-counts `givenNames` for exactly that shape — the gate still
+         // grafts and enforces correctly (Malloy resolved the reference
+         // fine), but the classifier reports it as reading no givens, which
+         // is the ONE shape `model.ts`'s `authorizeReferencedGivenNames` /
+         // "gate given unbound; deny opaquely" backstop must never see: an
+         // unsupplied `$GROUPS` then surfaces as Malloy's raw compile error
+         // naming the given, instead of an opaque 403. So this runs
+         // {@link expandRefSummaryGivenIds} directly, resolved against the graft
          // target's OWN compiled struct — `graftScope.modelDef.contents
          // [graftTarget]`, the same model `liftGateCondition` lifted this
          // condition through via `graftScope.materializer` (never
@@ -1022,19 +907,19 @@ async function liftGateCondition(
  * kind (confirmed against `@malloydata/malloy`'s `BooleanLiteralNode`).
  * Unwraps `()` parenthesization (the only wrapper the fail-closed sentinel
  * could be compiled with) but does not walk into `and`/`or` — a literal
- * buried inside a boolean tree is a dimension-form authoring mistake that
- * stays on the dimension-form path (`entry.dimensionForm` is set for any real
- * gate dimension), not this sentinel-only fallback.
+ * buried inside an author-written boolean tree (`#(authorize) x or false`) is
+ * a real, live expression this classifies through the source-line branch
+ * below, not this sentinel-only fallback.
  *
  * Deliberately `false`-only, not `true`-or-`false`: the only condition this
- * function's caller ever synthesizes without a `dimensionForm` is the
- * fail-closed `["false"]` sentinel (`gateExprsForOwnAnnotations`/
- * `ancestorGateExprs` in `./gate_registry_walk`, and the dimension-form
- * candidate-count/expansion checks above). Nothing in a successfully-loaded
- * model legitimately reaches this fallback with a bare `true` — accepting one
- * here would silently admit whatever residual, non-dimension-form shape
- * produced it, rather than deny it. A fallback that can only ever DENY is the
- * one that costs nothing to widen later and nothing to get wrong now.
+ * function's caller ever synthesizes as a raw `["false"]` expr array (rather
+ * than an author's own text) is the fail-closed sentinel
+ * (`gateExprsForOwnAnnotations`/`ancestorGateExprs` in
+ * `./gate_registry_walk`). Nothing in a successfully-loaded model
+ * legitimately reaches this fallback with a bare `true` — accepting one here
+ * would silently admit whatever residual shape produced it, rather than deny
+ * it. A fallback that can only ever DENY is the one that costs nothing to
+ * widen later and nothing to get wrong now.
  */
 function isBareFalseLiteral(expr: { node: string; e?: unknown }): boolean {
    let node: { node: string; e?: unknown } = expr;

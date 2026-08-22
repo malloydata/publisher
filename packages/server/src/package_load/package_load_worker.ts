@@ -97,7 +97,6 @@ import {
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
 import {
-   validateGateDimensionsForModel,
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
 } from "../service/gate_dimension";
@@ -765,12 +764,12 @@ async function compileMalloyModel(
       onRowLevelGateRejected: recordRowLevelGateRejected,
       onRowLevelGateUnexpressible:
          authorizeWarningCollection.onRowLevelGateUnexpressible,
-      // G4/W1/W2 for the SOURCE-LINE form — the counterpart to
-      // `validateGateDimensionsForModel` below for the dimension form.
-      // `sourceName` is always the DECLARING source (see
-      // `validateAuthorizeProbes`'s doc on this callback), so
-      // `modelDef.contents[sourceName]` is the same struct the probe was
-      // grafted onto and `refSummary` is already resolved against it.
+      // G4/W1/W2 for the SOURCE-LINE form. `sourceName` is always the
+      // DECLARING source (see `validateAuthorizeProbes`'s doc on this
+      // callback), so `modelDef.contents[sourceName]` is the same struct the
+      // probe was grafted onto and `refSummary` is already resolved against
+      // it. The worker has no logger (see this function's doc), so a warning
+      // rides the same wire channel as `onRowLevelGateUnexpressible` above.
       onOwnRowLevelConditionCompiled: (sourceName, condition) => {
          const struct = modelDef.contents[sourceName];
          if (!struct || !isSourceDef(struct)) return;
@@ -789,23 +788,6 @@ async function compileMalloyModel(
          );
       },
    });
-   // Load-time validation for the DIMENSION form of `#(authorize)` — see
-   // `../service/gate_dimension`'s doc for why it is a separate check from
-   // `validateAuthorizeProbes` above. The worker has no logger (see this
-   // function's doc), so a warning rides the same wire channel as
-   // `onRowLevelGateUnexpressible` above.
-   validateGateDimensionsForModel(
-      modelDef,
-      new Set(
-         (givens ?? []).map((g) => g.name).filter((n): n is string => !!n),
-      ),
-      (sourceName, cause, detail) => {
-         recordRowLevelGateRejected(cause);
-         authorizeWarningCollection.warnings.push(
-            `Row-level #(authorize) gate dimension warning on "${sourceName}" (${cause}): ${detail}`,
-         );
-      },
-   );
 
    return {
       modelPath,
@@ -1042,21 +1024,6 @@ async function compileNotebookModel(
             );
          },
       });
-      // See the identical check in `compileMalloyModel` above.
-      validateGateDimensionsForModel(
-         finalModelDef,
-         new Set(
-            (finalGivens ?? [])
-               .map((g) => g.name)
-               .filter((n): n is string => !!n),
-         ),
-         (sourceName, cause, detail) => {
-            recordRowLevelGateRejected(cause);
-            authorizeWarningCollection.warnings.push(
-               `Row-level #(authorize) gate dimension warning on "${sourceName}" (${cause}): ${detail}`,
-            );
-         },
-      );
    }
 
    return {
