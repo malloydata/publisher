@@ -669,11 +669,21 @@ async function liftRowLevelCondition(
  * entry point in `options.authorizeMap` — the gate applied as a source-level
  * `where:` on that entry point itself — surfacing an unknown given or a
  * source-field reference this entry point cannot resolve at model-load
- * instead of first request. A successful compile at the DECLARING entry
- * point still needs G4/W1/W2 against the lifted condition's own given usage
- * — see `onOwnRowLevelConditionCompiled` below — since a compile succeeding
- * says nothing about whether the gate references a defaulted given or
- * negates a membership test.
+ * instead of first request. A successful compile at ANY entry point still
+ * needs G4/W1/W2 against the lifted condition's own given usage — see
+ * `onOwnRowLevelConditionCompiled` below — since a compile succeeding says
+ * nothing about whether the gate references a defaulted given or negates a
+ * membership test, and since the compiled condition is re-resolved fresh
+ * against THIS entry point's own given surface (the probe is Malloy source
+ * text, recompiled here, not a copy of some other entry point's IR) — the
+ * same surface `Model.resolveGateShape` will graft against at request time.
+ * G4 must therefore run at every entry point whose probe compiles, not only
+ * the one that textually declared the annotation: an inheriting entry point
+ * two or more import hops from the declaring source can bind a given the
+ * declaring source's own compile never saw (a same-named given the entry
+ * model re-declares WITH a default), and `options.authorizeOwnNotes`
+ * attribution cannot reach that far to catch it — see this function's
+ * `authorizeOwnNotes` doc.
  *
  * A compile failure is either a genuinely broken gate, or an entry point that
  * INHERITED a gate it cannot express — a derived source (an `extend` that
@@ -722,18 +732,33 @@ export async function validateAuthorizeProbes(
          detail: string,
       ) => void;
       /**
-       * Called with the successfully-lifted condition for a group `sourceName`
-       * declares OWN (`authorizeOwnNotes` non-empty) — never for a group it
-       * only INHERITS. This module stays free of a `./gate_dimension` import
-       * (see the module doc's bundling note), so it hands the compiled
-       * condition back rather than running G4/W1/W2 itself; the caller (both
-       * `Model.create` and the package-load worker already import
-       * `./gate_dimension`) runs `validateSourceLineGateGivenUsage` against
-       * it. "Own" is the same distinction the throw-vs-warn branch below
-       * already draws: only the DECLARING source's own condition is checked —
-       * an inheritor gets no second check, since the expression and its
+       * Called with the successfully-lifted condition for EVERY group that
+       * compiles, own or inherited — despite the name, this is NOT gated on
+       * `authorizeOwnNotes`. This module stays free of a `./gate_dimension`
+       * import (see the module doc's bundling note), so it hands the
+       * compiled condition back rather than running G4/W1/W2 itself; the
+       * caller (both `Model.create` and the package-load worker already
+       * import `./gate_dimension`) runs `validateSourceLineGateGivenUsage`
+       * against it.
+       *
+       * This used to fire only for the group `authorizeOwnNotes` attributed
+       * to the DECLARING source, on the theory that "an inheritor's
        * referenced givens are identical to what was already checked where it
-       * was declared.
+       * was declared" — that theory is false across a model boundary: an
+       * inheriting entry point's probe is Malloy source text RECOMPILED at
+       * that entry point, so a same-named given the entry model re-declares
+       * (with its own default) resolves to THAT declaration, not the one the
+       * declaring source's own compile saw. Gating this callback on
+       * attribution therefore skipped G4 entirely whenever attribution
+       * couldn't reach the declaring source — which happens by construction
+       * two or more import hops out (Malloy merges only one import level
+       * into `modelDef.contents`/`sourceRegistry`, and `authorizeOwnNotes`
+       * needs a same-file candidate to attribute to) — even though the
+       * probe compiled successfully and its lifted condition already carries
+       * the exact given id the request-time graft will bind. Running G4
+       * unconditionally on every successful compile closes that gap: each
+       * entry point is checked against the given surface that will actually
+       * serve rows through it.
        */
       onOwnRowLevelConditionCompiled?: (
          sourceName: string,
@@ -752,16 +777,13 @@ export async function validateAuthorizeProbes(
    for (const [sourceName, groups] of options.authorizeMap ?? []) {
       for (const exprs of groups) {
          if (exprs.length === 0) continue;
+         let condition: CompiledGateCondition;
          try {
-            const condition = await liftRowLevelCondition(
+            condition = await liftRowLevelCondition(
                compiler,
                sourceName,
                exprs,
             );
-            const ownNotes = ownNotesOf.get(sourceName) ?? [];
-            if (ownNotes.length > 0) {
-               options.onOwnRowLevelConditionCompiled?.(sourceName, condition);
-            }
          } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             const ownNotes = ownNotesOf.get(sourceName) ?? [];
@@ -776,6 +798,18 @@ export async function validateAuthorizeProbes(
                   `[${exprs.join(" | ")}]: ${detail}`,
             });
          }
+         // Deliberately OUTSIDE the try above: a probe that compiles but
+         // whose own G4/W1/W2 check (`onOwnRowLevelConditionCompiled`)
+         // rejects it must abort the load unconditionally — never be caught
+         // by the attribution-gated throw-vs-warn branch meant for a probe
+         // that failed to COMPILE at all. `authorizeOwnNotes` (attribution)
+         // answers "did THIS struct write the annotation", which is the
+         // right question for an inheritor that merely can't EXPRESS an
+         // inherited gate; it is the wrong question for a gate that DID
+         // compile here and turned out to reference a defaulted given —
+         // that is refused regardless of who wrote the annotation, because
+         // this entry point is what would serve the rows.
+         options.onOwnRowLevelConditionCompiled?.(sourceName, condition);
       }
    }
 }

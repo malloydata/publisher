@@ -764,12 +764,14 @@ async function compileMalloyModel(
       onRowLevelGateRejected: recordRowLevelGateRejected,
       onRowLevelGateUnexpressible:
          authorizeWarningCollection.onRowLevelGateUnexpressible,
-      // G4/W1/W2 for the SOURCE-LINE form. `sourceName` is always the
-      // DECLARING source (see `validateAuthorizeProbes`'s doc on this
-      // callback), so `modelDef.contents[sourceName]` is the same struct the
-      // probe was grafted onto and `refSummary` is already resolved against
-      // it. The worker has no logger (see this function's doc), so a warning
-      // rides the same wire channel as `onRowLevelGateUnexpressible` above.
+      // G4/W1/W2 for the SOURCE-LINE form, run at EVERY entry point whose
+      // probe compiled (see `validateAuthorizeProbes`'s doc on this
+      // callback) -- `sourceName` may be an inheritor, not only the
+      // DECLARING source. `modelDef.contents[sourceName]` is the same
+      // struct the probe was grafted onto, so `refSummary` is already
+      // resolved against it either way. The worker has no logger (see this
+      // function's doc), so a warning rides the same wire channel as
+      // `onRowLevelGateUnexpressible` above.
       onOwnRowLevelConditionCompiled: (sourceName, condition) => {
          const struct = modelDef.contents[sourceName];
          if (!struct || !isSourceDef(struct)) return;

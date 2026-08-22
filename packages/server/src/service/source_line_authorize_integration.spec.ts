@@ -1158,7 +1158,7 @@ source: derived is gated_base extend { except: org_id }
       }
    });
 
-   it("KNOWN LIMITATION — a derivation two import hops from the declaring source gets no attribution at all, but still denies (fail-closed, less precise)", async () => {
+   it("cross-file attribution still can't reach two import hops for the entry_point_unexpressible label, but that no longer risks a G4 bypass", async () => {
       // `gated_base` is declared in `base.malloy`. `mid.malloy` imports it
       // and derives `mid_src` (a plain `extend {}`, itself one hop from
       // `gated_base`). `m.malloy` imports `mid.malloy` and derives `m_src`
@@ -1173,18 +1173,30 @@ source: derived is gated_base extend { except: org_id }
       // own compile, so `authorizeNoteDeclaredBy` gets NO entry for this note
       // at all — not `gated_base`, not `mid_src`, not `m_src`.
       //
-      // This is a real precision gap (documented, not fixed this round): a
-      // GENUINELY BROKEN gate on `gated_base` would, at this import depth,
-      // be classified here as "inherited-and-unexpressible" (warn + deny
-      // just this entry point) rather than aborting the whole load, purely
-      // because attribution couldn't reach far enough to blame the true
-      // declarer. It is mitigated, not a live hole: `base.malloy` (and
-      // `mid.malloy`) still compile ON THEIR OWN elsewhere, and a genuinely
-      // broken gate aborts THERE. What this test pins is the OBSERVED
-      // behavior for `m.malloy`'s own compile: the load still succeeds, and
-      // the entry point that cannot express the gate still DENIES at request
-      // time — fail-closed overall, just not attribution-precise beyond one
-      // import hop.
+      // THIS TEST USED TO DOCUMENT THAT GAP AS A MERE BLAME-PRECISION LOSS —
+      // that characterization was wrong. `validateAuthorizeProbes` used to
+      // gate its G4/W1/W2 check (`onOwnRowLevelConditionCompiled`) on this
+      // same attribution map, so an attribution gap at import depth didn't
+      // just mislabel a genuinely broken gate's rejection cause — it SKIPPED
+      // G4 there entirely. Combined with an entry model that re-declares the
+      // gate's given WITH a default (see "the exact repro" test below, which
+      // this file's fixture set never exercised until now), that skip let a
+      // model load clean and admit a caller-defaulted value it was never
+      // supposed to see. See `authorize.ts`'s `onOwnRowLevelConditionCompiled`
+      // doc for the fix: G4/W1/W2 now run at EVERY entry point whose probe
+      // compiles, not only the one attribution can blame.
+      //
+      // What survives, and what THIS test still pins, is narrower: the
+      // `entry_point_unexpressible` REJECTION-CAUSE LABEL is still
+      // attribution-limited. `m_src` here genuinely cannot express
+      // `gated_base`'s gate (the `except: org_id` below), and there is no
+      // defaulted given anywhere in this model to trip G4 on, so it is
+      // diagnosed the same "inherited and unexpressible" way whether or not
+      // attribution could name the true declarer. That throw-vs-warn
+      // distinction is a separate, deliberate axis (see `authorize.ts`'s
+      // module doc) and is unaffected by the G4 fix: the load still
+      // succeeds, and the entry point that cannot express the gate still
+      // DENIES at request time.
       const BASE = `##! experimental.givens
 
 given:
@@ -1227,8 +1239,65 @@ source: m_src is mid_src extend { except: org_id }
       }
    });
 
-   it("the legacy string form at the same two-hop shape is STILL refused at LOAD time — unlike the non-legacy limitation above, presence-based detection does not depend on import depth", async () => {
-      // Same two-hop shape as the "KNOWN LIMITATION" test above, but
+   it("the exact repro — G4 refuses a defaulted given two import hops out, where it used to load clean and admit the default (security fix)", async () => {
+      // `gated_base` (`base.malloy`) gates on `$TENANT`, declared with NO
+      // default. `mid.malloy` imports it and derives `mid_src` (a plain
+      // `extend {}`, one hop). `m.malloy` imports `mid.malloy`, derives
+      // `passthru` (a plain `extend {}`, TWO hops from `gated_base`), and
+      // — the crux — re-declares `TENANT` itself, WITH a default of `1`.
+      //
+      // Before the fix, this loaded with `compilationError` undefined and a
+      // caller supplying NO givens at all got back rows filtered on the
+      // default `org_id = 1`: `validateAuthorizeProbes` gated its G4 check
+      // on `attributedAuthorizeOwnNotes`, which cannot reach `gated_base`
+      // from `m.malloy`'s own compile at two import hops (see the
+      // attribution test above), so the callback that runs G4 never fired
+      // for `mid_src` or `passthru` even though each one's own probe
+      // compiled successfully and its lifted condition already carried the
+      // exact given id (`m.malloy`'s own `TENANT`, default `1`) the
+      // request-time graft goes on to bind. Collapsing `mid.malloy` so
+      // `m.malloy` imports
+      // `base.malloy` directly (one hop) was correctly refused throughout —
+      // this is the identical defaulted-given shape, differing only in
+      // import depth.
+      //
+      // After the fix, G4 runs unconditionally on every entry point whose
+      // probe compiles, so this is refused at load exactly like the
+      // one-hop shape.
+      const BASE = `##! experimental.givens
+given: TENANT :: number
+
+#(authorize) org_id = $TENANT
+source: gated_base is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+`;
+      const MID = `##! experimental.givens
+import { gated_base } from "base.malloy"
+
+source: mid_src is gated_base extend {}
+`;
+      const M = `##! experimental.givens
+import { mid_src } from "mid.malloy"
+given: TENANT :: number is 1
+
+source: passthru is mid_src extend {}
+`;
+      const { model, duckdb, dir } = await createModelWithFiles(
+         { "base.malloy": BASE, "mid.malloy": MID, "m.malloy": M },
+         "m.malloy",
+      );
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(ModelCompilationError);
+         expect(err?.message).toMatch(/\$TENANT.*declared with a default/);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("the legacy string form at the same two-hop shape is STILL refused at LOAD time — unlike the attribution gap above, presence-based detection does not depend on import depth", async () => {
+      // Same two-hop shape as the attribution test above, but
       // `gated_base` uses the legacy quoted-string form. One might expect the
       // same import-depth blindness to apply here too — but it does not:
       // `findLegacyStringGates`/`assertNoLegacyStringGate` read the

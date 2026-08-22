@@ -2570,12 +2570,13 @@ export class Model {
                      "Row-level #(authorize) gate not expressible at this entry point; every query against it will be denied",
                      { packageName, modelPath, sourceName, detail },
                   ),
-               // G4/W1/W2 for the SOURCE-LINE form. `sourceName` here is
-               // always the DECLARING source (see `validateAuthorizeProbes`'s
-               // doc on this callback), so
-               // `modelDef.contents[sourceName]` is the same struct the probe
-               // was grafted onto and `refSummary` is already resolved
-               // against it.
+               // G4/W1/W2 for the SOURCE-LINE form, run at EVERY entry
+               // point whose probe compiled (see `validateAuthorizeProbes`'s
+               // doc on this callback) -- `sourceName` may be an inheritor,
+               // not only the DECLARING source. `compiledModelDef
+               // .contents[sourceName]` is the same struct the probe was
+               // grafted onto, so `refSummary` is already resolved against
+               // it either way.
                onOwnRowLevelConditionCompiled: (sourceName, condition) => {
                   const struct = compiledModelDef.contents[sourceName];
                   if (!struct || !isSourceDef(struct)) return;
