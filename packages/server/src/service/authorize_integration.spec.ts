@@ -3222,21 +3222,20 @@ source: rt_open is duckdb.table('customers') extend { measure: oc is count() }
 // ungated and served every query against it — a real access-control bypass an
 // author could not detect from Publisher's own introspection response.
 //
-// The dimension form's gate lives in FIELD position inside `extend {}`,
-// unaffected by which of these syntaxes declares the enclosing SOURCE — so
-// this block's original distinguishing question (does `blockNotes` vs
-// `notes` placement matter for GATE discovery) no longer applies. Kept as
-// regression coverage that block-form/after-is source declarations still
-// compile and enforce a field-position gate the same as the line-above form.
+// Migrated to the source-line form (unlike most of this file's dimension-form
+// fixtures): a source-line `#(authorize)` IS a source-level note, so it is
+// the form that actually exercises the blockNotes-vs-notes question this
+// block is named for. Under the dimension form the gate lived in FIELD
+// position inside `extend {}`, which never touched `blockNotes`/`notes` at
+// all — these tests could not have caught the bypass they describe.
 describe("a gate declared in a multi-definition source: block is not silently dropped", () => {
    it("gates a source declared with its own #(authorize) inside a source: block", async () => {
       await writeModel(
          "block.malloy",
          `source:
+  #(authorize) false
   bf_locked is duckdb.table('customers') extend {
     measure: c is count()
-    #(authorize)
-    internal dimension: authorized is false
   }
 `,
       );
@@ -3265,10 +3264,9 @@ source: bf_above is duckdb.table('customers') extend {
 }
 
 source:
+  #(authorize) false
   bf_block is duckdb.table('customers') extend {
     measure: c is count()
-    #(authorize)
-    internal dimension: authorized is false
   }
 `,
       );
@@ -3290,10 +3288,9 @@ source:
          "block_sibling.malloy",
          `source:
   bf_open is duckdb.table('customers') extend { measure: c is count() }
+  #(authorize) false
   bf_sibling_locked is duckdb.table('customers') extend {
     measure: c is count()
-    #(authorize)
-    internal dimension: authorized is false
   }
 `,
       );
@@ -3359,10 +3356,9 @@ source:
       await writeModel(
          "block_inherit.malloy",
          `source:
+  #(authorize) false
   bf_base is duckdb.table('customers') extend {
     measure: c is count()
-    #(authorize)
-    internal dimension: authorized is false
   }
 
 # bar_chart
@@ -3393,26 +3389,26 @@ source: bf_ext is bf_base extend {}
       await writeModel(
          "block_registry.malloy",
          `source:
+  #(authorize) false
   bf_reg_base is duckdb.table('customers') extend {
     measure: c is count()
     dimension: secret is name
-    #(authorize)
-    internal dimension: authorized is false
   }
 
 source: bf_reg_derived is bf_reg_base -> { select: id, secret }
 `,
       );
-      // Same fails-CLOSED shape BLOCKING-5 pins: `bf_reg_derived`'s own
-      // projection doesn't select "authorized" forward, so the by-name graft
-      // can't attach and denies outright rather than filtering to zero rows.
-      await expect(
-         runGated(
-            "block_registry.malloy",
-            "run: bf_reg_derived -> { select: id, secret }",
-            {},
-         ),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
+      // Unlike the dimension form's by-name graft failure this test used to
+      // pin (an `AccessDeniedError` because "authorized" wasn't selected
+      // forward), the source-line gate is struct-level: `bf_reg_derived`
+      // inherits it as an ordinary ancestor gate and the query runs and
+      // filters to zero rows, the same as any other denied caller.
+      const { compactResult } = await runGated(
+         "block_registry.malloy",
+         "run: bf_reg_derived -> { select: id, secret }",
+         {},
+      );
+      expect(compactResult).toEqual([]);
    });
 
    it("evaluates a block-form gate that references a given", async () => {
@@ -3427,10 +3423,9 @@ given:
   ROLE :: string
 
 source:
+  #(authorize) $ROLE = 'analyst'
   bf_given is duckdb.table('customers') extend {
     measure: c is count()
-    #(authorize)
-    internal dimension: authorized is $ROLE = 'analyst'
   }
 `,
       );
@@ -3461,10 +3456,9 @@ source:
       await writeModel(
          "block_afteris.malloy",
          `source: bf_afteris is
+  #(authorize) false
   duckdb.table('customers') extend {
     measure: c is count()
-    #(authorize)
-    internal dimension: authorized is false
   }
 `,
       );
@@ -3496,10 +3490,9 @@ given:
   ROLE :: string
 
 source:
+  #(authorize) $NO_SUCH_GIVEN = 'x'
   bf_validate is duckdb.table('customers') extend {
     measure: c is count()
-    #(authorize)
-    internal dimension: authorized is $NO_SUCH_GIVEN = 'x'
   }
 `,
       );

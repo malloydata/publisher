@@ -444,6 +444,10 @@ source: emp is duckdb.sql("SELECT 1 as id") extend {
    // already pin the END-TO-END enforcement behavior of these shapes; these
    // three assert the raw IR mechanism underneath, same as invariants 1-5.
    // -------------------------------------------------------------------
+   // Left on the DIMENSION form deliberately (see task-3-report.md): this
+   // pins the FIELD's own annotation object surviving a rename, which only
+   // exists because the dimension form's gate IS a field. The source-line
+   // form's note lives on the struct, not a field, so this has no analogue.
    it("rename: on a gate-annotated field carries the field's own annotation object onto the renamed field, by reference", async () => {
       const modelDef = await compileModel(`
 ##! experimental.givens
@@ -479,6 +483,10 @@ source: renamed5a is base5a extend {
       expect(renamedNotes[0]).toBe(baseNotes[0]);
    });
 
+   // Left on the DIMENSION form deliberately (see task-3-report.md): same
+   // reasoning as the rename test above — the by-reference note copy this
+   // pins is a FIELD-level mechanism with no equivalent for a struct-level
+   // source-line note.
    it("extend {} (unchanged): the gate-annotated field's own annotation is the SAME object on the deriving struct's copy of the field, by reference", async () => {
       const modelDef = await compileModel(`
 ##! experimental.givens
