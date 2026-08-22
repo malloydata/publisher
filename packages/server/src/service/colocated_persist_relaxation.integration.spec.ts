@@ -473,9 +473,8 @@ source: base is duckdb.sql("""
 """)
 
 #@ persist name="orders"
+#(authorize) org_id = 'org1'
 source: orders is base -> { select: id, org_id, amount } extend {
-   #(authorize)
-   internal dimension: authorized is org_id = 'org1'
 }
 `,
          });

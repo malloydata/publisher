@@ -677,10 +677,9 @@ given:
   ROLE :: string
   REGION :: string is ''
 
+#(authorize) ($ROLE = 'admin') or ($REGION = 'us-west')
 source: regional is duckdb.table('customers') extend {
   measure: c is count()
-  #(authorize)
-  internal dimension: authorized is ($ROLE = 'admin') or ($REGION = 'us-west')
 }
 `,
       );
@@ -1538,54 +1537,61 @@ source: open_src is duckdb.table('customers') extend {
   dimension: open_flag is 1
 }
 
+#(authorize) false
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_flag is 1
-  #(authorize)
-  internal dimension: authorized is false
 }
 
 source: combo is compose(open_src, locked_src)
 `;
 
-   it("denies (zero rows) a query that resolves the composite to the locked member branch", async () => {
-      // A row-filter graft now, not a classify-time AccessDeniedError: the
-      // composite resolves toward the branch the query needs (`locked_flag`,
-      // only on locked_src), and the appended `where: authorized` filters
-      // that branch's rows to zero rather than refusing the request. A
-      // `group_by:` query with no matching rows is an EMPTY result set, not
-      // `expectDeniedByFilter`'s single zero-count aggregate row.
-      await writeModel("c_composite.malloy", COMPOSITE_MODEL);
-      const { compactResult } = await runGated(
-         "c_composite.malloy",
-         "run: combo -> { aggregate: c; group_by: locked_flag }",
-         {},
-      );
-      expect(compactResult).toEqual([]);
-   });
-
-   it("denies (AccessDeniedError) a query resolving to the OPEN member branch too — guarantee changed from the string form", async () => {
-      // Under the string form this allowed: the boolean probe evaluated
-      // ONLY against the branch the query actually resolved to (open_src),
-      // so an ungated member stayed queryable regardless of a sibling
-      // member's gate. The dimension form grafts `where: authorized` onto
-      // the composite unconditionally (enforcement does not know which
-      // branch the query will resolve to before attaching the filter), and
-      // `authorized` exists on ONLY locked_src's branch — so the composite
-      // resolver can no longer satisfy both "the query's own field
-      // (open_flag, locked_src-absent)" and "the filter's field (authorized,
-      // open_src-absent)" in one branch, and the query fails to compile.
-      // Confirmed safe (no fail-open: this still denies), but it is a real
-      // usability regression — an ungated composite member becomes
-      // unqueryable merely because a SIBLING member carries a gate.
+   it("denies (AccessDeniedError) a query that resolves the composite to the locked member branch", async () => {
+      // MEASURED: under the source-line form the note is a struct-level
+      // annotation, not a field the graft can select forward through the
+      // composite's own recompiled struct — resolving toward locked_src's
+      // branch (forced by `locked_flag`, only on locked_src) finds the gate
+      // condition does not land on the recompiled query at all, so
+      // enforcement denies structurally rather than via a row filter. Still
+      // a deny, just a different mechanism from the dimension form's
+      // `where: authorized` row-filter graft (which produced an EMPTY
+      // result set here instead).
       await writeModel("c_composite.malloy", COMPOSITE_MODEL);
       await expect(
          runGated(
             "c_composite.malloy",
-            "run: combo -> { aggregate: c; group_by: open_flag }",
+            "run: combo -> { aggregate: c; group_by: locked_flag }",
             {},
          ),
       ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("allows a query resolving to the OPEN member branch — the dimension form's regression does not exist under the source-line form", async () => {
+      // Under the STRING form this allowed: the boolean probe evaluated ONLY
+      // against the branch the query actually resolved to (open_src), so an
+      // ungated member stayed queryable regardless of a sibling member's
+      // gate. The DIMENSION form regressed this: it grafted `where:
+      // authorized` onto the composite unconditionally (enforcement does
+      // not know which branch the query will resolve to before attaching
+      // the filter), and `authorized` existed on ONLY locked_src's branch —
+      // so resolving to open_src's branch (which never references it)
+      // failed to compile and denied. Safe, but a real usability
+      // regression: an ungated composite member became unqueryable merely
+      // because a SIBLING member carried a gate.
+      //
+      // MEASURED: the source-line note lives on `locked_src`'s own
+      // declaration, not a field the composite resolver has to satisfy on
+      // every branch — resolving to open_src's branch finds no gate to
+      // attach at all, same as the string form. The regression this test
+      // used to pin is gone under this form.
+      await writeModel("c_composite.malloy", COMPOSITE_MODEL);
+      const { compactResult } = await runGated(
+         "c_composite.malloy",
+         "run: combo -> { aggregate: c; group_by: open_flag }",
+         {},
+      );
+      const rows = compactResult as unknown as { c: number }[];
+      expect(rows[0].c).toBe(2);
    });
 
    // `Query.compositeResolvedSourceDef` is what lets assertAuthorizedForAllSources
@@ -1646,6 +1652,12 @@ source: combo_locked_first is compose(locked_src, open_src)
    // (see the refusal test below); worth a human decision on whether
    // composites need first-class multi-gate support, but that is a product
    // question, not a test-authoring one.
+   //
+   // Left on the DIMENSION form deliberately (see task-3-report.md): G1's
+   // conflict here is with a member field INHERITED onto the composite's
+   // own struct, which only exists because the dimension form's gate is a
+   // FIELD. The source-line form has no field to inherit, so this shape has
+   // no equivalent under it.
    it("G1 refuses a composite's own gate dimension when a member already carries one (structural — the AND-composition shape above no longer exists)", async () => {
       await writeModel(
          "c_composite_qs_refused.malloy",
@@ -2602,16 +2614,13 @@ describe("authorize is classified by Malloy's annotation route", () => {
 
    for (const tag of GATE_SPELLINGS) {
       it(`enforces (zero rows) a gate written ${tag}`, async () => {
-         // The block closer's indentation must match the tag's (field
-         // position, inside `extend {}`) or Malloy fails to close the
-         // annotation and reports a spurious "Missing '}'" for the source.
-         const closer = blockCloser(tag).replace("\n|", "\n  |");
+         const closer = blockCloser(tag);
+         const annotation = closer ? `${tag}\nfalse${closer}` : `${tag} false`;
          await writeModel(
             "route.malloy",
-            `source: route_locked is duckdb.table('customers') extend {
+            `${annotation}
+source: route_locked is duckdb.table('customers') extend {
   measure: c is count()
-  ${tag}${closer}
-  internal dimension: authorized is false
 }
 `,
          );

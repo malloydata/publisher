@@ -142,8 +142,10 @@ function resolveFieldUsagePath(
 
 /** The two `refSummary` slots {@link expandRefSummaryGivenIds} reads —
  *  matches the shape both a `FieldDef`'s own `refSummary` and a compiled
- *  `FilterCondition`'s own `refSummary` carry. */
-type ExpandableRefSummary = {
+ *  `FilterCondition`'s own `refSummary` carry. Exported for `./authorize`'s
+ *  callers, which read this shape off a duck-typed `CompiledGateCondition`
+ *  rather than Malloy's own (unexported) `FilterCondition`. */
+export type ExpandableRefSummary = {
    fieldUsage?: { path: string[] }[];
    givenUsage?: { id: string }[];
 };
@@ -233,8 +235,13 @@ export function expandGivenIds(
  * (`and`/`or`/`not`/`()`/`inGiven`), not the general-purpose walk the
  * (deleted) string-form classifier once used — see this module's header for
  * why the two never shared one walker even while both existed.
+ *
+ * Exported for {@link validateSourceLineGateGivenUsage}'s W2, which runs the
+ * IDENTICAL structural scan against the source-line form's lifted condition
+ * expression — the node shapes a boolean predicate can compose from don't
+ * depend on which form declared it.
  */
-function containsNegatedMembership(node: unknown, depth = 0): boolean {
+export function containsNegatedMembership(node: unknown, depth = 0): boolean {
    if (depth > 64 || node === null || typeof node !== "object") return false;
    const n = node as {
       node?: unknown;
@@ -497,6 +504,110 @@ export function validateGateDimensionsForModel(
          modelDef,
          declaredGivenNames,
          (cause, detail) => onWarning?.(sourceName, cause, detail),
+      );
+   }
+}
+
+/** Non-fatal {@link validateSourceLineGateGivenUsage} findings — W1/W2 for
+ *  the SOURCE-LINE form, ridden on the same metric channel `./authorize`'s
+ *  `RowLevelGateRejectionCause` uses. Named distinctly from
+ *  {@link GateDimensionWarningCause} (rather than reused) even though the
+ *  underlying checks are shared: the two forms are discovered and validated
+ *  through entirely different call paths (this module's
+ *  `validateGateDimensionsForModel` vs `./authorize`'s
+ *  `validateAuthorizeProbes`), and an operator reading the metric needs to
+ *  know which form triggered it. */
+export type SourceLineGateWarningCause =
+   | "source_line_gate_no_given_reference"
+   | "source_line_gate_negated_membership";
+
+/**
+ * G4/W1/W2 for the SOURCE-LINE form of `#(authorize)` — the counterpart to
+ * {@link validateGateDimension}'s G4/W1/W2 for the dimension form, for the
+ * gap the task brief names: `validateGateDimension` opens with
+ * `findGateDimensionCandidates`, an annotated-DIMENSION lookup, so a
+ * source-line gate (no annotated dimension at all) short-circuits before any
+ * of its rules ever run.
+ *
+ * G3 (every referenced given resolves) needs no separate check here — it is
+ * covered by Malloy's own compile error on the very probe this reads
+ * `refSummary`/`conditionExpr` off (`./authorize`'s `liftRowLevelCondition`):
+ * an unreachable given fails that compile before this function is ever
+ * reached, the same way `expandGivenIds`'s call in `validateGateDimension`
+ * requires G1-G3 to have already passed. `declaredGivenNames`-reachability
+ * therefore has no counterpart here either — unlike the dimension form,
+ * there is no separately-registered field to check against a curated given
+ * surface; the probe already compiled against the graft target's real one.
+ *
+ * Reuses {@link expandRefSummaryGivenIds} rather than reading
+ * `refSummary.givenUsage` directly, for the identical non-transitivity
+ * reason `./gate_classification`'s request-time `resolveGateShape` does: a
+ * gate that is a bare field reference to another dimension (`#(authorize)
+ * authorized` over `dimension: authorized is org_id in $GROUPS`) carries
+ * `fieldUsage` but no `givenUsage` at all, and a G4 that only read the raw
+ * field would pass a defaulted given hidden one hop away. W1 is therefore
+ * "the EXPANDED given set is empty", never raw `givenUsage.length === 0` —
+ * those differ for exactly this shape (confirmed: `1 = 1`/`org_id = 999`
+ * carry neither `fieldUsage` nor `givenUsage` and correctly expand to
+ * empty; `#(authorize) authorized` over a given-referencing wrapper
+ * dimension carries `fieldUsage` alone and must NOT be mistaken for W1).
+ *
+ * `struct` must be the gate's OWN declaring source's compiled struct — the
+ * same one `buildRowLevelProbe` grafted the probe onto, so `refSummary`'s
+ * field paths are already resolved against it. Throws `ModelCompilationError`
+ * naming `sourceName` on G4 or an unresolvable reference — fail-closed, the
+ * same posture as {@link validateGateDimension}'s G4: an unresolvable
+ * reference is refused, never silently treated as referencing no given.
+ * `onWarning` fires for W1/W2, which do not fail the load.
+ */
+export function validateSourceLineGateGivenUsage(
+   sourceName: string,
+   struct: SourceDef,
+   refSummary: ExpandableRefSummary | undefined,
+   conditionExpr: unknown,
+   modelDef: ModelDef,
+   onWarning?: (cause: SourceLineGateWarningCause, detail: string) => void,
+): void {
+   const expansion = expandRefSummaryGivenIds(struct, refSummary);
+   if (!expansion.ok) {
+      throw new ModelCompilationError({
+         message:
+            `#(authorize) on source "${sourceName}" references ` +
+            `"${expansion.unresolvedPath}", which could not be resolved to a ` +
+            `field this model can reach. An unresolvable reference is refused, ` +
+            `not treated as referencing no given`,
+      });
+   }
+   const givenIds = expansion.givenIds;
+   for (const id of givenIds) {
+      const given = modelDef.givens?.[id];
+      if (
+         given &&
+         (given.default !== undefined || given.defaultText !== undefined)
+      ) {
+         throw new ModelCompilationError({
+            message:
+               `#(authorize) on source "${sourceName}" references ` +
+               `\`$${given.name}\`, which is declared with a default. A ` +
+               `caller who supplies no value for \`$${given.name}\` gets ` +
+               `that default, which can admit rows the gate was meant to ` +
+               `exclude. Declare \`$${given.name}\` with no default`,
+         });
+      }
+   }
+
+   if (givenIds.size === 0) {
+      onWarning?.(
+         "source_line_gate_no_given_reference",
+         `#(authorize) on source "${sourceName}" references no given; it is ` +
+            `a fixed predicate, not an access rule keyed on the caller`,
+      );
+   }
+   if (containsNegatedMembership(conditionExpr)) {
+      onWarning?.(
+         "source_line_gate_negated_membership",
+         `#(authorize) on source "${sourceName}" negates a membership test; ` +
+            `an empty given then matches every row instead of none`,
       );
    }
 }

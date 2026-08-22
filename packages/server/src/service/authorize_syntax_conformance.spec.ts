@@ -980,9 +980,8 @@ source: X is duckdb.table('accounts') extend {}
 given:
   REGION :: string is 'east'
 
+#(authorize) region = $REGION
 source: X is duckdb.table('accounts') extend {
-  #(authorize)
-  internal dimension: authorized is region = $REGION
 }
 `,
          { REGION: "east" },

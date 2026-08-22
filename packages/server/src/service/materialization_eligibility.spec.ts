@@ -145,10 +145,8 @@ source: mz_authz is base -> { aggregate: c is count() }`);
       // gate here would refuse on the given check first and never reach the
       // authorize path this test exists to exercise.
       const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS org_id") extend {
-  #(authorize)
-  internal dimension: authorized is org_id = 999
-}
+#(authorize) org_id = 999
+source: base is duckdb.sql("SELECT 1 AS org_id") extend {}
 #@ persist name="mz_dim_authz"
 source: mz_dim_authz is base -> { aggregate: c is count() }`);
       expect(sources.mz_dim_authz).toBeDefined();
@@ -273,10 +271,8 @@ source: orders__preagg__category is orders -> {
       // above — a given-keyed gate would refuse on `referencesGiven` first.
       const sources =
          await persistSources(`##! experimental { persistence composite_sources }
-source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id") extend {
-  #(authorize)
-  internal dimension: authorized is org_id = 999
-}
+#(authorize) org_id = 999
+source: orders is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 1 AS org_id") extend {}
 
 #@ persist
 source: orders__preagg__dim_category is orders -> {

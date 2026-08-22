@@ -678,9 +678,8 @@ source: W is X extend { ${extend} }
 given:
   GROUPS :: number[]
 
+#(authorize) not (org_id in $GROUPS)
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is not (org_id in $GROUPS)
    measure: n is count()
 }
 `,
@@ -3824,9 +3823,8 @@ given:
   ROLE :: string is ''
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS or $ROLE != 'admin'
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS or $ROLE != 'admin'
    measure: n is count()
 }
 `);
@@ -3853,9 +3851,8 @@ given:
   ROLE :: string is ''
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS or $ROLE != 'admin'
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS or $ROLE != 'admin'
    measure: n is count()
 }
 
@@ -3882,9 +3879,8 @@ given:
   ROLE :: string is ''
   GROUPS :: number[]
 
+#(authorize) org_id in $GROUPS or $ROLE = 'admin'
 source: X is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is org_id in $GROUPS or $ROLE = 'admin'
    measure: n is count()
 }
 `);
@@ -3952,10 +3948,9 @@ describe("row-level authorize — field comparison against a defaulted given", (
 given:
   FLOOR :: number is 0
 
+#(authorize) amount > $FLOOR
 source: X is duckdb.table('parent') extend {
    dimension: amount is id
-   #(authorize)
-   internal dimension: authorized is amount > $FLOOR
    measure: n is count()
 }
 `);
@@ -3978,10 +3973,9 @@ source: X is duckdb.table('parent') extend {
 given:
   EXCLUDED :: string is ''
 
+#(authorize) tenant != $EXCLUDED
 source: X is duckdb.table('parent') extend {
    dimension: tenant is val
-   #(authorize)
-   internal dimension: authorized is tenant != $EXCLUDED
    measure: n is count()
 }
 `);
@@ -4372,30 +4366,6 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
 `;
    }
 
-   /** DIMENSION-form twin of `modelText`, used only by the two G4 tests below
-    *  (see task-3-report.md): G4 is `validateGateDimension`'s own
-    *  (`gate_dimension.ts`) unconditional defaulted-given refusal —
-    *  dimension-form-only machinery with no equivalent under the
-    *  source-line form `modelText` builds (confirmed: the identical gate
-    *  text loads cleanly and USES the default under it, no refusal at all —
-    *  see the "G4 gap" finding). */
-   function modelTextDimensionForm(gate: string): string {
-      return `##! experimental.givens
-
-given:
-  ROLE :: string
-  ROLE_D :: string is 'x'
-
-source: Gated is duckdb.table('parent') extend {
-   #(authorize)
-   internal dimension: authorized is ${gate}
-   measure: n is count()
-}
-
-source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
-`;
-   }
-
    for (const { gate, expectedRows } of FIELD_LESS_GATES) {
       it(`\`${gate}\`: loads cleanly and the gated source enforces the expression as written (ROLE = "a")`, async () => {
          const duckdb = await newDuckdb();
@@ -4442,13 +4412,13 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
       });
    }
 
-   it("KNOWN GAP — `$ROLE = $ROLE_D` (a given-vs-given comparison where $ROLE_D carries a declared default) is refused at load — by G4 (unconditional), not the field-less grammar", async () => {
+   it("`$ROLE = $ROLE_D` (a given-vs-given comparison where $ROLE_D carries a declared default) is refused at load by G4, not the field-less grammar", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-fieldless-g4-"));
       try {
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
-            modelTextDimensionForm("$ROLE = $ROLE_D"),
+            modelText("$ROLE = $ROLE_D"),
          );
          const model = await Model.create(
             "test-pkg",
@@ -4466,7 +4436,7 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
       }
    });
 
-   it("KNOWN GAP — a vacuous-at-default atom (`$ROLE_D != 'blocked'`) is refused too, but by G4 (any declared default), not vacuousness specifically", async () => {
+   it("a vacuous-at-default atom (`$ROLE_D != 'blocked'`) is refused too, but by G4 (any declared default), not vacuousness specifically", async () => {
       // Same finding as the "vacuous default atom" describe block: G4 draws
       // no distinction between a genuinely vacuous atom and a safe one at
       // its given's default — it refuses every referenced default,
@@ -4476,7 +4446,7 @@ source: Ungated is duckdb.table('childtable') extend { measure: n is count() }
       try {
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
-            modelTextDimensionForm("$ROLE_D != 'blocked'"),
+            modelText("$ROLE_D != 'blocked'"),
          );
          const model = await Model.create(
             "test-pkg",

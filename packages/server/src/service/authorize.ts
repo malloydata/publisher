@@ -468,6 +468,12 @@ export type RowLevelGateRejectionCause =
    // rather than refused; the model still loads. See that module's doc.
    | "gate_dimension_no_given_reference"
    | "gate_dimension_negated_membership"
+   // Non-fatal siblings of the two above, for the SOURCE-LINE form —
+   // `./gate_dimension`'s `validateSourceLineGateGivenUsage` W1/W2. Kept as
+   // distinct cause names (rather than reused) so an operator reading the
+   // metric knows which form triggered it; also warned, not refused.
+   | "source_line_gate_no_given_reference"
+   | "source_line_gate_negated_membership"
    // Task 3 (the mechanical migration off the string form) produces this —
    // reserved here now so the cause union and this list never drift apart.
    | "legacy_string_gate"
@@ -500,6 +506,8 @@ export const ROW_LEVEL_GATE_REJECTION_CAUSES =
       "entry_point_unexpressible",
       "gate_dimension_no_given_reference",
       "gate_dimension_negated_membership",
+      "source_line_gate_no_given_reference",
+      "source_line_gate_negated_membership",
       "legacy_string_gate",
       "given_usage_unresolvable",
       "unclassifiable_condition",
@@ -528,6 +536,13 @@ export interface CompiledGateCondition {
    code?: string;
    e?: unknown;
    isSourceFilter?: boolean;
+   /** The IR's own reference-tracking summary for this condition —
+    *  `./gate_dimension`'s `ExpandableRefSummary` shape. Read by
+    *  `validateAuthorizeProbes`'s caller to run G4/W1/W2 for the SOURCE-LINE
+    *  form (`validateSourceLineGateGivenUsage`); this module stays free of
+    *  that import (see the module doc's bundling note), so the field is
+    *  typed loosely here and cast at the read site. */
+   refSummary?: unknown;
 }
 
 /** Minimal materializer surface needed to compile (not run) the probe. */
@@ -718,6 +733,24 @@ export async function validateAuthorizeProbes(
          sourceName: string,
          detail: string,
       ) => void;
+      /**
+       * Called with the successfully-lifted condition for a group `sourceName`
+       * declares OWN (`authorizeOwnNotes` non-empty) — never for a group it
+       * only INHERITS. This module stays free of a `./gate_dimension` import
+       * (see the module doc's bundling note), so it hands the compiled
+       * condition back rather than running G4/W1/W2 itself; the caller (both
+       * `Model.create` and the package-load worker already import
+       * `./gate_dimension` for the dimension form) runs
+       * `validateSourceLineGateGivenUsage` against it. "Own" is the same
+       * distinction the throw-vs-warn branch below already draws: only the
+       * DECLARING source's own condition is checked — an inheritor gets no
+       * second check, since the expression and its referenced givens are
+       * identical to what was already checked where it was declared.
+       */
+      onOwnRowLevelConditionCompiled?: (
+         sourceName: string,
+         condition: CompiledGateCondition,
+      ) => void;
    },
 ): Promise<void> {
    const ownNotesOf =
@@ -732,7 +765,15 @@ export async function validateAuthorizeProbes(
       for (const exprs of groups) {
          if (exprs.length === 0) continue;
          try {
-            await liftRowLevelCondition(compiler, sourceName, exprs);
+            const condition = await liftRowLevelCondition(
+               compiler,
+               sourceName,
+               exprs,
+            );
+            const ownNotes = ownNotesOf.get(sourceName) ?? [];
+            if (ownNotes.length > 0) {
+               options.onOwnRowLevelConditionCompiled?.(sourceName, condition);
+            }
          } catch (err) {
             const detail = err instanceof Error ? err.message : String(err);
             const ownNotes = ownNotesOf.get(sourceName) ?? [];

@@ -100,7 +100,11 @@ import {
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
-import { validateGateDimensionsForModel } from "./gate_dimension";
+import {
+   validateGateDimensionsForModel,
+   validateSourceLineGateGivenUsage,
+   type ExpandableRefSummary,
+} from "./gate_dimension";
 import {
    buildFilterClause,
    FilterValidationError,
@@ -2570,6 +2574,10 @@ export class Model {
             // `validateAuthorizeProbes` widens to `authorizeMap` (every entry
             // point, inheritance included) for shape-aware, per-entry-point
             // validation — see its doc comment.
+            //
+            // `const` (not the outer `let modelDef`) so the narrowed
+            // non-undefined type survives into the closures below.
+            const compiledModelDef: ModelDef = modelDef;
             await validateAuthorizeProbes(modelMaterializer, {
                authorizeMap: sourceResult.authorizeMap,
                authorizeOwnNotes: sourceResult.attributedAuthorizeOwnNotes,
@@ -2586,6 +2594,34 @@ export class Model {
                      "Row-level #(authorize) gate not expressible at this entry point; every query against it will be denied",
                      { packageName, modelPath, sourceName, detail },
                   ),
+               // G4/W1/W2 for the SOURCE-LINE form — the counterpart to
+               // `validateGateDimensionsForModel` below for the dimension
+               // form. `sourceName` here is always the DECLARING source (see
+               // `validateAuthorizeProbes`'s doc on this callback), so
+               // `modelDef.contents[sourceName]` is the same struct the probe
+               // was grafted onto and `refSummary` is already resolved
+               // against it.
+               onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+                  const struct = compiledModelDef.contents[sourceName];
+                  if (!struct || !isSourceDef(struct)) return;
+                  validateSourceLineGateGivenUsage(
+                     sourceName,
+                     struct,
+                     condition.refSummary as ExpandableRefSummary | undefined,
+                     condition.e,
+                     compiledModelDef,
+                     (cause, detail) => {
+                        recordRowLevelGateRejected(cause);
+                        logger.warn("Row-level #(authorize) gate warning", {
+                           packageName,
+                           modelPath,
+                           sourceName,
+                           cause,
+                           detail,
+                        });
+                     },
+                  );
+               },
             });
             // Load-time validation for the DIMENSION form of `#(authorize)` —
             // a separate check from `validateAuthorizeProbes` above (which

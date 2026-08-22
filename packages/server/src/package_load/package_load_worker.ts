@@ -49,6 +49,7 @@
  */
 import {
    contextOverlay,
+   isSourceDef,
    type BuildManifestEntry,
    type Connection,
    type FetchSchemaOptions,
@@ -95,7 +96,11 @@ import {
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
-import { validateGateDimensionsForModel } from "../service/gate_dimension";
+import {
+   validateGateDimensionsForModel,
+   validateSourceLineGateGivenUsage,
+   type ExpandableRefSummary,
+} from "../service/gate_dimension";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
@@ -760,6 +765,29 @@ async function compileMalloyModel(
       onRowLevelGateRejected: recordRowLevelGateRejected,
       onRowLevelGateUnexpressible:
          authorizeWarningCollection.onRowLevelGateUnexpressible,
+      // G4/W1/W2 for the SOURCE-LINE form — the counterpart to
+      // `validateGateDimensionsForModel` below for the dimension form.
+      // `sourceName` is always the DECLARING source (see
+      // `validateAuthorizeProbes`'s doc on this callback), so
+      // `modelDef.contents[sourceName]` is the same struct the probe was
+      // grafted onto and `refSummary` is already resolved against it.
+      onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+         const struct = modelDef.contents[sourceName];
+         if (!struct || !isSourceDef(struct)) return;
+         validateSourceLineGateGivenUsage(
+            sourceName,
+            struct,
+            condition.refSummary as ExpandableRefSummary | undefined,
+            condition.e,
+            modelDef,
+            (cause, detail) => {
+               recordRowLevelGateRejected(cause);
+               authorizeWarningCollection.warnings.push(
+                  `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+               );
+            },
+         );
+      },
    });
    // Load-time validation for the DIMENSION form of `#(authorize)` — see
    // `../service/gate_dimension`'s doc for why it is a separate check from
@@ -985,12 +1013,34 @@ async function compileNotebookModel(
       );
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.
+      //
+      // `const` (not the outer `let finalModelDef`) so the narrowed
+      // non-undefined type survives into the closure below.
+      const finalCompiledModelDef: ModelDef = finalModelDef;
       await validateAuthorizeProbes(mm, {
          authorizeMap: extracted.authorizeMap,
          authorizeOwnNotes: extracted.attributedAuthorizeOwnNotes,
          onRowLevelGateRejected: recordRowLevelGateRejected,
          onRowLevelGateUnexpressible:
             authorizeWarningCollection.onRowLevelGateUnexpressible,
+         // See the identical check in `compileMalloyModel` above.
+         onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+            const struct = finalCompiledModelDef.contents[sourceName];
+            if (!struct || !isSourceDef(struct)) return;
+            validateSourceLineGateGivenUsage(
+               sourceName,
+               struct,
+               condition.refSummary as ExpandableRefSummary | undefined,
+               condition.e,
+               finalCompiledModelDef,
+               (cause, detail) => {
+                  recordRowLevelGateRejected(cause);
+                  authorizeWarningCollection.warnings.push(
+                     `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                  );
+               },
+            );
+         },
       });
       // See the identical check in `compileMalloyModel` above.
       validateGateDimensionsForModel(

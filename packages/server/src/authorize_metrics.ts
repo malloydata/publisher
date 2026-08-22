@@ -182,13 +182,17 @@ export function recordRowLevelGateDecision(
  * validated, or absent entirely) — not by gate text, which two unrelated
  * sources can share without one deriving from the other.
  * `gate_dimension_no_given_reference` and `gate_dimension_negated_membership`
- * (`./service/gate_dimension`'s `validateGateDimension` W1/W2) are the other
- * two — both WARN rather than refuse, and the model still loads with the
- * flagged gate dimension intact (they name a shape that is almost certainly
- * an authoring mistake, not one that is provably wrong the way an
- * unreachable given or a legacy string-form gate is). A nonzero value from
- * any of these three is a per-gate authoring mistake worth a look, not an
- * outage.
+ * (`./service/gate_dimension`'s `validateGateDimension` W1/W2) are two more —
+ * both WARN rather than refuse, and the model still loads with the flagged
+ * gate dimension intact (they name a shape that is almost certainly an
+ * authoring mistake, not one that is provably wrong the way an unreachable
+ * given or a legacy string-form gate is). `source_line_gate_no_given_reference`
+ * and `source_line_gate_negated_membership`
+ * (`./service/gate_dimension`'s `validateSourceLineGateGivenUsage` W1/W2) are
+ * the same two warnings for the SOURCE-LINE form — distinct cause names so an
+ * operator can tell which form triggered one, otherwise identical in
+ * severity. A nonzero value from any of these five is a per-gate authoring
+ * mistake worth a look, not an outage.
  */
 export function recordRowLevelGateRejected(
    cause: RowLevelGateRejectionCause,
@@ -201,7 +205,7 @@ export function recordRowLevelGateRejected(
             // Derived from the union, not retyped beside it — the retyped
             // version had already drifted a cause behind.
             ROW_LEVEL_GATE_REJECTION_CAUSES.map((c) => `'${c}'`).join("|") +
-            "). All but 'entry_point_unexpressible', 'gate_dimension_no_given_reference', and 'gate_dimension_negated_membership' fail the whole model load; those three warn without failing it — see the doc above. Alert on any nonzero value since the last publish, not on a rate.",
+            "). All but 'entry_point_unexpressible', 'gate_dimension_no_given_reference', 'gate_dimension_negated_membership', 'source_line_gate_no_given_reference', and 'source_line_gate_negated_membership' fail the whole model load; those five warn without failing it — see the doc above. Alert on any nonzero value since the last publish, not on a rate.",
       },
    );
    rowLevelRejectionCounter.add(1, { cause });
