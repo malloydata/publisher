@@ -159,18 +159,23 @@ export function recordRowLevelGateDecision(
  * That is the expected, and by far the more common, call site: the right
  * alert is "nonzero since the last publish", not a rate or a slope.
  *
- * It ALSO fires per REQUEST, defensively, from `Model.resolveGateShape` — the
- * request-time gate-shape resolver runs the identical classification and
- * denies the same way a load-time rejection would have. That path should be
- * unreachable in normal operation (load-time validation already refused
- * anything it would refuse); reaching it anyway indicates either load-time
- * validation was bypassed for this package, or the package predates the
- * check (loaded before row-level gates existed and never reloaded). A
- * nonzero value from THAT call site, specifically, is worth its own look —
- * see the paired `cause` label and the source in the request's own logs.
+ * It ALSO fires per REQUEST from `Model.resolveGateShape`, and for three of
+ * the seven causes that is the ONLY call site: `unreachable_given`,
+ * `given_usage_unresolvable` and `unclassifiable_condition` are produced
+ * nowhere but the request-time resolver (`./service/gate_classification`),
+ * so no load-time check refuses them first. Read a nonzero value there as
+ * "this entry point denies every request against it", not as "load-time
+ * validation was bypassed" — see the paired `cause` label and the source in
+ * the request's own logs.
  *
- * Three causes are exceptions to "blocks the whole load", each of which
- * leaves the model servable while flagging one specific thing.
+ * So of the seven causes exactly ONE — `legacy_string_gate` — fails the whole
+ * model load. Three warn at load and leave the model servable; three only
+ * ever appear per request, which makes the counter a rate signal for the
+ * entry points they affect rather than the pure deploy-time step function the
+ * paragraph above describes.
+ *
+ * The three that warn at load, each leaving the model servable while flagging
+ * one specific thing.
  * `cause: 'entry_point_unexpressible'` fires at load for a gate that is
  * valid but unexpressible at one derived entry point (an `extend` that
  * renamed/excluded/projected away the gated field, or a `query_source`
@@ -197,11 +202,11 @@ export function recordRowLevelGateRejected(
       "publisher_authorize_row_level_rejected_total",
       {
          description:
-            "Row-level `#(authorize)` gates refused at package load because their compiled condition is not an allowed shape, or an inherited gate that could not be expressed at one derived entry point. Label: cause (" +
+            "Row-level `#(authorize)` gates that were refused, warned about, or could not be resolved. Label: cause (" +
             // Derived from the union, not retyped beside it — the retyped
             // version had already drifted a cause behind.
             ROW_LEVEL_GATE_REJECTION_CAUSES.map((c) => `'${c}'`).join("|") +
-            "). All but 'entry_point_unexpressible', 'source_line_gate_no_given_reference', and 'source_line_gate_negated_membership' fail the whole model load; those three warn without failing it — see the doc above. Alert on any nonzero value since the last publish, not on a rate.",
+            "). Only 'legacy_string_gate' fails the whole model load. 'entry_point_unexpressible', 'source_line_gate_no_given_reference' and 'source_line_gate_negated_membership' warn at load and leave the model servable. 'unreachable_given', 'given_usage_unresolvable' and 'unclassifiable_condition' are request-time only — that entry point denies every request. Alert on any nonzero value since the last publish; the request-time causes also make this a rate signal, so see the doc above before writing an alert.",
       },
    );
    rowLevelRejectionCounter.add(1, { cause });

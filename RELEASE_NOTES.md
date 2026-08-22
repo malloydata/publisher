@@ -52,9 +52,9 @@ source: orders is duckdb.table('orders.parquet') extend {
 ### What breaks
 
 - **The string form is refused at model load.** Any `#(authorize) "<expr>"` on a `source:` line
-  fails the load with **HTTP 424**, and the message carries the paste-ready rewrite — the exact
-  annotation to substitute, per finding. **Every existing gated package must be rewritten**; there
-  is no compatibility mode and no flag.
+  fails the load with **HTTP 424**, and the message names each offending source and expression and
+  tells you the rewrite: drop the quotes and keep the annotation on its own line above `source:`.
+  **Every existing gated package must be rewritten**; there is no compatibility mode and no flag.
 - **`##(authorize)` (file-level) is refused at load** as well, including one folded in from an
   imported file. Declare `#(authorize)` on each source it was meant to protect.
 - **`#(authorize)` anywhere other than directly on a `source:` line is refused at load** — on a
@@ -119,9 +119,11 @@ and it fails closed unless the data collides — but do not recycle a gated colu
 
 1. Find every `#(authorize) "<expr>"` and `##(authorize)` in your packages. Load the package — every
    `.malloy` file in the tree compiles and any failure aborts the load, so the refusal will name
-   each declaring source and hand you the rewrite. The one case that escapes it is a declaring file
-   *outside* the package tree: nothing compiles it, so it loads and then denies every request,
-   counted as `legacy_string_gate` with no author-facing detail.
+   each declaring source. The one case that escapes it is a declaring file *outside* the package
+   tree: nothing compiles it, so it loads and then denies every request — and it increments no
+   metric, since the request-time lift failure carries no `cause` at all. That gate is invisible
+   except in a debug log naming the graft target, so grep your packages rather than waiting for a
+   signal.
 2. Paste the rewrite: drop the quotes, and put the annotation and the `source:` line it gates
    directly adjacent, e.g. `#(authorize) $ROLE = 'analyst'` above `source: orders is …`.
 3. Collapse stacked annotations into one `or` expression.
