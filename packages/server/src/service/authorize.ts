@@ -142,8 +142,8 @@ function authorizeNoteContent(text: string): string | undefined {
  * Reject caller-submitted Malloy text that declares an `authorize` annotation.
  *
  * A source's own `#(authorize)` replaces the base's when it derives one
- * (`source: mine is locked_base extend {}` carrying `#(authorize) "true"` is
- * gated by "true"). That override is the locked-base + curated-extension idiom,
+ * (`#(authorize) true` above `source: mine is locked_base extend {}` is gated
+ * by `true`). That override is the locked-base + curated-extension idiom,
  * and it is only safe while the declaration is the model AUTHOR's — so a caller
  * may not mint one. Restricted mode does not stop it: its construct rejections
  * cover `##!` compiler-flag annotations, not object annotations.
@@ -292,8 +292,10 @@ export function assertNoAuthorizeNearMisses(found: readonly string[]): void {
          `\`#|(authorize)\`) reaches the authorize route — a space after the ` +
          `\`#\`, spaces inside the brackets, or anything trailing the closing ` +
          `bracket makes it a plain tag Malloy hands to something else. Write ` +
-         `\`#(authorize) "<expression>"\` on the \`source:\` statement you mean ` +
-         `to protect. This is refused rather than interpreted: guessing at the ` +
+         `\`#(authorize) <expression>\` on its own line directly above the ` +
+         `\`source:\` statement you mean to protect (unquoted — the quoted ` +
+         `string form is retired). This is refused rather than interpreted: ` +
+         `guessing at the ` +
          `intent would let publisher start enforcing a filter on a package that ` +
          `has been serving every row.`,
    });

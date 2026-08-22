@@ -2659,7 +2659,7 @@ source: near_locked is duckdb.table('customers') extend { measure: c is count() 
          expect(err).toBeInstanceOf(ModelCompilationError);
          // Names the spelling, and what to write instead.
          expect(err?.message).toContain(tag);
-         expect(err?.message).toContain('#(authorize) "<expression>"');
+         expect(err?.message).toContain("#(authorize) <expression>");
          // Refused, never silently enforced as if it had been spelled right.
          expect(model.getSources()).toBeUndefined();
       });
@@ -2714,7 +2714,7 @@ source: near_qs is near_base_gated -> { select: * }
       const err = model.getNotebookError();
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toContain("# (authorize)");
-      expect(err?.message).toContain('#(authorize) "<expression>"');
+      expect(err?.message).toContain("#(authorize) <expression>");
    });
 
    // The other side of the near-miss detector: it is anchored at each note's own
