@@ -268,16 +268,18 @@ afterAll(() => {
    );
    lines.push(
       "- Case B5 (`1 = 1`, a gate that reads no row field and no given) is now " +
-         "OBSERVED-ADMITTED, not a silent runtime deny: it loads cleanly — MEASURED with NO " +
-         "warning at all under the source-line form (the dimension form's operator-only " +
-         "`gate_dimension_no_given_reference` warning is `gate_dimension.ts`-only machinery, " +
-         "which does not run for a source-line annotation) — and serves every row to every " +
-         "caller, since `authorized is 1 = 1` is `decidable` with no given to withhold on " +
-         "(pinned in `compile_authorize.spec.ts`). A bare `1 = 1` does not deny every request " +
-         "forever; it is the KILL-SWITCH's admit-everyone counterpart (`authorized is false` is " +
-         "the deny-everyone one) working as designed, not an arbitrary-boundary trap — but an " +
-         "author writing this fixed-predicate shape now gets no load-time nudge that they " +
-         "probably meant to key it on a given.",
+         "OBSERVED-ADMITTED, not a silent runtime deny: it loads cleanly and serves every row " +
+         "to every caller, since the expression is a fixed predicate with no given to withhold " +
+         "on. A bare `1 = 1` does not deny every request forever; it is the KILL-SWITCH's " +
+         "admit-everyone counterpart (`#(authorize) false` is the deny-everyone one) working as " +
+         "designed, not an arbitrary-boundary trap. The load is not silent about it: W1 " +
+         "(`validateSourceLineGateGivenUsage`, `gate_dimension.ts`) warns " +
+         '`source_line_gate_no_given_reference` — "references no given; it is a fixed ' +
+         'predicate, not an access rule keyed on the caller" — and ticks ' +
+         "`publisher_authorize_row_level_rejected_total{cause=...}`, so an author who meant to " +
+         "key the gate on a given gets a load-time nudge. It warns rather than refuses because " +
+         "the fixed predicate is also how the kill switch is spelled. Producing coverage: " +
+         '`source_line_authorize_integration.spec.ts`, "W1/W2 fire from a real model load".',
    );
    lines.push(
       "- Of the three cases still genuinely refused with a message (B2, B3, B9), only B9's " +
@@ -963,16 +965,13 @@ source: X is duckdb.table('accounts') extend {}
    });
 
    it("9. `region = $REGION` where $REGION HAS a declared default", async () => {
-      // Left on the DIMENSION form deliberately (not migrated with the rest
-      // of this file — see task-3-report.md): G4 (refuse a gate referencing
-      // a given with a declared default) is `gate_dimension.ts`-only
-      // machinery. MEASURED: the source-line form's `resolveGateShape` has
-      // no equivalent check — the same shape below, rewritten to
-      // `#(authorize) region = $REGION` on the source line, loads cleanly
-      // and serves correctly-filtered rows (using the declared default when
-      // the caller omits `REGION`). That is a genuine gap relative to this
-      // form, not a migration artifact — flagged in the report rather than
-      // silently weakened here.
+      // G4 (refuse a gate referencing a given with a declared default) now
+      // runs for the source-line form too: `validateAuthorizeProbes` calls
+      // `validateSourceLineGateGivenUsage` at every entry point whose probe
+      // compiled, so this loads as a REFUSAL, asserted below. The gap this
+      // case used to record — the source-line form serving rows off the
+      // declared default — is closed; a caller who omits `$REGION` never
+      // reaches a query.
       await observe(
          9,
          "region = $REGION (REGION has a default)",

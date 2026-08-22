@@ -3908,12 +3908,16 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expression gating this source: the author's
-            `#(authorize)` expression as written, whether declared on this
-            source itself or carried in from elsewhere (the source it
+            Effective authorize expression gating this source: normally the
+            author's `#(authorize)` expression as written, whether declared on
+            this source itself or carried in from elsewhere (the source it
             extends, a query-source base, a composite member). Enforced at
             query time as a row filter grafted onto the source the query
-            enters through. An empty or absent list means unrestricted.
+            enters through. An empty or absent list means unrestricted. Where
+            the gate registry cannot attribute an expression to a declaring
+            source it reports `"false"` instead — a fail-closed placeholder,
+            not something the author wrote, and one more reason to read this
+            list only as "gated" rather than as a predicate.
 
             Every gate is enforced as a row filter, whether or not its
             expression reads a row field. A caller the gate admits nowhere

@@ -75,8 +75,10 @@ Refusals fail the whole model load (424, naming the source):
   (`#(authorize) authorized` over `dimension: authorized is $ROLE = 'analyst'`). An unsupplied given
   would otherwise resolve to its default and admit or exclude rows the gate did not mean to.
 
-There is no separate G3 check: a given the expression references that is off the model's own given
-surface fails to compile the gate's own probe query, and Malloy's own error covers it.
+There is no separate load-time G3 check: a given the expression references that is off the model's
+own given surface fails to compile the gate's own probe query, and Malloy's own error covers it. The
+`unreachable_given` rejection cause still exists for the request-time resolver, which sees references
+the load-time probe could not (see the membership-operand fix below).
 
 Warnings load fine and are counted on `publisher_authorize_row_level_rejected_total`:
 
@@ -145,7 +147,7 @@ constant-`false` lock does not hold there and `includeSql` returns the ungrafted
 - **A membership test checks given reachability on both operands.** The membership *candidate*
   position skipped the check every other operand position makes, so a gate naming a given two import
   hops away bound that given's declaration **default** at request time instead of the caller's value.
-  It is now refused (`unreachable_given`, G3) like every other unreachable reference.
+  It is now refused (`unreachable_given`) like every other unreachable reference.
 - **A documented gate example was never valid Malloy.** `$ROLE in ['analyst', 'admin']` fails to
   compile — a list literal is not valid in that position. Write the disjunction out
   (`$ROLE = 'analyst' or $ROLE = 'admin'`), or compare a row field to an array-typed given with `in`.

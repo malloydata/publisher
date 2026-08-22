@@ -844,10 +844,12 @@ export class Model {
     * `sources` (which rides the worker serialization boundary), so it works
     * for both freshly-created and deserialized models.
     *
-    * For a dimension-form gate this is the annotated dimension's own `code`
-    * (the expression as authored) — introspection only. Enforcement never
-    * re-derives from this text; it grafts by the dimension's NAME (see
-    * `./gate_classification`).
+    * The value is the annotation's expression as authored — introspection
+    * only. Use it to decide THAT a source is gated, never to reconstruct
+    * the gate: enforcement re-derives the condition from the recompiled IR
+    * (`./gate_classification`), and `gate_registry_walk.ts` substitutes a
+    * `"false"` sentinel where it cannot attribute an expression, so this
+    * text is not always literally what the author wrote.
     */
    public getAuthorize(sourceName: string): string[] {
       return (

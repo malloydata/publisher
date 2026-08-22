@@ -432,39 +432,22 @@ source: comp is combo -> { select: org_id, amount }
    );
 
    it(
-      "the DIMENSION form of #(authorize): a colocated persist over a gate dimension composes the same way the string form does",
+      "a givenless fixed-value gate composes over a colocated persist the same way a $GROUPS gate does",
       async () => {
-         // `build_plan.ts` now classifies a dimension-form gate as `row_level`
-         // (`resolveGateShape` skips `classifyAuthorizeGate` for it — see
-         // `./gate_dimension`'s doc) and `isAuthorizeAttributedToEntryPoint`
-         // reads it the same way it reads the string form (both are plain
-         // annotation-NOTE walks, form-agnostic) — this is the new reachable
-         // state IMPORTANT 6 flagged.
+         // Distinct from the `$GROUPS` case above in the one way that
+         // matters here: this gate references NO given, so its whole value is
+         // known without a request. The graft must still be applied per query
+         // against the BOUND ARTIFACT rather than folded into the build — a
+         // fixed predicate is the one shape an optimizer would be tempted to
+         // push into the CREATE-TABLE-AS, which would bake one caller's view
+         // into the shared artifact. The row set below proves it filtered
+         // the artifact's rows (amount 1000, not the defining query's 10).
          //
-         // The gate dimension is added via `extend {}` AFTER the `->`
-         // pipeline, not selected INSIDE it — a real wrinkle found writing
-         // this test. Selecting the dimension as an output column of the
-         // persist source's own defining query (`-> {select: ..., authorized}`)
-         // forces `PersistSource.getSQL()` — which compiles the physical
-         // CREATE-TABLE-AS with no request/given context at all — to
-         // evaluate it at BUILD time, so a given-referencing gate fails the
-         // build itself ("Given ... has no value and no default"),
-         // independent of G3/G4/request-time enforcement; and even a
-         // givenless one produced SQL that qualified the graft's `WHERE`
-         // against the wrong table alias. Declared via `extend {}` instead,
-         // it stays a LAZY field layered on the persisted query's own output
-         // — exactly how it behaves on an unpersisted source — and the
-         // by-name graft resolves against it normally. This is a narrower
-         // limitation of one specific shape (dimension SELECTED into a
-         // persist source's own projection), not a defect in this task's
-         // fix — flagged in the report.
-         //
-         // Left on the DIMENSION form deliberately (not migrated with the
-         // rest of this file — see task-3-report.md): the wrinkle pinned
-         // here (a gate dimension selectable as an output column, forcing
-         // BUILD-time evaluation) is specific to the gate being a field. A
-         // source-line annotation is never a selectable column, so this
-         // shape has no equivalent under the surviving form.
+         // It also loads with W1 (`source_line_gate_no_given_reference`)
+         // warning, since a givenless gate is a fixed predicate rather than
+         // an access rule — that is the warning's intended shape, not a
+         // failure. W1's own producing coverage lives in
+         // `source_line_authorize_integration.spec.ts`.
          const pkg = await loadPackageFiles({
             "model.malloy": `##! experimental.persistence
 

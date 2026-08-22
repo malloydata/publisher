@@ -525,20 +525,22 @@ source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
    });
 
    it("given: `_internal.defaultText` is the rendered default literal, and is absent when no default is declared", async () => {
-      // This one does not pin a discriminator — it pins an INPUT to a security
-      // refusal. `service/given.ts` reads `_internal.defaultText` (Malloy's
-      // private surface, as its own comment says) to populate
-      // `ApiGiven.default`; `model.ts` filters on `g.default != null` to build
-      // `declaredDefaults`; and `authorize.ts`'s `declaredDefaults.has(given)`
-      // is the refusal that stops a defaulted given from carrying a row-level
-      // gate.
+      // This one does not pin a discriminator — it pins a private Malloy
+      // surface two publisher features read. `service/given.ts` reads
+      // `_internal.defaultText` (Malloy's private surface, as its own comment
+      // says) to populate `ApiGiven.default`, which is what introspection
+      // reports and what `dashboard.ts` seeds a dashboard's given controls
+      // from.
       //
-      // Every one of those degrades SILENTLY and FAIL-OPEN if the field moves:
-      // each `default` becomes undefined, the map empties, `has()` is always
-      // false, and the gates that refusal exists to reject start loading again.
-      // There is no layer that can tell "no givens have defaults" from "the
-      // input went missing", which is exactly why the canary belongs here
+      // Both degrade SILENTLY if the field moves: every `default` becomes
+      // undefined, and nothing downstream can tell "no givens have defaults"
+      // from "the input went missing" — which is why the canary belongs here
       // rather than in a test of the publisher's own handling.
+      //
+      // G4 (refuse a gate referencing a defaulted given) does NOT read this
+      // field. `validateSourceLineGateGivenUsage` (`gate_dimension.ts`) reads
+      // `modelDef.givens[id].default` / `.defaultText` off the compiled model
+      // directly, so a rename here weakens introspection, not the refusal.
       const givens = await compileGivens(`##! experimental.givens
 
 given: ROLE :: string is 'analyst'

@@ -1346,3 +1346,102 @@ source: m_src is mid_src extend {}
       }
    });
 });
+
+// ---------------------------------------------------------------------------
+// W1/W2 producers. `validateSourceLineGateGivenUsage`'s two `onWarning` calls
+// (`gate_dimension.ts`) had no producing test at all: deleting both left the
+// whole suite green, in the very commit that added them. The nearest coverage
+// was `authorize_metrics.spec.ts` calling `recordRowLevelGateRejected` with
+// each cause by hand, which pins the counter's plumbing and says nothing about
+// whether a real model load ever reaches it.
+//
+// These go through the real `Model.create` and assert on `logger.warn`'s
+// `cause` field, which is the operator-facing surface (the paired
+// `publisher_authorize_row_level_rejected_total{cause=...}` increment happens
+// in the same callback, so it is reached by the same evidence). Both gates
+// LOAD -- W1 and W2 warn rather than refuse -- so each test also asserts the
+// model compiled, keeping "warned" distinct from "refused".
+// ---------------------------------------------------------------------------
+
+/** The `cause` values `logger.warn("Row-level #(authorize) gate warning", …)`
+ *  carried during this model load, in call order. */
+function gateWarningCauses(
+   warnSpy: ReturnType<typeof spyOn<typeof logger, "warn">>,
+): string[] {
+   return warnSpy.mock.calls
+      .filter((c) => String(c[0]) === "Row-level #(authorize) gate warning")
+      .map((c) =>
+         String(
+            (c as unknown as [string, { cause?: string }?])[1]?.cause ?? "",
+         ),
+      );
+}
+
+describe("source-line gate authoring warnings (W1/W2) fire from a real model load", () => {
+   it("W1: a gate referencing no given warns `source_line_gate_no_given_reference` and still loads", async () => {
+      const warnSpy = spyOn(logger, "warn");
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+#(authorize) 1 = 1
+source: fixed_gate is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(gateWarningCauses(warnSpy)).toContain(
+            "source_line_gate_no_given_reference",
+         );
+      } finally {
+         warnSpy.mockRestore();
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("W2: a gate negating a membership test warns `source_line_gate_negated_membership` and still loads", async () => {
+      const warnSpy = spyOn(logger, "warn");
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) not (org_id in $GROUPS)
+source: negated_gate is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const causes = gateWarningCauses(warnSpy);
+         expect(causes).toContain("source_line_gate_negated_membership");
+         // Discriminating, not merely non-empty: this gate DOES reference a
+         // given, so W1 must stay silent. A callback that fired
+         // unconditionally would satisfy the assertion above.
+         expect(causes).not.toContain("source_line_gate_no_given_reference");
+      } finally {
+         warnSpy.mockRestore();
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("an ordinary gate warns neither", async () => {
+      const warnSpy = spyOn(logger, "warn");
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+source: plain_gate is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(gateWarningCauses(warnSpy)).toEqual([]);
+      } finally {
+         warnSpy.mockRestore();
+         await cleanup(duckdb, dir);
+      }
+   });
+});

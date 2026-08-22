@@ -1852,7 +1852,6 @@ source: X is duckdb.table('parent') extend {
             exprs: ["org_id in $GROUPS"],
             selfContained: false,
             struct: modelDef.contents["X"] as unknown as SourceDef,
-            dimensionForm: { givenNames: ["GROUPS"] },
          };
 
          // Surface A: `GROUPS` is declared as an array — the gate compiles
