@@ -241,6 +241,20 @@ Read that summary rather than the run's green tick if you expected a publish.
    `gh-release` skips prereleases for the same reason. Publish these from an ordinary release, or
    dispatch their workflows on `main` directly.
 
+Those two are skips. The scaffolder has a third failure that is not a skip but a hard red, and it
+costs a full poll budget to discover: **`create-malloy-package` refuses to publish unless the
+`SERVER_VERSION` it pins in `src/scaffold.ts` equals `@malloy-publisher/server`'s npm `latest`.** The
+guard is deliberate — a scaffolder published ahead of its pinned server generates workspaces whose
+`npm start` cannot resolve — but nothing bumps that pin automatically, so a release that forgets it
+fails 25 minutes in, *after* `skills` has already published. Set the pin to the version the release is
+about to publish, in the pre-release PR.
+
+That only became possible in 0.0.250, when `publish-packages` gained `needs: publish-npm`. Before it,
+this job raced the server publish, and both pins failed: the outgoing version against an npm still a
+release behind, the previous one once npm caught up. 0.0.250 is the worked example — the guard ran at
+15:07:55 against a `latest` that did not become 0.0.250 until 15:09:13. Narrowing that `needs:` back
+to `prepare` alone re-breaks it.
+
 sdk/app/server are not re-runnable at the same version today. `prepare` walks the version forward
 whenever a release branch or tag exists, so a release that fails after `npm-sdk.yml` has published
 cannot be resumed and the retry burns three new versions. npm versions are immutable, so there is no

@@ -227,7 +227,19 @@ jobs:
     # publish anything. This job reads prepare's version solely for the
     # prerelease check below, and deliberately checks out main rather than the
     # release branch (see the checkout below).
-    needs: prepare
+    #
+    # `publish-npm` is in here for create-malloy-package's sake, and dropping it
+    # silently breaks that package's release. Its publish workflow refuses to
+    # ship unless the SERVER_VERSION it pins equals @malloy-publisher/server's
+    # npm `latest` — and on `needs: prepare` alone this job races publish-npm, so
+    # in 0.0.250 the scaffolder's guard ran at 15:07:55 against a `latest` that
+    # did not become 0.0.250 until 15:09:13. That is unwinnable rather than
+    # unlucky: pin the outgoing version and the guard fails because npm is still
+    # a release behind; pin the previous one and it fails once npm catches up. So
+    # the scaffolder could never publish in a release that bumped the server.
+    # Waiting for npm costs this job the few minutes publish-npm takes, against
+    # its own 25m-per-package poll budget.
+    needs: [ prepare, publish-npm ]
     runs-on: ubuntu-latest
     # Two full poll budgets (25m each, below) plus checkout and setup, with
     # margin. Keep this above 2 x POLL_BUDGET_SECONDS or a second package timing
