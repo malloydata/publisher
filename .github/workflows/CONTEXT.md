@@ -407,15 +407,25 @@ installs cleanly and cannot be imported:
   sdist targets so that switching the ignore rules off does not start packing `.venv/`, `dist/` and
   `__pycache__`. An explicit `packages` **alone does not fix it** — the ignore rules still apply.
 
-**A third tool reads `.gitignore` here, and it is worth knowing before you trust a green build.**
-`build-python-sdk.sh` runs `black`, `ruff` and `pyright` over the generated client at steps 6 and 7 —
-except ruff also honours `.gitignore`, so inside a git checkout it silently skips the entire generated
-tree. Measured on one tree with one ruff (0.16.4): **929 errors outside a git repo, `All checks
-passed!` inside one.** CI is a checkout, so it reports the latter and the release is not at risk; but
-"lint ran" does not mean "the generated client was linted". Left as-is deliberately — turning it on
-surfaces ~929 findings and is a separate decision — and recorded because it is the same trap as the
+**More tools read `.gitignore` here, and it is worth knowing before you trust a green build.**
+`build-python-sdk.sh` runs `black`, `ruff` and `pyright` over the generated client at steps 6 and 7,
+and **two of the three silently skip all of it** inside a git checkout, because both honour
+`.gitignore`:
+
+- **ruff.** Measured on one tree with one ruff (0.16.4): **929 errors outside a git repo, `All checks
+  passed!` inside one**, nothing else changed.
+- **black.** Its own line in any green run of this workflow is `7 files left unchanged` — which is
+  exactly the tracked set (`malloy_publisher_sdk/__init__.py` plus the six files under `tests/`) and
+  **zero** files from the generated tree.
+- **pyright is the exception**: it resolves into the generated code regardless, and reports against
+  its types (`list[Connection] | Unset`) from `tests/`. Note step 7 ends in `|| true`, so those
+  findings never fail the build either — a green run here has four outstanding pyright errors.
+
+CI is a checkout, so it reports the clean numbers and the release is not at risk; but "lint and format
+ran" does not mean the generated client was linted or formatted. Left as-is deliberately — turning it
+on surfaces ~929 findings and is a separate decision — and recorded because it is the same trap as the
 packaging bug above, one directory that is deliberately gitignored while being the package's entire
-content.
+content, and now three independent tools quietly deciding what that means.
 
 The guard against both is `Verify the wheel is importable before uploading it`, which installs the
 built wheel into a throwaway venv and imports it, from `/tmp` so the source tree cannot satisfy the

@@ -1108,6 +1108,10 @@ jobs:
           # here as well as reset per attempt below, so a path that never enters
           # the loop cannot trip `set -u` on it in the summary.
           VERSION_FAILED=0
+          # Read by the summary, the annotation and the commit body, but assigned
+          # deep inside the loop next to the commit — so declare it here too,
+          # for the same reason.
+          VERSION_NOTE=""
           OUTCOME=""
 
           # This step prepares a branch and hands a human a link. It deliberately
@@ -1268,9 +1272,17 @@ jobs:
             # non-zero by the break above, so `git commit` cannot be handed an
             # empty diff here — and if that ever stops holding it fails and is
             # reported as a failure, which is the honest outcome.
+            #
+            # Same ambiguity as the summary LEAD, and this one outlives the run:
+            # a reader doing archaeology on `git log` months later has no job
+            # summary and no annotation to cross-check the 0 against.
+            VERSION_NOTE=""
+            if [ "$VERSION_FAILED" = 1 ]; then
+              VERSION_NOTE=" (the reset FAILED rather than finding nothing to do)"
+            fi
             git commit -s \
               -m "chore(release): stamp ${VERSION} on main" \
-              -m "${STAMPED} release-note section(s) stamped, ${VERSIONED} version file(s) reset." \
+              -m "${STAMPED} release-note section(s) stamped, ${VERSIONED} version file(s) reset.${VERSION_NOTE}" \
               || { FAILURE="could not commit the stamp"; continue; }
 
             # NOT forced. A stamp branch already on the remote may carry a
@@ -1357,8 +1369,19 @@ jobs:
                 echo "::notice title=Release notes::${BRANCH} was already on the remote and was left untouched; open ${COMPARE_URL}"
                 LEAD="Branch \`${BRANCH}\` was **already on the remote** and has been left exactly as it was, in case it carries a fix someone pushed. Check it, then open the PR."
               else
-                echo "::notice title=Release notes::pushed ${BRANCH} stamping ${STAMPED} section(s) and resetting ${VERSIONED} version file(s) as ${VERSION}; open ${COMPARE_URL}"
+                # The annotation carries the same count and so the same
+                # ambiguity; VERSION_NOTE is the one built for the commit body.
+                echo "::notice title=Release notes::pushed ${BRANCH} stamping ${STAMPED} section(s) and resetting ${VERSIONED} version file(s) as ${VERSION}${VERSION_NOTE}; open ${COMPARE_URL}"
                 LEAD="Pushed \`${BRANCH}\`, stamping ${STAMPED} release-note section(s) and resetting ${VERSIONED} version file(s) to \`${VERSION}\`."
+                # "resetting 0 version file(s)" carries the same two meanings the
+                # rarer branches below were fixed for — nothing to reset, or the
+                # reset failed — and THIS is the branch that fires whenever there
+                # is narrative to stamp, so it is the one most people read. It
+                # reports an ambiguous count rather than asserting a false reason,
+                # which is milder, but the ::warning is easy to scroll past.
+                if [ "$VERSION_FAILED" = 1 ]; then
+                  LEAD="${LEAD} The 0 there is because the version reset FAILED (see the warning above), not because there was nothing to reset — \`main\` still declares whatever it did before this release."
+                fi
               fi
               {
                 echo "$LEAD"

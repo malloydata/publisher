@@ -105,11 +105,21 @@ describe("skills-npm.yml's EXCLUDE agrees with exclusions.ts", () => {
                   .trim(),
             ) as { exclude?: string[] };
             const excludes = buildTsconfig.exclude ?? [];
+            // The EXACT glob, not "some glob ending in *.spec.ts". A suffix
+            // test passes on a NARROWING — `src/legacy/**/*.spec.ts` still ends
+            // that way while `src/*.spec.ts` is emitted into dist/ and ships,
+            // with the workflow still excluding all of it from the bump check.
+            // Measured: under that edit this file passed 2/0 while dist/ gained
+            // workflow-exclusions.spec.js. Removing the glob is the mutation
+            // that is easy to imagine; narrowing it is the one someone actually
+            // makes. Brittle in the fail-CLOSED direction on purpose, the same
+            // trade `excludePathspecs` makes about the array's exact shape.
             expect(
-               excludes.some((glob) => glob.endsWith("*.spec.ts")),
+               excludes,
                `skills-npm.yml excludes ${repoPath} from its bump check because specs are not built into dist/, ` +
-                  `but tsconfig.build.json no longer excludes *.spec.ts — so they ARE published now and a spec change ships silently.`,
-            ).toBe(true);
+                  `but tsconfig.build.json's exclude no longer contains exactly "src/**/*.spec.ts" — so a spec under src/ may now be ` +
+                  `emitted into dist/ and published while the check still reports "no published skills content changed".`,
+            ).toContain("src/**/*.spec.ts");
             continue;
          }
 
