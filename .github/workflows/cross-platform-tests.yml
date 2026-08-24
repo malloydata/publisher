@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 name: Cross Platform Tests
 
 on:
@@ -124,6 +127,39 @@ jobs:
       # path, so it is exactly the kind of code that breaks on Windows only.
       - name: Run skills package tests
         run: bun run --cwd packages/skills test
+        shell: bash
+
+      # The storefront data app's filter encoding, checked against Malloy's own
+      # filter grammar. Run under node rather than bun because the page is a
+      # no-build ES module the browser loads directly, and node is the runtime
+      # closest to that: no bundler, no transform, no test-runner globals.
+      #
+      # Two ways this step could pass while testing nothing, both closed here
+      # rather than left to a comment.
+      #
+      # The script NAMES its test files instead of globbing them: `node --test`
+      # on a glob that matches nothing exits 0 and reports "tests 0", so a moved
+      # or renamed directory would turn this step green while running none of
+      # it. Named explicitly, a missing file exits 1. The cost is that a new
+      # test file has to be added to the script by hand.
+      #
+      # And a skip counts toward the total, so an expected-count comment cannot
+      # tell a skipped case from a run one. One suite skips itself off en-US,
+      # where its currency assertions do not hold, and CI is en-US, so any skip
+      # here means the runner is not what we think it is. No count is written
+      # down: this branch has had four different totals, and every one of them
+      # was stale in a later commit.
+      - name: Run example package tests
+        run: |
+          # -e explicitly: GitHub's `shell: bash` supplies it, but the whole
+          # point of this block is not to depend on an implicit flag. Without it
+          # a FAILING suite exits 0, because the grep succeeds and runs last.
+          set -eo pipefail
+          bun run test:examples 2>&1 | tee examples-tests.log
+          grep -q "skipped 0" examples-tests.log || {
+            echo "::error::example tests reported a skip; this suite must run in full on CI"
+            exit 1
+          }
         shell: bash
 
       # The scaffolder copies the skills tree into a generated project and

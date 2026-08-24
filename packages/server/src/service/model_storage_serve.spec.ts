@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // End-to-end routing contract for the `storage=` virtual-source serve path,
 // exercised through the real Model.getQueryResults against a real in-memory
 // DuckDB. The ORIGINAL source returns 0; the serve binding points at a table

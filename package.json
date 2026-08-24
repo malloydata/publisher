@@ -30,8 +30,9 @@
     "test:skills": "cd packages/skills && bun run test",
     "test:create-malloy-package": "cd packages/create-malloy-package && bun run test",
     "test:hammer": "bun test hammer/lib",
+    "test:examples": "node --test examples/storefront/tests/format.test.mjs examples/storefront/tests/controls.test.mjs examples/storefront/tests/conformance.test.mjs",
     "test:scripts": "bun test scripts",
-    "test": "NODE_ENV=test bun run test:sdk && bun run test:server && bun run test:skills && bun run test:create-malloy-package && bun run test:hammer && bun run test:scripts",
+    "test": "NODE_ENV=test bun run test:sdk && bun run test:server && bun run test:skills && bun run test:create-malloy-package && bun run test:hammer && bun run test:scripts && bun run test:examples",
     "generate-api-types:sdk": "cd packages/sdk && bun run generate-api-types",
     "generate-api-types:server": "cd packages/server && bun run generate-api-types",
     "generate-api-types": "bun run generate-api-types:sdk && bun run generate-api-types:server",
@@ -41,7 +42,8 @@
     "lint:server": "cd packages/server && bun run lint",
     "lint:skills": "cd packages/skills && bun run lint",
     "lint:create-malloy-package": "cd packages/create-malloy-package && bun run lint",
-    "lint": "bun run lint:sdk && bun run lint:app && bun run lint:server && bun run lint:skills && bun run lint:create-malloy-package",
+    "lint:examples": "bunx eslint --config examples/storefront/eslint.config.mjs examples/storefront",
+    "lint": "bun run lint:sdk && bun run lint:app && bun run lint:server && bun run lint:skills && bun run lint:create-malloy-package && bun run lint:examples",
     "lint:cli": "cd packages/cli && bun run lint",
     "typecheck:sdk": "cd packages/sdk && bun run tsc --noEmit && bun run tsc -p tsconfig.spec.json",
     "typecheck:app": "cd packages/app && bun run tsc --noEmit",
@@ -63,6 +65,7 @@
     "validate-pg-sync": "bun scripts/sync-pg-version.js",
     "validate-ducklake-catalog-range": "bun scripts/validate-ducklake-catalog-range.ts",
     "generate:example-data": "node scripts/generate-example-data.mjs",
+    "vendor:malloy-filter": "node scripts/vendor-malloy-filter.mjs",
     "docs:screenshots": "node scripts/capture-screenshots.mjs",
     "docs:recordings": "node scripts/capture-recordings.mjs"
   },
@@ -74,6 +77,9 @@
     "@types/ssh2": "^1.15.5",
     "eslint": "^8.50.0",
     "gts": "^6.0.2",
+    "@malloydata/malloy-filter": "^0.0.432",
+    "esbuild": "0.25.9",
+    "happy-dom": "^20.11.1",
     "prettier": "^3.0.0",
     "rimraf": "^5.0.1",
     "rollup": "4.45.1",
@@ -92,10 +98,10 @@
   "resolutions": {
     "pg": "8.7.3",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.427",
+    "@malloydata/malloy-interfaces": "^0.0.432",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.427",
-    "@malloydata/malloy-filter": "^0.0.427",
-    "@malloydata/malloy-tag": "^0.0.427"
+    "@malloydata/malloy-query-builder": "^0.0.432",
+    "@malloydata/malloy-filter": "^0.0.432",
+    "@malloydata/malloy-tag": "^0.0.432"
   }
 }

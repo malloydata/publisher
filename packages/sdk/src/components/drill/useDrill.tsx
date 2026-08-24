@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { ListSubheader, Menu, MenuItem } from "@mui/material";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { DrillField } from "./resolveDrill";

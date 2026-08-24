@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Build a bundled lunr index over the Malloy documentation for the malloy_searchDocs MCP tool.
  *

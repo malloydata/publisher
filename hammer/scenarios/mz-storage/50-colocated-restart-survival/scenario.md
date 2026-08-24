@@ -3,6 +3,10 @@ id: colocated-restart-survival
 tags: lifecycle, durability
 package: cs
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Serving is re-established after a restart on the COLOCATED tier too
 

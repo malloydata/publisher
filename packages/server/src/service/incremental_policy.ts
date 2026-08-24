@@ -1,7 +1,10 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { components } from "../api";
 import {
    describeDialects,
-   INCREMENTAL_DIALECT_ALLOWLIST,
+   INCREMENTAL_SOURCE_RANGE_DIALECTS,
    MERGE_CAPABLE_DIALECTS,
 } from "./incremental_apply";
 import type {
@@ -211,18 +214,25 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
    // has already named the real problem, and piling on would bury it.
    if (!d.incremental) return out;
 
-   // Rule 6: a dialect whose transactional delta apply the publisher has
-   // proven. An allowlist rather than a capability probe for this phase: a
-   // delta writes into a table that is already serving, so "we have not proven
-   // this engine" must read as no.
+   // Rule 6: a SOURCE dialect the publisher can derive a bounded range for — it
+   // needs a literal spelling for every watermark type and a frontier probe. An
+   // allowlist rather than a capability probe for this phase: a delta writes into
+   // a table that is already serving, so "we have not proven this engine" must
+   // read as no.
+   //
+   // The source's dialect, not the table's: a `storage=` source is computed by
+   // its warehouse and materialized into the destination engine, and it is the
+   // warehouse that has to express the range. Where the DML lands is checked
+   // separately, and cannot fail for a legal destination — see
+   // INCREMENTAL_TARGET_DML_DIALECTS.
    const dialect = source.dialect ?? "";
-   if (!INCREMENTAL_DIALECT_ALLOWLIST.has(dialect)) {
+   if (!INCREMENTAL_SOURCE_RANGE_DIALECTS.has(dialect)) {
       out.push(
          `${where} declares ${MODE}, which is not supported on dialect ` +
-            `"${dialect || "unknown"}". Incremental refresh applies its delta to ` +
-            `the live serving table, so it is enabled only where the publisher ` +
-            `has proven transactional DML: ` +
-            `${describeDialects(INCREMENTAL_DIALECT_ALLOWLIST)}. Use ` +
+            `"${dialect || "unknown"}". Incremental refresh reads a bounded ` +
+            `watermark range out of the source and applies it transactionally, ` +
+            `so it is enabled only where the publisher has proven both: ` +
+            `${describeDialects(INCREMENTAL_SOURCE_RANGE_DIALECTS)}. Use ` +
             `refresh="full" here; the supported set widens in a later release.`,
       );
    } else if (d.declaredMergeKey && !MERGE_CAPABLE_DIALECTS.has(dialect)) {
@@ -233,23 +243,6 @@ function rejectionsForSource(source: IncrementalPolicySource): string[] {
          `${where} declares merge_key=, which needs a MERGE statement that ` +
             `dialect "${dialect}" does not have. Remove merge_key= to replace ` +
             `the watermark range instead of merging by row identity.`,
-      );
-   }
-
-   // Rule 13: `storage=` sends the table to a DuckDB/DuckLake destination, built
-   // through a separate build session on a different engine than the one the
-   // dialect rule above just cleared. The delta path applies its DML on the
-   // SOURCE connection, so pairing the two would aim a Postgres or BigQuery
-   // statement at a table that does not live there.
-   if (source.storageDestination) {
-      out.push(
-         `${where} declares ${MODE} together with ` +
-            `storage="${source.storageDestination}". A stored source is ` +
-            `materialized into the storage destination's own engine, while an ` +
-            `incremental delta is applied on the source warehouse — so the two ` +
-            `cannot be combined yet. Drop one: refresh="full" keeps the storage ` +
-            `destination, removing storage= keeps the incremental refresh in the ` +
-            `source warehouse.`,
       );
    }
 
@@ -456,6 +449,19 @@ export function incrementalPolicyAdvisories(
       }
 
       if (d.incremental && d.watermark !== undefined && !d.declaredMergeKey) {
+         // The cost half of this advisory is per-engine, so it is stated for the
+         // engine the table actually lives in. A warehouse prunes a range DELETE
+         // by partitioning or clustering; a `storage=` table is columnar files in
+         // a DuckLake catalog, where the same DELETE rewrites whichever files the
+         // range touches — so naming partitioning there would point the author at
+         // a knob that does not exist on their table.
+         const rangeDeleteCost = source.storageDestination
+            ? `(b) the range DELETE rewrites every stored file the range ` +
+              `touches, so a wide range costs more than its row count suggests — ` +
+              `a narrower refresh interval keeps each one small.`
+            : `(b) if the destination table is not partitioned or clustered on ` +
+              `"${d.watermark.name}", the range DELETE may re-read the whole ` +
+              `table on every run.`;
          warnings.push({
             ...at,
             message:
@@ -465,9 +471,7 @@ export function incrementalPolicyAdvisories(
                `watermark value appears twice rather than replacing its ` +
                `predecessor, since the older row sits below the new range — ` +
                `declare merge_key= with the row's identity dimensions if that ` +
-               `happens; (b) if the destination table is not partitioned or ` +
-               `clustered on "${d.watermark.name}", the range DELETE may re-read ` +
-               `the whole table on every run.`,
+               `happens; ${rangeDeleteCost}`,
          });
       }
    }

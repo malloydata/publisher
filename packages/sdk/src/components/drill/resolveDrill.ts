@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Resolving a renderer click into a `# drill` intent.
  *

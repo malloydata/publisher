@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Query metadata (backend query tags)
 
 Every query Publisher sends arrives at the backend looking like every other one. Query metadata attaches a small bag of string properties to each statement — a team, a workload, a request id — so the backend's own reporting can tell them apart: what an interactive query cost versus a materialization build, which package drove a spike, which warehouse query belongs to which API call.

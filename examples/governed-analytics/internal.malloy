@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Shared base source for the governed-analytics package.
 //
 // This file is intentionally NOT listed in publisher.json `explores`, so

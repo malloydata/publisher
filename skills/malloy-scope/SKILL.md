@@ -2,6 +2,10 @@
 name: malloy-scope
 description: Present discovery findings and propose an analytical scope before modeling. Use after inspecting a package's model and data, to classify tables and recommend an analytical focus the user can pick from.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Propose Analytical Scope
 

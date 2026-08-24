@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Encoding between control widgets and `filter<…>` given values.
  *

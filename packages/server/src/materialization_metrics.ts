@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Centralized telemetry for materialization builds.
  *
@@ -36,8 +39,17 @@ export type ManifestBindOutcome = "success" | "failure" | "timeout";
  * pooling the two into one series. `delta` is an incremental refresh advancing
  * an in-warehouse table in place — typically far cheaper than a CTAS, which is
  * why it gets its own series instead of skewing `in_warehouse`.
+ *
+ * `delta_storage` is the same advance applied to a `storage=` table, kept apart
+ * from `delta` for the reason `storage` is kept apart from `in_warehouse`: its
+ * rows cross an egress boundary and its DML runs on a different engine, so
+ * pooling the two would average two different cost profiles into one number.
  */
-export type StorageBuildEngine = "storage" | "in_warehouse" | "delta";
+export type StorageBuildEngine =
+   | "storage"
+   | "in_warehouse"
+   | "delta"
+   | "delta_storage";
 /** Why a source was refused materialization into a storage destination. */
 export type EligibilityRefusalReason =
    | "free_parameter"
@@ -155,6 +167,18 @@ const scheduledFireCounter = lazyCounter(
 const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
    "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|'runtime_live_fallback').",
+);
+const storageTableRetainedCounter = lazyCounter(
+   "publisher_storage_tables_retained_total",
+   "Tables a FAILED run left in a storage= destination and deliberately did not " +
+      "reclaim, because the source is refreshed incrementally and the name may be " +
+      "the one it serves from. Label: destination. Not all of these are orphans — " +
+      "a rebuild at a fresh generational name is, a seed on the live serving name " +
+      "is not, and the manifest entry cannot separate them — so read this as an " +
+      "upper bound on what is accumulating rather than a leak count. It is the " +
+      "only accounting there is until reclaiming a destination exists, which is " +
+      "why it is a counter and not just a log line: the question is a rate, not " +
+      "whether it ever happened.",
 );
 const storageBuildFailureCounter = lazyCounter(
    "publisher_storage_build_failures_total",
@@ -313,6 +337,14 @@ export function recordDropTables(
    engine: StorageBuildEngine,
 ): void {
    dropTablesCounter().add(1, { outcome, engine });
+}
+
+/**
+ * Record a stored table a failed run left behind without reclaiming. Counted per
+ * destination so accumulation is attributable to a store rather than to the fleet.
+ */
+export function recordStorageTableRetained(destination: string): void {
+   storageTableRetainedCounter().add(1, { destination });
 }
 
 /**

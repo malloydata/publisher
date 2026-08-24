@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Pure parsing of the package manifest's (publisher.json) `materialization`
  * block. Kept side-effect free (no fs, no worker bootstrap) so it is unit

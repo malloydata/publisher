@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { defineConfig, devices } from "@playwright/test";
 
 /**
@@ -26,10 +29,13 @@ export default defineConfig({
    // the same shared state. `notebook-givens`, `notebook-authorize` and
    // `notebook-readme-links` each write fixture files into
    // `publisher_data/examples/storefront` and POST `?reload=true` on that
-   // package; they are the only three specs that do either. `packages.spec`
-   // contends differently: it creates and deletes a whole temporary
-   // environment, which appears and vanishes from the listings other specs
-   // navigate through. Observed: a `notebook-givens` navigation timed out
+   // package; they are the only three specs that do either. A second kind of
+   // contention is environment churn: `packages.spec`, `environments.spec` and
+   // `package-dashboards.spec` each create and delete a whole environment,
+   // which appears and vanishes from the listings other specs navigate
+   // through. All three, not just the first: anyone relaxing `workers: 1`
+   // reads this comment to find out what contends, so a short list is worse
+   // than none. Observed: a `notebook-givens` navigation timed out
    // waiting for the storefront tile while another file was mid-reload. It
    // passes 9/9 in isolation, which is the tell that it is contention rather
    // than a broken assertion.

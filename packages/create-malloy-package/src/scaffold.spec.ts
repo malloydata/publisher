@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -745,7 +748,8 @@ describe("scaffold: unservable workspace path", () => {
       // Not a DuckDB constraint, and not a cosmetic one: assertSafeEnvironmentPath
       // in the server's path_safety.ts tests an environment path against
       // /^(?:\/|[A-Za-z]:[\\/])[\x20-\x7E]*$/, so a package under a non-ASCII
-      // path never mounts. Measured against 0.0.244: the server answers
+      // path never mounts. Measured against 0.0.244 and still the same regex in
+      // 0.0.250, which is what SERVER_VERSION now pins: the server answers
       // `serving` with environments [], /environments/default/packages 400s,
       // and the only explanation is in status.loadErrors. Refusing here, before
       // anything is written, is what turns that into a message.

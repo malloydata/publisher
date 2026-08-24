@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { createHash } from "crypto";
 import lunr from "lunr";
 import { logger } from "../../logger";

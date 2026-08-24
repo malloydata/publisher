@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { GivenValue } from "@malloydata/malloy";
 import { EnvironmentStore } from "../service/environment_store";
 import type { CompileScope, TaggedLogMessage } from "../service/environment";

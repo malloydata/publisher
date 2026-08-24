@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";

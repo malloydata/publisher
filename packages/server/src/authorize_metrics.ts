@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Telemetry for caller-submitted `#(authorize)` rejections (HTTP 400).
  *

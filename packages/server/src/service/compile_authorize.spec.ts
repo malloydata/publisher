@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { type GivenValue } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";

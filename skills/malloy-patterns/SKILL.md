@@ -2,6 +2,10 @@
 name: malloy-patterns
 description: Index of Malloy documentation topics. Use to discover what's available in search_malloy_docs. Covers language reference (sources, queries, views, fields, aggregates, joins, filters, expressions, functions), common patterns (YoY, cohorts, percent of total), rendering, and experimental features.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Malloy Documentation Topics
 

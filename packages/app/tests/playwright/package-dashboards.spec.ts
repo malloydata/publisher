@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import path from "path";
 import { fileURLToPath } from "url";

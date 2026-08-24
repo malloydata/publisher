@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML Documentation Seeds (Step 9)
 
 > Extract LookML descriptions and formatting hints as starting material for Malloy `#(doc)` tags. This runs during Step 9 (DOCUMENT) when the prior-art notes have a Documentation Seeds section.

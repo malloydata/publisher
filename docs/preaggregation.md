@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Pre-aggregation
 
 Pre-aggregation rolls a measure up to a coarse grain and stores the result, so a query that only needs that grain reads a small table instead of scanning the base. You annotate the measure; Publisher builds the rollup and routes to it.
@@ -72,6 +77,8 @@ Publisher refuses a declaration it could not build, as a `400` from publish and 
 ### Only measures whose partials can be merged
 
 A rollup stores a partial aggregate per group, and answering a coarser query merges those partials. That works for `sum`, `count`, `min` and `max`, and not for anything else: an average of averages is not an average.
+
+A filter written directly on the aggregate is fine — `paid is amount.sum() { where: is_paying }` pre-aggregates, because the measure *means* the filtered value and filtering commutes with merging per-group partials. Several conditions belong in that one `where:`, comma-separated. The filter has to sit on the aggregate itself, applied once: a chained refinement (`amount.sum() { where: a } { where: b }` — the spelling most likely to happen by accident; write `{ where: a, b }` instead), a filter refining a derived measure, or an aggregate wrapped in a further expression (`coalesce(amount.sum() { where: … }, 0)`) is refused at publish like any other shape whose merge cannot be proven.
 
 For `avg`, pre-aggregate the parts and divide where you use them:
 

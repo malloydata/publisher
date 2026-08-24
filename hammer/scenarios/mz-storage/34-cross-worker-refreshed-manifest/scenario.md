@@ -3,6 +3,10 @@ id: cross-worker-refreshed-manifest
 tags: orchestration, cluster, needs-attention
 package: xwr
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A refreshed manifest lets one worker build against another's table
 

@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Review Results File: Template & Assembly Rules
 
 The output of `/malloy-review` is a single Markdown file, written to `./malloy-review-<YYYYMMDD-HHMMSS>.md` unless `--out` overrides. The file is designed as a **triage document**: the user scans the top, expands only what they want, and can treat the JSON tail as a work-queue.

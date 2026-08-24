@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 name: create-malloy-package
 
 # create-malloy-package versions on its own line, like the skills package.

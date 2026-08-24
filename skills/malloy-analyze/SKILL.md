@@ -2,6 +2,10 @@
 name: malloy-analyze
 description: Explore data for insights and build views/dashboards/notebooks. Use when user asks to "analyze this data", "find insights", "explore for patterns", "what's interesting", "what's driving X", "build a dashboard", "create views", or any analysis task. For EDA exploration, start at Step 1. For building views on an existing model, jump to View Patterns.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Analysis with Malloy
 
