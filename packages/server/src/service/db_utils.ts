@@ -4,6 +4,7 @@
 import { ClientSecretCredential } from "@azure/identity";
 import { ContainerClient } from "@azure/storage-blob";
 import { BigQuery } from "@google-cloud/bigquery";
+import { Impersonated } from "google-auth-library";
 import { Connection, TableSourceDef } from "@malloydata/malloy";
 import { components } from "../api";
 import { BadRequestError, InvalidArgumentError } from "../errors";
@@ -17,6 +18,7 @@ import {
    parseCloudUri,
    s3ConnectionToCredentials,
 } from "./gcs_s3_utils";
+import { getImpersonatedAuthClient } from "./gcp_impersonation";
 import { ApiConnection } from "./model";
 import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 
@@ -111,7 +113,9 @@ function groupColumnRowsIntoTables(
    return tables;
 }
 
-function createBigQueryClient(connection: ApiConnection): BigQuery {
+async function createBigQueryClient(
+   connection: ApiConnection,
+): Promise<BigQuery> {
    if (!connection.bigqueryConnection) {
       throw new Error("BigQuery connection is required");
    }
@@ -120,12 +124,26 @@ function createBigQueryClient(connection: ApiConnection): BigQuery {
       projectId: string;
       credentials?: object;
       keyFilename?: string;
+      authClient?: Impersonated;
    } = {
       projectId: connection.bigqueryConnection.defaultProjectId || "",
    };
 
-   // Add service account key if provided
-   if (connection.bigqueryConnection.serviceAccountKeyJson) {
+   // Discovery must run as the same identity as query execution. For an
+   // impersonated connection that means the shared Impersonated client from
+   // gcp_impersonation.ts — falling through to ambient ADC here would silently
+   // read schemas as the publisher's own (broad) credential, the exact
+   // identity impersonation exists to stop using.
+   if (connection.bigqueryConnection.impersonateServiceAccount) {
+      config.authClient = await getImpersonatedAuthClient(
+         connection.bigqueryConnection.impersonateServiceAccount,
+      );
+      if (!config.projectId) {
+         throw new Error(
+            "BigQuery project ID is required. Set defaultProjectId on the connection when using impersonateServiceAccount.",
+         );
+      }
+   } else if (connection.bigqueryConnection.serviceAccountKeyJson) {
       let credentials: Record<string, unknown>;
       try {
          credentials = JSON.parse(
@@ -199,7 +217,7 @@ async function getSchemasForBigQuery(
       throw new Error("BigQuery connection is required");
    }
    try {
-      const bigquery = createBigQueryClient(connection);
+      const bigquery = await createBigQueryClient(connection);
       const [datasets] = await bigquery.getDatasets();
 
       return await Promise.all(
@@ -1362,7 +1380,7 @@ async function listTablesForBigQuery(
    tableNames?: string[],
 ): Promise<ApiTable[]> {
    try {
-      const bigquery = createBigQueryClient(connection);
+      const bigquery = await createBigQueryClient(connection);
       // A 3-segment table reference ("project.dataset.table") reaches here with a
       // project-qualified schema ("project.dataset"). bigquery.dataset() takes a
       // BARE dataset id plus an optional projectId, so passing "project.dataset" as

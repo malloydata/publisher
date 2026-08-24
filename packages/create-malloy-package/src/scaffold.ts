@@ -279,7 +279,7 @@ const BIND_HOST = "127.0.0.1";
  * and confirm the new version still honours --host. A generated workspace can
  * move itself off it by editing the scripts in its own package.json.
  */
-export const SERVER_VERSION = "0.0.244";
+export const SERVER_VERSION = "0.0.250";
 
 function startCommandFor(envName: string): string {
    return (
@@ -379,7 +379,8 @@ function withAlternatePorts(command: string, viaNpmScript: boolean): string {
  * nothing. The server reports `serving` with the environment missing and names
  * the reason only in /api/v0/status loadErrors, so refusing here — before
  * anything is written — is the difference between a clear message and a
- * workspace that looks scaffolded and serves nothing. Measured against 0.0.244.
+ * workspace that looks scaffolded and serves nothing. Measured against 0.0.244,
+ * and `SAFE_ENVIRONMENT_PATH_RE` is unchanged in 0.0.250.
  *
  * Below U+0020 and DEL are refused for the separate reason that they corrupt
  * the shell commands and agent-briefing text this tool prints verbatim; being
