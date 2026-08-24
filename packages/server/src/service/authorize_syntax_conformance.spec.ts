@@ -158,6 +158,22 @@ type GroupBResult = {
 
 const RESULTS: (GroupAResult | GroupBResult)[] = [];
 
+/**
+ * One value, escaped for a single markdown table cell.
+ *
+ * Escapes the BACKSLASH before the pipe, in that order. Escaping only `|`
+ * (which this did) is incomplete: a value ending in a backslash turns the
+ * escape into a literal `\\` and lets the following `|` break the row, which
+ * is the `js/incomplete-sanitization` class CodeQL flags. Newlines collapse to
+ * spaces because a table cell cannot contain one.
+ */
+function mdCell(value: string): string {
+   return value
+      .replace(/\\/g, "\\\\")
+      .replace(/\|/g, "\\|")
+      .replace(/\r?\n/g, " ");
+}
+
 function recordA(
    caseNum: number,
    spelling: string,
@@ -198,7 +214,7 @@ afterAll(() => {
    lines.push("|---|----------|---------|------------------|");
    for (const r of RESULTS.filter((r): r is GroupAResult => r.group === "A")) {
       lines.push(
-         `| ${r.caseNum} | \`${r.spelling.replace(/\|/g, "\\|")}\` | ${r.verdict} | ${r.detail.replace(/\|/g, "\\|")} |`,
+         `| ${r.caseNum} | \`${mdCell(r.spelling)}\` | ${r.verdict} | ${mdCell(r.detail)} |`,
       );
    }
    lines.push("");
@@ -212,7 +228,7 @@ afterAll(() => {
    );
    for (const r of RESULTS.filter((r): r is GroupBResult => r.group === "B")) {
       lines.push(
-         `| ${r.caseNum} | \`${r.spelling.replace(/\|/g, "\\|")}\` | ${r.failureMode} | ${r.namesConstruct} | ${r.suggestsFix} | ${r.message.replace(/\|/g, "\\|").replace(/\n/g, " ")} |`,
+         `| ${r.caseNum} | \`${mdCell(r.spelling)}\` | ${r.failureMode} | ${r.namesConstruct} | ${r.suggestsFix} | ${mdCell(r.message)} |`,
       );
    }
    lines.push("");
