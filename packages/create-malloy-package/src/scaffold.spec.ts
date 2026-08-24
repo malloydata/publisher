@@ -2929,7 +2929,55 @@ describe("warehouse connections", () => {
    test("writes a .env.example naming the variable and no value", () => {
       run({ connection: postgres() });
       const env = fs.readFileSync(path.join(tmp, ".env.example"), "utf8");
-      expect(env).toMatch(/^MALLOY_POSTGRES_PASSWORD=\s*$/m);
+      expect(env).toMatch(/^export MALLOY_POSTGRES_PASSWORD=\s*$/m);
+   });
+
+   test("refuses a non-array connections rather than overwriting it", () => {
+      // Matches what "packages" does on the same malformed shape. A
+      // present-but-not-an-array value is most likely someone mid-edit, and
+      // replacing it would write their half-typed value out of their own config
+      // while reporting a connection created.
+      fs.writeFileSync(
+         path.join(tmp, "publisher.config.json"),
+         JSON.stringify(
+            {
+               frozenConfig: false,
+               environments: [
+                  { name: "default", packages: [], connections: {} },
+               ],
+            },
+            null,
+            2,
+         ),
+      );
+      expect(() => run({ connection: postgres() })).toThrow(/"connections"/);
+      // And nothing was written: the value the user was mid-way through typing
+      // is still theirs.
+      const after = readJson("publisher.config.json") as {
+         environments: { connections: unknown }[];
+      };
+      expect(after.environments[0].connections).toEqual({});
+   });
+
+   test("every dialect flag the CLI accepts reaches the written entry", () => {
+      // The guard against the hand-mapping drift: buildConnection is fed by a
+      // spread, so a newly added flag cannot be forgotten one layer up. This
+      // asserts an optional field actually lands rather than being dropped.
+      run({
+         connection: buildConnection({
+            connection: "snowflake",
+            sfAccount: "acme-east",
+            sfUser: "demo",
+            sfWarehouse: "COMPUTE_WH",
+            sfRole: "ANALYST",
+         }),
+      });
+      const config = readJson("publisher.config.json") as {
+         environments: { connections: Record<string, unknown>[] }[];
+      };
+      expect(
+         config.environments[0].connections[0].snowflakeConnection,
+      ).toMatchObject({ role: "ANALYST" });
    });
 
    test("leaves an existing .env.example alone without --force", () => {

@@ -2174,7 +2174,7 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
                .map((name) => `\`${name}\``)
                .join(
                   ", ",
-               )}. These are NOT in \`publisher.config.json\`, which refers to them by name. If the server comes up reporting no environments and no packages, and \`loadErrors\` is empty, that is what an unset one looks like: it does not fail the boot and it does not name the variable. The \`malloy-connections\` skill covers this.`,
+               )}. These are NOT in \`publisher.config.json\`, which refers to them by name, and nothing reads a \`.env\` file: export them in the shell you start the server from. An unset one stops the environment loading, so the server comes up reporting ready and serving nothing; older servers report that with no load errors and nothing naming the variable, newer ones name it in \`loadErrors\`. Either way, a server with no environments and no packages is worth checking these against first. Keeping the value out of the config file is not the same as keeping it private: a running Publisher returns connection config with these values already substituted from its unauthenticated \`/api/v0/status\`. The \`malloy-connections\` skill covers both.`,
             "",
          );
       }

@@ -84,19 +84,24 @@ driver as those literal characters and fails as an authentication error that nam
 This is the one worth reading twice, because every instinct about it is wrong.
 
 If a `${VAR}` in the config is not set in the environment, the server does **not** refuse to start.
-It boots, binds its ports, prints `PUBLISHER_READY`, and reports:
+The environment simply does not load, so the server boots, binds its ports, prints
+`PUBLISHER_READY`, and serves nothing:
 
 ```
-environments=0 packages=0 load_errors=0
+environments=0 packages=0 load_errors=<see below>
 ```
 
-`load_errors=0`. The field you would check to find out what went wrong is empty, precisely in the
-case it exists to describe. The variable name appears nowhere in the output; the underlying error
-reaches the log as an empty object.
+**How that is reported depends on the server version, so diagnose from the behaviour rather than
+from the number.** Measured on 0.0.250, `load_errors` reads `0` and the variable name appears
+nowhere in the output, the underlying error reaching the log as an empty object: the field you would
+check to find out what went wrong is empty, precisely in the case it exists to describe. A pending
+change makes the server name the unset variable in `loadErrors` instead, which is a strict
+improvement. Both are the same underlying failure.
 
-So: **a Publisher that comes up clean with no environments and no packages is very often an unset
-environment variable.** Check that before anything else. `grep` the config for `${` and confirm every
-name it finds is exported in the shell that starts the server.
+So the durable rule, true on either: **a Publisher that comes up reporting ready with no
+environments and no packages is very often an unset environment variable.** Check that before
+anything else, whatever `load_errors` says. `grep` the config for `${` and confirm every name it
+finds is exported in the shell that starts the server.
 
 ## Per-dialect fields
 

@@ -62,10 +62,13 @@ const RESERVED_CONNECTION_NAME = "duckdb";
  *
  * - A lowercase ${my_password} is not substituted, is not an error, and travels
  *   to the driver as those literal characters.
- * - An UNSET ${VAR} does not stop the server. Measured on 0.0.250: it boots,
- *   prints PUBLISHER_READY, and reports environments=0 packages=0
- *   load_errors=0, with the underlying error reaching the log as an empty
- *   object. A server that serves nothing and reports no error.
+ * - An UNSET ${VAR} does not stop the server. The environment fails to load, so
+ *   it boots, prints PUBLISHER_READY, and serves nothing. HOW that is reported
+ *   depends on the server version: measured on 0.0.250 it reads load_errors=0
+ *   with the variable named nowhere, and a pending change names it in
+ *   loadErrors instead. Everything user-facing here is worded around the
+ *   behaviour rather than either reading, so it stays true whichever ships
+ *   first; env_var_prose.spec.ts is what stops that drifting back.
  *
  * Every name this module generates is uppercased before it is written, so the
  * first case cannot arise from our side. The second is why the CLI checks
@@ -390,10 +393,10 @@ export function resolveConnectionName(
  */
 export function passwordEnvVar(connectionName: string): string {
    const name = `MALLOY_${connectionName.toUpperCase()}_PASSWORD`;
-   /* istanbul ignore next -- unreachable: resolveConnectionName has already
-      constrained the name to characters that uppercase into this set. Asserted
-      rather than assumed, because a name that fails it is not a broken variable,
-      it is a variable Publisher silently declines to substitute. */
+   // Unreachable today: resolveConnectionName has already constrained the name
+   // to characters that uppercase into this set. Asserted rather than assumed,
+   // because a name that fails it is not a broken variable, it is a variable
+   // Publisher silently declines to substitute.
    if (!SUBSTITUTABLE_ENV_VAR.test(name)) {
       throw new ScaffoldError(
          `Could not derive an environment variable name from connection ` +
@@ -526,24 +529,45 @@ export function buildConnection(flags: ConnectionFlags): BuiltConnection {
 }
 
 /**
- * The .env.example body: every variable the config refers to, with no values.
- * Written next to the config so the names are discoverable without reading the
- * config for `${...}` by eye, and so the file can be committed while the real
- * .env beside it is not.
+ * The .env.example body: the names of the variables the config refers to, and
+ * how to set them. A reference list, NOT a file to copy and fill in.
+ *
+ * It deliberately does not say "copy this to .env", because nothing would read
+ * that file. Publisher has no `--env-file` flag and no dotenv anywhere in the
+ * server, and the generated start script is a bare `npx @malloy-publisher/server`
+ * with no shell sourcing in front of it. Telling a user to write a real
+ * warehouse password into a `.env` would leave them with a secret at rest AND a
+ * server that still refuses to boot: the worst of both. `.env` stays in the
+ * generated .gitignore as belt-and-braces for anyone who makes one anyway.
+ *
+ * Sourcing it from the start script was the alternative and was rejected:
+ * `set -a; . ./.env; set +a &&` is POSIX shell, npm runs scripts through cmd on
+ * Windows, so it would break the generated workspace there to save a step here.
  */
 export function renderEnvExample(built: BuiltConnection): string {
    const lines = [
       "# Credentials for the Malloy Publisher connection.",
       "#",
-      "# Copy this file to .env, fill in the values, and export them before",
-      "# starting the server. publisher.config.json refers to these by name and",
-      "# never contains the values themselves.",
+      "# These are NAMES, not a file to fill in: nothing reads this file, and",
+      "# nothing reads a .env either. Export them in the shell you start the",
+      "# server from. publisher.config.json refers to them by name and never",
+      "# contains the values themselves.",
+      "#",
+      // Said here because this is where the person handling the credential is
+      // looking. The reassurance is printed to the terminal three times; the
+      // limit on it belongs somewhere they will actually meet it.
+      "# Worth knowing: keeping the value out of the config file is not the same",
+      "# as keeping it private. A running Publisher returns connection config,",
+      "# with these values already substituted, from its unauthenticated",
+      "# /api/v0/status endpoint. Keep that endpoint on localhost or behind a",
+      "# gateway that authenticates.",
       "",
    ];
    for (const variable of built.envVars) {
       lines.push(`# ${variable.describes}`);
-      lines.push(`${variable.name}=`);
+      lines.push(`export ${variable.name}=`);
       lines.push("");
    }
-   return lines.join("\n");
+   // No trailing blank line: the loop already ends with one.
+   return `${lines.join("\n").trimEnd()}\n`;
 }

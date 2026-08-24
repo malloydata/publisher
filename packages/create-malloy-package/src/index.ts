@@ -118,23 +118,14 @@ function resolveConnection(options: CliOptions): BuiltConnection | undefined {
       );
    }
 
-   return buildConnection({
-      connection: options.connection,
-      connectionName: options.connectionName,
-      table: options.table,
-      pgHost: options.pgHost,
-      pgPort: options.pgPort,
-      pgDatabase: options.pgDatabase,
-      pgUser: options.pgUser,
-      bqProject: options.bqProject,
-      bqLocation: options.bqLocation,
-      sfAccount: options.sfAccount,
-      sfUser: options.sfUser,
-      sfWarehouse: options.sfWarehouse,
-      sfDatabase: options.sfDatabase,
-      sfSchema: options.sfSchema,
-      sfRole: options.sfRole,
-   });
+   // Spread, not a field-by-field copy. The copy that used to be here was the
+   // --pg-port bug one layer up: adding a dialect flag took four edits, and
+   // forgetting THIS one told a user who passed --sf-x that they were missing
+   // --sf-x, or dropped an optional field in silence. Worse, the "every
+   // dialect-specific flag is owned by exactly one dialect" test reads DIALECTS,
+   // so it stays green through exactly that mistake. CliOptions extends
+   // Partial<ConnectionFlags>, so this cannot fall behind the interface.
+   return buildConnection({ ...options, connection: options.connection });
 }
 
 async function run(
@@ -962,26 +953,33 @@ export function formatSuccess(result: ScaffoldResult): string {
                   } not set in this shell.`,
                ),
             );
-            // Measured on 0.0.244, because the obvious guess is wrong and the
-            // truth is worse. Booting with the variable unset does NOT fail:
-            // the server starts, prints PUBLISHER_READY, and reports
-            // environments=0 packages=0 load_errors=0. Nothing anywhere names
-            // the variable — the underlying error reaches the log as an empty
-            // object. So the failure mode to warn about is a server that looks
-            // fine and serves nothing, not one that refuses to start.
+            // Worded around the BEHAVIOUR, not around one server version's
+            // reading of it. Measured on 0.0.250: the server does not refuse to
+            // start, it comes up reporting ready and serving nothing, and
+            // load_errors reads 0 with the variable named nowhere. A pending
+            // change makes the server name the variable in loadErrors instead.
+            // Naming either reading as "what you will see" makes this text
+            // false as soon as the other one ships, and this text is printed
+            // into somebody else's terminal, which is among the hardest places
+            // to correct a claim later.
             lines.push(
                log.yellow(
-                  `  Start the server without ${many ? "them" : "it"} and it does not fail: it comes up`,
+                  `  Start the server without ${many ? "them" : "it"} and the environment does not load:`,
                ),
             );
             lines.push(
                log.yellow(
-                  `  reporting ready, with no environments, no packages, and no load errors.`,
+                  `  it comes up reporting ready and serving nothing. Older servers report that`,
                ),
             );
             lines.push(
                log.yellow(
-                  `  Nothing names the variable, so export ${many ? "them" : "it"} before you start.`,
+                  `  as no load errors with nothing naming the variable; newer ones name it in`,
+               ),
+            );
+            lines.push(
+               log.yellow(
+                  `  loadErrors. Either way, export ${many ? "them" : "it"} before you start.`,
                ),
             );
          }

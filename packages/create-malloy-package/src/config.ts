@@ -328,6 +328,20 @@ export function assertCanAddConnection(
       );
    }
    const env = targetEnvironment(config, envName);
+   // Refused rather than replaced, matching what "packages" does a few lines up.
+   // A present-but-not-an-array `connections` is most likely someone mid-edit,
+   // and overwriting it would write their half-typed value out of their own
+   // config while reporting a connection created. The two keys behaving
+   // differently on the same malformed shape was the inconsistency here.
+   if (env?.connections !== undefined && !Array.isArray(env.connections)) {
+      throw new ScaffoldError(
+         `${shown("publisher.config.json")} has an environment whose ` +
+            `"connections" is ${describeJsonValue(env.connections)} rather ` +
+            `than an array. Adding a connection there would replace that value ` +
+            `with a list holding only the new one, so nothing was written. Fix ` +
+            `or remove it, then run again.`,
+      );
+   }
    if (!Array.isArray(env?.connections)) {
       return;
    }
@@ -369,12 +383,8 @@ export function addConnection(
       env = { name: envName, packages: [], connections: [] };
       config.environments.push(env);
    }
-   if (!Array.isArray(env.connections)) {
-      // Absent is the ordinary case (an environment with no warehouse writes no
-      // key at all). A present-but-not-an-array value is replaced rather than
-      // refused, unlike "packages": nothing reads it, Publisher's own loader
-      // treats a non-array as no connections, so there is no user data here to
-      // write out of the file.
+   if (env.connections === undefined) {
+      // The ordinary case: an environment with no warehouse writes no key.
       env.connections = [];
    }
    if (

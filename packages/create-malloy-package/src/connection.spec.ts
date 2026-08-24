@@ -267,8 +267,11 @@ describe("renderEnvExample", () => {
    test("lists every variable by name and none of them by value", () => {
       const built = buildConnection(MINIMAL.postgres);
       const rendered = renderEnvExample(built);
-      expect(rendered).toContain("MALLOY_POSTGRES_PASSWORD=");
+      expect(rendered).toContain("export MALLOY_POSTGRES_PASSWORD=");
       // Nothing after the `=`: this file is committed.
       expect(rendered).toMatch(/MALLOY_POSTGRES_PASSWORD=\s*$/m);
+      // And it must not end with a blank line.
+      expect(rendered.endsWith("\n")).toBe(true);
+      expect(rendered.endsWith("\n\n")).toBe(false);
    });
 });
