@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Makes the authorize-bypass safety argument behavioural instead of textual.
  *

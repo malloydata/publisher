@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # {{title}}
 
 This directory is a [Malloy Publisher](https://github.com/malloydata/publisher)

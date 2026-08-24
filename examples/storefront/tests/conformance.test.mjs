@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The rules the controls are supposed to SHARE, checked against every control
 // rather than against whichever one a bug surfaced through.
 //

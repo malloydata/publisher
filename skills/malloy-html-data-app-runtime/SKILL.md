@@ -2,6 +2,10 @@
 name: malloy-html-data-app-runtime
 description: Write the JavaScript that drives an in-package HTML data app, calling Publisher.query, building queries from filter state, and handling results and errors. Read before writing the page's data code.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # HTML Data App Runtime
 

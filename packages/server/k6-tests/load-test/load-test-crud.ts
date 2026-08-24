@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { sleep } from "k6";
 import { validateServerIsUpAndInitialized } from "../utils/common.ts";
 import {

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { parseAnnotation } from "@malloydata/malloy-tag";
 import { describe, expect, it } from "bun:test";
 import { drillableFieldNames } from "./markDrillableCells";

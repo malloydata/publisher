@@ -3,6 +3,10 @@ id: reclaim-reverts-live-colocated
 tags: lifecycle, build-control
 package: rrc
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Reclaim reverts to live IN PLACE (colocated) — no restart
 

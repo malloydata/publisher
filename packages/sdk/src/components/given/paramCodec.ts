@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Between a given's value and the two wire forms it takes: a URL query
  * parameter, and the `givens` map on a query request.

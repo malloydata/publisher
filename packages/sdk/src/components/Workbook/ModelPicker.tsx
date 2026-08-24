@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import CloseIcon from "@mui/icons-material/Close";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import {

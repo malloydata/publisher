@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Coverage for the storefront data app's one pure module.
 //
 //   bun run test:examples

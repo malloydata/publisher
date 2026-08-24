@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Chart.js wrappers.
 //
 // Chart.js draws these, so unlike the Console and the React SDK, which read the

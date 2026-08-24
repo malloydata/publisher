@@ -3,6 +3,10 @@ id: skip-unchanged-and-force-refresh
 tags: build-control
 package: sk
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Skip-if-unchanged carries the table; forceRefresh rebuilds it
 

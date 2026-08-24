@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { PublisherClient } from "../api/client.js";
 import Table from "cli-table3";
 import { logSuccess, logInfo, logOutput, truncate } from "../utils/logger.js";

@@ -3,6 +3,10 @@ id: chained-build-error-redaction
 tags: security, chained, needs-attention
 package: cbe
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Chained build errors must not leak the catalog connection secret
 

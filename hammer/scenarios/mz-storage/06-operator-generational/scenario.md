@@ -3,6 +3,10 @@ id: operator-generational
 tags: orchestration, operator
 package: dop
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # An orchestrated build lands at the caller's own generational table name
 

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 export { GivenInput, type GivenInputProps } from "./GivenInput";
 export {
    GivensPanel,

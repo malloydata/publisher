@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { DEFAULT_THEME } from "./defaults";
 import { PER_MODE_COLOR_KEYS, type PerModeColorKey } from "./keys";
 import type { ResolvedTheme, Theme, ThemeMode } from "./types";

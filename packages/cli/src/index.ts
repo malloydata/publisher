@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
 
 process.removeAllListeners("warning");
 process.on("warning", (warning) => {

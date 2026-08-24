@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Page, expect } from "@playwright/test";
 import { DEFAULT_ENV } from "./fixtures";
 

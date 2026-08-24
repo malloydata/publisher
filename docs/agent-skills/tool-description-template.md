@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Tool description template
 
 A tool description is the interface a model reads to decide when and how to call a tool (see

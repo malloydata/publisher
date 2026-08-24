@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";

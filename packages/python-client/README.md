@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Malloy Publisher Python SDK
 
 Auto-generated, fully typed Python client for the Malloy Publisher REST API.

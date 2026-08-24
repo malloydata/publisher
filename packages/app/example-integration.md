@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Integrating the Malloy Publisher Console
 
 This guide shows how to use the bundled Malloy Publisher Console (the `@malloy-publisher/app` package) in another React project.

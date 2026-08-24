@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useRouterClickHandler } from "@malloy-publisher/sdk";
 import ChevronRight from "@mui/icons-material/ChevronRight";
 import Box from "@mui/material/Box";

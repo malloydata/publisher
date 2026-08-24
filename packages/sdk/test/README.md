@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Testing React components and hooks in the SDK
 
 `bun test` in this package runs with a DOM, so components and hooks can be

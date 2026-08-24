@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import CloseIcon from "@mui/icons-material/Close";
 import { Dialog, DialogContent, DialogTitle, IconButton } from "@mui/material";
 import { LogMessage } from "../client";

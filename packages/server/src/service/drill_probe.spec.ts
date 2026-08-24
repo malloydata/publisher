@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Contract test for the Malloy property `# drill` navigation rests on: an
 // annotation written on a source *dimension* reaches the *query result's* output
 // field, verbatim.

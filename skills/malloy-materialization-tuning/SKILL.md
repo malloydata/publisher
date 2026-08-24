@@ -2,6 +2,10 @@
 name: malloy-materialization-tuning
 description: Optimize a package's Malloy Persistence materializations for cost and performance using the malloy-pub CLI and the materialization history. Recommend what to persist, what to stop persisting, and how to schedule/scope it. Use when the user asks to make a package cheaper or faster, tune persistence, decide what to materialize, or review persist/schedule choices.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Tuning materializations for cost and performance
 

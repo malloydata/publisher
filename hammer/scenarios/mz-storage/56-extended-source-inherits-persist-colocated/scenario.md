@@ -3,6 +3,10 @@ id: extended-source-inherits-persist-colocated
 tags: serve-correctness, safety, known-red
 package: esc
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # An extension must not become a second build target — COLOCATED
 

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Tests for scripts/release-notes.mjs, the release workflow's narrative step.
 //
 // This script is exercised exactly once per release, on `main`, after npm and

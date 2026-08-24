@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // {{sourceName}}: a starter Malloy model over local CSV data, served by Publisher.
 //
 // The source reads data/sales.csv through the package's built-in DuckDB sandbox:

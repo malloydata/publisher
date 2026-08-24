@@ -3,6 +3,10 @@ id: orchestrator-manifest-bind
 tags: orchestration
 package: orch
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Orchestrator manifest bind controls the serve source
 

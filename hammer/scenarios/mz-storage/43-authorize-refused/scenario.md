@@ -3,6 +3,10 @@ id: authorize-refused
 tags: eligibility, security
 package: az
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Eligibility: an #(authorize)-gated source is refused
 

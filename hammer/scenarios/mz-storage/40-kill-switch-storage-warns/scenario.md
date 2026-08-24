@@ -3,6 +3,10 @@ id: kill-switch-storage-warns
 tags: config, kill-switch
 package: ksw
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Kill switch down: a storage= source is served live AND warns
 

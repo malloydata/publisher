@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Row-level access
 
 > What this is: how to restrict **which rows** a caller sees, using [givens](givens.md). This is one

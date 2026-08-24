@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Model-level routing contract for JOINS and VIEWS in the `storage=` serve path,
 // through the real Model.getQueryResults against a real in-memory DuckDB. This
 // exercises the glue the transform-level tests can't: serveBindingsWithRefinements

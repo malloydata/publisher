@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
 import { useGivensState } from "./useGivensState";

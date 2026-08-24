@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Hammer scenario grammar
 
 The step vocabulary. For what a scenario is _for_ — rule vs. observation, when to

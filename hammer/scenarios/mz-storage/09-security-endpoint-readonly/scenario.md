@@ -3,6 +3,10 @@ id: security-endpoint-readonly
 tags: security
 package: sec2
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Security: the connection endpoints cannot reach a storage destination
 

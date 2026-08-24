@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { type ModelDef, type SourceDef } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 
