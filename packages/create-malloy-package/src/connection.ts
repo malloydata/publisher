@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { ScaffoldError } from "./errors";
 import { preview } from "./names";
 
@@ -43,7 +46,8 @@ const PORTABLE_CONNECTION_NAME = /^[A-Za-z_][A-Za-z0-9_]+$/;
  * (packages/server/src/service/connection_config.ts), which is why it applies to
  * a Postgres connection called `duckdb` just as much as to a DuckDB one.
  *
- * Measured on 0.0.244: the server still starts, but the whole ENVIRONMENT is
+ * Measured on 0.0.250, the version this tool pins: the server still starts,
+ * but the whole ENVIRONMENT is
  * skipped — `environments=0 packages=0 load_errors=1` — so with the single
  * environment this tool writes, nothing is served at all. Unlike the unset-${VAR}
  * case above, this one is properly diagnosed: the reason appears in loadErrors
@@ -58,7 +62,7 @@ const RESERVED_CONNECTION_NAME = "duckdb";
  *
  * - A lowercase ${my_password} is not substituted, is not an error, and travels
  *   to the driver as those literal characters.
- * - An UNSET ${VAR} does not stop the server. Measured on 0.0.244: it boots,
+ * - An UNSET ${VAR} does not stop the server. Measured on 0.0.250: it boots,
  *   prints PUBLISHER_READY, and reports environments=0 packages=0
  *   load_errors=0, with the underlying error reaching the log as an empty
  *   object. A server that serves nothing and reports no error.

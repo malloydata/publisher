@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // A starter Malloy model over the `{{connectionName}}` connection, served by
 // Publisher.
 //

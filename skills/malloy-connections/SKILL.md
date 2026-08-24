@@ -2,6 +2,10 @@
 name: malloy-connections
 description: Author and debug the database connections a Publisher environment serves, in publisher.config.json. Use when pointing a package at BigQuery, Snowflake, Postgres or another warehouse, when a connection will not load, when a server comes up serving nothing, or when deciding where a credential should live. Covers the reserved duckdb name, the per-package sandbox, environment variable substitution, and the failures that report no error.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Connections
 
@@ -176,7 +180,7 @@ Postgres with SSL off, the connection then fails with:
 Error fetching schema for public.orders: The server does not support SSL connections
 ```
 
-Measured on 0.0.244 against a local Postgres with `ssl` off: unset `PGSSLMODE` loads and queries
+Measured on 0.0.250 against a local Postgres with `ssl` off: unset `PGSSLMODE` loads and queries
 fine; `PGSSLMODE=allow` gives `packages=0 load_errors=1` and that error.
 
 **Do not reach for the connection's own `sslmode` field.** It is only valid on a connection reached
