@@ -12,6 +12,7 @@ import { components } from "../api";
 import {
    findEnvironmentConfigError,
    getProcessedPublisherConfig,
+   UNNAMED_ENVIRONMENT,
    getPublisherConfigDir,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
@@ -596,6 +597,51 @@ export class EnvironmentStore {
       }
    }
 
+   /**
+    * Record environments whose config could not be resolved, so they are counted
+    * in the readiness line's `load_errors` and listed in /status `loadErrors`
+    * like any other environment that failed to load.
+    *
+    * Called after every manifest read rather than only at boot. Reading it once
+    * at startup meant a config broken AFTER boot (an edit that references a
+    * variable nobody exported) reported `load_errors=0` again, which is the
+    * exact symptom this whole change exists to remove. The 404 paths already
+    * reported it, because `findEnvironmentConfigError` reads a fresh manifest
+    * each time; only the count was stale.
+    *
+    * Adds, never removes. `failedEnvironments` has a second writer for genuine
+    * load failures, keyed by the same environment names, so a sync that pruned
+    * entries it did not recognise could silently clear one of those. Removal
+    * stays where it already is: the delete when an environment successfully
+    * loads, which is the event that actually makes a recorded failure stale.
+    *
+    * Owns the log line too. It used to sit in the config parser, which runs per
+    * parse and once per broken entry, so a request for any not-yet-loaded
+    * environment reprinted every broken environment's warning, and a monitoring
+    * probe against a broken one produced a line per poll forever. Here it can
+    * see whether this failure is already known, so a genuinely new or changed
+    * failure warns and a repeat drops to debug.
+    */
+   private syncEnvironmentConfigErrors(
+      manifest: ProcessedPublisherConfig,
+   ): void {
+      for (const configError of manifest.environmentConfigErrors ?? []) {
+         const name = configError.name ?? UNNAMED_ENVIRONMENT;
+         const message = redactPgSecrets(configError.message);
+         const known = this.failedEnvironments.get(name);
+         this.failedEnvironments.set(name, message);
+
+         const line = `Skipping environment ${
+            configError.name ? `"${configError.name}"` : UNNAMED_ENVIRONMENT
+         } in ${PUBLISHER_CONFIG_NAME}: ${message}`;
+         if (known === message) {
+            logger.debug(line);
+         } else {
+            logger.warn(line);
+         }
+      }
+   }
+
    private async initialize() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
       const initialTime = performance.now();
@@ -612,18 +658,7 @@ export class EnvironmentStore {
                this.serverRootPath,
             );
 
-         // An environment whose config could not be resolved (an unset ${VAR})
-         // never reaches `this.environments`, so nothing downstream would report
-         // it. Record it here so it is counted in the readiness line's
-         // load_errors and listed in /status loadErrors, the same as any other
-         // environment that failed to load.
-         for (const configError of environmentManifest.environmentConfigErrors ??
-            []) {
-            this.failedEnvironments.set(
-               configError.name,
-               redactPgSecrets(configError.message),
-            );
-         }
+         this.syncEnvironmentConfigErrors(environmentManifest);
 
          await this.cleanupAndCreatePublisherPath();
 
@@ -1540,6 +1575,7 @@ export class EnvironmentStore {
             await EnvironmentStore.reloadEnvironmentManifest(
                this.serverRootPath,
             );
+         this.syncEnvironmentConfigErrors(environmentManifest);
          const environmentConfig = environmentManifest.environments.find(
             (e) => e.name === environmentName,
          );
@@ -1613,6 +1649,7 @@ export class EnvironmentStore {
       }
       const environmentManifest =
          await EnvironmentStore.reloadEnvironmentManifest(this.serverRootPath);
+      this.syncEnvironmentConfigErrors(environmentManifest);
       const environmentConfig = environmentManifest.environments.find(
          (e) => e.name === environmentName,
       );

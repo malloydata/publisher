@@ -5,6 +5,7 @@ import {
    getPersistCollisionEnforce,
    findEnvironmentConfigError,
    getPublisherConfig,
+   UNNAMED_ENVIRONMENT,
    getPublisherConfigDir,
    type PublisherConfig,
 } from "./config";
@@ -245,6 +246,41 @@ describe("Config Environment Variable Substitution", () => {
          expect(findEnvironmentConfigError(config, "healthy")).toBeUndefined();
          // A config with no failures at all must not claim one.
          expect(findEnvironmentConfigError({}, "broken")).toBeUndefined();
+      });
+
+      it("omits name for a nameless entry, so the placeholder cannot be looked up", () => {
+         // The placeholder is a display string. If it doubled as the stored key,
+         // asking for an environment literally called "(unnamed environment)"
+         // would match a real failure belonging to a different entry.
+         fs.writeFileSync(
+            configPath,
+            JSON.stringify(
+               {
+                  frozenConfig: false,
+                  environments: [
+                     {
+                        packages: [
+                           { name: "p", location: "./${NO_SUCH_VAR}/p" },
+                        ],
+                     },
+                  ],
+               },
+               null,
+               2,
+            ),
+         );
+
+         const result = getPublisherConfig(testServerRoot);
+
+         expect(result.environmentConfigErrors).toHaveLength(1);
+         expect(result.environmentConfigErrors?.[0].name).toBeUndefined();
+         expect(result.environmentConfigErrors?.[0].message).toContain(
+            "${NO_SUCH_VAR}",
+         );
+         expect(
+            findEnvironmentConfigError(result, UNNAMED_ENVIRONMENT),
+         ).toBeUndefined();
+         expect(findEnvironmentConfigError(result, "")).toBeUndefined();
       });
 
       it("still throws when the unset variable is outside the environment list", () => {

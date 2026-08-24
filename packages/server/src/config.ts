@@ -124,7 +124,14 @@ export type Environment = {
  * environment it belongs to, rather than vanishing into an empty config.
  */
 export type EnvironmentConfigError = {
-   name: string;
+   /**
+    * Absent when the failing entry had no usable `name`. Optional rather than a
+    * placeholder string so it cannot double as a lookup key: a caller asking
+    * `findEnvironmentConfigError(config, "(unnamed environment)")` must not
+    * match a real failure. The placeholder is a display concern; see
+    * {@link UNNAMED_ENVIRONMENT}.
+    */
+   name?: string;
    message: string;
 };
 
@@ -723,7 +730,7 @@ function processConfigValue(value: unknown): unknown {
    return value;
 }
 
-const UNNAMED_ENVIRONMENT = "(unnamed environment)";
+export const UNNAMED_ENVIRONMENT = "(unnamed environment)";
 
 function readEnvironmentName(entry: unknown): string | undefined {
    if (!entry || typeof entry !== "object") return undefined;
@@ -798,23 +805,16 @@ function processConfigWithEnvironmentAttribution(raw: unknown): {
             } catch (error) {
                if (!isEnvironmentSource) continue;
                const name = readEnvironmentName(entry);
-               const message =
-                  error instanceof Error ? error.message : String(error);
+               // Collected, not logged. This runs per parse and once per broken
+               // entry, so logging here reprinted every broken environment on
+               // any read, including a request for an unrelated environment that
+               // was not loaded yet. The caller that owns the durable record
+               // logs it, where a repeat can be told from a new failure.
                environmentConfigErrors.push({
-                  name: name ?? UNNAMED_ENVIRONMENT,
-                  message,
+                  ...(name ? { name } : {}),
+                  message:
+                     error instanceof Error ? error.message : String(error),
                });
-               // warn, not error, to match the siblings for this same
-               // outcome, an entry being skipped ("Invalid environment ...
-               // Skipping entry"). No error site in this file logs a skipped
-               // entry. It also fires once per config read, so an API request
-               // against a failed environment re-emits it; the durable signal is
-               // the load_errors count and the /status entry, not this line.
-               logger.warn(
-                  `Skipping environment ${
-                     name ? `"${name}"` : UNNAMED_ENVIRONMENT
-                  } in ${PUBLISHER_CONFIG_NAME}: ${message}`,
-               );
             }
          }
          result[key] = kept;
@@ -1184,6 +1184,7 @@ export function findEnvironmentConfigError(
    config: Pick<ProcessedPublisherConfig, "environmentConfigErrors">,
    environmentName: string,
 ): string | undefined {
+   if (!environmentName) return undefined;
    return config.environmentConfigErrors?.find(
       (candidate) => candidate.name === environmentName,
    )?.message;
