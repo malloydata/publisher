@@ -21,6 +21,12 @@
  * way, since a JSON string cannot hold a raw newline, so what remains is a
  * normal line-scoped conflict: the two branches touched the same region, either
  * the same entry or two entries inserted at the same sorted position.
+ *
+ * The width is 3 to match tabWidth in packages/server/.prettierrc, which makes
+ * this output byte-identical to what prettier emits. At any other width the file
+ * is permanently unformatted by its own package's config, so a contributor with
+ * format-on-save rewrites every line of it just by opening the file. Change this
+ * only alongside that setting.
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -194,7 +200,7 @@ function main(): void {
 
    const skills = buildSkills(skillsDir);
 
-   fs.writeFileSync(outFile, `${JSON.stringify({ skills }, null, 2)}\n`);
+   fs.writeFileSync(outFile, `${JSON.stringify({ skills }, null, 3)}\n`);
    console.log(
       `Wrote ${skills.length} entries (${skills.filter((s) => !s.name.includes("/")).length} skills plus ${skills.filter((s) => s.name.includes("/")).length} reference files) to ${outFile}`,
    );

@@ -60,9 +60,13 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
     * Read off disk rather than through the import above: the sync test compares
     * parsed JSON, so it stays green if a regeneration ever re-minifies the file.
     *
-    * CRLF-normalized because these newlines are new. The file had none while it
-    * was minified, there is no root .gitattributes, and a Windows runner can
-    * check it out with CRLF endings.
+    * The indent width is 3 rather than 2 so the file matches tabWidth in
+    * packages/server/.prettierrc. At any other width prettier reformats it, so a
+    * contributor with format-on-save would fail this test by opening the file.
+    *
+    * Still CRLF-normalized, though the sibling .gitattributes now pins eol=lf and
+    * should make that unreachable. It is two lines of insurance against that file
+    * being dropped, not a claim that CRLF is expected.
     */
    it("is committed indented, one entry per line", () => {
       const raw = fs
@@ -71,7 +75,7 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
 
       // Needs no positive control: if this pattern stopped matching, the count
       // would be 0 rather than quietly staying green.
-      const nameLines = raw.split("\n").filter((l) => /^ {6}"name": /.test(l));
+      const nameLines = raw.split("\n").filter((l) => /^ {9}"name": /.test(l));
       expect(nameLines.length).toBe(skills.length);
 
       expect(raw.endsWith("\n")).toBe(true);
