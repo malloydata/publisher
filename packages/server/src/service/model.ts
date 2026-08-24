@@ -2285,8 +2285,17 @@ export class Model {
 
    /**
     * Prove every grafted condition actually landed on the recompiled query's
-    * run target — the backstop that turns a future Malloy change which
-    * silently stops honoring the graft into a REFUSAL instead of a leak.
+    * run target — the backstop that turns a graft which silently failed to
+    * attach into a REFUSAL instead of a leak.
+    *
+    * Read what this does and does not cover. It inspects the recompiled
+    * query's IR, NOT the SQL that executes. So it catches the graft failing
+    * to reach the run target (the import-hop snapshot bugs), but it CANNOT
+    * catch a future Malloy change that keeps `filterList` in the IR and stops
+    * honoring it during SQL generation. Do not describe it as proof against
+    * "Malloy no longer honoring the graft" — five vacuous tests have already
+    * shipped on this feature, and overstating the last backstop is how the
+    * sixth gets written.
     * Resolves the recompiled query's run-target `SourceDef` the same way
     * {@link resolveRunTargetStruct} does, then, for each grafted condition,
     * matches its `code` against that struct's own `filterList[].code` —
@@ -2311,11 +2320,24 @@ export class Model {
       grafts: ReadonlyArray<{ condition: FilterCondition }>,
    ): Promise<void> {
       const prepared = (await recompiled.getPreparedQuery()) as {
-         _query?: { structRef?: unknown };
+         _query?: {
+            structRef?: unknown;
+            compositeResolvedSourceDef?: unknown;
+         };
          _modelDef?: ModelDef;
       };
       const modelDef = prepared._modelDef ?? this.modelDef;
-      const structRef = prepared._query?.structRef;
+      // MIRROR the compiler's own precedence, never a union of the two.
+      // Malloy generates SQL from `compositeResolvedSourceDef ?? structRef`
+      // (query_model_impl.js:69, :141-143, query_query.js:608). Reading only
+      // `structRef` let the proof pass on a name-resolved struct while a
+      // STALE resolved composite was what actually generated SQL — unfiltered
+      // rows behind a green proof. Checking "either one carries the filter"
+      // would reintroduce exactly that leak from the other side, so this
+      // picks the one the compiler picks and checks only that one.
+      const structRef =
+         prepared._query?.compositeResolvedSourceDef ??
+         prepared._query?.structRef;
       const resolvedRef =
          typeof structRef === "string"
             ? modelDef?.contents[structRef]
@@ -2352,10 +2374,18 @@ export class Model {
       if (struct.filterList?.some((f) => f.code === code)) return true;
       const duck = struct as unknown as {
          type: string;
-         query?: { structRef?: SourceDef | string };
+         query?: {
+            structRef?: SourceDef | string;
+            compositeResolvedSourceDef?: SourceDef | string;
+         };
       };
       if (duck.type === "query_source" && modelDef) {
-         const ref = duck.query?.structRef;
+         // Same mirrored precedence as `assertGateLanded` — see the note
+         // there. The inner pipeline generates SQL from the resolved
+         // composite when it has one, so proving against the unresolved
+         // `structRef` would prove the wrong struct.
+         const ref =
+            duck.query?.compositeResolvedSourceDef ?? duck.query?.structRef;
          const base = typeof ref === "string" ? modelDef.contents[ref] : ref;
          if (base && isSourceDef(base)) {
             return this.filterListContainsCode(base, modelDef, code, depth + 1);
