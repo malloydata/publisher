@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Development
 
 > What this is: how to build, run, and hack on Publisher from a clone. For deploying a built server

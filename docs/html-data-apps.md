@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # In-package HTML data apps
 
 A package can ship a `public/` directory of plain web files next to its `.malloy`

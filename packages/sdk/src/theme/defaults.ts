@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { MALLOY_BRAND } from "../components/styles";
 import type { Theme } from "./types";
 

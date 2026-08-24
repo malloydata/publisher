@@ -3,6 +3,10 @@ id: duckdb-source-not-materializable
 tags: eligibility, build-control
 package: dk
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A DuckDB (local) source can't be materialized into storage
 

@@ -3,6 +3,10 @@ id: strict-upstream-built-here
 tags: orchestration, chained, build-control
 package: sbh
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # strictUpstreams: an upstream built in the same call must satisfy the gate
 

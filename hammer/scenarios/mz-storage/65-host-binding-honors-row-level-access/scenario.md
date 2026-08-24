@@ -3,6 +3,10 @@ id: host-binding-honors-row-level-access
 tags: security, orchestration
 package: hbi
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A host-supplied binding must not bypass row-level access control
 

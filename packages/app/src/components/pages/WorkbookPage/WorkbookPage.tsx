@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { encodeResourceUri, Workbook } from "@malloy-publisher/sdk";
 import { useParams } from "react-router-dom";
 

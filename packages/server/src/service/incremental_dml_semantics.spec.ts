@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // What the generated delta DML actually DOES, proven by executing it.
 //
 // The statement TEXT is pinned in incremental_apply.spec.ts; this file runs it.
@@ -6,15 +9,19 @@
 // the two-statement form is atomic — is a claim about a database's behavior, and
 // the only way to hold it is to execute against one.
 //
-// Executed on DuckDB, which is NOT on the dialect allowlist: it is a stand-in
-// here for the transactional DML the allowlisted dialects provide, and it
-// accepts the Postgres spelling verbatim (double-quoted identifiers,
-// `BEGIN`/`COMMIT`, `MERGE INTO … WHEN MATCHED`). That makes these semantics
-// checkable in a unit test; it does NOT make DuckDB supported, and it is not a
-// substitute for running the real dialects (see the Postgres integration path
-// in the docs). Snowflake's range replace — a Snowflake Scripting block — has
-// no local stand-in at all: its text is pinned in incremental_apply.spec.ts and
-// its semantics are provable only against a real Snowflake account.
+// Executed on DuckDB while rendering the POSTGRES spelling, which DuckDB accepts
+// verbatim (double-quoted identifiers, `BEGIN`/`COMMIT`,
+// `MERGE INTO … WHEN MATCHED`). So DuckDB stands in here for the transactional
+// DML of a dialect whose engine these tests do not run: it makes the semantics
+// checkable in a unit test, and it is not a substitute for running the real
+// dialects (see the Postgres integration path in the docs).
+//
+// DuckDB's OWN dialect is a target in its own right — it is what a `storage=`
+// destination's DML is issued in — and it is exercised as itself in
+// incremental_storage_engine.spec.ts rather than here. Snowflake's range replace
+// (a Snowflake Scripting block) has no local stand-in at all: its text is pinned
+// in incremental_apply.spec.ts and its semantics are provable only against a
+// real Snowflake account.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { beforeAll, describe, expect, it } from "bun:test";
 import { applyDeltaScript, deltaStatements } from "./incremental_apply";

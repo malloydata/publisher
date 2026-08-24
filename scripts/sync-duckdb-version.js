@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
 
 /**
  * Verify the DuckDB build knobs match the version Malloy resolves.

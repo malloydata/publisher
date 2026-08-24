@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * The bare (unqualified) name of a possibly container-qualified table path:
  * the segment after the last dot, e.g. `my_schema.my_table` -> `my_table` and

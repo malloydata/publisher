@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";

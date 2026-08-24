@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Severity, Confidence, Categorization
 
 The shared vocabulary every finding uses. Read this alongside any rubric file.

@@ -1,7 +1,11 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useMemo } from "react";
 import { useServer } from "../components/ServerProvider";
 import { FilterSelection, FilterValuePrimitive } from "./useDimensionFilters";
 import { useQueryWithApiError } from "./useQueryWithApiError";
+import { escapeMalloyString } from "../utils/malloyString";
 
 /**
  * Filter types for dimensions
@@ -112,13 +116,6 @@ export interface DimensionalFilterRangeDataResult {
    error: Error | null;
    /** Refetch function to manually trigger the query */
    refetch: () => void;
-}
-
-/**
- * Escapes special characters in strings for Malloy queries
- */
-function escapeMalloyString(value: string): string {
-   return value.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
 }
 
 /**

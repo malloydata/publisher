@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Render a given's `default` (a raw Malloy source literal) for display in the
  * input as placeholder / helper text. Returns undefined when there is no

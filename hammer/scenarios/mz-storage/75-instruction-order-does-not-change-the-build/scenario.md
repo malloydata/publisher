@@ -3,6 +3,10 @@ id: instruction-order-does-not-change-the-build
 tags: orchestration, chained, build-control
 package: iob
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # The order instructions arrive in must not change what a build produces
 

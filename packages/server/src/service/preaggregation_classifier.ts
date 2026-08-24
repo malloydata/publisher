@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Additivity classification for `#@ preaggregate` measures: can this measure be
  * computed at a coarse grain, stored, and then correctly re-aggregated to a

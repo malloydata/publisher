@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Copy the repo's top-level skills/ into this package so npm can pack it.
  *

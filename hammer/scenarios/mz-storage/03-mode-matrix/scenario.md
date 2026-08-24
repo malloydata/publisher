@@ -3,6 +3,10 @@ id: mode-matrix
 tags: config, kill-switch
 package: b1
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # `PERSIST_STORAGE_MODE` governs building and serving independently
 

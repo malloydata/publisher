@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * End-to-end integration test for the OOM-mitigation guardrails
  * (Steps 1-6). Mounts a real Express app with the same middleware

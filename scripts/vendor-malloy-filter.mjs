@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Regenerate the copy of Malloy's filter grammar that the storefront example's
 // page loads.
 //

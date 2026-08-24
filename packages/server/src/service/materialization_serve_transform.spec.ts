@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Real-compiler + real-DuckDB contract for the virtual-source serve transform.
 // The declared serve-shape schema is trusted on faith by the compiler (it does
 // NOT type-check a virtual source's columns), so the generate -> compile ->

@@ -77,7 +77,7 @@
     "@types/ssh2": "^1.15.5",
     "eslint": "^8.50.0",
     "gts": "^6.0.2",
-    "@malloydata/malloy-filter": "^0.0.427",
+    "@malloydata/malloy-filter": "^0.0.432",
     "esbuild": "0.25.9",
     "happy-dom": "^20.11.1",
     "prettier": "^3.0.0",
@@ -98,10 +98,10 @@
   "resolutions": {
     "pg": "8.7.3",
     "esbuild": "0.25.9",
-    "@malloydata/malloy-interfaces": "^0.0.427",
+    "@malloydata/malloy-interfaces": "^0.0.432",
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
-    "@malloydata/malloy-query-builder": "^0.0.427",
-    "@malloydata/malloy-filter": "^0.0.427",
-    "@malloydata/malloy-tag": "^0.0.427"
+    "@malloydata/malloy-query-builder": "^0.0.432",
+    "@malloydata/malloy-filter": "^0.0.432",
+    "@malloydata/malloy-tag": "^0.0.432"
   }
 }

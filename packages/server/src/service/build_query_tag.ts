@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { sqlLiteral } from "./db_utils";
 import type { QueryMetadata } from "./query_metadata";
 

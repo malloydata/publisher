@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Notebooks, dashboards, or an HTML data app?
 
 > What this is: how to pick between Publisher's three in-package analytics surfaces, **notebooks**

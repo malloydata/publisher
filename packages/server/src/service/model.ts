@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import {
    API,
    Connection,
@@ -154,6 +157,7 @@ import {
    type AuthorizeBypassEntryPoint,
    type AuthorizeGuardField,
 } from "../authorize_metrics";
+import { safeJoinUnderRoot } from "../path_safety";
 
 /**
  * What a request boundary contributes to a model query's per-query metadata: the
@@ -5839,7 +5843,15 @@ export class Model {
       dataStyles: DataStyles;
       modelType: ModelType;
    }> {
-      const fullModelPath = path.join(packagePath, modelPath);
+      // Contain the caller-supplied model path inside the package directory;
+      // a path that resolves outside it is reported as a missing model, which
+      // is all a caller is entitled to learn.
+      let fullModelPath: string;
+      try {
+         fullModelPath = safeJoinUnderRoot(packagePath, modelPath);
+      } catch {
+         throw new ModelNotFoundError(`${modelPath} does not exist.`);
+      }
       try {
          if (!(await fs.stat(fullModelPath)).isFile()) {
             throw new ModelNotFoundError(`${modelPath} is not a file.`);

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { components } from "../api";
 
 /**
@@ -101,16 +104,14 @@ export interface ResourceRepository {
    // Incremental ledger
    getIncrementalLedgerEntry(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<IncrementalLedgerEntry | null>;
    upsertIncrementalLedgerEntry(
       entry: Omit<IncrementalLedgerEntry, "createdAt" | "advancedAt">,
    ): Promise<IncrementalLedgerEntry>;
    deleteIncrementalLedgerEntry(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<void>;
 }
 
@@ -244,10 +245,32 @@ export interface IncrementalLedgerEntry {
     */
    physicalTableName: string;
    connectionName: string;
+   /**
+    * The storage destination the table lives in, absent when it lives in
+    * `connectionName`'s own warehouse. Part of the table's identity: a
+    * destination and a connection are separate namespaces that may share a name,
+    * and a source keeps its physical name when it moves between them.
+    */
+   storageDestinationName?: string;
    /** Audit: which run last advanced this boundary, and when. */
    advancedByMaterializationId: string | null;
    advancedAt: Date;
    createdAt: Date;
+}
+
+/**
+ * Which physical table a boundary belongs to. Three fields rather than two
+ * because where a table LIVES is not implied by the connection that computes it:
+ * a `storage=` source is read from its warehouse and materialized into a
+ * destination, so the pair (connection, table) does not identify it.
+ */
+export interface LedgerTableIdentity {
+   /** The connection whose SQL computes the table's rows. */
+   connectionName: string;
+   /** The storage destination holding it, absent when colocated. */
+   storageDestinationName?: string;
+   /** The table's logical (unquoted) name, as the manifest reports it. */
+   physicalTableName: string;
 }
 
 /** How a delta advances the serving table. */

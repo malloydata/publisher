@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type {
    AtomicField,
    BuildGraph as MalloyBuildGraph,
@@ -67,7 +70,7 @@ export interface BuildPlanPackage {
    getMalloyConfig(): MalloyConfig;
    getMalloyConnection(name: string): Promise<MalloyConnection>;
    /**
-    * The package-level `materialization` config (from malloy-publisher.json),
+    * The package-level `materialization` config (from publisher.json),
     * used as the least-specific layer when resolving per-source freshness /
     * schedule. Optional so existing fixtures/callers that don't track it still
     * typecheck (they resolve without a package default).

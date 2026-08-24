@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Tutorial: materialize a source into DuckLake and serve it back
 
 Malloy Publisher can materialize a `#@ persist` source into a **store you choose**

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { beforeEach, describe, expect, it } from "bun:test";
 import type { EmbeddingProvider } from "../../service/embedding_provider";
 import {

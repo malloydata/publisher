@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Tests for the synthesizer: the plan, the emitted text, and the two properties
 // the seam decision made load-bearing — determinism, and that the emitted text
 // actually routes against a real built table.

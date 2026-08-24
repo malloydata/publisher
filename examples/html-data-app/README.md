@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # html-data-app — example in-package data app
 
 A no-build **SaaS subscriptions dashboard**: KPI tiles (active MRR, active

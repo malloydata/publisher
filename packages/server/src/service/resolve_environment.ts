@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { EnvironmentNotFoundError } from "../errors";
 import { ResourceRepository } from "../storage/DatabaseInterface";
 

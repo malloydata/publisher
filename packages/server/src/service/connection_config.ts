@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
@@ -464,8 +467,38 @@ function validateConnectionShape(connection: ApiConnection): void {
    switch (connection.type) {
       case "postgres":
       case "mysql":
-      case "bigquery":
          break;
+      case "bigquery": {
+         const bigquery = connection.bigqueryConnection;
+         if (bigquery?.impersonateServiceAccount) {
+            // An authClient replaces the credential entirely in the SDK, so a
+            // key alongside it would sit there looking live while the
+            // impersonated identity executes every query. Core refuses the
+            // combination at construction too; refusing here surfaces it as a
+            // config error at load instead of a connection error at first use.
+            if (bigquery.serviceAccountKeyJson) {
+               throw new Error(
+                  `Connection '${connection.name}' sets impersonateServiceAccount ` +
+                     `and serviceAccountKeyJson. Impersonation replaces the ` +
+                     `credential entirely — the key would be ignored — so supply ` +
+                     `one or the other.`,
+               );
+            }
+            // With an authClient the SDK resolves the project id through the
+            // impersonated credential, not ambient ADC, so auto-detection is
+            // not a meaningful fallback for the job project. Require it named.
+            if (!bigquery.billingProjectId) {
+               throw new Error(
+                  `Connection '${connection.name}' sets impersonateServiceAccount ` +
+                     `but no billingProjectId. Impersonated connections resolve ` +
+                     `the project through the impersonated credential, so the ` +
+                     `project that runs (and is billed for) jobs must be named ` +
+                     `explicitly.`,
+               );
+            }
+         }
+         break;
+      }
       case "duckdb":
          if (!connection.duckdbConnection) {
             throw new Error("DuckDB connection configuration is missing.");
@@ -473,6 +506,27 @@ function validateConnectionShape(connection: ApiConnection): void {
          {
             const attached =
                connection.duckdbConnection.attachedDatabases ?? [];
+            // AttachedDatabase reuses the BigqueryConnection schema, but the
+            // ATTACH path builds a DuckDB BIGQUERY secret from key JSON — the
+            // DuckDB extension takes a key, not a token — so an impersonation
+            // request here would be accepted and silently ignored. Refuse it
+            // with the limitation named, rather than the generic "service
+            // account key required" it would otherwise hit later.
+            for (const attachedDb of attached) {
+               if (
+                  attachedDb.type === "bigquery" &&
+                  attachedDb.bigqueryConnection?.impersonateServiceAccount
+               ) {
+                  throw new Error(
+                     `Attached database '${attachedDb.name}' on DuckDB connection ` +
+                        `'${connection.name}' sets impersonateServiceAccount, which ` +
+                        `is not supported on attached databases: DuckDB's BIGQUERY ` +
+                        `secret authenticates with a service account key, not a ` +
+                        `token. Use serviceAccountKeyJson for attached BigQuery ` +
+                        `databases.`,
+                  );
+               }
+            }
             if (attached.length === 0) {
                throw new Error(
                   `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
@@ -996,12 +1050,34 @@ export function assembleEnvironmentConnections(
                   | string
                   | undefined,
             );
+            // Impersonation rides the config-overlay mechanism: the pojo
+            // carries a plain-JSON reference, and buildEnvironmentMalloyConfig
+            // registers the `gcpImpersonation` overlay that resolves it to a
+            // live Impersonated auth client. The property is opaque +
+            // overlay-sourced + mustHaveValue on the bigquery type, so a
+            // literal can never satisfy it and an unresolved reference errors
+            // instead of falling back to ambient ADC. The raw reference (which
+            // embeds the SA email) is also what core folds into the connection
+            // digest, giving per-identity BuildIDs.
+            const impersonateServiceAccount =
+               connection.bigqueryConnection?.impersonateServiceAccount;
             pojo.connections[connection.name] = {
                is: "bigquery",
                projectId:
                   connection.bigqueryConnection?.defaultProjectId ??
                   serviceAccountKey?.environment_id,
                serviceAccountKey,
+               // Spread rather than `authClient: x ?? undefined`: the property
+               // is mustHaveValue, and core keys off the property being SET —
+               // an `authClient: undefined` entry still counts as set and
+               // fails every plain connection with "no value arrived".
+               ...(impersonateServiceAccount
+                  ? {
+                       authClient: {
+                          gcpImpersonation: impersonateServiceAccount,
+                       },
+                    }
+                  : {}),
                location: connection.bigqueryConnection?.location,
                maximumBytesBilled:
                   connection.bigqueryConnection?.maximumBytesBilled,

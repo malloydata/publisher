@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # The package format
 
 > What this is: what a Malloy Publisher package is on disk. The files, the `publisher.json`

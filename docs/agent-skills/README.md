@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Contributor guide
 
 How to design and contribute MCP tools and agent skills for the Malloy ecosystem. Read these

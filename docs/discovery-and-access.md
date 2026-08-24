@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Discovery surface & query boundary
 
 > What this is: how a package controls **which** models and sources are visible and queryable. This

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Card, CardContent, CardMedia, styled } from "@mui/material";
 
 /**

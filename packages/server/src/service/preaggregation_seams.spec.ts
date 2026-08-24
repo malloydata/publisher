@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The two pre-aggregation seams, over a real package: the BUILD PLAN (rollups get
 // planned and reported with their provenance) and the SERVE path (a covered query
 // routes through the composite and still answers correctly).

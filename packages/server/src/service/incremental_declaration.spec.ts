@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Declaration resolution for incremental materialization, against the real
 // compiler (in-memory DuckDB, the pattern of materialization_eligibility.spec.ts).
 // The behaviors this module depends on are pinned separately in

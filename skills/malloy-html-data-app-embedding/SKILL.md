@@ -2,6 +2,10 @@
 name: malloy-html-data-app-embedding
 description: Embed an in-package HTML data app into a host page or another application, including auto-sizing and auth. Read when embedding a Publisher page via Publisher.embed.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Embedding an HTML Data App
 

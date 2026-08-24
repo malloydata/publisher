@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Publish-time validation of `#@ preaggregate` declarations (handoff Work item 4).
  *

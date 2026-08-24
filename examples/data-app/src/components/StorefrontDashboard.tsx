@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import Dashboard from "./Dashboard";
 import defaultWidgets from "../constants/defaultStorefrontDashboardWidgets.json";
 

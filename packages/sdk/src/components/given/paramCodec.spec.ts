@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
