@@ -1,6 +1,6 @@
 // Generated file. Do not edit.
 //
-// @malloydata/malloy-filter@0.0.427 (MIT), bundled as a browser ES
+// @malloydata/malloy-filter@0.0.432 (MIT), bundled as a browser ES
 // module by scripts/vendor-malloy-filter.mjs. Regenerate with:
 //
 //   bun run vendor:malloy-filter
