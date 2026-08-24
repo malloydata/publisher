@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Card, CardContent, CardMedia, styled } from "@mui/material";
 
 /**
@@ -24,10 +27,18 @@ export const MALLOY_BRAND = {
  * WCAG minimum for a graphical object. The nearest series hues do not: `#aacd85`
  * sage is 1.8:1, `#ec72b8` pink 2.7:1, `#b87ced` violet 2.9:1.
  *
- * The bar is stated for these three only. `MALLOY_BRAND` above is inherited from
- * the logo and teal is 2.5:1, which is below it, so the row it backs has a
- * white-on-teal glyph that does not meet the same standard. Pre-existing, not
- * introduced here, and it is a brand decision rather than a component one.
+ * These three were picked against the bar, but they are not the only colors it
+ * now binds. `CONTENT_TINT` in `Package/ContentTypeIcon.tsx` paints all three of
+ * `MALLOY_BRAND` behind glyphs as well, and `ContentTypeIcon.spec.ts` holds two
+ * of them to the same 3:1: orange at 3.09:1 and darkBlue at 5.17:1. Orange
+ * clears it by 0.09, so retuning it lighter turns that suite red, in a file a
+ * brand change would not otherwise open. For those two the bar is a component
+ * constraint, not only a brand decision.
+ *
+ * Teal is the exception at 2.5:1, below the bar and inherited from the logo, so
+ * the row it backs carries a white-on-teal glyph that does not meet the
+ * standard. Pre-existing, not introduced here. The spec grandfathers it by
+ * content type rather than by color, so a new type handed teal still fails.
  */
 export const MALLOY_ACCENT = {
    violet: "#7c4dcc",

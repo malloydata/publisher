@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Read and stamp the `## [Unreleased]` sections in RELEASE_NOTES.md.
 //
 // The release workflow uses this for the two manual steps that used to sit

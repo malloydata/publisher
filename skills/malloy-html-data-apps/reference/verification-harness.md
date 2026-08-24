@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Headless Verification Harness
 
 > Scaffolding to verify a finished data app end-to-end without a live warehouse. Referenced from `SKILL.md` ("Verify before you call it done"). You are building for someone who cannot tell a correct dashboard from a broken one; this harness is how you check, so they don't have to.

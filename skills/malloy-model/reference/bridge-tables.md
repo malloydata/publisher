@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Bridge Tables & Composite Keys
 
 ## Bridge Table Pattern (Many-to-Many)

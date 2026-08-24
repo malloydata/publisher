@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Malloy Explorer: Visual Query Builder for Malloy
 
 > What this is: a tour of the Explorer, Publisher's no-code visual query builder. Every action

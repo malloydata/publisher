@@ -3,6 +3,10 @@ id: extended-source-inherits-persist
 tags: serve-correctness, safety, known-red
 package: esi
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # An extension of a persisted source must not become a second build target
 

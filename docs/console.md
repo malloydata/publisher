@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # The Publisher Console
 
 > What this is: a tour of the **Publisher Console**, the server's built-in web UI — how the core

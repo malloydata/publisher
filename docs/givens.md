@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Givens (Runtime Parameters)
 
 > What this is: the base runtime-parameter mechanism that powers notebook filter controls,

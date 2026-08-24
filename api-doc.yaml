@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 openapi: 3.1.0
 info:
   title: Malloy Publisher - Semantic Model Serving API
@@ -4363,7 +4366,12 @@ components:
             actually changes; consumers should treat it as an opaque token and
             use the supplied value verbatim rather than deriving their own. This
             field is optional — when omitted, a connection identity is derived
-            locally instead.
+            locally instead. Because the fingerprint replaces the derived digest
+            verbatim, it must vary with anything that changes which data the
+            connection can reach — including the impersonated identity: two
+            environments on the same project with different
+            impersonateServiceAccount values but the same fingerprint would
+            share persisted-table ids.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-
@@ -4727,6 +4735,19 @@ components:
         serviceAccountKeyJson:
           type: string
           description: JSON string containing Google Cloud service account credentials
+        impersonateServiceAccount:
+          type: string
+          description: >-
+            Email of a Google Cloud service account this connection impersonates
+            for every BigQuery call, via short-lived tokens from the IAM Service
+            Account Credentials API. The publisher's own credential (ADC) must
+            hold roles/iam.serviceAccountTokenCreator on the target service
+            account, and iamcredentials.googleapis.com must be enabled in the
+            calling project. Mutually exclusive with serviceAccountKeyJson; set
+            billingProjectId explicitly, since project auto-detection resolves
+            through the impersonated credential. Not supported on DuckDB
+            attachedDatabases entries or federated builds from a BigQuery
+            source through DuckDB, which require a service account key.
         maximumBytesBilled:
           type: string
           description: Maximum bytes to bill for query execution (prevents runaway costs)
@@ -5798,10 +5819,35 @@ components:
       properties:
         connectionName:
           type: string
-          description: With `physicalTableName`, the table the boundary belongs to.
+          description: >-
+            The connection whose SQL computes the table's rows. With
+            `physicalTableName` — and `storageDestinationName`, when the table is
+            in a storage destination — the table the boundary belongs to.
         physicalTableName:
           type: string
           description: The table's logical (unquoted) name, as the manifest reports it.
+        storageDestinationName:
+          type: string
+          description: >-
+            The storage destination the table lives in, when the source was
+            materialized into one — an entry in `storageDestinations`, NOT a
+            connection, exactly as on `ManifestEntry`. Absent means the table
+            lives in `connectionName`'s own warehouse.
+
+            Part of the table's IDENTITY, not a description of it, so it must be
+            returned verbatim like every other field here. A source keeps both its
+            physical name and its content address when `storage=` is added or
+            removed (an annotation enters neither), so without this field a
+            boundary measured on the stored table is indistinguishable from one
+            measured on a colocated table of the same name — and a delta computed
+            from the wrong one can skip rows.
+
+            A caller that has never recorded this field may omit it. An entry that
+            omits it for a source this run materializes into a destination
+            describes a different table, so that source SEEDS rather than being
+            rejected: the entry is stale, not wrong, and a seed is always correct.
+            An entry that names a DIFFERENT destination than the run instructs is
+            a caller error and is rejected like any other mismatched entry.
         coveredThrough:
           type: string
           description: >-
@@ -6040,14 +6086,24 @@ components:
             reach its own job records also reports null; that case is counted by
             `publisher_storage_build_attribution_skipped_total`.
 
-            An incremental delta reports null because its statements do not run
-            through a single call whose result reaches here. A chained `storage=`
-            build reports null because it read its parent's already-materialized
-            table and touched no warehouse at all. A POSTGRES source reports null
-            on every path: the label that makes a read reportable is BigQuery's,
-            and Postgres has no per-statement tag to carry one. And a bag whose
-            every property is unusable as a BigQuery label key renders no label,
-            so such a read is issued the untagged way and reports null too.
+            A COLOCATED incremental delta reports null because its statements do
+            not run through a single call whose result reaches here. A delta
+            into a `storage=` destination reports whatever its own bounded read
+            reported: that read is issued through the same call a full build's
+            is, so a tagged one is costed and an untagged one is not. A
+            SNOWFLAKE source reports null on a delta even though its full build
+            reports a figure — Snowflake does not return one with the read, so
+            the full build looks it up afterwards by matching the statement
+            text, and a delta's text is the bounded, projected wrapper rather
+            than the build SQL that lookup keys on. Summing this field across
+            refreshes therefore understates a Snowflake source; it does not mean
+            those reads were free. A chained `storage=` build reports null
+            because it read its parent's already-materialized table and touched
+            no warehouse at all. A POSTGRES source reports null on every path:
+            the label that makes a read reportable is BigQuery's, and Postgres
+            has no per-statement tag to carry one. And a bag whose every
+            property is unusable as a BigQuery label key renders no label, so
+            such a read is issued the untagged way and reports null too.
         dataAsOf:
           type: string
           format: date-time
@@ -6096,7 +6152,7 @@ components:
             Present exactly when the source is refreshed incrementally, so
             absent means only that it is not: a source declaring
             `refresh="full"`, or one whose declaration the delta path cannot act
-            on at all (an unsupported dialect, `storage=`), which the publish
+            on at all (an unsupported source dialect), which the publish
             gate rejects anyway.
 
   parameters:

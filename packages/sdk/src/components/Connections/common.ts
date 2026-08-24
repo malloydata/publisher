@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { HTMLInputTypeAttribute } from "react";
 import { ConnectionTypeEnum } from "../../client/api";
 import type {

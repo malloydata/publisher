@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Minimum Node major version Publisher supports. One floor with six
  * declarations across the repo: this constant, the server's, and `engines.node`

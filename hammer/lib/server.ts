@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Spawns the REAL Publisher server from source (`bun src/server.ts`) on isolated
 // ports and an isolated server root, pointed at a generated config. Waits for
 // operationalState === "serving". `PERSIST_STORAGE_MODE` is read at startup, so

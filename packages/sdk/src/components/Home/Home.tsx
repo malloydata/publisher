@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { MoreVert } from "@mui/icons-material";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import {
@@ -75,27 +78,26 @@ const FEATURES: Array<{ title: string; body: string; href: string }> = [
    },
 ];
 
+/**
+ * Always a new tab. `Home` is exported from the SDK, so it renders inside other
+ * people's pages as well as the standalone console, and same-tab navigation
+ * there unloads the host application. That includes the API spec, which is
+ * served by the Publisher server but not necessarily by the page's own origin.
+ * `target` and `rel` are set together so they cannot desynchronise.
+ */
 function InlineLink({
    href,
-   external = true,
    children,
 }: {
    href: string;
-   /**
-    * Whether to open in a new tab. False for the API spec, which is served by
-    * the Publisher server and replaces the console deliberately; true for
-    * off-site targets. `target` and `rel` are both driven from this one flag so
-    * they cannot desynchronise.
-    */
-   external?: boolean;
    children: React.ReactNode;
 }) {
    return (
       <Box
          component="a"
          href={href}
-         target={external ? "_blank" : undefined}
-         rel={external ? "noopener noreferrer" : undefined}
+         target="_blank"
+         rel="noopener noreferrer"
          sx={{ color: "text.primary", textDecoration: "underline" }}
       >
          {children}
@@ -285,10 +287,7 @@ export default function Home({ onClickEnvironment }: HomeProps) {
                 server's root, and an SDK consumer's page origin need not be
                 that server: a root-relative href resolves against the host and
                 404s. serverBaseUrl exists for exactly this. */}
-            <InlineLink
-               href={`${serverBaseUrl(server)}/api-doc.html`}
-               external={false}
-            >
+            <InlineLink href={`${serverBaseUrl(server)}/api-doc.html`}>
                REST API
             </InlineLink>{" "}
             that does everything this console does.

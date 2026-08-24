@@ -3,6 +3,10 @@ id: cross-worker-reference-isolation
 tags: orchestration, cluster
 package: xw
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A reference with nothing to resolve it fails loudly, never silently recomputing
 

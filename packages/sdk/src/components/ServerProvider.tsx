@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import axios from "axios";
 import React, {

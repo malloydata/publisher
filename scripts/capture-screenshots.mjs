@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // One-off screenshot capture for the docs. Requires a Publisher server running
 // on localhost:4000 serving the `examples` environment.
 //
@@ -17,7 +20,9 @@ const SHOTS = [
     url: `${BASE}/environments/examples/packages/storefront/index.html`,
     viewport: { width: 1200, height: 900 },
     waitUntil: "domcontentloaded",   // page holds an SSE live-reload stream, so networkidle never fires
-    waitFor: "#byCategory",
+    // The page builds its tiles in JS and gives them no ids, so wait on a KPI
+    // card, which only exists once the first query has come back.
+    waitFor: ".kpi-value",
     settle: 5000,
     fullPage: true,
   },

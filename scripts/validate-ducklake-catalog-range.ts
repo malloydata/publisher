@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
 
 /**
  * DuckLake catalog-format version-contract check (run under Bun).

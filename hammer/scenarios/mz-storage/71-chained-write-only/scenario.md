@@ -3,6 +3,10 @@ id: chained-write-only
 tags: config, kill-switch, chained
 package: cwo
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # `write-only` must not stop a chained pair building, and must serve both live
 

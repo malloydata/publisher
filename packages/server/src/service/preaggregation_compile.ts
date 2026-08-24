@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Compiling the synthesized pre-aggregation model — the one seam both legs share.
  *

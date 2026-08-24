@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Contract test for where a *source-level* `where:` referencing a given ends up
 // in the compiled model, and for `readDashboardModelFacts` reading it.
 //

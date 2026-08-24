@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { registerReloadPackageTool } from "./reload_package_tool";
 import type { EnvironmentStore } from "../../service/environment_store";

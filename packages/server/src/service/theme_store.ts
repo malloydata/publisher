@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Mutex } from "async-mutex";
 import { getInstanceTheme, sanitizeTheme, Theme } from "../config";
 import { logger } from "../logger";

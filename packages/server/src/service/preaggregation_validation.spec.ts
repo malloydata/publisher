@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Real-compile tests for `#@ preaggregate` publish validation.
 //
 // Every model below COMPILES CLEANLY. That is the point of the file: Malloy has

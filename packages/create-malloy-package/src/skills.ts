@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { skillsDir } from "@malloy-publisher/skills";

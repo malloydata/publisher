@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Unit contract for the build-scoped credential primitives: the SQL a build
 // session issues to (a) RW-attach a destination DuckLake and (b) federate a
 // source warehouse for a native query-passthrough. `runSQL` is stubbed so no

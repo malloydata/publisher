@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Hammer harness entrypoint. One command: brings up Postgres (DuckLake catalog +
 // source warehouse), builds + boots the real Publisher server (on demand, per
 // mode) and runs the selected scenarios against it, prints a report, tears

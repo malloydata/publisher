@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { givensToParams, paramsToGivens } from "../components/given/paramCodec";
 import type { GivenValue } from "./givenValue";

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * UI-side value for a given. Mirrors the JS shapes the server accepts for
  * `givens` runtime values, plus `Date` (serialized before send: see

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * The set of palette colour keys that have separate light and dark
  * variants. This is the SDK-side canonical list, consumed by the

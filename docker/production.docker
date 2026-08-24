@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 FROM oven/bun:1.2
 
 RUN apt-get update && apt-get install -y bash libc6 git

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 set -euo pipefail
 
 case "$1" in

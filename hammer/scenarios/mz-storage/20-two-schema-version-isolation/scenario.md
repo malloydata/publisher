@@ -3,6 +3,10 @@ id: two-schema-version-isolation
 tags: orchestration, isolation
 package: mzv1
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Two deployments of one source keep isolated snapshots in their own schemas
 
