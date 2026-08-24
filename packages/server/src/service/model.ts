@@ -1906,7 +1906,21 @@ export class Model {
       runnable: QueryMaterializer,
       givens: Record<string, GivenValue>,
       options?: {
-         recompile?: (materializer: ModelMaterializer) => QueryMaterializer;
+         recompile?: (
+            materializer: ModelMaterializer,
+            grafts: ReadonlyArray<{
+               graftTarget: string;
+               condition: FilterCondition;
+            }>,
+         ) => QueryMaterializer;
+         /**
+          * Replaces {@link assertGateLanded} for a caller whose bind mechanism
+          * makes the IR proof vacuous — currently only the notebook own-scope
+          * queryDef graft, which mutates the very object the prover would read
+          * back. Supplied together with `recompile` by
+          * {@link ownScopeQueryDefBinder} so the two cannot drift apart.
+          */
+         proveGraft?: (recompiled: QueryMaterializer) => Promise<void>;
          bypassAuthorize?: boolean;
          /** The scope a row-level gate on `runnable` grafts against — see
           *  {@link GraftScope}. Defaults to this model's own cumulative
@@ -2017,8 +2031,12 @@ export class Model {
             rowLevel,
             graftScope!,
          );
-         const recompiled = options.recompile(graftedMaterializer);
-         await this.assertGateLanded(recompiled, rowLevel);
+         const recompiled = options.recompile(graftedMaterializer, rowLevel);
+         if (options.proveGraft) {
+            await options.proveGraft(recompiled);
+         } else {
+            await this.assertGateLanded(recompiled, rowLevel);
+         }
          this.rowLevelFilteredRunnables.add(recompiled);
          return recompiled;
       } catch (err) {
@@ -2278,9 +2296,84 @@ export class Model {
                `graft target "${graftTarget}" is not a source in this model`,
             );
          }
+         // Spread-assign a NEW array; never `push`. Malloy shares `filterList`
+         // ARRAYS by reference across its spread copies (malloy-element.js,
+         // named-source.js, dynamic-space.js) and `structuredClone` preserves
+         // that aliasing, so pushing would land this gate on join copies of
+         // the source too — the exact leak the P0 note above forbids.
          target.filterList = [...(target.filterList ?? []), condition];
+         this.graftIntoNamedQuerySnapshots(
+            copy,
+            graftTarget,
+            target,
+            condition,
+         );
       }
       return this.gateRuntime._loadModelFromModelDef(copy);
+   }
+
+   /**
+    * Append `condition` to any NAMED QUERY in `copy` whose stored run target
+    * is a pre-graft snapshot of `target`.
+    *
+    * A model-level `query: tile is gated -> {…}` stores its own
+    * `NamedQueryDef.structRef`, and when `gated` came from an `import` that
+    * `structRef` is an INLINED copy of the struct rather than a name (see this
+    * file's `authorize_import_hop` spec header). `query-reference.js` reuses
+    * that stored def verbatim, so grafting `contents[graftTarget]` alone never
+    * reaches it and the gate silently fails to attach — which the prover then
+    * correctly turns into a denial of an authorized caller. This is the
+    * documented single-query dashboard shape (`docs/dashboards.md`), so it is
+    * not a corner case.
+    *
+    * Deliberately narrow, and each limit is load-bearing rather than caution:
+    *  - `sourceID` ONLY, never `referenceID` — a join copy carries the base's
+    *    `referenceID` (named-source.js), so matching that would graft the gate
+    *    onto joins and leak it into unrelated queries.
+    *  - APPEND to the snapshot; never repoint `structRef` at the name, which
+    *    would drop the reference site's own `sourceArguments`
+    *    (query_model_impl.js) and silently run a parameterized source on its
+    *    declaration defaults.
+    *  - NO recursion — not into `fields` (joins, per the P0 note on
+    *    {@link buildGraftedMaterializer}), not into the query's `pipeline`,
+    *    and not into a `CompositeSourceDef`'s `sources[]`. Composite member
+    *    snapshots are a separate, currently fail-CLOSED case.
+    *
+    * Idempotent by `condition.code`, so re-grafting a cached clone cannot
+    * stack the same filter twice.
+    *
+    * Known behaviour change, and the reason this is called out in review: for
+    * a gated `query_source` the filter now applies INSIDE the stored query's
+    * own run target, so aggregates over it change from all-rows to
+    * caller-rows. That is the correct number, but it IS a change.
+    */
+   private graftIntoNamedQuerySnapshots(
+      copy: ModelDef,
+      graftTarget: string,
+      target: SourceDef,
+      condition: FilterCondition,
+   ): void {
+      const sourceID = target.sourceID;
+      // No `sourceID` means no safe way to tell this struct from another of
+      // the same name in an inheritance chain — skip rather than guess.
+      if (!sourceID) return;
+      for (const [key, value] of Object.entries(copy.contents)) {
+         if (key === graftTarget) continue;
+         const named = value as unknown as {
+            type?: string;
+            structRef?: unknown;
+         };
+         if (named?.type !== "query") continue;
+         const snapshot = named.structRef;
+         if (!snapshot || typeof snapshot !== "object") continue;
+         const struct = snapshot as SourceDef;
+         if (struct.sourceID !== sourceID) continue;
+         if (struct.filterList?.some((f) => f.code === condition.code))
+            continue;
+         // Spread-assign, never `push` — same aliasing reason as the graft
+         // site above.
+         struct.filterList = [...(struct.filterList ?? []), condition];
+      }
    }
 
    /**
@@ -2359,6 +2452,140 @@ export class Model {
             );
          }
       }
+   }
+
+   /**
+    * The bind pair for a notebook cell that must graft against its OWN scope:
+    * a `recompile` that grafts the cell's already-compiled queryDef, and the
+    * `proveGraft` that checks it. Returned together because supplying one
+    * without the other is a silent fail-OPEN — see `prove` below.
+    *
+    * Why the queryDef is grafted rather than recompiled. A cell that both
+    * brings in a gated source and runs it in the SAME cell has no earlier
+    * cell to graft against, so its own model is the graft scope. That scope
+    * cannot be re-entered by recompiling the cell's text: the grafted clone is
+    * loaded from a ModelDef and therefore has no base URL, so a relative
+    * `import` in that text fails to resolve outright ("In order to use
+    * relative imports, you must compile a file via a URL") — which is exactly
+    * what an import-and-run cell contains. `_loadQueryFromQueryDef` binds the
+    * already-compiled queryDef instead, translating nothing.
+    *
+    * The cell's queryDef holds an INLINED copy of the run-target struct (its
+    * source arrived unexported through an `import`), so the condition is
+    * appended to that copy. The copy is deep-cloned first: `cell.runnable` is
+    * memoized across requests, and mutating it in place would leak one
+    * caller's filter into the next caller's query.
+    */
+   private ownScopeQueryDefBinder(
+      queryDef: unknown,
+      scope: GraftScope,
+   ): {
+      recompile: (
+         materializer: ModelMaterializer,
+         grafts: ReadonlyArray<{
+            graftTarget: string;
+            condition: FilterCondition;
+         }>,
+      ) => QueryMaterializer;
+      prove: (recompiled: QueryMaterializer) => Promise<void>;
+   } {
+      let graftedStruct: SourceDef | undefined;
+      let expectedCodes: string[] = [];
+      let appliedGrafts: ReadonlyArray<{ condition: FilterCondition }> = [];
+      return {
+         recompile: (materializer, grafts) => {
+            const clone = structuredClone(queryDef) as { structRef?: unknown };
+            expectedCodes = [];
+            appliedGrafts = grafts;
+            graftedStruct = undefined;
+            const snapshot = clone.structRef;
+            if (typeof snapshot === "string") {
+               // The cell DECLARES its own gated source, so the run target is
+               // a NAME. `_loadQueryFromQueryDef` resolves that name against
+               // the grafted clone, which already carries the condition — no
+               // queryDef surgery needed, and `assertGateLanded` stays fully
+               // honest because resolution goes through `contents`. This is
+               // the long-standing own-scope case; leave it exactly as it was.
+               return (
+                  materializer as HydrationMaterializer
+               )._loadQueryFromQueryDef(clone);
+            }
+            if (!snapshot || typeof snapshot !== "object") {
+               // Neither a name nor a struct is a shape we can prove — DENY
+               // rather than run ungated.
+               throw new Error(
+                  "own-scope run target is neither a named source nor an inlined struct",
+               );
+            }
+            const struct = snapshot as SourceDef;
+            for (const { graftTarget, condition } of grafts) {
+               const target = scope.modelDef.contents[graftTarget];
+               // `sourceID` identity, never name: two structs in one
+               // inheritance chain share a name, and appending a condition
+               // lifted in `graftTarget`'s field space to a renamed or
+               // projected relative binds it to the wrong column.
+               if (
+                  !target ||
+                  !isSourceDef(target) ||
+                  !target.sourceID ||
+                  struct.sourceID !== target.sourceID
+               ) {
+                  throw new Error(
+                     `own-scope run target does not match graft target "${graftTarget}"`,
+                  );
+               }
+               if (!struct.filterList?.some((f) => f.code === condition.code)) {
+                  struct.filterList = [...(struct.filterList ?? []), condition];
+               }
+               expectedCodes.push(condition.code ?? "");
+            }
+            graftedStruct = struct;
+            return (
+               materializer as HydrationMaterializer
+            )._loadQueryFromQueryDef(clone);
+         },
+         /**
+          * Be precise about what this proves, because half of it proves
+          * nothing. Re-reading the condition off `graftedStruct` is VACUOUS —
+          * it is the array this binder just wrote. The load-bearing half is
+          * the object-IDENTITY check: it asserts the struct the materializer
+          * will actually execute is the one we grafted, so a future
+          * `_loadQueryFromQueryDef` that copies, re-derives, or substitutes
+          * its argument turns into a denial instead of an ungated query.
+          *
+          * When the run target was a NAME, nothing was grafted here and this
+          * defers to {@link assertGateLanded}, which is non-vacuous on that
+          * path because the name resolves through the grafted `contents`.
+          *
+          * Neither branch proves Malloy still HONORS `filterList` during SQL
+          * generation — no IR-level check can, here or on the ordinary
+          * {@link assertGateLanded} path. That property is pinned by the
+          * row-count and generated-SQL assertions in
+          * `authorize_import_hop.integration.spec.ts`, which is where a
+          * behavioural property belongs.
+          */
+         prove: async (recompiled) => {
+            if (!graftedStruct) {
+               await this.assertGateLanded(recompiled, appliedGrafts);
+               return;
+            }
+            const prepared = (await recompiled.getPreparedQuery()) as {
+               _query?: { structRef?: unknown };
+            };
+            if (prepared._query?.structRef !== graftedStruct) {
+               throw new Error(
+                  "the grafted run target is not the one the query will execute",
+               );
+            }
+            for (const code of expectedCodes) {
+               if (!graftedStruct.filterList?.some((f) => f.code === code)) {
+                  throw new Error(
+                     "a row-level gate condition did not land on the recompiled query",
+                  );
+               }
+            }
+         },
+      };
    }
 
    /** Depth bound for {@link assertGateLanded}'s query-source base recursion. */
@@ -5450,25 +5677,29 @@ export class Model {
                // `runnableToExecute` (not `cell.runnable`) so a `#(filter)`
                // refinement rebuild above is still the one that ends up
                // executing.
-               const queryDefForOwnScopeRepoint = usesOwnScope
-                  ? (
-                       (await runnableToExecute.getPreparedQuery()) as {
-                          _query: unknown;
-                       }
-                    )._query
+               // Own-scope binding grafts the cell's own compiled queryDef and
+               // carries its own proof; the two arrive together from
+               // `ownScopeQueryDefBinder` precisely so neither can be wired up
+               // without the other. See its doc for why this cell cannot
+               // simply recompile its text.
+               const ownScopeBinder = usesOwnScope
+                  ? this.ownScopeQueryDefBinder(
+                       (
+                          (await runnableToExecute.getPreparedQuery()) as {
+                             _query: unknown;
+                          }
+                       )._query,
+                       graftScope!,
+                    )
                   : undefined;
                runnableToExecute = await this.authorizeAndBindRunnable(
                   runnableToExecute,
                   givens ?? {},
                   {
-                     recompile: usesOwnScope
-                        ? (mm) =>
-                             (
-                                mm as HydrationMaterializer
-                             )._loadQueryFromQueryDef(
-                                queryDefForOwnScopeRepoint,
-                             )
+                     recompile: ownScopeBinder
+                        ? ownScopeBinder.recompile
                         : (mm) => mm.loadQuery(textForRecompile),
+                     proveGraft: ownScopeBinder?.prove,
                      graftScope,
                   },
                );
