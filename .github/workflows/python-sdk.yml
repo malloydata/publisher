@@ -243,6 +243,8 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    # Runs the same generation-and-test script as publish, minus the upload.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -262,6 +264,11 @@ jobs:
 
   publish:
     name: Publish to PyPI
+    # The job holding PYPI_TOKEN and doing the most work: uv install, client
+    # generation, tests, build, the importability guard, then twine. Bounded for
+    # the reason its siblings are, and generously, because it is the one job here
+    # whose failure mode is an unusable upload rather than a red check.
+    timeout-minutes: 30
     # The same gate skills-npm.yml and create-malloy-package-npm.yml carry, and
     # for the same reason: workflow_dispatch offers every branch in the ref
     # dropdown, and the definition that runs is the one on the ref you pick, so
@@ -401,6 +408,24 @@ jobs:
             exit 1
           fi
           WHEEL="${WHEELS[0]}"
+
+          # The sdist too, because `twine upload dist/*` ships BOTH and a PyPI
+          # filename can never be reused for either. Almost nothing resolves an
+          # sdist for a pure-python wheel, which is why this is a containment
+          # check rather than an install: it asserts the generated client is
+          # actually inside the tarball, which is the failure that motivated all
+          # of this. One sdist, for the same reason as one wheel.
+          SDISTS=(dist/*.tar.gz)
+          if [ "${#SDISTS[@]}" -ne 1 ]; then
+            printf '[dist] %s\n' "${SDISTS[@]}"
+            echo "::error title=Publish::expected exactly one sdist in dist/, found ${#SDISTS[@]}"
+            exit 1
+          fi
+          if ! tar -tzf "${SDISTS[0]}" | grep -qE '/malloy_publisher_sdk/client\.py$'; then
+            tar -tzf "${SDISTS[0]}" | sed 's/^/[sdist] /'
+            echo "::error title=Publish::${SDISTS[0]} does not contain malloy_publisher_sdk/client.py, so the sdist is missing the generated client (logged above). NOTHING was uploaded."
+            exit 1
+          fi
           python -m venv /tmp/wheelcheck
           /tmp/wheelcheck/bin/pip install --quiet "$WHEEL"
           # From /tmp, so the source tree on disk cannot satisfy the import and

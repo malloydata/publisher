@@ -90,9 +90,22 @@ jobs:
 
           # Scoped to the paths this package's PUBLISHED content is built from,
           # which is deliberately NARROWER than the `paths:` trigger above:
-          # editing this workflow file changes no published byte, so demanding a
-          # version bump for it would force a content-free publish and make every
-          # future edit here require a release. The file is in the trigger, so a
+          # almost nothing in this workflow file changes a published byte, so
+          # demanding a version bump for it would force a content-free publish and
+          # make every future edit here require a release.
+          #
+          # "Almost": BUN_VERSION at the top of this file pins the bundler that
+          # `prepack` runs to emit dist/index.js, the only JS in the tarball. So a
+          # BUN_VERSION bump does change what ships, and this check reports "no
+          # published scaffolder content changed" for it. Accepted rather than
+          # closed, because the consequence is mild and bounded — the tarball
+          # stays one bundler behind until the next real release, not broken — and
+          # watching the whole file to catch one line would demand a release for
+          # every comment edit. It is the same shape as the bun.lock gap and is
+          # recorded beside it in CONTEXT.md. Hoisting BUN_VERSION somewhere
+          # watched is what would close it properly.
+          #
+          # The file is in the trigger, so a
           # workflow-only PR reaches this step and must be skipped here.
           #
           # packages/skills/package.json IS in scope, unlike the rest of the
@@ -483,6 +496,9 @@ jobs:
 
   publish:
     name: Publish to NPM
+    # Same reasoning as check_version and check_pack above: a hung step in a job
+    # holding id-token: write should not sit on a runner for six hours.
+    timeout-minutes: 30
     # workflow_dispatch offers every branch in the ref dropdown, and the
     # definition that runs is the one on the ref you pick. npm's trusted
     # publisher matches on this file's name, so the filename is effectively the

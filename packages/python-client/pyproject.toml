@@ -58,8 +58,20 @@ docs = [
     "mkdocstrings[python]>=0.22.0"
 ]
 dev = [
-    "openapi-python-client>=0.18.0",
-    "openapi-spec-validator>=0.7.1",
+    # PINNED, not a floor, and scripts/build-python-sdk.sh calls them by bare
+    # name so these are the versions that actually run. The generator's output
+    # is this package's entire public surface, and since release.yml began
+    # publishing to PyPI that surface ships under a filename which can never be
+    # reused — so "whatever is latest on the day of the release" is not an
+    # acceptable input. A generator bump is now a reviewable diff under
+    # packages/python-client/, which the bump check watches, so it correctly
+    # demands a version bump too.
+    #
+    # 0.29.0 is what CI already resolved before this pin, so it changes nothing
+    # today. Note it requires Python >=3.11 while this package declares >=3.9:
+    # that only affects installing the `dev` extra, not the published client.
+    "openapi-python-client==0.29.0",
+    "openapi-spec-validator==0.9.0",
     "black>=24.4.0",
     "ruff>=0.4.1",
     "pyright>=1.1.360"

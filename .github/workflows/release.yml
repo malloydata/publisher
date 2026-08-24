@@ -1104,6 +1104,10 @@ jobs:
           FAILURE=""
           STAMPED=0
           VERSIONED=0
+          # Distinct from VERSIONED=0, which is also the no-op value. Declared
+          # here as well as reset per attempt below, so a path that never enters
+          # the loop cannot trip `set -u` on it in the summary.
+          VERSION_FAILED=0
           OUTCOME=""
 
           # This step prepares a branch and hands a human a link. It deliberately
@@ -1149,6 +1153,10 @@ jobs:
               echo "::notice title=Release notes::${FAILURE}; retrying"
             fi
             FAILURE=""
+            # Reset per attempt, beside FAILURE and for the same reason: pass 1
+            # failing the reset must not make pass 2's summary claim it failed
+            # when the retry wrote the version fine.
+            VERSION_FAILED=0
 
             # A fresh main, not this checkout: this job is on the release branch,
             # and main may have moved since the release started.
@@ -1214,6 +1222,15 @@ jobs:
               sed 's/^/[set-version] /' "$STAMP_LOG"
               echo "::warning title=Release notes::could not reset main's declared version (logged above); continuing with the release notes only. main will keep declaring its previous version, which prepare's max(npm, declared) floor tolerates."
               VERSIONED=0
+              # A SEPARATE flag, because VERSIONED=0 has two meanings and only
+              # one of them is "main already declared this version". The summary
+              # lines below stated that reason as fact, so a run where the reset
+              # FAILED emitted the warning above AND a summary saying main already
+              # declared it — the summary contradicting a warning from the same
+              # run, which is exactly what the comment below this block warns
+              # about for the notes half. The summary is the artifact CONTEXT.md
+              # and the release skill both send a releaser to read.
+              VERSION_FAILED=1
             fi
 
             if [ "$STAMPED" = "0" ] && [ "$VERSIONED" = "0" ]; then
@@ -1370,13 +1387,27 @@ jobs:
               {
                 echo "⚠️ **Narrative shipped, nothing stamped.** This release's page carries hand-written sections, but none of the headings it recorded are still \`[Unreleased]\` on \`main\` — they were edited or removed while the release ran. See the warning above for which."
                 echo
+                if [ "$VERSION_FAILED" = 1 ]; then
+                  echo "No branch was pushed. The version reset also FAILED (see the warning above), so \`main\` still declares whatever it did before this release — \`prepare\`'s \`max(npm, declared)\` floor tolerates that, so it is the cheaper half to leave. Check that those sections on \`main\` say what they should, and carry the version that actually shipped them."
+                else
                 echo "No branch was pushed, and \`main\` already declared \`${VERSION}\` so there was no version to reset either. Check that those sections on \`main\` say what they should, and carry the version that actually shipped them."
+                fi
               } >> "$GITHUB_STEP_SUMMARY"
               ;;
             nothing)
-              echo "::notice title=Release notes::nothing to stamp and no version to reset on main"
+              # The annotation asserts the same reason the summary does, so it
+              # is conditional for the same reason.
+              if [ "$VERSION_FAILED" = 1 ]; then
+                echo "::notice title=Release notes::nothing to stamp on main; the version reset failed (see the warning above)"
+              else
+                echo "::notice title=Release notes::nothing to stamp and no version to reset on main"
+              fi
               {
+                if [ "$VERSION_FAILED" = 1 ]; then
+                  echo "Nothing to stamp — no \`[Unreleased]\` headings were recorded as shipping in this release, so its page carries the generated PR list only. The version reset FAILED (see the warning above), so \`main\` still declares whatever it did before this release, and no branch was pushed."
+                else
                 echo "Nothing to stamp — no \`[Unreleased]\` headings were recorded as shipping in this release, so its page carries the generated PR list only. \`main\` already declared \`${VERSION}\`, so there was no version to reset either, and no branch was pushed."
+                fi
                 echo
                 echo "If the step above warned that it could not read \`RELEASE_NOTES.md\`, that is the reason for the first half, and the narrative did not reach the release page either — this line does not rule that out."
               } >> "$GITHUB_STEP_SUMMARY"

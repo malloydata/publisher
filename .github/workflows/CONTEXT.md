@@ -168,6 +168,21 @@ Two gaps in that coverage, both named rather than assumed:
   `malloy-publisher-sdk` has a version on PyPI, this check starts enforcing
   exactly like its npm siblings, and the 404 branch stops being the path every
   run takes. See *The first PyPI publish* below.
+- `BUN_VERSION` in `create-malloy-package-npm.yml` pins the bundler `prepack`
+  runs to emit `dist/index.js`, the only JS in that tarball — so bumping it does
+  change published bytes, and the check reports "no published scaffolder content
+  changed". Same shape as the `bun.lock` entry above and accepted for the same
+  reason: watching the whole workflow file to catch one line would demand a
+  release for every comment edit, and the consequence is bounded — the tarball
+  stays one bundler behind until the next real release, not broken. Hoisting
+  `BUN_VERSION` somewhere watched is what would close it.
+
+**None of these three checks may become a required status check.** They all live
+behind path-filtered `pull_request` triggers, so a PR touching none of those
+paths produces no check at all — and a required check that never runs sits at
+`expected` forever, blocking merge on every unrelated PR. `skills-npm.yml` always
+had this shape; it now applies three times. Requiring them means first giving
+each an always-run gate job that reports success when the paths did not match.
 
 `release.yml` is `workflow_dispatch`-only and is the single place a release starts. Its `prepare` job
 bumps sdk/app/server, commits to a fresh `release/sdk-<version>` branch, and pushes it; `npm-sdk.yml`
@@ -391,6 +406,16 @@ installs cleanly and cannot be imported:
   sets `[tool.hatch.build] ignore-vcs = true`, plus explicit `packages`/`include` for the wheel and
   sdist targets so that switching the ignore rules off does not start packing `.venv/`, `dist/` and
   `__pycache__`. An explicit `packages` **alone does not fix it** — the ignore rules still apply.
+
+**A third tool reads `.gitignore` here, and it is worth knowing before you trust a green build.**
+`build-python-sdk.sh` runs `black`, `ruff` and `pyright` over the generated client at steps 6 and 7 —
+except ruff also honours `.gitignore`, so inside a git checkout it silently skips the entire generated
+tree. Measured on one tree with one ruff (0.16.4): **929 errors outside a git repo, `All checks
+passed!` inside one.** CI is a checkout, so it reports the latter and the release is not at risk; but
+"lint ran" does not mean "the generated client was linted". Left as-is deliberately — turning it on
+surfaces ~929 findings and is a separate decision — and recorded because it is the same trap as the
+packaging bug above, one directory that is deliberately gitignored while being the package's entire
+content.
 
 The guard against both is `Verify the wheel is importable before uploading it`, which installs the
 built wheel into a throwaway venv and imports it, from `/tmp` so the source tree cannot satisfy the

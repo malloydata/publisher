@@ -27,15 +27,27 @@ echo "Installing dependencies..."
 uv pip install -e ".[dev,test]"
 
 # Step 3: Validate OpenAPI spec
+#
+# NOT `uvx`. uvx resolves the LATEST release into an ephemeral environment and
+# ignores this project's declared dependencies entirely, so the pin in
+# pyproject.toml's `dev` extra read as if it governed these tools and did not.
+# The venv is already activated above and `uv pip install -e ".[dev,test]"` has
+# already installed both of them into it, so a bare command name runs the
+# version the project declares.
+#
+# This matters more since release.yml started publishing this package: the
+# generated client IS the wheel's public surface, and a PyPI filename can never
+# be reused. With uvx, what shipped was whatever the generator's latest emitted
+# at publish time, and nothing recorded which generator produced a release.
 echo "Validating OpenAPI spec..."
-uvx openapi-spec-validator ../../api-doc.yaml
+openapi-spec-validator ../../api-doc.yaml
 
 # Step 4: Generate client
 echo "Generating Python SDK into $SDK_OUTPUT_DIR/..."
 # Clean previous generation if it exists in the target directory
 rm -rf "$SDK_OUTPUT_DIR"
 # No need to mkdir -p if overwrite is used and it creates the dir
-uvx openapi-python-client generate \
+openapi-python-client generate \
     --path ../../api-doc.yaml \
     --config ./openapi-client.json \
     --meta none \

@@ -36,6 +36,12 @@ env:
 
 jobs:
   check_pack:
+    # A frozen-lockfile install, a build, the package's suite, and the registry
+    # check below. Bounded for the reason its siblings are: every registry call
+    # here is bounded individually, but a bound per call is not a bound on the
+    # job, and a hung step would sit on a runner for GitHub's 6-hour default
+    # blocking a PR on a check that can neither pass nor fail.
+    timeout-minutes: 30
     name: Verify the published tarball
     runs-on: ubuntu-latest
     permissions:
@@ -126,7 +132,22 @@ jobs:
           # `git ls-files | grep credible-` must stay empty), and no dotfile under
           # skills/ is content. Adding them would mean a pathspec that cannot match,
           # which the assertion below is about.
-          EXCLUDE=(':!skills/README.md')
+          #
+          # The second entry is governed by packaging, not by exclusions.ts:
+          # tsconfig.build.json excludes `src/**/*.spec.ts` from the `tsc` that
+          # emits dist/, and dist/ is the only thing `files` ships from this
+          # directory — so a spec change publishes nothing. Without it, adding a
+          # test to this package demands a version bump and a content-free
+          # publish, which is the same over-inclusive scope the scaffolder's
+          # enumerated PATHS already avoid for its tests/ directory. Measured:
+          # the PR that added workflow-exclusions.spec.ts went red on exactly
+          # this.
+          #
+          # `src/*.spec.ts`, not `src/**/*.spec.ts`: a git pathspec is fnmatch
+          # WITHOUT FNM_PATHNAME, so `*` already crosses `/` and `**` is not
+          # special — verified, the `**` form silently matches nothing and the
+          # exclusion would quietly do nothing at all.
+          EXCLUDE=(':!skills/README.md' ':!packages/skills/src/*.spec.ts')
 
           # Assert every entry exists, because `git diff -- does/not/exist` exits
           # 0 with EMPTY output, which lands in the skip branch below and reports
@@ -309,6 +330,8 @@ jobs:
 
   publish:
     name: Publish to NPM
+    # Bounded like the jobs above, and this one holds id-token: write.
+    timeout-minutes: 30
     # workflow_dispatch offers every branch in the ref dropdown, and the
     # definition that runs is the one on the ref you pick. npm's trusted
     # publisher matches on this file's name, so the filename is effectively the
