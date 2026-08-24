@@ -204,6 +204,31 @@ Any output there means bump `packages/skills/package.json`. Same shape for the
 scaffolder. This must be **merged to `main` before the dispatch**: the release
 reads `main`, not the release branch.
 
+#### The scaffolder also pins a server version, and it is checked
+
+`create-malloy-package` hard-pins the server its generated workspaces run
+(`SERVER_VERSION` in `packages/create-malloy-package/src/scaffold.ts`), and its
+publish workflow **refuses to ship unless that pin equals npm's `latest`**. A
+stale pin is therefore not a cosmetic lag; it fails the publish 25 minutes into a
+release, after `skills` has already gone out:
+
+```bash
+sed -n 's/^export const SERVER_VERSION = "\(.*\)";$/\1/p' \
+  packages/create-malloy-package/src/scaffold.ts
+npm view @malloy-publisher/server version
+```
+
+Set the pin to **the version this release is about to publish**, in the same
+pre-release PR, and confirm that version still honours `--host` (the guard's own
+instruction — check `--host` is still parsed in `packages/server/src/server.ts`).
+
+This works only because `publish-packages` waits for `publish-npm`. It did not
+until 0.0.250, and the two orderings made the pin unsatisfiable: the guard ran
+before the server reached npm, so pinning the outgoing version failed against a
+`latest` one release behind, and pinning the previous version failed once npm
+caught up. If that `needs:` is ever narrowed back to `prepare` alone, the
+scaffolder stops being publishable alongside a server bump at all.
+
 Do not skip the equality check and read the log alone. Anchored at the commit
 that set npm's version, the log still reports a bump that has already merged,
 and "any output means bump" then walks the version a second time for nothing.

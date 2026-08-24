@@ -19,8 +19,8 @@
    },
    "devDependencies": {
       "@eslint/js": "^8.57.0",
-      "@malloydata/malloy-interfaces": "^0.0.427",
-      "@malloydata/render": "^0.0.427",
+      "@malloydata/malloy-interfaces": "^0.0.432",
+      "@malloydata/render": "^0.0.432",
       "@modelcontextprotocol/ext-apps": "^1.7.5",
       "@types/bun": "^1.2.21",
       "@typescript-eslint/eslint-plugin": "^8.16.0",
