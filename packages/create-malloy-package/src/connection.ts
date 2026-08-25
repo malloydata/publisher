@@ -46,8 +46,11 @@ const PORTABLE_CONNECTION_NAME = /^[A-Za-z_][A-Za-z0-9_]+$/;
  * (packages/server/src/service/connection_config.ts), which is why it applies to
  * a Postgres connection called `duckdb` just as much as to a DuckDB one.
  *
- * Measured on 0.0.250, the version this tool pins: the server still starts,
- * but the whole ENVIRONMENT is
+ * Measured on 0.0.250. Not "the version this tool pins": SERVER_VERSION in
+ * source is a dev default, and the publish workflow substitutes npm's current
+ * `latest` into it at release time, so a published scaffolder pins whatever
+ * shipped that day. Cite what was measured, never what the user is assumed to
+ * be running. The server still starts, but the whole ENVIRONMENT is
  * skipped — `environments=0 packages=0 load_errors=1` — so with the single
  * environment this tool writes, nothing is served at all. Unlike the unset-${VAR}
  * case above, this one is properly diagnosed: the reason appears in loadErrors
