@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
-import { getColocatedPersistRelaxationEnabled } from "../config";
 import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
 import type { AnnotationNote } from "./annotations";
@@ -191,10 +190,8 @@ export function assertMaterializationEligible(
  * `"preaggregate"` when `CompiledBuildPlan.preaggregatePlans` has an entry for
  * the source — the same signal `build_plan.ts` reports as `origin`.
  *
- * Gated by `getColocatedPersistRelaxationEnabled()` (`PERSIST_COLOCATED_RELAXATION_ENABLED`,
- * default OFF): until a deployment opts in, this relaxation is skipped entirely
- * and an authorize-gated colocated persist source is refused unconditionally,
- * matching the pre-relaxation behavior.
+ * Applies unconditionally: any colocated persist source whose gate is proven
+ * `row_level` and attributed to the entry point is admitted.
  *
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
  *   annotation to remove, and the alternative of moving the gate to a source
@@ -209,7 +206,6 @@ export function assertColocatedPersistNotAuthorizeGated(
    if (!referencesAuthorize(persistSource)) return;
 
    if (
-      getColocatedPersistRelaxationEnabled() &&
       origin === "persist" &&
       gateOutcome?.classification === "row_level" &&
       gateOutcome.attributed
@@ -220,9 +216,11 @@ export function assertColocatedPersistNotAuthorizeGated(
       return;
    }
 
-   // Reuses the "authorize" reason: this is the same underlying refusal
-   // (a frozen table serving an authorize-gated relation to everyone) as
-   // the storage-destination case, just reached via the colocated path.
+   // Reuses the "authorize" reason: this is still an authorize-gate refusal,
+   // just for a DIFFERENT underlying reason than the storage-destination
+   // case above -- this pass cannot prove the gate compiles to the entry
+   // point's own row filter, not that the served artifact carries no gate
+   // at all.
    recordEligibilityRefused("authorize");
    const gated =
       origin === "preaggregate"

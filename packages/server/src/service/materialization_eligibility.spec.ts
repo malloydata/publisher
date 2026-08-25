@@ -14,14 +14,7 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import {
-   afterEach,
-   beforeAll,
-   beforeEach,
-   describe,
-   expect,
-   it,
-} from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../errors";
 import {
    assertColocatedPersistNotAuthorizeGated,
@@ -383,22 +376,6 @@ source: mz_colocated_given is base -> { where: tenant = $tenant; aggregate: c is
    });
 
    describe("row-level relaxation (gateOutcome)", () => {
-      // The relaxation is opt-in as of the default flip, so every case in here
-      // enables it explicitly. Left implicit, these would all pass for the
-      // wrong reason once the default changed -- they would be asserting the
-      // pre-relaxation refusal while reading as relaxation coverage.
-      const prevFlag = process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
-      beforeEach(() => {
-         process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = "true";
-      });
-      afterEach(() => {
-         if (prevFlag === undefined) {
-            delete process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
-         } else {
-            process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = prevFlag;
-         }
-      });
-
       it("admits a gated colocated source given a proven row_level + attributed outcome", async () => {
          const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
@@ -477,88 +454,6 @@ source: orders__preagg__category is orders -> {
                { classification: "row_level", attributed: true },
             ),
          ).toThrow(/authorize/i);
-      });
-   });
-
-   describe("PERSIST_COLOCATED_RELAXATION_ENABLED opt-in", () => {
-      const prev = process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
-      afterEach(() => {
-         if (prev === undefined) {
-            delete process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
-         } else {
-            process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = prev;
-         }
-      });
-
-      it("REFUSES a proven row_level + attributed outcome with the flag left at its default (off)", async () => {
-         // The default carries the safety property: until a deployment opts in,
-         // an authorize-gated colocated persist source is refused however well
-         // its gate classifies.
-         delete process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
-         const sources = await persistSources(`##! experimental.persistence
-##! experimental.givens
-given: role :: string
-source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) $role = 'analyst'
-#@ persist name="mz_relaxed_default"
-source: mz_relaxed_default is base -> { aggregate: c is count() }`);
-         expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
-               sources.mz_relaxed_default,
-               sources.mz_relaxed_default.name,
-               "persist",
-               { classification: "row_level", attributed: true },
-            ),
-         ).toThrow(/authorize/i);
-      });
-
-      it("admits that same outcome once a deployment opts in", async () => {
-         process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = "true";
-         const sources = await persistSources(`##! experimental.persistence
-##! experimental.givens
-given: role :: string
-source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) $role = 'analyst'
-#@ persist name="mz_relaxed_optin"
-source: mz_relaxed_optin is base -> { aggregate: c is count() }`);
-         expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
-               sources.mz_relaxed_optin,
-               sources.mz_relaxed_optin.name,
-               "persist",
-               { classification: "row_level", attributed: true },
-            ),
-         ).not.toThrow();
-      });
-
-      it("refuses unconditionally when the flag is explicitly disabled, even for an otherwise-admissible proven row_level + attributed outcome", async () => {
-         process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = "false";
-         const sources = await persistSources(`##! experimental.persistence
-##! experimental.givens
-given: role :: string
-source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#(authorize) $role = 'analyst'
-#@ persist name="mz_rolled_back"
-source: mz_rolled_back is base -> { aggregate: c is count() }`);
-         expect(() =>
-            assertColocatedPersistNotAuthorizeGated(
-               sources.mz_rolled_back,
-               sources.mz_rolled_back.name,
-               "persist",
-               { classification: "row_level", attributed: true },
-            ),
-         ).toThrow(/authorize/i);
-      });
-
-      it("does not affect an ungated colocated persist source when the flag is disabled", async () => {
-         process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = "false";
-         const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
-#@ persist name="mz_plain_flag_off"
-source: mz_plain_flag_off is base -> { aggregate: c is count() }`);
-         expect(() =>
-            assertColocatedPersistNotAuthorizeGated(sources.mz_plain_flag_off),
-         ).not.toThrow();
       });
    });
 });
