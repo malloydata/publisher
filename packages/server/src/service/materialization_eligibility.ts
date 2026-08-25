@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import type { PersistSource } from "@malloydata/malloy";
+import { getColocatedPersistRelaxationEnabled } from "../config";
 import { MaterializationEligibilityError } from "../errors";
 import { recordEligibilityRefused } from "../materialization_metrics";
+import type { AnnotationNote } from "./annotations";
 import { parseAuthorizeAnnotation } from "./authorize";
+import type { PersistSourceGateOutcome } from "./build_plan";
 
 /**
  * Compile-time eligibility gate for materializing a persist source into a
@@ -80,6 +83,7 @@ export function assertMaterializationEligible(
    } catch (err) {
       recordEligibilityRefused("free_parameter");
       throw new MaterializationEligibilityError({
+         reason: "free_parameter",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: its parameter surface could not be determined ` +
@@ -92,6 +96,7 @@ export function assertMaterializationEligible(
    if (unbound.length > 0) {
       recordEligibilityRefused("free_parameter");
       throw new MaterializationEligibilityError({
+         reason: "free_parameter",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: it has unbound parameter(s) ` +
@@ -105,6 +110,7 @@ export function assertMaterializationEligible(
    if (referencesGiven(persistSource)) {
       recordEligibilityRefused("given");
       throw new MaterializationEligibilityError({
+         reason: "given",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: it references a given. Givens bind per query and are ` +
@@ -117,6 +123,7 @@ export function assertMaterializationEligible(
    if (referencesAuthorize(persistSource)) {
       recordEligibilityRefused("authorize");
       throw new MaterializationEligibilityError({
+         reason: "authorize",
          message:
             `Source '${sourceName}' cannot be materialized into a storage ` +
             `destination: it is protected by an #(authorize) gate (its own or a ` +
@@ -139,9 +146,28 @@ export function assertMaterializationEligible(
  * represent a per-query given or a free parameter; a colocated build has no
  * such constraint (it is still one relation per source, computed once, in the
  * source's own warehouse), so applying them here would refuse a large set of
- * packages that build and serve correctly today. Only the authorize gate is a
- * problem on this path: it is evaluated per request, and a colocated build is
- * just as frozen as a storage build, so the same leak applies.
+ * packages that build and serve correctly today.
+ *
+ * Unlike the storage tier, a colocated artifact is NOT served frozen with
+ * respect to the gate: the entry point's own `#(authorize)` is re-evaluated on
+ * every query, grafted onto the SAME entry point (`Model.buildGraftedMaterializer`
+ * / `resolveGraftTarget`) whether that entry point resolves to a live
+ * recompute or a same-connection substitution of the materialized table.
+ * Persistence changes only where the rows are read FROM, never whether the
+ * row filter is appended — so a `gateOutcome` of `{classification: "row_level",
+ * attributed: true}` (the entry point's gate is PROVEN to compile to a row
+ * filter, and PROVEN to be the only gate reachable beneath the source — see
+ * `isAuthorizeAttributedToEntryPoint`) is admitted: the served artifact grants
+ * nothing a live query would not, and the only thing lost is freshness (a row
+ * whose access decision changed is served under the OLD decision until the
+ * next rebuild, since the build itself never evaluates the gate).
+ *
+ * Refused with no `gateOutcome`, or one classifying `rejected` or unattributed,
+ * for the ORIGINAL reason: this pass alone (`referencesAuthorize`'s deep walk)
+ * cannot tell whether the entry point's own gate is even expressible as a row
+ * filter, or whether a second gate hides behind a join outside the entry
+ * point's own identity chain — either way there is nothing here to prove the
+ * artifact matches what a live query enforces, so it fails closed.
  *
  * This gate carries a SECOND job that its own justification above does not
  * mention, and narrowing it on the strength of that justification alone would
@@ -150,8 +176,12 @@ export function assertMaterializationEligible(
  * `preaggregation_*` modules has any authorize awareness of its own — so this
  * refusal is also the only thing standing between an `#(authorize)`-gated source
  * and the pre-aggregation tier. `referencesAuthorize` finds the gate through the
- * import → rename → `query_source` chain, which is why it holds. See
- * `docs/materialization.md`, and the rollup-shaped test in this module's spec.
+ * import → rename → `query_source` chain, which is why it holds. A rollup
+ * GROUPS across the gated column by construction, so the column is not even
+ * present to filter on afterwards — the relaxation above therefore never
+ * applies to `origin === "preaggregate"`, regardless of `gateOutcome`; that
+ * refusal stays unconditional. See `docs/materialization.md`, and the
+ * rollup-shaped test in this module's spec.
  *
  * `origin` names the annotation the AUTHOR wrote, so the refusal can be
  * actionable for a source they never typed. A rollup's name is synthesized
@@ -161,6 +191,10 @@ export function assertMaterializationEligible(
  * `"preaggregate"` when `CompiledBuildPlan.preaggregatePlans` has an entry for
  * the source — the same signal `build_plan.ts` reports as `origin`.
  *
+ * Gated by `getColocatedPersistRelaxationEnabled()` (`PERSIST_COLOCATED_RELAXATION_ENABLED`,
+ * default on): disabling it skips this relaxation entirely and refuses
+ * unconditionally, matching the pre-relaxation behavior.
+ *
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
  *   annotation to remove, and the alternative of moving the gate to a source
  *   that is not materialized.
@@ -169,45 +203,79 @@ export function assertColocatedPersistNotAuthorizeGated(
    persistSource: PersistSource,
    sourceName: string = persistSource.name,
    origin: "persist" | "preaggregate" = "persist",
+   gateOutcome?: PersistSourceGateOutcome,
 ): void {
-   if (referencesAuthorize(persistSource)) {
-      // Reuses the "authorize" reason: this is the same underlying refusal
-      // (a frozen table serving an authorize-gated relation to everyone) as
-      // the storage-destination case, just reached via the colocated path.
-      recordEligibilityRefused("authorize");
-      const gated =
-         origin === "preaggregate"
-            ? `the source '${sourceName}' rolls up is protected by an ` +
-              `#(authorize) gate (its own or a joined source's)`
-            : `it is protected by an #(authorize) gate (its own or a joined ` +
-              `source's)`;
-      const remedy =
-         origin === "preaggregate"
-            ? `Remove the '#@ preaggregate' annotation from the gated source's ` +
-              `measure(s), or move the gate to a source that is not ` +
-              `pre-aggregated.`
-            : `Drop '#@ persist' from this source, or move the gate to a source ` +
-              `that is not materialized.`;
-      const what =
-         origin === "preaggregate"
-            ? `Pre-aggregation rollup '${sourceName}' cannot be built`
-            : `Source '${sourceName}' cannot be materialized (colocated ` +
-              `'#@ persist')`;
-      // Only true of a rollup: it GROUPS, so the gated column is not even
-      // present to filter on afterwards.
-      const alsoRollup =
-         origin === "preaggregate"
-            ? ` A rollup also groups ACROSS the gated column, so it could not ` +
-              `be row-filtered afterwards even in principle.`
-            : "";
-      throw new MaterializationEligibilityError({
-         message:
-            `${what}: ${gated}. An authorize expression is evaluated per ` +
-            `request; a materialized-once table served frozen carries no gate, ` +
-            `so it would be served to everyone, bypassing authorization.` +
-            `${alsoRollup} This is refused for safety. ${remedy}`,
-      });
+   if (!referencesAuthorize(persistSource)) return;
+
+   if (
+      getColocatedPersistRelaxationEnabled() &&
+      origin === "persist" &&
+      gateOutcome?.classification === "row_level" &&
+      gateOutcome.attributed
+   ) {
+      // Proven safe above: the entry point's own gate compiles to a row
+      // filter and nothing else is reachable beneath it, so colocated serving
+      // grafts exactly what a live query would.
+      return;
    }
+
+   // Reuses the "authorize" reason: this is the same underlying refusal
+   // (a frozen table serving an authorize-gated relation to everyone) as
+   // the storage-destination case, just reached via the colocated path.
+   recordEligibilityRefused("authorize");
+   const gated =
+      origin === "preaggregate"
+         ? `the source '${sourceName}' rolls up is protected by an ` +
+           `#(authorize) gate (its own, a joined source's, or inherited ` +
+           `from a source it derives from)`
+         : `it is protected by an #(authorize) gate (its own, a joined ` +
+           `source's, or inherited from a source it derives from)`;
+   // The relaxation's common refusal is now the join/inherited case: the gate
+   // is ALREADY on a source that is not materialized (a joined-in or
+   // derivation-base source), so "move the gate to a source that is not
+   // materialized" is not just unhelpful there, it describes what is already
+   // true. The only fix for that shape is making the gate provably the entry
+   // point's OWN row filter (see `isAuthorizeAttributedToEntryPoint`) rather
+   // than relying on something reachable underneath it.
+   const remedy =
+      origin === "preaggregate"
+         ? `If the gate is on the rolled-up source itself, remove the ` +
+           `'#@ preaggregate' annotation or move the gate to a source that ` +
+           `is not pre-aggregated. If it is reached through a join or a ` +
+           `derivation instead, that source is already unaggregated -- the ` +
+           `fix is to stop pre-aggregating this entry point, not to move ` +
+           `the gate again.`
+         : `If the gate is on this source itself, drop '#@ persist' or ` +
+           `move the gate to a source that is not materialized. If it is ` +
+           `reached through a join or a derivation instead, that source is ` +
+           `already not materialized -- express the condition as this ` +
+           `entry point's own row-level gate, or stop persisting it.`;
+   const what =
+      origin === "preaggregate"
+         ? `Pre-aggregation rollup '${sourceName}' cannot be built`
+         : `Source '${sourceName}' cannot be materialized (colocated ` +
+           `'#@ persist')`;
+   // Only true of a rollup: it GROUPS, so the gated column is not even
+   // present to filter on afterwards.
+   const alsoRollup =
+      origin === "preaggregate"
+         ? ` A rollup also groups ACROSS the gated column, so it could not ` +
+           `be row-filtered afterwards even in principle.`
+         : "";
+   // A plain `#@ persist` gate that is row-level but not (yet) proven
+   // attributed reads the same as an unclassifiable one here: this function
+   // has no visibility into WHY `gateOutcome` didn't clear the bar (missing,
+   // rejected, or a join-only gate outside its identity chain), so the
+   // message stays generic rather than guessing.
+   throw new MaterializationEligibilityError({
+      reason: "authorize",
+      message:
+         `${what}: ${gated}. An authorize expression is evaluated per ` +
+         `request; without a proven row-level, fully-attributed ` +
+         `classification this pass cannot show the served artifact matches ` +
+         `what a live query would enforce.` +
+         `${alsoRollup} This is refused for safety. ${remedy}`,
+   });
 }
 
 /**
@@ -416,4 +484,125 @@ function walkForAuthorize(
       if (walkForAuthorize(value, seen, depth + 1)) return true;
    }
    return false;
+}
+
+/**
+ * Whether every `#(authorize)` note reachable (transitively, INCLUDING
+ * joins) beneath the compiled source is also reachable WITHOUT crossing a
+ * join. The no-joins walk here is a superset of, and believed to cover, what
+ * `collectEntryPointGates` (`./gate_classification`) actually reaches by
+ * following only identity edges (own annotations -> `ancestorGateExprs`'s
+ * `extend` chain -> a query-source's derivation base -> its
+ * `compositeResolvedSourceDef`) — the two are not proven equivalent, so a gap
+ * (a note off every identity edge but still reachable without crossing a
+ * join) is not ruled out, only unobserved. `false` means the deep walk found
+ * a note reachable ONLY through a join: `referencesAuthorize`'s refusal is
+ * real for it today, but a row-level CLASSIFICATION of the entry point's own
+ * gate would say nothing about it, so a caller deciding whether to relax the
+ * colocated-persist refusal must require this to be `true`, not just a
+ * `row_level` classification.
+ *
+ * Object identity (matching `ownLevelNotes`'s convention, and
+ * `findSourceByOwnAnnotationIdentity`'s in `./gate_classification`), not text
+ * — two independently authored gates can share text.
+ *
+ * Fail-closed: any introspection failure is treated as unattributed.
+ */
+export function isAuthorizeAttributedToEntryPoint(
+   persistSource: PersistSource,
+): boolean {
+   try {
+      const deep = new Set<AnnotationNote>();
+      walkForAuthorizeNotes(
+         persistSource._sourceDef,
+         new WeakSet(),
+         0,
+         deep,
+         true,
+      );
+      const noJoins = new Set<AnnotationNote>();
+      walkForAuthorizeNotes(
+         persistSource._sourceDef,
+         new WeakSet(),
+         0,
+         noJoins,
+         false,
+      );
+      for (const note of deep) {
+         if (!noJoins.has(note)) return false;
+      }
+      return true;
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * Deep walk collecting authorize annotation NOTE objects (by identity)
+ * rather than {@link walkForAuthorize}'s boolean — a caller needs to know
+ * WHICH notes were found, not just whether any were. Its own recursion,
+ * independent of `walkForAuthorize`'s (rather than a shared core), so that
+ * function's early-return-on-first-match stays untouched by this
+ * collect-everything walk.
+ *
+ * `crossJoins=false` stops at a join field — matched the same way malloy's
+ * own `isJoined` does (`'join' in sd`), duck-typed here rather than fighting
+ * `TypedDef`'s union to call the exported predicate on a generic IR node
+ * (same spirit as `gate_classification.ts`'s own duck-typed casts).
+ * `crossJoins=true` reduces to `walkForAuthorize`'s full reach.
+ */
+function walkForAuthorizeNotes(
+   node: unknown,
+   seen: WeakSet<object>,
+   depth: number,
+   found: Set<AnnotationNote>,
+   crossJoins: boolean,
+): void {
+   if (depth > MAX_GIVEN_WALK_DEPTH) {
+      throw new Error("authorize-usage walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return;
+   if (seen.has(node as object)) return;
+   seen.add(node as object);
+
+   if (Array.isArray(node)) {
+      for (const item of node) {
+         walkForAuthorizeNotes(item, seen, depth + 1, found, crossJoins);
+      }
+      return;
+   }
+
+   const record = node as Record<string, unknown>;
+   if (!crossJoins && "join" in record) return;
+
+   for (const key of ["blockNotes", "notes"]) {
+      const arr = record[key];
+      if (!Array.isArray(arr)) continue;
+      for (const n of arr) {
+         const text =
+            typeof n === "string"
+               ? n
+               : n &&
+                   typeof n === "object" &&
+                   typeof (n as { text?: unknown }).text === "string"
+                 ? (n as { text: string }).text
+                 : undefined;
+         // Malloy's Note is always `{text, at}`, never a bare string, but Set
+         // identity is value equality for a string — two independently
+         // authored gates sharing text would collapse into one entry and
+         // could read as attributed for a join-only gate. Guard rather than
+         // rely on that never happening.
+         if (
+            text !== undefined &&
+            isAuthorizeAnnotation(text) &&
+            typeof n === "object"
+         ) {
+            found.add(n as AnnotationNote);
+         }
+      }
+   }
+
+   for (const value of Object.values(record)) {
+      walkForAuthorizeNotes(value, seen, depth + 1, found, crossJoins);
+   }
 }

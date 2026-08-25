@@ -4,7 +4,9 @@
 // ─────────────────────────────────────────────────────────────────────────
 // Access control, built on the same givens mechanism.
 //
-//   #(authorize)  decides WHETHER a caller may query the source (403 if not).
+//   #(authorize)  decides WHETHER this caller may read the source at all.
+//                 Enforced as a row filter, so a caller it admits nowhere
+//                 gets 200 with zero rows, not a 403.
 //   where:        decides WHICH rows they see once allowed (row-level access).
 //
 // Both read caller-supplied givens (ROLE, TENANT). They are a real boundary
@@ -15,17 +17,22 @@
 
 import { orders_base } from "internal.malloy"
 
-// Empty defaults keep both givens bound (fail-closed: an unset caller is denied)
-// and safe to reference in the row-level `where:` below.
+// Neither given may carry a default: the gate below references both, and a
+// referenced given with a default is refused at load (a caller who supplies
+// nothing would otherwise silently resolve to that default). One consequence:
+// since `where:` also references both, a caller MUST supply both keys on every
+// request — even the one whose value the caller's path doesn't care about
+// (send it as "") — or Malloy refuses to resolve the unsupplied given at all
+// and the request is denied, rather than binding to an implicit empty default
+// the way the retired string form's example did.
 given:
-  ROLE :: string is ''
-  TENANT :: string is ''
+  ROLE :: string
+  TENANT :: string
 
-// Authorization is OR across stacked annotations, each probed independently:
-// an admin override, plus a tenant allow-list. Supplying just one given still
-// grants — the other annotation simply doesn't match. See docs/authorize.md.
-#(authorize) "$ROLE = 'admin'"
-#(authorize) "$TENANT = 'acme' or $TENANT = 'globex' or $TENANT = 'initech'"
+// Authorization is a single disjunction: an admin override, plus a tenant
+// allow-list. Send both givens on every request (see the note above) — the one
+// not on the caller's path just fails to match. See docs/authorize.md.
+#(authorize) $ROLE = 'admin' or $TENANT = 'acme' or $TENANT = 'globex' or $TENANT = 'initech'
 source: orders_secured is orders_base extend {
   // Row-level access: admins see everything; a tenant caller sees only its rows.
   where: $ROLE = 'admin' or tenant = $TENANT

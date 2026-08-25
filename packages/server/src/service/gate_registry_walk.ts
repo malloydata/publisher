@@ -151,11 +151,12 @@ export function ancestorGateExprs(
    // A CYCLE returns `[]` ("no gate here"), not `["false"]`, and that is sound
    // because of a CALLER PRECONDITION, not because a cycle is harmless in
    // itself. Every call site reads the struct's OWN gate first and only calls
-   // this walk when that came back empty (`Model.gateExprsForOwnAnnotations`,
-   // `extractSourcesFromModelDef`'s `ownGates.length === 0`). So on an A->B->A
-   // cycle the struct at the far end is either an ancestor whose own notes the
-   // line below has already read, or the starting struct itself — whose own gate
-   // the caller read before calling. Nothing is skipped either way.
+   // this walk when that came back empty (`./gate_classification`'s
+   // `gateExprsForOwnAnnotations`, `extractSourcesFromModelDef`'s
+   // `ownGates.length === 0`). So on an A->B->A cycle the struct at the far
+   // end is either an ancestor whose own notes the line below has already
+   // read, or the starting struct itself — whose own gate the caller read
+   // before calling. Nothing is skipped either way.
    //
    // Do NOT "harden" this to `["false"]`: a diamond or self-referencing
    // derivation legitimately revisits a struct, and denying there denies every
