@@ -431,11 +431,12 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(bound.boundManifestUri).toBe(manifestFile);
 
          // Rebind to a URI that cannot be fetched. The CONFIGURED manifest is not
-         // applied, but the previously bound one stays fully in place — the throw
-         // happens before the new models are installed — so only the status moves.
-         // A reclaim gate reading live_fallback as "not serving from manifest
-         // tables" would drop the generation boundManifestUri still points at,
-         // out from under a package actively serving it.
+         // applied, but the previously bound one stays fully in place: the fetch
+         // fails before either tier applies, so nothing was even partially
+         // replaced — and only the status moves. A reclaim gate reading
+         // live_fallback as "not serving from manifest tables" would drop the
+         // generation boundManifestUri still points at, out from under a package
+         // actively serving it.
          const missing = path.join(tmpDir, `absent-rebind-${Date.now()}.json`);
          const failed = (await (
             await patchPackage({ manifestLocation: missing })

@@ -3218,6 +3218,11 @@ components:
             `manifestBindingStatus` — reading `live_fallback` as "not serving
             from manifest tables" and reclaiming that generation would drop
             tables out from under a package actively serving them.
+
+            Note this value is not the `live_fallback` on a query result's
+            `servedFrom`, which reports that ONE query degraded to the warehouse.
+            This one is about the package's binding, and as above does not imply
+            any query ran live.
         manifestEntryCount:
           type: integer
           readOnly: true
@@ -3241,6 +3246,13 @@ components:
             served models. Usually equals `manifestLocation`, but can differ
             after an in-memory auto-load following a materialization build (no
             URI), in which case it is null. Null whenever the package is unbound.
+
+            It also diverges after a FAILED REBIND: `manifestLocation` then names
+            the configured manifest that did not apply, while this names the
+            manifest still bound and still served from. So a non-null value here
+            is a live reference regardless of `manifestBindingStatus` — see that
+            field for the invariant a caller reclaiming superseded physical
+            tables has to hold.
         storageServeBindings:
           type: array
           readOnly: true
@@ -3253,6 +3265,11 @@ components:
             query actually routes to these tables additionally depends on
             `PERSIST_STORAGE_MODE=on`; under `off`/`write-only` the bindings may
             be present but the serve path still runs live (see `warnings`).
+
+            Like `boundManifestUri`, this describes whatever is CURRENTLY bound
+            rather than the configured manifest: after a failed rebind it goes on
+            listing the previously bound manifest's sources, which are still
+            serving.
           items:
             type: object
             properties:
