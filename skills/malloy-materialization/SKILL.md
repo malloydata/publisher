@@ -127,6 +127,13 @@ decision*, not merely stale data, and nothing raises an error.
   re-read - while the entry still reports an advancing `coveredThrough` and reads as healthy. Only a full
   rebuild recomputes the gating column.
 
+**And the window only binds where the serving manifest carries it.** Freshness is enforced from fields a
+control plane stamps onto the manifest it distributes; a Publisher that serves what it just built binds the
+table with no `dataAsOf` and no window, and an entry carrying no window never ages out. So on a standalone
+deployment the declared window is inert and the artifact serves until the next full rebuild - which leaves a
+rebuild cadence you actually verify as the only bound, and makes leaving a revocation-sensitive source
+unpersisted the safer call.
+
 When recommending `#@ persist` on a gated source, pair it with a freshness window and say out loud what
 staleness the author is accepting. A gated source with neither a window nor a full-rebuild cadence has no
 bound on how long a revoked row keeps being served.
