@@ -215,8 +215,14 @@ case, needs none of this.
 
 It keeps the secret out of the config file, and out of your shell history. It does not make the
 credential private in general: a running Publisher serves connection configuration, with values
-already substituted, from several unauthenticated REST endpoints. Measured on 0.0.250, the password
-comes back from `/api/v0/status`, `/api/v0/environments`, `/api/v0/environments/<env>` and that
-environment's `connections`, so protecting one path is not enough. Keep the whole API on localhost,
-or behind a gateway that authenticates, and treat "not in the file" as the scope of what the
-indirection buys.
+already substituted, from unauthenticated REST endpoints.
+
+**Do not treat that as a list of paths to protect.** Every route that can return a connection builds
+from one serializer, so the set is a consequence of that serializer rather than a boundary, and it
+grows whenever a route is added. Counting by probing understates it: two independent attempts did
+exactly that, one missing the legacy `/projects` aliases entirely. Reading the route table instead
+found fifteen registrations that can return a connection.
+
+So: keep the whole API on localhost or behind a gateway that authenticates, rather than hardening the
+endpoints you happen to know about, and treat "not in the file" as the scope of what the indirection
+buys.

@@ -559,12 +559,19 @@ export function renderEnvExample(built: BuiltConnection): string {
       // Said here because this is where the person handling the credential is
       // looking. The reassurance is printed to the terminal three times; the
       // limit on it belongs somewhere they will actually meet it.
-      // Deliberately does not name one endpoint. Measured: the substituted
-      // value comes back from /api/v0/status, /api/v0/environments,
-      // /api/v0/environments/<env> and .../connections, because the status
-      // builder mutates the environment object it spreads. Naming only /status
-      // would let a reader conclude that protecting that one path is enough,
-      // which is false, and would go stale the moment any subset is redacted.
+      // Deliberately names no endpoint and no count. Naming one path would let
+      // a reader conclude that protecting it is enough, which is false; naming
+      // a number invites hardening exactly that many routes.
+      //
+      // The history is the argument for both. I probed four paths, found the
+      // credential in four, and wrote "four" — a sample reported as a census.
+      // The team fixing the server independently counted eight the same way,
+      // missing the legacy /projects aliases. The real figure came from reading
+      // the route table rather than probing: 15 registrations can return a
+      // connection, and they all build from one serializer, which returned the
+      // live connections array rather than a redacted copy. So the count is a
+      // consequence of that single serializer, not a boundary to defend, and it
+      // moves whenever a route is added. Authenticate the API, not the paths.
       "# Worth knowing: keeping the value out of the config file is not the same",
       "# as keeping it private. A running Publisher serves connection config,",
       "# with these values already substituted, from several unauthenticated",
