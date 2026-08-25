@@ -86,7 +86,11 @@ Which clients render it today, as far as we have tested: **Claude Desktop** does
 
 To turn it off entirely, set `PUBLISHER_NO_MCP_APPS=1`. The server then advertises no widget at all and results render as JSON, which is also what happens when the bundle was never built.
 
-One thing the widget does not do yet: it ignores the `# theme.*` annotations that the Publisher web UI honours, so a model that sets its own palette renders in Malloy's default colours in chat and in your palette in the UI.
+Two things the widget does not do yet, both cosmetic and both worth knowing before you show it to anyone.
+
+It ignores the `# theme.*` annotations that the Publisher web UI honours, so a model that sets its own palette renders in Malloy's default colours in chat and in your palette in the UI.
+
+And the card is light only. Its background and text are fixed light values with no dark variant, so in a client running a dark theme it appears as a white panel with dark text: legible, but a bright patch in a dark conversation. Doing this properly means reading the host's own theme, which MCP Apps exposes to the widget, rather than guessing from a media query the host may not reflect, so it is left until that is wired up.
 
 If you build Publisher from source and want the widget, build it. `bun run build` covers it, as does `bun run build:server-deploy`. A server whose widget bundle is missing does not advertise one, which is deliberate: a client told about a widget it cannot read shows a broken card, so the server would rather offer nothing.
 
