@@ -220,6 +220,10 @@ describe("connection credentials never reach a response body", () => {
    });
 
    it("returns no credential from any endpoint that can carry a connection", async () => {
+      // The legacy /projects aliases are included because they are registered
+      // on the same app and answer from the same serializer, so a sweep of the
+      // /environments paths alone would report a surface narrower than the one
+      // a caller can actually reach.
       const paths = [
          "/api/v0/status",
          "/api/v0/environments",
@@ -229,10 +233,22 @@ describe("connection credentials never reach a response body", () => {
          `/api/v0/environments/${ENV_NAME}/connections/bq_conn`,
          `/api/v0/environments/${ENV_NAME}/connections/sf_conn`,
          `/api/v0/environments/${ENV_NAME}/packages`,
+         "/api/v0/projects",
+         `/api/v0/projects/${ENV_NAME}`,
+         `/api/v0/projects/${ENV_NAME}/connections`,
+         `/api/v0/projects/${ENV_NAME}/connections/pg_conn`,
       ];
 
       for (const suffix of paths) {
          const res = await fetch(url(suffix));
+         // Asserted, not assumed. A path that 404s returns a body with no
+         // secret in it, so without this the sweep would report "clean" for a
+         // route it never actually reached, and would keep reporting clean if a
+         // route were renamed.
+         expect({ path: suffix, status: res.status }).toEqual({
+            path: suffix,
+            status: 200,
+         });
          const body = await res.text();
          for (const secret of ALL_SECRETS) {
             // Named per path so a failure says which endpoint leaked.
