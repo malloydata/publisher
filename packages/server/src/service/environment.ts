@@ -2224,8 +2224,8 @@ export class Environment {
          // routing at a table the host no longer vouches for. Mirrors the
          // hadColocated guard below.
          //
-         // Both `had*` reads must happen before either tier applies, since each
-         // bind overwrites the state the other's guard is asking about.
+         // Each bind overwrites the state its own guard reads, so take both
+         // `had*` reads before either tier applies.
          const hasStorage = Object.keys(storageEntries).length > 0;
          const hadStorage = pkg.hasStorageServeBindings();
 

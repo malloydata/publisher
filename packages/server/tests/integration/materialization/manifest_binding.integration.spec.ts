@@ -418,6 +418,40 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    );
 
    it(
+      "a failed rebind keeps the previously bound manifest in every field but the status",
+      async () => {
+         await getPackage(true); // start from live (unbound)
+
+         const manifestFile = await writeManifest();
+         const bound = (await (
+            await patchPackage({ manifestLocation: manifestFile })
+         ).json()) as Record<string, unknown>;
+         expect(bound.manifestBindingStatus).toBe("bound");
+         expect(bound.manifestEntryCount).toBe(1);
+         expect(bound.boundManifestUri).toBe(manifestFile);
+
+         // Rebind to a URI that cannot be fetched. The CONFIGURED manifest is not
+         // applied, but the previously bound one stays fully in place — the throw
+         // happens before the new models are installed — so only the status moves.
+         // A reclaim gate reading live_fallback as "not serving from manifest
+         // tables" would drop the generation boundManifestUri still points at,
+         // out from under a package actively serving it.
+         const missing = path.join(tmpDir, `absent-rebind-${Date.now()}.json`);
+         const failed = (await (
+            await patchPackage({ manifestLocation: missing })
+         ).json()) as Record<string, unknown>;
+         expect(failed.manifestBindingStatus).toBe("live_fallback");
+         expect(failed.manifestEntryCount).toBe(1);
+         expect(failed.boundManifestUri).toBe(manifestFile);
+         expect(await queryOrderSummaryStatus()).toBe(200);
+
+         await patchPackage({ manifestLocation: null });
+         await getPackage(true);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
       "a rebind to a manifest whose storage entries vanished clears the old bindings",
       async () => {
          // Regression (MED-2): bindManifest must drop storage serve bindings when

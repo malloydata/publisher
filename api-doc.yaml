@@ -3188,30 +3188,51 @@ components:
             - bound
             - live_fallback
           description: >-
-            Server-computed, read-only: whether the configured build manifest
-            is currently bound to this package's served models. `unbound` = no
+            Server-computed, read-only: whether the CONFIGURED build manifest is
+            currently bound to this package's served models. `unbound` = no
             manifest configured, so the package serves live. `bound` = the
-            manifest was fetched and applied. `live_fallback` = a
-            `manifestLocation` is configured but the fetch/bind failed or timed
-            out, so the package is serving live despite intending to be
-            materialized-routed. Lets the caller confirm the publisher actually
-            bound the configured manifest rather than inferring it from logs.
+            configured manifest was fetched and applied. `live_fallback` = a
+            `manifestLocation` is configured but its fetch/bind failed or timed
+            out, so the configured manifest is NOT applied. Lets the caller
+            confirm the publisher actually bound the configured manifest rather
+            than inferring it from logs.
 
             `bound` reports that the bind ran to completion, NOT that any query
             routes to a materialized table: an entry whose source fails the
             eligibility gate is dropped, and the storage tier serves live under a
             `PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
             and `storageServeBindings` for what actually bound.
+
+            `live_fallback` does NOT imply the package is serving live. It says
+            the configured manifest was not applied — not that nothing is. A
+            failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
+            a failed REBIND leaves the previously bound manifest fully in place:
+            its colocated substitutions stay compiled in, its storage serve
+            bindings stay installed, and `boundManifestUri`, `manifestEntryCount`
+            and `storageServeBindings` all continue to describe it.
+
+            So the invariant to hold, whatever the status says: a non-null
+            `boundManifestUri` is a LIVE reference to the manifest whose tables
+            this package is currently serving from. A caller reclaiming
+            superseded physical tables must treat it as one regardless of
+            `manifestBindingStatus` — reading `live_fallback` as "not serving
+            from manifest tables" and reclaiming that generation would drop
+            tables out from under a package actively serving them.
         manifestEntryCount:
           type: integer
           readOnly: true
           description: >-
             Server-computed, read-only: number of sourceEntityId -> physical-table
             entries currently bound for the COLOCATED (same-connection tableName
-            substitution) tier only. 0 when unbound, on live fallback, or when the
-            manifest carried no colocated entries — so a fully bound
-            `storage=`-only manifest reports `bound` with a count of 0. Corroborate
-            a cross-connection bind with `storageServeBindings`, not this count.
+            substitution) tier only. 0 when unbound, or when the bound manifest
+            carried no colocated entries — so a fully bound `storage=`-only
+            manifest reports `bound` with a count of 0. Corroborate a
+            cross-connection bind with `storageServeBindings`, not this count.
+
+            Describes whatever is CURRENTLY bound, not the configured manifest: on
+            a failed rebind this keeps the previously bound manifest's count (as
+            `boundManifestUri` keeps its URI), because those entries really are
+            still bound.
         boundManifestUri:
           type: ["string", "null"]
           readOnly: true
