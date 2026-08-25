@@ -157,31 +157,9 @@ If you write a gate comparing a row field to an array-typed given, use `in`, not
 > values, not the real `org_id`'s. This is narrow (it requires an author to both drop and re-populate
 > the exact gated name) but real, and there is no load-time signal for it today.
 
-### Row-level gates and colocated persistence
-
-A row-level gate proven attributed to its entry point (see
-[materialization.md](materialization.md#authorize-gated-sources-and-materialization)) is the ONE
-`#(authorize)` shape eligible for a colocated `#@ persist`. Persisting the source changes only where
-its rows are read FROM; the gate itself keeps running live, on every query, exactly as described
-above — a materialized entry point is not served frozen with respect to who may see what. What can go
-stale between rebuilds is the row DATA the gate filters on: a row whose access decision changed (say,
-it changed owner) keeps serving to its former owner until the source rebuilds. See
-[materialization.md](materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source)
-for the full contract and how to bound that staleness. `storage=` and `#@ preaggregate` remain
-unconditionally refused for any `#(authorize)`-gated source — the relaxation applies to colocated
-persistence only.
-
-Declare the gate the same way as on any other source — directly above the `source:` line, whether or
-not that line is also tagged `#@ persist`:
-
-```malloy
-#(authorize) org_id in $GROUPS
-#@ persist name="orders_summary"
-source: orders_summary is orders_raw -> {
-  group_by: org_id, category
-  aggregate: total is amount.sum()
-} extend {}
-```
+An `#(authorize)`-gated source cannot be materialized, by any tier — `storage=`, colocated
+`#@ persist`, or `#@ preaggregate` all refuse it at build time. See
+[materialization.md](materialization.md#authorize-gated-sources-and-materialization).
 
 ## Semantics
 

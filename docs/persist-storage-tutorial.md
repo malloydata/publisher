@@ -689,14 +689,12 @@ closed: a source it cannot prove gate-free is refused.
 A colocated `#@ persist` is a different case, and the difference is worth stating because it is easy
 to over-claim. A colocated build has no virtual source: the substitution replaces only the source's
 relation SQL, while the gate is applied as the reading query's own `WHERE`, so the two compose and
-rows do come back filtered. The gate is not absent — which is why a colocated source is admitted when
-the compiler can _prove_ the gate is the entry point's own row-level filter and nothing else is
-reachable beneath it, and refused otherwise (an unattributed or join-only gate, an unclassifiable one,
-or one that doesn't reduce to a row filter at all). When admitted, what is frozen is the data the gate
-DECIDES AGAINST — the gating column's values are whatever they were at build time, so a row that
-changes hands keeps being served to its former owner until the next rebuild. See
-[materialization.md](materialization.md) for the author-facing refusal and the freshness contract that
-follows from it.
+rows do come back filtered. The gate is not absent — but a colocated source is refused anyway, and
+what the refusal is aimed at is narrower than a leak: the data the gate DECIDES AGAINST is frozen.
+The gating column's values are whatever they were at build time, so a row that changes hands keeps
+being served to its former owner until the next rebuild. See
+[materialization.md](materialization.md#authorize-gated-sources-and-materialization) for the
+author-facing refusal.
 
 ### Field-level hiding and the materialized table
 

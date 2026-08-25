@@ -64,7 +64,7 @@ Look across several runs, not one: the pattern over the recent history (how ofte
 
 Weigh rebuild cost against query benefit. Common findings:
 
-- **Persist candidate:** an expensive, frequently-queried source that is _not_ persisted (recomputed on every query). Recommend adding `#@ persist name="…"`. Strongest when the source is a heavy aggregate/join reused by many queries and its inputs change slowly.
+- **Persist candidate:** an expensive, frequently-queried source that is _not_ persisted (recomputed on every query). Recommend adding `#@ persist name="…"`. Strongest when the source is a heavy aggregate/join reused by many queries and its inputs change slowly. Never recommend this for a source protected by `#(authorize)` (its own, or one inherited/joined in) - the build will refuse it.
 - **Removal candidate:** a persisted source that is cheap to compute, rarely queried, or rebuilt far more often than it is read. Recommend dropping the `#@ persist` annotation (and its table): the storage + rebuild cost is not buying anything.
 - **Cadence mismatch:** a `SCHEDULER` cadence out of step with how fast the data changes or how long a build takes. If most scheduled runs are all-reused (nothing changed), the cron is too frequent, so loosen it. If queries routinely read stale data, tighten it. If the build's `durationMs` approaches the interval, the cadence is too aggressive.
 - **Scope mismatch:** `scope: version` re-materializes per published version (right when versions must be isolated, e.g. a schedule); `scope: package` reuses one lineage across versions (cheaper when versions can share). A schedule _requires_ `version`. If a package carries a schedule it does not need, clearing the schedule frees it to use the cheaper package scope.

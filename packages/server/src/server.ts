@@ -50,7 +50,6 @@ import {
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
-   getColocatedPersistRelaxationEnabled,
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
@@ -221,13 +220,6 @@ getPersistStorageMode();
 // path — so a typo would otherwise surface as a failed publish request rather
 // than a failed boot.
 getPersistCollisionEnforce();
-// Same for PERSIST_COLOCATED_RELAXATION_ENABLED. Its only other caller is
-// reached from inside `build_plan.ts`'s per-source try/catch, which logs a
-// generic "Failed to project a persist source into the build plan" and drops
-// the source with no `refusedSources` entry — so a typo would otherwise cost an
-// operator a silently vanishing source instead of the actionable error this
-// module exists to produce.
-getColocatedPersistRelaxationEnabled();
 
 // Same hazard, wider blast radius: getQueryMetadataMode() throws on an invalid
 // value and is read while resolving EVERY statement, so a typo'd off switch

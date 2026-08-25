@@ -102,3 +102,4 @@ Delete the smoke file and drop its table afterward.
 - **Quote the name** - a bare `name=` always hard-stops the build.
 - **Republishing unchanged persist logic reuses the table** - reuse is keyed on the content-addressed `sourceEntityId`, not the `name=`.
 - **Removing a persist source (or a smoke test) does not drop its table** - physical-table cleanup is the caller's responsibility; drop it yourself.
+- **An `#(authorize)`-gated source cannot be materialized, by any tier** - colocated `#@ persist`, `storage=`, or `#@ preaggregate` all refuse it at build time with a 422 naming the source. The gate is found through the import → rename → `query_source` chain, so one inherited from a base or reached via a join counts too - it doesn't have to be on the persisted source's own line. See `docs/materialization.md#authorize-gated-sources-and-materialization`.

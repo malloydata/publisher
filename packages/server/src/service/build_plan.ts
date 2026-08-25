@@ -7,10 +7,7 @@ import type {
    BuildNode,
    MalloyConfig,
    Connection as MalloyConnection,
-   ModelDef,
-   ModelMaterializer,
    PersistSource,
-   SourceDef,
 } from "@malloydata/malloy";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../api";
@@ -23,21 +20,12 @@ import {
 } from "../materialization_metrics";
 import { errMessage } from "../utils";
 import {
-   createGateClassificationDeps,
-   collectEntryPointGates,
-   resolveGateShape,
-   type GateClassificationDeps,
-   type GraftScope,
-} from "./gate_classification";
-import { malloyGivenToApi, type MalloyGiven } from "./given";
-import {
    resolveIncrementalDeclaration,
    type IncrementalDeclaration,
 } from "./incremental_declaration";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
-   isAuthorizeAttributedToEntryPoint,
 } from "./materialization_eligibility";
 import { Model } from "./model";
 import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
@@ -129,35 +117,6 @@ export interface CompiledBuildPlan {
     * `origin`/`preaggregate` fields report.
     */
    preaggregatePlans?: Record<string, RollupPlan>;
-   /**
-    * sourceID -> this source's entry-point `#(authorize)` gate classification,
-    * computed HERE (compile time) because this is where the compiled
-    * `{modelDef, materializer}` pair a classification needs exists — see
-    * {@link classifyPersistSourceGate}. Consumed by a relaxation of the
-    * colocated `#@ persist` refusal (`assertColocatedPersistNotAuthorizeGated`)
-    * that decides whether to admit a gated source; recording the outcome here
-    * changes no refusal on its own. Optional so existing fixtures/callers
-    * that don't track it still typecheck.
-    */
-   sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
-}
-
-/** {@link CompiledBuildPlan.sourceGateOutcomes}'s per-source classification. */
-export type PersistSourceGateClassification = "row_level" | "rejected";
-
-/**
- * `classification` is the entry-point gate's enforcement shape, per
- * `gate_classification.ts`'s vocabulary (every `#(authorize)` gate is a row
- * predicate). `attributed` is `false` when {@link isAuthorizeAttributedToEntryPoint}'s
- * deep walk finds a note reachable only through a join — see that function's
- * doc for why that must gate the relaxation independently of
- * `classification`: `collectEntryPointGates` does not trace joins, so a
- * join-carried gate can be entirely invisible to `classification` while still
- * being real and enforced-against today.
- */
-export interface PersistSourceGateOutcome {
-   classification: PersistSourceGateClassification;
-   attributed: boolean;
 }
 
 /** Output columns of a persist source, degrading to [] if unavailable. */
@@ -678,88 +637,6 @@ function detectDroppedPersistSources(
    return dropped;
 }
 
-/**
- * Classify one persist source's entry-point `#(authorize)` gate(s) and decide
- * whether it is `attributed` — see {@link PersistSourceGateOutcome}'s doc.
- *
- * Calls `gate_classification.ts`'s standalone functions directly, rather than
- * standing up a throwaway `Model` — a build-plan compile has exactly the
- * `{modelDef, materializer}` shape those functions operate on (a compiled
- * `ModelDef` plus the live `ModelMaterializer` that produced it), and nothing
- * else. `materializer` MUST be the same one that compiled `modelDef` — see
- * `liftGateCondition`'s doc for why a fresh `loadModel` cannot substitute (it
- * mints a new given identity per call).
- *
- * Gate GROUPS: each `GateEntry` `collectEntryPointGates` returns is one AND'd
- * group (its own OR-disjunction already folded by `resolveGateShape`'s
- * `gateFilterText`); groups are classified independently here and combined
- * with enforcement's own dominance rule — refuse if ANY group rejects, else
- * `row_level`. No entry-point gate at all (`groups.length === 0`) is
- * vacuously `row_level` (no group to reject) — the source is unrestricted at
- * its entry point; `attributed` is what still catches a gate hiding behind a
- * join in that case.
- *
- * Fails CLOSED: a throw anywhere in classification (this function's own
- * `try`, not `resolveGateShape`'s internal one — that already degrades a
- * lift/classify failure to `{shape: "rejected"}` without throwing) records
- * `rejected` + `attributed: false`, never a partial/optimistic result.
- *
- * Deterministic and network-free: `collectEntryPointGates` reads only the
- * already-compiled `modelDef` and struct annotations (no I/O), and
- * `resolveGateShape`'s lift (`liftGateCondition`) compiles a one-row PROBE
- * query through the SAME already-loaded `materializer` — a pure in-memory
- * semantic recompile that only generates SQL text, never opens the warehouse
- * connection or executes anything against it. Load time DOES compile a probe
- * per entry point/gate group (`validateAuthorizeProbes`, `./authorize`), but
- * that call returns `Promise<void>` and keeps no classification result: the
- * only survivor is `SerializedModel.authorizeWarnings: string[]` — so no
- * `row_level`/`rejected` outcome is reachable from that call. This
- * compile-time call is the only place that outcome is actually computed.
- */
-export async function classifyPersistSourceGate(
-   persistSource: PersistSource,
-   modelDef: ModelDef,
-   materializer: ModelMaterializer,
-   deps: GateClassificationDeps,
-   cacheScope: string,
-): Promise<PersistSourceGateOutcome> {
-   try {
-      const entryStruct = persistSource._sourceDef as SourceDef;
-      const groups = collectEntryPointGates(
-         entryStruct,
-         modelDef,
-         new Set(),
-         // This IS the entry point — see `collectEntryPointGates`'s
-         // `treatAsOwnGate` doc.
-         true,
-      );
-      const graftScope: GraftScope = { modelDef, materializer, cacheScope };
-      let classification: PersistSourceGateClassification = "row_level";
-      for (const group of groups) {
-         const shape = await resolveGateShape(
-            group,
-            modelDef,
-            graftScope,
-            deps,
-         );
-         if (shape.shape === "rejected") {
-            classification = "rejected";
-            break;
-         }
-      }
-      return {
-         classification,
-         attributed: isAuthorizeAttributedToEntryPoint(persistSource),
-      };
-   } catch (err) {
-      logger.warn("Failed to classify persist source gate; refusing", {
-         sourceID: persistSource.sourceID,
-         error: errMessage(err),
-      });
-      return { classification: "rejected", attributed: false };
-   }
-}
-
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
@@ -769,7 +646,6 @@ export async function compilePackageBuildPlan(
    const sourceModelPaths: Record<string, string> = {};
    const droppedPersistSources: { name: string; modelPath: string }[] = [];
    const preaggregatePlans: Record<string, RollupPlan> = {};
-   const sourceGateOutcomes: Record<string, PersistSourceGateOutcome> = {};
 
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
@@ -784,11 +660,9 @@ export async function compilePackageBuildPlan(
          modelPath,
          pkg.getMalloyConfig(),
       );
-      // Held onto (rather than chained straight into `.getModel()`) because
-      // the gate classification below needs the SAME live materializer that
-      // compiled this model — see `classifyPersistSourceGate`'s doc.
-      const materializer = runtime.loadModel(modelURL, { importBaseURL });
-      const malloyModel = await materializer.getModel();
+      const malloyModel = await runtime
+         .loadModel(modelURL, { importBaseURL })
+         .getModel();
 
       // Pre-aggregation, at the build-plan seam. Runs BEFORE the two `continue`s
       // below on purpose: a model can declare `#@ preaggregate` while having no
@@ -823,11 +697,6 @@ export async function compilePackageBuildPlan(
          const planByName = new Map(
             synthesized.plans.map((p) => [p.rollupSourceName, p]),
          );
-         // Lazily built on the first rollup source: same reasoning as the
-         // author-model loop below.
-         let rollupClassificationCtx:
-            | { modelDef: ModelDef; deps: GateClassificationDeps }
-            | undefined;
          for (const [sourceID, source] of Object.entries(rollupPlan.sources)) {
             if (!rollupNames.has(source.name)) continue;
             allSources[sourceID] = source;
@@ -838,25 +707,6 @@ export async function compilePackageBuildPlan(
             sourceModelPaths[sourceID] = modelPath;
             const rollup = planByName.get(source.name);
             if (rollup) preaggregatePlans[sourceID] = rollup;
-            if (!rollupClassificationCtx) {
-               const rollupGivens = Array.from(
-                  synthesized.model.givens.values(),
-               ) as unknown as MalloyGiven[];
-               rollupClassificationCtx = {
-                  modelDef: synthesized.model._modelDef,
-                  deps: createGateClassificationDeps(
-                     rollupGivens.map(malloyGivenToApi),
-                     `${modelPath}#preaggregate`,
-                  ),
-               };
-            }
-            sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
-               source,
-               rollupClassificationCtx.modelDef,
-               synthesized.materializer,
-               rollupClassificationCtx.deps,
-               `${modelPath}#preaggregate`,
-            );
          }
       }
 
@@ -897,34 +747,9 @@ export async function compilePackageBuildPlan(
       if (buildPlan.graphs.length === 0) continue;
 
       allGraphs.push(...buildPlan.graphs);
-      // Lazily built on the first persist source: avoids reading
-      // `malloyModel.givens`/`._modelDef` for a model that declares none (a
-      // model can have the persistence flag and yet build no persist source).
-      let classificationCtx:
-         | { modelDef: ModelDef; deps: GateClassificationDeps }
-         | undefined;
       for (const [sourceID, source] of Object.entries(buildPlan.sources)) {
          allSources[sourceID] = source;
          sourceModelPaths[sourceID] = modelPath;
-         if (!classificationCtx) {
-            const givens = Array.from(
-               malloyModel.givens.values(),
-            ) as unknown as MalloyGiven[];
-            classificationCtx = {
-               modelDef: malloyModel._modelDef,
-               deps: createGateClassificationDeps(
-                  givens.map(malloyGivenToApi),
-                  modelPath,
-               ),
-            };
-         }
-         sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
-            source,
-            classificationCtx.modelDef,
-            materializer,
-            classificationCtx.deps,
-            modelPath,
-         );
       }
    }
 
@@ -962,7 +787,6 @@ export async function compilePackageBuildPlan(
       sourceModelPaths,
       droppedPersistSources,
       preaggregatePlans,
-      sourceGateOutcomes,
    };
 }
 
@@ -976,7 +800,6 @@ export function deriveBuildPlan(
    packageMaterialization?: WirePackageMaterialization | null,
    options?: {
       preaggregatePlans?: Record<string, RollupPlan>;
-      sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
    },
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
@@ -1011,11 +834,12 @@ export function deriveBuildPlan(
          // tier mirrors the build path's own choice (deriveSelfInstructions /
          // executeInstructedBuild): a declared `storage=` gets the full,
          // unconditional storage-destination gate; a plain `#@ persist` gets the
-         // colocated gate, which — unlike the storage one — admits a proven
-         // row-level, fully-attributed `#(authorize)` gate. Using the storage
-         // gate for every source regardless of declared tier (the existing
+         // colocated gate, which — unlike the storage one — checks only the
+         // authorize condition. Using the storage gate for every source
+         // regardless of declared tier (the existing
          // `SourceEligibility.refused`, kept for its own serve-binding purpose)
-         // would misreport a now-buildable colocated source as refused.
+         // would misreport an eligible colocated source (one with unbound
+         // parameters or a given reference, both fine on this tier) as refused.
          const declaresStorage = !!annotationFields.storage;
          const rollup = options?.preaggregatePlans?.[sourceID];
          // A rollup's own eligibility gate refuses UNCONDITIONALLY when its base is
@@ -1035,7 +859,6 @@ export function deriveBuildPlan(
                      source,
                      source.name,
                      "persist",
-                     options?.sourceGateOutcomes?.[sourceID],
                   );
                }
             } catch (err) {
@@ -1059,7 +882,6 @@ export function deriveBuildPlan(
                   source,
                   source.name,
                   "preaggregate",
-                  options?.sourceGateOutcomes?.[sourceID],
                );
             } catch (err) {
                if (!(err instanceof MaterializationEligibilityError)) throw err;
@@ -1166,7 +988,6 @@ export async function computePackageBuildPlan(
               pkg.getMaterializationConfig?.() ?? null,
               {
                  preaggregatePlans: compiled.preaggregatePlans,
-                 sourceGateOutcomes: compiled.sourceGateOutcomes,
               },
            );
    return {
@@ -1297,12 +1118,7 @@ function collectColocatedSourceEligibility(
          ? "preaggregate"
          : "persist";
       try {
-         assertColocatedPersistNotAuthorizeGated(
-            source,
-            source.name,
-            origin,
-            compiled.sourceGateOutcomes?.[sourceID],
-         );
+         assertColocatedPersistNotAuthorizeGated(source, source.name, origin);
       } catch (err) {
          // Gate BEFORE computeSourceEntityId, matching the build path's own
          // convention: the colocated gate never calls getSQL(), so it still

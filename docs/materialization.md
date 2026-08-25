@@ -54,24 +54,23 @@ Reach for it when a reader must not see stale rows, and remember what it costs: 
 ### `#(authorize)`-gated sources and materialization
 
 A source protected by an `#(authorize)` gate — its own, or one carried from a joined or derived
-source — is refused for `storage=` and for pre-aggregation, unconditionally. A **colocated**
-`#@ persist` (no `storage=`) is different: it is admitted when the gate is *proven* to be the entry
-point's own row filter, and refused otherwise.
+source — is refused unconditionally, for every materialization tier: `storage=`, colocated
+`#@ persist`, and pre-aggregation alike.
 
 - **`storage=`** refuses at build time, unconditionally, alongside an unbound parameter or a given
   reference (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
   a materialized-once table is served frozen to every caller, and the served shape carries no gate
-  to re-evaluate. This refusal is unaffected by anything below.
-- **A colocated `#@ persist`** is not served frozen with respect to the gate at all: persistence
-  changes only where the rows are read FROM, never whether the entry point's own `#(authorize)` is
-  re-evaluated — the substitution swaps only the source's relation SQL, and the gate applies as the
-  reading query's own `WHERE` on top of it, so filtered rows come back filtered. When the compiler can
-  *prove* the gate is the entry point's own row-level filter and nothing else is reachable beneath it,
-  the source is eligible and serves correctly filtered from the materialized table. It is still
-  refused when that cannot be proven — a gate reachable only through a join (join-only gate
-  attribution is not traced), an inherited gate the compiler cannot attribute cleanly, or a gate that
-  does not classify as a row filter at all. Drop `#@ persist` from the source, or restructure it so the
-  condition is the entry point's own proven row-level gate.
+  to re-evaluate.
+- **A colocated `#@ persist`** refuses unconditionally too, and the reason is less obvious: it is
+  not served frozen with respect to the gate the way `storage=` is. Persistence changes only where
+  the rows are read FROM, never whether the entry point's own `#(authorize)` is re-evaluated — the
+  substitution swaps only the source's relation SQL, and the gate still applies as the reading
+  query's own `WHERE` on top of it, so filtered rows come back filtered. What it refuses is
+  narrower, and it is not a leak: authorization decided against a **frozen copy of the gating
+  column**. The artifact is built once, so a row whose `org_id` changes in the warehouse keeps being
+  served to its old owner and stays hidden from its new one until the next rebuild — an access
+  decision served from stale data. Drop `#@ persist` from the source, or move the gate to a source
+  that is not materialized.
 - **`#@ preaggregate`** refuses unconditionally, regardless of the gate's classification. A rollup
   synthesizes a colocated `#@ persist` over an import of the annotated base, and none of the
   pre-aggregation modules has any `#(authorize)` awareness of its own — so this refusal is the only
@@ -83,63 +82,6 @@ point's own row filter, and refused otherwise.
 Every refusal names the source and the remedy; a package carrying one fails to build (or, for
 `storage=`, fails that materialization run) rather than silently serving the gated source to
 everyone.
-
-### The freshness contract for a gated colocated persist source
-
-Admitting a proven row-level gate is a behavior change, and it is **not** opt-in. The refusal it
-relaxes never fired at *load*: it fires inside the build path (`deriveSelfInstructions` /
-`executeInstructedBuild`), so a package with a colocated `#@ persist` on an `#(authorize)`-gated
-source loads today, appears in `plan.sources`, and serves live — what 422'd was its *materialization
-run*, not the package.
-
-**So such packages already exist, which is why the relaxation is opt-in rather than on.** Set
-`PERSIST_COLOCATED_RELAXATION_ENABLED=true` to enable it. Once enabled, a run that used to fail
-succeeds when the gate proves row-level and attributed to the entry point, and the next auto-run or
-scheduled build materializes the source and binds it for serving **with no author action** — a source
-that served live yesterday serves from a possibly-stale artifact today, subject to the staleness
-below. That is the migration the default-off setting exists to keep deliberate: nobody republished
-those packages, so nobody chose it for them. Moving the flag back to `false` restores the
-unconditional refusal. It is read at package load, so an artifact already built keeps serving until
-its package next loads.
-
-What goes stale between rebuilds is the **row data**, not the gate. The gate expression and the
-querying principal's attributes (givens, roles) are still evaluated live, on every query, against the
-frozen table — only the column values the gate filters ON are frozen at build time. So a row whose
-access decision changes (say, it changes owner) keeps being served under the OLD decision to the
-principal who no longer should see it, until the next rebuild recomputes that column. This is a
-narrower staleness than an ordinary persisted source's (which goes stale on every column), but for a
-gated source it is a staleness that maps directly onto who can read what — treat it accordingly.
-
-Because row-data-dependent revocation is only as fresh as the artifact, a gated colocated persist
-source needs a declaration that says how long a stale access decision may be served. Two controls are
-on offer, and only one of them **bounds** that.
-
-**`materialization.freshness` — `{ "window": …, "fallback": "live" }` — is the bound.** The serve path
-re-evaluates freshness per query, so once an artifact's data ages past the window it drops out of the
-serving set and the query recomputes live, correctly filtered — whether or not any rebuild ever lands.
-That is a ceiling no refresh cadence can offer: a build that fails, or a scheduler that is off, leaves
-a schedule-only source serving its old decisions indefinitely. The cost is that `freshness` is
-[mutually exclusive with `schedule`](#the-persistence-policy-the-publish-gate), which is why advice
-framed around a cron steers away from it — for a gated source, take the ceiling. (The window is
-enforced from the freshness fields a control plane stamps on the manifest it distributes; a standalone
-Publisher's own post-build load binds its entries un-gated.)
-
-**A full rebuild is the refresh that actually re-reads the gate column.** A source with no incremental
-declaration rebuilds its whole table on every run, so every run recomputes the values the gate filters
-on. An incremental source needs `reseed` to do the same.
-
-**`refresh="incremental"` does not bound revocation.** The [delta](#incremental-refresh) wraps the
-seed's own SQL in a predicate over `[covered_through, frontier)`, so a row whose access decision
-changes *without its watermark advancing* falls outside every future delta and is never re-read.
-Take `orders`, gated with `#(authorize) org_id = $ORG` and declared
-`refresh="incremental" watermark="order_date"`: order 7 (`order_date` 2026-01-02) moves from org 1 to
-org 2, every later run advances past that date, and principal `ORG: 1` keeps reading it
-indefinitely — while the entry
-reports `refresh: delta` and an advancing `coveredThrough`, so the cadence reads as healthy.
-`merge_key=` does not close it: it changes how a delta is applied, not which rows the delta reads.
-
-A gated source with neither a freshness window nor a full-rebuild cadence is a source whose
-revocations have no bound at all.
 
 ## The persistence policy (the publish gate)
 

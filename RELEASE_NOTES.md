@@ -167,41 +167,6 @@ constant-`false` lock does not hold there and `includeSql` returns the ungrafted
 
 ---
 
-## [Unreleased] — a proven row-level `#(authorize)` gate can now be colocated-persisted
-
-This supersedes the "A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED" bullet
-further down this file, before that section has even shipped: unconditional refusal is no longer the
-whole story. A colocated `#@ persist` (no `storage=`) is now ELIGIBLE when the compiler can prove the
-gate is the entry point's own row-level filter and nothing else is reachable beneath it
-(`classification: "row_level", attributed: true`) — every other shape (unattributed/join-only,
-`rejected`, or no outcome at all) still refuses exactly as before. `storage=` and `#@ preaggregate`
-are unaffected; they remain unconditionally refused for any `#(authorize)`-gated source regardless of
-classification. See [docs/materialization.md](docs/materialization.md#authorize-gated-sources-and-materialization).
-
-**This is OPT-IN — set `PERSIST_COLOCATED_RELAXATION_ENABLED=true` to enable it.** The reason it is
-opt-in is worth reading before you turn it on. The refusal being relaxed never fired at package
-_load_; it fired inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`). A
-package with a colocated `#@ persist` on an `#(authorize)`-gated source therefore loads on the
-current release, appears in `plan.sources`, and serves live — what 422'd was its materialization run.
-So such packages already exist, and enabling this changes them: a run that used to fail succeeds, and
-the next auto-run or scheduled build materializes the source and binds it for serving **with no
-author action**. A source that served live serves from a possibly-stale artifact afterwards, subject
-to the staleness below. Nobody republished those packages, so nobody chose that for them — which is
-why the default leaves the unconditional refusal in place. The flag is read at package load, so an
-already-built artifact keeps serving until its package next loads.
-
-**What this does NOT make fresh: the row data the gate filters on, not the gate itself.** The gate
-expression and the querying principal's attributes are still evaluated live, every query, against the
-persisted table. Only the values in the gating column are frozen at build time, so a row whose access
-decision changes (say, it changes owner) keeps serving to its former owner until the next rebuild.
-Bound that with `materialization.freshness` `{ "window": …, "fallback": "live" }`: the serve path
-re-evaluates freshness per query, so a stale artifact drops out of the serving set and the query
-recomputes live whether or not a rebuild lands. A cadence alone is not a bound (a failed build or a
-stopped scheduler serves the old decisions indefinitely), and `refresh="incremental"` is not one
-either — its delta is bounded by the watermark, so a row that changes owner without its watermark
-advancing is never re-read. Only a full rebuild recomputes the gate column. See
-[docs/materialization.md § freshness contract](docs/materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source).
-
 ## [Unreleased] — `BuildPlan.refusedSources`, and a materialization-ordering fix
 
 **`BuildPlan` gains a `refusedSources` collection**, alongside the existing `sources` map, so a host can tell
@@ -210,8 +175,8 @@ collection rather than a field on `PersistSourcePlan`: constructing that plan en
 computes the source's content address, and a free-parameter or given-referencing source cannot reliably
 survive those calls, so a refused source needs a wire shape that requires neither. Each entry carries the
 source's name/sourceID/modelPath, which tier it was evaluated against (`storage` or `colocated` — the SAME
-tier the build path itself would use, post the colocated row-level relaxation; see below for the later-added
-`preaggregate` tier), the bounded refusal reason,
+tier the build path itself would use; see below for the later-added `preaggregate` tier), the bounded
+refusal reason,
 and the full refusal message. No new reason was added to the existing `free_parameter | given | authorize |
 not_duckdb_portable | public_surface_unknown` enum; the two compile-time asserts this collection is computed
 from can only ever produce the first three.
@@ -342,10 +307,8 @@ whole source. This ships on, unconditionally — there is no flag to stage the r
   columns for it to read), so no existing caller can be relying on the 403. It matters for gates
   authors write from now on — check any consumer that keys logic on the 403 status. See
   [docs/security-posture.md](docs/security-posture.md).
-- **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED** — superseded by the
-  relaxation in the section above this one, which admits exactly the proven `row_level` + attributed
-  shape; every other shape still refuses as described below. This DOES break
-  existing packages — one that has this will fail to build where it previously succeeded — so it is
+- **A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED, unconditionally.** This
+  DOES break existing packages — one that has this will fail to build where it previously succeeded — so it is
   worth being precise about what it does and does not close. It is **not** closing an unfiltered
   leak: measured, a colocated substitution replaces only the source's relation SQL, while the gate
   is applied as the reading query's own `WHERE`, so the two compose and rows come back filtered.
