@@ -49,6 +49,7 @@
  */
 import {
    contextOverlay,
+   isSourceDef,
    type BuildManifestEntry,
    type Connection,
    type FetchSchemaOptions,
@@ -86,11 +87,19 @@ import { recordRowLevelGateRejected } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
 import {
+   assertAtMostOneAuthorizeGate,
+   assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
+   findLegacyStringGates,
+   findMultipleAuthorizeGates,
    validateAuthorizeProbes,
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
+import {
+   validateSourceLineGateGivenUsage,
+   type ExpandableRefSummary,
+} from "../service/gate_dimension";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
@@ -606,6 +615,7 @@ function extractSources(
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
    authorizeOwnNotes: Map<string, AnnotationNote[]>;
+   attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
 } {
    const {
       sources,
@@ -613,6 +623,7 @@ function extractSources(
       authorizeMap,
       misplacedAuthorize,
       authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
    } = extractSourcesFromModelDef(modelDef, givens);
    return {
       sources: sources as unknown as ApiSourceWire[],
@@ -620,6 +631,7 @@ function extractSources(
       authorizeMap,
       misplacedAuthorize,
       authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
    };
 }
 
@@ -643,33 +655,6 @@ function authorizeWarningCollector(): {
          );
       },
    };
-}
-
-/** Given name → declared Malloy type, from this model's own given surface.
- *  Mirrors `Model.givenDeclaredTypes()` — see its doc comment. */
-function givenDeclaredTypes(
-   givens: ApiGivenWire[] | undefined,
-): Map<string, string> {
-   return new Map(
-      (givens ?? [])
-         .filter((g) => g.name != null && g.type != null)
-         .map((g) => [g.name, g.type] as [string, string]),
-   );
-}
-
-/** Given name → declared default (rendered Malloy source text), from this
- *  model's own given surface. Feeds `validateAuthorizeProbes`'s
- *  `declaredDefaults`, which `classifyAuthorizeGate` uses to refuse a
- *  field-vs-given row-level comparison whose given carries one — see that
- *  function's doc in `authorize.ts`. */
-function givenDeclaredDefaults(
-   givens: ApiGivenWire[] | undefined,
-): Map<string, string> {
-   return new Map(
-      (givens ?? [])
-         .filter((g) => g.name != null && g.default != null)
-         .map((g) => [g.name, g.default as string] as [string, string]),
-   );
 }
 
 function extractQueries(modelDef: ModelDef): {
@@ -741,6 +726,7 @@ async function compileMalloyModel(
       authorizeMap,
       misplacedAuthorize,
       authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
    } = extractSources(modelDef, givens);
    const queryResult = extractQueries(modelDef);
    const queries = queryResult.queries;
@@ -753,6 +739,18 @@ async function compileMalloyModel(
       ...misplacedAuthorize,
       ...queryResult.misplacedAuthorize,
    ]);
+   // The string form is refused outright — see `findLegacyStringGates`'s doc.
+   // Checked before `validateAuthorizeProbes`, same order as `Model.create`.
+   // Presence-based `authorizeOwnNotes` (not the attributed map) — see
+   // `extractSourcesFromModelDef`'s doc for why this refusal must not narrow.
+   const legacyStringGates = findLegacyStringGates(authorizeOwnNotes);
+   legacyStringGates.forEach(() =>
+      recordRowLevelGateRejected("legacy_string_gate"),
+   );
+   assertNoLegacyStringGate(legacyStringGates);
+   // A source may declare at most one `#(authorize)` block — see
+   // `findMultipleAuthorizeGates`'s doc. Presence-based, same reason as above.
+   assertAtMostOneAuthorizeGate(findMultipleAuthorizeGates(authorizeOwnNotes));
    // Validate #(authorize) at compile time (shared with Model.create). Throws
    // on an unknown given / source-field reference or a rejected row-level
    // shape; compileOneModel's catch turns it into this model's
@@ -762,12 +760,35 @@ async function compileMalloyModel(
    const authorizeWarningCollection = authorizeWarningCollector();
    await validateAuthorizeProbes(mm, {
       authorizeMap,
-      declaredTypes: givenDeclaredTypes(givens),
-      declaredDefaults: givenDeclaredDefaults(givens),
-      authorizeOwnNotes,
+      authorizeOwnNotes: attributedAuthorizeOwnNotes,
       onRowLevelGateRejected: recordRowLevelGateRejected,
       onRowLevelGateUnexpressible:
          authorizeWarningCollection.onRowLevelGateUnexpressible,
+      // G4/W1/W2 for the SOURCE-LINE form, run at EVERY entry point whose
+      // probe compiled (see `validateAuthorizeProbes`'s doc on this
+      // callback) -- `sourceName` may be an inheritor, not only the
+      // DECLARING source. `modelDef.contents[sourceName]` is the same
+      // struct the probe was grafted onto, so `refSummary` is already
+      // resolved against it either way. The worker has no logger (see this
+      // function's doc), so a warning rides the same wire channel as
+      // `onRowLevelGateUnexpressible` above.
+      onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+         const struct = modelDef.contents[sourceName];
+         if (!struct || !isSourceDef(struct)) return;
+         validateSourceLineGateGivenUsage(
+            sourceName,
+            struct,
+            condition.refSummary as ExpandableRefSummary | undefined,
+            condition.e,
+            modelDef,
+            (cause, detail) => {
+               recordRowLevelGateRejected(cause);
+               authorizeWarningCollection.warnings.push(
+                  `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+               );
+            },
+         );
+      },
    });
 
    return {
@@ -962,16 +983,48 @@ async function compileNotebookModel(
          ...extracted.misplacedAuthorize,
          ...finalQueryResult.misplacedAuthorize,
       ]);
+      // See the identical check in `compileMalloyModel` above.
+      const finalLegacyStringGates = findLegacyStringGates(
+         extracted.authorizeOwnNotes,
+      );
+      finalLegacyStringGates.forEach(() =>
+         recordRowLevelGateRejected("legacy_string_gate"),
+      );
+      assertNoLegacyStringGate(finalLegacyStringGates);
+      // See the identical check in `compileMalloyModel` above.
+      assertAtMostOneAuthorizeGate(
+         findMultipleAuthorizeGates(extracted.authorizeOwnNotes),
+      );
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.
+      //
+      // `const` (not the outer `let finalModelDef`) so the narrowed
+      // non-undefined type survives into the closure below.
+      const finalCompiledModelDef: ModelDef = finalModelDef;
       await validateAuthorizeProbes(mm, {
          authorizeMap: extracted.authorizeMap,
-         declaredTypes: givenDeclaredTypes(finalGivens),
-         declaredDefaults: givenDeclaredDefaults(finalGivens),
-         authorizeOwnNotes: extracted.authorizeOwnNotes,
+         authorizeOwnNotes: extracted.attributedAuthorizeOwnNotes,
          onRowLevelGateRejected: recordRowLevelGateRejected,
          onRowLevelGateUnexpressible:
             authorizeWarningCollection.onRowLevelGateUnexpressible,
+         // See the identical check in `compileMalloyModel` above.
+         onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+            const struct = finalCompiledModelDef.contents[sourceName];
+            if (!struct || !isSourceDef(struct)) return;
+            validateSourceLineGateGivenUsage(
+               sourceName,
+               struct,
+               condition.refSummary as ExpandableRefSummary | undefined,
+               condition.e,
+               finalCompiledModelDef,
+               (cause, detail) => {
+                  recordRowLevelGateRejected(cause);
+                  authorizeWarningCollection.warnings.push(
+                     `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                  );
+               },
+            );
+         },
       });
    }
 

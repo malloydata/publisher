@@ -4,21 +4,23 @@
 /// <reference types="bun-types" />
 
 /**
- * HTTP E2E for the givens × `#(authorize)` interaction. Malloy is the single
- * given validator, so on a GATED source a bad given (unknown NAME or wrong-typed
- * VALUE) is caught inside the authorize probe, which fails closed — surfacing as
- * a 403, not the 400 the ungated path returns. This suite pins that documented
- * asymmetry so it stays intentional:
+ * HTTP E2E for the givens × `#(authorize)` interaction. Every gate is a row
+ * filter, so there is no separate admit/deny probe to fail closed and no
+ * gated-vs-ungated asymmetry left to pin. A bad given (unknown NAME or
+ * wrong-typed VALUE) is now the SAME clean 400 on a gated source as on an
+ * ungated one, and the gate's own verdict is expressed in the rows returned:
  *
- *   - unknown given name        -> 403 (probe can't bind it -> fails closed)
+ *   - unknown given name        -> 400 (as ungated; nothing executes)
  *   - authorized + valid givens -> 200 (retargets rows)
- *   - authorize denies          -> 403
- *   - valid name, BAD value     -> 403 (probe can't evaluate it -> fails closed)
+ *   - authorize denies          -> 200 with ZERO rows
+ *   - valid name, BAD value     -> 400 (as ungated; nothing executes)
  *
- * On an UNGATED source the same unknown name / bad value are a clean 400 (Malloy
- * `runtime-given-*` mapped by model.ts) — see query_givens.integration.spec.ts.
+ * The 400s still fail closed — they are refused before execution, so no row is
+ * served and the response is identical to the ungated path, revealing nothing
+ * about whether a gate exists. Only a package-level FGA denial is still a 403.
  *
- * See packages/server/src/service/authorize.ts (evaluateAuthorize, fail-closed).
+ * See packages/server/src/service/authorize.ts and
+ * `Model.authorizeAndBindRunnable` (the graft that applies the filter).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -87,14 +89,14 @@ describe("givens × authorize on /query (HTTP E2E)", () => {
          },
       );
 
-   it("unknown given name -> 403 on a gated source (authorize probe fails closed)", async () => {
-      // Even with role=admin, the unknown given makes the authorize probe throw
-      // (`runtime-given-unknown`), which the gate treats as not-granting. On an
-      // ungated source the same name is a clean 400 (see query_givens suite).
+   it("unknown given name -> 400 on a gated source, same as ungated", async () => {
+      // `runtime-given-unknown` is raised before anything executes, so this
+      // refuses without serving a row and without disclosing that `gated` is
+      // gated at all — the ungated path returns the identical 400.
       const res = await queryGated({
          givens: { role: "admin", NOtaGiven: 1 },
       });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(400);
    });
 
    it("authorized caller with valid givens -> 200 and retargets rows", async () => {
@@ -107,18 +109,22 @@ describe("givens × authorize on /query (HTTP E2E)", () => {
       expect(Number(r[0].order_count)).toBe(3);
    });
 
-   it("authorize deny (non-admin role) -> 403", async () => {
+   it("authorize deny (non-admin role) -> 200 with zero rows", async () => {
+      // The gate is a row filter, so a caller it excludes gets the query's own
+      // result schema with nothing in it rather than a 403.
       const res = await queryGated({ givens: { role: "guest" } });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { result: string };
+      const r = JSON.parse(body.result) as Row[];
+      expect(Number(r[0].order_count)).toBe(0);
    });
 
-   it("valid given name with a bad value -> 403 on a gated source (fail-closed authorize)", async () => {
-      // The authorize probe binds the supplied givens; a value it can't evaluate
-      // makes the probe throw and the gate denies. On the UNGATED path the same
-      // bad value is a 400 (Malloy at prepare time) — this asymmetry is by design.
+   it("valid given name with a bad value -> 400 on a gated source, same as ungated", async () => {
+      // `runtime-given-bad-value` is raised at prepare time, before the graft
+      // runs — refused without serving a row, identical to the ungated path.
       const res = await queryGated({
          givens: { role: "admin", min_amount: "not-a-number" },
       });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(400);
    });
 });

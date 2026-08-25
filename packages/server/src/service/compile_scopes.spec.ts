@@ -148,9 +148,11 @@ source: tracks is base_source extend {
          `>>>malloy
 ##! experimental.givens
 given:
-  ROLE :: string
-#(authorize) "$NOPE = 'x'"
-source: broken is duckdb.sql("select 1 as id")`,
+  ROLE :: string is 'x'
+
+#(authorize) id = 1 and $ROLE = 'x'
+source: broken is duckdb.sql("select 1 as id") extend {
+}`,
       );
       const { problems } = await compile(
          "unused.malloynb",
@@ -249,11 +251,7 @@ source: broken is duckdb.sql("select 1 as id")`,
       // At file scope the submitted text replaces the file, so a caller gate
       // would displace the author's — same rejection as append.
       await expect(
-         compile(
-            "tracks.malloy",
-            `#(authorize) "true"\n${TRACKS_MODEL}`,
-            "file",
-         ),
+         compile("tracks.malloy", `#(authorize) true\n${TRACKS_MODEL}`, "file"),
       ).rejects.toThrow(/authorize` annotation is not permitted/);
    });
 

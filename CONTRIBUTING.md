@@ -65,6 +65,18 @@ a confusing first run, so it is worth knowing before you conclude a branch is br
 
 The same applies to `bun run test:e2e`, which has its own `pretest:e2e`.
 
+### Verifying a change landed: run the test, do not grep for the string
+
+Checking your own work by grepping for a phrase you remember writing is unreliable in this repo, and
+it fails in the more expensive direction. Source strings are frequently split across concatenated
+lines for line length, so a message that reads as one sentence in the terminal does not exist as one
+sentence in the file. A grep for it reports the change MISSING when it is present and covered by a
+passing test.
+
+A false absence is worse than a false positive: it sends you to re-fix something that is already
+fixed, or to report a gap that is not there. Verify with `git diff <ref> -- <path>` or by running the
+test that pins the behaviour.
+
 ## Contributing to the Python SDK (`packages/python-client`)
 
 The Python SDK is **auto-generated** from `api-doc.yaml` using OpenAPI Generator plus a thin build script.

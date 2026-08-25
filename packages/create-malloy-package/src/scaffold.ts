@@ -303,11 +303,25 @@ const BIND_HOST = "127.0.0.1";
  * and MCP endpoint on every interface, while its own package.json, AGENTS.md and
  * README all still say 127.0.0.1.
  *
- * Exact, not a range: the server is on 0.0.x, where `^` already means exact and
- * `~` spans every version there is, so a range pins nothing. Bump this when
- * releasing create-malloy-package (npm view @malloy-publisher/server dist-tags),
- * and confirm the new version still honours --host. A generated workspace can
- * move itself off it by editing the scripts in its own package.json.
+ * Exact, not a range. On the 0.0.x line the server is still on today that is
+ * forced: `^` already means exact there and `~` spans every version there is, so
+ * no range pins anything. It stays exact after the line moves to 0.MINOR.PATCH
+ * (intended at 0.2.0, not yet cut — see the versioning policy in
+ * .github/workflows/CONTEXT.md), where `^0.2.0` *would* resolve to a genuinely
+ * compatible range, because a range still re-resolves on every `npx` start and
+ * the paragraph above is about exactly that: what a workspace generated months
+ * ago boots today, and what happens the day `--host` moves.
+ *
+ * THE VALUE BELOW IS A DEV DEFAULT, NOT PUBLISHED TRUTH. What a `bun run` from a
+ * clone boots, and nothing more. create-malloy-package-npm.yml's "Resolve
+ * SERVER_VERSION for publishing" step substitutes npm's current
+ * @malloy-publisher/server `latest` into this line in the runner's working tree
+ * at publish time, the same way it de-workspaces the skills dependency, so the
+ * published scaffolder always pins the server that release just shipped. There is
+ * nothing to bump by hand any more, and a stale value here cannot reach a user;
+ * that workflow also re-reads the line back and confirms the published server
+ * still documents --host. A generated workspace can move itself off the pin by
+ * editing the scripts in its own package.json.
  */
 export const SERVER_VERSION = "0.0.250";
 
