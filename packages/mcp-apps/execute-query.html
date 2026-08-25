@@ -10,18 +10,17 @@ SPDX-License-Identifier: MIT
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>Malloy Query Result</title>
       <!--
-        Only the classes renderer.ts actually sets are styled here. The
-        collapsible chrome around this card is styled INLINE in
-        shared/collapse_wrapper.ts instead, because some hosts (notably Claude
-        Desktop) sandbox the iframe in a way that drops this <style> block.
+        Every style the card uses. The collapsible chrome was previously built
+        with inline `element.style.*` on the grounds that some hosts drop this
+        block; tested in Claude Desktop over an mcp-remote bridge, it does not,
+        so those styles live here now with the rest.
 
         Colours are neutral on purpose: this ships in the open-source Publisher,
-        so it carries no product palette and no licensed font. Keep the values
-        here in step with src/shared/tokens.ts, which is the source of truth for
-        the scripted styles (CSS cannot import TypeScript).
+        so it carries no product palette and no licensed font.
 
         Chart colours are not set at all, here or in the renderer: Malloy's own
-        renderer defaults apply.
+        renderer defaults apply. The chart is rendered into a shadow root by
+        @malloydata/render and brings its own styles, so nothing here reaches it.
       -->
       <style>
          * {
@@ -74,9 +73,72 @@ SPDX-License-Identifier: MIT
             color: #7a6320;
             font-size: 12px;
          }
+         /* The collapsible card: border, header, chevron, body.
+            `is-open` on the wrapper drives all three together. */
+         .mcp-card {
+            border: 1px solid #e2e2e2;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #ffffff;
+         }
+         .mcp-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            user-select: none;
+            background: #ffffff;
+            border-bottom: none;
+         }
+         .mcp-card.is-open .mcp-card-header {
+            border-bottom: 1px solid #e2e2e2;
+         }
+         .mcp-card-chevron {
+            display: inline-block;
+            width: 10px;
+            font-size: 9px;
+            color: #9a9a9a;
+            transform: rotate(0deg);
+            transition: transform 0.12s;
+         }
+         .mcp-card.is-open .mcp-card-chevron {
+            transform: rotate(90deg);
+         }
+         .mcp-card-label {
+            font-size: 12px;
+            font-weight: 500;
+            color: #6b6b6b;
+         }
+         .mcp-card-meta {
+            margin-left: auto;
+            font-family:
+               ui-monospace, SFMono-Regular, Menlo, Consolas,
+               "Liberation Mono", monospace;
+            font-size: 11px;
+            color: #9a9a9a;
+         }
+         .mcp-card-body {
+            display: none;
+         }
+         .mcp-card.is-open .mcp-card-body {
+            display: block;
+         }
+         .mcp-card.is-open .mcp-card-body--flex {
+            display: flex;
+         }
+
          /* Wraps the query expando and the rendered result as one unit. */
          .result-frame {
             overflow: hidden;
+         }
+
+         /* The error box sits directly under the query expando inside the
+            frame, so it takes a top rule instead of a full border there. */
+         .error-box--in-frame {
+            border: none;
+            border-radius: 0;
+            border-top: 1px solid #e2e2e2;
          }
          .malloy-result {
             width: 100%;

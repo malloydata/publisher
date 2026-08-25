@@ -4,22 +4,22 @@
 // Collapsible chrome around a widget card: the chevron, the "Show / Hide X"
 // header, the border, and the toggle behaviour.
 //
-// Every style here is applied INLINE, and that is load-bearing rather than a
-// style preference. Some hosts (notably Claude Desktop) load the widget iframe
-// in a sandbox that drops the <style> block, which would leave the chrome
-// unstyled and the body permanently visible. `element.style.*` survives it.
-
-import { FONT_MONO, FONT_SANS, tokens } from "./tokens";
+// Styled from the stylesheet in execute-query.html like everything else in the
+// card. This used to build all of it with inline `element.style.*`, on the
+// stated grounds that some hosts sandbox the widget iframe in a way that drops
+// the <style> block. That was tested in Claude Desktop over an mcp-remote bridge
+// and the block survives, so the claim was removed and the styles moved back
+// where the rest of the card's styles live.
 
 export interface CollapseWrapperOptions {
    root: HTMLElement;
    /** Composed into the label: "Show <subject>" / "Hide <subject>". */
    subject: string;
-   /** CSS display value when open. Pass "flex" if the body needs flex layout. */
-   bodyDisplay?: string;
+   /** Pass "flex" if the body's children rely on flex layout. */
+   bodyDisplay?: "block" | "flex";
    /** Optional right-aligned mono text after the label, e.g. a row count. */
    metadata?: string;
-   /** Called after the body's display flips, for re-measuring the iframe. */
+   /** Called after the body opens or closes, for re-measuring the iframe. */
    onToggle?: (open: boolean) => void;
    /**
     * Start expanded. Used when the agent passes `expanded=true` on the tool
@@ -68,61 +68,26 @@ export function buildCollapseWrapper(
       : hostChromeSuppressed || defaultOpen;
 
    const wrapper = document.createElement("div");
-   Object.assign(wrapper.style, {
-      border: `1px solid ${tokens.border}`,
-      borderRadius: "8px",
-      overflow: "hidden",
-      background: tokens.background,
-   } as Partial<CSSStyleDeclaration>);
+   wrapper.className = "mcp-card";
 
    const header = document.createElement("div");
-   Object.assign(header.style, {
-      display: "flex",
-      alignItems: "center",
-      gap: "8px",
-      padding: "8px 12px",
-      cursor: "pointer",
-      userSelect: "none",
-      background: tokens.background,
-      borderBottom: startsOpen ? `1px solid ${tokens.border}` : "none",
-   } as Partial<CSSStyleDeclaration>);
+   header.className = "mcp-card-header";
 
    const chevron = document.createElement("span");
-   Object.assign(chevron.style, {
-      display: "inline-block",
-      fontFamily: FONT_SANS,
-      fontSize: "9px",
-      color: tokens.textFaint,
-      width: "10px",
-      transform: startsOpen ? "rotate(90deg)" : "rotate(0deg)",
-      transition: "transform .12s",
-   } as Partial<CSSStyleDeclaration>);
+   chevron.className = "mcp-card-chevron";
    chevron.textContent = "▸";
    header.appendChild(chevron);
 
    const labelText = (open: boolean) => `${open ? "Hide" : "Show"} ${subject}`;
 
    const label = document.createElement("span");
-   Object.assign(label.style, {
-      fontFamily: FONT_SANS,
-      fontSize: "12px",
-      fontWeight: "500",
-      color: tokens.textMuted,
-   } as Partial<CSSStyleDeclaration>);
+   label.className = "mcp-card-label";
    label.textContent = labelText(startsOpen);
    header.appendChild(label);
 
    if (metadata) {
-      const spacer = document.createElement("span");
-      spacer.style.flex = "1";
-      header.appendChild(spacer);
-
       const meta = document.createElement("span");
-      Object.assign(meta.style, {
-         fontFamily: FONT_MONO,
-         fontSize: "11px",
-         color: tokens.textFaint,
-      } as Partial<CSSStyleDeclaration>);
+      meta.className = "mcp-card-meta";
       meta.textContent = metadata;
       header.appendChild(meta);
    }
@@ -132,21 +97,26 @@ export function buildCollapseWrapper(
    }
 
    const body = document.createElement("div");
-   body.style.display = startsOpen ? bodyDisplay : "none";
+   body.className =
+      bodyDisplay === "flex"
+         ? "mcp-card-body mcp-card-body--flex"
+         : "mcp-card-body";
    wrapper.appendChild(body);
+   // One state class drives the chevron, the header's border and the body's
+   // visibility together, so they cannot get out of step the way three separate
+   // inline assignments could.
+   wrapper.classList.toggle("is-open", startsOpen);
    root.appendChild(wrapper);
 
    const setOpen = (open: boolean) => {
-      body.style.display = open ? bodyDisplay : "none";
-      header.style.borderBottom = open ? `1px solid ${tokens.border}` : "none";
-      chevron.style.transform = open ? "rotate(90deg)" : "rotate(0deg)";
+      wrapper.classList.toggle("is-open", open);
       label.textContent = labelText(open);
       onToggle?.(open);
    };
 
-   header.addEventListener("click", () => {
-      setOpen(body.style.display === "none");
-   });
+   header.addEventListener("click", () =>
+      setOpen(!wrapper.classList.contains("is-open")),
+   );
 
    return { wrapper, body, setOpen };
 }

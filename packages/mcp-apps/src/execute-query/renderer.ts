@@ -5,7 +5,6 @@ import type { Result } from "@malloydata/malloy-interfaces";
 import { MalloyRenderer } from "@malloydata/render";
 import { buildCollapseWrapper } from "../shared/collapse_wrapper";
 import { rehydrate, type ResultMeta } from "../shared/rehydrate";
-import { tokens } from "../shared/tokens";
 import { highlightMalloy } from "./highlight_malloy";
 
 // A wide table inside the Malloy render scrolls horizontally, and its scrollbar
@@ -316,10 +315,7 @@ export function renderError(
       frame.appendChild(body);
 
       const errorBox = document.createElement("div");
-      errorBox.className = "error-box";
-      errorBox.style.borderRadius = "0";
-      errorBox.style.border = "none";
-      errorBox.style.borderTop = `1px solid ${tokens.border}`;
+      errorBox.className = "error-box error-box--in-frame";
       errorBox.textContent = message;
       frame.appendChild(errorBox);
 
