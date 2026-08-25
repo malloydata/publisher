@@ -421,8 +421,20 @@ jobs:
             echo "::error title=Publish::expected exactly one sdist in dist/, found ${#SDISTS[@]}"
             exit 1
           fi
-          if ! tar -tzf "${SDISTS[0]}" | grep -qE '/malloy_publisher_sdk/client\.py$'; then
-            tar -tzf "${SDISTS[0]}" | sed 's/^/[sdist] /'
+          # Listed ONCE into a variable rather than piped into `grep -q`, and
+          # that is not a style preference. `grep -q` exits on its first match;
+          # malloy_publisher_sdk/client.py is the SECOND of ~230 entries, so tar
+          # takes EPIPE on its next write, `pipefail` reports the pipeline as
+          # failed, and the check announces the file is missing WHILE LOGGING IT
+          # AS PRESENT. It is a race — whether tar has already emptied its
+          # listing into the pipe buffer decides it — which is why the harness
+          # for this step passed and the first real run failed with
+          # `tar: stdout: write error` above a listing containing client.py.
+          # Reading it once also makes the logged listing the same bytes the
+          # check ran against, rather than a second tar that could differ.
+          SDIST_LISTING="$(tar -tzf "${SDISTS[0]}")"
+          if ! grep -qE '/malloy_publisher_sdk/client\.py$' <<<"$SDIST_LISTING"; then
+            while IFS= read -r entry; do printf '[sdist] %s\n' "$entry"; done <<<"$SDIST_LISTING"
             echo "::error title=Publish::${SDISTS[0]} does not contain malloy_publisher_sdk/client.py, so the sdist is missing the generated client (logged above). NOTHING was uploaded."
             exit 1
           fi
