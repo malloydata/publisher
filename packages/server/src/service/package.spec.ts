@@ -619,6 +619,80 @@ describe("service/package", () => {
       });
    });
 
+   // The colocated-tier analogue of the storage gate above — a positive
+   // eligibility check on `bindColocatedServeManifest`, keyed by
+   // sourceEntityId (what a colocated binding actually carries; see
+   // `ColocatedSourceEligibility`'s doc in build_plan.ts).
+   describe("bindColocatedServeManifest eligibility gate", () => {
+      const packageWith = (
+         eligibility:
+            | {
+                 eligibleEntityIds: Set<string>;
+                 refused: Record<string, string>;
+              }
+            | undefined,
+      ) => {
+         const pkg = new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage" },
+            [],
+            new Map(),
+         );
+         // Private by design: its only writer is the load path, which needs a
+         // compiled package. Set directly to isolate the filter.
+         (
+            pkg as unknown as {
+               colocatedSourceEligibility: typeof eligibility;
+            }
+         ).colocatedSourceEligibility = eligibility;
+         return pkg;
+      };
+
+      it("drops a refused source's entry and keeps its eligible neighbour", () => {
+         const pkg = packageWith({
+            eligibleEntityIds: new Set(["eid-eligible"]),
+            refused: { "eid-refused": "row_level but not attributed" },
+         });
+
+         pkg.bindColocatedServeManifest({
+            "eid-eligible": { tableName: "t_eligible" },
+            "eid-refused": { tableName: "t_refused" },
+         });
+
+         expect(pkg.getBuildManifestEntries()).toEqual({
+            "eid-eligible": { tableName: "t_eligible" },
+         });
+      });
+
+      it("refuses every entry when the build plan could not be computed", () => {
+         const pkg = packageWith(undefined);
+
+         pkg.bindColocatedServeManifest({
+            "eid-eligible": { tableName: "t_eligible" },
+         });
+
+         expect(pkg.getBuildManifestEntries()).toBeUndefined();
+      });
+
+      it("refuses an entry naming a source never examined (absence is not eligibility)", () => {
+         const pkg = packageWith({
+            eligibleEntityIds: new Set(["eid-known"]),
+            refused: {},
+         });
+
+         pkg.bindColocatedServeManifest({
+            "eid-known": { tableName: "t_known" },
+            "eid-unknown": { tableName: "t_unknown" },
+         });
+
+         expect(pkg.getBuildManifestEntries()).toEqual({
+            "eid-known": { tableName: "t_known" },
+         });
+      });
+   });
+
    describe("getDeclaredQueryMetadata", () => {
       const pkgWith = (metadata: Record<string, unknown>) =>
          new Package(

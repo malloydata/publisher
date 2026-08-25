@@ -167,12 +167,12 @@ describe("Malloy IR annotation invariants (pins @malloydata/malloy behavior)", (
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in \\$GROUPS"
+#(authorize) org_id in $GROUPS
 source: member_a is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
 
-#(authorize) "region = 'us'"
+#(authorize) region = 'us'
 source: combo is compose(member_a, member_b)
 
 source: qs is combo -> { group_by: org_id }
@@ -217,12 +217,12 @@ source: qs is combo -> { group_by: org_id }
 given:
   GROUPS :: number[]
 
-#(authorize) "org_id in \\$GROUPS"
+#(authorize) org_id in $GROUPS
 source: member_a is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: member_b is duckdb.sql("SELECT 99 as org_id") extend {}
 
-#(authorize) "region = 'us'"
+#(authorize) region = 'us'
 source: combo is compose(member_a, member_b)
 
 source: qs is combo -> { group_by: org_id }
@@ -260,7 +260,7 @@ source: qs is combo -> { group_by: org_id }
    // -------------------------------------------------------------------
    it("extend {}: a trivial derivation shares the base's own note object by reference, at the TOP level (no .inherits demotion)", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: base is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: derived is base extend {}
@@ -290,10 +290,10 @@ source: derived is base extend {}
    // text. See the report for the pasted failing run.
    it("extend {}: two independently-declared sources with identical gate text are DISTINCT note objects (not shared)", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: indepA is duckdb.sql("SELECT 7 as org_id") extend {}
 
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: indepB is duckdb.sql("SELECT 8 as org_id") extend {}
 `);
       const indepA = modelDef.contents["indepA"] as StructDef;
@@ -325,10 +325,10 @@ source: indepB is duckdb.sql("SELECT 8 as org_id") extend {}
    // -------------------------------------------------------------------
    it("extend with its OWN #(authorize): the authored note is a distinct object, and the base's own note is demoted to .inherits", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: base3 is duckdb.sql("SELECT 7 as org_id") extend {}
 
-#(authorize) "org_id > 5"
+#(authorize) org_id > 5
 source: derived3 is base3 extend {}
 `);
       const base3 = modelDef.contents["base3"] as StructDef;
@@ -367,7 +367,7 @@ source: derived3 is base3 extend {}
    // -------------------------------------------------------------------
    it("query_source: the struct itself carries no annotations at all", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: base4 is duckdb.sql("SELECT 7 as org_id") extend {}
 
 source: z4 is base4 -> { group_by: org_id }
@@ -404,7 +404,7 @@ source: z4 is base4 -> { group_by: org_id }
    // -------------------------------------------------------------------
    it("join_one: an unannotated join copies the joined source's own gate note onto the join field, by reference", async () => {
       const modelDef = await compileModel(`
-#(authorize) "org_id > 0"
+#(authorize) org_id > 0
 source: salaries is duckdb.sql("SELECT 7 as org_id, 1 as id") extend {}
 
 source: emp is duckdb.sql("SELECT 1 as id") extend {
@@ -429,6 +429,35 @@ source: emp is duckdb.sql("SELECT 1 as id") extend {
       // own note, not a re-parsed equal one.
       expect(joinFieldOwnNotes[0]).toBe(salariesOwnNotes[0]);
    });
+
+   it("`#(authorized)` (extra `d`) on a FIELD's annotation does not route to `authorize` either — the near miss is not source-position-specific", async () => {
+      const modelDef = await compileModel(`
+source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
+   #(authorized)
+   internal dimension: notagate is org_id
+}
+`);
+      const base = modelDef.contents["base5c"] as StructDef;
+      const field = base.fields.find(
+         (f) => (f as unknown as { name?: string }).name === "notagate",
+      ) as unknown as { annotations?: RawAnnotations } | undefined;
+      expect(field).toBeDefined();
+      const notes = ownLevelNotes(field?.annotations);
+      expect(notes.length).toBe(1);
+      const at = {
+         url: `${ROOT}m.malloy`,
+         range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 0 },
+         },
+      };
+      expect(
+         new Annotations({ notes: [{ text: notes[0].text, at }] }).forRoute(
+            "authorize",
+         ).length,
+      ).toBe(0);
+   });
+
    // -------------------------------------------------------------------
    // Invariant 6: which annotation SPELLINGS Malloy routes to `authorize`.
    //
@@ -495,78 +524,23 @@ source: emp is duckdb.sql("SELECT 1 as id") extend {
       }
    });
 
-   // -------------------------------------------------------------------
-   // Invariant 7: Malloy's wording when a given is referenced with neither a
-   // caller value nor a declared default.
-   //
-   // `authorize.ts`'s `NO_DEFAULT_GIVEN_PATTERN` substring-matches this message
-   // — it has no access to Malloy's error types — and it is the ONE probe
-   // outcome `assertNoVacuousDefaultAtom` treats as safe rather than as a
-   // refusal. If the wording changes, that `continue` stops firing and the
-   // branch falls through to the ModelCompilationError below it: every
-   // row-level gate whose literal atom references a DEFAULTLESS given starts
-   // failing the load. Fail-closed, but a hard break on valid packages, with
-   // nothing else to point at the cause.
-   // -------------------------------------------------------------------
-   it("given: referencing a given with no value and no default fails with the wording NO_DEFAULT_GIVEN_PATTERN matches", async () => {
-      const duckdb = new DuckDBConnection("duckdb", ":memory:");
-      let message = "";
-      try {
-         const text = `##! experimental.givens
-
-given: NO_DEFAULT :: string
-
-source: s is duckdb.sql("SELECT 'a' as x") extend { measure: c is count() }
-`;
-         const urlReader = new InMemoryURLReader(
-            new Map([[`${ROOT}m.malloy`, text]]),
-         );
-         const runtime = new Runtime({
-            urlReader,
-            connections: new FixedConnectionMap(
-               new Map<string, Connection>([["duckdb", duckdb]]),
-               "duckdb",
-            ),
-         });
-         const mm = runtime.loadModel(new URL(`${ROOT}m.malloy`));
-         try {
-            // The same probe SHAPE `assertNoVacuousDefaultAtom` runs an accepted
-            // literal atom with — a one-row select of the atom, executed with NO
-            // supplied givens, so `$NO_DEFAULT` has neither a value nor a
-            // default. The message only appears when the givens actually bind,
-            // which is at run time, not at `getPreparedQuery`.
-            await mm
-               .loadQuery(
-                  `run: duckdb.sql("SELECT 1 AS r") -> { select: a is ($NO_DEFAULT = 'x') }`,
-               )
-               .run({ rowLimit: 1, givens: {} });
-         } catch (err) {
-            message = err instanceof Error ? err.message : String(err);
-         }
-      } finally {
-         await duckdb.close();
-      }
-      expect(message).not.toBe("");
-      // The literal `authorize.ts` depends on. Changing the expectation here
-      // must be accompanied by changing that pattern.
-      expect(message).toMatch(/has no value and no default/);
-   });
-
    it("given: `_internal.defaultText` is the rendered default literal, and is absent when no default is declared", async () => {
-      // This one does not pin a discriminator — it pins an INPUT to a security
-      // refusal. `service/given.ts` reads `_internal.defaultText` (Malloy's
-      // private surface, as its own comment says) to populate
-      // `ApiGiven.default`; `model.ts` filters on `g.default != null` to build
-      // `declaredDefaults`; and `authorize.ts`'s `declaredDefaults.has(given)`
-      // is the refusal that stops a defaulted given from carrying a row-level
-      // gate.
+      // This one does not pin a discriminator — it pins a private Malloy
+      // surface two publisher features read. `service/given.ts` reads
+      // `_internal.defaultText` (Malloy's private surface, as its own comment
+      // says) to populate `ApiGiven.default`, which is what introspection
+      // reports and what `dashboard.ts` seeds a dashboard's given controls
+      // from.
       //
-      // Every one of those degrades SILENTLY and FAIL-OPEN if the field moves:
-      // each `default` becomes undefined, the map empties, `has()` is always
-      // false, and the gates that refusal exists to reject start loading again.
-      // There is no layer that can tell "no givens have defaults" from "the
-      // input went missing", which is exactly why the canary belongs here
+      // Both degrade SILENTLY if the field moves: every `default` becomes
+      // undefined, and nothing downstream can tell "no givens have defaults"
+      // from "the input went missing" — which is why the canary belongs here
       // rather than in a test of the publisher's own handling.
+      //
+      // G4 (refuse a gate referencing a defaulted given) does NOT read this
+      // field. `validateSourceLineGateGivenUsage` (`gate_dimension.ts`) reads
+      // `modelDef.givens[id].default` / `.defaultText` off the compiled model
+      // directly, so a rename here weakens introspection, not the refusal.
       const givens = await compileGivens(`##! experimental.givens
 
 given: ROLE :: string is 'analyst'

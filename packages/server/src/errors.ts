@@ -3,6 +3,7 @@
 
 import { MalloyError } from "@malloydata/malloy";
 import { PUBLISHER_CONFIG_NAME } from "./constants";
+import type { EligibilityRefusalReason } from "./materialization_metrics";
 
 export function internalErrorToHttpError(error: Error) {
    if (error instanceof BadRequestError) {
@@ -188,11 +189,19 @@ export class ModelCompilationError extends Error {
  * — a hard refuse, never a silent fallback. Kept a distinct class so the
  * givens/RLAC refusal is greppable for security review. Accepts a
  * message-bearing object to match {@link ModelCompilationError}'s ergonomics.
+ * `reason` is optional so an existing throw site need not be touched to keep
+ * compiling; every current throw site sets it, matching the same value it
+ * hands `recordEligibilityRefused` — a caller that needs the bounded reason
+ * (rather than parsing the message) reads it off the error instead of a
+ * second classification pass.
  */
 export class MaterializationEligibilityError extends Error {
-   constructor(error: { message: string }) {
+   readonly reason?: EligibilityRefusalReason;
+
+   constructor(error: { message: string; reason?: EligibilityRefusalReason }) {
       super(error.message);
       this.name = "MaterializationEligibilityError";
+      this.reason = error.reason;
    }
 }
 

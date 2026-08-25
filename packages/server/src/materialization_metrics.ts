@@ -131,6 +131,14 @@ const buildPlanComputeDuration = lazyHistogram(
    "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
    "ms",
 );
+const buildPlanComputeFailedCounter = lazyCounter(
+   "publisher_materialization_build_plan_compute_failed_total",
+   "Package loads whose build plan failed to compute. The ROOT-CAUSE signal for " +
+      "colocated_bind_dropped{reason='build_plan_unavailable'}, which fires only " +
+      "per dropped entry per load -- a package that loads once and is never " +
+      "reloaded ticks that counter once and then sits with its colocated tier " +
+      "off and a flat total, indistinguishable from healthy.",
+);
 const autoLoadCounter = lazyCounter(
    "publisher_materialization_auto_load_total",
    "Auto-run manifest auto-load attempts. Label: outcome ('success'|'failure').",
@@ -166,7 +174,8 @@ const scheduledFireCounter = lazyCounter(
 );
 const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
-   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|'runtime_live_fallback').",
+   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|" +
+      "'runtime_live_fallback'|'blocked_by_row_level_gate').",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -222,6 +231,16 @@ const chainedStorageBuildCounter = lazyCounter(
       "upstream). Label: outcome ('parent_reuse'|'inline_fallback'|" +
       "'strict_refused'). The parent_reuse share is the headline signal for how " +
       "far the stack-on-the-parent path gets us vs recompute-from-raw.",
+);
+const colocatedBindDroppedCounter = lazyCounter(
+   "publisher_materialization_colocated_bind_dropped_total",
+   "Colocated serve-manifest entries dropped by bindColocatedServeManifest. " +
+      "Label: reason ('build_plan_unavailable' when the package's build plan " +
+      "failed to compute, so no source was examined at all; 'refused' when the " +
+      "source itself was examined and found ineligible). 'build_plan_unavailable' " +
+      "is a whole-package regression -- colocated is the default tier and is NOT " +
+      "gated by PERSIST_STORAGE_MODE, so every colocated binding for the package " +
+      "reverts to live recompute until a load succeeds.",
 );
 
 /**
@@ -280,6 +299,15 @@ export function recordIncrementalStep(
  */
 export function recordBuildPlanComputeDuration(durationMs: number): void {
    buildPlanComputeDuration().record(durationMs);
+}
+
+/**
+ * Record that a package's build plan failed to compute at load. The package
+ * name stays in the accompanying warn log rather than becoming a label, as
+ * everywhere else in this file.
+ */
+export function recordBuildPlanComputeFailed(): void {
+   buildPlanComputeFailedCounter().add(1);
 }
 
 /**
@@ -418,11 +446,19 @@ export function recordServeShapeTypeFallback(
  * failed underneath it, and every binding's `freshnessFallback=live` allowed it
  * to degrade. That last one is the operationally interesting label: it means the
  * tier is broken while queries still succeed, which is invisible in the hit rate
- * alone. This hit rate is the headline KPI of the storage tier — otherwise the
+ * alone. `blocked_by_row_level_gate` = a row-level-gated entry point vetoed
+ * BOTH the storage and pre-aggregation tiers before either was attempted — the
+ * one outcome with no compile attempt behind it, so without this label a
+ * blocked query recorded nothing at all rather than reading as a fallback.
+ * This hit rate is the headline KPI of the storage tier — otherwise the
  * fallback side is only a DEBUG log.
  */
 export function recordStorageServeRouting(
-   outcome: "storage" | "live_fallback" | "runtime_live_fallback",
+   outcome:
+      | "storage"
+      | "live_fallback"
+      | "runtime_live_fallback"
+      | "blocked_by_row_level_gate",
 ): void {
    storageServeRoutingCounter().add(1, { outcome });
 }
@@ -437,6 +473,17 @@ export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,
 ): void {
    chainedStorageBuildCounter().add(1, { outcome });
+}
+
+/**
+ * Record one colocated serve-manifest entry dropped by
+ * `Package.bindColocatedServeManifest`. See {@link colocatedBindDroppedCounter}
+ * for why `build_plan_unavailable` is the label worth alerting on.
+ */
+export function recordColocatedBindDropped(
+   reason: "build_plan_unavailable" | "refused",
+): void {
+   colocatedBindDroppedCounter().add(1, { reason });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */
