@@ -645,6 +645,32 @@ export const getPersistCollisionEnforce = (): boolean =>
    parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
 
 /**
+ * Whether a colocated `#@ persist` source may be admitted despite an
+ * `#(authorize)` gate when the gate is proven row-level and attributed to the
+ * entry point, from `PERSIST_COLOCATED_RELAXATION_ENABLED` (default `false`).
+ *
+ * OPT-IN for a release, like `PERSIST_STORAGE_MODE` and `PERSIST_COLLISION_ENFORCE`
+ * before it. It shipped as a default-on rollback lever, and the argument against
+ * that is what changed the default: a gated source carrying `#@ persist` is not
+ * refused at publish, so turning the relaxation on fleet-wide starts applying
+ * the freshness contract to packages nobody republished — the next scheduled
+ * build materializes and binds one with no author action. Enabling it should be
+ * a deployment deciding to, having read what the contract bounds.
+ *
+ * Set to `true` to enable. Moving it back to `false` restores the unconditional
+ * refusal of any authorize-gated colocated persist source, proven or not.
+ *
+ * It is read at package load, so an ALREADY-BUILT artifact keeps serving through
+ * the three `reloadAllModels` bind paths until its package next loads. That is a
+ * completeness gap, not a safety one — the gate is re-evaluated live against the
+ * artifact, so what still serves stays filtered (see
+ * docs/materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source
+ * for what a stale artifact does and does not bound).
+ */
+export const getColocatedPersistRelaxationEnabled = (): boolean =>
+   parseBoolEnv("PERSIST_COLOCATED_RELAXATION_ENABLED") ?? false;
+
+/**
  * Whether the publisher attaches per-query metadata at all, from
  * `PUBLISHER_QUERY_METADATA` (default `off`).
  *

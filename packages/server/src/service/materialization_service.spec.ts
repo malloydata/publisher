@@ -4,6 +4,7 @@
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { enableColocatedRelaxationForTests } from "./colocated_relaxation_test_flag";
 import * as sinon from "sinon";
 import {
    MaterializationEligibilityError,
@@ -1645,6 +1646,116 @@ describe("deriveSelfInstructions", () => {
       }
    });
 
+   /** deriveSelfInstructions with defaults, for the row-level-authorize tests below. */
+   function derive(compiled: unknown): { instructions: BuildInstruction[] } {
+      return (
+         ctx.service as unknown as {
+            deriveSelfInstructions: (
+               c: unknown,
+               n: string[] | undefined,
+               p: unknown,
+            ) => { instructions: BuildInstruction[] };
+         }
+      ).deriveSelfInstructions(compiled, undefined, {});
+   }
+
+   /** A colocated (no `storage=`) fakeSource carrying an #(authorize) gate. */
+   const authorizeGatedColocated = fakeSource({
+      name: "s1",
+      sourceEntityId: "c1c1c1c1c1c1c1c1",
+      sourceDef: { blockNotes: ["#(authorize) true"] },
+   });
+
+   describe("colocated #(authorize) gate", () => {
+      // The relaxation is opt-in; see the helper's doc for why a test of it
+      // must say so rather than inherit a default.
+      enableColocatedRelaxationForTests({ beforeEach, afterEach });
+
+      afterEach(() => {
+         delete process.env.PERSIST_STORAGE_MODE;
+      });
+
+      it("refuses a colocated authorize-gated source with no compile-time gate outcome (fail-closed default)", () => {
+         // No `sourceGateOutcomes` supplied — the relaxation below requires a
+         // PROVEN row_level+attributed outcome, so an unclassified gate keeps
+         // refusing exactly as it always has.
+         const compiled = compiledWith({ s1: authorizeGatedColocated }, [
+            ["s1"],
+         ]);
+         expect(() => derive(compiled)).toThrow(
+            MaterializationEligibilityError,
+         );
+         expect(() => derive(compiled)).toThrow(/authorize/i);
+      });
+
+      // A `row_level` + `attributed` compile-time gate outcome proves the
+      // entry point's own gate is a row filter and nothing else is reachable
+      // beneath it, so colocated serving grafts exactly what a live query
+      // would — see `assertColocatedPersistNotAuthorizeGated`'s doc.
+      it("admits a colocated authorize-gated source whose compile-time outcome is row_level and attributed", () => {
+         const compiled = compiledWith(
+            { s1: authorizeGatedColocated },
+            [["s1"]],
+            new Map(),
+            { s1: { classification: "row_level", attributed: true } },
+         );
+         expect(() => derive(compiled)).not.toThrow();
+      });
+
+      it("still refuses when the compile-time outcome is row_level but NOT attributed (a join-only gate outside identity reach)", () => {
+         const compiled = compiledWith(
+            { s1: authorizeGatedColocated },
+            [["s1"]],
+            new Map(),
+            { s1: { classification: "row_level", attributed: false } },
+         );
+         expect(() => derive(compiled)).toThrow(
+            MaterializationEligibilityError,
+         );
+      });
+
+      it("still refuses when the compile-time outcome is rejected", () => {
+         const compiled = compiledWith(
+            { s1: authorizeGatedColocated },
+            [["s1"]],
+            new Map(),
+            { s1: { classification: "rejected", attributed: true } },
+         );
+         expect(() => derive(compiled)).toThrow(
+            MaterializationEligibilityError,
+         );
+      });
+
+      it("leaves an ungated colocated source unaffected", () => {
+         const compiled = compiledWith(
+            {
+               s1: fakeSource({
+                  name: "s1",
+                  sourceEntityId: "d1d1d1d1d1d1d1d1",
+               }),
+            },
+            [["s1"]],
+         );
+         expect(() => derive(compiled)).not.toThrow();
+      });
+
+      it("still refuses a storage= authorize-gated source via the existing path, unchanged", () => {
+         process.env.PERSIST_STORAGE_MODE = "on";
+         const storageGated = fakeSource({
+            name: "s1",
+            sourceEntityId: "f1f1f1f1f1f1f1f1",
+            annotationFields: { storage: "lake" },
+            sourceDef: { blockNotes: ["#(authorize) true"] },
+         });
+         const compiled = compiledWith({ s1: storageGated }, [["s1"]]);
+         // Same message as assertMaterializationEligible's storage-destination
+         // refusal (no double-refusal, no changed message from the colocated path).
+         expect(() => derive(compiled)).toThrow(
+            /cannot be materialized into a storage destination/,
+         );
+      });
+   });
+
    // An incremental source is the one case where an unchanged content address
    // does NOT mean there is nothing to do: its data moves while its SQL stays
    // put. Carrying it forward here would strand the delta path behind a check it
@@ -2571,9 +2682,11 @@ describe("executeInstructedBuild", () => {
       ).rejects.toThrow(BadRequestError);
    });
 
-   describe("a refused sibling", () => {
-      // Colocated (no `storage=`) authorize-gated: refused unconditionally
-      // (see `assertColocatedPersistNotAuthorizeGated`'s doc).
+   describe("a refused sibling with no compile-time gate outcome", () => {
+      // Colocated (no `storage=`) authorize-gated, and `compiledWith`'s default
+      // `sourceGateOutcomes` is undefined — the fail-closed default the
+      // colocated relaxation never admits, so this refuses unconditionally
+      // (see the "colocated #(authorize) gate" describe above).
       function refusedColocated(sourceEntityId: string) {
          return fakeSource({
             name: "refused",

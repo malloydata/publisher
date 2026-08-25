@@ -1122,13 +1122,11 @@ export class MaterializationService {
                // No storage destination: this is the colocated `#@ persist`
                // path (a CTAS into the source's own warehouse). It is not
                // covered by assertMaterializationEligible above (that gate
-               // only runs when a storage destination resolved). Unlike the
-               // storage tier, the gate here is not served frozen — it is
-               // reapplied per query — but the DATA the gate decides against
-               // is frozen as of the last build, so an authorize-gated source
-               // materialized here is refused unconditionally regardless. See
-               // the function's doc. Gate BEFORE computeSourceEntityId for the
-               // same reason as the storage case above.
+               // only runs when a storage destination resolved), but it is
+               // just as frozen as a storage build, so an authorize-gated
+               // source materialized here would still be served to every
+               // caller. Gate BEFORE computeSourceEntityId for the same
+               // reason as the storage case above.
                //
                // The origin is passed so a REFUSED ROLLUP names `#@ preaggregate`
                // and not `#@ persist`: a rollup's name is synthesized and appears
@@ -1140,6 +1138,7 @@ export class MaterializationService {
                   compiled.preaggregatePlans?.[persistSource.sourceID]
                      ? "preaggregate"
                      : "persist",
+                  compiled.sourceGateOutcomes?.[persistSource.sourceID],
                );
             }
 
@@ -1849,10 +1848,11 @@ export class MaterializationService {
                   // the colocated one with no destination, and any build while
                   // the mode is off — unexamined. An orchestrated host chooses
                   // the destination, so this path reaches that case with no
-                  // `#@ persist`-vs-`storage=` distinction to lean on; refuse a
-                  // gated source however it was instructed (see
-                  // `assertColocatedPersistNotAuthorizeGated`'s doc). `else`
-                  // rather than an unconditional call:
+                  // `#@ persist`-vs-`storage=` distinction to lean on; refuse
+                  // a gated source however it was instructed, unless its
+                  // compile-time gate outcome proves the colocated relaxation
+                  // applies (see `assertColocatedPersistNotAuthorizeGated`'s
+                  // doc). `else` rather than an unconditional call:
                   // `assertMaterializationEligible` already runs the identical
                   // `referencesAuthorize` IR walk, so calling both on the
                   // storage path would walk every persist source's whole
@@ -1864,6 +1864,7 @@ export class MaterializationService {
                      compiled.preaggregatePlans?.[persistSource.sourceID]
                         ? "preaggregate"
                         : "persist",
+                     compiled.sourceGateOutcomes?.[persistSource.sourceID],
                   );
                }
 
