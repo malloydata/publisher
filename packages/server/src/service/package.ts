@@ -1191,12 +1191,25 @@ export class Package {
    }
 
    /**
-    * Record the URI whose manifest is currently bound to the served models. May
-    * differ from `manifestLocation` after an in-memory auto-load following a
-    * materialization build (no URI), in which case it stays null.
+    * Record that `uri`'s manifest is bound to the served models, and report the
+    * package as bound.
+    *
+    * The status is set here rather than left to the colocated entry count,
+    * because the two manifest tiers bind through different paths: colocated
+    * entries flow through {@link recordManifestBinding}, which derives the status
+    * from its count, while `storage=` entries bind via
+    * {@link bindStorageServeBindings}, which does not touch the status at all.
+    * Counting colocated entries alone therefore reports `unbound` after a
+    * successful pure-`storage=` bind, and a control plane that treats anything
+    * other than `bound` as manifest drift will rebind the package on every
+    * reconcile tick without ever converging.
+    *
+    * `unbound` remains the state for a package with no manifest bound, and
+    * {@link markManifestBindFailed} still owns the degraded `live_fallback`.
     */
-   public setBoundManifestUri(uri: string | null): void {
+   public markManifestBound(uri: string): void {
       this.boundManifestUri = uri;
+      this.manifestBindingStatus = "bound";
    }
 
    /**

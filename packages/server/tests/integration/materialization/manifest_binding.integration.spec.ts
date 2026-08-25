@@ -363,12 +363,21 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          ]);
          // The bound URI is recorded even though no tableName manifest bound.
          expect(patched.boundManifestUri).toBe(manifestFile);
+         // And it reports BOUND despite the zero colocated entry count. This is
+         // what a control plane reads to decide whether the worker honoured the
+         // manifest it distributed; reporting `unbound` after a successful bind
+         // reads as drift, and the package is rebound on every reconcile tick.
+         expect(patched.manifestBindingStatus).toBe("bound");
 
-         // Clearing reverts: the storage serve binding is dropped.
+         // Clearing reverts: the storage serve binding is dropped and the package
+         // reports unbound again, so the bound status tracks real state in both
+         // directions rather than latching on.
          const clearRes = await patchPackage({ manifestLocation: null });
          expect(clearRes.status).toBe(200);
          const cleared = (await clearRes.json()) as Record<string, unknown>;
          expect(cleared.storageServeBindings ?? null).toBeNull();
+         expect(cleared.manifestBindingStatus).toBe("unbound");
+         expect(cleared.boundManifestUri ?? null).toBeNull();
          await getPackage(true);
       },
       { timeout: 60_000 },

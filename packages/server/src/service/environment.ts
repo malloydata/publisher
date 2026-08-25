@@ -2241,7 +2241,10 @@ export class Environment {
             await pkg.reloadAllModels(tableNameManifest);
          }
 
-         pkg.setBoundManifestUri(manifestLocation);
+         // Both tiers have applied by here, so the package is bound regardless of
+         // which one carried entries — a pure-`storage=` manifest binds without a
+         // colocated entry to count.
+         pkg.markManifestBound(manifestLocation);
          recordManifestBind("success");
          logger.info("Bound build manifest to package", {
             environmentName: this.environmentName,
