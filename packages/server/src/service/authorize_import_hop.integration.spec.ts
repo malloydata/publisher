@@ -230,6 +230,29 @@ run: gated -> { aggregate: c }
                }),
             ).count,
          ).toBe(2);
+
+         // The row counts above CANNOT catch a lost clone on their own, which
+         // is worth stating because it is easy to assume they can. The gate's
+         // `condition.code` comes from the authored `#(authorize)` text, not
+         // from any caller's given values, so every caller of this cell
+         // computes the SAME code, the append is idempotent against it, and an
+         // in-place mutation is invisible in the results.
+         //
+         // So assert the memoized runnable directly: after serving a gated
+         // request, the cell's own compiled query must still carry no gate
+         // condition. This is the assertion that fails if the per-request
+         // deep clone is ever dropped.
+         const cells = (
+            model as unknown as {
+               runnableNotebookCells?: Array<{
+                  runnable?: { getPreparedQuery(): Promise<unknown> };
+               }>;
+            }
+         ).runnableNotebookCells;
+         const memoized = (await cells![0].runnable!.getPreparedQuery()) as {
+            _query?: { structRef?: { filterList?: Array<{ code?: string }> } };
+         };
+         expect(memoized._query?.structRef?.filterList ?? []).toHaveLength(0);
       } finally {
          await cleanup(duckdb, dir);
       }
@@ -262,6 +285,61 @@ run: plain -> { aggregate: c }
          );
          expect(cell.count).toBe(4);
          expect(cell.sql).not.toMatch(/org_id/i);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
+
+describe("a query_source built on an imported gated source", () => {
+   it("aggregates over the CALLER's rows, not every tenant's", async () => {
+      // A gated `query_source` aggregates over the rows the caller may see.
+      //
+      // Worth stating because an earlier version of this change claimed the
+      // opposite: this is NOT a behaviour change to any previously-working
+      // shape. `graftIntoNamedQuerySnapshots` only touches a stored query
+      // whose `structRef` is an INLINED struct, which happens exactly when the
+      // source arrived unexported through an `import`. A locally-declared
+      // source is exported, so its named query stores the NAME `per_org` and
+      // the sweep skips it -- measured identical with and without the sweep.
+      // The imported shape below did not previously produce a different
+      // number either; it produced a 403.
+      const { model, duckdb, dir } = await createModelWithFiles(
+         {
+            "gate.malloy": ROW_FIELD_GATE,
+            "dash.malloy": `##! experimental.givens
+import "gate.malloy"
+
+source: per_org is gated -> { group_by: org_id; aggregate: n is count() }
+
+query: tile is per_org -> { aggregate: c is count() }
+`,
+         },
+         "dash.malloy",
+      );
+      try {
+         // Seed data holds two orgs. A caller scoped to one sees ONE group.
+         const one = await model.getQueryResults(
+            undefined,
+            "tile",
+            undefined,
+            undefined,
+            false,
+            { GROUPS: [1] },
+         );
+         expect(countRows(one)).toEqual([{ c: 1 }]);
+
+         // Scoped to both, the same tile counts two -- so the number tracks
+         // the caller rather than being uniformly filtered or uniformly not.
+         const both = await model.getQueryResults(
+            undefined,
+            "tile",
+            undefined,
+            undefined,
+            false,
+            { GROUPS: [1, 2] },
+         );
+         expect(countRows(both)).toEqual([{ c: 2 }]);
       } finally {
          await cleanup(duckdb, dir);
       }
