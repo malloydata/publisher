@@ -384,6 +384,40 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    );
 
    it(
+      "recovers from live_fallback when a later storage= manifest binds",
+      async () => {
+         await getPackage(true); // start from live (unbound)
+
+         // Degrade first: a manifest URI that cannot be fetched reports
+         // live_fallback.
+         const missing = path.join(tmpDir, `absent-${Date.now()}.json`);
+         const failed = (await (
+            await patchPackage({ manifestLocation: missing })
+         ).json()) as Record<string, unknown>;
+         expect(failed.manifestBindingStatus).toBe("live_fallback");
+
+         // A pure-`storage=` manifest binds with no colocated entry to recompile, so
+         // nothing on that path recomputes the status — the successful bind has to
+         // report itself. Otherwise the package stays live_fallback while healthily
+         // bound, which reads as degraded to a caller that alerts on it.
+         const sourceEntityId = await orderSummarySourceEntityId();
+         const manifestFile = await writeStorageManifest(sourceEntityId);
+         const bound = (await (
+            await patchPackage({ manifestLocation: manifestFile })
+         ).json()) as Record<string, unknown>;
+         expect(bound.manifestBindingStatus).toBe("bound");
+         expect(bound.boundManifestUri).toBe(manifestFile);
+         expect(
+            (bound.storageServeBindings as unknown[] | undefined)?.length,
+         ).toBe(1);
+
+         await patchPackage({ manifestLocation: null });
+         await getPackage(true);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
       "a rebind to a manifest whose storage entries vanished clears the old bindings",
       async () => {
          // Regression (MED-2): bindManifest must drop storage serve bindings when

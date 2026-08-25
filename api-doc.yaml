@@ -3190,19 +3190,28 @@ components:
           description: >-
             Server-computed, read-only: whether the configured build manifest
             is currently bound to this package's served models. `unbound` = no
-            manifest configured, so the package serves live. `bound` = a manifest
-            was fetched and applied, so persist sources route to their
-            materialized physical tables. `live_fallback` = a `manifestLocation`
-            is configured but the fetch/bind failed or timed out, so the package
-            is serving live despite intending to be materialized-routed. Lets the
-            caller confirm the publisher actually bound the configured manifest
-            rather than inferring it from logs.
+            manifest configured, so the package serves live. `bound` = the
+            manifest was fetched and applied. `live_fallback` = a
+            `manifestLocation` is configured but the fetch/bind failed or timed
+            out, so the package is serving live despite intending to be
+            materialized-routed. Lets the caller confirm the publisher actually
+            bound the configured manifest rather than inferring it from logs.
+
+            `bound` reports that the bind ran to completion, NOT that any query
+            routes to a materialized table: an entry whose source fails the
+            eligibility gate is dropped, and the storage tier serves live under a
+            `PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
+            and `storageServeBindings` for what actually bound.
         manifestEntryCount:
           type: integer
           readOnly: true
           description: >-
             Server-computed, read-only: number of sourceEntityId -> physical-table
-            entries currently bound (0 when unbound or on live fallback).
+            entries currently bound for the COLOCATED (same-connection tableName
+            substitution) tier only. 0 when unbound, on live fallback, or when the
+            manifest carried no colocated entries — so a fully bound
+            `storage=`-only manifest reports `bound` with a count of 0. Corroborate
+            a cross-connection bind with `storageServeBindings`, not this count.
         boundManifestUri:
           type: ["string", "null"]
           readOnly: true
