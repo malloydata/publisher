@@ -2173,9 +2173,9 @@ export class Model {
       // Widen `authorizeReferencedGivenNames` with whatever THIS
       // classification resolved — a source-line gate's given names are only
       // knowable post-lift, via the compiled condition's own `refSummary`.
-      // (The retired dimension form was knowable at construction time
-      // instead, which is why `computeAuthorizeReferencedGivenNames` captures
-      // some names up front; that path no longer sees a gate.) Without this, a
+      // (`computeAuthorizeReferencedGivenNames` still captures names up front
+      // for every gate, but by TEXT-scanning `entry.exprs`, so it cannot see a
+      // name that only surfaces in the compiled condition.) Without this, a
       // source-line field-reference gate's opaque-403 backstop
       // (`authorizeReferencedGivenNames`, `model.ts`'s "Gate given unbound;
       // denying opaquely" check) never learns the given it reads, and a

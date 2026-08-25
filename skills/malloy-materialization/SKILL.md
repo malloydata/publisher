@@ -114,11 +114,18 @@ What freezes is the **column the gate filters on**. A row whose access decision 
 owner, say - keeps being served under its OLD decision until the next rebuild. That is a stale *access
 decision*, not merely stale data, and nothing raises an error.
 
-**So a persisted gated source needs a declared bound, and only one control is one:**
+**So a persisted gated source needs a declared bound, and of the three controls that look like one,
+only the first is:**
 
 - **`materialization.freshness` `{ "window": "24h", "fallback": "live" }` is the bound.** The serve path
   re-checks freshness per query, so once the artifact ages past the window it drops out of the serving set
-  and the query recomputes live, correctly filtered - whether or not a rebuild ever lands.
+  and the query recomputes live, correctly filtered - whether or not a rebuild ever lands. Two details
+  decide whether you actually get that. **`fallback` must be `live`**: under `stale_ok` a stale artifact
+  keeps being served, which voids the bound, and window and fallback resolve *independently* per layer,
+  so a package-level `stale_ok` silently defeats a window you set on the source. And prefer the
+  **per-source** spelling `#@ persist name="..." freshness.window="24h" freshness.fallback="live"` over
+  the package-wide `materialization.freshness` key: the gated source is what needs the bound, and setting
+  it package-wide forces every other persisted source to recompute once stale too.
 - **A cron alone is not a bound.** A failed build or a stopped scheduler leaves the source serving its old
   decisions indefinitely. `freshness` and `schedule` are mutually exclusive; for a gated source, take the
   window.

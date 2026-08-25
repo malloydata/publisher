@@ -52,8 +52,10 @@ source: orders is duckdb.table('orders.parquet') extend {
 > the remedy: declare `#(authorize)` on each source it was meant to protect.
 
 > **The string form — `#(authorize) "<expr>"` on the `source:` line itself — is retired and refused
-> at load.** If you are looking at an older example that annotates the `source:` line with a quoted
-> expression, it is the form this page used to describe; it no longer loads. The refusal is:
+> at load.** Either quote is refused: `#(authorize) 'org_id = 999'` takes the same path as the
+> double-quoted spelling, since Malloy accepts either for a string literal. If you are looking at an
+> older example that annotates the `source:` line with a quoted expression, it is the form this page
+> used to describe; it no longer loads. The refusal is:
 >
 > > The string form of `#(authorize)` (a Malloy-quoted expression on the `source:` line) is no
 > > longer accepted. Replace it with the unquoted expression, carried by an `#(authorize)`
@@ -72,14 +74,17 @@ source: orders is duckdb.table('orders.parquet') extend {
 > **The residual case is a declaring file outside the package tree.** Nothing compiles it on its own,
 > so no load error names it, and the importing model's own load does not see it. It still denies: a
 > quoted string compiles to a string literal rather than a boolean, so it fails to lift as a filter
-> condition and the request is refused, with no author-facing detail. **It increments no counter** —
-> the request-time classifier returns `rejected` with no `cause`, and the recorder only fires when
-> there is one, so do not go looking for it under
-> `publisher_authorize_row_level_rejected_total{cause="legacy_string_gate"}`; that label covers only
+> condition and the request is refused, with no author-facing detail. **It is counted, but only
+> coarsely.** The refusal books `publisher_authorize_row_level_total{decision="denied_by_gate"}` like
+> any other fail-closed rejection, so a package denying every caller *is* visible as a rate. What it
+> does not book is the finer label: the request-time classifier returns `rejected` with no `cause`,
+> and that recorder only fires when there is one, so do not go looking for it under
+> `publisher_authorize_row_level_rejected_total{cause="legacy_string_gate"}` — that label covers only
 > the in-tree string form the load-time check can see. See
 > [Row-level gate metrics](#row-level-gate-metrics). Fail-closed, but confusing — the package loads,
-> appears to work, and denies every caller with no compile-time hint of why, and no metric to notice
-> it by. A debug log naming the graft target is the only signal.
+> appears to work, and denies every caller with no compile-time hint of why. Alert on the
+> `denied_by_gate` rate; a debug log naming the graft target is what tells you a string form is the
+> cause.
 >
 > **An annotation anywhere other than directly above a `source:` line is also refused at load** —
 > the earlier `internal dimension: authorized is <expr>` form (the annotation on a `dimension:`
@@ -409,7 +414,7 @@ Every use is counted (`publisher_authorize_bypass_total`, labelled `entry_point`
 Two more counters cover row-level gates specifically:
 
 - `publisher_authorize_row_level_total`, labelled `decision` — exactly two values, `denied_by_gate` and `empty_after_filter`. `denied_by_gate` is the fail-closed refusal when a gate's expression could not be resolved against the entry point; `empty_after_filter` is a normal 200 with zero rows after the filter matched none, which is not an error. A provably constant-`false` gate is not a third case: it runs the `where: false` graft and records `empty_after_filter`.
-- `publisher_authorize_row_level_rejected_total`, labelled `cause`. The label set is generated from the `RowLevelGateRejectionCause` union (`ROW_LEVEL_GATE_REJECTION_CAUSES` in `authorize.ts`, which is the single source of truth — read it there rather than trusting this list) and has seven members: `source_line_gate_no_given_reference`, `source_line_gate_negated_membership`, `unreachable_given`, `entry_point_unexpressible`, `legacy_string_gate`, `given_usage_unresolvable`, `unclassifiable_condition`. The first two are **non-fatal** — the model still loads: W1 (the gate reads no given at all) and W2 (a negated membership test). A hard load-time failure (G1, G4) fails the whole model load but does **not** increment this counter today — it surfaces only as a load error on the package, not as a metric. `entry_point_unexpressible` is the inherited-and-unexpressible case above: the load warns naming the entry point rather than aborting, and that one entry point denies every request. `unreachable_given` and `given_usage_unresolvable` are request-time classification failures — a gate whose given lands off the model's own surface, or whose lifted condition references a field the graft target cannot resolve. `unclassifiable_condition` is a lifted condition carrying no usable expression at all, an IR shape not otherwise expected. `legacy_string_gate` is the only cause that fires for a **load refusal**, and it is the one worth alerting on — but only for the string-form annotation the load-time check can see. The out-of-tree case (a string-form gate declared outside the package tree, see [Declaring Gates](#declaring-gates)) increments **nothing**: the lift fails at request time and the classifier returns `rejected` with no `cause` at all, so that gate denies every request while staying invisible on this counter. Do not watch for a steady rate here to find one; it shows up only in a debug log naming the graft target.
+- `publisher_authorize_row_level_rejected_total`, labelled `cause`. The label set is generated from the `RowLevelGateRejectionCause` union (`ROW_LEVEL_GATE_REJECTION_CAUSES` in `authorize.ts`, which is the single source of truth — read it there rather than trusting this list) and has seven members: `source_line_gate_no_given_reference`, `source_line_gate_negated_membership`, `unreachable_given`, `entry_point_unexpressible`, `legacy_string_gate`, `given_usage_unresolvable`, `unclassifiable_condition`. The first two are **non-fatal** — the model still loads: W1 (the gate reads no given at all) and W2 (a negated membership test). A hard load-time failure (G1, G4) fails the whole model load but does **not** increment this counter today — it surfaces only as a load error on the package, not as a metric. `entry_point_unexpressible` is the inherited-and-unexpressible case above: the load warns naming the entry point rather than aborting, and that one entry point denies every request. `unreachable_given` and `given_usage_unresolvable` are request-time classification failures — a gate whose given lands off the model's own surface, or whose lifted condition references a field the graft target cannot resolve. `unclassifiable_condition` is a lifted condition carrying no usable expression at all, an IR shape not otherwise expected. `legacy_string_gate` is the only cause that fires for a **load refusal**, and it is the one worth alerting on — but only for the string-form annotation the load-time check can see. The out-of-tree case (a string-form gate declared outside the package tree, see [Declaring Gates](#declaring-gates)) never increments **this** counter: the lift fails at request time and the classifier returns `rejected` with no `cause` at all, so that gate denies every request while staying invisible here. It is not invisible everywhere — it still books `denied_by_gate` on `publisher_authorize_row_level_total` above, which is the rate to alert on. Do not watch for a steady rate on *this* counter to find one; what identifies the string form specifically is a debug log naming the graft target.
 
 `publisher_authorize_guard_rejected_total`, labelled `field` (`query` | `source_name` | `query_name` | `compile_source`), counts requests rejected with 400 for declaring an `#(authorize)` annotation in caller-submitted Malloy text.
 

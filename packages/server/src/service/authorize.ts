@@ -410,10 +410,20 @@ export function assertNoMisplacedAuthorizeAnnotations(
 export type AuthorizeMap = Map<string, string[][]>;
 
 const GIVEN_REF_PATTERN = /\$([A-Za-z_][A-Za-z0-9_]*)/g;
-// Malloy string literals are single-quoted; a `$NAME` inside one is literal
-// text, not a given reference. Strip literals (honoring `\'` escapes) before
-// scanning, so e.g. `$ROLE = 'the $BOSS role'` references only ROLE.
-const STRING_LITERAL_PATTERN = /'(?:\\.|[^'\\])*'/g;
+// A `$NAME` inside a string literal is literal text, not a given reference, so
+// strip literals (honoring escapes) before scanning: `$ROLE = 'the $BOSS role'`
+// references only ROLE. Malloy accepts EITHER quote for a literal -- the same
+// premise `WHOLE_BODY_SINGLE_QUOTED_STRING` rests on -- so both are stripped.
+// Single-quote-only would report a phantom given for the double-quoted
+// spelling, and `filterGivensToModelSurface` would then drop a caller-supplied
+// value for it instead of letting the query fail closed on an unknown given.
+// The two escapes the whole-body matchers recognize, one per quote style:
+// `\'`/`\\` for the single-quoted form and `\"`/`\\` for the double-quoted one.
+// Hoisted rather than built per call so the escaping is greppable and reviewable
+// by eye, like every other pattern in this file.
+const SINGLE_QUOTE_ESCAPE = /\\(['\\])/g;
+const DOUBLE_QUOTE_ESCAPE = /\\(["\\])/g;
+const STRING_LITERAL_PATTERN = /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g;
 
 /**
  * Given names an authorize expression references (`$NAME` tokens), deduped,
@@ -839,8 +849,8 @@ const WHOLE_BODY_SINGLE_QUOTED_STRING = /^'(?:\\.|[^'\\])*'$/;
  * Whether an authorize note's (trimmed) payload is the legacy QUOTED-STRING
  * form (`#(authorize) "<expr>"`) rather than the current unquoted natural-Malloy
  * expression form (`#(authorize) <expr>`) — decided by whether the ENTIRE
- * payload is one double-quoted string literal, not merely whether it opens
- * with a quote. Malloy accepts a double-quoted string literal as a normal
+ * payload is one quoted string literal, in EITHER quote, not merely whether it
+ * opens with a quote. Malloy accepts a quoted string literal as a normal
  * sub-expression (`where: ("admin" = $ROLE)` compiles), so a legal unquoted
  * gate can legitimately START with one (`#(authorize) "admin" = $ROLE`) — a
  * test that only looked at the first character would misidentify it as
@@ -883,8 +893,9 @@ function unquoteLegacyGatePayload(payload: string): string {
    const inner = trimmed.slice(1, -1);
    // Decode only the quote character this payload actually used, so a literal
    // `\'` inside a double-quoted gate (and vice versa) is left as authored.
-   const quote = trimmed[0] === "'" ? "'" : '"';
-   return inner.replace(new RegExp(`\\\\([${quote}\\\\])`, "g"), "$1");
+   return trimmed[0] === "'"
+      ? inner.replace(SINGLE_QUOTE_ESCAPE, "$1")
+      : inner.replace(DOUBLE_QUOTE_ESCAPE, "$1");
 }
 
 /**
