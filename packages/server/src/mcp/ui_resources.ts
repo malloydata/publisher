@@ -6,6 +6,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { parseBoolEnv } from "../config";
 import { logger } from "../logger";
 
 /**
@@ -23,7 +24,7 @@ import { logger } from "../logger";
  *      type.
  *   3. The tool carries `_meta.ui.resourceUri` naming that resource, which is
  *      what associates a result with the widget that draws it. That part lives
- *      with the tool, in execute_query_tool.ts, and reads `uiToolMeta` below.
+ *      with the tool, in execute_query_tool.ts, and reads `executeQueryToolMeta` below.
  *
  * Everything the widget needs arrives over postMessage from the host, so it makes
  * no network request of its own and the built HTML has no external script, style,
@@ -81,8 +82,8 @@ export function resolveWidgetDir(): string {
  * server reads its widget from disk on every read for the same reason.
  *
  * A cached `false` keeps a missing bundle from being re-stat-ed on every request.
- * Both callers below consult this, which is what stops `uiToolMeta` and
- * `registerUiResources` from disagreeing about whether a widget exists.
+ * Both callers below consult this, which is what stops `executeQueryToolMeta`
+ * and `registerUiResources` from disagreeing about whether a widget exists.
  *
  * Reading on demand also means rebuilding a widget takes effect without
  * restarting the server, as long as it existed when the server first looked.
@@ -123,10 +124,30 @@ export function resetWidgetCache(): void {
    widgetExistsCache = new Map();
 }
 
-/** Whether the execute-query widget is available to serve. */
+/**
+ * Operator kill switch, mirroring PUBLISHER_NO_MCP_CONFIG.
+ *
+ * Without it the only way to turn inline rendering off is to rebuild without the
+ * widget, which an operator running the published package or the image cannot do.
+ * Read on every call rather than cached at module load so a test can set it, and
+ * because the cost is one env lookup.
+ */
+function widgetsDisabled(): boolean {
+   return parseBoolEnv("PUBLISHER_NO_MCP_APPS") ?? false;
+}
+
+/**
+ * Whether the execute-query widget is available to serve.
+ *
+ * The single predicate the whole feature follows: the resource registration, the
+ * UI extension, the tool's `_meta`, and the sentence in the server instructions
+ * all consult this, so disabling it here disables all four together and none of
+ * them can advertise what the others do not.
+ */
 export function hasExecuteQueryWidget(
    widgetDir: string = resolveWidgetDir(),
 ): boolean {
+   if (widgetsDisabled()) return false;
    return widgetExists(widgetDir, EXECUTE_QUERY_WIDGET_FILE);
 }
 
@@ -140,15 +161,20 @@ export function hasExecuteQueryWidget(
  * `openai/outputTemplate` is the equivalent ChatGPT reads. A server emitting only
  * one is invisible to the other host, so Credible's tools emit both and so do
  * these.
+ *
+ * Named for the one widget it serves, and takes no URI. It previously accepted a
+ * `resourceUri` and returned it while gating on the execute-query widget, so
+ * asking it for any other URI would have handed back metadata whose presence was
+ * decided by a different file: generic in shape and specific in fact. A second
+ * widget gets its own function, or this one grows a real lookup.
  */
-export function uiToolMeta(
-   resourceUri: string,
+export function executeQueryToolMeta(
    widgetDir: string = resolveWidgetDir(),
 ): Record<string, unknown> | undefined {
    if (!hasExecuteQueryWidget(widgetDir)) return undefined;
    return {
-      ui: { resourceUri },
-      "openai/outputTemplate": resourceUri,
+      ui: { resourceUri: EXECUTE_QUERY_UI_URI },
+      "openai/outputTemplate": EXECUTE_QUERY_UI_URI,
    };
 }
 
@@ -165,7 +191,10 @@ export function registerUiResources(
    mcpServer: McpServer,
    widgetDir: string = resolveWidgetDir(),
 ): string[] {
-   if (!widgetExists(widgetDir, EXECUTE_QUERY_WIDGET_FILE)) {
+   // hasExecuteQueryWidget, not widgetExists: the kill switch lives in the former,
+   // and calling the raw filesystem check here would register the resource on a
+   // server whose tool and instructions had already been told there is none.
+   if (!hasExecuteQueryWidget(widgetDir)) {
       return [];
    }
    const path = widgetPath(widgetDir, EXECUTE_QUERY_WIDGET_FILE);

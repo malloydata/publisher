@@ -22,7 +22,7 @@ import {
 } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { buildQueryEnvelope } from "../query_envelope";
-import { EXECUTE_QUERY_UI_URI, uiToolMeta } from "../ui_resources";
+import { executeQueryToolMeta } from "../ui_resources";
 import { mintCorrelationId } from "../../service/query_metadata";
 import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
@@ -140,7 +140,7 @@ export function registerExecuteQueryTool(
          inputSchema: executeQueryShape,
          // Absent unless the widget bundle was built, so the tool never points
          // at a resource this server cannot serve.
-         _meta: uiToolMeta(EXECUTE_QUERY_UI_URI),
+         _meta: executeQueryToolMeta(),
       },
       /** Handles requests for the malloy_executeQuery tool */
       async (params) => {

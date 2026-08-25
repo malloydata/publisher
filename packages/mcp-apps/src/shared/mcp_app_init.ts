@@ -20,16 +20,27 @@ import {
    type ToolResultBlock,
 } from "./tool_result_payload";
 
-// Suppress the noisy per-message debug logs PostMessageTransport emits.
+// Suppress the two per-message debug logs PostMessageTransport emits for every
+// frame, which otherwise bury anything useful in the host's console.
+//
+// Deliberately NOT suppressing "Ignoring non-JSON-RPC message" or "Ignoring
+// message from unknown source". Those fire when a host sends something this
+// widget did not expect, which is exactly the line worth having when a host
+// misbehaves, and swallowing them was hiding the diagnostic along with the noise.
+//
+// Matching on a third-party library's log text is fragile by nature: an ext-apps
+// release that rewords these silently restores the noise. That failure mode is
+// noise rather than breakage, and the alternative is patching the transport, so
+// it is accepted rather than solved. Kept to the two highest-volume strings so
+// there is less to go stale.
+const SUPPRESSED_TRANSPORT_LOGS = new Set([
+   "Parsed message",
+   "Sending message",
+]);
+
 const originalDebug = console.debug;
 console.debug = function (...args: unknown[]) {
-   if (
-      typeof args[0] === "string" &&
-      (args[0] === "Parsed message" ||
-         args[0] === "Sending message" ||
-         args[0] === "Ignoring non-JSON-RPC message" ||
-         args[0] === "Ignoring message from unknown source")
-   ) {
+   if (typeof args[0] === "string" && SUPPRESSED_TRANSPORT_LOGS.has(args[0])) {
       return;
    }
    originalDebug.apply(console, args);

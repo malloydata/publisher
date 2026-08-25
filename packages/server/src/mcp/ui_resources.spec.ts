@@ -15,7 +15,7 @@ import {
    registerUiResources,
    resetWidgetCache,
    resolveWidgetDir,
-   uiToolMeta,
+   executeQueryToolMeta,
 } from "./ui_resources";
 
 const WIDGET_HTML = "<!doctype html><title>widget</title><div id=root></div>";
@@ -61,7 +61,7 @@ describe("ui_resources", () => {
       it("gives the tool no widget metadata", () => {
          // So malloy_executeQuery registers exactly as it did before this
          // feature, and every client sees today's behaviour.
-         expect(uiToolMeta(EXECUTE_QUERY_UI_URI, widgetDir)).toBeUndefined();
+         expect(executeQueryToolMeta(widgetDir)).toBeUndefined();
       });
    });
 
@@ -90,7 +90,7 @@ describe("ui_resources", () => {
 
       it("emits both the spec and the ChatGPT widget-association keys", () => {
          // A server emitting only one of these is invisible to the other host.
-         expect(uiToolMeta(EXECUTE_QUERY_UI_URI, widgetDir)).toEqual({
+         expect(executeQueryToolMeta(widgetDir)).toEqual({
             ui: { resourceUri: EXECUTE_QUERY_UI_URI },
             "openai/outputTemplate": EXECUTE_QUERY_UI_URI,
          });
@@ -100,7 +100,7 @@ describe("ui_resources", () => {
          // If the bundle ever stops being self-contained, it needs CSP
          // resourceDomains and this assertion should fail rather than the widget
          // silently rendering blank in a host that blocks the fetch.
-         const meta = uiToolMeta(EXECUTE_QUERY_UI_URI, widgetDir) as {
+         const meta = executeQueryToolMeta(widgetDir) as {
             ui: Record<string, unknown>;
          };
          expect(meta.ui.csp).toBeUndefined();
@@ -167,6 +167,48 @@ describe("ui_resources", () => {
          expect(message).not.toContain(EXECUTE_QUERY_WIDGET_FILE);
          expect(message).not.toMatch(/ENOENT|no such file/i);
          expect(message).toMatch(/build:mcp-apps/);
+      });
+   });
+
+   describe("PUBLISHER_NO_MCP_APPS", () => {
+      // The operator escape hatch, mirroring PUBLISHER_NO_MCP_CONFIG. Without it
+      // the only way to turn inline rendering off is to rebuild without the
+      // widget, which whoever runs the published package or the image cannot do.
+      const saved = process.env.PUBLISHER_NO_MCP_APPS;
+      afterEach(() => {
+         if (saved === undefined) delete process.env.PUBLISHER_NO_MCP_APPS;
+         else process.env.PUBLISHER_NO_MCP_APPS = saved;
+         resetWidgetCache();
+      });
+
+      it("turns the whole feature off even with the bundle present", () => {
+         writeWidget();
+         expect(hasExecuteQueryWidget(widgetDir)).toBe(true);
+         process.env.PUBLISHER_NO_MCP_APPS = "true";
+         resetWidgetCache();
+         // All four surfaces follow the one predicate, so none can advertise
+         // what the others do not.
+         expect(hasExecuteQueryWidget(widgetDir)).toBe(false);
+         expect(executeQueryToolMeta(widgetDir)).toBeUndefined();
+         expect(registerUiResources(newServer(), widgetDir)).toEqual([]);
+      });
+
+      it("is off by default and accepts the falsey spellings", () => {
+         writeWidget();
+         for (const off of ["false", "0", "no", "off", ""]) {
+            process.env.PUBLISHER_NO_MCP_APPS = off;
+            resetWidgetCache();
+            expect(hasExecuteQueryWidget(widgetDir)).toBe(true);
+         }
+      });
+
+      it("rejects a value that is neither, rather than guessing", () => {
+         writeWidget();
+         process.env.PUBLISHER_NO_MCP_APPS = "maybe";
+         resetWidgetCache();
+         expect(() => hasExecuteQueryWidget(widgetDir)).toThrow(
+            /expected a boolean/i,
+         );
       });
    });
 

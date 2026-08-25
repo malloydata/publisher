@@ -17,6 +17,15 @@
  *
  * Chart colours are not set here at all. The renderer's own defaults apply, so
  * the charts look like Malloy's charts.
+ *
+ * LIGHT ONLY, and worth stating rather than discovering: these are fixed hex
+ * values with no `prefers-color-scheme` variant, so the card is a white panel
+ * with dark text even in a client running a dark theme. It will look like a
+ * light patch in a dark conversation. Not addressed here for the same reason as
+ * `# theme.*` parity: doing it properly means reading the host's own theme, which
+ * the MCP Apps spec exposes (`McpUiHostStylesSchema` carries `--color-*` and
+ * `--font-*` variables), so the honest fix is to consume those rather than to
+ * guess with a media query the host may not reflect.
  */
 
 export const FONT_SANS =

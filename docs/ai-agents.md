@@ -82,6 +82,10 @@ Nothing to configure. The widget is one self-contained HTML file with no externa
 
 **Most clients do not support MCP Apps, and nothing is lost when they do not.** The tool result is identical either way, so an agent reading the JSON sees exactly what it saw before. A client that ignores the extension simply gets no card.
 
+Which clients render it today, as far as we have tested: **Claude Desktop** does, but only through the `mcp-remote` bridge described above, because it will not take an HTTP MCP endpoint directly. **ChatGPT** reads the `openai/outputTemplate` key the server emits alongside the spec's own, though we have not run it. Cursor and the rest are untested rather than known-broken.
+
+To turn it off entirely, set `PUBLISHER_NO_MCP_APPS=1`. The server then advertises no widget at all and results render as JSON, which is also what happens when the bundle was never built.
+
 One thing the widget does not do yet: it ignores the `# theme.*` annotations that the Publisher web UI honours, so a model that sets its own palette renders in Malloy's default colours in chat and in your palette in the UI.
 
 If you build Publisher from source and want the widget, build it. `bun run build` covers it, as does `bun run build:server-deploy`. A server whose widget bundle is missing does not advertise one, which is deliberate: a client told about a widget it cannot read shows a broken card, so the server would rather offer nothing.

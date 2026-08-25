@@ -13,7 +13,7 @@
    "scripts": {
       "build": "bunx vite build",
       "typecheck": "bunx tsc --noEmit",
-      "lint": "bunx eslint ./src --fix",
+      "lint": "bunx eslint ./src",
       "format": "bunx prettier --write --parser typescript 'src/**/*.ts'",
       "test": "bun test src"
    },

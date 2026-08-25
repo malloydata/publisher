@@ -20,7 +20,7 @@
     "build:skills": "cd packages/skills && bun run build",
     "build:mcp-apps": "cd packages/mcp-apps && bun run build",
     "build:create-malloy-package": "cd packages/create-malloy-package && bun run build",
-    "build:server-deploy": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:app:server && NODE_ENV=production bun run build:mcp-apps && NODE_ENV=production bun run build:server",
+    "build:server-deploy": "NODE_ENV=production bun run build:sdk && NODE_ENV=production bun run build:app:server && NODE_ENV=production bun run build:server",
     "start": "cd packages/server && bun run start",
     "start:init": "cd packages/server && bun run start:init",
     "start:dev": "cd packages/server && bun run start:dev",
