@@ -61,6 +61,7 @@ import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { mcpAppsDisabled } from "./mcp/ui_resources";
 import {
    addCommand,
    ensureMcpConfig,
@@ -235,6 +236,12 @@ const MCP_PORT = Number(process.env.MCP_PORT || 4040);
 // listen callback is an uncaughtException that kills a server which has already
 // bound both ports. At module scope it is an ordinary startup failure.
 const MCP_CONFIG_ENABLED = mcpConfigEnabled();
+// Same reasoning as the line above, one step more so: this flag is read while
+// building the McpServer for every MCP POST, so a typo left to be discovered
+// there would return -32603 on every MCP call from a server that boots clean and
+// keeps serving REST. Resolving it at module scope makes a bad value a startup
+// failure, which is what the docs promise.
+mcpAppsDisabled();
 const MCP_ENDPOINT = "/mcp";
 const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
    process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,

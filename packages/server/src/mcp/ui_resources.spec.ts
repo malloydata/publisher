@@ -202,6 +202,23 @@ describe("ui_resources", () => {
          }
       });
 
+      it("resolves once, so a bad value cannot 500 every MCP request", () => {
+         // The reason this is cached rather than read per call. hasExecuteQueryWidget
+         // runs while building the McpServer for EVERY MCP POST, and parseBoolEnv
+         // throws on a typo, so a per-call read turned one bad character into a
+         // -32603 on every MCP call from a server that booted clean and kept
+         // answering REST. server.ts resolves it at module scope so a bad value is
+         // a startup failure instead.
+         writeWidget();
+         process.env.PUBLISHER_NO_MCP_APPS = "true";
+         resetWidgetCache();
+         expect(hasExecuteQueryWidget(widgetDir)).toBe(false);
+         // Changing the variable without clearing the cache must not re-read it.
+         process.env.PUBLISHER_NO_MCP_APPS = "maybe";
+         expect(() => hasExecuteQueryWidget(widgetDir)).not.toThrow();
+         expect(hasExecuteQueryWidget(widgetDir)).toBe(false);
+      });
+
       it("rejects a value that is neither, rather than guessing", () => {
          writeWidget();
          process.env.PUBLISHER_NO_MCP_APPS = "maybe";

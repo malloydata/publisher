@@ -122,6 +122,7 @@ function widgetExists(widgetDir: string, file: string): boolean {
 /** Clears the per-process widget existence cache. For tests. */
 export function resetWidgetCache(): void {
    widgetExistsCache = new Map();
+   widgetsDisabledCache = undefined;
 }
 
 /**
@@ -129,11 +130,27 @@ export function resetWidgetCache(): void {
  *
  * Without it the only way to turn inline rendering off is to rebuild without the
  * widget, which an operator running the published package or the image cannot do.
- * Read on every call rather than cached at module load so a test can set it, and
- * because the cost is one env lookup.
+ *
+ * RESOLVED ONCE, and that is load-bearing rather than an optimisation.
+ * `parseBoolEnv` throws on a typo, which is this server's convention for flags,
+ * and `hasExecuteQueryWidget` is called while building the McpServer for EVERY
+ * MCP POST. Reading it per request therefore turned one bad character into a
+ * `-32603` on every MCP call, on a server that had booted clean, reported
+ * `serving`, and kept answering REST perfectly: the whole MCP surface dead with
+ * nothing saying why. server.ts resolves it at module scope for the same reason
+ * it resolves `mcpConfigEnabled()` there, so a typo is an ordinary startup
+ * failure instead.
+ *
+ * Cached with the widget cache rather than at module load so a test can change
+ * the variable and clear it through `resetWidgetCache`.
  */
-function widgetsDisabled(): boolean {
-   return parseBoolEnv("PUBLISHER_NO_MCP_APPS") ?? false;
+let widgetsDisabledCache: boolean | undefined;
+
+export function mcpAppsDisabled(): boolean {
+   if (widgetsDisabledCache === undefined) {
+      widgetsDisabledCache = parseBoolEnv("PUBLISHER_NO_MCP_APPS") ?? false;
+   }
+   return widgetsDisabledCache;
 }
 
 /**
@@ -147,7 +164,7 @@ function widgetsDisabled(): boolean {
 export function hasExecuteQueryWidget(
    widgetDir: string = resolveWidgetDir(),
 ): boolean {
-   if (widgetsDisabled()) return false;
+   if (mcpAppsDisabled()) return false;
    return widgetExists(widgetDir, EXECUTE_QUERY_WIDGET_FILE);
 }
 
