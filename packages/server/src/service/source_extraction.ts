@@ -142,6 +142,87 @@ function joinFieldNamesUnresolvableDeclaration(
 }
 
 /**
+ * Whether `a` sits strictly before `b` in a document (line first, then
+ * character) — the tie-break `considerAuthorizeNoteOwner` uses to keep the
+ * EARLIEST candidate rather than the last one visited (iteration order over
+ * `modelDef.contents`/`sourceRegistry` is not guaranteed to be declaration
+ * order).
+ */
+function isEarlierPosition(
+   a: { line: number; character: number },
+   b: { line: number; character: number },
+): boolean {
+   return a.line < b.line || (a.line === b.line && a.character < b.character);
+}
+
+/**
+ * Resolve which top-level struct actually WROTE a shared `#(authorize)` note
+ * object, keyed by the note itself, so `attributedAuthorizeOwnNotes` can stop
+ * mistaking "this struct's `annotations` carries the note" for "this struct
+ * declared the note" — see `validateAuthorizeProbes`'s doc for why that
+ * distinction is the one thing standing between a bad `except:`/`accept:`
+ * derivation denying only itself versus aborting the whole package load.
+ *
+ * Why location, not identity or a backlink: `gateExprsForOwnAnnotations`'s
+ * `excludeNotes` identity-subtraction (`gate_classification.ts`) only works
+ * where the caller already independently knows the base struct's own notes
+ * (the composite-member recursion in `collectEntryPointGates`) — there is no
+ * equivalent "already known base" for a plain `extend {}`/`except:`/`accept:`
+ * derivation. `resolveDeclaredSource` (`./gate_registry_walk`) doesn't help
+ * either: it resolves no ancestor for any extend-BASED derivation (a bare
+ * alias, `source: y is x`, is the one shape it does resolve). And a base's
+ * `fields` are not shared by reference with its extend, so there's no
+ * field-identity to key on either.
+ *
+ * What DOES work, confirmed empirically against `@malloydata/malloy`: Malloy
+ * copies a base's ENTIRE `struct.annotations` object by reference onto a
+ * derivation that adds no annotation of its own (`parent.annotations ===
+ * wExcept.annotations` is `true`). Every `AnnotationNote` carries `at:
+ * DocumentLocation` recording where it was PARSED, which travels with the
+ * note wherever Malloy copies it — it always names the original `source:`
+ * line, never a derivation's. Every top-level `SourceDef` also carries its
+ * own `location?: DocumentLocation` recording where THAT STRUCT was
+ * declared. So among every struct sharing a note object by reference, the
+ * one whose own `.location` is in the SAME file as the note's `.at.url` is
+ * the struct that wrote it — Malloy requires a source to exist before it can
+ * be extended, so ties (more than one same-file candidate, e.g. a block-list
+ * sharing one note across siblings) are broken by earliest position via
+ * `isEarlierPosition`. Filtering to `location.url === at.url` alone already
+ * excludes a cross-file derivation of an imported gated source, since the
+ * note's `at.url` always names the original file.
+ *
+ * `candidate.location` absent (should not happen for a top-level source, but
+ * not guaranteed by the type) skips the candidate rather than crashing —
+ * see the call sites' doc for why an unresolved note then behaves as
+ * "inherited everywhere it's found", which stays fail-closed either way.
+ */
+function considerAuthorizeNoteOwner(
+   declaredBy: Map<AnnotationNote, StructDef>,
+   note: AnnotationNote,
+   candidate: StructDef,
+): void {
+   const location = candidate.location;
+   // Raw string equality, not URL normalization (no trailing-slash/case
+   // folding) — sufficient in practice for both the file loader's URLs and
+   // notebook cells' distinct `internal://` URLs, but not a general URL
+   // comparison.
+   if (!location || location.url !== note.at.url) return;
+   const currentLocation = declaredBy.get(note)?.location;
+   // On a tie (identical position — shouldn't happen for two distinct
+   // declarations, but not guaranteed by the type), the FIRST-visited
+   // candidate wins because `isEarlierPosition` is strict `<`. Today that
+   // means the `modelDef.contents` sweep (visited first, below) beats the
+   // `sourceRegistry` sweep — accidental, not asserted; reordering those two
+   // sweeps would silently flip which candidate wins a tie.
+   if (
+      !currentLocation ||
+      isEarlierPosition(location.range.start, currentLocation.range.start)
+   ) {
+      declaredBy.set(note, candidate);
+   }
+}
+
+/**
  * Extract every source from a compiled model, parsing `#(filter)` annotations
  * along the way.
  *
@@ -160,7 +241,8 @@ function joinFieldNamesUnresolvableDeclaration(
  * Authorize (`#(authorize)`) is collected own-gate-first and then from the
  * nearest ancestor that declares one, via {@link effectiveAncestorGateExprs}
  * (`./gate_registry_walk`) — its `annotations.inherits`/`sourceRegistry` half
- * is shared verbatim with `Model.gateExprsForOwnAnnotations`; its
+ * is shared verbatim with `./gate_classification`'s
+ * `gateExprsForOwnAnnotations`; its
  * `query_source` hop is NOT (see that module's doc comment for why
  * `Model.collectEntryPointGates` takes it as its own separate, already-tested
  * recursion instead). For `X is Y extend {...}`: if X declares its own
@@ -175,8 +257,8 @@ function joinFieldNamesUnresolvableDeclaration(
  * carries no annotation of its OWN; any annotation — a render tag, a doc
  * comment, an unrelated `#(filter)` — demotes Y's to `annotations.inherits`, at
  * which point own-blockNotes reports a locked source as ungated. So the chain is
- * walked, nearest declaration wins, matching `Model.gateExprsForOwnAnnotations`.
- * Joins are a separate concern and are not gated.
+ * walked, nearest declaration wins, matching `./gate_classification`'s
+ * `gateExprsForOwnAnnotations`. Joins are a separate concern and are not gated.
  *
  * `blockNotes` alone is also not sufficient WITHIN one level, because which
  * note key a declaration lands in is decided by the author's syntax. The
@@ -196,18 +278,17 @@ function joinFieldNamesUnresolvableDeclaration(
  * `authorizeOwnNotes` is the companion that tells it which of those entry
  * points DECLARED the gate rather than inheriting it.
  *
- * A separate list, `misplacedAuthorize`, is not about a source's gate at all: it
- * is every `#(authorize)` annotation this walk found attached to a
- * `dimension:`/`measure:`/`view:` FIELD rather than the `source:` line itself
- * — a position nothing here, or anywhere else, ever reads for enforcement.
- * See `assertNoMisplacedAuthorizeAnnotations`'s doc for why that fails OPEN
- * and has to be refused at load rather than silently ignored. An unannotated
- * `join_one:`/`join_many:` of a gated source is deliberately EXCLUDED from
- * this list, even though it carries the identical annotation text on the
- * join field — see the note-identity check just above the main loop. A
- * `##(authorize)` on the MODEL itself (file-level, deprecated) is also folded
- * into `misplacedAuthorize`, as a `"file"`-kind finding, rather than
- * collected as a gate — see the check ahead of the per-source walk below.
+ * A separate list, `misplacedAuthorize`, is not about a source's gate at all:
+ * it is every `#(authorize)` annotation this walk found attached to a
+ * `dimension:`/`measure:`/`view:`/`join_one:`/`join_many:` FIELD
+ * (author-written one line too low, or directly on the join line, never
+ * Malloy's by-reference copy of the joined source's own gate — see the
+ * note-identity check just above the main loop) or to the MODEL itself
+ * (`##(authorize)`, file-level, deprecated — folded in as a `"file"`-kind
+ * finding, see the check ahead of the per-source walk below). All are
+ * positions nothing here, or anywhere else, ever reads for enforcement; see
+ * `assertNoMisplacedAuthorizeAnnotations`'s doc for why that fails OPEN and
+ * has to be refused at load rather than silently ignored.
  *
  * A `join_one:`/`join_many:` FIELD carrying a note this walk cannot identify
  * as that copy is routed by whether its declaration resolves INSIDE this
@@ -240,7 +321,36 @@ export function extractSourcesFromModelDef(
    filterMap: Map<string, FilterDefinition[]>;
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
+   /**
+    * source name → EVERY `#(authorize)`-tagged note object present on that
+    * source's own annotation level, by TEXT/presence alone — this is the
+    * pre-attribution check, restored deliberately. Feeds ONLY
+    * `findLegacyStringGates`/`assertNoLegacyStringGate` and
+    * `findMultipleAuthorizeGates`/`assertAtMostOneAuthorizeGate`, both LOAD
+    * REFUSALS: they must fire on what a source's own annotations literally
+    * carry (a plain `extend {}`/`except:`/`accept:` derivation that adds its
+    * own `#(authorize)` alongside an inherited-by-reference one really does
+    * carry two notes, and declaring two gates is refused regardless of which
+    * one attribution would credit as "declared here"). Do NOT swap this for
+    * {@link attributedAuthorizeOwnNotes} at either call site — narrowing it
+    * to attribution silently turns a load refusal into a fail-open (a
+    * source's own second gate goes unenforced instead of aborting the load;
+    * see the block-form regression test in
+    * `source_line_authorize_integration.spec.ts`).
+    */
    authorizeOwnNotes: Map<string, AnnotationNote[]>;
+   /**
+    * source name → the subset of {@link authorizeOwnNotes} that
+    * `authorizeNoteDeclaredBy` resolved back to THIS struct as the one that
+    * actually WROTE the note (see `considerAuthorizeNoteOwner`'s doc). Feeds
+    * ONLY `validateAuthorizeProbes`'s own-vs-inherited diagnostic — whether an
+    * unexpressible probe throws (a genuine authoring mistake at the
+    * declaring source) or warns-and-scopes-to-one-entry-point (a derivation
+    * that merely inherited a gate it cannot express). Never use this for a
+    * load refusal: it is deliberately narrower than presence, which is
+    * exactly what would reopen finding 1.
+    */
+   attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
 } {
    const filterMap = new Map<string, FilterDefinition[]>();
    const authorizeMap: AuthorizeMap = new Map();
@@ -273,6 +383,13 @@ export function extractSourcesFromModelDef(
    // source the field happens to live on — a join field's copied note names
    // the JOINED source, not the joiner.
    const gatedSourceOwnAuthorizeNotes = new Set<AnnotationNote>();
+   // Every `#(authorize)`-tagged note object seen above, resolved to the ONE
+   // top-level struct whose OWN `source:` line actually wrote it — see
+   // `considerAuthorizeNoteOwner`'s doc. Feeds `authorizeOwnNotes` below so a
+   // struct that merely CARRIES a copied note (every plain `extend {}` /
+   // `except:` / `accept:` derivation of a gated base) is no longer
+   // mistaken for one that DECLARED it.
+   const authorizeNoteDeclaredBy = new Map<AnnotationNote, StructDef>();
    // Every annotation position this function reads for authorize purposes is
    // also swept for a NEAR-MISS spelling — one that reads as an attempt at a
    // gate but that Malloy routes elsewhere, so nothing would ever enforce it.
@@ -290,6 +407,7 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes(struct.annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
+            considerAuthorizeNoteOwner(authorizeNoteDeclaredBy, note, struct);
          }
       }
       nearMissAuthorize.push(
@@ -323,6 +441,11 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes((entry as StructDef).annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
+            considerAuthorizeNoteOwner(
+               authorizeNoteDeclaredBy,
+               note,
+               entry as StructDef,
+            );
          }
       }
       nearMissAuthorize.push(
@@ -366,13 +489,13 @@ export function extractSourcesFromModelDef(
    assertNoAuthorizeNearMisses(nearMissAuthorize);
 
    // source name → the source's OWN-level `#(authorize)`-tagged note
-   // objects (possibly empty — e.g. a `query_source` struct carries no
-   // `annotations` at all, so it has none of its own by construction). Fed to
-   // `validateAuthorizeProbes` so it can tell a gate genuinely DECLARED at one
-   // entry point from one merely CARRIED there by Malloy's by-reference copy
-   // — see that function's doc for why gate TEXT and source identity both
-   // fail this test and object identity is what's left.
+   // objects, by presence — see the return type's doc for why this stays
+   // presence-based and which two load refusals depend on that.
    const authorizeOwnNotes = new Map<string, AnnotationNote[]>();
+   // source name → the same notes, narrowed to the ones `authorizeNoteDeclaredBy`
+   // attributes to THIS struct — see the return type's doc. Fed to
+   // `validateAuthorizeProbes` ONLY.
+   const attributedAuthorizeOwnNotes = new Map<string, AnnotationNote[]>();
 
    // A `##(authorize)` on the model itself (file-level) is deprecated: no
    // code path reads a model's own notes for authorize purposes any more, so
@@ -443,14 +566,31 @@ export function extractSourcesFromModelDef(
          // rather than silently dropping the gate.
          const ownNotes = ownLevelNoteTexts(struct.annotations);
          const ownGates = collectAuthorizeExprs(ownNotes);
-         authorizeOwnNotes.set(
+         // Presence-based: every `#(authorize)`-tagged note this struct's OWN
+         // annotations carry, regardless of who wrote it. Feeds the two load
+         // refusals — see the return type's doc for why they must NOT read
+         // the attributed map instead.
+         const ownAuthorizeNotes = ownLevelNotes(struct.annotations).filter(
+            (note) => containsAuthorizeAnnotationTag([note.text]),
+         );
+         authorizeOwnNotes.set(sourceName, ownAuthorizeNotes);
+         // Attribution-narrowed: only the notes `authorizeNoteDeclaredBy`
+         // resolved back to THIS struct as the one that wrote them — feeds
+         // `validateAuthorizeProbes`'s own-vs-inherited decision ONLY.
+         // `ownGates`/`authorize`/`authorizeMap` below keep reading by TEXT
+         // regardless of who declared it: the effective gate genuinely
+         // applies to an inheriting entry point, only this diagnostic SIGNAL
+         // changes. See `considerAuthorizeNoteOwner`'s doc for the mechanism
+         // and why simpler alternatives don't work.
+         attributedAuthorizeOwnNotes.set(
             sourceName,
-            ownLevelNotes(struct.annotations).filter((note) =>
-               containsAuthorizeAnnotationTag([note.text]),
+            ownAuthorizeNotes.filter(
+               (note) => authorizeNoteDeclaredBy.get(note) === struct,
             ),
          );
-         // Shared with `Model.gateExprsForOwnAnnotations` (`./gate_registry_walk`)
-         // rather than walking `struct.annotations.inherits` by hand here: that
+         // Shared with `./gate_classification`'s `gateExprsForOwnAnnotations`
+         // via the `./gate_registry_walk` walk both call into, rather than
+         // walking `struct.annotations.inherits` by hand here: that
          // chain alone misses a `query_source` entry point (`Z is X -> {...}`),
          // whose compiled `StructDef` carries no `annotations` at all, so the
          // ONLY link back to `X`'s gate is the `sourceRegistry` fallback the
@@ -495,10 +635,16 @@ export function extractSourcesFromModelDef(
             }));
 
          // Every field's OWN annotations, regardless of kind (dimension,
-         // measure, join, view) — an author who meant to gate the whole
-         // source but placed `#(authorize)` one line too low, in front of a
-         // field instead of the `source:` line, gets an annotation Malloy
-         // happily attaches and nothing ever reads.
+         // measure, join, view). `#(authorize)` only gates from the
+         // `source:` line now (the dimension form is gone — Task 6); a
+         // non-join field carrying its own authorize note is therefore
+         // always misplaced, the same fail-load protection this walk gave
+         // every field kind before the dimension form existed. The join
+         // carve-out below is unchanged: an unannotated join's BY-REFERENCE
+         // copy of the joined source's own gate note is still never
+         // misplaced (Constraint 3 — joins never carry a gate), and an
+         // author-typed annotation on the join line itself is still refused
+         // as misplaced.
          for (const field of struct.fields) {
             const fieldAuthorizeNotes = ownLevelNotes(field.annotations).filter(
                (note) => containsAuthorizeAnnotationTag([note.text]),
@@ -581,6 +727,13 @@ export function extractSourcesFromModelDef(
                });
                continue;
             }
+            // A non-join field carrying its own authorize note that isn't
+            // Malloy's by-reference join copy: `#(authorize)` on a
+            // `dimension:`/`measure:`/`view:` line inside a `source:` block
+            // is never enforced (see `MisplacedAuthorizeAnnotation`'s
+            // `"field"` doc) now that the dimension form no longer exists to
+            // legitimize it — fail the load rather than let it silently
+            // protect nothing.
             misplacedAuthorize.push({
                kind: "field",
                name: sourceName,
@@ -604,6 +757,7 @@ export function extractSourcesFromModelDef(
       authorizeMap,
       misplacedAuthorize,
       authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
    };
 }
 

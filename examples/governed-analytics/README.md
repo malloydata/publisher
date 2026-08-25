@@ -10,7 +10,9 @@ mechanism — power three things at once:
 
 - **Interactive filter controls** — `REGION` and `MIN_AMOUNT` become inputs in the notebook
   Parameters panel and scope the `sales` source. → [givens.md](../../docs/givens.md)
-- **Source authorization** — `#(authorize)` gates *who* may query `orders_secured` (403 otherwise).
+- **Source authorization** — `#(authorize)` gates *who* may read `orders_secured`. It is enforced as a
+  row filter, so a caller it admits nowhere gets 200 with zero rows; a 403 means the gate could not be
+  attached at all (here: a referenced given was not supplied).
   → [authorize.md](../../docs/authorize.md)
 - **Row-level access** — a `where:` over the caller's given controls *which rows* they see.
   → [row-level-access.md](../../docs/row-level-access.md)
@@ -80,13 +82,23 @@ curl -s -X POST $API/orders.malloy/query -H 'content-type: application/json' \
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_status"}'                          # → 403
 
+# Send BOTH keys on every request. The gate and the row-level `where:` each
+# reference ROLE and TENANT, and neither given may carry a default (a
+# gate-referenced given with one is refused at load), so an unsupplied given
+# cannot resolve and the request is denied — send the one your path doesn't
+# care about as "".
+
 # Authorize + row-level: an admin sees all tenants…
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
-  -d '{"query":"run: orders_secured -> by_tenant","givens":{"ROLE":"admin"}}'   # → 3 tenants
+  -d '{"query":"run: orders_secured -> by_tenant","givens":{"ROLE":"admin","TENANT":""}}'  # → 3 tenants
 
 # …a tenant caller sees only its own rows.
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
-  -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANT":"acme"}}'  # → 1 tenant
+  -d '{"query":"run: orders_secured -> by_tenant","givens":{"ROLE":"","TENANT":"acme"}}'   # → 1 tenant
+
+# A tenant off the allow-list is admitted nowhere: 200 with zero rows, not 403.
+curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
+  -d '{"query":"run: orders_secured -> by_tenant","givens":{"ROLE":"","TENANT":"nope"}}'   # → 0 rows
 
 # Discovery: orders_base is hidden and not a valid query target → 404
 curl -s -X POST $API/internal.malloy/query -H 'content-type: application/json' \

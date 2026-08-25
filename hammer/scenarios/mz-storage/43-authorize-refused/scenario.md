@@ -40,7 +40,7 @@ unit tests.)
 
 source: orders is orders_pg.table('public.az_orders')
 
-#(authorize) "true"
+#(authorize) true
 #@ persist name="az_daily" storage=lake
 source: daily is orders -> {
   group_by: order_date

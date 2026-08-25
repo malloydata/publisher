@@ -167,8 +167,8 @@ export { customers }`,
       writeManifest({ explores: ["index.malloy"] });
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
-         `#(authorize) "1 = 1"
-source: base_source is duckdb.sql("select 1 as id")`,
+         `#(authorize) true
+source: base_source is duckdb.sql("select 1 as id") extend {}`,
       );
       fs.writeFileSync(
          path.join(tempDir, "index.malloy"),
@@ -193,7 +193,7 @@ export { customers }`,
          ]);
 
          // Enforcement: the hidden source's gate is still in force.
-         expect(model.getAuthorize("base_source")).toEqual(["1 = 1"]);
+         expect(model.getAuthorize("base_source")).toEqual(["true"]);
       } finally {
          await duckdb.close();
       }

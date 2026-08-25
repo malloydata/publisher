@@ -85,74 +85,127 @@ after `gh release create` succeeds and not before. Stamping a version that has
 stamp branch needs a human to open and merge, and can be missed; step 3 covers
 it, including why the obvious command for it is destructive.
 
-## Which number to bump
+## The versioning policy
 
-**A breaking change should take a minor bump** — a change that turns a package
-which loaded or built yesterday into one that does not: a refused annotation, a
-refused `#@ persist` combination, a load-time failure on syntax that previously
-passed. Everything else is a patch.
+**`0.MINOR.PATCH` for every published package, while pre-1.0.** It is the policy,
+not yet the state: `skills` follows it, `sdk`/`app`/`server` are still on `0.0.x`
+until `0.2.0` is cut, `create-malloy-package` is on `0.0.8`, and the Python client
+declares `0.1.0` — sharing `0.1.x` with `skills`. The bump checks enforce *ahead of
+the registry*, not the shape of the number, so moving those two is a judgement call
+on their next release rather than something CI will demand.
 
-That is the direction, not yet the record. **Every release on this line has been
-a patch**, including 0.0.242's `/pages` → `/data-apps` rename, which was
-breaking. So do not infer the bump from the diff on your own: propose it and get
-the maintainer's call. A narrow break may still be judged patch-worthy, and that
-judgement is theirs.
+- **MINOR = a breaking change. PATCH = everything else.** A breaking change is
+  one that turns a package which loaded or built yesterday into one that does
+  not: a refused annotation, a refused `#@ persist` combination, a load-time
+  failure on syntax that previously passed. It also covers a removed endpoint or
+  response field, like 0.0.242's `/pages` → `/data-apps` rename.
+- **This is what makes a range usable.** `^0.0.250` resolves to
+  `>=0.0.250 <0.0.251` — exactly one version — and `~0.0.250` to
+  `>=0.0.250 <0.1.0`, a range whose upper half does not exist. So on `0.0.x` no
+  consumer can say "patches yes, breaking no". `^0.2.0` resolves to
+  `>=0.2.0 <0.3.0`, which they can. (On any `0.x` line `^` and `~` are
+  identical — both stop at the next minor.)
+- **No `1.x`.** Publisher is preview, so a major is a deliberate decision made
+  with an explicit `-f version=`; there is no `major` option on the dispatch. If
+  it ever happens, note `@malloy-publisher/sdk@1.0.1` **is** published (an old
+  off-line publish `latest` moved off long ago) while `1.0.0` is free, and `app`
+  and `server` have no `1.x` at all — so a 1.x line has to start at `1.0.0` and
+  skip `1.0.1`, or start at `1.0.2`.
+- **The `sdk`/`app`/`server` train has NOT moved yet.** Its `latest` is still
+  `0.0.250` and the policy takes effect at its first minor release, intended to
+  be **`0.2.0`** — not `0.1.0`, because `skills` already occupies `0.1.x` and two
+  trains sharing a minor invites reading one for the other. Until that release is
+  cut, a default dispatch derives `0.0.251`, `0.0.252`, … and that is correct.
+  **Do not "correct" it with an explicit version.** `skills` is already on
+  `0.1.x` and already follows the policy.
 
-Read the release note's own claims rather than its heading, either way. A
-section can be titled `(BREAKING)` while its individual bullets say *"this
-cannot affect an existing package"*, and the reverse happens too.
+Read a release note's own claims rather than its heading when deciding. A section
+can be titled `(BREAKING)` while its bullets say *"this cannot affect an existing
+package"*, and the reverse happens too. Propose the level and get the
+maintainer's call rather than inferring it from the diff alone — a narrow break
+may still be judged patch-worthy, and that judgement is theirs.
 
-### `prepare`'s default version is not trustworthy — always pass `-f version=`
+### How to bump
 
-`prepare`'s default patch-bumps **`main`'s `packages/sdk/package.json`**, which
-lags npm permanently because release branches are never merged back, then walks
-forward until it finds a version whose release branch and tag are both free.
-Three things are wrong with that, in rising order of consequence:
+`prepare` derives the version from **npm's `latest`**, so a routine release needs
+no version input at all:
 
-- **It grows.** `main` never advances, so the walk restarts from the same old
-  number every release and costs one `ls-remote` per step, forever.
-- **It stops at the first *free* number, not above the *highest*.** It is correct
-  today only because the tag sequence happens to be gapless, so "first free" and
-  "above the highest" are the same number. Nothing enforces that.
-- **It never asks npm**, which is the only authority on what is actually
-  published — so a free branch-and-tag pair is all it takes, whatever the
-  registry holds.
+```bash
+# a patch — the default
+gh workflow run release.yml --repo malloydata/publisher --ref main
 
-The two combine badly, and **passing an explicit version is what opens the
-hole.** Dispatch `0.0.250` while the walk would have reached `0.0.248`, and
-`0.0.248`/`0.0.249` become permanent gaps below the high-water mark. The next
-run dispatched *without* a version walks up, finds `0.0.248` free of branch and
-tag, publishes it, and `npm publish` moves the `latest` dist-tag **backwards** to
-a version older than the one before it. Nothing fails; the release goes green.
+# a breaking release
+gh workflow run release.yml --repo malloydata/publisher --ref main -f bump=minor
+```
 
-Deleting a stale release branch whose tag was never cut opens a gap the same
-way. That one is likelier to fail loudly — if npm already holds the version, the
-publish 403s on immutability — but it fails loudly only by luck, and only if the
-version got as far as npm.
+The floor is `max(npm latest, main declared)` by version sort, and it **fails
+closed**: if the registry will not answer, `prepare` refuses rather than falling
+back to the file. An explicit `-f version=` still wins outright over `bump`, and
+is what you want for a major, for a prerelease, or to name the number exactly.
 
-The durable fix is to derive the floor from `npm view @malloy-publisher/sdk
-version` rather than from `main`. Until that lands, pass the version explicitly
-on every dispatch.
+Two things worth knowing about the derived path:
 
-**If the line ever moves off `0.0.x`,** the second problem stops being
-hypothetical: with `0.1.0` published, a default run walks up from `main`'s old
-number, finds `0.0.248` free, and publishes below `latest`. Reset the floor by
-setting `main`'s sdk/app/server to the version that just shipped — in the
-**post-release** PR, never before. `prepare` runs `set_version`, `git add` and
-`git commit -s` over those three files only; if `main` already carries the
-version being released there is no diff, `git commit` exits non-zero, and the
-step dies under `set -euo pipefail` before anything is pushed.
+- The chosen level is applied **once**. If that number's release branch or tag
+  already exists, the walk past it is by *patch* — so `bump=minor` colliding with
+  an existing `0.3.0` gives `0.3.1`, not `0.4.0`.
+- `bump=minor` is computed off npm's current `latest`, which is not always the
+  number the policy wants. Off a `0.0.x` floor a minor bump lands on `0.1.0` —
+  the line `skills` occupies. That is why the pending move to `0.2.0` needs an
+  explicit version rather than `bump=minor`.
 
-## The three version trains
+An earlier version of this section said *"`prepare`'s default version is not
+trustworthy — always pass `-f version=`"*. That was true and is no longer:
+#1037 changed the floor to `max(npm latest, main declared)` with fail-closed
+behaviour, so the hole it warned about — a default run walking up from `main`'s
+stale number, finding a gap below `latest`, and moving the dist-tag **backwards**
+with nothing failing — is closed. Passing an explicit version is now a choice,
+not a precaution.
 
-| Packages | Version | Bumped by |
-| --- | --- | --- |
-| `sdk`, `app`, `server` | lockstep | `release.yml` itself, on a `release/sdk-<v>` branch never merged back |
-| `skills` | its own line | you, by hand, on `main` |
-| `create-malloy-package` | its own line | you, by hand, on `main` |
+## The version trains
 
-`main`'s `packages/sdk/package.json` lags npm permanently — release branches are
-never merged back. Never treat it as the current version; ask npm.
+| Packages | Version | Bumped by | Missing bump caught by |
+| --- | --- | --- | --- |
+| `sdk`, `app`, `server` | lockstep | `release.yml` itself, on a `release/sdk-<v>` branch | n/a — the release sets it |
+| `skills` | its own line | you, by hand, on `main` | `skills-npm.yml` PR check |
+| `create-malloy-package` | its own line | you, by hand, on `main` | `create-malloy-package-npm.yml` PR check |
+| `malloy-publisher-sdk` (Python) | its own line | you, by hand, on `main` | `python-sdk.yml` PR check — but see below |
+
+**A forgotten bump is now a red PR check**, not a silent skip at release time.
+Each check asks the same thing — *is the declared version ahead of the registry* —
+scoped to the paths that package's published content is built from, and skips
+when this PR touched none of them. So the pre-release hand-audit that used to
+live in step 2 below is mostly gone.
+
+Two caveats on that:
+
+- The **Python** check has nothing to *catch* until the first publish lands,
+  because `malloy-publisher-sdk` is not on PyPI at all and a project-level 404 is
+  its pass. (It can still go red on an unreadable `pyproject.toml`, a version
+  that is not `major.minor.patch`, or a registry that answers neither 200 nor
+  404.) It starts enforcing like the npm checks the moment a version is up there,
+  so treat the Python version as unenforced only until then.
+
+  **And the release now publishes it.** `python-client` is the third package
+  `publish-packages` dispatches, so the next ordinary release is the first one
+  that would upload to PyPI. Read *The first PyPI publish* in
+  `.github/workflows/CONTEXT.md` before cutting it: `PYPI_TOKEN` has to be
+  account-scoped for a first upload (a project-scoped token cannot exist for a
+  project that does not), the name has to still be free, and `0.1.0` is what
+  ships — PyPI filenames can never be reused, so move the version before that
+  run if it is going to move at all. A failure there is cheap: it is dispatched
+  last, nothing depends on it, and re-running the job skips whatever already
+  published.
+- `bun.lock` and the root `package.json` change what `skills` publishes (its
+  `dist/` is emitted by `tsc`, whose version bun resolves from the lockfile) but
+  are **not** in `skills-npm.yml`'s trigger, so a lockfile-only PR never reaches
+  the check. That one case still needs the manual look in step 2.
+
+`main`'s `packages/sdk/package.json` used to lag npm permanently. It no longer
+should: the post-release stamp PR resets those three files to the version that
+shipped. But that PR needs a human to merge it, so **`main` is truthful only if
+the last one landed** — which is why `prepare` still takes the max of npm and the
+file rather than trusting either. Ask npm when you want to know what is
+published.
 
 ## Order, and why each step is where it is
 
@@ -167,71 +220,74 @@ git log --oneline "v$(npm view @malloy-publisher/server version)..origin/main"
 That commit list is what this release ships. If it is empty, there is nothing to
 release.
 
-### 2. Bump the independently-versioned packages, if their content changed
+### 2. Confirm the independently-versioned packages are bumped
 
 `publish-packages` decides purely on the version in `main`'s `package.json`, and
 **a change that lands without a bump is skipped while the release stays green.**
-Nothing else in CI requires the bump, so nothing else will catch it.
-
-Check each against the commit that last set its version, over the paths its
-*published content* is built from — which is not the same as where it lives:
-
-- `skills` → `skills/`, `packages/skills/`, `bun.lock`, root `package.json`
-- `create-malloy-package` → `packages/create-malloy-package/`, and
-  `packages/skills/package.json` (its publish job bakes the skills version into
-  its dependency range)
-
-**First ask whether it is already bumped.** A push only runs `check_pack`, so a
-merged bump sits on `main` while npm still reports the old version — which is
-the normal state between a release-prep merge and the dispatch. Skip this whole
-step when `main` is already ahead:
+That used to be caught by nothing, so this step was a hand-audit of two packages.
+It is now a PR check on each of them, so this step is a confirmation rather than
+an investigation:
 
 ```bash
-npm view @malloy-publisher/skills version                       # what is published
-node -p "require('./packages/skills/package.json').version"     # what main declares
+for p in skills create-malloy-package; do
+  printf '%s: npm %s, main %s\n' "$p" \
+    "$(npm view "@malloy-publisher/$p" version)" \
+    "$(node -p "require('./packages/$p/package.json').version")"
+done
+
+# The Python client too, since the release now publishes it. Its version is in
+# pyproject.toml, not a package.json, and PyPI answers 404 for the whole project
+# until the first upload lands — so "PyPI: 404" here is the expected reading
+# today and NOT a reason to skip the comparison next time.
+printf 'python-client: PyPI %s, main %s\n' \
+  "$(curl -sS --max-time 20 https://pypi.org/pypi/malloy-publisher-sdk/json \
+     | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])' \
+     2>/dev/null || echo 404)" \
+  "$(python3 -c 'import tomllib; print(tomllib.load(open("packages/python-client/pyproject.toml","rb"))["project"]["version"])')"
 ```
 
-Different means it is bumped and pending; leave it alone. Only when they
-**match** does the content question arise:
+`main` ahead of npm is the normal, healthy state between a release-prep merge and
+the dispatch: the bump is merged and pending. Equal is fine too — it means
+nothing that ships in those packages changed. Either way, the bump must be
+**merged to `main` before the dispatch**, because the release reads `main`, not
+the release branch.
+
+The one gap the checks do not cover: `bun.lock` and the root `package.json`
+change what `skills` publishes — its `dist/` is emitted by `tsc`, whose version
+bun resolves from the lockfile — but neither is in `skills-npm.yml`'s trigger, so
+a lockfile-only PR never reaches the check. If this release contains a dependency
+bump and `skills` is at npm's version, look:
 
 ```bash
 vb=$(git log --format=%h -S"\"version\": \"$(npm view @malloy-publisher/skills version)\"" \
        -- packages/skills/package.json | tail -1)
-git log --oneline "$vb..origin/main" -- skills/ packages/skills/ bun.lock package.json
+git log --oneline "$vb..origin/main" -- bun.lock package.json
 ```
 
-Any output there means bump `packages/skills/package.json`. Same shape for the
-scaffolder. This must be **merged to `main` before the dispatch**: the release
-reads `main`, not the release branch.
+Output there means bump `packages/skills/package.json`.
 
-#### The scaffolder also pins a server version, and it is checked
+#### The scaffolder's server pin is derived now — do not set it by hand
 
-`create-malloy-package` hard-pins the server its generated workspaces run
-(`SERVER_VERSION` in `packages/create-malloy-package/src/scaffold.ts`), and its
-publish workflow **refuses to ship unless that pin equals npm's `latest`**. A
-stale pin is therefore not a cosmetic lag; it fails the publish 25 minutes into a
-release, after `skills` has already gone out:
+`create-malloy-package` pins the server its generated workspaces run
+(`SERVER_VERSION` in `packages/create-malloy-package/src/scaffold.ts`). **That pin
+is substituted at publish time** from npm's current `@malloy-publisher/server`
+`latest`, in the runner's working tree only, so the value committed to the repo is
+a dev default and there is nothing to bump before a release. Its publish job then
+reads the line back, confirms it matches the registry, and confirms that server
+still documents `--host`.
 
-```bash
-sed -n 's/^export const SERVER_VERSION = "\(.*\)";$/\1/p' \
-  packages/create-malloy-package/src/scaffold.ts
-npm view @malloy-publisher/server version
-```
+This is what 0.0.250 was about, and it is worth knowing why the old instruction
+existed: the pin was hand-maintained and the publish job refused to ship unless it
+equalled npm's `latest`, so a release that forgot it went red 25 minutes in, after
+`skills` had already published. Setting it in the pre-release PR is now wrong
+rather than merely unnecessary — the substitution overwrites it, and a committed
+value that happens to differ is not a problem to fix.
 
-Set the pin to **the version this release is about to publish**, in the same
-pre-release PR, and confirm that version still honours `--host` (the guard's own
-instruction — check `--host` is still parsed in `packages/server/src/server.ts`).
-
-This works only because `publish-packages` waits for `publish-npm`. It did not
-until 0.0.250, and the two orderings made the pin unsatisfiable: the guard ran
-before the server reached npm, so pinning the outgoing version failed against a
-`latest` one release behind, and pinning the previous version failed once npm
-caught up. If that `needs:` is ever narrowed back to `prepare` alone, the
-scaffolder stops being publishable alongside a server bump at all.
-
-Do not skip the equality check and read the log alone. Anchored at the commit
-that set npm's version, the log still reports a bump that has already merged,
-and "any output means bump" then walks the version a second time for nothing.
+The derivation is only correct because `publish-packages` waits for `publish-npm`.
+It did not until 0.0.250, and on `needs: prepare` alone this job races the server
+publish, so the substituted value would be a release behind and every generated
+workspace would pin the previous server. **If that `needs:` is ever narrowed back
+to `prepare` alone, this breaks silently rather than loudly.**
 
 ### 3. Sanity-check the notes
 
@@ -259,14 +315,19 @@ an edit.
 is what the third command is for. The stamp cannot land itself: `main` requires a
 pull request, so the release pushes the branch and stops. Until someone opens and
 merges it, its sections still read `[Unreleased]` and *this* release re-appends
-the previous release's narrative to its own page.
+the previous release's narrative to its own page — and `main` still declares the
+version before last. The second is harmless (`prepare` takes the max of npm and
+the file), the first is not.
 
 `git ls-remote` rather than `gh pr list --search`, deliberately. That search is
 full text, not title-scoped, so it matches any PR whose body merely discusses the
 stamp — including release-prep PRs, which all explain the mechanism. The branch
 name is exact, and it also catches a branch that was pushed but never opened,
 which the PR search cannot see at all. If you want the PR too:
-`gh pr list --repo malloydata/publisher --search '"stamp the release notes shipped in" in:title' --state open`.
+`gh pr list --repo malloydata/publisher --search '"stamp" in:title' --state open`.
+The commit title is `chore(release): stamp <version> on main`; 0.0.250 used
+`docs: stamp the release notes shipped in <version>`, so search on `stamp` rather
+than either full phrase.
 
 So: if the branch is there, open and merge it before dispatching.
 
@@ -303,6 +364,15 @@ stamp is safe. If the file has extras, write just the shipped headings — verba
 from `RELEASE_NOTES.md`, `[Unreleased]` marker included — into a file and pass
 `--titles <that file>`. Either way, commit on a branch and open a PR.
 
+The lost branch carried the version reset too, so add it to the same commit —
+this one has no destructive edge, and it is a no-op if `main` already declares
+the version:
+
+```bash
+node scripts/set-version.mjs <version> \
+  packages/sdk/package.json packages/app/package.json packages/server/package.json
+```
+
 0.0.249 is the worked example, and it is why this section exists: it put all six
 of its sections on its release page and stamped none of them, because the step
 still pushed straight to a protected `main`. The unscoped stamp was safe there
@@ -311,12 +381,18 @@ same six in the file.
 
 ### 4. Dispatch
 
-Pass the version explicitly — always, and not merely to know the number in
-advance. Left to itself `prepare` patch-bumps `main`'s stale sdk version and
-walks forward until it finds a free branch and tag, which is not the same as a
-version above `latest`; see *`prepare`'s default version is not trustworthy*.
+`prepare` derives the version from npm's `latest` and fails closed if the registry
+will not answer, so a routine patch needs no input. See *How to bump* above for
+the policy behind the choice.
 
 ```bash
+# a patch
+gh workflow run release.yml --repo malloydata/publisher --ref main
+
+# a breaking release
+gh workflow run release.yml --repo malloydata/publisher --ref main -f bump=minor
+
+# an exact number: a major, a prerelease, or a line change like 0.0.x -> 0.2.0
 gh workflow run release.yml --repo malloydata/publisher --ref main -f version=<next>
 ```
 
@@ -344,7 +420,18 @@ Two things `gh-release` did, both visible without leaving the run:
   logs `attached N narrative section(s)`, or `no [Unreleased] sections` when
   there were none.
 - A `release-notes-stamp-<version>` branch is pushed, and the job summary's
-  *Release notes* section carries a compare link to open it as a PR.
+  *Release notes and version* section carries a compare link to open it as a PR.
+
+**That branch now carries two things**, despite its name: the stamped
+`RELEASE_NOTES.md` headings *and* `main`'s three `packages/{sdk,app,server}/
+package.json` files reset to the version that shipped. The summary line names
+both counts, and either can legitimately be zero — nothing to stamp, or `main`
+already declaring that version. When both are zero no branch is pushed at all,
+and the summary says so.
+
+The name is unchanged on purpose: it is the identifier this skill and
+`CONTEXT.md` both tell you to look for, and renaming it would break the recovery
+below to buy nothing.
 
 **Follow that link, open the PR, merge it.** The run stops at a branch on
 purpose: a PR opened by a person triggers `pull_request`, so its checks run and
@@ -352,11 +439,18 @@ any maintainer can merge it, where one opened by the workflow would trigger no
 workflows at all and only an admin could ever merge it. One click buys back the
 check suite. Left unopened it costs exactly what a failed stamp used to — the
 next release re-appends this release's narrative to its own page, and so does the
-one after.
+one after — and `main` keeps declaring the pre-release version.
+
+Of those two, **the notes half is the one that compounds**; the version half is
+self-correcting, because `prepare` takes `max(npm latest, main declared)` and so
+derives the right floor whether or not this PR landed. That is exactly why that
+floor is not "simplified" to reading the file.
 
 ```bash
 gh release view "v<version>" --repo malloydata/publisher --json body -q .body | head -40
 git ls-remote --heads origin 'refs/heads/release-notes-stamp-*'
+# after merging: main should now declare what shipped
+git fetch origin main && git show origin/main:packages/sdk/package.json | grep '"version"'
 ```
 
 **Wait for `publish-packages` to finish before you merge it.** Merging moves
