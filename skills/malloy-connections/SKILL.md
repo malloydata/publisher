@@ -122,6 +122,14 @@ is the default the scaffolder writes.
 When you do supply `serviceAccountKeyJson`, it is the **contents** of the key file as a JSON string,
 not a path to it. Put it in an environment variable and reference it.
 
+There is a third option, newer than the other two: `impersonateServiceAccount` takes the *email* of a
+service account to impersonate, and is **mutually exclusive with `serviceAccountKeyJson`**, so setting
+both is a configuration error rather than a fallback. Publisher's *own* credential (its ADC) must
+hold `roles/iam.serviceAccountTokenCreator` on the target account, and `iamcredentials.googleapis.com`
+must be enabled in the calling project. It is the better option where it is available,
+because there is no key material anywhere: not in the config, not in an environment variable, and
+nothing to rotate or leak. See `docs/connections.md` for the setup.
+
 ## Naming a connection so it stays portable
 
 Publisher itself accepts almost any name. Credible's `cred add connection` does not: it validates
@@ -206,6 +214,9 @@ case, needs none of this.
 ## A note on what `${VAR}` does and does not protect
 
 It keeps the secret out of the config file, and out of your shell history. It does not make the
-credential private in general: a running Publisher returns connection configuration, with values
-already substituted, over its unauthenticated REST API. Keep the API on localhost, or behind a
-gateway that authenticates, and treat "not in the file" as the scope of what the indirection buys.
+credential private in general: a running Publisher serves connection configuration, with values
+already substituted, from several unauthenticated REST endpoints. Measured on 0.0.250, the password
+comes back from `/api/v0/status`, `/api/v0/environments`, `/api/v0/environments/<env>` and that
+environment's `connections`, so protecting one path is not enough. Keep the whole API on localhost,
+or behind a gateway that authenticates, and treat "not in the file" as the scope of what the
+indirection buys.

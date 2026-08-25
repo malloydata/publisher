@@ -128,7 +128,13 @@ describe(".env.example does not invite a secret into a file nothing reads", () =
          // The limit on what ${VAR} buys, stated where the person handling the
          // credential is looking rather than only in the skill.
          expect(env).toMatch(/unauthenticated/i);
-         expect(env).toMatch(/status/i);
+         // Substance, not a specific route. The first version of this assertion
+         // required the string "status", which pinned the disclosure to one
+         // endpoint; when the text was corrected to stop naming a single path
+         // (four leak it, not one) the guard failed the fix. Assert that the
+         // caveat covers the API rather than that it names any one route.
+         expect(env).toMatch(/REST endpoints|the whole API|API/i);
+         expect(env).not.toMatch(/only .*\/api\/v0\/status/i);
       } finally {
          fs.rmSync(tmp, { recursive: true, force: true });
       }

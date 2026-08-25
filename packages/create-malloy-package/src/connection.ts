@@ -556,11 +556,17 @@ export function renderEnvExample(built: BuiltConnection): string {
       // Said here because this is where the person handling the credential is
       // looking. The reassurance is printed to the terminal three times; the
       // limit on it belongs somewhere they will actually meet it.
+      // Deliberately does not name one endpoint. Measured: the substituted
+      // value comes back from /api/v0/status, /api/v0/environments,
+      // /api/v0/environments/<env> and .../connections, because the status
+      // builder mutates the environment object it spreads. Naming only /status
+      // would let a reader conclude that protecting that one path is enough,
+      // which is false, and would go stale the moment any subset is redacted.
       "# Worth knowing: keeping the value out of the config file is not the same",
-      "# as keeping it private. A running Publisher returns connection config,",
-      "# with these values already substituted, from its unauthenticated",
-      "# /api/v0/status endpoint. Keep that endpoint on localhost or behind a",
-      "# gateway that authenticates.",
+      "# as keeping it private. A running Publisher serves connection config,",
+      "# with these values already substituted, from several unauthenticated",
+      "# REST endpoints. Put the whole API on localhost or behind a gateway that",
+      "# authenticates; do not rely on protecting any single path.",
       "",
    ];
    for (const variable of built.envVars) {
