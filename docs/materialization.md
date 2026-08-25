@@ -92,13 +92,15 @@ relaxes never fired at *load*: it fires inside the build path (`deriveSelfInstru
 source loads today, appears in `plan.sources`, and serves live — what 422'd was its *materialization
 run*, not the package.
 
-**So such packages already exist, and this release changes what they do.** A run that used to fail now
+**So such packages already exist, which is why the relaxation is opt-in rather than on.** Set
+`PERSIST_COLOCATED_RELAXATION_ENABLED=true` to enable it. Once enabled, a run that used to fail
 succeeds when the gate proves row-level and attributed to the entry point, and the next auto-run or
-scheduled build materializes the source and binds it for serving with no author action. A source that
-served live yesterday serves from a possibly-stale artifact today, subject to the staleness below.
-`PERSIST_COLOCATED_RELAXATION_ENABLED=false` restores the unconditional refusal — set it before
-rolling out if that migration needs to be deliberate rather than automatic. It is read at package
-load, so an artifact already built keeps serving until its package next loads.
+scheduled build materializes the source and binds it for serving **with no author action** — a source
+that served live yesterday serves from a possibly-stale artifact today, subject to the staleness
+below. That is the migration the default-off setting exists to keep deliberate: nobody republished
+those packages, so nobody chose it for them. Moving the flag back to `false` restores the
+unconditional refusal. It is read at package load, so an artifact already built keeps serving until
+its package next loads.
 
 What goes stale between rebuilds is the **row data**, not the gate. The gate expression and the
 querying principal's attributes (givens, roles) are still evaluated live, on every query, against the

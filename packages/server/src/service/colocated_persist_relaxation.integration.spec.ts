@@ -28,6 +28,7 @@
 // codebase already uses the query_source shape for exactly this reason.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { enableColocatedRelaxationForTests } from "./colocated_relaxation_test_flag";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -129,6 +130,10 @@ async function buildAndBindColocated(
 }
 
 describe("colocated persist + row-level #(authorize): compose end to end", () => {
+   // The relaxation is opt-in; see the helper's doc for why a test of it
+   // must say so rather than inherit a default.
+   enableColocatedRelaxationForTests({ beforeEach, afterEach });
+
    it(
       "a direct entry-point gate: two principals see DIFFERENT rows from the SAME bound artifact",
       async () => {

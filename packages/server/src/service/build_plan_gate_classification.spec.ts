@@ -19,7 +19,15 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { beforeAll, describe, expect, it } from "bun:test";
+import {
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
+import { enableColocatedRelaxationForTests } from "./colocated_relaxation_test_flag";
 import { classifyPersistSourceGate } from "./build_plan";
 import {
    createGateClassificationDeps,
@@ -70,6 +78,10 @@ async function compileModel(model: string): Promise<{
 }
 
 describe("classifyPersistSourceGate", () => {
+   // The relaxation is opt-in; see the helper's doc for why a test of it
+   // must say so rather than inherit a default.
+   enableColocatedRelaxationForTests({ beforeEach, afterEach });
+
    it("classifies a plain row-level gate as row_level and attributed", async () => {
       const { modelDef, materializer, deps, sources } = await compileModel(
          `##! experimental.persistence

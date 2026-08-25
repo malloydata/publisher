@@ -4,6 +4,7 @@
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { enableColocatedRelaxationForTests } from "./colocated_relaxation_test_flag";
 import * as sinon from "sinon";
 import {
    MaterializationEligibilityError,
@@ -1666,6 +1667,10 @@ describe("deriveSelfInstructions", () => {
    });
 
    describe("colocated #(authorize) gate", () => {
+      // The relaxation is opt-in; see the helper's doc for why a test of it
+      // must say so rather than inherit a default.
+      enableColocatedRelaxationForTests({ beforeEach, afterEach });
+
       afterEach(() => {
          delete process.env.PERSIST_STORAGE_MODE;
       });

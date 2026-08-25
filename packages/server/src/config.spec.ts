@@ -1539,8 +1539,10 @@ describe("PERSIST_COLLISION_ENFORCE", () => {
 });
 
 describe("PERSIST_COLOCATED_RELAXATION_ENABLED", () => {
-   // A rollback lever, not an opt-in: it must default to the RELAXED (new)
-   // behavior, unlike PERSIST_COLLISION_ENFORCE's warn-only default above.
+   // Opt-in, like PERSIST_COLLISION_ENFORCE and PERSIST_STORAGE_MODE above:
+   // it must default to the REFUSING (pre-relaxation) behavior. Enabling it
+   // starts materializing gated sources in packages nobody republished, so the
+   // default is the half of this flag that carries the safety property.
    const prev = process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
    afterEach(() => {
       if (prev === undefined) {
@@ -1550,21 +1552,21 @@ describe("PERSIST_COLOCATED_RELAXATION_ENABLED", () => {
       }
    });
 
-   it("defaults to enabled when unset or empty", () => {
+   it("defaults to DISABLED when unset or empty", () => {
       delete process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
-      expect(getColocatedPersistRelaxationEnabled()).toBe(true);
+      expect(getColocatedPersistRelaxationEnabled()).toBe(false);
       process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = "   ";
-      expect(getColocatedPersistRelaxationEnabled()).toBe(true);
+      expect(getColocatedPersistRelaxationEnabled()).toBe(false);
    });
 
-   it("disables for every spelling of false an operator might use", () => {
+   it("stays disabled for every spelling of false an operator might use", () => {
       for (const raw of ["false", "FALSE", " False ", "0", "no", "off"]) {
          process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = raw;
          expect(getColocatedPersistRelaxationEnabled()).toBe(false);
       }
    });
 
-   it("stays enabled for every spelling of true", () => {
+   it("enables for every spelling of true an operator might use", () => {
       for (const raw of ["true", "TRUE", "1", "yes", "on"]) {
          process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = raw;
          expect(getColocatedPersistRelaxationEnabled()).toBe(true);

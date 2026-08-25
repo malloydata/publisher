@@ -72,10 +72,14 @@ source: orders is duckdb.table('orders.parquet') extend {
 > **The residual case is a declaring file outside the package tree.** Nothing compiles it on its own,
 > so no load error names it, and the importing model's own load does not see it. It still denies: a
 > quoted string compiles to a string literal rather than a boolean, so it fails to lift as a filter
-> condition and the request is refused, counted under
-> `publisher_authorize_row_level_rejected_total{cause="legacy_string_gate"}` with no author-facing
-> detail. Fail-closed, but confusing — the package loads, appears to work, and denies every caller
-> with no compile-time hint of why.
+> condition and the request is refused, with no author-facing detail. **It increments no counter** —
+> the request-time classifier returns `rejected` with no `cause`, and the recorder only fires when
+> there is one, so do not go looking for it under
+> `publisher_authorize_row_level_rejected_total{cause="legacy_string_gate"}`; that label covers only
+> the in-tree string form the load-time check can see. See
+> [Row-level gate metrics](#row-level-gate-metrics). Fail-closed, but confusing — the package loads,
+> appears to work, and denies every caller with no compile-time hint of why, and no metric to notice
+> it by. A debug log naming the graft target is the only signal.
 >
 > **An annotation anywhere other than directly above a `source:` line is also refused at load** —
 > the earlier `internal dimension: authorized is <expr>` form (the annotation on a `dimension:`
@@ -415,7 +419,7 @@ Two more counters cover row-level gates specifically:
 
 - **A request can be exempted from the gate entirely** (see [Authorize bypass](#authorize-bypass-for-trusted-data-management-callers)). `x-publisher-bypass-authorize: true` on a query request skips evaluation, and Publisher does not bound who may send it — so on a deployment that does not strip the header at its edge, every gate is advisory for any caller who knows the name. Listed first here because it is the only limitation on this page that a *deployment*, not a model, has to close.
 - **A gate does not follow a join** (see [above](#the-entry-point-and-only-the-entry-point)). This is the limitation with the largest practical consequence: any source that joins gated data and is itself ungated hands that data to every caller. Treat "which sources can a caller enter through, and what does each of them reach" as part of modelling, not as something the gate handles for you.
-- **`except:`-ing, projecting away, or `accept:`-not-relisting the column a gate reads fails CLOSED** (see [Row-level gates](#row-level-gates)) — the graft cannot resolve, so the affected entry point warns at load and denies every request at 403. This is the reverse of the retired dimension form's own known gap, where the equivalent derivation dropped the gate as a plain field and served every row silently. The one narrow residual hole is `except:`-ing the gated column and then `rename:`-ing a *different* column onto that exact name: the graft resolves again, but against the wrong data — see [Row-level gates](#row-level-gates) for the pinned example.
+- **`except:`-ing, projecting away, or `accept:`-not-relisting the column a gate reads fails CLOSED** (see [Row-level gates](#row-level-gates)) — the graft cannot resolve, so the affected entry point warns at load and denies every request at 403. This is the reverse of the retired dimension form's own known gap, where the equivalent derivation dropped the gate as a plain field and served every row silently. One misbinding hole is pinned by a test: `except:`-ing the gated column and then `rename:`-ing a *different* column onto that exact name, where the graft resolves again but against the wrong data — see [Row-level gates](#row-level-gates) for the example. It is **not** established as the only one, and this page previously claimed it was: a rename chain, an `except:` plus a join reintroducing the name, and a composite member supplying it should all reproduce the same class, and none of those is tested. The author rule that covers all of them is not to recycle a gated column's name.
 - **An extension's own gate replaces the base's** (see [above](#the-entry-point-and-only-the-entry-point)) — that is the curated-extension idiom, so pair locked bases with access modifiers to keep the re-exposed column surface deliberate. (An extension with no gate of its own carries the base's.)
 - **A gated source is a schema oracle wherever its gate expression resolves.** The expression-resolution refusal (see [Enforcement](#enforcement)) fires only when the gate's expression cannot be resolved against the entry point at all. Otherwise the gate is grafted into the query and evaluated with it, so compilation happens first, and a caller gets Malloy's own compile errors for the gated source even when the gate then admits them no rows: a malformed probe (`group_by: no_such_field`) returns "field is not defined", confirming whether a column exists. Behind the trusted tier the exposure is a column name, not data — see [security-posture.md](security-posture.md#row-level-authorize-rows-are-protected-the-schema-is-not).
 - **`/compile` raw SQL is not gated.** The gate covers named Malloy sources; `/compile` still compiles unrestricted, so a caller could read a gated table's schema/SQL via raw `duckdb.sql(...)`. Closing this (restricted compilation on `/compile`, as on `/query`) is tracked as a follow-up; until then keep `/compile` behind the trusted tier.

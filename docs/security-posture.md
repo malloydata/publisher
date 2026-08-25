@@ -56,23 +56,24 @@ is why the custom JSX dashboard sandbox was cut after it was built and working �
 
 ## Row-level authorize: rows are protected, the schema is not
 
-An `#(authorize)` gate that reads a row field (see
-[authorize.md § Row-level gates](authorize.md#row-level-gates)) filters rows instead of admitting
-or rejecting the whole source. It is a deliberate trade, stated plainly rather than left to be
-discovered:
+**Every** `#(authorize)` gate is a row filter (see
+[authorize.md § Row-level gates](authorize.md#row-level-gates)) — there is no longer a whole-source
+class that admits or rejects a source outright. The gate's expression is grafted onto the source and
+evaluated with the query, so a caller it admits nowhere reads zero rows rather than being refused.
+It is a deliberate trade, stated plainly rather than left to be discovered:
 
-- **Rows are protected; the schema is not.** A row-gated source is readable-but-empty rather than
+- **Rows are protected; the schema is not.** A gated source is readable-but-empty rather than
   403 for a caller the gate admits nowhere. Any caller with package read can therefore name a
   gated source, compile against it, and enumerate its columns through compile errors. That is
   accepted on purpose — resolving a gate out of untrusted text before compiling it is exactly the
   resolution-from-text this design already refuses elsewhere (see
   [authorize.md § Security model](authorize.md#security-model)).
-- **403 becomes 200-with-zero-rows.** A caller a whole-source gate would have rejected outright
-  now gets a successful, empty response from a row-level gate instead. That is wire-visible: a
-  consumer keying its own logic on the 403 status must be checked and updated before upgrading a
-  deployment it serves to a version carrying row-level gates.
+- **403 becomes 200-with-zero-rows.** A caller the retired whole-source gate would have rejected
+  outright now gets a successful, empty response. That is wire-visible: a consumer keying its own
+  logic on the 403 status must be checked and updated before upgrading a deployment it serves. A 403
+  now means only that the gate could not be *attached* — not that a caller was denied by it.
 - **Fail-closed is the only backstop.** A row filter has no boolean admission to fall back on the
-  way a whole-source gate does, so every path that cannot *apply* the filter denies instead — a
+  way the retired whole-source gate did, so every path that cannot *apply* the filter denies instead — a
   gate whose column doesn't resolve at the entry point, an unresolved given, a compile that
   throws. There is no "serve unfiltered" failure mode.
 - **The gate's own structure is still scrubbed.** Accepting schema disclosure above is not

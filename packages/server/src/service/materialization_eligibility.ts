@@ -192,8 +192,9 @@ export function assertMaterializationEligible(
  * the source — the same signal `build_plan.ts` reports as `origin`.
  *
  * Gated by `getColocatedPersistRelaxationEnabled()` (`PERSIST_COLOCATED_RELAXATION_ENABLED`,
- * default on): disabling it skips this relaxation entirely and refuses
- * unconditionally, matching the pre-relaxation behavior.
+ * default OFF): until a deployment opts in, this relaxation is skipped entirely
+ * and an authorize-gated colocated persist source is refused unconditionally,
+ * matching the pre-relaxation behavior.
  *
  * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
  *   annotation to remove, and the alternative of moving the gate to a source

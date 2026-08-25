@@ -178,15 +178,17 @@ gate is the entry point's own row-level filter and nothing else is reachable ben
 are unaffected; they remain unconditionally refused for any `#(authorize)`-gated source regardless of
 classification. See [docs/materialization.md](docs/materialization.md#authorize-gated-sources-and-materialization).
 
-**This is not opt-in — read this before rolling out.** The refusal being relaxed never fired at
-package _load_; it fired inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`).
-A package with a colocated `#@ persist` on an `#(authorize)`-gated source therefore loads on the
+**This is OPT-IN — set `PERSIST_COLOCATED_RELAXATION_ENABLED=true` to enable it.** The reason it is
+opt-in is worth reading before you turn it on. The refusal being relaxed never fired at package
+_load_; it fired inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`). A
+package with a colocated `#@ persist` on an `#(authorize)`-gated source therefore loads on the
 current release, appears in `plan.sources`, and serves live — what 422'd was its materialization run.
-So such packages already exist, and this release changes them: a run that used to fail now succeeds,
-and the next auto-run or scheduled build materializes the source and binds it for serving with no
-author action. A source that served live serves from a possibly-stale artifact afterwards, subject to
-the staleness below. `PERSIST_COLOCATED_RELAXATION_ENABLED=false` restores the unconditional refusal;
-it is read at package load, so an already-built artifact keeps serving until its package next loads.
+So such packages already exist, and enabling this changes them: a run that used to fail succeeds, and
+the next auto-run or scheduled build materializes the source and binds it for serving **with no
+author action**. A source that served live serves from a possibly-stale artifact afterwards, subject
+to the staleness below. Nobody republished those packages, so nobody chose that for them — which is
+why the default leaves the unconditional refusal in place. The flag is read at package load, so an
+already-built artifact keeps serving until its package next loads.
 
 **What this does NOT make fresh: the row data the gate filters on, not the gate itself.** The gate
 expression and the querying principal's attributes are still evaluated live, every query, against the

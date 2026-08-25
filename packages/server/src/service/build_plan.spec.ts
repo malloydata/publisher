@@ -5,6 +5,7 @@ import type { PersistSource } from "@malloydata/malloy";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { enableColocatedRelaxationForTests } from "./colocated_relaxation_test_flag";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -859,6 +860,10 @@ describe("computePackageBuildPlan", () => {
    });
 
    describe("colocatedSourceEligibility", () => {
+      // The relaxation is opt-in; see the helper's doc for why a test of it
+      // must say so rather than inherit a default.
+      enableColocatedRelaxationForTests({ beforeEach, afterEach });
+
       let rootDir: string;
 
       beforeEach(async () => {
@@ -1099,6 +1104,10 @@ source: bad is base -> { where: org_id = $ORG; select: org_id, amount }
 // above, because the whole point is the exact IR shape (getSQL() actually
 // throwing for a given with no default) rather than a stubbed approximation.
 describe("BuildPlan.refusedSources", () => {
+   // The relaxation is opt-in; see the helper's doc for why a test of it
+   // must say so rather than inherit a default.
+   enableColocatedRelaxationForTests({ beforeEach, afterEach });
+
    let rootDir: string;
 
    beforeEach(async () => {

@@ -396,10 +396,12 @@ export function assertNoMisplacedAuthorizeAnnotations(
  * as a single source's own disjunction. `validateAuthorizeProbes` classifies
  * and validates each group independently for exactly this reason.
  *
- * A source that declares its own `#(authorize)` (possibly more than one,
- * genuinely OR'd) still gets exactly ONE group — grouping only ever splits
- * apart gates that came from DIFFERENT declaring sources, never a single
- * source's own annotations.
+ * A source that declares its own `#(authorize)` still gets exactly ONE group —
+ * grouping only ever splits apart gates that came from DIFFERENT declaring
+ * sources. A source declaring more than one is refused at load now (see
+ * {@link assertAtMostOneAuthorizeGate}), so a single source's list holds at most one
+ * entry; the group is still a list because a source can INHERIT one while
+ * declaring its own.
  *
  * The WIRE shape (`sources[].authorize`) stays a flat `string[]` for
  * introspection — see `extractSourcesFromModelDef`, which flattens the groups
@@ -823,6 +825,17 @@ export async function validateAuthorizeProbes(
 const WHOLE_BODY_QUOTED_STRING = /^"(?:\\.|[^"\\])*"$/;
 
 /**
+ * The same test for a SINGLE-quoted payload (`#(authorize) 'org_id = 999'`).
+ * Malloy accepts either quote for a string literal, so both spellings produce
+ * the same failure — a string literal where a boolean is required — and both
+ * deserve the same paste-ready rewrite. Without this the single-quoted form got
+ * a bare "Filter expression must have boolean value" instead, which is the same
+ * bug class as the byte-identical rewrite this pair exists to prevent, one
+ * spelling over.
+ */
+const WHOLE_BODY_SINGLE_QUOTED_STRING = /^'(?:\\.|[^'\\])*'$/;
+
+/**
  * Whether an authorize note's (trimmed) payload is the legacy QUOTED-STRING
  * form (`#(authorize) "<expr>"`) rather than the current unquoted natural-Malloy
  * expression form (`#(authorize) <expr>`) — decided by whether the ENTIRE
@@ -839,7 +852,11 @@ const WHOLE_BODY_QUOTED_STRING = /^"(?:\\.|[^"\\])*"$/;
  * {@link findLegacyStringGates} reports at load time.
  */
 function isLegacyQuotedPayload(payload: string): boolean {
-   return WHOLE_BODY_QUOTED_STRING.test(payload.trim());
+   const trimmed = payload.trim();
+   return (
+      WHOLE_BODY_QUOTED_STRING.test(trimmed) ||
+      WHOLE_BODY_SINGLE_QUOTED_STRING.test(trimmed)
+   );
 }
 
 /**
@@ -862,8 +879,12 @@ function isLegacyQuotedPayload(payload: string): boolean {
  * what they wrote rather than at a silently mangled version of it.
  */
 function unquoteLegacyGatePayload(payload: string): string {
-   const inner = payload.trim().slice(1, -1);
-   return inner.replace(/\\(["\\])/g, "$1");
+   const trimmed = payload.trim();
+   const inner = trimmed.slice(1, -1);
+   // Decode only the quote character this payload actually used, so a literal
+   // `\'` inside a double-quoted gate (and vice versa) is left as authored.
+   const quote = trimmed[0] === "'" ? "'" : '"';
+   return inner.replace(new RegExp(`\\\\([${quote}\\\\])`, "g"), "$1");
 }
 
 /**
