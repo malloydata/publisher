@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import {
-   getColocatedPersistRelaxationEnabled,
    getPersistCollisionEnforce,
    getPublisherConfig,
    getPublisherConfigDir,
@@ -1535,46 +1534,5 @@ describe("PERSIST_COLLISION_ENFORCE", () => {
    it("throws on a value that is neither, rather than guessing", () => {
       process.env.PERSIST_COLLISION_ENFORCE = "enabled";
       expect(() => getPersistCollisionEnforce()).toThrow(/expected a boolean/i);
-   });
-});
-
-describe("PERSIST_COLOCATED_RELAXATION_ENABLED", () => {
-   // A rollback lever, not an opt-in: it must default to the RELAXED (new)
-   // behavior, unlike PERSIST_COLLISION_ENFORCE's warn-only default above.
-   const prev = process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
-   afterEach(() => {
-      if (prev === undefined) {
-         delete process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
-      } else {
-         process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = prev;
-      }
-   });
-
-   it("defaults to enabled when unset or empty", () => {
-      delete process.env.PERSIST_COLOCATED_RELAXATION_ENABLED;
-      expect(getColocatedPersistRelaxationEnabled()).toBe(true);
-      process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = "   ";
-      expect(getColocatedPersistRelaxationEnabled()).toBe(true);
-   });
-
-   it("disables for every spelling of false an operator might use", () => {
-      for (const raw of ["false", "FALSE", " False ", "0", "no", "off"]) {
-         process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = raw;
-         expect(getColocatedPersistRelaxationEnabled()).toBe(false);
-      }
-   });
-
-   it("stays enabled for every spelling of true", () => {
-      for (const raw of ["true", "TRUE", "1", "yes", "on"]) {
-         process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = raw;
-         expect(getColocatedPersistRelaxationEnabled()).toBe(true);
-      }
-   });
-
-   it("throws on a value that is neither, rather than guessing", () => {
-      process.env.PERSIST_COLOCATED_RELAXATION_ENABLED = "enabled";
-      expect(() => getColocatedPersistRelaxationEnabled()).toThrow(
-         /expected a boolean/i,
-      );
    });
 });

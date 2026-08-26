@@ -29,12 +29,13 @@ const sourceDir = path.join(
 );
 
 /**
- * Codepoint order. The committed bundle is sorted with localeCompare, which
- * depends on the runtime's locale, and this suite runs on three platforms.
- * Membership and content are what matter here; file order is cosmetic.
+ * Codepoint order, matching the builder's own sort. Both sides are sorted before
+ * comparing so the sync test stays about membership and content rather than order;
+ * the order test below covers order separately.
  */
-const byName = (a: SkillEntry, b: SkillEntry) =>
-   a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+const byCodepoint = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+const byName = (a: SkillEntry, b: SkillEntry) => byCodepoint(a.name, b.name);
 
 describe("skills_bundle.json (generated dual-channel asset)", () => {
    it("is in sync with skills/", () => {
@@ -47,6 +48,77 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
 
    it("is not empty", () => {
       expect(skills.length).toBeGreaterThan(0);
+   });
+
+   /**
+    * The bundle is committed indented, which is a merge property rather than a
+    * style preference. One line per entry field means two branches editing
+    * different skills touch different lines, so git merges them cleanly; while
+    * the file was minified it was a single line, and every pair of concurrent
+    * skills edits collided on it.
+    *
+    * Read off disk rather than through the import above: the sync test compares
+    * parsed JSON, so it stays green if a regeneration ever re-minifies the file.
+    *
+    * The indent width is 3 rather than 2 so the file matches tabWidth in
+    * packages/server/.prettierrc. At any other width prettier reformats it, so a
+    * contributor with format-on-save would fail this test by opening the file.
+    *
+    * Still CRLF-normalized, though the sibling .gitattributes now pins eol=lf and
+    * should make that unreachable. It is two lines of insurance against that file
+    * being dropped, not a claim that CRLF is expected.
+    */
+   it("is committed indented, one entry per line", () => {
+      const raw = fs
+         .readFileSync(path.join(import.meta.dir, "skills_bundle.json"), "utf8")
+         .replace(/\r\n/g, "\n");
+
+      // Read the width from prettier's config rather than restating it. There
+      // were three copies of "3": the builder's JSON.stringify indent, this
+      // matcher, and tabWidth in packages/server/.prettierrc. Nothing failed
+      // when they disagreed, because prettier:check globs only ts and tsx and
+      // never looks at a .json, so a tabWidth edit alone reintroduced the
+      // format-on-save trap with the guard unable to see it. Reading it here
+      // means that edit fails immediately, at the config change.
+      const prettierrc = JSON.parse(
+         fs.readFileSync(
+            path.join(import.meta.dir, "..", "..", "..", ".prettierrc"),
+            "utf8",
+         ),
+      ) as { tabWidth?: number };
+      expect(typeof prettierrc.tabWidth).toBe("number");
+
+      // Entry keys sit three levels deep: root object, skills array, entry.
+      const indent = " ".repeat((prettierrc.tabWidth as number) * 3);
+
+      // Needs no positive control: if this pattern stopped matching, the count
+      // would be 0 rather than quietly staying green.
+      const nameLines = raw
+         .split("\n")
+         .filter((l) => l.startsWith(`${indent}"name": `));
+      expect(nameLines.length).toBe(skills.length);
+
+      expect(raw.endsWith("\n")).toBe(true);
+   });
+
+   /**
+    * Entry order decides line positions in a committed file, so it has to be the
+    * same on every contributor's machine. The builder sorts by codepoint for that
+    * reason: localeCompare follows the runtime's locale, and under cs-CZ the `ch`
+    * digraph sorts after `h`, which moves malloy-charts and makes a regeneration
+    * emit a reordering diff unrelated to the skill that actually changed.
+    *
+    * Both halves are about the committed file, not the comparator: no test can
+    * catch a localeCompare revert on a machine whose locale agrees with codepoint
+    * order, which includes en-US and therefore CI. The second assertion is the
+    * one that narrows it, by failing as soon as the builder's order and the
+    * committed order disagree. The sync test cannot see either problem, because
+    * it sorts both sides before comparing.
+    */
+   it("is committed in codepoint order, and in the order the builder emits", () => {
+      const names = skills.map((s) => s.name);
+      expect(names).toEqual([...names].sort(byCodepoint));
+      expect(names).toEqual(buildSkills(sourceDir).map((s) => s.name));
    });
 
    it("every skill has a nonempty name, description, and body", () => {
