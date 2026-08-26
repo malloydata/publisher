@@ -52,10 +52,10 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Fix:** pick whichever option matches the source's needs. Curation options, lightest to heaviest:
   1. `extend { except: a, b, c }`, drop a small named set of columns. Compatible with `rename:`. No experimental flag.
   2. `extend { accept: a, b, c }`, keep only a small named set. Compatible with `rename:`. No experimental flag.
-  3. `##! experimental.access_modifiers` + `include { public: …, internal: …, private: … }`, full per-column visibility tiers. **Incompatible with `rename:`** and disallows measures/dimensions whose names shadow `internal:` columns. Use only when the visibility distinction matters (e.g., shared sources joined into multiple consumers).
+  3. `##! experimental.access_modifiers` + `include { public: …, internal: …, private: … }`, full per-column visibility tiers. **Composes with `rename:` in one order only** (the `extend { rename: }` before the `include {}`, which then names the field by its new name) and disallows measures/dimensions whose names shadow `internal:` columns. Use only when the visibility distinction matters (e.g., shared sources joined into multiple consumers).
 
   Most files only need option 1 or 2, for the small set of columns that shouldn't be public, prefer `except:` over the heavier `include {}` machinery. Reach for `include {}` only when per-column tiers are genuinely worth the constraints.
-- **See:** `skill:malloy-gotchas-modeling` § Field Management, `extend {}` vs `include {}` Don't Compose · `skill:malloy-model` § Base Source Templates · `malloy-model/reference/access-modifiers.md`
+- **See:** `skill:malloy-gotchas-modeling` § Field Management: `extend {}` and `include {}`, in that order · `skill:malloy-model` § Base Source Templates · `malloy-model/reference/access-modifiers.md`
 
 ---
 

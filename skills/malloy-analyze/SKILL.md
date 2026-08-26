@@ -123,14 +123,14 @@ run: source -> {
 
 ### Multi-Source Comparison (Source vs Group)
 
-Compare each source to its group average using query-as-source:
+Compare each source to its group average using query-as-source. Name the query directly. `from(query_name)` was removed from the language and no longer parses (`unexpected 'from'`):
 
 ```malloy
 query: team_stats is source -> { group_by: team, season, aggregate: team_avg is avg(points) }
 query: driver_stats is source -> { group_by: driver, team, season, aggregate: driver_points is sum(points) }
 
-source: driver_vs_team is from(driver_stats) extend {
-  join_one: ts is from(team_stats) on team = ts.team and season = ts.season
+source: driver_vs_team is driver_stats extend {
+  join_one: ts is team_stats on team = ts.team and season = ts.season
   dimension: advantage is driver_points - ts.team_avg
 }
 ```
@@ -139,7 +139,7 @@ source: driver_vs_team is from(driver_stats) extend {
 
 Use `nest:` for multi-level drill-downs in a single query:
 ```malloy
-# dashboard
+# dashboard { columns=2 }
 view: deep_dive is {
   nest: # big_value
     kpis is { aggregate: # label="Total" total_metric, # label="Count" row_count }
@@ -149,6 +149,8 @@ view: deep_dive is {
     over_time is { group_by: period is date.month, aggregate: metric, order_by: period }
 }
 ```
+
+`columns=N` is what gives a dashboard a layout. Bare `# dashboard` is flex mode, where tiles just flow and wrap and `# colspan` is silently ignored, so if your tiles look wrong, that is usually why. See `skill:malloy-charts` for the full tag set.
 
 ### Build As You Go
 
@@ -169,7 +171,7 @@ For each finding, validate with at least ONE of:
 
 Build a dashboard view that tells the story:
 ```malloy
-# dashboard
+# dashboard { columns=2 }
 view: analysis_summary is {
   nest: # big_value
     headlines is { aggregate: ... }
