@@ -993,12 +993,13 @@ test.describe("package-dashboards", () => {
       // `grid` is the single-query form, so every card and cell on it is the
       // renderer's own output rather than the SDK's tile chrome.
       await openDashboard(page, "grid");
-      // The renderer builds its tables from divs, not <table>, which is why the
-      // rest of this suite locates cells by .column-cell.
-      // 30s, not 60s: the per-test budget is 60s (playwright.config.ts) and the
-      // poll below needs 15s of it, so a 60s wait here could never be spent and
-      // would surface a cold-render failure as a bare test timeout naming no
-      // wait. 30s matches what this suite uses for a dashboard render.
+      // `.malloy-table`, not `table`: the renderer builds its tables from divs,
+      // which is why this suite addresses cells by class throughout.
+      //
+      // 30s, not 60s: the per-test budget is 60s (playwright.config.ts), and the
+      // two waits below claim 15s and 5s of it, so a 60s wait here could never
+      // be spent and a cold-render failure would surface as a bare test timeout
+      // naming no wait. 30 + 15 + 5 leaves headroom for the navigation.
       await expect(
          page.locator(".malloy-render .malloy-table").first(),
       ).toBeVisible({
@@ -1029,7 +1030,7 @@ test.describe("package-dashboards", () => {
          .locator(".malloy-render .column-cell.td")
          .first()
          .evaluate((el) => getComputedStyle(el).fontFamily, undefined, {
-            timeout: 10_000,
+            timeout: 5_000,
          });
       expect(cellFont).toContain(SENTINEL);
    });
