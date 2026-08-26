@@ -10,6 +10,7 @@ import {
 import * as path from "path";
 import { logger } from "../../logger";
 import { DatabaseConnection } from "../DatabaseInterface";
+import { getDuckDBMemoryLimit, getDuckDBTempDirectory } from "../../config";
 
 /**
  * Embedded persistence layer for the publisher's own metadata (environments,
@@ -26,6 +27,24 @@ import { DatabaseConnection } from "../DatabaseInterface";
  * It wraps `@duckdb/node-api` (the same DuckDB engine Malloy pulls in), so the
  * repo carries a single DuckDB engine rather than a second, redundant driver.
  */
+/**
+ * The `memory_limit` / `temp_directory` instance options, when configured.
+ * Empty when neither is set, so `DuckDBInstance.create` sees exactly what it saw
+ * before and nothing changes for a deployment that has not opted in.
+ */
+function duckDBInstanceResourceOptions(): Record<string, string> {
+   const options: Record<string, string> = {};
+   const memoryLimit = getDuckDBMemoryLimit();
+   if (memoryLimit !== undefined) {
+      options["memory_limit"] = memoryLimit;
+   }
+   const tempDirectory = getDuckDBTempDirectory();
+   if (tempDirectory !== undefined) {
+      options["temp_directory"] = tempDirectory;
+   }
+   return options;
+}
+
 export class DuckDBConnection implements DatabaseConnection {
    private instance: DuckDBInstance | null = null;
    private connection: NeoConnection | null = null;
@@ -39,7 +58,17 @@ export class DuckDBConnection implements DatabaseConnection {
 
    async initialize(): Promise<void> {
       try {
-         this.instance = await DuckDBInstance.create(this.dbPath);
+         // The metadata store is a real DuckDB instance held open for the whole
+         // server lifetime, and it sizes its memory from the container exactly
+         // like every other one — so it belongs in the same budget. It is a
+         // different class from Malloy's connection, so the session funnel that
+         // bounds those never sees it; passed as instance config here instead,
+         // which is the only hook this one has. Not idle, either: the embedding
+         // index runs real compute against it.
+         this.instance = await DuckDBInstance.create(
+            this.dbPath,
+            duckDBInstanceResourceOptions(),
+         );
          this.connection = await this.instance.connect();
          // Verify the connection works
          await this.connection.run("SELECT 42 as answer");

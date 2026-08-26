@@ -15,6 +15,7 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
+import { mkdirSync } from "node:fs";
 
 /**
  * Path to the publisher.config.json file shipped inside the published
@@ -220,70 +221,6 @@ export function parseBoolEnv(name: string): boolean | undefined {
  * Throws at startup on malformed input so a typo in a k8s manifest
  * surfaces as a loud failure rather than silently disabling the cap.
  */
-/**
- * DuckDB `memory_limit` for every Publisher-owned DuckDB session, as a FLAT
- * value (`'1GB'`, `'512MB'`) rather than a share of anything.
- *
- * Flat because the thing being corrected is a per-instance calculation. DuckDB
- * derives its own default from the container's memory — roughly 80% — and it does
- * that INDEPENDENTLY per instance, accounting for neither the resident Node/Bun
- * baseline nor any other instance in the same process. Publisher always runs
- * several: the environment lookup funnel, a per-package sandbox, and a
- * disposable session per materialization build. Measured in a 3 GiB container,
- * three instances each reported a 2.3 GiB limit — 6.9 GiB of committed budget
- * against 3 GiB of real memory, with nothing coordinating them. The process is
- * then killed by the kernel while every instance still believes it is well
- * inside its budget, which is why the growth presents as untracked native memory
- * and no single session looks at fault.
- *
- * A percentage cannot fix that: any percentage is still computed per instance,
- * so N instances still commit N times it. Only an absolute per-session value
- * bounds the sum, and the operator is the only party that knows both the
- * container size and how many sessions to budget for.
- *
- * Passed to DuckDB verbatim, so any unit DuckDB accepts works. `off` (or empty)
- * disables the override and restores DuckDB's own per-instance default —
- * available deliberately, because a single-session deployment on a large host is
- * the one case where the default is not wrong.
- *
- * Read per session rather than at startup, so a malformed value surfaces on the
- * session that tried to use it rather than preventing boot. DuckDB rejects a
- * value it cannot parse, and that error is not swallowed.
- */
-export const getDuckDBMemoryLimit = (): string | undefined => {
-   const raw = process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim();
-   if (raw === undefined || raw === "" || raw.toLowerCase() === "off") {
-      return undefined;
-   }
-   return raw;
-};
-
-/**
- * Directory DuckDB spills to, for every Publisher-owned session that is not a
- * materialization build (a build spills inside its own disposable working
- * directory, which is already unique per build and already removed with it).
- *
- * Worth naming even though the paths that spill are narrow. DuckDB's default is
- * `.tmp` relative to the process working directory, and its default
- * `max_temp_directory_size` is 90% of whatever filesystem that lands on — on a
- * container without an ephemeral-storage limit, that is the node's shared disk.
- * Pointing it somewhere deliberate is what makes the spill bounded by a volume
- * an operator chose.
- *
- * Setting a `memory_limit` does NOT by itself create spill on the storage-build
- * path: that pipeline pushes its SQL to the source warehouse and streams the
- * result into the destination, with no join, sort or aggregation to spill —
- * measured across a 30x range of output at a flat peak, and with an over-tight
- * limit failing as a clean query error rather than spilling. Local compute, and
- * therefore spill, happens on the chained-build and serve paths.
- *
- * Unset leaves DuckDB's default in place.
- */
-export const getDuckDBTempDirectory = (): string | undefined => {
-   const raw = process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY?.trim();
-   return raw === undefined || raw === "" ? undefined : raw;
-};
-
 export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
    const maxMemoryBytes = parseIntEnv("PUBLISHER_MAX_MEMORY_BYTES");
    if (maxMemoryBytes === undefined || maxMemoryBytes === 0) {
@@ -336,6 +273,91 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
       backpressureEnabled,
    };
 };
+
+/**
+ * DuckDB `memory_limit` for every Publisher-owned DuckDB session and instance,
+ * as a FLAT value (`'1GB'`, `'512MB'`). `off` or unset leaves DuckDB's own
+ * default. Sizing guidance and the full rationale live in
+ * `docs/configuration.md`; what matters at this call site is why the value is
+ * absolute rather than derived.
+ *
+ * DuckDB sizes its default from the container INDEPENDENTLY per instance, so N
+ * instances in one process commit N times that share and the kernel kills the
+ * process while each of them still believes it is inside its budget. Publisher
+ * cannot fix that by computing bytes from the container and dividing: the
+ * divisor is not known when a session opens (a build, a package sandbox and the
+ * gate session all come and go independently, and nothing bounds concurrent
+ * builds), and revising the division as instances appear would shrink a live
+ * cap underneath a running query. An absolute per-session value is the only
+ * thing that bounds the sum without needing to know N.
+ *
+ * Read per session rather than at startup so a malformed value surfaces on the
+ * session that used it; {@link assertDuckDBResourceConfig} is what makes that a
+ * boot failure instead.
+ */
+export const getDuckDBMemoryLimit = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim();
+   if (raw === undefined || raw === "" || raw.toLowerCase() === "off") {
+      return undefined;
+   }
+   return raw;
+};
+
+/**
+ * Directory DuckDB spills to. A materialization build overrides this with its
+ * own disposable working directory; every other session and instance uses this.
+ *
+ * No `off` sentinel, unlike {@link getDuckDBMemoryLimit}: a directory named
+ * `off` is a legal path, and unset already means "DuckDB's default".
+ *
+ * Setting a `memory_limit` does not by itself create spill on the `storage=`
+ * build path — that pipeline pushes its SQL to the source warehouse and streams
+ * the result into the destination, with nothing to spill. Local compute, and so
+ * spill, is the chained-build and serve paths.
+ */
+export const getDuckDBTempDirectory = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
+/**
+ * Validate the DuckDB resource settings at boot, and create the spill directory.
+ *
+ * Both are otherwise read on the first session that opens, which is the wrong
+ * moment to discover a typo: `/health` and `/health/readiness` never touch
+ * DuckDB, so the pod reports ready and then fails every query and package load.
+ * `getExtensionFetchPolicy` resolves the same tradeoff the same way.
+ *
+ * The directory is created rather than merely checked because
+ * `SET temp_directory` accepts a path that does not exist and only fails at the
+ * first spill, with an IO error that names the directory but not the variable
+ * that set it. Creating it here turns both that and an unwritable path into a
+ * startup failure naming the variable.
+ */
+export function assertDuckDBResourceConfig(): void {
+   const memoryLimit = getDuckDBMemoryLimit();
+   if (
+      memoryLimit !== undefined &&
+      !/^\d+(\.\d+)?\s*[a-zA-Z]+$/.test(memoryLimit)
+   ) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKDB_MEMORY_LIMIT: expected a size like ` +
+            `"1GB" or "512MB" (or "off" to disable), got "${memoryLimit}"`,
+      );
+   }
+   const tempDirectory = getDuckDBTempDirectory();
+   if (tempDirectory !== undefined) {
+      try {
+         mkdirSync(tempDirectory, { recursive: true });
+      } catch (error) {
+         const detail = error instanceof Error ? error.message : String(error);
+         throw new Error(
+            `Cannot use PUBLISHER_DUCKDB_TEMP_DIRECTORY "${tempDirectory}": ` +
+               `${detail}`,
+         );
+      }
+   }
+}
 
 /**
  * Settings for the optional embedding provider behind semantic

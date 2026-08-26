@@ -812,6 +812,15 @@ export async function buildSourceIntoStorage(params: {
    // Visible to the finally, which clears the session tag before release.
    let federatedHandle: string | undefined;
    try {
+      // FIRST, before the destination attach: the attach is what carries a
+      // DuckLake session into the shared funnel, which applies the limits without
+      // a `tempDirectory` and latches them. Running after it therefore lost this
+      // build its own disposable directory on exactly the destination type that
+      // reaches production, sending spill to the shared configured path instead —
+      // outliving `dispose`, and collidable between concurrent builds. Ordering
+      // it here also puts the memory bound in effect during the attach itself,
+      // and matches `dropStorageTable`.
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
          destinationName,
@@ -832,14 +841,6 @@ export async function buildSourceIntoStorage(params: {
       // incremental refresh (a full CTAS issues none), but it is cheap and the
       // session it protects is this one — see pinSessionToUTC.
       await pinSessionToUTC(session);
-      // Explicit here as well as in the session funnel, because a build reaches
-      // that funnel only for a DuckLake destination -- a plain-DuckDB destination
-      // attaches a file and never passes through it. This is also the one session
-      // that owns a disposable directory, so its spill is pointed there rather
-      // than at the configured default: unique per build, removed with the build.
-      await applySessionResourceLimits(session, {
-         tempDirectory: workDir,
-      });
 
       const federated = await federateSourceForPassthrough(
          session,
@@ -1006,6 +1007,15 @@ export async function buildDownstreamIntoStorage(params: {
       `build_${destinationName}`,
    );
    try {
+      // FIRST, before the destination attach: the attach is what carries a
+      // DuckLake session into the shared funnel, which applies the limits without
+      // a `tempDirectory` and latches them. Running after it therefore lost this
+      // build its own disposable directory on exactly the destination type that
+      // reaches production, sending spill to the shared configured path instead —
+      // outliving `dispose`, and collidable between concurrent builds. Ordering
+      // it here also puts the memory bound in effect during the attach itself,
+      // and matches `dropStorageTable`.
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
          destinationName,
@@ -1023,14 +1033,6 @@ export async function buildDownstreamIntoStorage(params: {
       // this guards the case that lifting that exclusion creates, in the one
       // function where its absence would not be obvious.
       await pinSessionToUTC(session);
-      // Explicit here as well as in the session funnel, because a build reaches
-      // that funnel only for a DuckLake destination -- a plain-DuckDB destination
-      // attaches a file and never passes through it. This is also the one session
-      // that owns a disposable directory, so its spill is pointed there rather
-      // than at the configured default: unique per build, removed with the build.
-      await applySessionResourceLimits(session, {
-         tempDirectory: workDir,
-      });
 
       // Compile the transient rebind model against the build session. Its only
       // connection is the attached destination; the upstream virtual sources
@@ -1158,7 +1160,21 @@ export async function assertStorageServeShapeCompiles(params: {
    // left by an earlier one. Pinned in the spec — refusals still refuse after 25
    // successful compiles, a refusal does not poison the session, and the same
    // handle recompiled with a different schema sees the new one.
-   sharedGateSession ??= createIsolatedBuildSession("gate_shared").session;
+   if (sharedGateSession === undefined) {
+      const gate = createIsolatedBuildSession("gate_shared");
+      // Bounded on creation, and it is the instance that most needs it: process-
+      // wide and deliberately never disposed, so it is the longest-lived DuckDB
+      // instance here. It reaches `assertServesInDuckDB` through a
+      // `FixedConnectionMap` that builds a Runtime directly — no connection
+      // lookup, no attach — so neither hook that bounds the other sessions ever
+      // sees it. Spill goes to its own directory for the same reason the build
+      // sessions' does; unlike theirs it is never removed, because the session
+      // outlives every build.
+      await applySessionResourceLimits(gate.session, {
+         tempDirectory: gate.workDir,
+      });
+      sharedGateSession = gate.session;
+   }
    await assertServesInDuckDB(
       sourceName,
       binding,
@@ -1213,8 +1229,9 @@ export async function dropStorageTable(params: {
    );
    try {
       // Bounded like the build sessions even though a DROP allocates almost
-      // nothing: the cost this guards is the INSTANCE, which claims its share of
-      // the container the moment it exists, whatever it goes on to run.
+      // nothing. DuckDB does not reserve the limit up front, so this instance
+      // costs little while idle; what it carries is a CAP, and it is the sum of
+      // the caps across every live instance that has to fit the container.
       await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,

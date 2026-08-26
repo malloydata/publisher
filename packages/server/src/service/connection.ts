@@ -100,59 +100,72 @@ export type InternalConnection = ApiConnection & {
 const extensionSessionPinned = new WeakSet<Connection>();
 
 /**
- * Sessions that already carry their resource limits, so the funnel below can be
- * reached twice for one connection without re-issuing the SETs.
+ * Sessions that already carry their resource limits, mapped to the spill
+ * directory they were given, so the funnel can be reached twice for one
+ * connection without re-issuing the SETs — while a caller that owns a directory
+ * can still re-point one that was set from the global default.
  */
-const sessionLimitsApplied = new WeakSet<DuckDBConnection>();
+const sessionLimitsApplied = new WeakMap<
+   DuckDBConnection,
+   string | undefined
+>();
 
 /**
  * Bound ONE DuckDB session's memory, and name where it spills.
  *
  * Applied to every Publisher-owned session, which is the point rather than mere
  * thoroughness: DuckDB sizes `memory_limit` per INSTANCE from the container, and
- * Publisher runs several instances in one process (the environment lookup funnel,
- * a per-package sandbox, a disposable session per materialization build). Each
- * independently claims most of the container, so the process commits a multiple
- * of what it has and the kernel kills it while every session still believes it is
- * inside its budget. Bounding only the session running the largest job does not
- * fix that -- the SUM is what overcommits -- so a partial rollout of this buys
- * nothing.
+ * Publisher runs several in one process. Each independently claims most of the
+ * container, so the process commits a multiple of what it has and the kernel
+ * kills it while every session still believes it is inside its budget. Bounding
+ * only the session running the largest job fixes nothing — the SUM is what
+ * overcommits.
  *
- * Both settings are opt-in and independent: unset leaves DuckDB's own default in
- * place, and a deployment can bound memory without redirecting spill or the
- * reverse. See {@link getDuckDBMemoryLimit} for why the limit is flat rather than
- * a percentage.
+ * Both settings are opt-in and independent; unset leaves DuckDB's own default.
+ * See {@link getDuckDBMemoryLimit} for why the limit is absolute, not derived.
  *
- * `tempDirectory` overrides the configured default for a session that owns a
- * directory of its own -- a build session's disposable working directory, unique
- * per build and removed with it, so its spill can neither outlive the build nor
- * collide with another one.
+ * `tempDirectory` names a directory the SESSION owns — a build session's
+ * disposable working directory, unique per build and removed with it, so its
+ * spill can neither outlive the build nor collide with another one. It takes
+ * precedence over the configured default AND over a directory already applied
+ * from that default, because the two are reached in an order this function
+ * cannot see: an attach carries a session through the funnel below, which knows
+ * nothing of the caller's directory. Latching the first value silently cost the
+ * build its own directory on precisely the destination type that reaches
+ * production, so the override is the property, not a convenience.
  *
  * Failures are NOT swallowed, unlike the extension pin below. A configured value
  * DuckDB rejects is an operator error in a resource bound, and continuing would
- * open a session on the unbounded default while the configuration says otherwise
- * -- the exact state this exists to prevent.
+ * open a session on the unbounded default while the configuration says otherwise.
  */
 export async function applySessionResourceLimits(
    connection: DuckDBConnection,
    { tempDirectory }: { tempDirectory?: string } = {},
 ): Promise<void> {
-   if (sessionLimitsApplied.has(connection)) {
-      return;
-   }
    const memoryLimit = getDuckDBMemoryLimit();
    const temp = tempDirectory ?? getDuckDBTempDirectory();
-   if (memoryLimit === undefined && temp === undefined) {
-      sessionLimitsApplied.add(connection);
+   if (sessionLimitsApplied.has(connection)) {
+      const applied = sessionLimitsApplied.get(connection);
+      // Only a session-owned directory can revise an earlier decision, and only
+      // the directory: the memory bound is identical either way.
+      if (tempDirectory === undefined || tempDirectory === applied) {
+         return;
+      }
+      await connection.runSQL(
+         `SET temp_directory = '${escapeSQL(tempDirectory)}'`,
+      );
+      sessionLimitsApplied.set(connection, tempDirectory);
       return;
    }
    if (temp !== undefined) {
+      // Before `memory_limit`: a limit low enough to force spill must never be in
+      // effect while the directory is still DuckDB's default.
       await connection.runSQL(`SET temp_directory = '${escapeSQL(temp)}'`);
    }
    if (memoryLimit !== undefined) {
       await connection.runSQL(`SET memory_limit = '${escapeSQL(memoryLimit)}'`);
    }
-   sessionLimitsApplied.add(connection);
+   sessionLimitsApplied.set(connection, temp);
    logger.debug("Applied DuckDB session resource limits", {
       memoryLimit: memoryLimit ?? "<duckdb default>",
       tempDirectory: temp ?? "<duckdb default>",
