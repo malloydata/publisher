@@ -6,24 +6,7 @@ import { MalloyRenderer } from "@malloydata/render";
 import { buildCollapseWrapper } from "../shared/collapse_wrapper";
 import { rehydrate, type ResultMeta } from "../shared/rehydrate";
 import { highlightMalloy } from "./highlight_malloy";
-
-// A wide table inside the Malloy render scrolls horizontally, and its scrollbar
-// is laid out *inside* the element's box (border-box is global here).
-// `scrollHeight` excludes that scrollbar, so sizing the container to
-// scrollHeight alone clips the final row behind it. Walk the subtree for the
-// element that overflows horizontally and return the vertical space its
-// scrollbar occupies. Returns 0 for overlay scrollbars (macOS), which consume no
-// layout, so there is nothing to add.
-function horizontalScrollbarAllowance(el: HTMLElement): number {
-   let allowance = 0;
-   const nodes = [el, ...el.querySelectorAll<HTMLElement>("*")];
-   for (const node of nodes) {
-      if (node.scrollWidth > node.clientWidth + 1) {
-         allowance = Math.max(allowance, node.offsetHeight - node.clientHeight);
-      }
-   }
-   return allowance;
-}
+import { horizontalScrollbarAllowance } from "./scrollbar_allowance";
 
 function notifySize() {
    // Double rAF: the browser has to reflow after a display change before the
@@ -240,6 +223,26 @@ export function renderResult(
 
    // Measure the real rendered height once the Malloy web components settle,
    // then size the container to fit.
+   //
+   // COUPLED TO @malloydata/render's INTERNAL DOM. If you are bumping Malloy and
+   // the card renders clipped, blank, or too tall, this block is the first place
+   // to look. It depends on three things the renderer does not promise:
+   //   - the class name `.malloy-dashboard` on the element below the render root,
+   //   - the class name `.malloy-error-message` for a failed plugin,
+   //   - the container > child > grandchild nesting depth walked below.
+   // Publisher's SDK reaches for `.malloy-dashboard` too, in
+   // sdk/src/components/RenderedResult/RenderedResult.tsx, but there it is CSS,
+   // so a rename degrades into a style regression. Here it degrades into a card
+   // the user cannot read, which is why this comment exists.
+   //
+   // Verified against @malloydata/render 0.0.432 by rendering the bundled
+   // storefront `business_overview` dashboard: the grandchild does carry
+   // `.malloy-dashboard`, and its own offsetHeight is clamped to the container
+   // while the content below it is not, which is why the dashboard branch reads
+   // the great-grandchild.
+   //
+   // The arithmetic that turns those measurements into a height is in
+   // scrollbar_allowance.ts and IS tested. The DOM assumptions above are not.
    const observer = new MutationObserver(() => {
       setTimeout(() => {
          if (checkForPluginErrors()) {
