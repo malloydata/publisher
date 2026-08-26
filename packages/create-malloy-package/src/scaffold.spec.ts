@@ -2912,7 +2912,7 @@ describe("warehouse connections", () => {
          name: "postgres",
          type: "postgres",
       });
-      expect(result.connectionName).toBe("postgres");
+      expect(result.connection?.name).toBe("postgres");
       expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
    });
 

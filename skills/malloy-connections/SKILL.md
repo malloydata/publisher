@@ -213,16 +213,16 @@ case, needs none of this.
 
 ## A note on what `${VAR}` does and does not protect
 
-It keeps the secret out of the config file, and out of your shell history. It does not make the
-credential private in general: a running Publisher serves connection configuration, with values
-already substituted, from unauthenticated REST endpoints.
+It keeps the secret out of the config file, and out of your shell history. **That is the whole of
+what it buys.** In particular it does not make the credential private in general.
 
-**Do not treat that as a list of paths to protect.** Every route that can return a connection builds
-from one serializer, so the set is a consequence of that serializer rather than a boundary, and it
-grows whenever a route is added. Counting by probing understates it: two independent attempts did
-exactly that, one missing the legacy `/projects` aliases entirely. Reading the route table instead
-found fifteen registrations that can return a connection.
+Whether a running Publisher hands the substituted value back over its API depends on the server
+version, and that is being closed: the routes that can return a connection all build from one
+serializer, so redacting there covers them all at once. Because the set is a consequence of that
+serializer rather than a boundary, it is not a list to harden. Counting it by probing understates it,
+and did so twice independently, once missing the legacy `/projects` aliases entirely; reading the
+route table found fifteen registrations that can return a connection.
 
-So: keep the whole API on localhost or behind a gateway that authenticates, rather than hardening the
-endpoints you happen to know about, and treat "not in the file" as the scope of what the indirection
-buys.
+So the advice does not rest on the leak and does not change when it closes: keep the whole API on
+localhost or behind a gateway that authenticates, rather than hardening endpoints you happen to know
+about.

@@ -899,18 +899,17 @@ export function formatSuccess(result: ScaffoldResult): string {
    // ${VAR} in its config an unset variable does not degrade the server, it
    // stops it booting. A user who reads top to bottom has to meet the export
    // before the command that requires it.
-   if (result.connectionName !== undefined) {
+   const conn = result.connection;
+   if (conn !== undefined) {
       lines.push("");
       lines.push(log.bold("Your warehouse connection:"));
       lines.push(
-         `  ${log.cyan(result.connectionName)} ${log.dim(
-            `(${result.connectionType})`,
+         `  ${log.cyan(conn.name)} ${log.dim(
+            `(${conn.type})`,
          )}, defined in publisher.config.json`,
       );
-      if (result.connectionTable !== undefined) {
-         lines.push(
-            `  The starter model reads ${log.cyan(result.connectionTable)}.`,
-         );
+      if (conn.table !== undefined) {
+         lines.push(`  The starter model reads ${log.cyan(conn.table)}.`);
       } else {
          // Said plainly, because the package genuinely has no source in it and
          // an agent that calls get_context will find nothing. That reads as a
@@ -926,29 +925,29 @@ export function formatSuccess(result: ScaffoldResult): string {
             )} for this.`,
          );
       }
-      if (result.connectionCredentialNote !== undefined) {
-         lines.push(`  ${result.connectionCredentialNote}`);
+      if (conn.credentialNote !== undefined) {
+         lines.push(`  ${conn.credentialNote}`);
       }
-      if (result.connectionEnvVars.length > 0) {
+      if (conn.envVars.length > 0) {
          lines.push("");
          lines.push(
             `  ${log.bold("Export these before starting the server:")}`,
          );
-         for (const variable of result.connectionEnvVars) {
+         for (const variable of conn.envVars) {
             lines.push(`    ${log.cyan(`export ${variable}=...`)}`);
          }
          lines.push(
             `  ${log.dim(".env.example lists them too. The values are never written to disk by this tool.")}`,
          );
-         if (result.connectionEnvVarsUnset.length > 0) {
+         if (conn.envVarsUnset.length > 0) {
             // Reported, not treated as an error: scaffolding first and
             // exporting afterwards is the ordinary order. It is worth a warning
             // because the server does not share that view.
-            const many = result.connectionEnvVarsUnset.length > 1;
+            const many = conn.envVarsUnset.length > 1;
             lines.push("");
             lines.push(
                log.yellow(
-                  `  ${result.connectionEnvVarsUnset.join(", ")} ${
+                  `  ${conn.envVarsUnset.join(", ")} ${
                      many ? "are" : "is"
                   } not set in this shell.`,
                ),

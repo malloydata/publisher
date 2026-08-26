@@ -147,27 +147,39 @@ export interface ScaffoldResult {
     * NOT include. Set only when there is at least one.
     */
    siblingDataFiles?: string[];
-   /** The connection this run added to the environment, when it added one. */
-   connectionName?: string;
-   /** Its type, for the closing output and the agent briefing. */
-   connectionType?: string;
-   /** The table the starter model reads, when --table named one. */
-   connectionTable?: string;
    /**
-    * Environment variables the written config refers to and does not contain.
-    * Empty for a dialect that authenticates ambiently (BigQuery ADC).
+    * The connection this run added to the environment, absent when it added
+    * none. One optional object rather than a spread of sibling fields, so
+    * "there is no connection" is a property of the result rather than a
+    * convention every caller has to know: the alternative was six fields whose
+    * absence had to agree, with one of them serving as the de facto test.
+    *
+    * Mirrors ScaffoldOptions.connection, which already takes a single optional
+    * object. The two sides of this function now say the same thing the same way.
     */
-   connectionEnvVars: string[];
-   /**
-    * Which of those are NOT set in the environment this run saw. Reported rather
-    * than acted on: the recommended flow is to scaffold first and export the
-    * credentials afterwards, so an unset variable here is the ordinary case and
-    * not an error. It is worth saying out loud because the server does not treat
-    * it as ordinary — it refuses to start.
-    */
-   connectionEnvVarsUnset: string[];
-   /** How this dialect authenticates, for the closing output. */
-   connectionCredentialNote?: string;
+   connection?: {
+      name: string;
+      /** For the closing output and the agent briefing. */
+      type: string;
+      /** The table the starter model reads, when --table named one. */
+      table?: string;
+      /**
+       * Environment variables the written config refers to and does not
+       * contain. Empty for a dialect that authenticates ambiently (BigQuery
+       * ADC).
+       */
+      envVars: string[];
+      /**
+       * Which of those are NOT set in the environment this run saw. Reported
+       * rather than acted on: the recommended flow is to scaffold first and
+       * export the credentials afterwards, so an unset variable here is the
+       * ordinary case and not an error. It is worth saying out loud because the
+       * server does not treat it as ordinary.
+       */
+      envVarsUnset: string[];
+      /** How this dialect authenticates, for the closing output. */
+      credentialNote: string;
+   };
    /** The environment the package is registered in, which may not be "default". */
    envName: string;
    /**
@@ -497,8 +509,6 @@ export function scaffold(options: ScaffoldOptions): ScaffoldResult {
    const result: ScaffoldResult = {
       cwd: options.cwd,
       packageCreated: false,
-      connectionEnvVars: [],
-      connectionEnvVarsUnset: [],
       envName: ENV_NAME,
       envPackageCount: 0,
       publisherPort: PUBLISHER_PORT,
@@ -560,16 +570,20 @@ export function scaffold(options: ScaffoldOptions): ScaffoldResult {
 
    if (options.connection) {
       const { entry, envVars, table, credentialNote } = options.connection;
-      result.connectionName = entry.name;
-      result.connectionType = entry.type;
-      result.connectionTable = table;
-      result.connectionCredentialNote = credentialNote;
-      result.connectionEnvVars = envVars.map((variable) => variable.name);
-      // Read now rather than at boot, and reported rather than enforced: the
-      // recommended order is scaffold, then export, then start.
-      result.connectionEnvVarsUnset = result.connectionEnvVars.filter(
-         (name) => process.env[name] === undefined || process.env[name] === "",
-      );
+      const names = envVars.map((variable) => variable.name);
+      result.connection = {
+         name: entry.name,
+         type: entry.type,
+         table,
+         credentialNote,
+         envVars: names,
+         // Read now rather than at boot, and reported rather than enforced: the
+         // recommended order is scaffold, then export, then start.
+         envVarsUnset: names.filter(
+            (name) =>
+               process.env[name] === undefined || process.env[name] === "",
+         ),
+      };
    }
 
    wireWorkspace(
@@ -2154,19 +2168,19 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
       // claim on both warehouse paths, and the editor paragraph below it named
       // a malloy-config.json that a warehouse package is not given.
       const hasSource =
-         result.connectionName === undefined ||
-         result.connectionTable !== undefined;
-      if (result.connectionName === undefined) {
+         result.connection === undefined ||
+         result.connection.table !== undefined;
+      if (result.connection === undefined) {
          lines.push(
             `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over local data. Read it for the real source, field, and view names and use them verbatim; never guess them. The package's REST base is:`,
          );
-      } else if (result.connectionTable !== undefined) {
+      } else if (result.connection.table !== undefined) {
          lines.push(
-            `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over \`${result.connectionTable}\`, read through the \`${result.connectionName}\` connection defined in \`publisher.config.json\`. Read it for the real source, field, and view names and use them verbatim; never guess them. The package's REST base is:`,
+            `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over \`${result.connection.table}\`, read through the \`${result.connection.name}\` connection defined in \`publisher.config.json\`. Read it for the real source, field, and view names and use them verbatim; never guess them. The package's REST base is:`,
          );
       } else {
          lines.push(
-            `\`${result.packageName}/${result.modelFile}\` has NO source in it yet, on purpose: the \`${result.connectionName}\` connection was scaffolded without a table name, and guessing one would produce a model that compiles against nothing. Find a real table with \`malloy_searchDatabaseSchema\`, which searches this connection's schema in plain language, then write the source into that file and call \`malloy_reloadPackage\`. Do not invent a table name. The package's REST base is:`,
+            `\`${result.packageName}/${result.modelFile}\` has NO source in it yet, on purpose: the \`${result.connection.name}\` connection was scaffolded without a table name, and guessing one would produce a model that compiles against nothing. Find a real table with \`malloy_searchDatabaseSchema\`, which searches this connection's schema in plain language, then write the source into that file and call \`malloy_reloadPackage\`. Do not invent a table name. The package's REST base is:`,
          );
       }
       lines.push("", "```", base, "```", "");
@@ -2182,17 +2196,17 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
             "",
          );
       }
-      if (result.connectionEnvVars.length > 0) {
+      if (result.connection && result.connection.envVars.length > 0) {
          lines.push(
-            `The connection reads its credentials from the environment: ${result.connectionEnvVars
+            `The connection reads its credentials from the environment: ${result.connection.envVars
                .map((name) => `\`${name}\``)
                .join(
                   ", ",
-               )}. These are NOT in \`publisher.config.json\`, which refers to them by name, and nothing reads a \`.env\` file: export them in the shell you start the server from. An unset one stops the environment loading, so the server comes up reporting ready and serving nothing; older servers report that with no load errors and nothing naming the variable, newer ones name it in \`loadErrors\`. Either way, a server with no environments and no packages is worth checking these against first. Keeping the value out of the config file is not the same as keeping it private: a running Publisher serves connection config, with these values already substituted, from several unauthenticated REST endpoints, so put the whole API behind something that authenticates rather than protecting one path. The \`malloy-connections\` skill covers both.`,
+               )}. These are NOT in \`publisher.config.json\`, which refers to them by name, and nothing reads a \`.env\` file: export them in the shell you start the server from. An unset one stops the environment loading, so the server comes up reporting ready and serving nothing; older servers report that with no load errors and nothing naming the variable, newer ones name it in \`loadErrors\`. Either way, a server with no environments and no packages is worth checking these against first. Keeping the value out of the config file and out of shell history is the whole of what that buys: depending on the server version, a running Publisher may serve connection config with these values already substituted, so keep the whole API on localhost or behind a gateway that authenticates rather than protecting particular paths. The \`malloy-connections\` skill covers both.`,
             "",
          );
       }
-      if (result.connectionName === undefined) {
+      if (result.connection === undefined) {
          lines.push(
             `The VS Code / Cursor Malloy extension resolves the model's relative \`duckdb.table('data/…')\` paths against the EDITOR WORKSPACE root, while Publisher resolves them against the package directory. \`${result.packageName}/malloy-config.json\` (generated, machine-specific absolute path) bridges that for an editor opened at this workspace root; without it, open the editor at \`${result.packageName}/\` itself, or a model Publisher serves fine shows unresolved-table errors in the editor.`,
             "",

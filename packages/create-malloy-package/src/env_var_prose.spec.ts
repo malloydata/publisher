@@ -107,6 +107,54 @@ describe("unset-variable prose survives the server changing how it reports", () 
    });
 });
 
+/**
+ * Claims about the leak must be hedged the same way claims about load_errors
+ * are, and for the same reason: #1071 redacts at the single serializer every
+ * connection-returning route builds from, so a flat "Publisher serves your
+ * password over its API" becomes false the moment it lands.
+ *
+ * This class escaped the guard once, in the worst possible way: one sentence
+ * hedged the load_errors clause correctly and then asserted the leak clause
+ * flat, one clause later. Fixing an instance and missing its sibling in the
+ * same sentence is exactly what a guard is for.
+ */
+const LEAK_ASSERTED_AS_FACT = [
+   /a running Publisher serves connection config(?!.*may)/i,
+   /is served (?:by|from) .*unauthenticated/i,
+   /your (?:password|credential) is (?:readable|exposed|served)/i,
+];
+
+describe("leak claims are hedged, because a pending fix removes the leak", () => {
+   test("the generated AGENTS.md hedges it", () => {
+      const { agents } = scaffoldInto();
+      for (const flat of LEAK_ASSERTED_AS_FACT) {
+         expect(agents).not.toMatch(flat);
+      }
+      // And it must still carry the advice, which does not rest on the leak.
+      expect(agents).toMatch(/localhost|gateway|authenticat/i);
+   });
+
+   test("the .env.example header hedges it", () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cmp-prose-leak-"));
+      try {
+         scaffold({
+            name: "sales",
+            cwd: tmp,
+            host: "claude-code",
+            force: false,
+            connection: postgres(),
+         });
+         const env = fs.readFileSync(path.join(tmp, ".env.example"), "utf8");
+         for (const flat of LEAK_ASSERTED_AS_FACT) {
+            expect(env).not.toMatch(flat);
+         }
+         expect(env).toMatch(/may serve|depending on the server version/i);
+      } finally {
+         fs.rmSync(tmp, { recursive: true, force: true });
+      }
+   });
+});
+
 describe(".env.example does not invite a secret into a file nothing reads", () => {
    test("it never tells the user to copy it to .env", () => {
       // Publisher has no --env-file and no dotenv, and the generated start
@@ -125,15 +173,16 @@ describe(".env.example does not invite a secret into a file nothing reads", () =
          expect(env).not.toMatch(/copy this file/i);
          expect(env).not.toMatch(/copy .*to \.env/i);
          expect(env).toMatch(/export MALLOY_POSTGRES_PASSWORD=/);
-         // The limit on what ${VAR} buys, stated where the person handling the
-         // credential is looking rather than only in the skill.
-         expect(env).toMatch(/unauthenticated/i);
-         // Substance, not a specific route. The first version of this assertion
-         // required the string "status", which pinned the disclosure to one
-         // endpoint; when the text was corrected to stop naming a single path
-         // (four leak it, not one) the guard failed the fix. Assert that the
-         // caveat covers the API rather than that it names any one route.
-         expect(env).toMatch(/REST endpoints|the whole API|API/i);
+         // The three assertions below are about PROPERTIES of the claim, not
+         // about vocabulary. Three earlier versions of this guard asserted
+         // particular words ("status", then "unauthenticated") and each one
+         // went red against a correct rewrite, which is a guard punishing the
+         // fix it exists to protect. What must hold is: the scope is stated,
+         // the leak is not asserted as fact, and the advice is about the API.
+         expect(env).toMatch(
+            /not in the config file|not in your shell history|whole of it/i,
+         );
+         expect(env).toMatch(/localhost|gateway|authenticat/i);
          expect(env).not.toMatch(/only .*\/api\/v0\/status/i);
       } finally {
          fs.rmSync(tmp, { recursive: true, force: true });

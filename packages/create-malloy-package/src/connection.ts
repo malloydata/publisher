@@ -121,12 +121,24 @@ export interface EnvVarRef {
    describes: string;
 }
 
-/** A connection entry, in the shape environments[].connections[] takes. */
-export interface ConnectionEntry {
+/** The payload key each dialect's configuration lives under. */
+export type PayloadKey = `${WarehouseType}Connection`;
+
+/**
+ * A connection entry, in the shape environments[].connections[] takes.
+ *
+ * Closed rather than carrying `[payload: string]: unknown`. The open index
+ * signature let a misspelled payload key typecheck and produce a config
+ * Publisher silently ignores, which is the one failure this file is otherwise
+ * built to prevent: it validates connection names against a portable
+ * intersection, refuses foreign dialect flags and constrains table paths, all so
+ * a scaffold cannot look fine and not work. Leaving the door open here undid
+ * that in the one place the config is actually assembled.
+ */
+export type ConnectionEntry = {
    name: string;
    type: WarehouseType;
-   [payload: string]: unknown;
-}
+} & Partial<Record<PayloadKey, Record<string, unknown>>>;
 
 export interface BuiltConnection {
    entry: ConnectionEntry;
@@ -171,7 +183,10 @@ interface ExtraFlag {
 const DIALECTS: Record<
    WarehouseType,
    {
-      payloadKey: string;
+      // PayloadKey, not string: this is where the key actually comes from, so
+      // typing it loosely here would leave the closed ConnectionEntry unable to
+      // catch the typo it exists to catch.
+      payloadKey: PayloadKey;
       fields: FieldSpec[];
       extraFlags: ExtraFlag[];
       credentialNote: string;
@@ -572,11 +587,13 @@ export function renderEnvExample(built: BuiltConnection): string {
       // live connections array rather than a redacted copy. So the count is a
       // consequence of that single serializer, not a boundary to defend, and it
       // moves whenever a route is added. Authenticate the API, not the paths.
-      "# Worth knowing: keeping the value out of the config file is not the same",
-      "# as keeping it private. A running Publisher serves connection config,",
-      "# with these values already substituted, from several unauthenticated",
-      "# REST endpoints. Put the whole API on localhost or behind a gateway that",
-      "# authenticates; do not rely on protecting any single path.",
+      "# What this buys you: the value is not in the config file and not in",
+      "# your shell history. That is the whole of it.",
+      "#",
+      "# Depending on the server version, a running Publisher may serve",
+      "# connection config with these values already substituted. Keep the whole",
+      "# API on localhost or behind a gateway that authenticates, rather than",
+      "# protecting particular paths.",
       "",
    ];
    for (const variable of built.envVars) {
