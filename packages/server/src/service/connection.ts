@@ -34,7 +34,11 @@ import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
 import { components } from "../api";
-import { getExtensionFetchPolicy } from "../config";
+import {
+   getDuckDBMemoryLimit,
+   getDuckDBTempDirectory,
+   getExtensionFetchPolicy,
+} from "../config";
 import {
    catalogFormatRangeForEngine,
    isCatalogFormatInRange,
@@ -96,6 +100,66 @@ export type InternalConnection = ApiConnection & {
 const extensionSessionPinned = new WeakSet<Connection>();
 
 /**
+ * Sessions that already carry their resource limits, so the funnel below can be
+ * reached twice for one connection without re-issuing the SETs.
+ */
+const sessionLimitsApplied = new WeakSet<DuckDBConnection>();
+
+/**
+ * Bound ONE DuckDB session's memory, and name where it spills.
+ *
+ * Applied to every Publisher-owned session, which is the point rather than mere
+ * thoroughness: DuckDB sizes `memory_limit` per INSTANCE from the container, and
+ * Publisher runs several instances in one process (the environment lookup funnel,
+ * a per-package sandbox, a disposable session per materialization build). Each
+ * independently claims most of the container, so the process commits a multiple
+ * of what it has and the kernel kills it while every session still believes it is
+ * inside its budget. Bounding only the session running the largest job does not
+ * fix that -- the SUM is what overcommits -- so a partial rollout of this buys
+ * nothing.
+ *
+ * Both settings are opt-in and independent: unset leaves DuckDB's own default in
+ * place, and a deployment can bound memory without redirecting spill or the
+ * reverse. See {@link getDuckDBMemoryLimit} for why the limit is flat rather than
+ * a percentage.
+ *
+ * `tempDirectory` overrides the configured default for a session that owns a
+ * directory of its own -- a build session's disposable working directory, unique
+ * per build and removed with it, so its spill can neither outlive the build nor
+ * collide with another one.
+ *
+ * Failures are NOT swallowed, unlike the extension pin below. A configured value
+ * DuckDB rejects is an operator error in a resource bound, and continuing would
+ * open a session on the unbounded default while the configuration says otherwise
+ * -- the exact state this exists to prevent.
+ */
+export async function applySessionResourceLimits(
+   connection: DuckDBConnection,
+   { tempDirectory }: { tempDirectory?: string } = {},
+): Promise<void> {
+   if (sessionLimitsApplied.has(connection)) {
+      return;
+   }
+   const memoryLimit = getDuckDBMemoryLimit();
+   const temp = tempDirectory ?? getDuckDBTempDirectory();
+   if (memoryLimit === undefined && temp === undefined) {
+      sessionLimitsApplied.add(connection);
+      return;
+   }
+   if (temp !== undefined) {
+      await connection.runSQL(`SET temp_directory = '${escapeSQL(temp)}'`);
+   }
+   if (memoryLimit !== undefined) {
+      await connection.runSQL(`SET memory_limit = '${escapeSQL(memoryLimit)}'`);
+   }
+   sessionLimitsApplied.add(connection);
+   logger.debug("Applied DuckDB session resource limits", {
+      memoryLimit: memoryLimit ?? "<duckdb default>",
+      tempDirectory: temp ?? "<duckdb default>",
+   });
+}
+
+/**
  * Pin the extension-management PRAGMAs on a Publisher-owned DuckDB session.
  * Publisher installs the extensions it needs explicitly (see
  * {@link installAndLoadExtension}), so DuckDB's own IMPLICIT auto-install
@@ -129,6 +193,11 @@ export async function applyExtensionSessionSettings(
       alwaysDisableAutoinstall = false,
    }: { alwaysDisableAutoinstall?: boolean } = {},
 ): Promise<void> {
+   // Ahead of the autoinstall guard below, which returns early in the common
+   // case: the resource limits must not inherit the extension policy's
+   // conditions. This is the one funnel every Publisher-owned session reaches,
+   // so it is where "every session is bounded" is actually enforced.
+   await applySessionResourceLimits(connection);
    const policy = getExtensionFetchPolicy();
    const disableAutoinstall =
       alwaysDisableAutoinstall || policy === "local-only";

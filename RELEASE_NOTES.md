@@ -31,6 +31,17 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — every DuckDB session is now bounded
+
+DuckDB sizes its `memory_limit` from the container, at roughly 80%, and it does that **independently per instance**. Publisher runs several instances in one process — the environment lookup funnel, a per-package sandbox, and a disposable session for each materialization build — and none of them accounts for the resident Node/Bun baseline or for any of the others. Measured in a 3 GiB container, three instances each reported a 2.3 GiB limit: 6.9 GiB of committed budget against 3 GiB of real memory. The process is then killed by the kernel while every session still believes it is comfortably inside its budget, so no single session looks at fault and the growth presents as untracked native memory.
+
+Two new settings, both **opt-in and no-ops when unset**, so nothing changes on upgrade:
+
+- `PUBLISHER_DUCKDB_MEMORY_LIMIT` — a flat `memory_limit` (`1GB`, `512MB`) applied to every Publisher-owned session. Flat rather than a fraction on purpose: any fraction is still computed per instance, so N instances still commit N times it. Only an absolute per-session value bounds the sum, and the operator is the only party that knows both the container size and how many sessions to budget for. Set it to roughly (container memory − resident baseline) ÷ concurrent sessions. `off` restores DuckDB's default for the one case where it is not wrong — a single-session deployment on a large host.
+- `PUBLISHER_DUCKDB_TEMP_DIRECTORY` — where DuckDB spills, for every session except a materialization build, which spills inside its own disposable working directory (unique per build, removed with it). DuckDB's default is `.tmp` relative to the process working directory, with a `max_temp_directory_size` of 90% of whatever filesystem that lands on.
+
+Worth knowing before tuning: a `memory_limit` does **not** by itself introduce spill on the `storage=` build path. That pipeline pushes its SQL to the source warehouse and streams the result into the destination, with no join, sort or aggregation to spill — measured at a flat peak across a 30× range of output, with zero bytes written to the temp directory at any limit, including one tight enough to fail. An over-tight limit fails the query with a DuckDB out-of-memory error and leaves the process up, which is the intended trade against losing the pod. Local compute, and therefore spill, is the chained-build and serve paths.
+
 ## [Unreleased] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
 
 This is the headline change of this release, and it supersedes every earlier section on this page

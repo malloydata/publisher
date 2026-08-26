@@ -220,6 +220,70 @@ export function parseBoolEnv(name: string): boolean | undefined {
  * Throws at startup on malformed input so a typo in a k8s manifest
  * surfaces as a loud failure rather than silently disabling the cap.
  */
+/**
+ * DuckDB `memory_limit` for every Publisher-owned DuckDB session, as a FLAT
+ * value (`'1GB'`, `'512MB'`) rather than a share of anything.
+ *
+ * Flat because the thing being corrected is a per-instance calculation. DuckDB
+ * derives its own default from the container's memory — roughly 80% — and it does
+ * that INDEPENDENTLY per instance, accounting for neither the resident Node/Bun
+ * baseline nor any other instance in the same process. Publisher always runs
+ * several: the environment lookup funnel, a per-package sandbox, and a
+ * disposable session per materialization build. Measured in a 3 GiB container,
+ * three instances each reported a 2.3 GiB limit — 6.9 GiB of committed budget
+ * against 3 GiB of real memory, with nothing coordinating them. The process is
+ * then killed by the kernel while every instance still believes it is well
+ * inside its budget, which is why the growth presents as untracked native memory
+ * and no single session looks at fault.
+ *
+ * A percentage cannot fix that: any percentage is still computed per instance,
+ * so N instances still commit N times it. Only an absolute per-session value
+ * bounds the sum, and the operator is the only party that knows both the
+ * container size and how many sessions to budget for.
+ *
+ * Passed to DuckDB verbatim, so any unit DuckDB accepts works. `off` (or empty)
+ * disables the override and restores DuckDB's own per-instance default —
+ * available deliberately, because a single-session deployment on a large host is
+ * the one case where the default is not wrong.
+ *
+ * Read per session rather than at startup, so a malformed value surfaces on the
+ * session that tried to use it rather than preventing boot. DuckDB rejects a
+ * value it cannot parse, and that error is not swallowed.
+ */
+export const getDuckDBMemoryLimit = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim();
+   if (raw === undefined || raw === "" || raw.toLowerCase() === "off") {
+      return undefined;
+   }
+   return raw;
+};
+
+/**
+ * Directory DuckDB spills to, for every Publisher-owned session that is not a
+ * materialization build (a build spills inside its own disposable working
+ * directory, which is already unique per build and already removed with it).
+ *
+ * Worth naming even though the paths that spill are narrow. DuckDB's default is
+ * `.tmp` relative to the process working directory, and its default
+ * `max_temp_directory_size` is 90% of whatever filesystem that lands on — on a
+ * container without an ephemeral-storage limit, that is the node's shared disk.
+ * Pointing it somewhere deliberate is what makes the spill bounded by a volume
+ * an operator chose.
+ *
+ * Setting a `memory_limit` does NOT by itself create spill on the storage-build
+ * path: that pipeline pushes its SQL to the source warehouse and streams the
+ * result into the destination, with no join, sort or aggregation to spill —
+ * measured across a 30x range of output at a flat peak, and with an over-tight
+ * limit failing as a clean query error rather than spilling. Local compute, and
+ * therefore spill, happens on the chained-build and serve paths.
+ *
+ * Unset leaves DuckDB's default in place.
+ */
+export const getDuckDBTempDirectory = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
 export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
    const maxMemoryBytes = parseIntEnv("PUBLISHER_MAX_MEMORY_BYTES");
    if (maxMemoryBytes === undefined || maxMemoryBytes === 0) {

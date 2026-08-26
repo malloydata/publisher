@@ -33,6 +33,7 @@ import {
 import { recordAttributionSkipped } from "../materialization_metrics";
 import type { QueryMetadata } from "./query_metadata";
 import {
+   applySessionResourceLimits,
    attachDuckLakeReadWrite,
    escapeSQL,
    federateSourceForPassthrough,
@@ -560,13 +561,21 @@ export function passthroughSourceType(
  * attaches, torn down on close. Crucially `databasePath` stays exactly
  * `:memory:` (NOT a temp file): a `:memory:` primary lets a DuckLake attach
  * auto-initialize a fresh catalog, whereas a file primary does not. The working
- * directory is only there to make the share key unique — nothing is written to
- * it (every real path the build uses is absolute), so it stays empty and is
- * removed on dispose (best-effort; a leftover empty dir is benign).
+ * directory started out only as a way to make the share key unique — every real
+ * path the build uses is absolute — and it is also where the caller points
+ * DuckDB's `temp_directory`, so it holds spill for the life of the build and
+ * nothing else. Removed on dispose (best-effort; a leftover dir is benign).
  */
 export function createIsolatedBuildSession(sessionName: string): {
    session: DuckDBConnection;
    dispose: () => Promise<void>;
+   /**
+    * The session's private working directory. Returned so the caller can point
+    * DuckDB's `temp_directory` at it: it is unique per build and removed by
+    * `dispose`, so spill from one build can neither outlive it nor collide with
+    * another build's.
+    */
+   workDir: string;
 } {
    const workDir = mkdtempSync(path.join(os.tmpdir(), "malloy-build-"));
    // The disposer that owns removing workDir does not exist until this function
@@ -634,7 +643,7 @@ export function createIsolatedBuildSession(sessionName: string): {
          });
       }
    };
-   return { session, dispose };
+   return { session, dispose, workDir };
 }
 
 /**
@@ -797,7 +806,7 @@ export async function buildSourceIntoStorage(params: {
    // read-write destination attach and federated source credentials cannot be
    // pooled onto — or collide with — any other build/serve connection (see
    // createIsolatedBuildSession).
-   const { session, dispose } = createIsolatedBuildSession(
+   const { session, dispose, workDir } = createIsolatedBuildSession(
       `build_${destinationName}`,
    );
    // Visible to the finally, which clears the session tag before release.
@@ -823,6 +832,14 @@ export async function buildSourceIntoStorage(params: {
       // incremental refresh (a full CTAS issues none), but it is cheap and the
       // session it protects is this one — see pinSessionToUTC.
       await pinSessionToUTC(session);
+      // Explicit here as well as in the session funnel, because a build reaches
+      // that funnel only for a DuckLake destination -- a plain-DuckDB destination
+      // attaches a file and never passes through it. This is also the one session
+      // that owns a disposable directory, so its spill is pointed there rather
+      // than at the configured default: unique per build, removed with the build.
+      await applySessionResourceLimits(session, {
+         tempDirectory: workDir,
+      });
 
       const federated = await federateSourceForPassthrough(
          session,
@@ -985,7 +1002,7 @@ export async function buildDownstreamIntoStorage(params: {
 
    assertSupportedDestination(destinationName, destinationConnection);
 
-   const { session, dispose } = createIsolatedBuildSession(
+   const { session, dispose, workDir } = createIsolatedBuildSession(
       `build_${destinationName}`,
    );
    try {
@@ -1006,6 +1023,14 @@ export async function buildDownstreamIntoStorage(params: {
       // this guards the case that lifting that exclusion creates, in the one
       // function where its absence would not be obvious.
       await pinSessionToUTC(session);
+      // Explicit here as well as in the session funnel, because a build reaches
+      // that funnel only for a DuckLake destination -- a plain-DuckDB destination
+      // attaches a file and never passes through it. This is also the one session
+      // that owns a disposable directory, so its spill is pointed there rather
+      // than at the configured default: unique per build, removed with the build.
+      await applySessionResourceLimits(session, {
+         tempDirectory: workDir,
+      });
 
       // Compile the transient rebind model against the build session. Its only
       // connection is the attached destination; the upstream virtual sources
@@ -1183,10 +1208,14 @@ export async function dropStorageTable(params: {
    // Fail fast (pre-session, pre-attach) on a destination the build can't target.
    assertSupportedDestination(destinationName, destinationConnection);
 
-   const { session, dispose } = createIsolatedBuildSession(
+   const { session, dispose, workDir } = createIsolatedBuildSession(
       `gc_${destinationName}`,
    );
    try {
+      // Bounded like the build sessions even though a DROP allocates almost
+      // nothing: the cost this guards is the INSTANCE, which claims its share of
+      // the container the moment it exists, whatever it goes on to run.
+      await applySessionResourceLimits(session, { tempDirectory: workDir });
       await attachDestinationReadWrite(
          session,
          destinationName,
