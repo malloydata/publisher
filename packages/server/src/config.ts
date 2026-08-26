@@ -274,6 +274,28 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
 };
 
 /**
+ * Resolve the materialization build session's `preserve_insertion_order`
+ * override from `PUBLISHER_BUILD_PRESERVE_INSERTION_ORDER`.
+ *
+ * `undefined` when unset — the default — and the build then issues no such
+ * statement at all, so DuckDB's own default stands and this knob cannot change
+ * an existing deployment until someone sets it. Opting in is the whole
+ * interface.
+ *
+ * Scoped to the build session on purpose. It is a global session setting, and a
+ * build session is the one place where the tradeoff is unambiguous: the
+ * pipeline is a single passthrough read written straight into a destination
+ * table, and nothing downstream depends on the order the rows were written in.
+ * See `applyBuildInsertionOrder` for why the buffer it governs is not bounded
+ * by batch size.
+ *
+ * Throws at startup on a malformed value, so a typo in a manifest is a loud
+ * failure rather than a silently ignored setting.
+ */
+export const getBuildPreserveInsertionOrder = (): boolean | undefined =>
+   parseBoolEnv("PUBLISHER_BUILD_PRESERVE_INSERTION_ORDER");
+
+/**
  * Settings for the optional embedding provider behind semantic
  * `malloy_getContext` retrieval. See {@link getEmbeddingConfig}.
  */

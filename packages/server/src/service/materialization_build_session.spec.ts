@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { BadRequestError } from "../errors";
 import { storageDestinationRoot } from "./connection_config";
 import type { components } from "../api";
 import {
+   applyBuildInsertionOrder,
    assertStorageServeShapeCompiles,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
@@ -442,5 +443,57 @@ describe("createTableAndDescribe (schema read-back window)", () => {
 
       expect(schema).toEqual([{ name: "a", type: "VARCHAR" }]);
       expect(issued.some((s) => /^DROP TABLE/i.test(s))).toBe(false);
+   });
+});
+
+describe("applyBuildInsertionOrder (opt-in preserve_insertion_order)", () => {
+   const ENV = "PUBLISHER_BUILD_PRESERVE_INSERTION_ORDER";
+   const original = process.env[ENV];
+
+   /** Records the SQL a session is asked to run, without opening a database. */
+   function recorder(): { session: DuckDBConnection; sql: string[] } {
+      const sql: string[] = [];
+      const session = {
+         runSQL: async (q: string) => {
+            sql.push(q);
+            return { rows: [], totalRows: 0, runStats: {} };
+         },
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any as DuckDBConnection;
+      return { session, sql };
+   }
+
+   afterEach(() => {
+      if (original === undefined) delete process.env[ENV];
+      else process.env[ENV] = original;
+   });
+
+   it("issues nothing when unset, so DuckDB's own default stands", async () => {
+      delete process.env[ENV];
+      const { session, sql } = recorder();
+      await applyBuildInsertionOrder(session);
+      expect(sql).toEqual([]);
+   });
+
+   it("turns order preservation off when opted out", async () => {
+      process.env[ENV] = "false";
+      const { session, sql } = recorder();
+      await applyBuildInsertionOrder(session);
+      expect(sql).toEqual(["SET preserve_insertion_order = false"]);
+   });
+
+   it("honours an explicit opt-in, rather than treating it as unset", async () => {
+      process.env[ENV] = "true";
+      const { session, sql } = recorder();
+      await applyBuildInsertionOrder(session);
+      expect(sql).toEqual(["SET preserve_insertion_order = true"]);
+   });
+
+   it("throws on a malformed value rather than silently ignoring it", async () => {
+      process.env[ENV] = "maybe";
+      const { session } = recorder();
+      await expect(applyBuildInsertionOrder(session)).rejects.toThrow(
+         /expected a boolean/i,
+      );
    });
 });

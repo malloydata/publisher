@@ -39,6 +39,7 @@ import {
    type FederatedSourceType,
 } from "./connection";
 import type { WatermarkBound } from "./incremental_apply";
+import { getBuildPreserveInsertionOrder } from "../config";
 import { storageDestinationRoot } from "./connection_config";
 import {
    assertServesInDuckDB,
@@ -657,6 +658,41 @@ export async function pinSessionToUTC(
    await session.runSQL("SET TimeZone='UTC'");
 }
 
+/**
+ * Apply the optional `preserve_insertion_order` override to a build session.
+ *
+ * A no-op unless `PUBLISHER_BUILD_PRESERVE_INSERTION_ORDER` is set: with it
+ * unset no statement is issued at all, so DuckDB's own default stands and an
+ * existing deployment's behaviour is unchanged. Opting in is the only way to
+ * move it.
+ *
+ * Why it is worth being able to move. A build's write is one pipeline — a
+ * passthrough SELECT the source engine executes, whose result is written
+ * straight into the destination — and DuckDB's execution is pull-based, so the
+ * writer paces the read. Order preservation sits outside that: to hand rows to
+ * the writer in input order, DuckDB buffers them between a parallel scan and
+ * the sink, and that buffer grows with how far out of order the pipeline runs
+ * rather than with any batch size. On a large enough result it is the
+ * difference between a bounded pipeline and one that outgrows its container,
+ * and no per-batch bound constrains it.
+ *
+ * A materialization has no insertion-order contract to keep — the built table
+ * is read back through the serve transform, which does not preserve or promise
+ * row order — so on this path the guarantee costs memory and buys nothing.
+ * Left opt-in regardless: this is a global session setting, and the blast
+ * radius of flipping it for every build is wider than the one build that
+ * needed it.
+ */
+export async function applyBuildInsertionOrder(
+   session: DuckDBConnection,
+): Promise<void> {
+   const preserve = getBuildPreserveInsertionOrder();
+   if (preserve === undefined) {
+      return;
+   }
+   await session.runSQL(`SET preserve_insertion_order = ${preserve}`);
+}
+
 /** Result of building one source into a storage destination. */
 export interface StorageBuildResult {
    /** The connection the physical table now lives in (the destination). */
@@ -823,6 +859,9 @@ export async function buildSourceIntoStorage(params: {
       // incremental refresh (a full CTAS issues none), but it is cheap and the
       // session it protects is this one — see pinSessionToUTC.
       await pinSessionToUTC(session);
+      // Before the write, since it governs how the write buffers. A no-op unless
+      // explicitly configured — see applyBuildInsertionOrder.
+      await applyBuildInsertionOrder(session);
 
       const federated = await federateSourceForPassthrough(
          session,
@@ -1006,6 +1045,9 @@ export async function buildDownstreamIntoStorage(params: {
       // this guards the case that lifting that exclusion creates, in the one
       // function where its absence would not be obvious.
       await pinSessionToUTC(session);
+      // Applied on both build-session paths for the same reason: this one also
+      // writes, so it also buffers.
+      await applyBuildInsertionOrder(session);
 
       // Compile the transient rebind model against the build session. Its only
       // connection is the attached destination; the upstream virtual sources
