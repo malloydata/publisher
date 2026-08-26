@@ -147,8 +147,9 @@ twelfth of the page wide. Use the single-query form when one tile deserves more 
 
 **Write `dashboard_columns=N` on a composite and `# dashboard { columns=N }` on a single query.**
 A composite forgives the mix, since both spellings feed the manifest field it
-lays out from, but **a single query tagged `dashboard_columns` silently loses its whole layout**, and
-the manifest reports the count either way: see "Losing the grid". A composite's tiles also keep their
+lays out from, but **a single query tagged `dashboard_columns` loses its whole layout**: only a
+composite reads that spelling for the grid, so on a single query the count never reaches the manifest,
+and the package warnings say so at load. See "Losing the grid". A composite's tiles also keep their
 own field names on their axes and column headers, and the Layout section's remedy, inlining the view,
 is not open to you here: naming existing views is the whole point of the form. `tiles=` on a
 single-query artifact tag is dropped the same way, silently.
@@ -318,7 +319,9 @@ either, for a different reason.
 ## Losing the grid
 
 A single-query dashboard can come out with its layout wrong in two visibly different ways, and the
-reload is 200 and the manifest reports the column count you asked for in both.
+reload is 200 in both. Only one of them tells you: `dashboard_columns` on a single query raises a
+package warning and keeps the count off the manifest, rather than reporting a width no page used. The
+`f'…'` case below is still silent, and still reports the count you asked for.
 
 **Not a dashboard at all: one plain nested table**, every `# colspan` and `# break` dropped. Either
 you tagged a single query with `dashboard_columns=N`, which only a composite reads, or a `f'…'`
@@ -330,18 +333,20 @@ is immune because its layout comes from the manifest rather than a re-parse.
 **A dashboard, but nothing lines up**: you wrote `# colspan` without `columns=N`, so the items flow
 side by side at their natural widths instead of aligning to a grid.
 
-To tell them apart, run the dashboard's own query, `{"queryName": "<the manifest's query>"}`, and read
+**Read the package warnings first.** `dashboard_columns does nothing on a single-query dashboard`
+names the first cause outright, and its absence rules that cause out, which is most of the work. For
+what is left, run the dashboard's own query, `{"queryName": "<the manifest's query>"}`, and read
 `renderLogs` on the response. Like `warnings`, the key is absent when there is nothing to say.
 Single-query dashboards have no `tiles` in their manifest, so there is no tile query to run:
 
 | render log | what it means |
 |---|---|
-| `Unknown render tag 'colspan'` | the renderer never saw a `# dashboard` tag. It does **not** say which of the two causes; check both |
+| `Unknown render tag 'colspan'` | the renderer never saw a `# dashboard` tag. It does **not** say which of the two causes; the package warnings do |
 | `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count |
 
-Neither reaches the package warnings, so step 6 will not show either. A **wrapped `##` tag** is the
-one failure in this family that does: the file is absent from the listing and the package warnings
-say "Tag does not parse (Unclosed '{')".
+Neither render log reaches the package warnings, so step 6 shows the `dashboard_columns` cause and
+never the `f'…'` one. A **wrapped `##` tag** is the other failure in this family that shows there: the
+file is absent from the listing and the package warnings say "Tag does not parse (Unclosed '{')".
 
 ## Read the lint
 
@@ -354,7 +359,10 @@ Package warnings after a reload are the dashboard's test suite. Fix all of them:
 - `filters by given "X", which this file does not import, so no control is shown for it`: the trap
   under "Importing a given is what makes it bindable", which the lint now names for you, with the file
   to fix.
-- A tile that does not resolve to a real view, or a non-positive `dashboard_columns`.
+- A tile that does not resolve to a real view, or a non-positive `dashboard_columns` on a composite.
+- `dashboard_columns does nothing on a single-query dashboard`: the wrong spelling for the form. The
+  message names what the page did instead, which is either a grid from `# dashboard { columns=N }` or,
+  with no `# dashboard` tag at all, one nested table.
 
 Findings carry a `severity`, but `warn` is the ordinary default and tells you nothing about how bad
 one is. Read the text, not the severity and not the count. One message is worth recognising because

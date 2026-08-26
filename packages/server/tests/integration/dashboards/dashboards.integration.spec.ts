@@ -942,6 +942,15 @@ describe("Dashboard discovery (E2E)", () => {
                "dashboard_columns must be a positive integer",
             ),
          );
+         // The same tag on the OTHER form, where it is inert rather than
+         // invalid: `overview` is a single query, so its `dashboard_columns=6`
+         // never reaches the manifest, and with no `# dashboard` tag the
+         // renderer lays out no grid at all.
+         expect(messages).toContainEqual(
+            expect.stringContaining(
+               "dashboard_columns does nothing on a single-query dashboard",
+            ),
+         );
          expect(messages).toContainEqual(
             expect.stringContaining(
                'given "REGION", which this file does not import',

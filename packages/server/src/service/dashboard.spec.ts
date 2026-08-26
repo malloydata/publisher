@@ -1365,9 +1365,11 @@ describe("service/dashboard grid width and hostile literals", () => {
          queries: [{ name: "overview", annotations: [annotation], givens: [] }],
       });
 
-   // BOTH spellings reach the manifest, but only `dashboard_columns` was ever
-   // checked, and `# dashboard { columns=N }` is the form the shipped example
-   // dashboards use, so a bad value there was dropped with no finding at all.
+   // Each spelling is checked on the form that HONORS it. `# dashboard
+   // { columns=N }` reaches the manifest on both forms and is the form the
+   // shipped example dashboards use, so a bad value there was once dropped with
+   // no finding at all; `dashboard_columns` is checked for its value on the
+   // composite only, and reported as inert on a single query.
    it("validates the # dashboard { columns= } spelling", () => {
       expect(
          lintOf(singleQuery('# artifact dashboard { columns="wide" }\n')),
@@ -1406,26 +1408,37 @@ describe("service/dashboard grid width and hostile literals", () => {
       }
    });
 
-   // The two spellings are read with `??`, so a bad value in one is not always
-   // a fallback to the renderer default: when the other spelling is good, the
-   // grid quietly uses it, and the finding must say so.
+   // Mixing the spellings on a single query used to be reported as a bad VALUE
+   // ("must be a positive integer"), which sent the author to fix a number that
+   // was never going to be read. The tag is inert here whatever it says, so the
+   // finding is about scope, and it names the width the page actually uses.
    it("names the width actually used when the other spelling supplies one", () => {
       const both = singleQuery(
          '# artifact { dashboard_columns="wide" } dashboard { columns=6 }\n',
       );
       expect(build(both)?.dashboardColumns).toBe(6);
       expect(lintOf(both)).toEqual([
-         expect.stringContaining("The grid uses 6 instead."),
+         expect.stringContaining("The grid uses 6, from # dashboard"),
       ]);
    });
 
+   // The `# dashboard` TAG is present, so the renderer still lays this out as a
+   // dashboard in its non-columns flex mode. The bad `columns` gets the
+   // renderer-default finding; the scope finding must NOT also claim a nested
+   // table, which is the wording reserved for a query with no `# dashboard` tag
+   // at all. This fixture is the one that would pin the wrong message if the
+   // scope branch were keyed on the value rather than on tag presence.
    it("still says renderer default when neither spelling is usable", () => {
       const neither = singleQuery(
          '# artifact { dashboard_columns="wide" } dashboard { columns="wider" }\n',
       );
       expect(build(neither)?.dashboardColumns).toBeUndefined();
+      expect(lintOf(neither)).toEqual([
+         expect.stringContaining("falls back to the renderer default"),
+         expect.stringContaining("The layout comes from # dashboard."),
+      ]);
       for (const m of lintOf(neither)) {
-         expect(m).toContain("falls back to the renderer default");
+         expect(m).not.toContain("nested table");
       }
    });
 
@@ -1463,6 +1476,53 @@ describe("service/dashboard grid width and hostile literals", () => {
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
       expect(lintDashboard(f, manifest)).toEqual([]);
+   });
+
+   // The composite's OTHER spelling. `readArtifactTag` keeps the `# dashboard
+   // { columns=N }` fallback live on both forms deliberately: a composite
+   // written this way is honored today, and scoping it away would move those
+   // dashboards to the SDK's default of 2 with nothing said. Pinned here so
+   // that stays true.
+   it("keeps a composite spelled # dashboard { columns= } on the manifest", () => {
+      const f = facts({
+         modelAnnotations: [
+            '## artifact { tiles=["orders -> totals"] } dashboard { columns=4 }\n',
+         ],
+         viewGivens: new Map([["orders -> totals", []]]),
+         sourceFields: new Map([["orders", new Set(["totals"])]]),
+      });
+      expect(build(f)?.dashboardColumns).toBe(4);
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(f, manifest)).toEqual([]);
+   });
+
+   // The worst case, and the one that used to be silent in both directions:
+   // `dashboard_columns` alone on a single query put a width on the wire that
+   // nothing read, AND left the renderer with no `# dashboard` tag, so the
+   // result is one nested table instead of a grid.
+   it("drops a query-level dashboard_columns and names the lost grid", () => {
+      const f = singleQuery("# artifact { dashboard_columns=6 }\n");
+      expect(build(f)?.dashboardColumns).toBeUndefined();
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      const findings = lintDashboard(f, manifest);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].message).toContain("nested table rather than a grid");
+      expect(findings[0].message).toContain("# dashboard { columns=N }");
+      // A package spelled this way loads and serves today, and this change does
+      // not alter the page it renders. Reporting it as an error would stop it.
+      expect(findings[0].severity).toBe("warn");
+   });
+
+   it("names the # dashboard width when a query spells both", () => {
+      const f = singleQuery(
+         "# artifact { dashboard_columns=6 } dashboard { columns=3 }\n",
+      );
+      expect(build(f)?.dashboardColumns).toBe(3);
+      expect(lintOf(f)).toEqual([
+         expect.stringContaining("The grid uses 3, from # dashboard"),
+      ]);
    });
 
    it("accepts a valid width in either spelling", () => {

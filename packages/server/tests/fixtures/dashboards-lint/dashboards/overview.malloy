@@ -2,10 +2,15 @@
 import { orders } from '../orders.malloy'
 import { BRAND } from '../givens.malloy'
 
-// The one well-formed dashboard here: it exists so a `# drill { to=["overview"] }`
-// has something real to resolve to. Its only finding is BRAND's suggest, which
-// names a query nothing defines.
-# artifact { title="Overview" }
+// The drill target: `# drill { to=["overview"] }` needs a real dashboard to
+// resolve to, and this one serves.
+//
+// It also carries the single-query form's own mistake, which no other file here
+// makes. `dashboard_columns` is read for the grid on a COMPOSITE only, and with
+// no `# dashboard` tag the renderer has no grid to lay out, so this renders as
+// one nested table. Its other finding is BRAND's suggest, which names a query
+// nothing defines.
+# artifact { title="Overview" dashboard_columns=6 }
 query: overview is orders -> {
    where: brand_name ~ $BRAND
    group_by: brand_name

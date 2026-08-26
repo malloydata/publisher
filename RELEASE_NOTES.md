@@ -304,6 +304,38 @@ the caller stripped from submitted text is still found and still denies.
 
 ---
 
+## [Unreleased] — `dashboardColumns` stops reporting a grid width nothing used
+
+A dashboard's grid width has two spellings, and each is now read only on the form that honours it.
+`dashboard_columns` on the artifact tag is the **composite** form's; `# dashboard { columns=N }` on
+the query is the **single-query** form's, and the one `@malloydata/render` reads.
+
+Until now the server read both on both forms. On a single-query dashboard that meant
+`# artifact { dashboard_columns=6 } dashboard { columns=3 }` put `dashboardColumns: 6` on the wire,
+linted clean, and laid out at 3: the field reported a number no page used. Worse, `dashboard_columns`
+alone on a single query left the renderer with no `# dashboard` tag at all, so the whole grid was lost
+and the result rendered as one nested table, with nothing said at load.
+
+Two changes, both server-side:
+
+- **`ApiDashboard.dashboardColumns` narrows in one case.** On a single-query dashboard it now reflects
+  only `# dashboard { columns=N }`; `dashboard_columns` no longer contributes. A host reading that
+  field for its own layout will see it absent where it used to carry an inert number. Nothing else
+  moves: the composite form is unchanged, and `# dashboard { columns=N }` is still read on a composite
+  too, so a composite spelled that way keeps the width it has today rather than dropping to the SDK's
+  default of 2.
+- **A new package warning.** `dashboard_columns` on a single-query dashboard is reported at load
+  (severity `warn`, so nothing stops loading), naming what the page actually did: the width from
+  `# dashboard { columns=N }` when there is one, and the lost grid when there is no `# dashboard` tag.
+  It reaches `ApiPackage.warnings` and the `malloy_reloadPackage` MCP tool like every other dashboard
+  finding.
+
+This does not close the question of why there are two names for one idea. That is Malloy grammar work
+upstream; what ships here is that the wrong one now tells you, instead of reporting a width nothing
+read.
+
+---
+
 ## [0.0.250] — opt-in request rate limiting
 
 The REST server can now cap how many requests one client makes per minute: set `PUBLISHER_RATE_LIMIT=<n>` and the `n+1`th request in a minute from the same peer address gets a `429` with standard `RateLimit-*` headers. It is off unless set, so nothing changes for an existing deployment. Health probes and `/metrics` are exempt, and the MCP port is not covered. Behind a reverse proxy every client arrives from the proxy's address and would share one bucket, so rate-limit at the proxy in that deployment instead. See [docs/configuration.md](docs/configuration.md).

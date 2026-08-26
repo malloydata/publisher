@@ -233,6 +233,7 @@ interface ArtifactTagData {
 
 function readArtifactTag(
    tag: Tag,
+   form: "composite" | "query",
    declaredType: (name: string) => string | undefined,
 ): ArtifactTagData | undefined {
    const artifact = tag.tag("artifact");
@@ -247,9 +248,18 @@ function readArtifactTag(
          .array("tiles")
          ?.map((tile) => tagText(tile))
          .filter((tile): tile is string => tile !== undefined),
-      // The composite form carries its grid width inside the artifact tag; the
-      // single-query form gets it from the `# dashboard` render tag, which the
-      // renderer reads too.
+      // Each spelling is read only on the form that HONORS it. The composite
+      // grid is laid out by the SDK from this field (`Dashboard.tsx`), so
+      // `dashboard_columns` is live there. The single-query form is laid out by
+      // `@malloydata/render` from the query's own `# dashboard` tag, which the
+      // SDK never feeds: reading `dashboard_columns` there put a number on the
+      // wire that no page used, and the author was told nothing. It is a load
+      // warning now instead (see `lintDashboard`).
+      //
+      // The `# dashboard { columns }` fallback stays live on BOTH forms. A
+      // composite spelled that way is honored today, and dropping it would
+      // silently move those dashboards to the SDK's default of 2. Only the
+      // inert direction goes away.
       //
       // Read through the same strict reader the lint validates with, and
       // require a positive integer here as well. `Tag.numeric()` is parseFloat,
@@ -258,7 +268,9 @@ function readArtifactTag(
       // the wire in the very case the lint was reporting as dropped, so the two
       // disagreed about the same tag.
       dashboardColumns:
-         positiveInteger(tagNumeric(artifact, "dashboard_columns")) ??
+         (form === "composite"
+            ? positiveInteger(tagNumeric(artifact, "dashboard_columns"))
+            : undefined) ??
          positiveInteger(tagNumeric(tag.tag("dashboard"), "columns")),
       givens,
       autorun,
@@ -688,7 +700,7 @@ export function buildDashboardManifest(
    const modelTag = motlyTag(facts.modelAnnotations);
    const declaredType = (name: string) => facts.givens.get(name)?.type;
    const composite = modelTag
-      ? readArtifactTag(modelTag, declaredType)
+      ? readArtifactTag(modelTag, "composite", declaredType)
       : undefined;
    if (composite?.tiles?.length) {
       const tiles = composite.tiles.map((query) => {
@@ -736,7 +748,9 @@ export function buildDashboardManifest(
 
    for (const query of facts.queries) {
       const tag = motlyTag(query.annotations);
-      const artifact = tag ? readArtifactTag(tag, declaredType) : undefined;
+      const artifact = tag
+         ? readArtifactTag(tag, "query", declaredType)
+         : undefined;
       if (!artifact) continue;
       const doc = docCommentTitleAndDescription(
          query.annotations,
@@ -867,12 +881,21 @@ export function lintDashboard(
       );
    }
 
-   // The grid width has two spellings and BOTH reach the manifest (see
+   // The grid width has two spellings and both can reach the manifest (see
    // readArtifactTag), so both are checked here. Checking only the artifact-tag
    // spelling left `# dashboard { columns=… }`, the form the shipped examples
    // use, silently dropped on a bad value.
    for (const [tag, key, written] of [
-      [artifactTag, "dashboard_columns", "dashboard_columns"],
+      // `dashboard_columns` reaches the manifest on the COMPOSITE form only, so
+      // its value is only checked there. On a query-level artifact tag the tag
+      // is inert whatever it says, and "must be a positive integer" would send
+      // the author to fix the value when the problem is the spelling. The scope
+      // finding below is what that page needs to hear instead.
+      [
+         manifest.tiles ? artifactTag : undefined,
+         "dashboard_columns",
+         "dashboard_columns",
+      ],
       [ownTag?.tag("dashboard"), "columns", "# dashboard { columns=… }"],
    ] as const) {
       // A bad value is invisible in the manifest, because `positiveInteger`
@@ -898,6 +921,46 @@ export function lintDashboard(
                ? `The grid falls back to the renderer default.`
                : `The grid uses ${manifest.dashboardColumns} instead.`),
       );
+   }
+
+   // The spelling that does nothing, said aloud. `dashboard_columns` on a
+   // single-query dashboard is inert: only the composite SDK path reads that
+   // manifest field, and the single-query form is laid out by
+   // `@malloydata/render` from the query's own `# dashboard` tag, which
+   // Publisher never feeds. Before this the author got a number on the wire, a
+   // clean lint, and a page laid out by something else entirely.
+   //
+   // `warn`, not `error`: every package spelled this way loads today and its
+   // page does not change, so an error would stop packages over a tag that
+   // never did anything.
+   //
+   // Branched on whether the `# dashboard` TAG is present, not on whether its
+   // `columns` is usable, because those are two different pages. With no tag at
+   // all the renderer has no dashboard to lay out and the result is ONE NESTED
+   // TABLE — the loss `skills/malloy-dashboards` already documents. With the
+   // tag present and `columns` unusable the renderer still lays it out as a
+   // dashboard, in its non-columns flex mode, so a nested-table claim would be
+   // false; that bad value is reported by the loop above and by the renderer's
+   // own `renderLogs`, and three messages that disagree about what the page did
+   // are worse than one.
+   if (manifest.query !== undefined && artifactTag?.has("dashboard_columns")) {
+      const inert =
+         "dashboard_columns does nothing on a single-query dashboard: " +
+         "only a composite artifact tag is read for the grid width.";
+      if (!ownTag?.has("dashboard")) {
+         add(
+            `${inert} With no # dashboard tag this query renders as one ` +
+               `nested table rather than a grid. Tag the query ` +
+               `# dashboard { columns=N } to lay it out as one.`,
+         );
+      } else if (manifest.dashboardColumns !== undefined) {
+         add(
+            `${inert} The grid uses ${manifest.dashboardColumns}, from ` +
+               `# dashboard { columns=… }.`,
+         );
+      } else {
+         add(`${inert} The layout comes from # dashboard.`);
+      }
    }
 
    for (const { query: tile } of manifest.tiles ?? []) {

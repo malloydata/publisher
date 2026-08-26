@@ -423,8 +423,10 @@ that never appears, a click that goes nowhere. Broadly, they cover:
   whose given no model in the package declares, so the clicked value has nowhere to land.
 - **Controls.** A given surfaced by a dashboard whose `suggest` names a source, query or dimension
   that file cannot see, or declares a `suggest` in a form that cannot fetch options at all.
-- **Layout and tiles.** A composite tile that does not resolve to a real view, and a `columns=` or
-  `dashboard_columns=` that is not a positive integer.
+- **Layout and tiles.** A composite tile that does not resolve to a real view; a `columns=` or
+  `dashboard_columns=` that is not a positive integer; and `dashboard_columns=` on a *single-query*
+  dashboard, where only a composite reads it for the grid, so the tag does nothing and the layout
+  comes from `# dashboard` (or, with no such tag, is lost entirely).
 - **Tags that did not parse**, on the dashboard or on a `given:` declaration, which otherwise lose
   their whole line in silence.
 - **Curation.** A dashboard whose entry file is not listed in `explores` under

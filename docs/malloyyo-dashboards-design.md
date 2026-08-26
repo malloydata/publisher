@@ -110,7 +110,9 @@ The grammar, in brief (full reference: Malloyyo's `creating-dashboards.md`):
 
 Malloyyo also ships a `lint` verb: every dashboard file compiles as its own entry, every tile /
 suggest query compiles, `dashboard_columns` is a positive int, every `# drill { to=… }` resolves
-to a real dashboard file, and no component is orphaned or points at a missing query.
+to a real dashboard file, and no component is orphaned or points at a missing query. (Publisher's
+own lint additionally reports `dashboard_columns` written on a *single-query* dashboard, where only
+the composite form reads it for the grid; see "Load-time lint" below.)
 
 Requires `@malloydata/malloy` 0.0.423+ (earlier versions drop annotations on refined nests).
 
@@ -358,7 +360,9 @@ the render-tag findings) rather than a new verb. Loud at load, where authors see
 click time. Advisory throughout: a finding never costs the package its dashboards.
 
 Checked: a plain `source -> view` or bare-name tile resolves; `dashboard_columns` is a positive
-integer; a tile filters by a given the entry file can actually bind (above); a `suggest`'s
+integer on a composite, and is reported as doing nothing on a single query, where only the composite
+form reads it for the grid and the layout comes from the `# dashboard` render tag instead;
+a tile filters by a given the entry file can actually bind (above); a `suggest`'s
 `query=` or `source=`/`dimension=` resolves in that file; every `# drill { to=… }` names a real
 dashboard or `self`, and a `to=self` has a given somewhere in the package to write the clicked
 value into; no component file sits beside a dashboard that doesn't exist. Compilation itself is
