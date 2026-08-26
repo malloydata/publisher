@@ -449,6 +449,12 @@ export class EnvironmentStore {
     * missing rather than never asked for. Surfaced on `getStatus`.
     */
    private failedEnvironments = new Map<string, string>();
+   /**
+    * Config errors for entries with no `name`, in config order. Separate from
+    * `failedEnvironments` because they have no name to key on; see
+    * {@link syncEnvironmentConfigErrors}.
+    */
+   private unnamedConfigErrors: string[] = [];
    private environmentMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    public finishedInitialization: Promise<void>;
@@ -618,6 +624,18 @@ export class EnvironmentStore {
     * stays where it already is: the delete when an environment successfully
     * loads, which is the event that actually makes a recorded failure stale.
     *
+    * What that costs, stated because it is the mirror of the bug this fixes:
+    * repairing a broken environment IN PLACE clears its entry, via that delete,
+    * but REMOVING or RENAMING it in the config does not. Until the next restart,
+    * /status can name an environment the config no longer declares and a
+    * variable nothing references. Pruning names absent from both the manifest
+    * and `this.environments` would close it and is the obvious fix, but not
+    * safely yet: a config that fails to READ returns an empty manifest, so
+    * everything would look absent and the prune would clear every genuine load
+    * failure, re-creating the load_errors=0 blindness this change exists to
+    * remove. It needs the manifest read to distinguish "empty" from "unreadable"
+    * first.
+    *
     * Owns the log line too. It used to sit in the config parser, which runs per
     * parse and once per broken entry, so a request for any not-yet-loaded
     * environment reprinted every broken environment's warning, and a monitoring
@@ -628,21 +646,77 @@ export class EnvironmentStore {
    private syncEnvironmentConfigErrors(
       manifest: ProcessedPublisherConfig,
    ): void {
-      for (const configError of manifest.environmentConfigErrors ?? []) {
-         const name = configError.name ?? UNNAMED_ENVIRONMENT;
-         const message = redactPgSecrets(configError.message);
-         const known = this.failedEnvironments.get(name);
-         this.failedEnvironments.set(name, message);
+      // Nameless entries are held apart from `failedEnvironments`, which is
+      // keyed by environment name because every other entry in it is one. A
+      // config entry with no `name` has no name to key on, and inventing one
+      // (a shared placeholder) made every nameless entry collide: two of them
+      // counted as one load error, the second overwrote the first so one of the
+      // two variables appeared nowhere in the API, and the repeat-detection
+      // below inverted because the stored value changed on every pass. They also
+      // could never be cleared, since the delete on successful load is keyed by
+      // the name of an environment that loaded and these have none.
+      //
+      // Kept as a list rebuilt from each manifest read, in config order. That is
+      // correct precisely because they cannot be looked up or cleared by name:
+      // the latest manifest is the only authority on them, so mirroring it gives
+      // one entry per broken entry and self-heals when the config is repaired.
+      const unnamed: string[] = [];
 
-         const line = `Skipping environment ${
-            configError.name ? `"${configError.name}"` : UNNAMED_ENVIRONMENT
-         } in ${PUBLISHER_CONFIG_NAME}: ${message}`;
-         if (known === message) {
-            logger.debug(line);
-         } else {
-            logger.warn(line);
+      for (const configError of manifest.environmentConfigErrors ?? []) {
+         const message = redactPgSecrets(configError.message);
+
+         if (configError.name === undefined) {
+            const known = this.unnamedConfigErrors[unnamed.length];
+            unnamed.push(message);
+            this.logConfigError(
+               UNNAMED_ENVIRONMENT,
+               message,
+               known === message,
+            );
+            continue;
          }
+
+         const known = this.failedEnvironments.get(configError.name);
+         this.failedEnvironments.set(configError.name, message);
+         this.logConfigError(
+            `"${configError.name}"`,
+            message,
+            known === message,
+         );
       }
+
+      this.unnamedConfigErrors = unnamed;
+   }
+
+   private logConfigError(
+      label: string,
+      message: string,
+      isRepeat: boolean,
+   ): void {
+      const line = `Skipping environment ${label} in ${PUBLISHER_CONFIG_NAME}: ${message}`;
+      if (isRepeat) {
+         logger.debug(line);
+      } else {
+         logger.warn(line);
+      }
+   }
+
+   /**
+    * Read the manifest and record any config errors it reports.
+    *
+    * Every manifest read must sync, or a config error reaches one surface and
+    * not another: the endpoint that reads a fresh manifest reports the reason in
+    * its 404 while `/status` and the readiness count stay silent. Enforcing that
+    * by remembering to add two lines at each call site is what let the
+    * watch-mode read miss it, so the read and the sync are one method and every
+    * caller goes through it, including controllers outside this class.
+    */
+   public async readEnvironmentManifest(): Promise<ProcessedPublisherConfig> {
+      const manifest = await EnvironmentStore.reloadEnvironmentManifest(
+         this.serverRootPath,
+      );
+      this.syncEnvironmentConfigErrors(manifest);
+      return manifest;
    }
 
    private async initialize() {
@@ -656,12 +730,7 @@ export class EnvironmentStore {
             this.serverRootPath,
          );
 
-         const environmentManifest =
-            await EnvironmentStore.reloadEnvironmentManifest(
-               this.serverRootPath,
-            );
-
-         this.syncEnvironmentConfigErrors(environmentManifest);
+         const environmentManifest = await this.readEnvironmentManifest();
 
          await this.cleanupAndCreatePublisherPath();
 
@@ -897,7 +966,8 @@ export class EnvironmentStore {
     */
    private emitReadinessLine(): void {
       let packages = 0;
-      let loadErrors = this.failedEnvironments.size;
+      let loadErrors =
+         this.failedEnvironments.size + this.unnamedConfigErrors.length;
       for (const environment of this.environments.values()) {
          packages += environment.getServingPackageCount();
          loadErrors += environment.getFailedPackages().size;
@@ -1504,6 +1574,12 @@ export class EnvironmentStore {
       for (const [environmentName, message] of this.failedEnvironments) {
          loadErrors.push({ environment: environmentName, message });
       }
+      // No `environment`: the schema does not require it, and a nameless entry
+      // has no name. Reporting a placeholder would claim an identity that a
+      // caller could try to look up.
+      for (const message of this.unnamedConfigErrors) {
+         loadErrors.push({ message });
+      }
       for (const [environmentName, environment] of this.environments) {
          for (const [packageName, message] of environment.getFailedPackages()) {
             loadErrors.push({
@@ -1574,11 +1650,7 @@ export class EnvironmentStore {
             return existingEnvironment;
          }
 
-         const environmentManifest =
-            await EnvironmentStore.reloadEnvironmentManifest(
-               this.serverRootPath,
-            );
-         this.syncEnvironmentConfigErrors(environmentManifest);
+         const environmentManifest = await this.readEnvironmentManifest();
          const environmentConfig = environmentManifest.environments.find(
             (e) => e.name === environmentName,
          );
@@ -1650,9 +1722,7 @@ export class EnvironmentStore {
          await this.addEnvironmentToDatabase(updatedEnvironment);
          return updatedEnvironment;
       }
-      const environmentManifest =
-         await EnvironmentStore.reloadEnvironmentManifest(this.serverRootPath);
-      this.syncEnvironmentConfigErrors(environmentManifest);
+      const environmentManifest = await this.readEnvironmentManifest();
       const environmentConfig = environmentManifest.environments.find(
          (e) => e.name === environmentName,
       );

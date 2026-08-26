@@ -208,10 +208,13 @@ export class WatchModeController {
          res.status(status).json({ error: (error as Error).message });
          return;
       }
+      // Through the store's read-and-sync rather than the static: this endpoint
+      // is the documented watch-mode iteration loop, so it can plausibly be the
+      // only traffic a server sees, and calling the static directly reported the
+      // reason in the 404 below while leaving /status and the readiness count
+      // saying nothing was wrong.
       const environmentManifest =
-         await EnvironmentStore.reloadEnvironmentManifest(
-            this.environmentStore.serverRootPath,
-         );
+         await this.environmentStore.readEnvironmentManifest();
       const environment = environmentManifest.environments.find(
          (e) => e.name === watchName,
       );

@@ -18,6 +18,7 @@ import { components } from "../api";
 import { isPublisherConfigFrozen } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError } from "../errors";
+import { logger } from "../logger";
 import { _resetEmbeddingIndexStateForTests } from "../mcp/tools/embedding_index";
 import { Environment, PackageStatus } from "./environment";
 import {
@@ -2810,5 +2811,159 @@ describe("EnvironmentStore embeddings cleanup wiring", () => {
       );
       expect(deletes.length).toBe(1);
       expect(deletes[0].params).toEqual(["wiring-env"]);
+   });
+});
+
+// Reporting, not parsing. Every spec in config.spec.ts proves a config error is
+// DETECTED; nothing asserted one is ever REPORTED, and reporting is the bug.
+// Measured against the full unit suite before these existed: making the sync a
+// no-op, removing the sync from the manifest read, and making the repeat
+// detection unconditional ALL left it green.
+describe("config errors are reported, not just detected", () => {
+   const errorRoot = path.join(TEMP_DIR_PATH, "config-error-reporting-test");
+   let stderrWrites: string[];
+   let stderrSpy: ReturnType<typeof spyOn>;
+   let warnSpy: ReturnType<typeof spyOn>;
+   let debugSpy: ReturnType<typeof spyOn>;
+
+   const loadErrorCount = () => {
+      const line = stderrWrites
+         .join("")
+         .split("\n")
+         .filter((l) => l.startsWith("PUBLISHER_READY"))
+         .at(-1);
+      return line?.match(/load_errors=(\d+)/)?.[1];
+   };
+
+   const writeConfig = (environments: unknown[]) =>
+      writeFileSync(
+         path.join(errorRoot, "publisher.config.json"),
+         JSON.stringify({ frozenConfig: false, environments }, null, 2),
+      );
+
+   /** A config entry that cannot resolve, named or not. */
+   const broken = (name: string | undefined, varName: string) => ({
+      ...(name ? { name } : {}),
+      packages: [{ name: "p", location: `./\${${varName}}/p` }],
+   });
+
+   beforeEach(() => {
+      if (existsSync(errorRoot)) {
+         rmSync(errorRoot, { recursive: true, force: true });
+      }
+      mkdirSync(errorRoot, { recursive: true });
+      mock.module("../config", () => ({
+         isPublisherConfigFrozen: () => false,
+      }));
+      delete process.env.PUBLISHER_NOPE;
+      delete process.env.PUBLISHER_NOPE_A;
+      delete process.env.PUBLISHER_NOPE_B;
+      stderrWrites = [];
+      stderrSpy = spyOn(process.stderr, "write").mockImplementation(
+         (chunk: string | Uint8Array) => {
+            stderrWrites.push(String(chunk));
+            return true;
+         },
+      );
+      warnSpy = spyOn(logger, "warn");
+      debugSpy = spyOn(logger, "debug");
+   });
+
+   afterEach(() => {
+      stderrSpy.mockRestore();
+      warnSpy.mockRestore();
+      debugSpy.mockRestore();
+      rmSync(errorRoot, { recursive: true, force: true });
+   });
+
+   it("reports a named environment whose config variable is unset, and counts it", async () => {
+      writeConfig([broken("broken", "PUBLISHER_NOPE")]);
+
+      const store = new EnvironmentStore(errorRoot);
+      await store.finishedInitialization;
+      const status = await store.getStatus();
+
+      expect(status.loadErrors).toHaveLength(1);
+      expect(status.loadErrors?.[0]?.environment).toBe("broken");
+      expect(status.loadErrors?.[0]?.message).toContain("${PUBLISHER_NOPE}");
+      // The readiness count too: /status and the boot line are separate
+      // surfaces and the original bug was that one of them read healthy.
+      expect(loadErrorCount()).toBe("1");
+   });
+
+   it("picks up an environment broken AFTER boot", async () => {
+      // Regression for recording config errors only in initialize(): a config
+      // broken later reported nothing at all.
+      writeConfig([broken("broken_a", "PUBLISHER_NOPE_A")]);
+      const store = new EnvironmentStore(errorRoot);
+      await store.finishedInitialization;
+
+      writeConfig([
+         broken("broken_a", "PUBLISHER_NOPE_A"),
+         broken("broken_b", "PUBLISHER_NOPE_B"),
+      ]);
+      // Through a real request path rather than the sync helper, so this fails
+      // if any call site stops syncing.
+      await expect(store.getEnvironment("broken_b")).rejects.toThrow();
+
+      const status = await store.getStatus();
+      const names = (status.loadErrors ?? []).map((e) => e.environment);
+      expect(names).toContain("broken_a");
+      expect(names).toContain("broken_b");
+      expect(status.loadErrors).toHaveLength(2);
+   });
+
+   it("counts two NAMELESS broken entries separately and names both variables", async () => {
+      // A nameless entry has no name to key on. Keying them by a shared
+      // placeholder counted two as one, dropped one variable from the API
+      // entirely, and inverted the repeat detection below.
+      writeConfig([
+         broken(undefined, "PUBLISHER_NOPE_A"),
+         broken(undefined, "PUBLISHER_NOPE_B"),
+      ]);
+
+      const store = new EnvironmentStore(errorRoot);
+      await store.finishedInitialization;
+      const status = await store.getStatus();
+
+      expect(status.loadErrors).toHaveLength(2);
+      const messages = (status.loadErrors ?? [])
+         .map((e) => e.message)
+         .join(" ");
+      expect(messages).toContain("${PUBLISHER_NOPE_A}");
+      expect(messages).toContain("${PUBLISHER_NOPE_B}");
+      expect(loadErrorCount()).toBe("2");
+      // No invented identity: nothing claims a name a caller could look up.
+      expect(
+         (status.loadErrors ?? []).every((e) => e.environment === undefined),
+      ).toBe(true);
+   });
+
+   it("warns once for a failure and drops to debug when it repeats", async () => {
+      // Without this, an unconditional warn passes every other test here while
+      // a poll against a broken environment logs a line forever.
+      writeConfig([broken("broken", "PUBLISHER_NOPE")]);
+      const store = new EnvironmentStore(errorRoot);
+      await store.finishedInitialization;
+
+      const skipWarns = () =>
+         warnSpy.mock.calls.filter((c: unknown[]) =>
+            String(c[0]).includes("Skipping environment"),
+         ).length;
+      const skipDebugs = () =>
+         debugSpy.mock.calls.filter((c: unknown[]) =>
+            String(c[0]).includes("Skipping environment"),
+         ).length;
+
+      const afterBoot = skipWarns();
+      expect(afterBoot).toBeGreaterThan(0);
+
+      // Re-read the manifest three times with the config unchanged.
+      await store.readEnvironmentManifest();
+      await store.readEnvironmentManifest();
+      await store.readEnvironmentManifest();
+
+      expect(skipWarns()).toBe(afterBoot);
+      expect(skipDebugs()).toBeGreaterThanOrEqual(3);
    });
 });
