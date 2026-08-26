@@ -94,6 +94,57 @@ source: persist_smoke is smoke_raw -> { aggregate: n is count() }
 
 Delete the smoke file and drop its table afterward.
 
+## Persisting an `#(authorize)`-gated source
+
+A gated source **can** be persisted, but only on one tier and only in one shape, and the thing to be
+careful about is not refused by anything - you have to decide it.
+
+- **`storage=` and `#@ preaggregate` always refuse a gated source**, with a 422 at build time naming the
+  source. A rollup also groups *across* the gated column, so it could not be row-filtered afterwards even
+  in principle.
+- **A colocated `#@ persist` (no `storage=`) is admitted** when the gate is provably the entry point's
+  **own row filter**. It is refused when the gate is reached only through a join, inherited from a base
+  the compiler cannot attribute cleanly, or does not classify as a row filter at all. The gate is found
+  through the import -> rename -> `query_source` chain, so a gate the persisted source did not declare
+  itself still counts.
+
+**What to be wary of.** Persisting does not weaken the gate: it changes only where rows are read FROM, and
+the gate still runs live on every query as that query's own `WHERE`, so filtered rows come back filtered.
+What freezes is the **column the gate filters on**. A row whose access decision changes - it changes
+owner, say - keeps being served under its OLD decision until the next rebuild. That is a stale *access
+decision*, not merely stale data, and nothing raises an error.
+
+**So a persisted gated source needs a declared bound, and of the three controls that look like one,
+only the first is:**
+
+- **`materialization.freshness` `{ "window": "24h", "fallback": "live" }` is the bound.** The serve path
+  re-checks freshness per query, so once the artifact ages past the window it drops out of the serving set
+  and the query recomputes live, correctly filtered - whether or not a rebuild ever lands. Two details
+  decide whether you actually get that. **`fallback` must be `live`**: under `stale_ok` a stale artifact
+  keeps being served, which voids the bound, and window and fallback resolve *independently* per layer,
+  so a package-level `stale_ok` silently defeats a window you set on the source. And prefer the
+  **per-source** spelling `#@ persist name="..." freshness.window="24h" freshness.fallback="live"` over
+  the package-wide `materialization.freshness` key: the gated source is what needs the bound, and setting
+  it package-wide forces every other persisted source to recompute once stale too.
+- **A cron alone is not a bound.** A failed build or a stopped scheduler leaves the source serving its old
+  decisions indefinitely. `freshness` and `schedule` are mutually exclusive; for a gated source, take the
+  window.
+- **`refresh="incremental"` does not bound revocation.** The delta only re-reads rows in
+  `[covered_through, frontier)`, so a row that changes owner *without its watermark advancing* is never
+  re-read - while the entry still reports an advancing `coveredThrough` and reads as healthy. Only a full
+  rebuild recomputes the gating column.
+
+**And the window only binds where the serving manifest carries it.** Freshness is enforced from fields a
+control plane stamps onto the manifest it distributes; a Publisher that serves what it just built binds the
+table with no `dataAsOf` and no window, and an entry carrying no window never ages out. So on a standalone
+deployment the declared window is inert and the artifact serves until the next full rebuild - which leaves a
+rebuild cadence you actually verify as the only bound, and makes leaving a revocation-sensitive source
+unpersisted the safer call.
+
+When recommending `#@ persist` on a gated source, pair it with a freshness window and say out loud what
+staleness the author is accepting. A gated source with neither a window nor a full-rebuild cadence has no
+bound on how long a revoked row keeps being served.
+
 ## Gotchas
 
 - **Every `.malloy` file needs the persistence flag** - one unflagged file aborts the whole package's build plan. (A `#@ persist` on a *non*-persistable source, by contrast, is silently ignored and does not affect other sources.)
@@ -102,3 +153,4 @@ Delete the smoke file and drop its table afterward.
 - **Quote the name** - a bare `name=` always hard-stops the build.
 - **Republishing unchanged persist logic reuses the table** - reuse is keyed on the content-addressed `sourceEntityId`, not the `name=`.
 - **Removing a persist source (or a smoke test) does not drop its table** - physical-table cleanup is the caller's responsibility; drop it yourself.
+- **An `#(authorize)`-gated source freezes its gating column when persisted** - the gate still runs live, but a revoked row keeps being served under its old access decision until the next rebuild. `storage=` and `#@ preaggregate` refuse a gated source outright. See **Persisting an `#(authorize)`-gated source**.
