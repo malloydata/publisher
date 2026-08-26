@@ -600,6 +600,53 @@ describe("narrowSchemaToPublic", () => {
       expect(narrowSchemaToPublic(schema, undefined)).toEqual([]);
       expect(narrowSchemaToPublic(schema, [])).toEqual([]);
    });
+
+   it("matches an UPPERCASE captured name and emits the author's spelling", () => {
+      // What an upper-folding warehouse (Snowflake, Oracle, Redshift, Teradata)
+      // reports from DESCRIBE. An exact match intersects to NOTHING here, and the
+      // caller drops an empty-schema binding — so the source leaves the serve
+      // shape and every query on it falls back live.
+      const captured = [
+         { name: "ID", type: "BIGINT" },
+         { name: "SSN", type: "VARCHAR" },
+         { name: "AMOUNT", type: "BIGINT" },
+      ];
+      const fields = [{ name: "id" }, { name: "amount" }];
+      expect(narrowSchemaToPublic(captured, fields)).toEqual([
+         { name: "id", type: "BIGINT" },
+         { name: "amount", type: "BIGINT" },
+      ]);
+   });
+
+   it("still hides a non-public column when the captured name differs in case", () => {
+      // The security property must not ride on the case matching: folding decides
+      // which PHYSICAL column can match an author field, never which author fields
+      // exist. `ssn` is access-restricted, so `SSN` has nothing public to match.
+      const captured = [
+         { name: "ID", type: "BIGINT" },
+         { name: "SSN", type: "VARCHAR" },
+      ];
+      const fields = [
+         { name: "id" },
+         { name: "ssn", accessModifier: "private" },
+      ];
+      expect(narrowSchemaToPublic(captured, fields).map((c) => c.name)).toEqual(
+         ["id"],
+      );
+   });
+
+   it("emits a case-colliding author field once rather than failing the shape", () => {
+      // Two physical columns folding onto one author field: declaring the name
+      // twice is a duplicate that fails the whole shape model, which would cost
+      // storage serving for every source in the model. First wins.
+      const captured = [
+         { name: "AMOUNT", type: "BIGINT" },
+         { name: "amount", type: "VARCHAR" },
+      ];
+      expect(narrowSchemaToPublic(captured, [{ name: "amount" }])).toEqual([
+         { name: "amount", type: "BIGINT" },
+      ]);
+   });
 });
 
 describe("extractJoins", () => {

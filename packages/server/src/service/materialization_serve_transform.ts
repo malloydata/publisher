@@ -516,7 +516,10 @@ function isAccessRestricted(field: unknown): boolean {
  * the source's own visibility always applies). A column is kept only if it names
  * a publicly-visible field of the compiled source; an `except:`-ed column is
  * absent from the field list, and an access-restricted one is caught by
- * {@link isAccessRestricted} — both are dropped. Dropped columns stay physically
+ * {@link isAccessRestricted} — both are dropped. The name match is
+ * case-INsensitive and the surviving column is emitted under the AUTHOR's
+ * spelling, because the captured name is in the source warehouse's identifier
+ * case rather than the author's; see the body. Dropped columns stay physically
  * in the table but become unreachable through the source: a query that
  * references one fails the shape compile and falls back to live, where the
  * source's visibility rules are enforced (fail-safe). This mirrors the
@@ -527,14 +530,48 @@ export function narrowSchemaToPublic(
    schema: { name: string; type: string }[],
    fields: readonly unknown[] | undefined,
 ): { name: string; type: string }[] {
-   const publicNames = new Set<string>();
+   // Keyed case-folded, and the AUTHOR's spelling is the value. The two sides of
+   // this intersection are in different namespaces: `fields` carries the names the
+   // author WROTE, while `schema` carries what DESCRIBE reported for the built
+   // table — and a warehouse that folds unquoted identifiers (Snowflake, Oracle,
+   // Redshift and Teradata all upper-fold) reports them in ITS case, not the
+   // author's. Matching those exactly intersects to nothing, and an empty narrowed
+   // schema is not a partial failure: the caller drops such a binding entirely, so
+   // the source vanishes from the serve shape and every query on it dies at
+   // "Reference to undefined object" and falls back live. That is silent — the
+   // rows are correct, only the tier is lost — so it reads as "materialization did
+   // nothing" rather than as a bug.
+   //
+   // Emitting the author's spelling rather than the physical one is the other half:
+   // a query references the field by the name the author wrote, so that is the name
+   // the shape has to declare. It still reads the right column, because the serve
+   // shape resolves against DuckDB, which matches identifiers case-insensitively —
+   // which is also why this needs no rebuild of already-built tables.
+   const publicNames = new Map<string, string>();
    for (const f of fields ?? []) {
       const name = (f as { name?: unknown }).name;
       if (typeof name === "string" && !isAccessRestricted(f)) {
-         publicNames.add(name);
+         publicNames.set(name.toLowerCase(), name);
       }
    }
-   return schema.filter((c) => publicNames.has(c.name));
+   const emitted = new Set<string>();
+   const out: { name: string; type: string }[] = [];
+   for (const c of schema) {
+      const authorName = publicNames.get(c.name.toLowerCase());
+      // Absent from the public surface (`except:`-ed or access-restricted) in
+      // either case: dropped, exactly as before. Case-folding widens which
+      // PHYSICAL columns can match an author field; it never adds an author field,
+      // so a hidden one stays hidden.
+      if (authorName === undefined) continue;
+      // Two physical columns differing only in case fold onto one author field.
+      // Declaring that name twice is a duplicate that fails the whole shape, so
+      // keep the first and drop the rest: the source still serves, rather than the
+      // ambiguity costing storage serving for the entire model.
+      if (emitted.has(authorName)) continue;
+      emitted.add(authorName);
+      out.push({ name: authorName, type: c.type });
+   }
+   return out;
 }
 
 export function extractRefinements(
