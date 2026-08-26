@@ -1,0 +1,92 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// A dashboard: `## artifact { tiles=[…] }` at model level, one tile per named
+// view, laid out by Publisher into the grid `# dashboard { columns=N }` names.
+//
+// The tag has to be model-level because a composite has no query of its own to
+// hang a `#` tag on, and it is model-level for a second reason worth knowing:
+// tiles run as separate queries, which is the only way a dashboard can span
+// unrelated sources. A nest's pipeline starts from its own query's source, so no
+// single Malloy result does.
+//
+// The givens are imported so the control row is bindable. Malloy's given
+// namespace is per-file: a tile's `where: … ~ $CATEGORY` lives over in
+// data_app.malloy, and without these imports this file surfaces no givens and
+// binding one at run time fails.
+//
+// Compare `order_items -> business_overview` in storefront.malloy, which is the
+// same figures as one query with nests. That form is Malloy's own rendering
+// feature and still works; this is the form to author a dashboard in.
+##! experimental.givens
+## artifact { title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state", "overview -> revenue_by_category", "overview -> best_sellers"] } dashboard { columns=12 }
+import "../data_app.malloy"
+import { CATEGORY, BRAND, REGION, SINCE, MIN_SALE } from "../givens.malloy"
+// Named explicitly rather than arriving with `scoped_orders`: a bare import is
+// not transitive, so without this the controls' `suggest { source= }` and
+// `suggest { query= }` point at names this file cannot see, and the load lint
+// says so rather than serving a picker with no options.
+//
+// `order_items` is here for the same reason and is the half the lint does NOT
+// catch: `brand_suggest` resolves as a name, so the lint passes, but running it
+// needs the source it reads, and without this the Brand picker answers 400
+// "Undefined source 'order_items'" and offers no options.
+import {
+   order_items,
+   products,
+   regions,
+   brand_suggest
+} from "../storefront.malloy"
+
+// Layout lives on the view, which is what lets one view lay out the same way
+// whether it is named as a tile here or nested under a `# dashboard` query. The
+// reusable views keep their own chart tags in storefront.malloy; this extension
+// adds only how wide each one sits and what it is called.
+//
+// `# colspan` and `# break` are @malloydata/render's own per-child dashboard
+// tags, read the same way and clamped to `columns` the same way, so the two
+// forms cannot drift.
+#(doc) The overview dashboard's tiles, over the control row's filtered orders
+source: overview is scoped_orders extend {
+  // A full-width KPI strip. `# big_value` renders each aggregate as a figure
+  // rather than a table row.
+  # colspan=12
+  # label="Key figures"
+  # big_value
+  view: kpis is {
+    aggregate:
+      # label="Revenue"
+      # currency
+      total_sales
+      # label="Gross margin"
+      # currency
+      total_margin
+      # label="Orders"
+      order_count
+      # label="Customers"
+      customer_count
+      # label="Avg order value"
+      # currency
+      avg_order_value
+  }
+
+  // `# break` starts a fresh row, so the trend leads the second row however the
+  // strip above it wraps.
+  # colspan=8
+  # break
+  # label="Revenue by month"
+  view: revenue_trend is sales_by_month
+
+  # colspan=4
+  # label="Revenue by state"
+  view: revenue_by_state is sales_by_state
+
+  # colspan=6
+  # break
+  # label="Revenue by category"
+  view: revenue_by_category is by_category
+
+  # colspan=6
+  # label="Top products"
+  view: best_sellers is top_products
+}

@@ -72,6 +72,54 @@ Unset now logs a startup warning naming the condition, so the oversubscription i
 
 One thing worth knowing before tuning: setting a `memory_limit` does **not** by itself introduce spill on the `storage=` build path. That pipeline pushes its SQL to the source warehouse and streams the result into the destination, with nothing to spill — measured at a flat peak across a 30× range of output, with zero bytes written to the temp directory at any limit, including one tight enough to fail. An over-tight limit fails the query and leaves the process up, which is the intended trade against losing the pod.
 
+---
+
+## [Unreleased] — one way to build a dashboard, and per-tile layout for it (BREAKING)
+
+A Publisher dashboard is `## artifact { tiles=[…] }`. The `# artifact` on a `query:` still works and
+is still served, but it is no longer offered as a second way to build one: it is a rendered Malloy
+query, the same thing a notebook cell shows, and it cannot span sources because a nest's pipeline
+starts from its own query's source.
+
+Two things changed to make that one form sufficient.
+
+**Per-tile layout.** The per-child dashboard tags on the view a tile names are now read by Publisher
+and applied in its own grid: `# colspan=N`, `# break`, `# subtitle`, `# borderless` and `# label`,
+which is the whole set `@malloydata/render` resolves for a `# dashboard` nest child, validated and
+clamped the same way. So one view presents identically whether it is named as a tile or nested under
+a query, and a dashboard is no longer limited to equal-width tiles. `DashboardTile` on the wire gains
+`label`, `subtitle`, `colspan`, `break` and `borderless`, each spelled the way the tag is (a generated
+client escapes the attribute where the word is reserved, so the Python client exposes `break_`, while
+the wire key stays `break`).
+
+**One spelling of the grid width. `dashboard_columns` is gone.** Write
+`# dashboard { columns=N }` beside the artifact tag, on either form:
+
+```malloy
+## artifact { title="Overview" tiles=["overview -> kpis", "overview -> trend"] } dashboard { columns=12 }
+```
+
+Nothing reads `dashboard_columns` any more, so a package still spelling it lays out at the default
+width. That is not silent: a new lint enumerates the artifact tag and names every property Publisher
+does not read, `dashboard_columns` included, with the spelling to use instead. It also catches a
+misspelling and a `tiles=` on a query-level tag, neither of which was reported before — the reader
+looks properties up by name, so an unrecognised one was simply never asked for.
+
+`DashboardManifest.dashboardColumns` therefore narrows on a tiles-form dashboard: it now reflects
+only `# dashboard { columns=N }`. Downstream artifacts spelling `dashboard_columns=2`, which equals
+the viewer's default, do not visibly move, but their lint output changes.
+
+This is also where Publisher stops being byte-compatible with Malloyyo, which reads
+`dashboard_columns`. That is one property and it is deliberate — the render tag already covers a
+tagged `query:`, so one spelling covers both forms — and the docs that claimed byte-compatibility now
+say so. `docs/malloyyo-dashboards-design.md` §Where Publisher diverges is the record, and the
+divergence is an input to the shared-grammar extraction rather than a settled thing.
+
+`examples/storefront/dashboards/overview.malloy` is the first dashboard the bundled examples ship,
+and it is the same figures as the model's `business_overview` view laid out with these tags.
+
+---
+
 ## [0.2.0] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
 
 This is the headline change of this release, and it supersedes every earlier section on this page
