@@ -73,9 +73,29 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
          .readFileSync(path.join(import.meta.dir, "skills_bundle.json"), "utf8")
          .replace(/\r\n/g, "\n");
 
+      // Read the width from prettier's config rather than restating it. There
+      // were three copies of "3": the builder's JSON.stringify indent, this
+      // matcher, and tabWidth in packages/server/.prettierrc. Nothing failed
+      // when they disagreed, because prettier:check globs only ts and tsx and
+      // never looks at a .json, so a tabWidth edit alone reintroduced the
+      // format-on-save trap with the guard unable to see it. Reading it here
+      // means that edit fails immediately, at the config change.
+      const prettierrc = JSON.parse(
+         fs.readFileSync(
+            path.join(import.meta.dir, "..", "..", "..", ".prettierrc"),
+            "utf8",
+         ),
+      ) as { tabWidth?: number };
+      expect(typeof prettierrc.tabWidth).toBe("number");
+
+      // Entry keys sit three levels deep: root object, skills array, entry.
+      const indent = " ".repeat((prettierrc.tabWidth as number) * 3);
+
       // Needs no positive control: if this pattern stopped matching, the count
       // would be 0 rather than quietly staying green.
-      const nameLines = raw.split("\n").filter((l) => /^ {9}"name": /.test(l));
+      const nameLines = raw
+         .split("\n")
+         .filter((l) => l.startsWith(`${indent}"name": `));
       expect(nameLines.length).toBe(skills.length);
 
       expect(raw.endsWith("\n")).toBe(true);
