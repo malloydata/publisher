@@ -28,6 +28,17 @@ describe("referencedGivenNames", () => {
          "Z",
       ]);
    });
+
+   it("ignores a $NAME inside a DOUBLE-quoted literal too", () => {
+      // Malloy accepts either quote for a literal, so a double-quoted one must
+      // be stripped as well. Reporting a phantom BOSS here makes
+      // `filterGivensToModelSurface` drop a caller-supplied BOSS instead of
+      // letting the query fail closed on an unknown given.
+      expect(referencedGivenNames('$ROLE = "the $BOSS role"')).toEqual([
+         "ROLE",
+      ]);
+      expect(referencedGivenNames('"$A $B $C"')).toEqual([]);
+   });
 });
 
 describe("parseAuthorizeAnnotation", () => {

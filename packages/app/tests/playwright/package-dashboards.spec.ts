@@ -943,4 +943,100 @@ test.describe("package-dashboards", () => {
       ).toBeVisible({ timeout: 30_000 });
       await expect(page.locator("iframe")).toHaveCount(0);
    });
+
+   // REGRESSION GUARD, not a fix. The operator's font already reaches the text
+   // the renderer draws, and this pins that it keeps doing so.
+   //
+   // It is guarding a genuinely fragile arrangement. The renderer declares
+   // `font-family: var(--malloy-render--font-family)` on .malloy-render and then,
+   // in the same stylesheet, an `@supports (font-variation-settings: normal)`
+   // block re-declares `font-family: InterVariable, Inter, system-ui sans-serif`.
+   // That later rule would win on source order and pin every host to Inter. It
+   // does not, because `system-ui sans-serif` is an unquoted multi-word family
+   // name, and both `system-ui` and `sans-serif` are generic-family keywords, so
+   // the identifier sequence is invalid and the browser drops the whole
+   // declaration. Verified against `document.styleSheets`: the block declares
+   // `font-feature-settings: 'liga' 1, 'calt' 1` in source and computes to
+   // `font-feature-settings: "liga", "calt"`, with no `font-family` surviving.
+   //
+   // So a well-meaning upstream fix to that missing comma would silently pin
+   // every embedding host's dashboards to Inter, and nothing else in this repo
+   // would notice. This test is what notices.
+   //
+   // Asserted on the computed value rather than the emitted variable: the
+   // variable was always emitted correctly, so a test at that level passes
+   // whether or not the value reaches any text. The sentinel family need not
+   // exist on the machine, since getComputedStyle returns the specified
+   // font-family list rather than the face that resolved.
+   test("the instance theme's font reaches renderer-drawn text", async ({
+      page,
+   }) => {
+      const SENTINEL = "PublisherThemeProbe";
+      await page.route("**/api/v0/status", async (route) => {
+         const res = await route.fetch();
+         const body = await res.json();
+         await route.fulfill({
+            response: res,
+            json: {
+               ...body,
+               theme: {
+                  ...(body.theme ?? {}),
+                  font: {
+                     ...(body.theme?.font ?? {}),
+                     family: `"${SENTINEL}", monospace`,
+                  },
+               },
+            },
+         });
+      });
+
+      // `grid` is the single-query form, so every card and cell on it is the
+      // renderer's own output rather than the SDK's tile chrome. That split is
+      // also the limit of this guard: a composite's leaf cells ride the same
+      // `.malloy-render` cascade and would follow the sentinel too, but its tile
+      // titles are MUI `Typography` inheriting the app's own font and never read
+      // `theme.font.family`, so a themed instance can still ship Inter titles
+      // there and nothing here would catch it.
+      await openDashboard(page, "grid");
+      // `.malloy-table`, not `table`: the renderer builds its tables from divs,
+      // which is why this suite addresses cells by class throughout.
+      //
+      // 30s, not 60s: the per-test budget is 60s (playwright.config.ts), and the
+      // two waits below claim 15s and 5s of it, so a 60s wait here could never
+      // be spent and a cold-render failure would surface as a bare test timeout
+      // naming no wait. 30 + 15 + 5 leaves headroom for the navigation.
+      await expect(
+         page.locator(".malloy-render .malloy-table").first(),
+      ).toBeVisible({
+         timeout: 30_000,
+      });
+
+      // The root the renderer pins its own family on.
+      await expect
+         .poll(
+            () =>
+               page
+                  .locator(".malloy-render")
+                  .first()
+                  .evaluate((el) => getComputedStyle(el).fontFamily),
+            { timeout: 15_000 },
+         )
+         .toContain(SENTINEL);
+
+      // And that it inherits all the way to a BODY cell, which is the text a
+      // reader actually sees. `.td` deliberately: header cells carry
+      // `column-cell` too and come first in DOM order, so a bare
+      // `.column-cell.first()` pins the `th` instead, and a future
+      // `font-family` on the header would let body text regress unnoticed.
+      // Explicit timeout because `actionTimeout` is unset, so a table that
+      // renders empty would otherwise hang to the test cap without naming the
+      // locator it could not find.
+      const cellFont = await page
+         .locator(".malloy-render .column-cell.td")
+         .first()
+         .evaluate((el) => getComputedStyle(el).fontFamily, undefined, {
+            timeout: 5_000,
+         });
+      expect(cellFont).toContain(SENTINEL);
+   });
 });

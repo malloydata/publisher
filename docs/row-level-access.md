@@ -6,8 +6,8 @@ SPDX-License-Identifier: MIT
 # Row-level access
 
 > What this is: how to restrict **which rows** a caller sees, using [givens](givens.md). This is one
-> application of givens; for allowing/denying a whole source see [authorize.md](authorize.md), and for
-> the base mechanism see [givens.md](givens.md).
+> application of givens; for gating access with `#(authorize)` see [authorize.md](authorize.md), and
+> for the base mechanism see [givens.md](givens.md).
 
 Three related but distinct things live here — keep them apart:
 
@@ -101,15 +101,16 @@ write or to keep in sync.
 
 - **`where: field in $GIVEN` alone** — a convenience filter, not access control. A caller who omits
   the given sees everything. Use it when scoping is a UX nicety, not a boundary.
-- **`where:` paired with `#(authorize)`** (the pattern above) — the gate is a whole-source boolean
-  (it admits every row, or none); `where:` does the row scoping. Reach for this when the "may enter,
+- **`where:` paired with `#(authorize)`** (the pattern above) — the gate is one scalar boolean, and
+  when it reads no row field (`$ROLE = 'admin'`) it resolves the same way for every row, so it reads
+  as all-or-nothing; `where:` does the row scoping. Reach for this when the "may enter,
   but only sees their rows" logic genuinely needs two independent expressions — an admin-override
   gate (`$ROLE = 'admin'`) whose row scoping differs from a tenant's (`tenant = $TENANT`), for
   example — or when the row scoping itself is more than a single gate expression can hold (a
   `filter<T>`, a range, a join-based lookup composed across several fields): a gate is exactly one
   scalar boolean expression, so anything that needs its own named intermediate steps belongs in
   `where:` instead.
-- **A row-level `#(authorize)` gate alone** — when the whole-source decision and the row scope are
+- **A row-level `#(authorize)` gate alone** — when the access decision and the row scope are
   the *same* comparison (`org_id in $GROUPS` is both "may they enter" and "which rows"), write it
   once as a gate. An unset or empty given fails closed to zero rows, with no matching pair of
   expressions that could drift apart.
