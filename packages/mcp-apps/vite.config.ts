@@ -56,9 +56,16 @@ function inlineWidgetAssets(): Plugin {
             if (key === htmlKey) continue;
 
             if (output.type === "chunk") {
-               // Match the tag by its filename so a hashed name still resolves.
+               // Match the tag by its BASENAME, not the whole key. The key is a
+               // bundle path and the tag is a URL, so comparing them whole makes
+               // the build depend on rollup emitting forward slashes in
+               // `fileName` on every platform. It does, but this leg runs on
+               // Windows and a contract that has not been observed there is not
+               // an observation. Measured: a backslash on either side fails the
+               // guard below and the build errors out. The basename carries the
+               // content hash, so this still identifies one chunk exactly.
                const tag = new RegExp(
-                  `<script[^>]*src="[^"]*${escapeRegExp(key)}"[^>]*></script>`,
+                  `<script[^>]*src="[^"]*${escapeRegExp(basename(key))}"[^>]*></script>`,
                );
                if (!tag.test(html)) {
                   this.error(
@@ -81,7 +88,7 @@ function inlineWidgetAssets(): Plugin {
                delete bundle[key];
             } else if (key.endsWith(".css")) {
                const tag = new RegExp(
-                  `<link[^>]*href="[^"]*${escapeRegExp(key)}"[^>]*>`,
+                  `<link[^>]*href="[^"]*${escapeRegExp(basename(key))}"[^>]*>`,
                );
                // Function replacer, for the same reason as the script above.
                html = html.replace(
@@ -105,6 +112,12 @@ function inlineWidgetAssets(): Plugin {
          htmlAsset.source = html;
       },
    };
+}
+
+/** Last segment of a bundle key, accepting either separator. */
+function basename(key: string): string {
+   const segments = key.split(/[\\/]/);
+   return segments[segments.length - 1] as string;
 }
 
 function escapeRegExp(value: string): string {
