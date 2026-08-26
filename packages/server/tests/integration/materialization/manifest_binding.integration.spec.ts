@@ -3,7 +3,7 @@
 
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fsp from "fs/promises";
 import os from "os";
 import path from "path";
@@ -77,6 +77,21 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    function url(p: string): string {
       return `${baseUrl}${API}${p}`;
    }
+
+   // These tests share one package and run serially, so a failed assertion would
+   // otherwise leak its binding into the next one and fail it for the wrong
+   // reason — the failed-rebind case deliberately ends in `live_fallback`. Revert
+   // to live after every test, unconditionally, and without assertions of its own
+   // so a cleanup failure cannot mask the real one.
+   afterEach(async () => {
+      if (!baseUrl) return;
+      await fetch(url(""), {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ name: PACKAGE_NAME, manifestLocation: null }),
+      }).catch(() => {});
+      await fetch(url("?reload=true")).catch(() => {});
+   });
 
    async function getPackage(reload = false): Promise<Record<string, unknown>> {
       const res = await fetch(url(reload ? "?reload=true" : ""));
@@ -481,6 +496,15 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          ).json()) as Record<string, unknown>;
          // Stale storage binding must be gone, not left routing.
          expect(rebound.storageServeBindings ?? null).toBeNull();
+         // An empty manifest is still a manifest that was fetched and applied, so
+         // it reports bound with neither tier populated. That combination — bound
+         // with a zero count and no storage bindings — is what tells a caller the
+         // manifest carried nothing, as against the bind having been missed.
+         // Reporting `unbound` here would instead be permanent drift to a caller
+         // that rebinds on anything but `bound`.
+         expect(rebound.manifestBindingStatus).toBe("bound");
+         expect(rebound.manifestEntryCount).toBe(0);
+         expect(rebound.boundManifestUri).toBe(noStorage);
 
          await patchPackage({ manifestLocation: null });
          await getPackage(true);

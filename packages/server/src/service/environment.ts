@@ -2260,7 +2260,16 @@ export class Environment {
 
          // Both tiers have applied by here, so the package is bound regardless of
          // which one carried entries — a pure-`storage=` manifest binds without a
-         // colocated entry to count.
+         // colocated entry to count, and deriving the status from that count
+         // alone reports `unbound` after a bind that fully succeeded.
+         //
+         // This is deliberately unconditional, and supersedes the status
+         // `recordManifestBinding` derived if the recompile ran: a manifest that
+         // binds nothing (empty, or every entry skipped) is still a manifest that
+         // was fetched and applied, and reporting it `unbound` would make it
+         // permanent drift to a caller that rebinds on anything but `bound`.
+         // `manifestEntryCount` and `storageServeBindings` are what distinguish
+         // "bound and serving" from "bound and empty".
          pkg.markManifestBound(manifestLocation);
          recordManifestBind("success");
          logger.info("Bound build manifest to package", {

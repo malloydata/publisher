@@ -3203,13 +3203,26 @@ components:
             `PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
             and `storageServeBindings` for what actually bound.
 
+            An EMPTY manifest is a bind like any other: it is fetched and applied,
+            binds nothing, and reports `bound` with `manifestEntryCount` 0 and no
+            `storageServeBindings`, while the package serves entirely live. That
+            combination is the signature — `bound` with neither tier populated
+            means the manifest carried nothing, not that the bind was missed.
+
             `live_fallback` does NOT imply the package is serving live. It says
             the configured manifest was not applied — not that nothing is. A
             failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
-            a failed REBIND leaves the previously bound manifest fully in place:
-            its colocated substitutions stay compiled in, its storage serve
-            bindings stay installed, and `boundManifestUri`, `manifestEntryCount`
-            and `storageServeBindings` all continue to describe it.
+            a failed REBIND leaves the previously bound manifest in place: its
+            colocated substitutions stay compiled in, its storage serve bindings
+            stay installed, and `boundManifestUri`, `manifestEntryCount` and
+            `storageServeBindings` all continue to describe it.
+
+            That rebind guarantee covers a failure BEFORE either tier applies —
+            the manifest fetch failing or timing out, which is what produces
+            `live_fallback` in practice. A failure partway through the recompile,
+            after the new models are installed but before the binding is
+            recorded, is out of scope: the new substitutions would be live while
+            these fields still described the previous manifest.
 
             So the invariant to hold, whatever the status says: a non-null
             `boundManifestUri` is a LIVE reference to the manifest whose tables

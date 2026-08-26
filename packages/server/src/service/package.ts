@@ -1194,15 +1194,11 @@ export class Package {
     * Record that `uri`'s manifest is bound to the served models, and report the
     * package as bound.
     *
-    * The status is set here rather than left to the colocated entry count,
-    * because the two manifest tiers bind through different paths: colocated
-    * entries flow through {@link recordManifestBinding}, which derives the status
-    * from its count, while `storage=` entries bind via
-    * {@link bindStorageServeBindings}, which does not touch the status at all.
-    * Counting colocated entries alone therefore reports `unbound` after a
-    * successful pure-`storage=` bind, and a control plane that treats anything
-    * other than `bound` as manifest drift will rebind the package on every
-    * reconcile tick without ever converging.
+    * Asserts the status rather than deriving it, so it holds for a bind that
+    * carried no colocated entries to count — see the call site in
+    * `Environment.bindManifest` for why the count cannot stand in for it. Called
+    * once both tiers have applied, so it is authoritative over anything
+    * {@link recordManifestBinding} computed earlier in the same bind.
     *
     * `unbound` remains the state for a package with no manifest bound, and
     * {@link markManifestBindFailed} still owns the degraded `live_fallback`.
