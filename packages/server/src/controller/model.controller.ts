@@ -63,7 +63,29 @@ export class ModelController {
          if (model.getType() === "notebook") {
             throw new ModelNotFoundError(`${modelPath} is a notebook`);
          }
-         return await model.getModel();
+         // The compiled view and the file's own text, together: the file is on
+         // disk beside the package, and a client showing code next to the model
+         // otherwise has no way to fetch it. The read stays on `getPackage`'s
+         // lock-free fast path (see environment.ts: callers reachable from
+         // `Model.getModel()` must not take the package lock): a single
+         // `readFile` against a mid-swap tree sees the old file, the new file,
+         // or ENOENT, and only the last needs handling — it withholds the text,
+         // never the compiled model the spec marks it optional beside.
+         const [compiled, sourceText] = await Promise.all([
+            model.getModel(),
+            p.getModelFileText(modelPath).catch((error: unknown) => {
+               logger.warn("getModel: model source text unavailable", {
+                  environmentName,
+                  packageName,
+                  modelPath,
+                  error: error instanceof Error ? error.message : String(error),
+               });
+               return undefined;
+            }),
+         ]);
+         return sourceText === undefined
+            ? compiled
+            : { ...compiled, sourceText };
       } catch (error) {
          // Re-throw ModelNotFoundError as-is
          if (error instanceof ModelNotFoundError) {

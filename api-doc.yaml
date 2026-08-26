@@ -3735,6 +3735,16 @@ components:
             `given:` keyword
           items:
             $ref: "#/components/schemas/Given"
+        sourceText:
+          type: string
+          description: >-
+            The model file's Malloy text, verbatim, so a client can show the
+            code beside the compiled view of the same file without a second,
+            differently-shaped fetch. Named `sourceText`, not `source`, because
+            `sources` on this same object are the model's Malloy sources.
+            Optional twice over: absent from servers that predate it, and
+            omitted (with a server-side warning) when the file cannot be read,
+            so a compiled model is never withheld for want of its text.
 
     View:
       type: object
