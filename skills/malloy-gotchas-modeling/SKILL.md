@@ -202,7 +202,7 @@ source: orders is conn.table('orders')
 Two ways to get the order wrong, with the errors they produce:
 
 - **`include {}` before the renaming `extend {}`** fails with `Can't find field 'X' to set access modifier`, currently surfaced as an internal compiler error. `include` runs against names that no longer exist by the time the rename is applied.
-- **Naming the pre-rename column inside `include {}`** fails with `` `revenue` not found 'revenue' is not defined ``. After a rename only the new name exists; use it.
+- **Naming the pre-rename column inside `include {}`** fails with `` `revenue` not found ``. After a rename only the new name exists; use it.
 
 You do not have to give up `include {}` to get a rename: the curated surface, `#(doc)` on raw columns, and the `public/internal/private` tiers all survive. Renaming the *measure* instead is still worth considering when the raw column name is the one people know, but it is a modeling preference, not a workaround for a limitation.
 
