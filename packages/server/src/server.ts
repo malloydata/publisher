@@ -53,6 +53,7 @@ import {
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
+   isDuckDBMemoryLimitDisabled,
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
@@ -289,7 +290,7 @@ logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
 // first spill.
 assertDuckDBResourceConfig();
 const duckDBMemoryLimit = getDuckDBMemoryLimit();
-if (duckDBMemoryLimit === undefined) {
+if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
    // Warned rather than defaulted. A flat value that suits one container size
    // badly constrains another, so the safe value is the operator's to pick — but
    // an operator who never reads a release note would otherwise have no way to
@@ -304,7 +305,7 @@ if (duckDBMemoryLimit === undefined) {
    );
 } else {
    logger.info(
-      `DuckDB session limits: memory_limit=${duckDBMemoryLimit} ` +
+      `DuckDB session limits: memory_limit=${duckDBMemoryLimit ?? "off (explicitly disabled)"} ` +
          `temp_directory=${getDuckDBTempDirectory() ?? "<duckdb default>"}`,
    );
 }

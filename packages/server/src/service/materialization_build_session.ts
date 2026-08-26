@@ -1160,21 +1160,27 @@ export async function assertStorageServeShapeCompiles(params: {
    // left by an earlier one. Pinned in the spec — refusals still refuse after 25
    // successful compiles, a refusal does not poison the session, and the same
    // handle recompiled with a different schema sees the new one.
-   if (sharedGateSession === undefined) {
-      const gate = createIsolatedBuildSession("gate_shared");
-      // Bounded on creation, and it is the instance that most needs it: process-
-      // wide and deliberately never disposed, so it is the longest-lived DuckDB
-      // instance here. It reaches `assertServesInDuckDB` through a
-      // `FixedConnectionMap` that builds a Runtime directly — no connection
-      // lookup, no attach — so neither hook that bounds the other sessions ever
-      // sees it. Spill goes to its own directory for the same reason the build
-      // sessions' does; unlike theirs it is never removed, because the session
-      // outlives every build.
-      await applySessionResourceLimits(gate.session, {
-         tempDirectory: gate.workDir,
-      });
-      sharedGateSession = gate.session;
-   }
+   // Assigned synchronously, deliberately. An `await` between the check and the
+   // assignment lets two concurrent callers both pass the check and both build a
+   // session, and the loser is an orphaned connection and temp directory that
+   // nothing disposes for the life of the process — and because the limits call
+   // is `async` even when nothing is configured, that window would be open on
+   // every deployment rather than only opted-in ones.
+   sharedGateSession ??= createIsolatedBuildSession("gate_shared").session;
+   // Bounded on every use rather than at creation, which is what keeps the line
+   // above synchronous: the call is idempotent per connection, so this is one
+   // WeakMap hit after the first compile. This is the instance that most needs
+   // bounding — process-wide and deliberately never disposed, so the
+   // longest-lived DuckDB instance here — and it reaches `assertServesInDuckDB`
+   // through a `FixedConnectionMap` that builds a Runtime directly, with no
+   // connection lookup and no attach, so neither hook that bounds the other
+   // sessions ever sees it.
+   //
+   // No session-owned spill directory, unlike a build: this session outlives
+   // every build, so a directory of its own would accumulate for the life of the
+   // process with nothing to remove it. It uses the configured one, which is
+   // where an operator who set it wants spill to land.
+   await applySessionResourceLimits(sharedGateSession);
    await assertServesInDuckDB(
       sourceName,
       binding,

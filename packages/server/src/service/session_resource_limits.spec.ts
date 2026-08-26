@@ -6,9 +6,15 @@
 // recording stub, so an unset value proving to be a no-op is a real assertion
 // rather than an absence of one.
 import { afterEach, describe, expect, it } from "bun:test";
+import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { applySessionResourceLimits } from "./connection";
 import { createIsolatedBuildSession } from "./materialization_build_session";
+import { applyExtensionSessionSettings } from "./connection";
+import { DuckDBConnection as MetadataStoreConnection } from "../storage/duckdb/DuckDBConnection";
+import { assertDuckDBResourceConfig } from "../config";
 
 function recorder(): { conn: DuckDBConnection; sql: string[] } {
    const sql: string[] = [];
@@ -155,4 +161,102 @@ describe("applySessionResourceLimits", () => {
          await dispose();
       }
    }, 30_000);
+
+   // WIRING. Everything above proves the applier behaves; these prove it is
+   // actually reached. Deleting a call site left the whole suite green, so the
+   // "every session is bounded" claim rested on reading the code.
+
+   it("is reached through the extension-settings funnel", async () => {
+      // The funnel is what covers the serve/package/attach paths — the limits sit
+      // ahead of its autoinstall early-return precisely so they do not inherit
+      // its conditions, and nothing held that.
+      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "512MB";
+      const conn = new DuckDBConnection("funnel_wiring", ":memory:");
+      try {
+         await applyExtensionSessionSettings(conn);
+         const r = await conn.runSQL(
+            "SELECT current_setting('memory_limit') AS m",
+         );
+         expect((r as unknown as { rows: { m: string }[] }).rows[0].m).toBe(
+            "488.2 MiB",
+         );
+      } finally {
+         await conn.close();
+      }
+   }, 30_000);
+
+   it("is reached by the metadata store, which is a different DuckDB class", async () => {
+      // `publisher.db` is not Malloy's connection, so the funnel never sees it and
+      // it takes its bound as instance config. It is also held open for the whole
+      // server lifetime, which makes it one of the budgets that has to fit.
+      process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "512MB";
+      const store = new MetadataStoreConnection(":memory:");
+      try {
+         await store.initialize();
+         const rows = await store.all<{ m: string }>(
+            "SELECT current_setting('memory_limit') AS m",
+         );
+         expect(rows[0].m).toBe("488.2 MiB");
+      } finally {
+         await store.close();
+      }
+   }, 30_000);
+
+   describe("assertDuckDBResourceConfig", () => {
+      it("rejects trailing garbage that DuckDB would reject later", () => {
+         process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "1GBB";
+         expect(() => assertDuckDBResourceConfig()).toThrow(
+            /PUBLISHER_DUCKDB_MEMORY_LIMIT/,
+         );
+      });
+
+      it("rejects a bare byte count, which DuckDB has no unit for", () => {
+         process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "1073741824";
+         expect(() => assertDuckDBResourceConfig()).toThrow(
+            /PUBLISHER_DUCKDB_MEMORY_LIMIT/,
+         );
+      });
+
+      it("accepts the spellings DuckDB accepts", () => {
+         for (const value of ["1GB", "1gb", "1 GB", "1GiB", "1.5GB", "512MB"]) {
+            process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = value;
+            expect(() => assertDuckDBResourceConfig()).not.toThrow();
+         }
+      });
+
+      it("accepts `off`, which is the documented opt-out", () => {
+         process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT = "off";
+         expect(() => assertDuckDBResourceConfig()).not.toThrow();
+      });
+
+      it("fails on an existing directory it cannot write to", () => {
+         // The common Kubernetes shape: a volume mounted with the wrong
+         // ownership. `mkdirSync(…, { recursive: true })` returns silently for an
+         // existing directory whatever its mode, so without the explicit access
+         // check this surfaced only at the first spill.
+         const dir = mkdtempSync(path.join(os.tmpdir(), "unwritable-"));
+         chmodSync(dir, 0o500);
+         process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
+         try {
+            expect(() => assertDuckDBResourceConfig()).toThrow(
+               /PUBLISHER_DUCKDB_TEMP_DIRECTORY/,
+            );
+         } finally {
+            chmodSync(dir, 0o700);
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      it("creates a missing spill directory rather than failing at first spill", () => {
+         const base = mkdtempSync(path.join(os.tmpdir(), "spillbase-"));
+         const dir = path.join(base, "nested", "spill");
+         process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
+         try {
+            expect(() => assertDuckDBResourceConfig()).not.toThrow();
+            expect(existsSync(dir)).toBe(true);
+         } finally {
+            rmSync(base, { recursive: true, force: true });
+         }
+      });
+   });
 });

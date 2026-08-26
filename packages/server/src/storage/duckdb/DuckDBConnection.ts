@@ -13,21 +13,6 @@ import { DatabaseConnection } from "../DatabaseInterface";
 import { getDuckDBMemoryLimit, getDuckDBTempDirectory } from "../../config";
 
 /**
- * Embedded persistence layer for the publisher's own metadata (environments,
- * packages, connections, materializations, build manifests) in `publisher.db`.
- *
- * This is a plain DAO over a durable, exclusively-owned DuckDB handle -- it is
- * deliberately NOT Malloy's `@malloydata/db-duckdb` connection, which is an
- * analytical query connection (no prepared-statement parameter binding, a
- * `:memory:` primary with ATTACH/DETACH/idle lifecycle, pooled/shared
- * instances, and a poison-pill close). Those semantics are wrong for a
- * source-of-truth store that must hold one handle open for the server's
- * lifetime and run parameterized CRUD.
- *
- * It wraps `@duckdb/node-api` (the same DuckDB engine Malloy pulls in), so the
- * repo carries a single DuckDB engine rather than a second, redundant driver.
- */
-/**
  * The `memory_limit` / `temp_directory` instance options, when configured.
  * Empty when neither is set, so `DuckDBInstance.create` sees exactly what it saw
  * before and nothing changes for a deployment that has not opted in.
@@ -45,6 +30,21 @@ function duckDBInstanceResourceOptions(): Record<string, string> {
    return options;
 }
 
+/**
+ * Embedded persistence layer for the publisher's own metadata (environments,
+ * packages, connections, materializations, build manifests) in `publisher.db`.
+ *
+ * This is a plain DAO over a durable, exclusively-owned DuckDB handle -- it is
+ * deliberately NOT Malloy's `@malloydata/db-duckdb` connection, which is an
+ * analytical query connection (no prepared-statement parameter binding, a
+ * `:memory:` primary with ATTACH/DETACH/idle lifecycle, pooled/shared
+ * instances, and a poison-pill close). Those semantics are wrong for a
+ * source-of-truth store that must hold one handle open for the server's
+ * lifetime and run parameterized CRUD.
+ *
+ * It wraps `@duckdb/node-api` (the same DuckDB engine Malloy pulls in), so the
+ * repo carries a single DuckDB engine rather than a second, redundant driver.
+ */
 export class DuckDBConnection implements DatabaseConnection {
    private instance: DuckDBInstance | null = null;
    private connection: NeoConnection | null = null;

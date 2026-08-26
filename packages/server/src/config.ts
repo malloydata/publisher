@@ -15,7 +15,7 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
-import { mkdirSync } from "node:fs";
+import { accessSync, constants as fsConstants, mkdirSync } from "node:fs";
 
 /**
  * Path to the publisher.config.json file shipped inside the published
@@ -295,6 +295,19 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
  * session that used it; {@link assertDuckDBResourceConfig} is what makes that a
  * boot failure instead.
  */
+/**
+ * Whether an operator explicitly opted out with the documented `off` sentinel,
+ * as distinct from never having set the variable.
+ *
+ * Both resolve to "no limit", so the difference is invisible to
+ * {@link getDuckDBMemoryLimit} — but only one of them is a decision. The startup
+ * warning about unbounded instances is worth making to someone who has never
+ * seen it and worthless to someone who opted out on purpose, and a warning with
+ * no way to acknowledge it is the kind people learn to filter.
+ */
+export const isDuckDBMemoryLimitDisabled = (): boolean =>
+   process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim().toLowerCase() === "off";
+
 export const getDuckDBMemoryLimit = (): string | undefined => {
    const raw = process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim();
    if (raw === undefined || raw === "" || raw.toLowerCase() === "off") {
@@ -338,7 +351,12 @@ export function assertDuckDBResourceConfig(): void {
    const memoryLimit = getDuckDBMemoryLimit();
    if (
       memoryLimit !== undefined &&
-      !/^\d+(\.\d+)?\s*[a-zA-Z]+$/.test(memoryLimit)
+      // Anchored to the units DuckDB actually accepts rather than any letters:
+      // trailing garbage like `1GBB` passes a `[a-zA-Z]+` shape and is then
+      // rejected by DuckDB, which is the late failure this check exists to pull
+      // forward. A bare byte count is correctly rejected too — DuckDB refuses
+      // `1073741824` with "Unknown unit for memory" — so a unit is required.
+      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i.test(memoryLimit)
    ) {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKDB_MEMORY_LIMIT: expected a size like ` +
@@ -349,6 +367,12 @@ export function assertDuckDBResourceConfig(): void {
    if (tempDirectory !== undefined) {
       try {
          mkdirSync(tempDirectory, { recursive: true });
+         // `recursive: true` returns silently when the directory already exists,
+         // whatever its permissions — the common Kubernetes case of a volume
+         // mounted with the wrong ownership, and the one the promise above would
+         // otherwise miss. Checked explicitly so an unwritable mount fails the
+         // boot rather than the first spill.
+         accessSync(tempDirectory, fsConstants.W_OK);
       } catch (error) {
          const detail = error instanceof Error ? error.message : String(error);
          throw new Error(
