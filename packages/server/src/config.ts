@@ -743,6 +743,31 @@ export const getPublisherConfigDir = (serverRoot: string): string | null => {
    return path.resolve(path.dirname(resolved.path));
 };
 
+/**
+ * The `publisher.config.json` path that was looked for and not found, or null
+ * whenever a config did resolve.
+ *
+ * Exists so a caller running ONCE at boot can explain an empty environment list.
+ * `getPublisherConfig` deliberately does not log this itself: it is called on
+ * every config read, so a line there re-emits per request.
+ *
+ * Returns null when `--config` was given, whether or not that path exists.
+ * A missing explicit path is already reported by `getPublisherConfig`, and
+ * reporting it twice in two different shapes helps nobody.
+ */
+export const getUnresolvedPublisherConfigPath = (
+   serverRoot: string,
+): string | null => {
+   const explicitPath = process.env.PUBLISHER_CONFIG_PATH;
+   if (explicitPath && explicitPath.length > 0) {
+      return null;
+   }
+   if (resolvePublisherConfigPath(serverRoot)) {
+      return null;
+   }
+   return path.join(serverRoot, PUBLISHER_CONFIG_NAME);
+};
+
 export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    const resolved = resolvePublisherConfigPath(serverRoot);
    if (!resolved) {
