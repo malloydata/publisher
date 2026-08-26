@@ -100,7 +100,10 @@ A gated source **can** be persisted, but only on one tier and only in one shape,
 careful about is not refused by anything - you have to decide it.
 
 - **`storage=` and `#@ preaggregate` always refuse a gated source**, with a 422 at build time naming the
-  source. A rollup also groups *across* the gated column, so it could not be row-filtered afterwards even
+  source. (`#@ persist storage=<name>` is the tier that materializes into a separate registered storage
+  destination and serves from there, rather than building in the source's own connection; `#@ preaggregate`
+  stores a rollup Publisher derives from a measure you annotated with a grain, rather than a source you
+  wrote.) A rollup also groups *across* the gated column, so it could not be row-filtered afterwards even
   in principle.
 - **A colocated `#@ persist` (no `storage=`) is admitted** when the gate is provably the entry point's
   **own row filter**. It is refused when the gate is reached only through a join, inherited from a base
@@ -114,8 +117,9 @@ What freezes is the **column the gate filters on**. A row whose access decision 
 owner, say - keeps being served under its OLD decision until the next rebuild. That is a stale *access
 decision*, not merely stale data, and nothing raises an error.
 
-**So a persisted gated source needs a declared bound, and of the three controls that look like one,
-only the first is:**
+**None of this is needed for the gate to work.** It is enforced live on every query either way; what
+needs a bound is how long a *stale* decision can survive. Of the three controls that look like that
+bound, only the first is:
 
 - **`materialization.freshness` `{ "window": "24h", "fallback": "live" }` is the bound.** The serve path
   re-checks freshness per query, so once the artifact ages past the window it drops out of the serving set
