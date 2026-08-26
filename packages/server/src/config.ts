@@ -1182,7 +1182,7 @@ export const getProcessedPublisherConfig = (
 
    // Filter and validate environments, skipping invalid ones
    const validEnvironments: ProcessedEnvironment[] = [];
-   for (const environment of rawConfig.environments) {
+   for (const [index, environment] of rawConfig.environments.entries()) {
       if (!environment || typeof environment !== "object") {
          logger.warn(
             `Invalid environment in ${PUBLISHER_CONFIG_NAME}: entry must be an object. Skipping.`,
@@ -1191,9 +1191,15 @@ export const getProcessedPublisherConfig = (
       }
 
       if (!environment.name || typeof environment.name !== "string") {
+         // Index only. The environment carries every connection and storage
+         // destination, credentials included and already ${VAR}-substituted,
+         // and the name is what is missing, so position is the only safe way
+         // to point at the entry. Metadata here reaches a log transport
+         // verbatim: redactSensitive is applied at the request/response and
+         // axios-error call sites, not in the winston format chain.
          logger.warn(
             `Invalid environment in ${PUBLISHER_CONFIG_NAME}: missing or invalid "name" field. Skipping entry.`,
-            { environment },
+            { index },
          );
          continue;
       }
