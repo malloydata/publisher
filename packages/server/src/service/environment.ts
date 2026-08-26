@@ -2223,11 +2223,11 @@ export class Environment {
          // storage entries vanished must drop the old bindings, not leave them
          // routing at a table the host no longer vouches for. Mirrors the
          // hadColocated guard below.
+         //
+         // Each bind overwrites the state its own guard reads, so take both
+         // `had*` reads before either tier applies.
          const hasStorage = Object.keys(storageEntries).length > 0;
          const hadStorage = pkg.hasStorageServeBindings();
-         if (hasStorage || hadStorage) {
-            pkg.bindStorageServeBindings(storageEntries);
-         }
 
          // colocated entries drive the same-connection tableName substitution, which
          // is resolved at COMPILE time — so they require a reloadAllModels
@@ -2237,11 +2237,40 @@ export class Environment {
          // its last colocated entry must still recompile to revert it).
          const hasColocated = Object.keys(tableNameManifest).length > 0;
          const hadColocated = pkg.hasBoundTableNameManifest();
+
+         // Recompile FIRST. `reloadAllModels` is the only step here that can throw
+         // (a compile error, or the worker pool being unavailable), and the catch
+         // below reports `live_fallback` — "no manifest applied". Binding storage
+         // entries before it would leave the NEW manifest's cross-connection
+         // bindings installed and routing while the package reports that nothing
+         // was applied and `boundManifestUri` still names the OLD manifest: a
+         // caller reading the status as "not serving from manifest tables" would be
+         // wrong about tables this package is actively serving from.
          if (hasColocated || hadColocated) {
             await pkg.reloadAllModels(tableNameManifest);
          }
 
-         pkg.setBoundManifestUri(manifestLocation);
+         // Then storage. Ordering between the two is otherwise immaterial:
+         // `reloadAllModels` re-pushes whatever bindings are current onto the fresh
+         // model set, and `bindStorageServeBindings` pushes its own, so the new set
+         // lands either way.
+         if (hasStorage || hadStorage) {
+            pkg.bindStorageServeBindings(storageEntries);
+         }
+
+         // Both tiers have applied by here, so the package is bound regardless of
+         // which one carried entries — a pure-`storage=` manifest binds without a
+         // colocated entry to count, and deriving the status from that count
+         // alone reports `unbound` after a bind that fully succeeded.
+         //
+         // This is deliberately unconditional, and supersedes the status
+         // `recordManifestBinding` derived if the recompile ran: a manifest that
+         // binds nothing (empty, or every entry skipped) is still a manifest that
+         // was fetched and applied, and reporting it `unbound` would make it
+         // permanent drift to a caller that rebinds on anything but `bound`.
+         // `manifestEntryCount` and `storageServeBindings` are what distinguish
+         // "bound and serving" from "bound and empty".
+         pkg.markManifestBound(manifestLocation);
          recordManifestBind("success");
          logger.info("Bound build manifest to package", {
             environmentName: this.environmentName,

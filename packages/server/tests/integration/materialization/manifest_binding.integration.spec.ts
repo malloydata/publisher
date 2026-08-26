@@ -3,7 +3,7 @@
 
 /// <reference types="bun-types" />
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fsp from "fs/promises";
 import os from "os";
 import path from "path";
@@ -77,6 +77,21 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    function url(p: string): string {
       return `${baseUrl}${API}${p}`;
    }
+
+   // These tests share one package and run serially, so a failed assertion would
+   // otherwise leak its binding into the next one and fail it for the wrong
+   // reason — the failed-rebind case deliberately ends in `live_fallback`. Revert
+   // to live after every test, unconditionally, and without assertions of its own
+   // so a cleanup failure cannot mask the real one.
+   afterEach(async () => {
+      if (!baseUrl) return;
+      await fetch(url(""), {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ name: PACKAGE_NAME, manifestLocation: null }),
+      }).catch(() => {});
+      await fetch(url("?reload=true")).catch(() => {});
+   });
 
    async function getPackage(reload = false): Promise<Record<string, unknown>> {
       const res = await fetch(url(reload ? "?reload=true" : ""));
@@ -363,12 +378,90 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          ]);
          // The bound URI is recorded even though no tableName manifest bound.
          expect(patched.boundManifestUri).toBe(manifestFile);
+         // And it reports BOUND despite the zero colocated entry count. This is
+         // what a control plane reads to decide whether the worker honoured the
+         // manifest it distributed; reporting `unbound` after a successful bind
+         // reads as drift, and the package is rebound on every reconcile tick.
+         expect(patched.manifestBindingStatus).toBe("bound");
 
-         // Clearing reverts: the storage serve binding is dropped.
+         // Clearing reverts: the storage serve binding is dropped and the package
+         // reports unbound again, so the bound status tracks real state in both
+         // directions rather than latching on.
          const clearRes = await patchPackage({ manifestLocation: null });
          expect(clearRes.status).toBe(200);
          const cleared = (await clearRes.json()) as Record<string, unknown>;
          expect(cleared.storageServeBindings ?? null).toBeNull();
+         expect(cleared.manifestBindingStatus).toBe("unbound");
+         expect(cleared.boundManifestUri ?? null).toBeNull();
+         await getPackage(true);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "recovers from live_fallback when a later storage= manifest binds",
+      async () => {
+         await getPackage(true); // start from live (unbound)
+
+         // Degrade first: a manifest URI that cannot be fetched reports
+         // live_fallback.
+         const missing = path.join(tmpDir, `absent-${Date.now()}.json`);
+         const failed = (await (
+            await patchPackage({ manifestLocation: missing })
+         ).json()) as Record<string, unknown>;
+         expect(failed.manifestBindingStatus).toBe("live_fallback");
+
+         // A pure-`storage=` manifest binds with no colocated entry to recompile, so
+         // nothing on that path recomputes the status — the successful bind has to
+         // report itself. Otherwise the package stays live_fallback while healthily
+         // bound, which reads as degraded to a caller that alerts on it.
+         const sourceEntityId = await orderSummarySourceEntityId();
+         const manifestFile = await writeStorageManifest(sourceEntityId);
+         const bound = (await (
+            await patchPackage({ manifestLocation: manifestFile })
+         ).json()) as Record<string, unknown>;
+         expect(bound.manifestBindingStatus).toBe("bound");
+         expect(bound.boundManifestUri).toBe(manifestFile);
+         expect(
+            (bound.storageServeBindings as unknown[] | undefined)?.length,
+         ).toBe(1);
+
+         await patchPackage({ manifestLocation: null });
+         await getPackage(true);
+      },
+      { timeout: 60_000 },
+   );
+
+   it(
+      "a failed rebind keeps the previously bound manifest in every field but the status",
+      async () => {
+         await getPackage(true); // start from live (unbound)
+
+         const manifestFile = await writeManifest();
+         const bound = (await (
+            await patchPackage({ manifestLocation: manifestFile })
+         ).json()) as Record<string, unknown>;
+         expect(bound.manifestBindingStatus).toBe("bound");
+         expect(bound.manifestEntryCount).toBe(1);
+         expect(bound.boundManifestUri).toBe(manifestFile);
+
+         // Rebind to a URI that cannot be fetched. The CONFIGURED manifest is not
+         // applied, but the previously bound one stays fully in place: the fetch
+         // fails before either tier applies, so nothing was even partially
+         // replaced — and only the status moves. A reclaim gate reading
+         // live_fallback as "not serving from manifest tables" would drop the
+         // generation boundManifestUri still points at, out from under a package
+         // actively serving it.
+         const missing = path.join(tmpDir, `absent-rebind-${Date.now()}.json`);
+         const failed = (await (
+            await patchPackage({ manifestLocation: missing })
+         ).json()) as Record<string, unknown>;
+         expect(failed.manifestBindingStatus).toBe("live_fallback");
+         expect(failed.manifestEntryCount).toBe(1);
+         expect(failed.boundManifestUri).toBe(manifestFile);
+         expect(await queryOrderSummaryStatus()).toBe(200);
+
+         await patchPackage({ manifestLocation: null });
          await getPackage(true);
       },
       { timeout: 60_000 },
@@ -403,6 +496,15 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          ).json()) as Record<string, unknown>;
          // Stale storage binding must be gone, not left routing.
          expect(rebound.storageServeBindings ?? null).toBeNull();
+         // An empty manifest is still a manifest that was fetched and applied, so
+         // it reports bound with neither tier populated. That combination — bound
+         // with a zero count and no storage bindings — is what tells a caller the
+         // manifest carried nothing, as against the bind having been missed.
+         // Reporting `unbound` here would instead be permanent drift to a caller
+         // that rebinds on anything but `bound`.
+         expect(rebound.manifestBindingStatus).toBe("bound");
+         expect(rebound.manifestEntryCount).toBe(0);
+         expect(rebound.boundManifestUri).toBe(noStorage);
 
          await patchPackage({ manifestLocation: null });
          await getPackage(true);
