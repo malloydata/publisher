@@ -180,7 +180,7 @@ source: customer_health is customers extend {
 - **Verify join paths** exist before referencing `a.b.field` (each hop needs explicit join)
 - **Pick syntax**: value BEFORE condition, `pick 'Small' when size < 10`
 - **`where:` vs `having:`**: Use `where:` for row filters, `having:` for aggregate filters
-- **`rename:` composes with `include {}`, but only in one order**: the `extend { rename: }` must come before the `include {}`, which then names the field by its new name. Reversed, it fails with `Can't find field 'X' to set access modifier`. For a cleaner column name without a rename, `internal:` + `dimension:` is still the lighter move (mark `` `Type` `` as `internal`, add `dimension: order_type is `Type``). See `skill:malloy-gotchas-modeling` § Field Management
+- **`rename:` composes with `include {}`, but only in one order**: the `extend { rename: }` must come before the `include {}`, which then names the field by its new name. Reversed, it fails with `Can't find field 'X' to set access modifier`. For a cleaner column name without a rename, `internal:` + `dimension:` is still the lighter move (mark `` `Type` `` as `internal`, add `` dimension: order_type is `Type` ``). See `skill:malloy-gotchas-modeling` § Field Management
 - **Mark raw columns `internal` when a derived dimension replaces them**
 - **Check for duplicate rows** before building measures
 - When both a combined table (all types) and filtered/split tables exist, prefer the split tables

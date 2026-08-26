@@ -65,7 +65,7 @@ created_at.date                   created_at.day     // truncate to day
 An interval is `unit(start to end)`. Two rules, both enforced by the compiler:
 
 - **Never subtract.** `days(a - b)` fails with `Can not offset time by 'date'`. The `to` form is the only one.
-- **Both endpoints must be the same time type.** Mixing them fails with `Cannot measure from date to timestamp`, so cast the odd one out (`::date`, `::timestamp`). `now` is a timestamp.
+- **Mixing a date and a timestamp needs a cast, unless the date side is a literal.** A date *literal* widens to a timestamp on its own, so `days(@2020-01-01 to now)` compiles. A date *column* does not: `days(signup_date to now)` fails with `Cannot measure from date to timestamp`. Cast the odd one out (`::date`, `::timestamp`). `now` is a timestamp.
 
 Which units accept what:
 
@@ -202,7 +202,7 @@ source: orders is conn.table('orders')
 Two ways to get the order wrong, with the errors they produce:
 
 - **`include {}` before the renaming `extend {}`** fails with `Can't find field 'X' to set access modifier`, currently surfaced as an internal compiler error. `include` runs against names that no longer exist by the time the rename is applied.
-- **Naming the pre-rename column inside `include {}`** fails with `` `revenue` not found ``. After a rename only the new name exists; use it.
+- **Naming the pre-rename column inside `include {}`** fails with `` `revenue` not found 'revenue' is not defined ``. After a rename only the new name exists; use it.
 
 You do not have to give up `include {}` to get a rename: the curated surface, `#(doc)` on raw columns, and the `public/internal/private` tiers all survive. Renaming the *measure* instead is still worth considering when the raw column name is the one people know, but it is a modeling preference, not a workaround for a limitation.
 
@@ -218,8 +218,8 @@ The biggest reason teams reach for `conn.sql()` is column gating, aliasing, and 
 
 1. **Verify the schema**: `run: <source> -> { select: *; limit: 1 }` to discover all columns. Anything in the table but not in the SQL's `SELECT` was being intentionally hidden, so preserve that gating.
 2. Switch to `conn.table('…')`.
-3. Hidden columns: preferably `include { internal: ... }` (lets you also `#(doc)` the public columns). If a `rename:` is also needed in the same source, fall back to `extend { except: ... }`.
-4. SQL aliases: `extend { rename: ... }` (forces the fallback path, since `rename:` and `include {}` don't compose). If the alias was to free up a name for a measure, use `rename: raw_X is X`, then `measure: X is raw_X.sum()`.
+3. Hidden columns: `include { internal: ... }` (lets you also `#(doc)` the public columns). A `rename:` in the same source does not force you off `include {}` - see item 4 for the order.
+4. SQL aliases: an `extend { rename: ... }` before `include {}`, naming the field by its new name in `include {}` (they compose, but only in that order). If the alias was to free up a name for a measure, use `rename: raw_X is X`, then `measure: X is raw_X.sum()`.
 5. SQL derivations: `dimension:` definitions in `extend {}`.
 6. SQL `WHERE`: source-level `where:`.
 
