@@ -991,7 +991,12 @@ test.describe("package-dashboards", () => {
       });
 
       // `grid` is the single-query form, so every card and cell on it is the
-      // renderer's own output rather than the SDK's tile chrome.
+      // renderer's own output rather than the SDK's tile chrome. That split is
+      // also the limit of this guard: a composite's leaf cells ride the same
+      // `.malloy-render` cascade and would follow the sentinel too, but its tile
+      // titles are MUI `Typography` inheriting the app's own font and never read
+      // `theme.font.family`, so a themed instance can still ship Inter titles
+      // there and nothing here would catch it.
       await openDashboard(page, "grid");
       // `.malloy-table`, not `table`: the renderer builds its tables from divs,
       // which is why this suite addresses cells by class throughout.
