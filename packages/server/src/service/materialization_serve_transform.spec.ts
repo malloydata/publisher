@@ -635,6 +635,42 @@ describe("narrowSchemaToPublic", () => {
       );
    });
 
+   it("prefers an EXACT hit over a fold, so a folding dimension cannot steal a column", () => {
+      // Malloy permits two fields differing only in case: a `TitleCase` dimension
+      // over a `snake_case` column. On a case-PRESERVING warehouse the captured
+      // name already is the author's, so folding first let the dimension's name
+      // win the physical column — the shape declared the stored column as `Total`,
+      // the duplicate against the re-emitted dimension failed the shape down to
+      // base-only, and `group_by: Total` served the raw column (1) instead of the
+      // computed one (other * 10 = 20). Wrong rows, reported `servedFrom: storage`.
+      const captured = [
+         { name: "total", type: "BIGINT" },
+         { name: "other", type: "BIGINT" },
+      ];
+      const fields = [
+         { name: "total" },
+         { name: "other" },
+         { name: "Total", code: "other * 10", expressionType: "scalar" },
+      ];
+      expect(narrowSchemaToPublic(captured, fields)).toEqual([
+         { name: "total", type: "BIGINT" },
+         { name: "other", type: "BIGINT" },
+      ]);
+   });
+
+   it("drops a captured column that several author fields fold onto", () => {
+      // The upper-folded version of the case above: nothing here can tell which of
+      // `total`/`Total` the warehouse's `TOTAL` came from, and guessing is the bug
+      // the test above pins. Dropping sends a query touching it to live, where the
+      // author's own names still distinguish the two.
+      const captured = [{ name: "TOTAL", type: "BIGINT" }];
+      const fields = [
+         { name: "total" },
+         { name: "Total", code: "other * 10", expressionType: "scalar" },
+      ];
+      expect(narrowSchemaToPublic(captured, fields)).toEqual([]);
+   });
+
    it("emits a case-colliding author field once rather than failing the shape", () => {
       // Two physical columns folding onto one author field: declaring the name
       // twice is a duplicate that fails the whole shape model, which would cost

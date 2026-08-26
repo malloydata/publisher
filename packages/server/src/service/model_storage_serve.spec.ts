@@ -244,6 +244,56 @@ describe("storage= serve routing (end-to-end)", () => {
       ).rejects.toThrow();
    });
 
+   it("serves a computed dimension, not the column its name folds onto", async () => {
+      // Malloy permits two fields differing only in case. Here `Total` is a
+      // dimension over `other` (2 * 10 = 20) and `total` is a physical column (1).
+      // A fold-first narrowing declared the STORED column under the dimension's
+      // name, the duplicate failed the shape down to base-only, and this query
+      // returned 1 while reporting `servedFrom: storage` — wrong rows, no warning,
+      // which is worse than any fallback. The assertion is the value, because the
+      // shape compiling is not the property that matters.
+      process.env.PERSIST_STORAGE_MODE = "on";
+      const model = await buildModel({
+         originalText:
+            `source: X is duckdb.sql("SELECT 1 AS total, 2 AS other") extend {\n` +
+            `  dimension: Total is other * 10\n}`,
+         storageSQL:
+            "CREATE OR REPLACE TABLE mz_real AS SELECT 1 AS total, 2 AS other",
+      });
+      model.setServeBindings([
+         {
+            ...BINDING,
+            schema: [
+               { name: "total", type: "BIGINT" },
+               { name: "other", type: "BIGINT" },
+            ],
+         },
+      ]);
+      const computed = await model.getQueryResults(
+         undefined,
+         undefined,
+         "run: X -> { group_by: Total }",
+         {},
+         true,
+      );
+      expect(
+         (computed.compactResult as unknown as { Total: number }[])[0].Total,
+      ).toBe(20);
+      expect(computed.servedFrom).toBe("storage");
+      // And the physical column it collides with still resolves to itself.
+      const raw = await model.getQueryResults(
+         undefined,
+         undefined,
+         "run: X -> { group_by: total }",
+         {},
+         true,
+      );
+      expect(
+         (raw.compactResult as unknown as { total: number }[])[0].total,
+      ).toBe(1);
+      expect(raw.servedFrom).toBe("storage");
+   });
+
    it("does not serve an except:-hidden column from storage (vector A)", async () => {
       process.env.PERSIST_STORAGE_MODE = "on";
       // X hides `secret` via except:, but the built table still carries it (the

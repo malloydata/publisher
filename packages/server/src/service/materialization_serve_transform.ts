@@ -516,10 +516,12 @@ function isAccessRestricted(field: unknown): boolean {
  * the source's own visibility always applies). A column is kept only if it names
  * a publicly-visible field of the compiled source; an `except:`-ed column is
  * absent from the field list, and an access-restricted one is caught by
- * {@link isAccessRestricted} — both are dropped. The name match is
- * case-INsensitive and the surviving column is emitted under the AUTHOR's
- * spelling, because the captured name is in the source warehouse's identifier
- * case rather than the author's; see the body. Dropped columns stay physically
+ * {@link isAccessRestricted} — both are dropped. A captured name is matched
+ * EXACTLY first and only then case-insensitively, and the surviving column is
+ * emitted under the AUTHOR's spelling, because the captured name is in the
+ * source warehouse's identifier case rather than the author's. An ambiguous
+ * fold — several author fields folding onto one captured column — is dropped
+ * rather than guessed. See the body for why each of those three is load-bearing. Dropped columns stay physically
  * in the table but become unreachable through the source: a query that
  * references one fails the shape compile and falls back to live, where the
  * source's visibility rules are enforced (fail-safe). This mirrors the
@@ -530,44 +532,68 @@ export function narrowSchemaToPublic(
    schema: { name: string; type: string }[],
    fields: readonly unknown[] | undefined,
 ): { name: string; type: string }[] {
-   // Keyed case-folded, and the AUTHOR's spelling is the value. The two sides of
-   // this intersection are in different namespaces: `fields` carries the names the
+   // Two lookups, tried in that order, because the two sides of this
+   // intersection are in different namespaces: `fields` carries the names the
    // author WROTE, while `schema` carries what DESCRIBE reported for the built
-   // table — and a warehouse that folds unquoted identifiers (Snowflake, Oracle,
+   // table -- and a warehouse that folds unquoted identifiers (Snowflake, Oracle,
    // Redshift and Teradata all upper-fold) reports them in ITS case, not the
-   // author's. Matching those exactly intersects to nothing, and an empty narrowed
-   // schema is not a partial failure: the caller drops such a binding entirely, so
-   // the source vanishes from the serve shape and every query on it dies at
-   // "Reference to undefined object" and falls back live. That is silent — the
-   // rows are correct, only the tier is lost — so it reads as "materialization did
-   // nothing" rather than as a bug.
-   //
-   // Emitting the author's spelling rather than the physical one is the other half:
-   // a query references the field by the name the author wrote, so that is the name
-   // the shape has to declare. It still reads the right column, because the serve
-   // shape resolves against DuckDB, which matches identifiers case-insensitively —
-   // which is also why this needs no rebuild of already-built tables.
-   const publicNames = new Map<string, string>();
+   // author's. Matching only exactly intersects to nothing there, and an empty
+   // narrowed schema is not a partial failure: the caller drops such a binding
+   // entirely, so the source vanishes from the serve shape and every query on it
+   // dies at "Reference to undefined object" and falls back live. Silently -- the
+   // rows are correct, only the tier is lost -- so it reads as "materialization
+   // did nothing" rather than as a bug.
+   const exactNames = new Set<string>();
+   const byFoldedName = new Map<string, string[]>();
    for (const f of fields ?? []) {
       const name = (f as { name?: unknown }).name;
       if (typeof name === "string" && !isAccessRestricted(f)) {
-         publicNames.set(name.toLowerCase(), name);
+         exactNames.add(name);
+         const folded = name.toLowerCase();
+         const sameFold = byFoldedName.get(folded);
+         if (sameFold) {
+            sameFold.push(name);
+         } else {
+            byFoldedName.set(folded, [name]);
+         }
       }
    }
    const emitted = new Set<string>();
    const out: { name: string; type: string }[] = [];
    for (const c of schema) {
-      const authorName = publicNames.get(c.name.toLowerCase());
+      let authorName: string | undefined;
+      if (exactNames.has(c.name)) {
+         // An exact hit is authoritative and must be tried FIRST. On a
+         // case-PRESERVING warehouse the captured name already is the author's,
+         // and Malloy permits two fields whose names differ only in case -- a
+         // `TitleCase` dimension over a `snake_case` column. Folding first would
+         // let the dimension's name win the physical column, so the shape declared
+         // the stored column under the dimension's name, the duplicate failed the
+         // shape down to base-only, and the query served the raw column in place
+         // of the computed one. Wrong rows, `servedFrom: storage`, no warning.
+         authorName = c.name;
+      } else {
+         const candidates = byFoldedName.get(c.name.toLowerCase());
+         // Exactly one, or not at all. Several author fields folding onto one
+         // captured column cannot be resolved from here, and guessing is the
+         // failure above; dropping sends a query that touches it to live, where
+         // the author's own names still distinguish them.
+         if (candidates?.length === 1) {
+            authorName = candidates[0];
+         }
+      }
       // Absent from the public surface (`except:`-ed or access-restricted) in
-      // either case: dropped, exactly as before. Case-folding widens which
-      // PHYSICAL columns can match an author field; it never adds an author field,
-      // so a hidden one stays hidden.
-      if (authorName === undefined) continue;
-      // Two physical columns differing only in case fold onto one author field.
-      // Declaring that name twice is a duplicate that fails the whole shape, so
-      // keep the first and drop the rest: the source still serves, rather than the
-      // ambiguity costing storage serving for the entire model.
-      if (emitted.has(authorName)) continue;
+      // either namespace: dropped, exactly as before. Neither lookup can invent
+      // an author field, so a hidden one stays hidden.
+      if (authorName === undefined) {
+         continue;
+      }
+      // Two captured columns can still reach one author field (a folded hit plus
+      // an exact one). Declaring the name twice fails the whole shape, so the
+      // first in captured order wins and the rest drop.
+      if (emitted.has(authorName)) {
+         continue;
+      }
       emitted.add(authorName);
       out.push({ name: authorName, type: c.type });
    }
