@@ -604,6 +604,18 @@ describe("mergeConnectionUpdate", () => {
       },
    } as ApiConnection;
 
+   it("lets a malformed scalar patch win rather than resurrecting the stored object", () => {
+      // Not a shape any client should send, but the rule stated above is that a
+      // value the patch supplies wins. Returning the stored object instead made
+      // that false and silently dropped what the patch did send.
+      const merged = mergeConnectionUpdate(stored, {
+         postgresConnection: "oops",
+      } as unknown as Partial<ApiConnection>);
+      expect(merged.postgresConnection).toBe(
+         "oops" as unknown as ApiConnection["postgresConnection"],
+      );
+   });
+
    it("tolerates an absent stored config", () => {
       // The spread this replaced accepted null, and a stored config can be
       // absent, so losing that tolerance would crash the update path.
@@ -839,6 +851,51 @@ describe("mergeConnectionUpdate", () => {
       const db = merged.databricksConnection as Record<string, unknown>;
       expect(db.token).toBe("NEW-PAT");
       expect(db.oauthClientSecret).toBeUndefined();
+   });
+
+   it("drops a stale s3 secret when a round-tripped read adds gcs", () => {
+      // The sub-objects come back on every read carrying region/accessKeyId, so
+      // selecting a storage slot on their PRESENCE kept two slots selected for
+      // any client that resubmits what it read, exclusionsFor bailed on the
+      // ambiguity, and the stale secret survived. hasS3 then beats GCS on the
+      // connect path, so the connection kept authenticating against the old
+      // store while the operator believed they had moved it.
+      const storedS3 = {
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: {
+            storage: {
+               bucketUrl: "s3://old",
+               s3Connection: {
+                  region: "us-east-1",
+                  accessKeyId: "AK",
+                  secretAccessKey: "S3-SECRET",
+               },
+            },
+         },
+      } as unknown as ApiConnection;
+
+      const asRead = toPublicConnection(storedS3) as unknown as {
+         ducklakeConnection: { storage: Record<string, unknown> };
+      };
+      const merged = mergeConnectionUpdate(storedS3, {
+         ducklakeConnection: {
+            storage: {
+               ...asRead.ducklakeConnection.storage,
+               bucketUrl: "gs://new",
+               gcsConnection: { keyId: "KID", secret: "GCS-SECRET" },
+            },
+         },
+      } as unknown as Partial<ApiConnection>);
+
+      const storage = (
+         merged as unknown as {
+            ducklakeConnection: {
+               storage: { s3Connection?: Record<string, unknown> };
+            };
+         }
+      ).ducklakeConnection.storage;
+      expect(storage.s3Connection?.secretAccessKey).toBeUndefined();
    });
 
    it("does not resurrect a databricks token when the patch switches to OAuth", () => {

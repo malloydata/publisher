@@ -266,6 +266,85 @@ describe("connection credentials never reach a response body", () => {
       }
    });
 
+   it("keeps every credential when the environment PATCH rewrites the whole list", async () => {
+      // This is the path the connections UI writes through: it GETs the list,
+      // edits one entry, and PATCHes the WHOLE list back, so every other
+      // connection arrives as the credential-free view the read returned. The
+      // per-connection PATCH test below does not reach the merge that protects
+      // this, and neither does the unit spec, which exercises the function
+      // against literals. Without that merge a single add, edit or delete in
+      // the app strips the credentials of every connection in the environment
+      // and answers 200, which is the worst defect this change fixes and the
+      // one a refactor could undo in silence.
+      const before = await fetch(
+         url(`/api/v0/environments/${ENV_NAME}/connections`),
+      );
+      expect(before.status).toBe(200);
+      const original = (await before.json()) as Array<{
+         name: string;
+         withheldFields?: string[];
+      }>;
+      const originalWithheld = Object.fromEntries(
+         original.map((c) => [c.name, c.withheldFields ?? []]),
+      );
+      // Guard: the assertion below is only meaningful if there was something to
+      // lose in the first place.
+      expect(
+         Object.values(originalWithheld).filter((w) => w.length > 0).length,
+      ).toBeGreaterThanOrEqual(3);
+
+      const patch = await fetch(url(`/api/v0/environments/${ENV_NAME}`), {
+         method: "PATCH",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            name: ENV_NAME,
+            connections: [
+               ...original,
+               {
+                  name: "added_pg",
+                  type: "postgres",
+                  postgresConnection: {
+                     host: "127.0.0.3",
+                     port: 5432,
+                     databaseName: "extra",
+                     userName: "reader",
+                     password: "added-connection-password",
+                  },
+               },
+            ],
+         }),
+      });
+      expect(patch.status).toBe(200);
+
+      const after = await fetch(
+         url(`/api/v0/environments/${ENV_NAME}/connections`),
+      );
+      expect(after.status).toBe(200);
+      const now = (await after.json()) as Array<{
+         name: string;
+         withheldFields?: string[];
+      }>;
+      const nowWithheld = Object.fromEntries(
+         now.map((c) => [c.name, c.withheldFields ?? []]),
+      );
+
+      // Every connection that held a credential before must still hold it.
+      // withheldFields is the observable for that, since reading the credential
+      // is the thing being prevented.
+      for (const [name, withheld] of Object.entries(originalWithheld)) {
+         expect({ name, withheld: nowWithheld[name] ?? [] }).toEqual({
+            name,
+            withheld,
+         });
+      }
+
+      // And the rewrite must not have leaked anything on the way through.
+      const statusBody = await (await fetch(url("/api/v0/status"))).text();
+      for (const secret of ALL_SECRETS) {
+         expect(statusBody.includes(secret)).toBe(false);
+      }
+   });
+
    it("keeps the credential when an update omits it", async () => {
       // The other half of the same contract: a caller cannot echo back a
       // credential it never received, so omission must not read as deletion.

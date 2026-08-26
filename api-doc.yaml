@@ -4373,8 +4373,10 @@ components:
             type: string
           description: >
             Read-only. Dotted paths of the fields this connection has stored
-            that the response does not return, which is to say its credentials.
-            Names only, never a value.
+            that this response does not return. In practice that is its
+            credentials, but it is any stored field the response withholds, so
+            a field the server does not publish appears here too. Names only,
+            never a value.
 
             It exists because a client otherwise cannot tell a credential that
             is set from one that is absent, and so cannot tell whether leaving a

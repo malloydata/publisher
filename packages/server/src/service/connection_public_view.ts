@@ -454,11 +454,22 @@ const EXCLUSIVE_SLOTS: readonly (readonly CredentialSlot[])[] = [
       { selects: ["peakaKey"], fields: ["peakaKey"] },
       { selects: ["password"], fields: ["password"] },
    ],
-   // Object store for DuckLake storage and DuckDB attached databases.
+   // Object store for DuckLake storage and DuckDB attached databases. Selected
+   // by the nested credential rather than by the sub-object, because the
+   // sub-objects come back on every read carrying region/endpoint/accessKeyId:
+   // selecting on their presence would keep two slots permanently selected for
+   // any client that round-trips a read, which is the oauthClientId failure
+   // mode this docstring warns about.
    [
-      { selects: ["s3Connection"], fields: ["s3Connection"] },
-      { selects: ["gcsConnection"], fields: ["gcsConnection"] },
-      { selects: ["azureConnection"], fields: ["azureConnection"] },
+      {
+         selects: ["s3Connection.secretAccessKey"],
+         fields: ["s3Connection"],
+      },
+      { selects: ["gcsConnection.secret"], fields: ["gcsConnection"] },
+      {
+         selects: ["azureConnection.sasUrl", "azureConnection.clientSecret"],
+         fields: ["azureConnection"],
+      },
    ],
    // Databricks: the driver prefers OAuth over a PAT, so a stale OAuth secret
    // would keep authenticating as the old app. Selected by the secret only,
@@ -480,6 +491,21 @@ function isSupplied(value: unknown): boolean {
 }
 
 /**
+ * Whether the patch supplies a value at `path`, which is either a field name or
+ * one dotted level into a sub-object.
+ */
+function suppliedAt(patch: Record<string, unknown>, path: string): boolean {
+   const dot = path.indexOf(".");
+   if (dot === -1) {
+      return Object.hasOwn(patch, path) && isSupplied(patch[path]);
+   }
+   const parent = patch[path.slice(0, dot)];
+   if (!isPlainObject(parent)) return false;
+   const leaf = path.slice(dot + 1);
+   return Object.hasOwn(parent, leaf) && isSupplied(parent[leaf]);
+}
+
+/**
  * Hidden field names to leave behind, because the patch selected a sibling
  * slot. Only when exactly one slot is selected: selecting several is explicit
  * enough to take at face value, and selecting none is a plain omission.
@@ -488,9 +514,7 @@ function exclusionsFor(patch: Record<string, unknown>): ReadonlySet<string> {
    const skip = new Set<string>();
    for (const slots of EXCLUSIVE_SLOTS) {
       const selected = slots.filter((slot) =>
-         slot.selects.some(
-            (field) => Object.hasOwn(patch, field) && isSupplied(patch[field]),
-         ),
+         slot.selects.some((path) => suppliedAt(patch, path)),
       );
       if (selected.length !== 1) continue;
       for (const slot of slots) {
@@ -513,7 +537,12 @@ function reinstate(patch: unknown, hidden: unknown): unknown {
    // caller sends when it has nothing to say, and erring toward keeping a
    // credential beats erring toward destroying one.
    if (patch === null) return null;
-   if (!isPlainObject(patch)) return hidden;
+   // A scalar where the stored value was an object is malformed, but the patch
+   // still supplied it, and the rule above is that a supplied value wins.
+   // Returning `hidden` here made the stored object win and silently dropped
+   // the fields the patch did send; validation downstream is the right place to
+   // reject it.
+   if (!isPlainObject(patch)) return patch;
    const skip = exclusionsFor(patch);
    const out: Record<string, unknown> = { ...patch };
    for (const [field, hiddenValue] of Object.entries(hidden)) {

@@ -91,6 +91,14 @@ export default function EditConnectionDialog({
 }: EditConnectionDialogProps) {
    const [open, setOpen] = useState(false);
    const [type, setType] = useState<Connection["type"]>(connection.type);
+   // One reader for withheldFields, so the form labels a box as holding a
+   // credential on the same evidence the submit path uses. Keyed by the dotted
+   // path the API reports, e.g. "postgresConnection.connectionString".
+   const withheldFields = React.useMemo(
+      () => new Set(connection.withheldFields ?? []),
+      [connection.withheldFields],
+   );
+
    const [attachedDatabases, setAttachedDatabases] = useState<
       Array<{
          name: string;
@@ -306,9 +314,9 @@ export default function EditConnectionDialog({
             // the form does not mean there is none. withheldFields is what
             // separates "this connection is described by a connection string"
             // from "this connection has nothing".
-            const hasStoredConnectionString = (
-               connection.withheldFields ?? []
-            ).includes("postgresConnection.connectionString");
+            const hasStoredConnectionString = withheldFields.has(
+               "postgresConnection.connectionString",
+            );
             const describedByConnectionString =
                !!connectionConfig.connectionString?.trim() ||
                hasStoredConnectionString;
@@ -617,7 +625,11 @@ export default function EditConnectionDialog({
                                        placeholder={
                                           field.name === "region"
                                              ? "us-east-1"
-                                             : field.name === "secretAccessKey"
+                                             : field.name ===
+                                                    "secretAccessKey" &&
+                                                 withheldFields.has(
+                                                    "ducklakeConnection.storage.s3Connection.secretAccessKey",
+                                                 )
                                                ? "Leave empty to keep existing"
                                                : undefined
                                        }
@@ -652,7 +664,10 @@ export default function EditConnectionDialog({
                                           `gcs_${field.name}`,
                                        )}
                                        placeholder={
-                                          field.name === "secret"
+                                          field.name === "secret" &&
+                                          withheldFields.has(
+                                             "ducklakeConnection.storage.gcsConnection.secret",
+                                          )
                                              ? "Leave empty to keep existing"
                                              : undefined
                                        }
@@ -859,6 +874,14 @@ export default function EditConnectionDialog({
                         const isPasswordField =
                            field.type === "password" ||
                            SERVER_HELD_SECRETS.has(field.name);
+                        // Whether THIS connection holds a value for THIS field,
+                        // rather than whether the field is the kind that can
+                        // hold one. Saying "leave empty to keep it" over a box
+                        // with nothing behind it is the confusion
+                        // withheldFields exists to remove.
+                        const isStored = withheldFields.has(
+                           `${attributesFieldName[type] ?? ""}.${field.name}`,
+                        );
                         return (
                            <TextField
                               key={field.name}
@@ -876,13 +899,15 @@ export default function EditConnectionDialog({
                               }
                               defaultValue={existingValue}
                               placeholder={
-                                 isPasswordField
+                                 isStored
                                     ? "Leave empty to keep existing"
                                     : undefined
                               }
                               helperText={
                                  isPasswordField
-                                    ? "Stored value is not shown. Leave empty to keep it."
+                                    ? isStored
+                                       ? "Stored value is not shown. Leave empty to keep it."
+                                       : "No value stored."
                                     : undefined
                               }
                            />
