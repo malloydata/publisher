@@ -337,17 +337,29 @@ const SENSITIVE_KEY =
    /pass(word)?|secret|private_?key|service_?account|access_?key|token|connection_?string|account/i;
 
 /** Collect credential string values (from sensitively-named keys) in a config. */
-function collectSensitiveValues(value: unknown, out: Set<string>): void {
+function collectSensitiveValues(
+   value: unknown,
+   out: Set<string>,
+   seen: WeakSet<object> = new WeakSet(),
+): void {
    if (value === null || typeof value !== "object") return;
+   // The callers pass a LIVE connection, not its config, so this walks driver
+   // and pool internals whose graph can contain a back-reference. Without this
+   // guard such a cycle recurses until the stack is exhausted, and the
+   // RangeError replaces the build error being redacted -- turning any failure
+   // on a cyclic connection into "Maximum call stack size exceeded". Mirrors the
+   // guard in redactSensitive.
+   if (seen.has(value)) return;
+   seen.add(value);
    if (Array.isArray(value)) {
-      for (const v of value) collectSensitiveValues(v, out);
+      for (const v of value) collectSensitiveValues(v, out, seen);
       return;
    }
    for (const [key, v] of Object.entries(value)) {
       if (typeof v === "string" && v.length >= 4 && SENSITIVE_KEY.test(key)) {
          out.add(v);
       } else {
-         collectSensitiveValues(v, out);
+         collectSensitiveValues(v, out, seen);
       }
    }
 }
@@ -3535,14 +3547,31 @@ export class MaterializationService {
       run(abortController.signal)
          .catch(async (err) => {
             const message = errMessage(err);
-            const next = abortController.signal.aborted
-               ? "CANCELLED"
-               : "FAILED";
+            const cancelled = abortController.signal.aborted;
+            const next = cancelled ? "CANCELLED" : "FAILED";
+            // The materialization record carries the message to whoever polls
+            // it, but a background run's throw answers no request -- so without
+            // a log here the failure is invisible in the server's own output,
+            // and the stack, the only thing that locates the throw, is dropped.
+            // Per-source build failures arrive already redacted (see the
+            // "Source failed to materialize" site); a whole-run throw carries no
+            // connection to redact against.
+            if (cancelled) {
+               logger.info("Materialization run cancelled", {
+                  materializationId: id,
+               });
+            } else {
+               logger.error("Materialization run failed", {
+                  materializationId: id,
+                  error: message,
+                  stack: err instanceof Error ? err.stack : undefined,
+               });
+            }
             try {
                await this.repository.updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),
-                  error: abortController.signal.aborted ? "Cancelled" : message,
+                  error: cancelled ? "Cancelled" : message,
                });
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {

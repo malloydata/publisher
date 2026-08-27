@@ -116,6 +116,28 @@ describe("redactConnectionSecrets", () => {
       expect(out).toContain("***");
    });
 
+   it("still redacts when the connection graph contains a cycle", () => {
+      // The callers pass a LIVE connection, whose driver/pool internals can hold
+      // a back-reference. An unguarded walk recurses until the stack is
+      // exhausted, and the resulting RangeError replaces the build error being
+      // redacted -- so every failure on such a connection reports only
+      // "Maximum call stack size exceeded".
+      const source: Record<string, unknown> = {
+         name: "sf",
+         type: "snowflake",
+         snowflakeConnection: { password: "sup3rsecret" },
+      };
+      source.pool = { owner: source };
+
+      const out = redactConnectionSecrets(
+         "Object 'x' already exists (password=sup3rsecret)",
+         source,
+      );
+      expect(out).not.toContain("sup3rsecret");
+      expect(out).toContain("***");
+      expect(out).toContain("already exists");
+   });
+
    // Stubbed at the seam because the leak needs an ATTACH (not CTAS) failure:
    // bad catalog creds fast-fail at connection validation, so no black-box test
    // can reach this branch.
@@ -3684,6 +3706,50 @@ describe("runInBackground (terminal recording)", () => {
       bg.runInBackground("bg-3", async () => {});
       await flush();
       expect(bg.runningAbortControllers.has("bg-3")).toBe(false);
+   });
+
+   it("logs the failure with its stack when the run rejects", async () => {
+      const errorStub = sinon.stub(logger, "error");
+      try {
+         background().runInBackground("bg-4", async () => {
+            throw new Error("boom");
+         });
+         await flush();
+
+         expect(errorStub.calledOnce).toBe(true);
+         const [message, meta] = errorStub.firstCall.args as unknown as [
+            string,
+            { materializationId: string; error: string; stack?: string },
+         ];
+         expect(message).toBe("Materialization run failed");
+         expect(meta.materializationId).toBe("bg-4");
+         expect(meta.error).toBe("boom");
+         // The stack is the half that locates the throw; a message alone cannot.
+         expect(meta.stack).toContain("Error: boom");
+      } finally {
+         errorStub.restore();
+      }
+   });
+
+   it("logs a cancellation as info, not as a failure", async () => {
+      const errorStub = sinon.stub(logger, "error");
+      const infoStub = sinon.stub(logger, "info");
+      try {
+         const bg = background();
+         bg.runInBackground("bg-5", async () => {
+            bg.runningAbortControllers.get("bg-5")!.abort();
+            throw new Error("boom");
+         });
+         await flush();
+
+         expect(errorStub.called).toBe(false);
+         expect(infoStub.calledOnce).toBe(true);
+         const [message] = infoStub.firstCall.args as unknown as [string];
+         expect(message).toBe("Materialization run cancelled");
+      } finally {
+         errorStub.restore();
+         infoStub.restore();
+      }
    });
 });
 
