@@ -2914,6 +2914,47 @@ describe("buildOneSource", () => {
       expect(entry.sourceEntityId).toBe("abcdef1234567890");
    });
 
+   it("qualifies the rename target on a session-relative dialect", async () => {
+      // The swap assertions above all use a 1-part name, where the bare and
+      // qualified targets are textually identical and cannot discriminate. On a
+      // dialect that resolves a bare target against the session, a container-
+      // qualified name must reach the RENAME as the same path the CREATE used,
+      // or the finished table lands in the session's container instead -- a green
+      // build that wrote to the wrong schema.
+      const runSQL = sinon.stub().resolves();
+      const entry = await callBuildOneSource(
+         { runSQL },
+         "MY_SCHEMA.orders_v1",
+         "snowflake",
+      );
+
+      const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(sql).toEqual([
+         'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_abcdef123456"',
+         'CREATE TABLE "MY_SCHEMA"."orders_v1_abcdef123456" AS (SELECT * FROM t)',
+         'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1"',
+         'ALTER TABLE "MY_SCHEMA"."orders_v1_abcdef123456" RENAME TO "MY_SCHEMA"."orders_v1"',
+      ]);
+      // The manifest keeps the logical name the control plane sent.
+      expect(entry.physicalTableName).toBe("MY_SCHEMA.orders_v1");
+   });
+
+   it("keeps the rename target bare on a container-relative dialect", async () => {
+      // The other direction of the same wiring: BigQuery rejects a qualified
+      // rename target, so a container-qualified name must still rename bare.
+      const runSQL = sinon.stub().resolves();
+      await callBuildOneSource(
+         { runSQL },
+         "mydataset.orders_v1",
+         "standardsql",
+      );
+
+      const sql = runSQL.getCalls().map((c) => c.args[0] as string);
+      expect(sql[3]).toBe(
+         "ALTER TABLE `mydataset`.`orders_v1_abcdef123456` RENAME TO `orders_v1`",
+      );
+   });
+
    it("drops the staging table and rethrows when the build SQL fails", async () => {
       const runSQL = sinon.stub();
       runSQL.onCall(0).resolves(); // initial staging drop

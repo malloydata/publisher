@@ -4,8 +4,11 @@
 /**
  * The bare (unqualified) name of a possibly container-qualified table path:
  * the segment after the last dot, e.g. `my_schema.my_table` -> `my_table` and
- * `my_table` -> `my_table`. Used as the RENAME target, which names a table
- * within its existing schema rather than re-stating the full path.
+ * `my_table` -> `my_table`.
+ *
+ * Not a rename target on its own: whether a bare target keeps the table in its
+ * own container or moves it to the session's is dialect-specific, which is what
+ * {@link quoteRenameTarget} decides.
  */
 export function bareTableName(tableName: string): string {
    const lastDot = tableName.lastIndexOf(".");
@@ -48,31 +51,41 @@ export function quoteTablePath(tableName: string, dialect: string): string {
 }
 
 /**
- * Dialects whose `ALTER TABLE ... RENAME TO` resolves an UNQUALIFIED target
- * against the SESSION's current container rather than against the renamed
- * table's own — so a bare target MOVES the table. On these the target must be
- * qualified, or a persist source naming a container other than the connection's
- * default silently materializes into the default one, and collides there with
- * any same-named table.
+ * Dialects whose `ALTER TABLE ... RENAME TO` target must be QUALIFIED, because a
+ * bare one is either resolved against the session's current container -- moving
+ * the table -- or is resolved that way by some of the dialect's backends. A
+ * qualified target naming the table's own container is a no-op for placement, so
+ * this set is safe to widen and costly to leave narrow: the failure it prevents
+ * is a silent write to the wrong container.
  *
- * Everywhere else the target must stay bare, in several cases because a
- * qualified one is rejected outright. Measured, one table per dialect, by
- * renaming `s1.t_staging` to a bare `t` with the session pointed at `s2`:
+ * Measured, one table per dialect, by renaming `s1.t_staging` to a bare `t` with
+ * the session pointed at `s2`:
  *
- * | dialect   | bare target      | qualified target        |
- * | --------- | ---------------- | ----------------------- |
- * | snowflake | moves to s2      | accepted, correct       |
- * | mysql     | moves to s2      | accepted, correct       |
- * | postgres  | stays in s1      | syntax error            |
- * | duckdb    | stays in s1      | parser error            |
- * | bigquery  | stays in s1      | "cannot contain dot"    |
- * | trino     | stays in s1      | (bare already correct)  |
+ * | dialect   | bare target        | qualified target      |
+ * | --------- | ------------------ | --------------------- |
+ * | snowflake | moves to s2        | accepted, correct     |
+ * | mysql     | moves to s2        | accepted, correct     |
+ * | postgres  | stays in s1        | syntax error          |
+ * | duckdb    | stays in s1        | parser error          |
+ * | bigquery  | stays in s1        | "cannot contain dot"  |
+ * | trino     | stays in s1 (*)    | accepted, correct     |
  *
- * Databricks is not covered by that sweep and stays out of the set, keeping its
- * current behaviour; add it only once its bare target is shown to be
- * session-relative.
+ * (*) Trino was measured against the `memory` connector, which ignores the
+ * target's container. That does not generalize: the engine's `RenameTableTask`
+ * fills a missing schema from the session, and connectors differ on whether they
+ * permit a cross-schema rename at all. Since Trino accepts a qualified target and
+ * a real deployment never runs on `memory`, it is qualified here rather than
+ * relying on one connector's behaviour.
+ *
+ * The three that reject a qualified target are why this cannot be unconditional.
+ * Databricks is not covered by the sweep and stays out, keeping its current
+ * behaviour; add it once measured.
  */
-const QUALIFIED_RENAME_TARGET_DIALECTS = new Set(["snowflake", "mysql"]);
+const QUALIFIED_RENAME_TARGET_DIALECTS = new Set([
+   "snowflake",
+   "mysql",
+   "trino",
+]);
 
 /**
  * Dialect-quote the TARGET of an `ALTER TABLE ... RENAME TO` for a (possibly
