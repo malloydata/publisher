@@ -29,7 +29,10 @@ const fixtureDir = path.resolve(__dirname, "../../fixtures/render-tags-test");
 
 interface Warning {
    model?: string;
-   target?: string;
+   // The API field is `subject` (RenderTagWarning.subject in service/model.ts),
+   // not `target`. Typing it optional means a wrong name reads as undefined and
+   // every filter silently matches nothing, so keep this in step with the type.
+   subject?: string;
    message?: string;
    severity?: string;
 }
@@ -89,8 +92,8 @@ describe("load-time render-tag validation", () => {
       env = null;
    });
 
-   const findingsOn = (target: string) =>
-      warnings.filter((w) => w.target === `nums -> ${target}`);
+   const findingsOn = (view: string) =>
+      warnings.filter((w) => w.subject === `nums -> ${view}`);
 
    it("surfaces the inert colspan as a warn-severity finding", () => {
       // The regression this exists for: severity-filtering to `error` dropped
