@@ -1,6 +1,6 @@
 ---
 name: malloy-analyze
-description: Explore data for insights and build views/dashboards/notebooks. Use when user asks to "analyze this data", "find insights", "explore for patterns", "what's interesting", "what's driving X", "build a dashboard", "create views", or any analysis task. For EDA exploration, start at Step 1. For building views on an existing model, jump to View Patterns.
+description: Open-ended exploration with no specific question to answer, and building views/dashboards/notebooks on an existing model. Use when the user asks "what's interesting?", "explore this data", "find insights", "look for patterns", "build a dashboard", or "create views". Not for a specific data question - answering one is `malloy-analysis`, and writing down what the answer assumed is `malloy-model-as-you-go`. For exploration start at Step 1; for views on an existing model jump to View Patterns.
 ---
 <!--
 Copyright (c) Credible Data Inc.
