@@ -31,6 +31,16 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — every DuckDB session is now bounded
+
+DuckDB sizes its `memory_limit` from the container, at roughly 80%, and it does that **independently per instance**. Publisher runs several instances in one process — the metadata store, a serve-shape gate session, the environment lookup funnel, a sandbox per loaded package, and a disposable session for each materialization build — and none of them accounts for the resident runtime baseline or for any of the others. Measured in a 3 GiB container, three instances each reported a 2.3 GiB limit: 6.9 GiB of committed budget against 3 GiB of real memory. The process is then killed by the kernel while every instance still believes it is comfortably inside its budget, so none of them looks at fault and the growth presents as untracked native memory.
+
+Two new settings, `PUBLISHER_DUCKDB_MEMORY_LIMIT` and `PUBLISHER_DUCKDB_TEMP_DIRECTORY`, both **opt-in and no-ops when unset**, so nothing changes on upgrade. The limit is a flat absolute value rather than a share: Publisher cannot compute one, because the number of live instances is not known when a session opens and revising the division as instances appear would shrink a live cap underneath a running query. [docs/configuration.md](docs/configuration.md) has the sizing guidance — the divisor is not a number of builds — and the reasoning behind both.
+
+Unset now logs a startup warning naming the condition, so the oversubscription is discoverable without reading this file.
+
+One thing worth knowing before tuning: setting a `memory_limit` does **not** by itself introduce spill on the `storage=` build path. That pipeline pushes its SQL to the source warehouse and streams the result into the destination, with nothing to spill — measured at a flat peak across a 30× range of output, with zero bytes written to the temp directory at any limit, including one tight enough to fail. An over-tight limit fails the query and leaves the process up, which is the intended trade against losing the pod.
+
 ## [Unreleased] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
 
 This is the headline change of this release, and it supersedes every earlier section on this page
