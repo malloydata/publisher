@@ -31,6 +31,37 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a colocated persist into a non-default schema now lands there (ACTION REQUIRED)
+
+A colocated `#@ persist name=` that names a container — `name="analytics.orders"`
+rather than `name="orders"` — was materialized into the connection's **default**
+container instead, on Snowflake and MySQL.
+
+The build finishes by staging a table and renaming it into place, and it named the
+rename target by its bare table name. Snowflake and MySQL resolve an unqualified
+rename target against the session's current container, so the table was created in
+the right place and then moved to the wrong one. Two ways it showed up:
+
+- **Silently.** The build reported success and the manifest recorded
+  `analytics.orders`, while the table sat in the default container. Anything
+  serving that source then resolved a path holding no table.
+- **As a nonsense error.** ``Object '"orders"' already exists`` when something of
+  that name was already in the default container — while `analytics` was empty.
+
+The rename target is now qualified on the dialects that resolve a bare one against
+the session (Snowflake, MySQL, Trino) and stays bare on those that reject a
+qualified one (Postgres, DuckDB, BigQuery).
+
+**Action required.** Tables built before this release from a container-qualified
+colocated persist name are in the default container, with manifests pointing at a
+path that holds nothing. Upgrading does not move them. Rebuild those sources — a
+forced refresh or a republish — so the table is written where the name says. The
+strays in the default container are not referenced by any manifest and can be
+dropped once the rebuild is confirmed.
+
+Unaffected: `storage=` sources (a different write path), colocated sources whose
+`name=` carries no container, and every dialect other than the three above.
+
 ## [Unreleased] — every DuckDB session is now bounded
 
 DuckDB sizes its `memory_limit` from the container, at roughly 80%, and it does that **independently per instance**. Publisher runs several instances in one process — the metadata store, a serve-shape gate session, the environment lookup funnel, a sandbox per loaded package, and a disposable session for each materialization build — and none of them accounts for the resident runtime baseline or for any of the others. Measured in a 3 GiB container, three instances each reported a 2.3 GiB limit: 6.9 GiB of committed budget against 3 GiB of real memory. The process is then killed by the kernel while every instance still believes it is comfortably inside its budget, so none of them looks at fault and the growth presents as untracked native memory.
