@@ -1,9 +1,12 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Centralized telemetry for materialization builds.
  *
  * Operators need to answer "are builds completing, how long do they take, and
  * where are they failing?" without grepping logs. The run counter carries
- * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`failed`|`cancelled`);
+ * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`partial`|`failed`|`cancelled`);
  * the run-duration histogram carries `mode` so a dashboard can render auto-run
  * vs orchestrated build latency side by side.
  *
@@ -16,7 +19,16 @@ import { type Counter, type Histogram } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
 
 export type MaterializationMode = "auto" | "orchestrated";
-export type MaterializationOutcome = "success" | "failed" | "cancelled";
+/**
+ * `partial` is a run that committed a manifest while some of its sources failed:
+ * distinct from `success` because the manifest is missing tables a consumer
+ * expected, and from `failed` because the sources that did build are usable.
+ */
+export type MaterializationOutcome =
+   | "success"
+   | "partial"
+   | "failed"
+   | "cancelled";
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
 /**
@@ -27,8 +39,17 @@ export type ManifestBindOutcome = "success" | "failure" | "timeout";
  * pooling the two into one series. `delta` is an incremental refresh advancing
  * an in-warehouse table in place — typically far cheaper than a CTAS, which is
  * why it gets its own series instead of skewing `in_warehouse`.
+ *
+ * `delta_storage` is the same advance applied to a `storage=` table, kept apart
+ * from `delta` for the reason `storage` is kept apart from `in_warehouse`: its
+ * rows cross an egress boundary and its DML runs on a different engine, so
+ * pooling the two would average two different cost profiles into one number.
  */
-export type StorageBuildEngine = "storage" | "in_warehouse" | "delta";
+export type StorageBuildEngine =
+   | "storage"
+   | "in_warehouse"
+   | "delta"
+   | "delta_storage";
 /** Why a source was refused materialization into a storage destination. */
 export type EligibilityRefusalReason =
    | "free_parameter"
@@ -86,7 +107,7 @@ function lazyHistogram(
 
 const runCounter = lazyCounter(
    "publisher_materialization_runs_total",
-   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'failed'|'cancelled').",
+   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'partial'|'failed'|'cancelled').",
 );
 const runDuration = lazyHistogram(
    "publisher_materialization_run_duration_ms",
@@ -95,7 +116,7 @@ const runDuration = lazyHistogram(
 );
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
-   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused').",
+   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused'|'failed').",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -109,6 +130,14 @@ const buildPlanComputeDuration = lazyHistogram(
    "publisher_materialization_build_plan_compute_duration_ms",
    "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
    "ms",
+);
+const buildPlanComputeFailedCounter = lazyCounter(
+   "publisher_materialization_build_plan_compute_failed_total",
+   "Package loads whose build plan failed to compute. The ROOT-CAUSE signal for " +
+      "colocated_bind_dropped{reason='build_plan_unavailable'}, which fires only " +
+      "per dropped entry per load -- a package that loads once and is never " +
+      "reloaded ticks that counter once and then sits with its colocated tier " +
+      "off and a flat total, indistinguishable from healthy.",
 );
 const autoLoadCounter = lazyCounter(
    "publisher_materialization_auto_load_total",
@@ -146,9 +175,19 @@ const scheduledFireCounter = lazyCounter(
 const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
    "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|" +
-      "'runtime_live_fallback'). NOTE: outcome='live_fallback' here means the transform " +
-      "was ineligible, which QueryResult.servedFrom reports as null; that field's " +
-      "'live_fallback' is this metric's 'runtime_live_fallback'.",
+      "'runtime_live_fallback'|'blocked_by_row_level_gate').",
+);
+const storageTableRetainedCounter = lazyCounter(
+   "publisher_storage_tables_retained_total",
+   "Tables a FAILED run left in a storage= destination and deliberately did not " +
+      "reclaim, because the source is refreshed incrementally and the name may be " +
+      "the one it serves from. Label: destination. Not all of these are orphans — " +
+      "a rebuild at a fresh generational name is, a seed on the live serving name " +
+      "is not, and the manifest entry cannot separate them — so read this as an " +
+      "upper bound on what is accumulating rather than a leak count. It is the " +
+      "only accounting there is until reclaiming a destination exists, which is " +
+      "why it is a counter and not just a log line: the question is a rate, not " +
+      "whether it ever happened.",
 );
 const storageBuildFailureCounter = lazyCounter(
    "publisher_storage_build_failures_total",
@@ -193,6 +232,16 @@ const chainedStorageBuildCounter = lazyCounter(
       "'strict_refused'). The parent_reuse share is the headline signal for how " +
       "far the stack-on-the-parent path gets us vs recompute-from-raw.",
 );
+const colocatedBindDroppedCounter = lazyCounter(
+   "publisher_materialization_colocated_bind_dropped_total",
+   "Colocated serve-manifest entries dropped by bindColocatedServeManifest. " +
+      "Label: reason ('build_plan_unavailable' when the package's build plan " +
+      "failed to compute, so no source was examined at all; 'refused' when the " +
+      "source itself was examined and found ineligible). 'build_plan_unavailable' " +
+      "is a whole-package regression -- colocated is the default tier and is NOT " +
+      "gated by PERSIST_STORAGE_MODE, so every colocated binding for the package " +
+      "reverts to live recompute until a load succeeds.",
+);
 
 /**
  * Record a standalone-scheduler fire attempt. `fired` = a SCHEDULER run started;
@@ -221,7 +270,7 @@ export function recordMaterializationRun(
  * the main lever on materialization cost.
  */
 export function recordSourcesOutcome(
-   outcome: "built" | "reused",
+   outcome: "built" | "reused" | "failed",
    count: number,
 ): void {
    if (count <= 0) return;
@@ -250,6 +299,15 @@ export function recordIncrementalStep(
  */
 export function recordBuildPlanComputeDuration(durationMs: number): void {
    buildPlanComputeDuration().record(durationMs);
+}
+
+/**
+ * Record that a package's build plan failed to compute at load. The package
+ * name stays in the accompanying warn log rather than becoming a label, as
+ * everywhere else in this file.
+ */
+export function recordBuildPlanComputeFailed(): void {
+   buildPlanComputeFailedCounter().add(1);
 }
 
 /**
@@ -307,6 +365,14 @@ export function recordDropTables(
    engine: StorageBuildEngine,
 ): void {
    dropTablesCounter().add(1, { outcome, engine });
+}
+
+/**
+ * Record a stored table a failed run left behind without reclaiming. Counted per
+ * destination so accumulation is attributable to a store rather than to the fleet.
+ */
+export function recordStorageTableRetained(destination: string): void {
+   storageTableRetainedCounter().add(1, { destination });
 }
 
 /**
@@ -380,24 +446,19 @@ export function recordServeShapeTypeFallback(
  * failed underneath it, and every binding's `freshnessFallback=live` allowed it
  * to degrade. That last one is the operationally interesting label: it means the
  * tier is broken while queries still succeed, which is invisible in the hit rate
- * alone. This hit rate is the headline KPI of the storage tier — otherwise the
+ * alone. `blocked_by_row_level_gate` = a row-level-gated entry point vetoed
+ * BOTH the storage and pre-aggregation tiers before either was attempted — the
+ * one outcome with no compile attempt behind it, so without this label a
+ * blocked query recorded nothing at all rather than reading as a fallback.
+ * This hit rate is the headline KPI of the storage tier — otherwise the
  * fallback side is only a DEBUG log.
- *
- * **`live_fallback` does not mean here what it means on `QueryResult.servedFrom`.**
- * This metric's `live_fallback` is the ineligible case, which that field reports as
- * null; that field's `live_fallback` is this metric's `runtime_live_fallback`. Both
- * surfaces are individually correct and were named independently, but a dashboard
- * that joins them on the token is wrong in both directions. Neither name can move
- * without breaking someone: the field's is a published enum value, and this one is a
- * label existing dashboards already select on.
- *
- * Scope, since the KPI framing invites the wrong reading: every outcome here is a
- * `storage=` routing decision. A colocated `#@ persist` source is served by manifest
- * substitution and never reaches this counter, so a colocated hit is absent from both
- * the numerator and the denominator rather than counted as a miss.
  */
 export function recordStorageServeRouting(
-   outcome: "storage" | "live_fallback" | "runtime_live_fallback",
+   outcome:
+      | "storage"
+      | "live_fallback"
+      | "runtime_live_fallback"
+      | "blocked_by_row_level_gate",
 ): void {
    storageServeRoutingCounter().add(1, { outcome });
 }
@@ -412,6 +473,17 @@ export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,
 ): void {
    chainedStorageBuildCounter().add(1, { outcome });
+}
+
+/**
+ * Record one colocated serve-manifest entry dropped by
+ * `Package.bindColocatedServeManifest`. See {@link colocatedBindDroppedCounter}
+ * for why `build_plan_unavailable` is the label worth alerting on.
+ */
+export function recordColocatedBindDropped(
+   reason: "build_plan_unavailable" | "refused",
+): void {
+   colocatedBindDroppedCounter().add(1, { reason });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

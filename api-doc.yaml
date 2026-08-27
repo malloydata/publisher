@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 openapi: 3.1.0
 info:
   title: Malloy Publisher - Semantic Model Serving API
@@ -64,6 +67,10 @@ tags:
     description: Malloy model access and compilation operations
   - name: notebooks
     description: Malloy notebook access and execution operations
+  - name: dashboards
+    description:
+      Discovery and manifests for `# artifact` dashboards - layout, tiles, and
+      the given specs behind their controls
   - name: data-apps
     description:
       In-package HTML data apps (static pages served from a package's public/
@@ -1407,10 +1414,19 @@ paths:
         package-level properties. The package must exist and be accessible.
 
         A supplied `materialization` block REPLACES the one on disk, so re-send every
-        field of it you want to keep. Two exceptions, because neither is expressible
-        in the block a caller sends: `scope` (a top-level field) and `queryMetadata`
-        (orthogonal to the schedule and freshness policy this call usually carries) are
-        preserved when omitted. Send `queryMetadata: null` to clear it.
+        field of it you want to keep. Two exceptions are preserved when omitted:
+        `scope`, which is a top-level field and not expressible in the block at all,
+        and `queryMetadata`, which is orthogonal to the schedule and freshness policy
+        this call usually carries — a client setting a schedule has no reason to
+        re-send the package's tags, and dropping them silently untags every statement
+        the package issues.
+
+        `queryMetadata` has two homes: the top-level field, which is canonical, and
+        `materialization.queryMetadata`, which is DEPRECATED and still accepted. The
+        canonical field wins if a request sends both, and both are populated on read.
+        At EITHER home, omitting it preserves the package's tags and so does sending
+        null — a client that serializes unset fields as null must not untag a package
+        by accident. Send an empty object to clear.
       parameters:
         - name: environmentName
           in: path
@@ -1703,6 +1719,150 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/dashboards:
+    get:
+      tags:
+        - dashboards
+      operationId: list-dashboards
+      summary: List package dashboards
+      description: |
+        Lists the dashboards in the specified package — every `.malloy` file in
+        the package's `dashboards/` directory that carries an `# artifact` (or
+        model-level `## artifact`) annotation. A file in that directory with no
+        artifact tag is a shared include and is not listed, whether or not it
+        compiles.
+
+        A tagged dashboard that failed to compile is listed carrying its
+        `error` where that state can arise at all, so a broken dashboard is
+        visibly broken rather than silently absent. In practice it rarely does:
+        a package whose model fails to compile is not loaded, and a reload that
+        would break one is refused and leaves the previously loaded package
+        serving, so `error` is only reachable on the paths that keep per-model
+        placeholders. Treat it as present-but-uncommon rather than the normal
+        way a broken dashboard surfaces. When the package curates its query surface
+        (`queryableSources: "declared"`), a dashboard whose entry file is not in
+        `explores` is omitted, because its query and given names would not be
+        runnable; the omission is reported in the package's `warnings` as of the
+        last load. A metadata `PATCH` that TIGHTENS curation takes effect on
+        this listing immediately; one that relaxes it takes effect on the next
+        package reload, because the withheld dashboards were never built into
+        the cached set. Either way the matching warning is computed at load, so
+        after a `PATCH` it appears only once the package reloads.
+
+        Where the boundary is active at all, which needs `explores` declared
+        AND `queryableSources` left at `"declared"`, being listed does not by
+        itself guarantee the dashboard runs: the queryable sources are the
+        union of every listed file's `export {}` closure, so a dashboard whose
+        tiles read a source that only an UNLISTED file exports is still served
+        while those queries are refused. The fix is to list that file too, or
+        to re-export the source from one already listed. It is served rather
+        than withheld because withholding on a guess would hide dashboards that
+        do work. Under `"all"` nothing is refused, so the situation does not
+        arise.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: A list of dashboards in the package
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Dashboard"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/dashboards/{dashboardName}:
+    get:
+      tags:
+        - dashboards
+      operationId: get-dashboard
+      summary: Get a dashboard manifest
+      description: |
+        Retrieves everything a viewer needs to render one dashboard: the artifact
+        tag's declarations plus the control contract derived from the givens its
+        query references. Running the dashboard needs no further endpoint — its
+        query, each composite tile, and each control's suggest query all run
+        through the model query endpoint with `givens`, using the manifest's
+        `path` as the model.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: dashboardName
+          in: path
+          description: >-
+            The dashboard's name: its filename basename. Conventionally letters,
+            digits, "-" and "_", and a package is warned when one of its SERVED
+            dashboards falls outside that. A dashboard withheld by curation gets
+            no naming finding, because the naming check runs after the curation
+            gate and a withheld dashboard is already reported as withheld. It is NOT constrained to it, because
+            the name comes from a filename rather than being chosen: a file such
+            as `dashboards/v1.2.malloy` is served, and its published `resource`
+            carries the name percent-encoded. Send it percent-encoded.
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: The dashboard manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardManifest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -2530,10 +2690,12 @@ components:
           description:
             Configured packages and environments that did not load, and why. A
             load failure is not fatal to the server, so operationalState stays
-            serving and the affected packages are simply absent from
-            environments; this is the only place that difference is reported, so
-            check it before treating a serving server as complete. Present only
-            when something failed to load, so a healthy server omits the field.
+            serving and the affected packages are absent from environments,
+            unless the entry carries stale = true, in which case the package is
+            still listed and still serving its last successful compile. This is
+            the only place either difference is reported, so check it before
+            treating a serving server as complete or current. Present only when
+            something failed, so a healthy server omits the field.
           items:
             type: object
             properties:
@@ -2551,6 +2713,24 @@ components:
               message:
                 type: string
                 description: Why it did not load.
+              stale:
+                type: boolean
+                description:
+                  When true, the package did load earlier and is still serving
+                  that last successful compile; the message is why its most
+                  recent reload (a watch-mode save, malloy_reloadPackage, or
+                  reload=true) failed. The served model is older than the files
+                  on disk. Absent on ordinary load failures. This array is the
+                  only place staleness is reported, because the package's entry
+                  under environments, and its own package resource, both read
+                  SERVING; join on the package name here to tell a current
+                  package from a stale one.
+              failedAt:
+                type: string
+                format: date-time
+                description:
+                  When the failed reload happened. Only present alongside
+                  stale = true.
         frozenConfig:
           type: boolean
           description:
@@ -2753,8 +2933,19 @@ components:
         location:
           type: string
           description:
-            Package location, can be an absolute path or URI (e.g. github, s3,
-            gcs, etc.)
+            Package location. A LOCAL path must start with `./`, `../`, `~/`,
+            or `/`; a `./` or `../` path resolves against the config file's
+            directory, and `~/` against the home directory. Anything else is
+            read as a remote URI (github, s3, gcs, https), so a bare name like
+            `sales` is not local and the package is skipped with
+            "Invalid package path" in the server's loadErrors. At boot a local
+            package is COPIED into publisher_data/ and the copy is served, so
+            edits to the source directory are not read; starting the server
+            with `--watch-env <env>` mounts local packages in place (symlink)
+            and live-reloads them instead. The mount is chosen when the
+            environment is first loaded from config, so adding `--watch-env`
+            to a later boot needs `--init` to re-mount a package already
+            copied.
         scope:
           type: string
           enum:
@@ -2812,9 +3003,65 @@ components:
             findings: a `storage=` source not served from storage, a `#@ persist`
             source that was not recognized as materializable, a persist-target
             collision, and materialization-config problems that degrade
-            attribution. Server-computed and read-only: ignored on create/update
-            requests and only returned in responses. Present only when there are
-            such findings.
+            attribution. Discovery findings: a model listed in `explores` whose
+            export closure surfaces no sources or named queries, so it lists as
+            empty and renders a blank page. Dashboard findings: a
+            `dashboards/` file whose `# artifact` tag does not parse or does not
+            describe a dashboard, a tile or suggest query that does not resolve,
+            a `# drill` naming a destination that is not a dashboard, and a
+            dashboard held back from the listing because its entry file is not
+            in `explores`. Two dashboard findings are about Publisher rather
+            than about the package: one when a file carrying an artifact tag
+            could not be read and so is not served at all, and one when the lint
+            stops early, in which case the list must be read as incomplete
+            rather than as a clean package. Server-computed and read-only:
+            ignored on
+            create/update requests and only returned in responses. Present only
+            when there are such findings.
+
+
+            **Pre-aggregation contributes nothing to this array. A
+            `#@ preaggregate` that cannot be honored is an ERROR, never a
+            warning** — a 400 at publish or PATCH, and a load failure thereafter.
+            Rejected are a `#@ preaggregate` anywhere but on a measure;
+            a `#@ preaggregate` with no `grain=`;
+            a grain naming anything but a dimension the base source itself
+            declares, which rules out an inline time truncation such as
+            `order_time.day`; a measure that cannot be correctly
+            re-aggregated to a coarser grain, whether because its aggregate has no
+            exact merge function (`count(distinct)`, `median`, percentiles, `mode`,
+            and `avg` until it is decomposed) or because it carries its own filter,
+            an ungrouping (`all`, `exclude`), or a required group-by; a measure
+            whose expression cannot be POSITIVELY classified as re-aggregatable,
+            which fails closed rather than being guessed at; a base source with a
+            FAN-OUT join (`join_many` or `join_cross`), which can multiply rows,
+            while a `join_one` is permitted and a measure aggregating through one
+            is served normally; a base source that already fails persist eligibility (unbound
+            parameters, `given` references, `#(authorize)` gates); `sharing=` or
+            `schedule=` at the resource level; and a synthesized rollup name that
+            collides with an existing model object. Each names the measure and the
+            fix.
+
+
+            Refusing rather than silently dropping the measure is the deliberate
+            choice. A dropped measure is not served from the rollup at ANY grain,
+            so the declaration would have no effect whatsoever while still reading
+            as applied — and the build cost of the rollup would still be paid. An
+            author who writes `#@ preaggregate` on a measure that cannot be rolled
+            up has made a modeling mistake, and an error is where a mistake
+            belongs.
+
+
+            The same verdict is enforced at LOAD, not only at publish, so a
+            package whose declarations stopped being honorable does not load at
+            all: it is absent from its environment and reported in
+            `ServerStatus.loadErrors`. Worth knowing because whether a measure can
+            be re-aggregated is derived from the compiled model, so a Malloy
+            version change can in principle reclassify a measure that published
+            cleanly long before. That surfaces as a package that stops loading
+            rather than as a package quietly serving without its rollups — louder,
+            and deliberately so, since the alternative is paying for rollups that
+            answer nothing.
           items:
             type: object
             properties:
@@ -2827,9 +3074,13 @@ components:
                 type: string
                 description: >-
                   What the finding is about: the query or view a render finding
-                  sits on (`by_carrier`, `flights -> by_carrier`), or the source
-                  a materialization finding belongs to. Absent when a finding
-                  spans several, in which case the message names them.
+                  sits on (`by_carrier`, `flights -> by_carrier`), the source a
+                  materialization finding belongs to, or, for a dashboard
+                  finding, the dashboard's name or the `source.dimension` a
+                  `# drill` is declared on. Absent when a finding sits on none
+                  of those, either because it spans several, in which case the
+                  message names them, or because it is about the lint itself
+                  rather than about any one dashboard.
               message:
                 type: string
                 description: A description of the problem.
@@ -2839,9 +3090,21 @@ components:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Currently only `error`-severity render
-                  findings are surfaced here; lower-severity findings remain on
-                  the query-time `renderLogs` surface.
+                  Finding severity. Render findings are surfaced here only at
+                  `error` severity; lower-severity render findings remain on the
+                  query-time `renderLogs` surface. Materialization and dashboard
+                  findings use both: `error` for something that cannot work as
+                  written, such as a tile naming a view the source does not
+                  have, and `warn` for something that works but not as the
+                  author probably intended, such as a dashboard held back by
+                  curation. The two findings about Publisher rather than about
+                  the package split across both: a file that carries an artifact
+                  tag and could not be read is `error`, because the dashboard it
+                  should have produced does not exist, and a lint that stopped
+                  early is `warn`, because the lint failing is not itself a
+                  defect in the package. That `warn` does NOT mean the package is
+                  free of `error`-severity findings, since the ones the lint
+                  never reached are exactly what it cannot report.
         queryableSources:
           type: string
           enum:
@@ -2850,21 +3113,60 @@ components:
           description: >-
             Controls whether the discovery surface is also a query boundary.
             `"declared"` (the default) makes queryable == discoverable: when
-            `explores` is declared, only `explores` model files — and within
-            them only the `export {}` closure — are valid top-level query
-            targets; every other source still compiles, imports, joins, and
-            extends but is not directly queryable (denied with 404). `"all"`
-            decouples them: `explores`/`export {}` gate discovery only and every
-            compiled source stays directly queryable. When `explores` is absent
-            there is no curated surface, so both modes are equivalent
-            (everything queryable). Invalid values fall back to `"declared"`.
-            Identity-based access is a separate concern — see `#(authorize)`.
+            `explores` is declared, only `explores` model files are valid query
+            entry points, and the queryable sources are the union of those
+            files' `export {}` closures — so a source exported by any listed
+            file stays queryable whichever listed model path the request
+            addresses it through. Admission is by declaration, not by name: a
+            request clears only when the model it names resolves the name to the
+            very source a listed file exported, so a same-named source declared
+            in a hidden file is not admitted by the coincidence. Every other
+            source still compiles, imports, joins, and extends but is not
+            directly queryable (denied with 404).
+            The `/compile` endpoint is exempt (compile is the authoring loop;
+            the boundary is discovery curation, not access control — for
+            confidentiality use `#(authorize)`, which gates compile too). A
+            source that is both hidden and `#(authorize)`-gated still answers
+            `/compile` with the generic 404, so the exemption cannot be used to
+            enumerate gated names.
+            `"all"` decouples the axes: `explores`/`export {}` gate discovery
+            only and every compiled source stays directly queryable. When
+            `explores` is absent there is no curated surface, so both modes are
+            equivalent (everything queryable). Invalid values fall back to
+            `"declared"`. Identity-based access is a separate concern — see
+            `#(authorize)`.
         manifestLocation:
           type: ["string", "null"]
           description: |
             URI (gs:// or s3://) of the externally-computed manifest for this package.
             On (re)load the publisher reads it and binds persist references
             (sourceEntityId -> physicalTableName). Null = serve live.
+        queryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: |
+            The package-level layer of per-query metadata. Applies to every
+            statement the package's sources issue — a served query as much as a
+            build — and is overridden per property by a model-file, source or
+            per-request declaration.
+
+            **This is the canonical home, here and in `publisher.json`.**
+            `materialization.queryMetadata` is the original one and is
+            DEPRECATED: the properties are not a build setting, so carrying them
+            inside the build-policy block described a scope the feature does not
+            have.
+
+            Both are populated on read and both are accepted on write, so a
+            client can migrate on its own schedule. On write the canonical field
+            wins if a request sends both; in the manifest, the two declaring
+            different bags warns and the root wins, rather than failing the load
+            the way a conflicting `scope` does — a tag is observability only and
+            must never be the reason a package refuses to load.
+
+            Omitting this on a PATCH preserves the package's existing tags, and
+            so does sending null — a client that serializes unset fields as null
+            must not untag a package by accident. Send an empty object to clear.
         materialization:
           oneOf:
             - $ref: "#/components/schemas/PackageMaterializationConfig"
@@ -2886,21 +3188,69 @@ components:
             - bound
             - live_fallback
           description: >-
-            Server-computed, read-only: whether the configured build manifest
-            is currently bound to this package's served models. `unbound` = no
-            manifest configured, so the package serves live. `bound` = a manifest
-            was fetched and applied, so persist sources route to their
-            materialized physical tables. `live_fallback` = a `manifestLocation`
-            is configured but the fetch/bind failed or timed out, so the package
-            is serving live despite intending to be materialized-routed. Lets the
-            caller confirm the publisher actually bound the configured manifest
-            rather than inferring it from logs.
+            Server-computed, read-only: whether the CONFIGURED build manifest is
+            currently bound to this package's served models. `unbound` = no
+            manifest configured, so the package serves live. `bound` = the
+            configured manifest was fetched and applied. `live_fallback` = a
+            `manifestLocation` is configured but its fetch/bind failed or timed
+            out, so the configured manifest is NOT applied. Lets the caller
+            confirm the publisher actually bound the configured manifest rather
+            than inferring it from logs.
+
+            `bound` reports that the bind ran to completion, NOT that any query
+            routes to a materialized table: an entry whose source fails the
+            eligibility gate is dropped, and the storage tier serves live under a
+            `PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
+            and `storageServeBindings` for what actually bound.
+
+            An EMPTY manifest is a bind like any other: it is fetched and applied,
+            binds nothing, and reports `bound` with `manifestEntryCount` 0 and no
+            `storageServeBindings`, while the package serves entirely live. That
+            combination is the signature — `bound` with neither tier populated
+            means the manifest carried nothing, not that the bind was missed.
+
+            `live_fallback` does NOT imply the package is serving live. It says
+            the configured manifest was not applied — not that nothing is. A
+            failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
+            a failed REBIND leaves the previously bound manifest in place: its
+            colocated substitutions stay compiled in, its storage serve bindings
+            stay installed, and `boundManifestUri`, `manifestEntryCount` and
+            `storageServeBindings` all continue to describe it.
+
+            That rebind guarantee covers a failure BEFORE either tier applies —
+            the manifest fetch failing or timing out, which is what produces
+            `live_fallback` in practice. A failure partway through the recompile,
+            after the new models are installed but before the binding is
+            recorded, is out of scope: the new substitutions would be live while
+            these fields still described the previous manifest.
+
+            So the invariant to hold, whatever the status says: a non-null
+            `boundManifestUri` is a LIVE reference to the manifest whose tables
+            this package is currently serving from. A caller reclaiming
+            superseded physical tables must treat it as one regardless of
+            `manifestBindingStatus` — reading `live_fallback` as "not serving
+            from manifest tables" and reclaiming that generation would drop
+            tables out from under a package actively serving them.
+
+            Note this value is not the `live_fallback` on a query result's
+            `servedFrom`, which reports that ONE query degraded to the warehouse.
+            This one is about the package's binding, and as above does not imply
+            any query ran live.
         manifestEntryCount:
           type: integer
           readOnly: true
           description: >-
             Server-computed, read-only: number of sourceEntityId -> physical-table
-            entries currently bound (0 when unbound or on live fallback).
+            entries currently bound for the COLOCATED (same-connection tableName
+            substitution) tier only. 0 when unbound, or when the bound manifest
+            carried no colocated entries — so a fully bound `storage=`-only
+            manifest reports `bound` with a count of 0. Corroborate a
+            cross-connection bind with `storageServeBindings`, not this count.
+
+            Describes whatever is CURRENTLY bound, not the configured manifest: on
+            a failed rebind this keeps the previously bound manifest's count (as
+            `boundManifestUri` keeps its URI), because those entries really are
+            still bound.
         boundManifestUri:
           type: ["string", "null"]
           readOnly: true
@@ -2909,6 +3259,13 @@ components:
             served models. Usually equals `manifestLocation`, but can differ
             after an in-memory auto-load following a materialization build (no
             URI), in which case it is null. Null whenever the package is unbound.
+
+            It also diverges after a FAILED REBIND: `manifestLocation` then names
+            the configured manifest that did not apply, while this names the
+            manifest still bound and still served from. So a non-null value here
+            is a live reference regardless of `manifestBindingStatus` — see that
+            field for the invariant a caller reclaiming superseded physical
+            tables has to hold.
         storageServeBindings:
           type: array
           readOnly: true
@@ -2921,6 +3278,11 @@ components:
             query actually routes to these tables additionally depends on
             `PERSIST_STORAGE_MODE=on`; under `off`/`write-only` the bindings may
             be present but the serve path still runs live (see `warnings`).
+
+            Like `boundManifestUri`, this describes whatever is CURRENTLY bound
+            rather than the configured manifest: after a failed rebind it goes on
+            listing the previously bound manifest's sources, which are still
+            serving.
           items:
             type: object
             properties:
@@ -2994,11 +3356,20 @@ components:
             - $ref: "#/components/schemas/QueryMetadata"
             - type: "null"
           description: >-
-            The manifest's `materialization.queryMetadata` block, verbatim. Null
-            = none declared. The package-level layer of per-query metadata: it
-            applies to every statement the package's sources issue, and a
-            model-file, source or per-request declaration overrides it property
-            by property.
+            DEPRECATED home for the package's per-query metadata; read
+            `Package.queryMetadata`, which is canonical. Null = none declared.
+
+            NOT the manifest's `materialization.queryMetadata` verbatim: it is
+            the RESOLVED winner across both manifest homes, and it is synthesized
+            for a package whose manifest has no `materialization` block at all —
+            a package that declares tags the canonical way has no build policy to
+            carry them, and its tags must not be lost for want of one. Both homes
+            are populated on read, so this and `Package.queryMetadata` agree.
+
+            The package-level layer of per-query metadata: it applies to every
+            statement the package's sources issue — a build and a served query
+            alike — and a model-file, source or per-request declaration overrides
+            it property by property.
 
     Freshness:
       type: object
@@ -3041,18 +3412,195 @@ components:
       type: object
       description: Malloy notebook metadata and status information
       properties:
-        resource:
+        environmentName:
           type: string
-          description: Resource path to the notebook
+          description: Name of the environment containing this notebook
         packageName:
           type: string
           description: Name of the package containing this notebook
         path:
           type: string
           description: Relative path to the notebook file within its package directory
+        title:
+          type: string
+          description:
+            Human title, resolved from the notebook's own `## title="…"`, then
+            its `#"` doc comment, then its first markdown heading. Absent when
+            none of those resolve, leaving the caller to show the path.
+        description:
+          type: string
+          description: The notebook's `#"` doc comment, when it has one
         error:
           type: string
           description: Error message if the notebook failed to compile or load
+
+    Dashboard:
+      type: object
+      description: |
+        A dashboard within a Malloy package: a self-contained `.malloy` file in
+        the package's `dashboards/` directory carrying an `# artifact` (or
+        model-level `## artifact`) annotation. The list entry; see
+        DashboardManifest for the detail a viewer needs to render one.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the dashboard
+        packageName:
+          type: string
+          description: Name of the package containing this dashboard
+        name:
+          type: string
+          description:
+            The dashboard's slug — its filename basename. Addresses it in a URL
+            and as a `# drill` target.
+        path:
+          type: string
+          description:
+            Relative path to the dashboard file within its package directory
+            (`dashboards/<name>.malloy`)
+        title:
+          type: string
+          description:
+            Human title from the artifact tag, falling back to the file's `#"`
+            doc comment and then to the slug
+        description:
+          type: string
+          description: The file's `#"` doc comment, when it has one
+        error:
+          type: string
+          description: Error message if the dashboard file failed to compile
+
+    DashboardManifest:
+      type: object
+      description: |
+        Everything a viewer needs to render one dashboard: the artifact tag's
+        declarations plus the control contract derived from the givens its query
+        references. Running needs no dashboard-specific endpoint — the query,
+        each composite tile, and each control's suggest query all run through
+        the ordinary model query endpoint with `givens`.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the dashboard
+        packageName:
+          type: string
+          description: Name of the package containing this dashboard
+        name:
+          type: string
+          description:
+            The dashboard's slug — its filename basename. Addresses it in a URL
+            and as a `# drill` target.
+        path:
+          type: string
+          description: |
+            Relative path to the dashboard file within its package directory
+            (`dashboards/<name>.malloy`). This is also the model to POST to:
+            `query`, each tile, and each control's suggest query all run through
+            `POST /environments/{environmentName}/packages/{packageName}/models/{path}/query`
+            with `givens`, which is why there is no dashboard-specific run
+            endpoint.
+        title:
+          type: string
+          description:
+            Human title from the artifact tag, falling back to the file's `#"`
+            doc comment and then to the slug
+        description:
+          type: string
+          description: The file's `#"` doc comment, when it has one
+        error:
+          type: string
+          description: Error message if the dashboard file failed to compile
+        query:
+          type: string
+          description: >-
+            Name of the tagged query to run. Present for the single-query form
+            only; a composite dashboard carries `tiles` instead. A NAME rather
+            than an expression, so it goes in the `queryName` field of a
+            `POST …/models/{path}/query` body. A tile's `query` is the other
+            shape and is not interchangeable with this one; see
+            `DashboardTile.query`.
+        tiles:
+          type: array
+          description:
+            Tiles of a composite dashboard, run separately and combined into one
+            grid. Present for the composite form only.
+          items:
+            $ref: "#/components/schemas/DashboardTile"
+        dashboardColumns:
+          type: integer
+          description:
+            Grid width — from the `# dashboard {columns=N}` render tag, or
+            `dashboard_columns=N` on a composite artifact tag
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Per-dashboard starting values for controls, from the artifact tag.
+            URL parameters override these, which is why the two share a shape.
+        autorun:
+          type: boolean
+          description:
+            False batches control changes behind an Apply button instead of
+            re-running on every change. Defaults to true.
+        givens:
+          type: array
+          description: |
+            The control row. Normally one entry per given the dashboard runs
+            with, which is what its `query` references on the single-query form
+            and the union over `tiles` on a composite, and which the entry file
+            can bind. A composite widens it to
+            every given the entry file surfaces when any tile is one discovery
+            cannot resolve, because that tile's givens are otherwise absent from
+            the row it filters by; see `DashboardTile.givenNames`. So an entry
+            here is always bindable, but on a widened row it is not necessarily
+            referenced by any tile. A given reachable only
+            through an import chain the entry file does not import itself
+            cannot be bound at query time, so no control is offered for it and
+            it stays at its default; that case is reported in the package's
+            `warnings` rather than represented here by an unusable entry. Plain
+            `Given`s, because the presentation a control takes is declared on
+            the given itself, so a dashboard and a notebook render the same
+            control for the same given, `#(description=…)` helper text
+            included.
+
+            ONE DELIBERATE DIVERGENCE from `Given` as the model surface sends
+            it: `default` here is the value the QUERY ENDPOINT takes, not the
+            Malloy source literal. A `filter<…>` given declared `f'West'`
+            publishes `West`. As the literal it could not be used as a default
+            at all, since sending it back verbatim matches zero rows silently,
+            with no error to search for. Only filter-typed givens are unwrapped,
+            so a plain string default that merely reads like `f'x'` is
+            untouched. `startingGivens` uses the same shape for the same reason.
+          items:
+            $ref: "#/components/schemas/Given"
+
+    DashboardTile:
+      type: object
+      description: One tile of a composite dashboard
+      properties:
+        query:
+          type: string
+          description: >-
+            The run expression exactly as written in `tiles=[…]`, for example
+            "orders -> by_month". An EXPRESSION rather than a name, so it goes in
+            the `query` field of a `POST …/models/{path}/query` body, prefixed
+            with `run:`. Sending it in `queryName`, the field
+            `DashboardManifest.query` takes, is rejected.
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: |
+            Names of the givens this tile references. This is a scoping hint,
+            not a binding constraint: it tells a caller which tiles a changed
+            control actually needs to re-run. Running a tile with the
+            dashboard's whole control row also works, because an unreferenced
+            given is ignored. Absent when the tile expression is not one
+            discovery can resolve, a refinement or a multi-stage pipeline for
+            instance, in which case send the whole control row. One such tile
+            widens `DashboardManifest.givens` to every given the entry file
+            surfaces, rather than the union over the resolvable tiles, so that
+            the row actually contains the givens that tile filters by.
 
     DataApp:
       type: object
@@ -3125,6 +3673,14 @@ components:
             Starting values for the notebook's controls, declared at its file
             level. URL parameters override these, which is why the two share a
             shape. Omitted when the notebook declares none.
+        autorun:
+          type: boolean
+          description:
+            False batches control changes behind an Apply button instead of
+            re-running on every change. Defaults to true. The same flag, with
+            the same default, that `DashboardManifest.autorun` carries, so a
+            notebook's `## autorun=false` and a dashboard's
+            `# artifact { autorun=false }` arrive identically.
         sources:
           type: array
           description: Sources defined in the notebook's model
@@ -3179,6 +3735,16 @@ components:
             `given:` keyword
           items:
             $ref: "#/components/schemas/Given"
+        sourceText:
+          type: string
+          description: >-
+            The model file's Malloy text, verbatim, so a client can show the
+            code beside the compiled view of the same file without a second,
+            differently-shaped fetch. Named `sourceText`, not `source`, because
+            `sources` on this same object are the model's Malloy sources.
+            Optional twice over: absent from servers that predate it, and
+            omitted (with a server-side warning) when the file cannot be read,
+            so a compiled model is never withheld for want of its text.
 
     View:
       type: object
@@ -3257,12 +3823,16 @@ components:
         that survives a URL), and a bare list of names is spelled `givenNames`.
 
         It also carries how the given should be presented as an input control
-        (`label`, `control`, `rangeMin`, `rangeMax`, `suggest`), derived from
-        the declaration's own tags. That contract belongs to the given rather
-        than to any one surface, which is what lets a notebook and an SDK host
-        render the same control without restating it. Those five fields describe
-        the contract a renderer implements; no endpoint populates them yet, so
-        they are absent from every response today.
+        (`label`, `description`, `control`, `rangeMin`, `rangeMax`, `suggest`),
+        derived from the declaration's own tags. That contract belongs to the
+        given rather than to any one surface, which is what lets a notebook and
+        an SDK host render the same control without restating it. Each of those
+        six is present only when the declaration carries the tag it reads, so a
+        given tagged with none of them carries none of them. A tag whose value is
+        not one this contract accepts is dropped the same way rather than
+        reported, so an unrecognized `control`, or a `rangeMin`/`rangeMax` that is
+        not a number, is absent here and indistinguishable from never having been
+        written.
       properties:
         name:
           type: string
@@ -3286,6 +3856,15 @@ components:
         label:
           type: string
           description: Display label from the declaration's `# label=` tag
+        description:
+          type: string
+          description:
+            Helper text from the declaration's `# description=` tag. Distinct
+            from the older `#(description="…")` annotation, which is not derived
+            into this field and instead stays on `annotations` for the client
+            that already parses it. The tag form is also the one that compiles
+            without a `malformed-route` warning, because Malloy reads an
+            annotation's route up to the first whitespace.
         control:
           type: string
           enum:
@@ -3353,10 +3932,13 @@ components:
 
         The role it names: a surface's URL parameters and the starting values a
         document declares share this shape, so the two can merge and then be
-        decoded once against the declarations and sent as `GivenValues`. No
-        endpoint returns it yet. `RawNotebook.startingGivens` is the first field
-        typed as it, and nothing populates that field so far, so today this
-        schema documents the contract rather than describing live traffic. The
+        decoded once against the declarations and sent as `GivenValues`.
+        `RawNotebook.startingGivens` and `DashboardManifest.startingGivens` are
+        both typed as it and both populated, so this schema now describes live
+        traffic rather than only the contract. A `filter<…>` value is unwrapped
+        to its body and every other type is published as declared, keyed on the
+        declared type, so a plain string default that reads like `f'x'` survives
+        untouched. The
         `givens` query parameter is not an instance of it: that carries a
         JSON-encoded `GivenValues`, with values typed rather than stringified.
       additionalProperties:
@@ -3396,23 +3978,35 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expressions gating this source via `#(authorize)`
-            / `##(authorize)` annotations — file-level expressions first, then the
-            source's own, or, when it declares none, the nearest source it extends
-            that does. Each is a Malloy boolean expression over declared givens,
-            evaluated as a disjunction (OR) and enforced at query time. A request
-            that reads this source is denied with HTTP 403 unless at least one
-            expression evaluates true for the supplied givens; an empty or absent
-            list means unrestricted.
+            Effective authorize expression gating this source: normally the
+            author's `#(authorize)` expression as written, whether declared on
+            this source itself or carried in from elsewhere (the source it
+            extends, a query-source base, a composite member). Enforced at
+            query time as a row filter grafted onto the source the query
+            enters through. An empty or absent list means unrestricted. Where
+            the gate registry cannot attribute an expression to a declaring
+            source it reports `"false"` instead — a fail-closed placeholder,
+            not something the author wrote, and one more reason to read this
+            list only as "gated" rather than as a predicate.
 
-            IMPORTANT for anything re-implementing the decision: this flat list
-            cannot always express the predicate. Expressions from one source are
-            OR-ed, but when more than one source gates the entry point (its own
-            gate plus one carried from the source it derives from) those sources
-            are AND-ed, and both sets appear here as one list. So a list of two
-            expressions may mean "either" or "both". Treat it as "at least these
-            constraints apply" — use it to decide THAT a source is gated, not to
-            recompute WHETHER a given caller passes. Reading it as a pure
+            Every gate is enforced as a row filter, whether or not its
+            expression reads a row field. A caller the gate admits nowhere
+            therefore gets HTTP 200 with zero rows, not a 403. Do not treat a
+            200 with zero rows as "no gate applied". A 403 means the gate
+            could not be applied at all: the entry point renamed or dropped a
+            field the gate reads, or a given the gate names was not supplied.
+            Both are denials, but only one is visible as a status code.
+
+            IMPORTANT for anything re-implementing the decision: this flat
+            list is not a predicate you can evaluate, and it is not a count of
+            one. A source may declare at most one gate of its OWN, but the
+            list flattens every gate carried in, so several elements are
+            normal — a query source over a composite reports the same
+            authored gate twice, once from its base and once from the resolved
+            member. Expressions that came from different declaring sources are
+            AND-ed rather than OR-ed. Treat the list as "at least these
+            constraints apply": use it to decide THAT a source is gated, not
+            to recompute WHETHER a given caller passes. Reading it as a pure
             disjunction grants where Publisher denies.
 
             Givens are caller-asserted, so this is a boundary only behind a
@@ -3584,13 +4178,23 @@ components:
         grammar while other backends keep it.
 
         Layers, most specific wins per property: connection default < package
-        `materialization.queryMetadata` < model-file
-        `## materialization.queryMetadata.*` < `#@ persist queryMetadata.*` <
-        per-request `queryMetadata`. The publisher's own context (`class`,
+        `queryMetadata` < model-file `## queryMetadata.*` < source
+        `#@ queryMetadata.*` < per-request `queryMetadata`. The `materialization.`
+        spellings of the package and model-file layers are deprecated and still
+        read; where a file declares both, the canonical one wins per property. The publisher's own context (`class`,
         `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
-        `query_id`) is applied on top and cannot be overwritten by a declaration
-        — it is what the server is actually doing, and a caller must not be able
-        to relabel it. Put no secrets or personal data here: a tag is visible to
+        `query_id`, `version`) is applied on top and cannot be overwritten — it
+        is what the server is actually doing, and a caller must not be able to
+        relabel it. Those names are also RESERVED against a MODEL-SIDE
+        declaration: a package block, a model file or a `#@ persist` annotation
+        declaring one has it DROPPED rather than attached. Context only
+        overwrites a name it has a value for, and a served query has no
+        `source`, `trigger` or `run_id` — so a declared one would otherwise ride
+        interactive traffic and read, in the backend's own history, exactly like
+        a build. A connection default and a per-request bag are not covered: a
+        request setting `queryClass` is a caller describing its own call, while a
+        model-side declaration rides every query against that source, including
+        ones its author never sees. Put no secrets or personal data here: a tag is visible to
         anyone who can read the backend's query history, and on a backend with no
         native tag mechanism it is visible in the statement text.
 
@@ -3666,31 +4270,12 @@ components:
             indistinguishable from a storage hit at the call site, and treating it
             as one would report a healthy hit rate for a broken store.
 
-            **Null is three states, not one.** It means (a) the query never had a
-            storage binding to consider — every query on a deployment with no
-            `storage=` sources, which is the default; (b) the query was answered
-            from a COLOCATED materialized table, which this field does not report
-            at all; or (c) the storage transform was ineligible for this
-            particular query, so it was served live. The field alone cannot tell
-            these apart.
+            Null when the query never had a storage binding to consider — every
+            query on a deployment with no `storage=` sources, which is the default.
 
-            **Scope: this reports the `storage=` tier, not materialization in
-            general.** A colocated `#@ persist` source — one with no `storage=`,
-            the default persistence path — is served by substituting the
-            materialized table into the model, which never reaches the routing
-            decision this field records. Such a query reports null, the same value
-            a fully live query reports, so a storage-served answer being
-            byte-identical to a live one is only half the problem: for the
-            colocated tier there is no per-query signal here to read at all. At
-            package grain, `manifestBindingStatus` on package status reports
-            whether a manifest is currently bound.
-
-            **`live_fallback` here is not `live_fallback` in the routing metric.**
-            This value corresponds to
-            `publisher_storage_serve_routing_total{outcome=runtime_live_fallback}`.
-            That metric's own `outcome=live_fallback` is case (c) above, which
-            this field reports as null. The two surfaces use the same token for
-            different things; do not correlate them by name.
+            A storage-served result is byte-identical to a live one by design, so
+            this field is the only way a caller can tell that materialization did
+            anything, or show a user which of their sources it applies to.
         executionTimeMs:
           type: integer
           description: >-
@@ -3818,7 +4403,14 @@ components:
           description: Resource path to the connection
         name:
           type: string
-          description: Name of the connection
+          description:
+            Name of the connection. The name `duckdb` is RESERVED for the
+            per-package DuckDB sandbox every loaded package gets automatically;
+            declaring an environment-level connection with that name fails the
+            whole environment at init. A flat-file (CSV/Parquet/XLSX) package
+            needs no connection entry at all — its models reach the sandbox as
+            `duckdb.table('data/…')`. Name an environment-level DuckDB
+            connection something else (e.g. `shared_duckdb`).
         type:
           type: string
           description: Type of database connection
@@ -3849,7 +4441,12 @@ components:
             actually changes; consumers should treat it as an opaque token and
             use the supplied value verbatim rather than deriving their own. This
             field is optional — when omitted, a connection identity is derived
-            locally instead.
+            locally instead. Because the fingerprint replaces the derived digest
+            verbatim, it must vary with anything that changes which data the
+            connection can reach — including the impersonated identity: two
+            environments on the same project with different
+            impersonateServiceAccount values but the same fingerprint would
+            share persisted-table ids.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-
@@ -4213,6 +4810,19 @@ components:
         serviceAccountKeyJson:
           type: string
           description: JSON string containing Google Cloud service account credentials
+        impersonateServiceAccount:
+          type: string
+          description: >-
+            Email of a Google Cloud service account this connection impersonates
+            for every BigQuery call, via short-lived tokens from the IAM Service
+            Account Credentials API. The publisher's own credential (ADC) must
+            hold roles/iam.serviceAccountTokenCreator on the target service
+            account, and iamcredentials.googleapis.com must be enabled in the
+            calling project. Mutually exclusive with serviceAccountKeyJson; set
+            billingProjectId explicitly, since project auto-detection resolves
+            through the impersonated credential. Not supported on DuckDB
+            attachedDatabases entries or federated builds from a BigQuery
+            source through DuckDB, which require a service account key.
         maximumBytesBilled:
           type: string
           description: Maximum bytes to bill for query execution (prevents runaway costs)
@@ -4528,18 +5138,39 @@ components:
       properties:
         source:
           type: string
-          description: Malloy source code to compile
+          description:
+            Malloy source code to compile; never executed. Required at scope
+            "append" and "file"; optional at scope "package", where it acts as
+            a what-if replacement for the model in the URL.
+        scope:
+          type: string
+          enum: ["append", "file", "package"]
+          default: append
+          description:
+            What the source means, and how far the check reaches. "append"
+            (default, the historical behavior) appends the source to the model
+            in the URL and compiles it in that namespace — right for NEW
+            definitions; an edit to an existing definition collides ("Cannot
+            redefine"), and diagnostic positions land in the concatenated
+            virtual file. "file" compiles the source AS that model, replacing
+            its on-disk content for the check — validates an edit before
+            saving, at true file coordinates. "package" runs the same worker
+            compiler and file selection as reload over every .malloy and
+            .malloynb file, without swapping the result into the served
+            package; with a source, importers compile against the replacement.
+            Package diagnostics can name files hidden from discovery. No rows
+            or SQL are returned, and caller-provided source remains subject to
+            authorize gates. includeSql is not available at "package". An
+            invalid value is rejected with a 400 naming the valid set.
         includeSql:
           type: boolean
           default: false
           description:
             If true, returns the generated SQL alongside compilation results
-            (only available when compilation succeeds and the source contains a
-            runnable query).
+            (only available at scope "append"/"file", when compilation succeeds
+            and the source contains a runnable query).
         givens:
           $ref: "#/components/schemas/GivenValues"
-      required:
-        - source
 
     CompileResult:
       type: object
@@ -4576,6 +5207,14 @@ components:
         code:
           type: string
           description: Machine-readable error code
+        model:
+          type: string
+          description:
+            Package-relative path of the model file the problem points at,
+            derived from `at.url`. Load-bearing at scope "package", where one
+            array carries every file's problems; elsewhere it says when a
+            diagnostic points at pre-existing content rather than the
+            submitted source. Absent when the location is not a package file.
         at:
           type: object
           description: Source location of the problem
@@ -4750,6 +5389,90 @@ components:
           description: Map of sourceID ("sourceName@modelURL") to per-source plan.
           additionalProperties:
             $ref: "#/components/schemas/PersistSourcePlan"
+        refusedSources:
+          type: object
+          description: >-
+            Map of sourceID ("sourceName@modelURL") to the sources the package
+            declared `#@ persist` on but that are ineligible to build, so they
+            carry no entry in `sources`. A SEPARATE collection rather than a
+            field on `PersistSourcePlan`: constructing that plan entry requires
+            the source's SQL and content address, and a free-parameter or
+            given-referencing source cannot produce either, so a refused
+            source needs a wire shape that requires neither. Lets a host
+            distinguish "this package declares no persist source" (both maps
+            empty) from "every persist source was refused" (empty `sources`,
+            populated `refusedSources`) — silence otherwise reads as the
+            former.
+          additionalProperties:
+            $ref: "#/components/schemas/RefusedSource"
+
+    RefusedSource:
+      type: object
+      description: >-
+        One `#@ persist` source refused at compile time, and why. Computed
+        from the SAME tier-appropriate eligibility assert the build path
+        itself enforces (the colocated tier's post-relaxation admission for a
+        proven row-level, fully-attributed `#(authorize)` gate applies here
+        too), so a source this reports as refused is refused for the tier it
+        would actually build under — never the unconditional
+        `storage=`-destination check applied to a source that declares no
+        `storage=`. A `preaggregate`-tier entry can coexist with an entry of
+        the same sourceID in `BuildPlan.sources` — the one tier where
+        refused-and-present-in-sources is the correct, intended state, unlike
+        `storage`/`colocated` where a refusal means absence from `sources`.
+      required: [name, sourceID, tier, reason, message]
+      properties:
+        name:
+          type: string
+          description: The source's declared name.
+        sourceID:
+          type: string
+          description: "sourceName@modelURL — matches this entry's map key."
+        modelPath:
+          type: string
+          description: >-
+            Package-relative path of the `.malloy` model that declares this
+            source, mirroring `PersistSourcePlan.modelPath`. Absent if the
+            model path could not be resolved.
+        tier:
+          type: string
+          enum: [storage, colocated, preaggregate]
+          description: >-
+            Which build path this source was evaluated against: `storage` for
+            a source declaring `#@ persist storage=<ref>` (evaluated against
+            the full storage-destination eligibility gate, which never
+            admits an `#(authorize)`-gated source); `colocated` for a plain
+            `#@ persist` (evaluated against the colocated gate, which admits
+            a proven row-level, fully-attributed gate); `preaggregate` for a
+            `#@ preaggregate` rollup (evaluated against the pre-aggregation
+            gate, which refuses unconditionally when the rollup's base is
+            `#(authorize)`-gated — rollups group away the gate column, so
+            there is no row-level admission the way colocated has).
+        reason:
+          type: string
+          enum:
+            [
+              free_parameter,
+              given,
+              authorize,
+              not_duckdb_portable,
+              public_surface_unknown,
+            ]
+          description: >-
+            The bounded refusal reason. Only `free_parameter`, `given` and
+            `authorize` can appear here — those are the only reasons the two
+            compile-time eligibility asserts this collection is computed from
+            produce. `not_duckdb_portable` is decided against the post-build
+            captured schema, which does not exist at compile time, and
+            `public_surface_unknown` is raised by the build-time narrowing of a
+            stored table to the source's public columns; both are listed only
+            because they share the enum the runtime eligibility metric uses.
+        message:
+          type: string
+          description: >-
+            The full, human-readable refusal message the eligibility assert
+            produced — the same text a build attempting this source would 422
+            with.
 
     BuildGraph:
       type: object
@@ -4792,6 +5515,45 @@ components:
           type: string
         dialect:
           type: string
+        origin:
+          type: string
+          enum: [persist, preaggregate]
+          default: persist
+          description: >-
+            Which authoring annotation produced this plan entry. `persist` — the
+            modeler wrote `#@ persist` on the source; every entry on a deployment
+            that uses no pre-aggregation, and the meaning of an absent value.
+            `preaggregate` — the modeler wrote `#@ preaggregate` on measures of
+            `preaggregate.baseSourceName`, and the publisher SYNTHESIZED this
+            rollup source to serve them.
+
+
+            Note that BOTH kinds carry a `#@ persist` annotation by the time they
+            reach this plan, because synthesis emits one (see `annotationFields`).
+            So this reports which surface the AUTHOR used, not which annotation
+            sits on the source — which is the question worth answering, since a
+            `preaggregate` entry's `name` appears in no model file and without
+            this field an operator or orchestrator sees a source nobody wrote with
+            no way to tell it from one they did.
+
+
+            Everything downstream is deliberately indifferent to it: a synthesized
+            entry is built, identified, manifested, shared and garbage-collected
+            exactly like a hand-written one.
+        preaggregate:
+          oneOf:
+            - $ref: "#/components/schemas/PreaggregatePlan"
+            - type: "null"
+          description: >-
+            What the synthesized rollup covers: the base source it was derived
+            from, the one grain it is built at, and the measures served there.
+            Present only when `origin` is `preaggregate`; null otherwise.
+
+
+            Coverage is complete by construction — a measure that cannot be
+            correctly re-aggregated is refused at publish rather than dropped
+            from the rollup — so there is no per-measure omission list to
+            reconcile against the model.
         sourceEntityId:
           type: string
           description: >-
@@ -4830,20 +5592,38 @@ components:
             scope modes. (Per-source `sharing`/`schedule` were retired: scope is
             a single package-level mode and a schedule is package-root-only —
             declaring either on a source is a publish-time manifest error.)
+
+
+            A synthesized rollup (`origin: preaggregate`) declares nothing of its
+            own and gets no freshness policy of its own: it INHERITS its base's,
+            so what is reported here is the base source's effective objective
+            resolved by the rule above. A rollup and its base therefore go stale
+            together, which is what makes "serve the base when the rollup is
+            stale" a safe degradation rather than a change of answer.
         queryMetadata:
           oneOf:
             - $ref: "#/components/schemas/QueryMetadata"
             - type: "null"
           description: >-
             The source's EFFECTIVE per-query metadata after most-specific-wins
-            resolution per property (`#@ persist queryMetadata.*` > model-file
-            `## materialization.queryMetadata.*` > package
-            `materialization.queryMetadata`). Null = declared at no level. The
+            resolution per property (`#@ queryMetadata.*` > model-file
+            `## queryMetadata.*` > package `queryMetadata`; the deprecated
+            `materialization.` spellings of the last two are still read and lose
+            to the canonical ones). Null = declared at no level. The
             publisher attaches it — merged under its own context — to every
-            statement it issues while building this source, and reports it here so
-            a caller can see how a build will be tagged and tag its own queries
-            the same way. Observability only: excluded from `sourceEntityId`, so
-            editing it never re-addresses the source or orphans its table.
+            statement it issues while building this source AND to every query
+            served from it, and reports it here so a caller can see how the
+            source's traffic will be tagged. Reported as DECLARED, not as
+            attached: a property whose name the server owns (`class`,
+            `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
+            `query_id`, `version`) appears here and is then dropped rather than
+            attached. Copying this bag onto a request does NOT reproduce that
+            drop: the reservation covers a MODEL-SIDE declaration only, so a
+            `source`, `trigger` or `run_id` sent on a request layer ATTACHES, and
+            the statement then reads, in the backend's own history, exactly like
+            a build of this source. Strip the server-owned names before reusing
+            it. Observability only: excluded from `sourceEntityId`, so editing it
+            never re-addresses the source or orphans its table.
         columns:
           type: array
           description: Output schema of the source.
@@ -4884,14 +5664,141 @@ components:
             a dangling or stale name is rejected rather than deferred to a build.
             Neither participates in `sourceEntityId`: adding a watermark to an
             existing source must not re-address its table.
+
+
+            For a synthesized rollup (`origin: preaggregate`) the annotation was
+            generated by the publisher rather than authored, so this reports what
+            synthesis emitted. It is still the annotation that governs the build,
+            which is why it is reported the same way: a rollup is an ordinary
+            persist source whose `#@ persist` nobody typed.
         modelPath:
           type: string
-          description:
+          description: >-
             Package-relative path of the `.malloy` model that declares this
             source (e.g. `order_rollup.malloy`). The source's sourceID embeds an
             absolute `file://` modelURL with no package boundary, so this is the
             only place the relative path is exposed; callers use it to deep-link
             the source back to its model.
+
+
+            A synthesized rollup (`origin: preaggregate`) is declared by no model,
+            so this is the model of its base — the file holding the
+            `#@ preaggregate` annotations it was synthesized from, which is where
+            an author would go to change it.
+
+    PreaggregatePlan:
+      type: object
+      description: >-
+        Provenance for a rollup source synthesized from `#@ preaggregate`
+        annotations. A query never names a rollup, never changes shape because one
+        exists, and gets the same answer whether one is used or not, so this is
+        the only place the set of rollups and the coverage of each is visible at
+        all.
+
+
+        **This object describes ONE rollup table, at ONE grain.** A rollup is a
+        single `GROUP BY`, so a grain is a property of the table, not of the
+        individual measures in it: `grainDimensions` lists the dimensions of that
+        one grain, and `measures` are the measures served at it.
+
+
+        That inverts how the grain was authored, which is worth knowing before
+        reading a plan. The modeler declares per measure — `#@ preaggregate
+        grain="order_day, category"` — and may declare a measure at SEVERAL grains
+        by writing several annotation lines on it, each of which is its own rollup.
+        The publisher then packs every measure declaring the same (grain,
+        connection, base source) into a single synthesized source, because ten
+        measures at one grain should be one table and one CTAS rather than ten. So
+        the plan has one entry per DISTINCT grain declared anywhere on the source,
+        which is neither the number of annotated measures nor the number of
+        annotations: a measure declared at two grains appears in two entries, and
+        two measures sharing a grain appear in one. To recover the per-measure view
+        that was written, iterate `buildPlan.sources`, keep the `origin:
+        preaggregate` entries, and invert each entry's grain-to-measures pairing.
+
+
+        Choosing between two rollups and one at the combined grain is a size
+        judgement, not a correctness one — see `grainDimensions`.
+      required: [baseSourceName, grainDimensions, measures]
+      properties:
+        baseSourceName:
+          type: string
+          description: >-
+            The source whose measures carry the `#@ preaggregate` annotations this
+            rollup was synthesized from. Queries name THIS source; the rollup is
+            selected behind it, or bypassed, per grain coverage.
+        grainDimensions:
+          type: array
+          items:
+            type: string
+          description: >-
+            The dimensions of the ONE grain this rollup is built at — the parsed
+            form of a single `grain=` annotation value, so `grain="order_day,
+            category"` reports as two entries here and not as two grains.
+
+
+            **Every entry is a dimension the base source itself declares**, never
+            a truncation written inline. `grain="order_time.day"` is refused at
+            publish: a stored column of truncated values either shadows the base's
+            own `order_time` and answers untruncated queries from truncated rows,
+            or is named something no query references and serves nothing. So time
+            grains are reached by declaring `dimension: order_day is
+            order_time.day` on the source and naming `order_day` here.
+
+
+            **Sorted, and canonically so.** Synthesis derives the rollup's name
+            and identity from the sorted grain, so two authors who write the same
+            dimensions in different orders get one table rather than two. Compare
+            grains as sets using this list; never by the annotation's original
+            string, which is not canonical.
+
+
+            A query can be answered here only if this grain covers it: every
+            dimension the query groups by is in this list, or is a coarser
+            truncation of one (a `month` of a stored `order_day` is derivable and
+            does route; a `day` of a stored `order_month` is not). Which makes the
+            set of grains ACROSS a package the whole performance story, and the
+            reason adding a rollup per query shape is the documented way to spend
+            more on builds than you save.
+
+
+            Note that covering does not require an exact match: a query grouping
+            by a SUBSET of these dimensions — or by none of them — is served here
+            too, by re-aggregating across the ones it omits. So one rollup at the
+            finest grain an author needs does subsume every coarser one, and a
+            combined grain is often the economical choice.
+
+
+            That subsumption is about coverage, though, not cost, and it is why a
+            measure may still be declared at several grains. A combined grain has
+            roughly the PRODUCT of its dimensions' cardinalities, so
+            `customer_id, order_day` can approach the base table's row count and
+            save almost nothing, while `order_day` alone is tiny. Two rollups then
+            beat one, each query reading the smallest that covers it, at the price
+            of two tables to build and refresh. Correctness is identical either
+            way; the choice is size against build cost.
+        measures:
+          type: array
+          items:
+            type: string
+          description: >-
+            The measures served at this rollup's grain, under their original names
+            — the names a query uses, not the names of the partial-aggregate
+            columns stored to serve them. A query using only these, at a grain
+            this rollup covers, is eligible to be served from its table.
+
+
+            These are the measures whose `#@ preaggregate` named THIS grain. A
+            measure declared at a different grain is not missing: it is in the
+            plan entry for that grain. Do not read this list as the base source's
+            full set of pre-aggregated measures — that is the union of these lists
+            across every entry sharing a `baseSourceName`.
+
+
+            **Every measure that declared this grain is here.** There is no
+            partial rollup and no per-measure omission to check: a measure that
+            cannot be correctly re-aggregated is refused at publish, so a rollup
+            that exists carries everything that asked to be in it.
 
     Realization:
       type: string
@@ -5071,10 +5978,35 @@ components:
       properties:
         connectionName:
           type: string
-          description: With `physicalTableName`, the table the boundary belongs to.
+          description: >-
+            The connection whose SQL computes the table's rows. With
+            `physicalTableName` — and `storageDestinationName`, when the table is
+            in a storage destination — the table the boundary belongs to.
         physicalTableName:
           type: string
           description: The table's logical (unquoted) name, as the manifest reports it.
+        storageDestinationName:
+          type: string
+          description: >-
+            The storage destination the table lives in, when the source was
+            materialized into one — an entry in `storageDestinations`, NOT a
+            connection, exactly as on `ManifestEntry`. Absent means the table
+            lives in `connectionName`'s own warehouse.
+
+            Part of the table's IDENTITY, not a description of it, so it must be
+            returned verbatim like every other field here. A source keeps both its
+            physical name and its content address when `storage=` is added or
+            removed (an annotation enters neither), so without this field a
+            boundary measured on the stored table is indistinguishable from one
+            measured on a colocated table of the same name — and a delta computed
+            from the wrong one can skip rows.
+
+            A caller that has never recorded this field may omit it. An entry that
+            omits it for a source this run materializes into a destination
+            describes a different table, so that source SEEDS rather than being
+            rejected: the entry is stale, not wrong, and a seed is always correct.
+            An entry that names a DIFFERENT destination than the run instructs is
+            a caller error and is rejected like any other mismatched entry.
         coveredThrough:
           type: string
           description: >-
@@ -5124,20 +6056,131 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ManifestEntry"
-          description: Map of sourceEntityId to manifest entry.
+          description: >-
+            Map of sourceEntityId to manifest entry. Every source that BUILT is
+            here. A source that FAILED is reported in `failures`, and during the
+            `ManifestEntry.error` deprecation window is also mirrored here
+            carrying that field -- so a consumer resolving an entry to a real
+            table must skip entries whose `error` is set until the field is
+            removed, after which `entries` is built-only.
+        failures:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SourceFailure"
+          description: >-
+            Map of sourceEntityId to the reason that source failed to
+            materialize, for the sources that did NOT build. A build that loses
+            some of its sources still returns the ones that succeeded in
+            `entries`, so this is how a consumer tells a partial failure from a
+            clean run and learns which source failed. Empty or absent on a run
+            where every source built.
         strict:
           type: boolean
           description: Whether unresolved references should error.
 
+    SourceFailure:
+      type: object
+      description: >-
+        One source that failed to materialize, and why. Kept beside `entries`
+        rather than inside a manifest entry because a failed source names no
+        table that exists: an entry carries a required `physicalTableName`, so
+        putting a failure there would hand every consumer a table name it must
+        know not to resolve.
+      required: [sourceEntityId, reason]
+      properties:
+        sourceEntityId:
+          type: string
+          description: The source's content address, as `entries` would have keyed it.
+        sourceName:
+          type: string
+          description: The persist source's declared name, for reporting.
+        reason:
+          type: string
+          description: >-
+            Why this source failed, in the words the warehouse or compiler
+            reported, redacted against that source's own connection.
+        materializedTableId:
+          type: string
+          description: >-
+            Echoes the caller-assigned id from the BuildInstruction, so an
+            orchestrator can match this failure to the row it dispatched without
+            deriving the content address itself.
+        physicalTableName:
+          type: string
+          description: >-
+            The table this source was HEADED for, echoing the instruction. NOT a
+            table that exists -- the build that would have created it is what
+            failed, and a source that failed a REBUILD leaves the prior
+            generation's table in place under this same name, so resolving it
+            serves stale data rather than missing. Present for correlating the
+            failure with the request; a consumer must never resolve or read it.
+        connectionName:
+          type: string
+          description: >-
+            The persist source's own connection (the source warehouse),
+            mirroring `ManifestEntry.connectionName`. Without this a failure-only
+            source carries no destination discriminator at all, so a consumer
+            cannot tell a colocated failure from a `storage=` one and, lacking
+            `storageDestinationName`, would resolve a destination-scoped claim
+            against the wrong key.
+        storageDestinationName:
+          type: string
+          description: >-
+            When the source was instructed to build into a `storage=`
+            destination, the destination name, mirroring
+            `ManifestEntry.storageDestinationName`. Absent for a colocated
+            failure. A consumer computes the same destination key a successful
+            build would (`storageDestinationName ?? connectionName`) whether the
+            source built or failed.
+
     ManifestEntry:
       type: object
-      description: A single entry in the build manifest.
+      description: >-
+        A single entry in the build manifest. An entry describing a source that
+        BUILT names a table that exists; `error` marks the one exception, kept for
+        one deprecation cycle (see that field).
       required: [sourceEntityId, physicalTableName]
       properties:
         sourceEntityId:
           type: string
+        error:
+          type: [string, "null"]
+          deprecated: true
+          description: >-
+            DEPRECATED -- read `BuildManifest.failures` instead, which is where a
+            failed source is now reported. Mirrors `SourceFailure.reason` for the
+            same source, so a consumer written against 0.0.245-0.0.246 keeps
+            working unchanged; it will be removed once those consumers have moved.
+            An entry carrying this describes a source that FAILED, so its
+            `physicalTableName` names a table the build did not create -- which is
+            the defect the `failures` collection exists to remove, because the
+            field is required and a consumer resolving an entry to a real table has
+            no way to know it must check here first.
         sourceName:
           type: string
+          description: >-
+            The persist source this table was built for. Convenience only:
+            `sourceEntityId` is the identity, and this is the human-readable label
+            beside it.
+
+
+            **It may name no source in any model file.** A pre-aggregation rollup
+            is a persist source the publisher synthesized, so its name is
+            generated (see `PersistSourcePlan.origin`). Match on
+            `sourceEntityId`; do not resolve this against a package's models and
+            treat a miss as a corrupt manifest.
+        origin:
+          type: string
+          enum: [persist, preaggregate]
+          default: persist
+          description: >-
+            Mirrors `PersistSourcePlan.origin` for the source this entry was built
+            from: `persist` for a source the modeler wrote `#@ persist` on, which
+            is the meaning of an absent value, and `preaggregate` for a rollup
+            synthesized from `#@ preaggregate` measures. Repeated here because a
+            manifest travels without its build plan, and a consumer holding only
+            the manifest otherwise cannot tell why it holds a table for a source
+            that does not appear in the package.
         materializedTableId:
           type: string
           description: Echoes the caller-assigned id from the BuildInstruction.
@@ -5220,14 +6263,24 @@ components:
             reach its own job records also reports null; that case is counted by
             `publisher_storage_build_attribution_skipped_total`.
 
-            An incremental delta reports null because its statements do not run
-            through a single call whose result reaches here. A chained `storage=`
-            build reports null because it read its parent's already-materialized
-            table and touched no warehouse at all. A POSTGRES source reports null
-            on every path: the label that makes a read reportable is BigQuery's,
-            and Postgres has no per-statement tag to carry one. And a bag whose
-            every property is unusable as a BigQuery label key renders no label,
-            so such a read is issued the untagged way and reports null too.
+            A COLOCATED incremental delta reports null because its statements do
+            not run through a single call whose result reaches here. A delta
+            into a `storage=` destination reports whatever its own bounded read
+            reported: that read is issued through the same call a full build's
+            is, so a tagged one is costed and an untagged one is not. A
+            SNOWFLAKE source reports null on a delta even though its full build
+            reports a figure — Snowflake does not return one with the read, so
+            the full build looks it up afterwards by matching the statement
+            text, and a delta's text is the bounded, projected wrapper rather
+            than the build SQL that lookup keys on. Summing this field across
+            refreshes therefore understates a Snowflake source; it does not mean
+            those reads were free. A chained `storage=` build reports null
+            because it read its parent's already-materialized table and touched
+            no warehouse at all. A POSTGRES source reports null on every path:
+            the label that makes a read reportable is BigQuery's, and Postgres
+            has no per-statement tag to carry one. And a bag whose every
+            property is unusable as a BigQuery label key renders no label, so
+            such a read is issued the untagged way and reports null too.
         dataAsOf:
           type: string
           format: date-time
@@ -5276,7 +6329,7 @@ components:
             Present exactly when the source is refreshed incrementally, so
             absent means only that it is not: a source declaring
             `refresh="full"`, or one whose declaration the delta path cannot act
-            on at all (an unsupported dialect, `storage=`), which the publish
+            on at all (an unsupported source dialect), which the publish
             gate rejects anyway.
 
   parameters:

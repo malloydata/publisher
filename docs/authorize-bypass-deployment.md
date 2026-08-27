@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Deploying with the authorize bypass
 
 Publisher accepts a request header that **skips `#(authorize)` gate evaluation**:
@@ -78,6 +83,15 @@ finding. Two cautions:
 Neither signal records *who* sent the header — Publisher does not know. If you need caller
 attribution, log it at the hop that sets the header, and join on package + model.
 
+Three other counters are not bypass signals — they cover gate outcomes on requests that did *not*
+bypass — but are worth knowing apart from `publisher_authorize_bypass_total` when reading a
+dashboard: `publisher_authorize_row_level_total` (labelled `decision`: `denied_by_gate` |
+`empty_after_filter`) and `publisher_authorize_row_level_rejected_total` (labelled `cause`) cover
+row-level gates; `publisher_authorize_guard_rejected_total` (labelled `field`) counts 400s for a
+caller-declared `#(authorize)` annotation. See
+[authorize.md § Row-level gate metrics](authorize.md#row-level-gate-metrics) for the full label
+values.
+
 ## If you do not need it
 
 There is no flag to disable it, and adding one would be a false comfort: a flag lives in the same
@@ -90,6 +104,6 @@ ever set it.
 The bypass is an interim answer. The shape that keeps the decision with the model author is
 identity-bound givens ([docs/authorize.md § Security
 model](authorize.md#security-model)) — a reserved system given the caller cannot set, so an author
-writes `#(authorize) "$ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'"` and a source they never
-opted in stays gated. This header instead removes gating globally for callers you trust wholesale.
+writes `#(authorize) $ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'` and a source they never opted
+in stays gated. This header instead removes gating globally for callers you trust wholesale.
 When identity-bound givens land, expect this to narrow or be withdrawn.

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it, mock } from "bun:test";
 
 // Tiers 3, 4 and 5 go through ConnectionController, so they were never driven

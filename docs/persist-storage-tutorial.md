@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Tutorial: materialize a source into DuckLake and serve it back
 
 Malloy Publisher can materialize a `#@ persist` source into a **store you choose**
@@ -674,13 +679,24 @@ just the stored columns; it's the floor that guarantees the captured schema
 forms a valid DuckDB source.
 
 These are the checks derivable from the compiled source and the built schema
-alone. One more belongs here and is **not yet enforced**: a source protected by
-`#(authorize)` — directly, or transitively through a join or derivation — should
-not be materialized into a shared store, because the serve path rebinds it to a
-virtual source whose shape carries no `#(authorize)` annotation, so the gate
-can't be evaluated on the served table. Until that refusal lands (alongside the
-upstream transitive-`#(authorize)` enforcement it reuses), do not materialize an
-authorize-gated source; serve it live.
+alone. One more belongs here and **is enforced**: a source protected by
+`#(authorize)` — directly, or transitively through a join or derivation — is
+refused, because the serve path rebinds it to a virtual source whose shape
+carries no `#(authorize)` annotation, so the gate can't be evaluated on the
+served table. The check walks the compiled source for the gate and fails
+closed: a source it cannot prove gate-free is refused.
+
+A colocated `#@ persist` is a different case, and the difference is worth stating because it is easy
+to over-claim. A colocated build has no virtual source: the substitution replaces only the source's
+relation SQL, while the gate is applied as the reading query's own `WHERE`, so the two compose and
+rows do come back filtered. The gate is not absent — which is why a colocated source is admitted when
+the compiler can _prove_ the gate is the entry point's own row-level filter and nothing else is
+reachable beneath it, and refused otherwise (an unattributed or join-only gate, an unclassifiable one,
+or one that doesn't reduce to a row filter at all). When admitted, what is frozen is the data the gate
+DECIDES AGAINST — the gating column's values are whatever they were at build time, so a row that
+changes hands keeps being served to its former owner until the next rebuild. See
+[materialization.md](materialization.md) for the author-facing refusal and the freshness contract that
+follows from it.
 
 ### Field-level hiding and the materialized table
 
@@ -732,19 +748,6 @@ Everything you need is on the package status and the logs:
     failure degraded it to live (so a fallback never counts as a storage hit).
     The attribute is absent for a query that never routed, so an `off`
     deployment's histogram is unchanged.
-
-Two things to know before building a dashboard on these:
-
-- **All of it is scoped to the `storage=` tier.** A colocated `#@ persist` source
-  is served by manifest substitution, which never reaches the routing decision, so
-  a colocated hit lands in neither the numerator nor the denominator of the hit
-  rate, and `served_from` is absent for it — the same as for a fully live query.
-  No per-query signal separates those two today; `manifestBindingStatus` on
-  package status answers the related question at package grain.
-- **`live_fallback` means different things on the metric and on the response.**
-  The counter's `outcome=live_fallback` is the *ineligible* case, which
-  `QueryResult.servedFrom` reports as null; that field's `live_fallback` is the
-  counter's `runtime_live_fallback`. Correlating the two by name inverts them.
 
 `PERSIST_STORAGE_MODE` (`off` default | `write-only` | `on`) is read at startup;
 change it by restarting. It's a kill switch: moving it **down** never fails a

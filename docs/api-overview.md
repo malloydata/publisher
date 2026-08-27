@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # API overview
 
 > What this is: the shape of Publisher's programmatic surfaces — the resource hierarchy, the REST and
@@ -25,6 +30,8 @@ put the server behind your own gateway before exposing it beyond localhost.
     │   │   └── /compile                POST — compile to SQL / metadata
     │   ├── /notebooks/{path}           a .malloynb notebook
     │   │   └── /cells/{index}          GET — run one notebook cell
+    │   ├── /dashboards                 `# artifact` dashboards in dashboards/
+    │   │   └── /{name}                 GET, one dashboard's manifest
     │   ├── /data-apps                  in-package HTML data apps
     │   ├── /events                     GET, the live-reload SSE stream (held open)
     │   ├── /databases                  the package's embedded data files (e.g. parquet)
@@ -38,14 +45,16 @@ put the server behind your own gateway before exposing it beyond localhost.
 
 | Method & path | Does |
 | --- | --- |
-| `GET /api/v0/status` | Server lifecycle (`operationalState`), plus `loadErrors` for anything configured that did not load. |
+| `GET /api/v0/status` | Server lifecycle (`operationalState`), plus `loadErrors` for anything configured that did not load, or that is still serving an older model because its most recent reload failed to compile (`stale: true`). |
 | `GET /api/v0/environments` | List environments, each with its packages. |
 | `GET /api/v0/environments/{env}/packages/{pkg}` | Package metadata (models, `explores`, `buildPlan`, …). Add `?reload=true` to recompile the package from disk first, the REST form of `malloy_reloadPackage`. |
 | `POST /api/v0/environments/{env}/packages` | Register a package at runtime; body `{ "name": "…", "location": "…" }` ([packages.md](packages.md)). |
-| `GET  …/packages/{pkg}/models/{path}` | A model's compiled metadata (sources, views, givens). |
+| `GET  …/packages/{pkg}/models/{path}` | A model's compiled metadata (sources, views, givens), plus `sourceText`, the file's Malloy verbatim. |
 | `POST …/packages/{pkg}/models/{path}/query` | Run a Malloy query; see [request shapes](#query-request-shapes) below. |
 | `POST …/packages/{pkg}/models/{path}/compile` | Compile Malloy to SQL / metadata. |
 | `GET  …/packages/{pkg}/notebooks/{path}/cells/{index}` | Run one notebook cell. |
+| `GET  …/packages/{pkg}/dashboards` | List a package's dashboards: the `.malloy` files in `dashboards/` carrying an `# artifact` tag. |
+| `GET  …/packages/{pkg}/dashboards/{name}` | One dashboard's manifest: its layout, tiles, and the control row derived from the givens its query references (widened to the file's surfaced set when a tile cannot be resolved). There is no run endpoint; run the manifest's `path` through `…/models/{path}/query` with `givens`. Its `query` is a name (`queryName`), a tile's `query` is an expression (`query`, prefixed `run:`); the two are not interchangeable. |
 | `GET  …/packages/{pkg}/data-apps` | List a package's HTML data apps. |
 | `GET  …/packages/{pkg}/events` | Live-reload SSE stream ([html-data-apps.md](html-data-apps.md#live-reload)). Held open by design. |
 | `GET  …/environments/{env}/connections` | List database connections. |

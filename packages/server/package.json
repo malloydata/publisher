@@ -7,7 +7,9 @@
       "malloy-publisher": "dist/server.mjs"
    },
    "files": [
-      "dist"
+      "dist",
+      "publisher.config.example.duckdb.json",
+      "publisher.config.example.bigquery.json"
    ],
    "engines": {
       "node": ">=20"
@@ -34,26 +36,27 @@
       "lint": "bunx eslint \"./src/**/*.ts\"",
       "format": "bunx prettier --write '**/*.{ts,tsx}'",
       "build:app": "cd ../app && NODE_ENV=production bunx vite build",
-      "generate-api-types": "bunx openapi-typescript ../../api-doc.yaml --output src/api.ts"
+      "generate-api-types": "bunx openapi-typescript ../../api-doc.yaml --output src/api.ts && node ../../scripts/add-license-headers.mjs src/api.ts"
    },
    "dependencies": {
       "@aws-sdk/client-s3": "^3.958.0",
       "@azure/identity": "^4.13.0",
       "@azure/storage-blob": "^12.26.0",
-      "@duckdb/node-api": "1.5.3-r.2",
+      "@duckdb/node-api": "1.5.5-r.4",
       "@google-cloud/bigquery": "^7.9.4",
       "@google-cloud/storage": "^7.16.0",
-      "@malloydata/db-bigquery": "^0.0.427",
-      "@malloydata/db-databricks": "^0.0.427",
-      "@malloydata/db-duckdb": "^0.0.427",
-      "@malloydata/db-mysql": "^0.0.427",
-      "@malloydata/db-postgres": "^0.0.427",
-      "@malloydata/db-publisher": "^0.0.427",
-      "@malloydata/db-snowflake": "^0.0.427",
-      "@malloydata/db-trino": "^0.0.427",
-      "@malloydata/malloy": "^0.0.427",
-      "@malloydata/malloy-sql": "^0.0.427",
-      "@malloydata/render-validator": "^0.0.427",
+      "@malloydata/db-bigquery": "^0.0.432",
+      "@malloydata/db-databricks": "^0.0.432",
+      "@malloydata/db-duckdb": "^0.0.432",
+      "@malloydata/db-mysql": "^0.0.432",
+      "@malloydata/db-postgres": "^0.0.432",
+      "@malloydata/db-publisher": "^0.0.432",
+      "@malloydata/db-snowflake": "^0.0.432",
+      "@malloydata/db-trino": "^0.0.432",
+      "@malloydata/malloy": "^0.0.432",
+      "@malloydata/malloy-sql": "^0.0.432",
+      "@malloydata/malloy-tag": "^0.0.432",
+      "@malloydata/render-validator": "^0.0.432",
       "@modelcontextprotocol/sdk": "^1.13.2",
       "@opentelemetry/api": "^1.9.0",
       "@opentelemetry/auto-instrumentations-node": "^0.57.0",
@@ -67,8 +70,10 @@
       "cors": "^2.8.5",
       "cron-parser": "^5.6.2",
       "express": "^4.21.0",
+      "express-rate-limit": "^8",
       "extract-zip": "^2.0.1",
       "globals": "^15.9.0",
+      "google-auth-library": "^9.15.1",
       "handlebars": "^4.7.8",
       "http-proxy-middleware": "^3.0.5",
       "lunr": "^2.3.6",

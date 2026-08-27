@@ -3,6 +3,10 @@ id: restart-survival
 tags: lifecycle, durability
 package: rs
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Serving is re-established from the store after a restart, with no rebuild
 

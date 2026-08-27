@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { logger } from "../logger";
 import { DatabaseConnection, ResourceRepository } from "./DatabaseInterface";
 import { DuckDBConnection } from "./duckdb/DuckDBConnection";

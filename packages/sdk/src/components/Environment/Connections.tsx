@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { MoreVert } from "@mui/icons-material";
 import StorageOutlinedIcon from "@mui/icons-material/StorageOutlined";
 import {

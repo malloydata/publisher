@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Package-load worker entry point.
  *
@@ -46,6 +49,7 @@
  */
 import {
    contextOverlay,
+   isSourceDef,
    type BuildManifestEntry,
    type Connection,
    type FetchSchemaOptions,
@@ -79,22 +83,38 @@ import {
    NOTEBOOK_FILE_SUFFIX,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
+import { recordRowLevelGateRejected } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
-import { validateAuthorizeProbes } from "../service/authorize";
+import {
+   assertAtMostOneAuthorizeGate,
+   assertNoLegacyStringGate,
+   assertNoMisplacedAuthorizeAnnotations,
+   findLegacyStringGates,
+   findMultipleAuthorizeGates,
+   validateAuthorizeProbes,
+   type AuthorizeMap,
+   type MisplacedAuthorizeAnnotation,
+} from "../service/authorize";
+import {
+   validateSourceLineGateGivenUsage,
+   type ExpandableRefSummary,
+} from "../service/gate_dimension";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
    PackageScope,
-   packageMaterializationWarnings,
+   materializationWithQueryMetadata,
    parsePackageMaterialization,
+   queryMetadataParseWarnings,
+   resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "../service/package_manifest";
 import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
-   type OwnAuthorizeSource,
 } from "../service/source_extraction";
+import { type AnnotationNote } from "../service/annotations";
 import {
    malloyGivenToApi,
    type MalloyGiven,
@@ -316,20 +336,27 @@ function serializeFetchOptions(options: FetchSchemaOptions): {
 // URLReader: file:// → fs; everything else proxies to main thread
 // ──────────────────────────────────────────────────────────────────────
 
-function makeWorkerUrlReader(jobId: string): {
+function makeWorkerUrlReader(job: LoadPackageRequest): {
    readURL: (url: URL) => Promise<string>;
 } {
    return {
       readURL: async (url: URL): Promise<string> => {
          if (url.protocol === "file:") {
             const filePath = fileURLToPath(url);
+            if (
+               job.replacement &&
+               path.resolve(filePath) ===
+                  path.resolve(job.packagePath, job.replacement.modelPath)
+            ) {
+               return job.replacement.source;
+            }
             return fs.promises.readFile(filePath, "utf8");
          }
          const response = await callMain<ReadUrlResponse>((requestId) => {
             const req: ReadUrlRequest = {
                type: "read-url",
                requestId,
-               jobId,
+               jobId: job.requestId,
                url: url.toString(),
             };
             port.postMessage(req);
@@ -425,14 +452,29 @@ async function readPackageMetadata(packagePath: string): Promise<{
       manifestLocation?: unknown;
       materialization?: unknown;
       scope?: unknown;
+      queryMetadata?: unknown;
    };
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
    // an invalid value or a conflict between the two throws and fails the load,
    // and the deprecation rides back as a warning.
    const scope = resolvePackageScope(parsed.scope, parsed.materialization);
+   // Query metadata has two homes as well, migrating the other way (canonical
+   // root, deprecated `materialization.queryMetadata`). A conflict warns rather
+   // than throws — see resolvePackageQueryMetadata.
+   const queryMetadata = resolvePackageQueryMetadata(
+      parsed.queryMetadata,
+      parsed.materialization,
+   );
    const manifestWarnings = [
       ...scope.warnings,
-      ...packageMaterializationWarnings(parsed.materialization),
+      ...queryMetadata.warnings,
+      // Report what the WINNING home could not keep. Reading the envelope alone
+      // would say nothing about a malformed property declared at the root, which
+      // is the home authors are being moved to.
+      ...queryMetadataParseWarnings(
+         queryMetadata.queryMetadata,
+         queryMetadata.home,
+      ),
    ];
    return {
       name: parsed.name,
@@ -452,7 +494,10 @@ async function readPackageMetadata(packagePath: string): Promise<{
       // Package-level Malloy Persistence policy; surfaced to the control plane,
       // which owns scheduling. `schedule`/`freshness` are for the control plane;
       // `queryMetadata` is the publisher's own package-level layer.
-      materialization: parsePackageMaterialization(parsed.materialization),
+      materialization: materializationWithQueryMetadata(
+         parsePackageMaterialization(parsed.materialization),
+         queryMetadata.queryMetadata,
+      ),
       // Package-level persist scope mode; defaults to "package".
       scope: scope.scope,
       manifestWarnings:
@@ -567,27 +612,67 @@ function extractSources(
 ): {
    sources: ApiSourceWire[];
    filterMap: Map<string, FilterDefinition[]>;
-   ownAuthorizeSources: OwnAuthorizeSource[];
+   authorizeMap: AuthorizeMap;
+   misplacedAuthorize: MisplacedAuthorizeAnnotation[];
+   authorizeOwnNotes: Map<string, AnnotationNote[]>;
+   attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
 } {
-   const { sources, filterMap, ownAuthorizeSources } =
-      extractSourcesFromModelDef(modelDef, givens);
+   const {
+      sources,
+      filterMap,
+      authorizeMap,
+      misplacedAuthorize,
+      authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
+   } = extractSourcesFromModelDef(modelDef, givens);
    return {
       sources: sources as unknown as ApiSourceWire[],
       filterMap,
-      ownAuthorizeSources,
+      authorizeMap,
+      misplacedAuthorize,
+      authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
    };
 }
 
-function extractQueries(modelDef: ModelDef): ApiQueryWire[] {
-   return extractQueriesFromModelDef(modelDef) as ApiQueryWire[];
+/**
+ * Collects `validateAuthorizeProbes`'s non-fatal `onRowLevelGateUnexpressible`
+ * findings as plain strings for the wire
+ * (`SerializedModel.authorizeWarnings`) — the worker has no logger (see
+ * `extractSources`'s doc above), so these ride to the main thread, which does,
+ * to be logged once per compiled model.
+ */
+function authorizeWarningCollector(): {
+   onRowLevelGateUnexpressible: (sourceName: string, detail: string) => void;
+   warnings: string[];
+} {
+   const warnings: string[] = [];
+   return {
+      warnings,
+      onRowLevelGateUnexpressible: (sourceName, detail) => {
+         warnings.push(
+            `Row-level #(authorize) gate not expressible at entry point "${sourceName}"; every query against it will be denied: ${detail}`,
+         );
+      },
+   };
+}
+
+function extractQueries(modelDef: ModelDef): {
+   queries: ApiQueryWire[];
+   misplacedAuthorize: MisplacedAuthorizeAnnotation[];
+} {
+   const { queries, misplacedAuthorize } = extractQueriesFromModelDef(modelDef);
+   return {
+      queries: queries as unknown as ApiQueryWire[],
+      misplacedAuthorize,
+   };
 }
 
 function buildRuntimeForModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
-   jobId: string,
 ): { runtime: Runtime; urlReader: HackyDataStylesAccumulator } {
-   const urlReader = new HackyDataStylesAccumulator(makeWorkerUrlReader(jobId));
+   const urlReader = new HackyDataStylesAccumulator(makeWorkerUrlReader(job));
    const runtime = new Runtime({
       urlReader,
       config: malloyConfig,
@@ -617,11 +702,7 @@ async function compileMalloyModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      job.requestId,
-   );
+   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
    const mm = runtime.loadModel(modelURL, { importBaseURL });
    const compiled = await mm.getModel();
    const modelDef = compiled._modelDef;
@@ -639,16 +720,76 @@ async function compileMalloyModel(
    );
    appendLocalSourceInfos(modelDef, sourceInfos, importedNames);
 
-   const { sources, filterMap, ownAuthorizeSources } = extractSources(
-      modelDef,
-      givens,
+   const {
+      sources,
+      filterMap,
+      authorizeMap,
+      misplacedAuthorize,
+      authorizeOwnNotes,
+      attributedAuthorizeOwnNotes,
+   } = extractSources(modelDef, givens);
+   const queryResult = extractQueries(modelDef);
+   const queries = queryResult.queries;
+   // A `#(authorize)` annotation in a position nothing enforces (a top-level
+   // `query:` statement, or a field inside a `source:` rather than the
+   // `source:` line itself) fails OPEN — see
+   // `assertNoMisplacedAuthorizeAnnotations`'s doc. Checked before
+   // `validateAuthorizeProbes` below, same order as `Model.create`.
+   assertNoMisplacedAuthorizeAnnotations([
+      ...misplacedAuthorize,
+      ...queryResult.misplacedAuthorize,
+   ]);
+   // The string form is refused outright — see `findLegacyStringGates`'s doc.
+   // Checked before `validateAuthorizeProbes`, same order as `Model.create`.
+   // Presence-based `authorizeOwnNotes` (not the attributed map) — see
+   // `extractSourcesFromModelDef`'s doc for why this refusal must not narrow.
+   const legacyStringGates = findLegacyStringGates(authorizeOwnNotes);
+   legacyStringGates.forEach(() =>
+      recordRowLevelGateRejected("legacy_string_gate"),
    );
-   const queries = extractQueries(modelDef);
+   assertNoLegacyStringGate(legacyStringGates);
+   // A source may declare at most one `#(authorize)` block — see
+   // `findMultipleAuthorizeGates`'s doc. Presence-based, same reason as above.
+   assertAtMostOneAuthorizeGate(findMultipleAuthorizeGates(authorizeOwnNotes));
    // Validate #(authorize) at compile time (shared with Model.create). Throws
-   // on an unknown given / source-field reference; compileOneModel's catch
-   // turns it into this model's compilationError. Declared gates only — an
-   // inherited one belongs to the base's namespace (see extractSources).
-   await validateAuthorizeProbes(mm, ownAuthorizeSources);
+   // on an unknown given / source-field reference or a rejected row-level
+   // shape; compileOneModel's catch turns it into this model's
+   // compilationError. A gate INHERITED at an entry point that can't express
+   // it does not throw — see `validateAuthorizeProbes`'s doc comment for what
+   // it validates.
+   const authorizeWarningCollection = authorizeWarningCollector();
+   await validateAuthorizeProbes(mm, {
+      authorizeMap,
+      authorizeOwnNotes: attributedAuthorizeOwnNotes,
+      onRowLevelGateRejected: recordRowLevelGateRejected,
+      onRowLevelGateUnexpressible:
+         authorizeWarningCollection.onRowLevelGateUnexpressible,
+      // G4/W1/W2 for the SOURCE-LINE form, run at EVERY entry point whose
+      // probe compiled (see `validateAuthorizeProbes`'s doc on this
+      // callback) -- `sourceName` may be an inheritor, not only the
+      // DECLARING source. `modelDef.contents[sourceName]` is the same
+      // struct the probe was grafted onto, so `refSummary` is already
+      // resolved against it either way. The worker has no logger (see this
+      // function's doc), so a warning rides the same wire channel as
+      // `onRowLevelGateUnexpressible` above.
+      onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+         const struct = modelDef.contents[sourceName];
+         if (!struct || !isSourceDef(struct)) return;
+         validateSourceLineGateGivenUsage(
+            sourceName,
+            struct,
+            condition.refSummary as ExpandableRefSummary | undefined,
+            condition.e,
+            modelDef,
+            (cause, detail) => {
+               recordRowLevelGateRejected(cause);
+               authorizeWarningCollection.warnings.push(
+                  `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+               );
+            },
+         );
+      },
+   });
 
    return {
       modelPath,
@@ -666,6 +807,11 @@ async function compileMalloyModel(
       givens,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
+      problems: job.collectProblems ? compiled.problems : undefined,
+      authorizeWarnings:
+         authorizeWarningCollection.warnings.length > 0
+            ? authorizeWarningCollection.warnings
+            : undefined,
    };
 }
 
@@ -681,11 +827,8 @@ async function compileNotebookModel(
    const modelURL = pathToFileURL(fullPath);
    const importBaseURL = new URL(".", modelURL);
 
-   const { runtime, urlReader } = buildRuntimeForModel(
-      job,
-      malloyConfig,
-      job.requestId,
-   );
+   const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
+   const authorizeWarningCollection = authorizeWarningCollector();
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
    const parse = MalloySQLParser.parse(fileContents, modelPath);
@@ -809,8 +952,10 @@ async function compileNotebookModel(
    let finalSourceInfos: Malloy.SourceInfo[] | undefined;
    let finalFilterMap: Map<string, FilterDefinition[]> | undefined;
    let finalGivens: ApiGivenWire[] | undefined;
+   let finalProblems: unknown[] | undefined;
    if (mm) {
       const compiled = await mm.getModel();
+      finalProblems = compiled.problems;
       finalModelDef = compiled._modelDef;
       const malloyGivens = Array.from(compiled.givens.values());
       finalGivens =
@@ -831,10 +976,56 @@ async function compileNotebookModel(
       const extracted = extractSources(finalModelDef, finalGivens);
       finalSources = extracted.sources;
       finalFilterMap = extracted.filterMap;
-      finalQueries = extractQueries(finalModelDef);
-      // Validate #(authorize) at compile time (shared with Model.create).
-      // Declared gates only — see extractSources.
-      await validateAuthorizeProbes(mm, extracted.ownAuthorizeSources);
+      const finalQueryResult = extractQueries(finalModelDef);
+      finalQueries = finalQueryResult.queries;
+      // See the identical check in `compileMalloyModel` above.
+      assertNoMisplacedAuthorizeAnnotations([
+         ...extracted.misplacedAuthorize,
+         ...finalQueryResult.misplacedAuthorize,
+      ]);
+      // See the identical check in `compileMalloyModel` above.
+      const finalLegacyStringGates = findLegacyStringGates(
+         extracted.authorizeOwnNotes,
+      );
+      finalLegacyStringGates.forEach(() =>
+         recordRowLevelGateRejected("legacy_string_gate"),
+      );
+      assertNoLegacyStringGate(finalLegacyStringGates);
+      // See the identical check in `compileMalloyModel` above.
+      assertAtMostOneAuthorizeGate(
+         findMultipleAuthorizeGates(extracted.authorizeOwnNotes),
+      );
+      // Validate #(authorize) at compile time (shared with Model.create). See
+      // `validateAuthorizeProbes`'s doc comment for what it validates.
+      //
+      // `const` (not the outer `let finalModelDef`) so the narrowed
+      // non-undefined type survives into the closure below.
+      const finalCompiledModelDef: ModelDef = finalModelDef;
+      await validateAuthorizeProbes(mm, {
+         authorizeMap: extracted.authorizeMap,
+         authorizeOwnNotes: extracted.attributedAuthorizeOwnNotes,
+         onRowLevelGateRejected: recordRowLevelGateRejected,
+         onRowLevelGateUnexpressible:
+            authorizeWarningCollection.onRowLevelGateUnexpressible,
+         // See the identical check in `compileMalloyModel` above.
+         onOwnRowLevelConditionCompiled: (sourceName, condition) => {
+            const struct = finalCompiledModelDef.contents[sourceName];
+            if (!struct || !isSourceDef(struct)) return;
+            validateSourceLineGateGivenUsage(
+               sourceName,
+               struct,
+               condition.refSummary as ExpandableRefSummary | undefined,
+               condition.e,
+               finalCompiledModelDef,
+               (cause, detail) => {
+                  recordRowLevelGateRejected(cause);
+                  authorizeWarningCollection.warnings.push(
+                     `Row-level #(authorize) gate warning on "${sourceName}" (${cause}): ${detail}`,
+                  );
+               },
+            );
+         },
+      });
    }
 
    return {
@@ -852,6 +1043,11 @@ async function compileNotebookModel(
       notebookCells,
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
+      problems: job.collectProblems ? finalProblems : undefined,
+      authorizeWarnings:
+         authorizeWarningCollection.warnings.length > 0
+            ? authorizeWarningCollection.warnings
+            : undefined,
    };
 }
 
@@ -903,6 +1099,12 @@ async function loadPackage(
 
    const allFiles = await listPackageFiles(job.packagePath);
    const modelPaths = filterModelPaths(allFiles);
+   const replacementMatchedExisting = job.replacement
+      ? modelPaths.includes(job.replacement.modelPath)
+      : undefined;
+   if (job.replacement && !replacementMatchedExisting) {
+      modelPaths.push(job.replacement.modelPath);
+   }
 
    // Bracket the compile region: only work from here on is compilation +
    // proxied schema fetches. The setup above (manifest read + file listing)
@@ -927,6 +1129,7 @@ async function loadPackage(
       requestId: job.requestId,
       packageMetadata,
       models,
+      replacementMatchedExisting,
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Compile-region wall minus the schema-fetch wait it contains — a

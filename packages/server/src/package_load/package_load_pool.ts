@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Main-thread half of the package-load worker pool.
  *
@@ -215,6 +218,10 @@ export interface LoadPackageJob {
    urlReader?: PackageLoadUrlReader;
    /** Optional buildManifest passed through to Malloy Runtime. */
    buildManifest?: unknown;
+   /** Optional in-memory model replacement for a package compile dry-run. */
+   replacement?: { modelPath: string; source: string };
+   /** Return non-fatal compiler diagnostics for dry-run reporting. */
+   collectProblems?: boolean;
 }
 
 /**
@@ -242,6 +249,7 @@ export interface LoadPackageOutcome {
       /** See {@link LoadPackageResult.packageMetadata.manifestWarnings}. */
       manifestWarnings?: string[];
    };
+   replacementMatchedExisting?: boolean;
    models: Array<
       Omit<SerializedModel, "modelDef" | "sourceInfos"> & {
          modelDef?: ModelDef;
@@ -451,6 +459,8 @@ export class PackageLoadPool {
          packageName: qj.request.packageName,
          defaultConnectionName: qj.request.defaultConnectionName,
          buildManifest: qj.request.buildManifest,
+         replacement: qj.request.replacement,
+         collectProblems: qj.request.collectProblems,
       };
       pw.worker.postMessage(message);
    }
@@ -842,6 +852,7 @@ function buildFetchOptions(options: {
 function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
    return {
       packageMetadata: result.packageMetadata,
+      replacementMatchedExisting: result.replacementMatchedExisting,
       models: result.models.map((m) => ({
          ...m,
          modelDef: m.modelDef as ModelDef | undefined,

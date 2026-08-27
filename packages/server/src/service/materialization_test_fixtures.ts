@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { PersistSource } from "@malloydata/malloy";
 import {
    BuildInstruction,
@@ -240,11 +243,16 @@ export function fakeSource(opts: {
  * Assemble a {@link CompiledBuildPlan} from a sources map and dependency
  * levels (one connection, "duckdb"). `connections` is supplied by the caller
  * because build vs. plan-derivation tests need different connection mocks.
+ * `sourceGateOutcomes` is left undefined unless a test explicitly supplies
+ * one — a fixture that doesn't set it exercises the fail-closed default (no
+ * compile-time gate outcome ⇒ the colocated authorize relaxation never
+ * applies, same as before that outcome existed).
  */
 export function compiledWith(
    sources: Record<string, PersistSource>,
    levels: string[][],
    connections: CompiledBuildPlan["connections"] = new Map(),
+   sourceGateOutcomes?: CompiledBuildPlan["sourceGateOutcomes"],
 ): CompiledBuildPlan {
    return {
       graphs: [
@@ -258,5 +266,6 @@ export function compiledWith(
       sources,
       connectionDigests: { duckdb: "dig" },
       connections,
+      sourceGateOutcomes,
    };
 }

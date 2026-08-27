@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Build a bundled JSON of the agent skills so the MCP server can expose them as
  * MCP prompts (dual-channel): skill-aware hosts read the skill files directly, while
@@ -9,6 +12,21 @@
  *   bun run packages/server/src/mcp/skills/build_skills_bundle.ts <skills-dir> [out.json]
  *
  * <skills-dir> points at the repo's top-level skills/ directory.
+ *
+ * Indented rather than minified, and that is load-bearing rather than cosmetic.
+ * One line per entry field gives git something to merge: two branches that edit
+ * different skills land on different lines and merge without a conflict, where a
+ * single-line bundle made every pair of concurrent skills edits collide on the
+ * one line the whole file consists of. A skill body stays on one line either
+ * way, since a JSON string cannot hold a raw newline, so what remains is a
+ * normal line-scoped conflict: the two branches touched the same region, either
+ * the same entry or two entries inserted at the same sorted position.
+ *
+ * The width is 3 to match tabWidth in packages/server/.prettierrc, which makes
+ * this output byte-identical to what prettier emits. At any other width the file
+ * is permanently unformatted by its own package's config, so a contributor with
+ * format-on-save rewrites every line of it just by opening the file. Change this
+ * only alongside that setting.
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -23,12 +41,23 @@ export function unquote(s: string): string {
    return s.trim().replace(/^["']|["']$/g, "");
 }
 
+/**
+ * Drop the license header (an HTML comment at the top of the Markdown body) and
+ * trim. The header is for the file; the agent reading the prompt should not
+ * see it as the first line.
+ */
+export function stripLicenseHeader(body: string): string {
+   return body
+      .replace(/^\s*<!--[\s\S]*?SPDX-License-Identifier:[\s\S]*?-->/, "")
+      .trim();
+}
+
 /** Parse a SKILL.md into its frontmatter name/description and Markdown body. */
 export function parseSkill(md: string, dirName: string): SkillEntry {
    const text = md.replace(/\r\n/g, "\n"); // tolerate CRLF-committed files
    const fm = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
    const front = fm ? fm[1] : "";
-   const body = (fm ? fm[2] : text).trim();
+   const body = stripLicenseHeader(fm ? fm[2] : text);
    const name = unquote(front.match(/^name:\s*(.+)$/m)?.[1] ?? dirName);
    const description = unquote(
       front.match(/^description:\s*(.+)$/m)?.[1] ?? "",
@@ -69,7 +98,7 @@ export function parseReference(
    skillName: string,
    file: string,
 ): SkillEntry {
-   const body = md.replace(/\r\n/g, "\n").trim();
+   const body = stripLicenseHeader(md.replace(/\r\n/g, "\n"));
    const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
    return {
       name: referenceName(skillName, file),
@@ -148,7 +177,14 @@ export function buildSkills(skillsDir: string): SkillEntry[] {
          );
       }
    }
-   return skills.sort((a, b) => a.name.localeCompare(b.name));
+   // Codepoint order, not localeCompare: entry order decides line positions in a
+   // committed artifact, so it has to be identical on every contributor's machine.
+   // localeCompare follows the runtime's locale (under cs-CZ the `ch` digraph sorts
+   // after `h`, moving malloy-charts), which made a regeneration produce a spurious
+   // reordering diff unrelated to the skill the contributor actually edited.
+   return skills.sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+   );
 }
 
 function main(): void {
@@ -164,7 +200,7 @@ function main(): void {
 
    const skills = buildSkills(skillsDir);
 
-   fs.writeFileSync(outFile, JSON.stringify({ skills }));
+   fs.writeFileSync(outFile, `${JSON.stringify({ skills }, null, 3)}\n`);
    console.log(
       `Wrote ${skills.length} entries (${skills.filter((s) => !s.name.includes("/")).length} skills plus ${skills.filter((s) => s.name.includes("/")).length} reference files) to ${outFile}`,
    );

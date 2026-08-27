@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Wire protocol between the main thread (`PackageLoadPool`) and a
  * package-load worker thread.
@@ -62,6 +65,13 @@
  * The protocol uses plain structured-clonable POJOs so the
  * `postMessage` transfer goes through V8's structured clone — much
  * cheaper than `JSON.stringify` for the multi-MB modelDef payloads.
+ *
+ * Structured clone also PRESERVES INTERNAL ALIASING, and `#(authorize)`
+ * enforcement depends on that: a note object shared by two structs stays
+ * shared across this boundary, which is what lets an inherited gate be told
+ * apart from an independently authored one by reference identity. Switching
+ * this transport to JSON would silently turn every such check into a
+ * fail-closed deny, with no test naming the reason.
  */
 
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
@@ -104,6 +114,15 @@ export interface LoadPackageRequest {
    defaultConnectionName: string | null;
    /** Optional row-build manifest passed through to Malloy Runtime. */
    buildManifest?: unknown;
+   /**
+    * Optional in-memory replacement used by a package compile dry-run. The
+    * worker still enumerates and compiles the package exactly like a reload,
+    * but reads this text instead of the named file. If the path is new it is
+    * added to the compile set without touching disk.
+    */
+   replacement?: { modelPath: string; source: string };
+   /** Include non-fatal compiler diagnostics in SerializedModel results. */
+   collectProblems?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -147,8 +166,29 @@ export interface SerializedModel {
    dataStyles?: unknown;
    /** Wall-clock ms spent compiling this single model in the worker. */
    compileDurationMs?: number;
+   /** Non-fatal compiler diagnostics emitted while compiling this model. */
+   problems?: unknown[];
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
+   /**
+    * Non-fatal `#(authorize)` load-time findings — two independent sources:
+    *  - `validateAuthorizeProbes`'s `onRowLevelGateUnexpressible` case: a gate
+    *    genuinely INHERITED (not declared) at some entry point that could not
+    *    be expressed THERE (renamed/excluded/projected-away field, or a
+    *    `query_source` projection). "Genuinely" is load-bearing:
+    *    `validateAuthorizeProbes` confirms it by the gate's own annotation
+    *    NOTE OBJECT being shared, by reference, with a base (or absent
+    *    entirely) — not by gate text, which two independently-authored
+    *    sources can share without being related at
+    *    all. The model still loads and serves; the affected entry point
+    *    denies every request (`Model.resolveGateShape`).
+    *
+    * The worker has no logger (see `extractSources`'s doc in
+    * `package_load_worker.ts`), so these ride over the wire as plain strings
+    * for the main thread — which does have one — to log once the model is
+    * constructed.
+    */
+   authorizeWarnings?: string[];
 }
 
 export interface SerializedNotebookCell {
@@ -193,6 +233,8 @@ export interface LoadPackageResult {
       manifestWarnings?: string[];
    };
    models: SerializedModel[];
+   /** Whether the replacement path exactly matched an enumerated package file. */
+   replacementMatchedExisting?: boolean;
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**

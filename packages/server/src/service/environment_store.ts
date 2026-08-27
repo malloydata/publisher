@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import { Mutex } from "async-mutex";
@@ -1460,6 +1463,24 @@ export class EnvironmentStore {
                message,
             });
          }
+         // Stale packages are SERVING (they still appear in environments, and
+         // the readiness counters still count them), but the model answering
+         // queries is older than the files on disk because the latest reload
+         // failed to compile. Reported here so the failure is visible off-box:
+         // without it a broken watch-mode save is stderr-only and /status
+         // keeps reading healthy while queries answer from the previous model.
+         for (const [
+            packageName,
+            stale,
+         ] of environment.getStaleCompileErrors()) {
+            loadErrors.push({
+               environment: environmentName,
+               package: packageName,
+               message: stale.message,
+               stale: true,
+               failedAt: stale.failedAt,
+            });
+         }
       }
       // Left unset when nothing failed, so the key is absent from the response
       // and a healthy server's status body is byte-for-byte what it was before
@@ -1645,10 +1666,21 @@ export class EnvironmentStore {
       logger.info(
          `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
       );
-      const unzippedEnvironmentPath = absoluteEnvironmentPath.replace(
-         ".zip",
-         "",
+      // The archive extracts to a sibling directory named for it. Resolve the
+      // target and check it lexically against the archive's directory, in
+      // the one shape CodeQL's js/path-injection query accepts as a barrier
+      // (an unconditional startsWith on the resolved value it later sinks),
+      // so the target provably stays beside the archive.
+      const archiveDir = path.resolve(path.dirname(absoluteEnvironmentPath));
+      const unzippedEnvironmentPath = path.resolve(
+         archiveDir,
+         path.basename(absoluteEnvironmentPath, ".zip"),
       );
+      if (!unzippedEnvironmentPath.startsWith(archiveDir + path.sep)) {
+         throw new BadRequestError(
+            `Refusing to unzip "${absoluteEnvironmentPath}": target escapes its directory`,
+         );
+      }
       await fs.promises.rm(unzippedEnvironmentPath, {
          recursive: true,
          force: true,

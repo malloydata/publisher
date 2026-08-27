@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -270,13 +273,27 @@ const BIND_HOST = "127.0.0.1";
  * and MCP endpoint on every interface, while its own package.json, AGENTS.md and
  * README all still say 127.0.0.1.
  *
- * Exact, not a range: the server is on 0.0.x, where `^` already means exact and
- * `~` spans every version there is, so a range pins nothing. Bump this when
- * releasing create-malloy-package (npm view @malloy-publisher/server dist-tags),
- * and confirm the new version still honours --host. A generated workspace can
- * move itself off it by editing the scripts in its own package.json.
+ * Exact, not a range. On the 0.0.x line the server is still on today that is
+ * forced: `^` already means exact there and `~` spans every version there is, so
+ * no range pins anything. It stays exact after the line moves to 0.MINOR.PATCH
+ * (intended at 0.2.0, not yet cut — see the versioning policy in
+ * .github/workflows/CONTEXT.md), where `^0.2.0` *would* resolve to a genuinely
+ * compatible range, because a range still re-resolves on every `npx` start and
+ * the paragraph above is about exactly that: what a workspace generated months
+ * ago boots today, and what happens the day `--host` moves.
+ *
+ * THE VALUE BELOW IS A DEV DEFAULT, NOT PUBLISHED TRUTH. What a `bun run` from a
+ * clone boots, and nothing more. create-malloy-package-npm.yml's "Resolve
+ * SERVER_VERSION for publishing" step substitutes npm's current
+ * @malloy-publisher/server `latest` into this line in the runner's working tree
+ * at publish time, the same way it de-workspaces the skills dependency, so the
+ * published scaffolder always pins the server that release just shipped. There is
+ * nothing to bump by hand any more, and a stale value here cannot reach a user;
+ * that workflow also re-reads the line back and confirms the published server
+ * still documents --host. A generated workspace can move itself off the pin by
+ * editing the scripts in its own package.json.
  */
-export const SERVER_VERSION = "0.0.237";
+export const SERVER_VERSION = "0.0.250";
 
 function startCommandFor(envName: string): string {
    return (
@@ -299,14 +316,94 @@ function resetCommandFor(envName: string): string {
 }
 
 /**
- * The characters DuckDB accepts in an unquoted file path (DUCKDB_FILE_PATH_RE in
- * malloy's dialect/duckdb/table-path-parser.ts). Publisher absolutizes the model's
- * relative `duckdb.table('data/sales.csv')` against the package directory before
- * that check runs, so one space or accent anywhere in the workspace path makes
- * every model in it fail to load. The server still reports serving and puts the
- * reason in its log, so the user's only symptom is an empty package list.
+ * The boot command with the alternate ports, for the machine whose defaults are
+ * taken. Shared by AGENTS.md and the closing output so the two cannot drift.
+ * It has to be the same boot as the primary one with two flags added:
+ * hardcoding `npm start -- --port ...` ran the workspace's own start script
+ * (`vite --port 4100 --mcp_port 4140`) whenever that script was not ours, and
+ * npm's `--` separator only belongs on the `npm start` form in the first place.
  */
-const DUCKDB_SAFE_PATH_CHAR = /[A-Za-z0-9._~:/?#@!$&*+,=%-]/;
+export function portOverrideCommandFor(result: {
+   hasStartScript: boolean;
+   startCommand: string;
+}): string {
+   return withAlternatePorts(
+      result.hasStartScript ? "npm start" : result.startCommand,
+      result.hasStartScript,
+   );
+}
+
+/**
+ * The same, for the boot that carries --init. A workspace that needs the reset
+ * boot needs it whether or not its ports moved: handing it the plain start
+ * command with two ports appended boots a server that serves its persisted
+ * package list, leaving the package this run just created registered, reported,
+ * and never mounted — the silent failure the reset guidance exists to prevent.
+ */
+export function resetPortOverrideCommandFor(result: {
+   hasResetScript: boolean;
+   resetCommand: string;
+}): string {
+   return withAlternatePorts(
+      result.hasResetScript ? "npm run reset" : result.resetCommand,
+      result.hasResetScript,
+   );
+}
+
+/** npm's `--` separator belongs on the npm-script form only. */
+function withAlternatePorts(command: string, viaNpmScript: boolean): string {
+   return (
+      `${command}${viaNpmScript ? " --" : ""} ` +
+      `--port ${ALT_PUBLISHER_PORT} --mcp_port ${ALT_MCP_PORT}`
+   );
+}
+
+/**
+ * The characters Publisher accepts in a path it mounts a package from:
+ * printable ASCII, which is the character class of SAFE_ENVIRONMENT_PATH_RE in
+ * the server's own path_safety.ts.
+ *
+ * This guard used to refuse any character outside DUCKDB_FILE_PATH_RE (malloy's
+ * dialect/duckdb/table-path-parser.ts), on the premise that Publisher
+ * absolutizes the model's relative `duckdb.table('data/sales.csv')` against the
+ * package directory before that check runs. Measured against the current
+ * server, that premise does not hold on the query path: the per-package
+ * DuckDB sandbox resolves the model's RELATIVE path through its
+ * workingDirectory, reaching DuckDB as a quoted `SET FILE_SEARCH_PATH`
+ * literal, so workspace-path characters never reach the path parser there.
+ * Verified end-to-end (install, load, query a CSV) under paths containing a
+ * space, an apostrophe, and a double quote — and a full QA session served a
+ * 784 MB CSV from a `YYYY-MM-DD Project Name` path, the exact convention the
+ * old refusal turned away with an incorrect explanation. Those are all
+ * printable ASCII, and they are now accepted.
+ *
+ * One server code path still absolutizes: Package.getDatabaseInfo builds a
+ * `duckdb.table('<absolute path>')` literal for the databases endpoint's
+ * schema probe, which DOES reach the path parser, so a spaced/quoted
+ * workspace still loses row counts and column types there (the entry carries
+ * `error` instead of `info`; the package still loads and queries fine, and
+ * status still reports no load errors). Pre-existing server behavior, known
+ * gap, tracked as a follow-up — not a reason to keep the old refusal, since
+ * refusing the whole workspace over a degraded schema panel is the worse
+ * trade.
+ *
+ * The old rule was still right about ONE thing, for a reason that has nothing
+ * to do with DuckDB: assertSafeEnvironmentPath rejects a path outside printable
+ * ASCII when the server mounts the package, so a workspace under `~/josé` loads
+ * nothing. The server reports `serving` with the environment missing and names
+ * the reason only in /api/v0/status loadErrors, so refusing here — before
+ * anything is written — is the difference between a clear message and a
+ * workspace that looks scaffolded and serves nothing. Measured against 0.0.244,
+ * and `SAFE_ENVIRONMENT_PATH_RE` is unchanged in 0.0.250.
+ *
+ * Below U+0020 and DEL are refused for the separate reason that they corrupt
+ * the shell commands and agent-briefing text this tool prints verbatim; being
+ * outside the printable range, the one rule covers both.
+ */
+function isServablePathCharacter(character: string): boolean {
+   const codePoint = character.codePointAt(0) as number;
+   return codePoint >= 0x20 && codePoint <= 0x7e;
+}
 
 /**
  * Names the workspace itself uses. A package on one of these either crashes
@@ -482,6 +579,37 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
       options.cwd,
    );
 
+   // malloy-config.json: for the VS Code / Cursor Malloy extension, which
+   // resolves the model's relative `duckdb.table('data/…')` against the EDITOR
+   // WORKSPACE root, while Publisher resolves it against the package directory.
+   // This tool scaffolds the workspace one level above the package — exactly
+   // the layout that breaks in the editor — so without this file a freshly
+   // scaffolded model is correct in Publisher and shows unresolved-table
+   // errors in the editor, out of the box. The path is absolute because the
+   // extension resolves a relative workingDirectory against its own process
+   // cwd (per-window, non-deterministic); absolute is machine-specific, which
+   // is why the generated .gitignore covers it. path.resolve, because
+   // packageDir is only as absolute as options.cwd was: scaffold() is exported
+   // and its cwd is documented as a directory, not an absolute path, so a
+   // relative one would write exactly the relative workingDirectory this is
+   // absolute to avoid.
+   writeFile(
+      path.join(packageDir, "malloy-config.json"),
+      JSON.stringify(
+         {
+            connections: {
+               duckdb: {
+                  is: "duckdb",
+                  workingDirectory: path.resolve(packageDir),
+               },
+            },
+         },
+         null,
+         2,
+      ) + "\n",
+      options.cwd,
+   );
+
    let dataPath: string;
    if (options.dataFile !== undefined) {
       const sourceBase = path.basename(options.dataFile);
@@ -554,8 +682,9 @@ function forceDescription(name: string, modelFile: string, host: Host): string {
    const mcpPath = mcpConfigPathFor(host);
    return (
       `--force does not empty the directory. It rewrites ${name}/publisher.json, ` +
-      `${name}/${modelFile} and the data file it copies into ${name}/data/, and ` +
-      `leaves anything else in there alone. It also refreshes .claude/skills/ ` +
+      `${name}/malloy-config.json, ${name}/${modelFile} and the data file it ` +
+      `copies into ${name}/data/, and leaves anything else in there alone. ` +
+      `It also refreshes .claude/skills/ ` +
       `from the bundled copies, as every run does. Outside the package it ` +
       `replaces ${agentFiles}; in package.json it sets only the "start" and ` +
       `"reset" scripts and keeps the rest of the file as it is; in ${mcpPath} it ` +
@@ -841,49 +970,60 @@ function installWorkspaceSkills(cwd: string, result: ScaffoldResult): void {
 }
 
 /**
- * Refuse a workspace path DuckDB cannot read data files from. The scaffold cannot
- * work around it by quoting, because the model already single-quotes the path and
- * Publisher rewrites it to an absolute one before DuckDB sees it.
+ * Refuse a workspace path Publisher would not mount a package from. Spaces,
+ * apostrophes, and quotes are all fine on the query path — the served data
+ * path is the model's RELATIVE `duckdb.table('data/…')`, resolved against the
+ * package's working directory, so workspace-path characters never reach
+ * DuckDB's path parser there (one server code path still absolutizes and
+ * degrades gracefully instead; see {@link isServablePathCharacter}). What is
+ * refused is anything outside printable ASCII, which is the server's own rule
+ * for a path it mounts, plus the control characters that would corrupt what
+ * this tool prints (see the note on {@link isServablePathCharacter}).
  */
 function assertServablePath(cwd: string): void {
    const absolute = path.resolve(cwd);
-   // Windows separators are normalized before the path reaches DuckDB, so only
-   // the rest of the path has to be in the safe set.
-   const candidate =
-      path.sep === "\\" ? absolute.replace(/\\/g, "/") : absolute;
-   for (const character of candidate) {
-      if (!DUCKDB_SAFE_PATH_CHAR.test(character)) {
+   for (const character of absolute) {
+      if (!isServablePathCharacter(character)) {
+         const codePoint = character.codePointAt(0) as number;
+         // The two halves of the refused set fail for unrelated reasons, and
+         // the reason is the actionable part of the message.
+         const consequence =
+            codePoint < 0x20 || codePoint === 0x7f
+               ? `which would corrupt the commands and briefing files this ` +
+                 `tool writes verbatim`
+               : `and Publisher refuses to mount a package from a path ` +
+                 `outside printable ASCII: it would report serving with this ` +
+                 `workspace's environment missing, naming the reason only in ` +
+                 `/api/v0/status loadErrors`;
          throw new ScaffoldError(
             // printable(), because the path being refused is a path holding a
             // character this tool has just decided it cannot handle, and an ESC
             // or a CR in it would be sent to the terminal rather than shown.
-            `This workspace cannot live in ${printable(absolute)}: DuckDB ` +
-               `cannot read a ` +
-               `data file under a path containing ${describeCharacter(
-                  character,
-               )}, so every model here would fail to load with the server ` +
-               `still reporting healthy. Move to a path made of letters, ` +
-               `digits, "-", "_", "." and "/" (for example ` +
-               `~/malloy-workspace) and run again.`,
+            `This workspace cannot live in ${printable(absolute)}: its path ` +
+               `contains ${describeCharacter(character)}, ${consequence}. ` +
+               `Move to a path of printable ASCII and run again — spaces are ` +
+               `fine, so ~/Documents/My Projects works.`,
          );
       }
    }
 }
 
-/** Name the offending character, since several of them do not print usefully. */
+/**
+ * Name the offending character, since none of them print usefully: everything
+ * that reaches this is either a control character or outside ASCII.
+ */
 function describeCharacter(character: string): string {
    const named: Record<string, string> = {
-      " ": "a space",
-      "'": "an apostrophe",
-      '"': "a double quote",
-      "\\": "a backslash",
       "\t": "a tab",
+      "\n": "a line feed",
+      "\r": "a carriage return",
    };
-   const label = named[character] ?? `"${character}"`;
+   // printable(), not the raw character: interpolating an ESC or a CR here
+   // would send it to the terminal, defeating the printable() call on the path
+   // this message is built from.
+   const label = named[character] ?? `"${printable(character)}"`;
    const codePoint = character.codePointAt(0) as number;
-   return codePoint < 0x20 || codePoint > 0x7e
-      ? `${label} (U+${codePoint.toString(16).toUpperCase().padStart(4, "0")})`
-      : label;
+   return `${label} (U+${codePoint.toString(16).toUpperCase().padStart(4, "0")})`;
 }
 
 /**
@@ -1816,14 +1956,7 @@ function renderAgentsFile(
    const startCommand = result.hasStartScript
       ? "npm start"
       : result.startCommand;
-   // The port-override line in AGENTS.md has to be the same boot as the one
-   // above it, with two flags added. Hardcoding `npm start -- --port ...` there
-   // ran the workspace's own start script (`vite --port 4100 --mcp_port 4140`)
-   // whenever that script was not ours, and npm's `--` separator only belongs on
-   // the `npm start` form in the first place.
-   const portOverrideCommand =
-      `${startCommand}${result.hasStartScript ? " --" : ""} ` +
-      `--port ${ALT_PUBLISHER_PORT} --mcp_port ${ALT_MCP_PORT}`;
+   const portOverrideCommand = portOverrideCommandFor(result);
    return renderTemplate("AGENTS.md", {
       title: result.packageCreated
          ? `${result.packageName}: a Malloy Publisher package`
@@ -1900,6 +2033,8 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
          "  -H 'content-type: application/json' \\",
          `  -d '{"query":"run: ${result.sourceName} -> overview"}'`,
          "```",
+         "",
+         `The VS Code / Cursor Malloy extension resolves the model's relative \`duckdb.table('data/…')\` paths against the EDITOR WORKSPACE root, while Publisher resolves them against the package directory. \`${result.packageName}/malloy-config.json\` (generated, machine-specific absolute path) bridges that for an editor opened at this workspace root; without it, open the editor at \`${result.packageName}/\` itself, or a model Publisher serves fine shows unresolved-table errors in the editor.`,
          "",
       );
    }
@@ -1991,6 +2126,12 @@ function workspaceGitignoreEntries(): string[] {
       "publisher.db*",
       "*.log",
       ".DS_Store",
+      // Unanchored, so it matches at any depth: one per package. It carries an
+      // absolute workingDirectory generated on this machine, so committing it
+      // points a teammate's editor at a directory that does not exist on their
+      // machine, which reads as every table failing to resolve rather than as a
+      // missing file.
+      "malloy-config.json",
    ];
 }
 

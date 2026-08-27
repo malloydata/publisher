@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "child_process";
 import * as fs from "fs";
@@ -5,6 +8,7 @@ import * as os from "os";
 import * as path from "path";
 import { logger } from "./logger";
 import {
+   addCommand,
    ensureMcpConfig,
    logMcpConfigOutcome,
    MCP_CONFIG_FILENAME,
@@ -135,12 +139,83 @@ describe("ensureMcpConfig", () => {
          expect(fs.readFileSync(cfg(dir), "utf8")).toBe(body);
       });
 
-      it("does not touch a file it could not parse, and does not read it", () => {
+      it("does not touch a file it could not parse, and does not surface its content", () => {
          const dir = tmpDir();
          const body = "{ this is not json";
          fs.writeFileSync(cfg(dir), body);
          expect(run(dir).action).toBe("exists");
          expect(fs.readFileSync(cfg(dir), "utf8")).toBe(body);
+      });
+   });
+
+   describe("an existing file's malloy URL is compared against this run", () => {
+      // The stale-pointer trap (observed live): a boot writes the file, dies on
+      // its REST port, and the retry on other ports skips the rewrite, so the
+      // file points every future agent session at a dead port with nothing
+      // saying so. The compare exists to say so.
+      const outcomeFor = (dir: string, mcpPort = 4040) =>
+         run(dir, mcpPort) as Extract<McpConfigOutcome, { action: "exists" }>;
+
+      it("flags a file naming a different URL", () => {
+         const dir = tmpDir();
+         fs.writeFileSync(
+            cfg(dir),
+            JSON.stringify({
+               mcpServers: { malloy: { type: "http", url: ep(4040) } },
+            }),
+         );
+         const outcome = outcomeFor(dir, 15040);
+         expect(outcome.action).toBe("exists");
+         expect(outcome.existingUrl).toBe(ep(4040));
+      });
+
+      it("stays quiet when the URL matches this run", () => {
+         const dir = tmpDir();
+         fs.writeFileSync(
+            cfg(dir),
+            JSON.stringify({
+               mcpServers: { malloy: { type: "http", url: ep(4040) } },
+            }),
+         );
+         const outcome = outcomeFor(dir);
+         expect(outcome.action).toBe("exists");
+         expect(outcome.existingUrl).toBeUndefined();
+      });
+
+      it("stays quiet when the file does not parse", () => {
+         const dir = tmpDir();
+         fs.writeFileSync(cfg(dir), "{ this is not json");
+         expect(outcomeFor(dir, 15040).existingUrl).toBeUndefined();
+      });
+
+      it("stays quiet on a stdio bridge entry, which has no url", () => {
+         const dir = tmpDir();
+         fs.writeFileSync(
+            cfg(dir),
+            JSON.stringify({
+               mcpServers: {
+                  malloy: { command: "npx", args: ["-y", "mcp-remote"] },
+               },
+            }),
+         );
+         expect(outcomeFor(dir, 15040).existingUrl).toBeUndefined();
+      });
+
+      it.skipIf(!canSymlink)("never reads through a symlink", () => {
+         // A link named .mcp.json could point anywhere; comparing would mean
+         // reading the target. The lstat gate keeps that off the table.
+         const dir = tmpDir();
+         const target = path.join(dir, "elsewhere.json");
+         fs.writeFileSync(
+            target,
+            JSON.stringify({
+               mcpServers: { malloy: { type: "http", url: ep(4040) } },
+            }),
+         );
+         fs.symlinkSync(target, cfg(dir));
+         const outcome = outcomeFor(dir, 15040);
+         expect(outcome.action).toBe("exists");
+         expect(outcome.existingUrl).toBeUndefined();
       });
    });
 
@@ -543,6 +618,25 @@ describe("logMcpConfigOutcome", () => {
       expect(said.join("\n")).toContain(
          `claude mcp add --transport http malloy '${ep(15040)}'`,
       );
+   });
+
+   it("warns, naming both URLs, when the existing file points somewhere else", () => {
+      const said: string[] = [];
+      const restore = captureLogger(said);
+      try {
+         logMcpConfigOutcome({
+            action: "exists",
+            file: "/w/.mcp.json",
+            endpoint: ep(15040),
+            existingUrl: ep(4040),
+         });
+      } finally {
+         restore();
+      }
+      const text = said.join("\n");
+      expect(text).toContain(ep(4040));
+      expect(text).toContain(ep(15040));
+      expect(text).toContain(addCommand(ep(15040)));
    });
 
    it("says it wrote the file, and how to turn that off", () => {

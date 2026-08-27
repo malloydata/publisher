@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * JSON.stringify replacer for raw driver output, which can carry BigInt.
  *

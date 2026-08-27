@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Shared contract for serving and embedding in-package HTML data apps.
 //
 // Both the Publisher SPA host (DataAppViewer.tsx, Package.tsx) and the

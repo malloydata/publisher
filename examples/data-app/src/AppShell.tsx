@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { ThemeProvider } from "@mui/material/styles";
 import {
   PaletteMode,

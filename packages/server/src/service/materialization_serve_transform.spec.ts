@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Real-compiler + real-DuckDB contract for the virtual-source serve transform.
 // The declared serve-shape schema is trusted on faith by the compiler (it does
 // NOT type-check a virtual source's columns), so the generate -> compile ->
@@ -596,6 +599,89 @@ describe("narrowSchemaToPublic", () => {
       // to live rather than risk exposing a hidden column.
       expect(narrowSchemaToPublic(schema, undefined)).toEqual([]);
       expect(narrowSchemaToPublic(schema, [])).toEqual([]);
+   });
+
+   it("matches an UPPERCASE captured name and emits the author's spelling", () => {
+      // What an upper-folding warehouse (Snowflake, Oracle, Redshift, Teradata)
+      // reports from DESCRIBE. An exact match intersects to NOTHING here, and the
+      // caller drops an empty-schema binding — so the source leaves the serve
+      // shape and every query on it falls back live.
+      const captured = [
+         { name: "ID", type: "BIGINT" },
+         { name: "SSN", type: "VARCHAR" },
+         { name: "AMOUNT", type: "BIGINT" },
+      ];
+      const fields = [{ name: "id" }, { name: "amount" }];
+      expect(narrowSchemaToPublic(captured, fields)).toEqual([
+         { name: "id", type: "BIGINT" },
+         { name: "amount", type: "BIGINT" },
+      ]);
+   });
+
+   it("still hides a non-public column when the captured name differs in case", () => {
+      // The security property must not ride on the case matching: folding decides
+      // which PHYSICAL column can match an author field, never which author fields
+      // exist. `ssn` is access-restricted, so `SSN` has nothing public to match.
+      const captured = [
+         { name: "ID", type: "BIGINT" },
+         { name: "SSN", type: "VARCHAR" },
+      ];
+      const fields = [
+         { name: "id" },
+         { name: "ssn", accessModifier: "private" },
+      ];
+      expect(narrowSchemaToPublic(captured, fields).map((c) => c.name)).toEqual(
+         ["id"],
+      );
+   });
+
+   it("prefers an EXACT hit over a fold, so a folding dimension cannot steal a column", () => {
+      // Malloy permits two fields differing only in case: a `TitleCase` dimension
+      // over a `snake_case` column. On a case-PRESERVING warehouse the captured
+      // name already is the author's, so folding first let the dimension's name
+      // win the physical column — the shape declared the stored column as `Total`,
+      // the duplicate against the re-emitted dimension failed the shape down to
+      // base-only, and `group_by: Total` served the raw column (1) instead of the
+      // computed one (other * 10 = 20). Wrong rows, reported `servedFrom: storage`.
+      const captured = [
+         { name: "total", type: "BIGINT" },
+         { name: "other", type: "BIGINT" },
+      ];
+      const fields = [
+         { name: "total" },
+         { name: "other" },
+         { name: "Total", code: "other * 10", expressionType: "scalar" },
+      ];
+      expect(narrowSchemaToPublic(captured, fields)).toEqual([
+         { name: "total", type: "BIGINT" },
+         { name: "other", type: "BIGINT" },
+      ]);
+   });
+
+   it("drops a captured column that several author fields fold onto", () => {
+      // The upper-folded version of the case above: nothing here can tell which of
+      // `total`/`Total` the warehouse's `TOTAL` came from, and guessing is the bug
+      // the test above pins. Dropping sends a query touching it to live, where the
+      // author's own names still distinguish the two.
+      const captured = [{ name: "TOTAL", type: "BIGINT" }];
+      const fields = [
+         { name: "total" },
+         { name: "Total", code: "other * 10", expressionType: "scalar" },
+      ];
+      expect(narrowSchemaToPublic(captured, fields)).toEqual([]);
+   });
+
+   it("emits a case-colliding author field once rather than failing the shape", () => {
+      // Two physical columns folding onto one author field: declaring the name
+      // twice is a duplicate that fails the whole shape model, which would cost
+      // storage serving for every source in the model. First wins.
+      const captured = [
+         { name: "AMOUNT", type: "BIGINT" },
+         { name: "amount", type: "VARCHAR" },
+      ];
+      expect(narrowSchemaToPublic(captured, [{ name: "amount" }])).toEqual([
+         { name: "amount", type: "BIGINT" },
+      ]);
    });
 });
 

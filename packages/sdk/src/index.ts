@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 export * from "./components";
 export { default as ConnectionExplorer } from "./components/Environment/ConnectionExplorer";
 export { useServer } from "./components/ServerProvider";

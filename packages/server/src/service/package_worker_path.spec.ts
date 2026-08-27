@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Integration test: exercise `Package.create` with the package-load
  * worker pool enabled (PACKAGE_LOAD_WORKERS=1).
@@ -178,8 +181,8 @@ describe("Package.create via worker pool", () => {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.sql("select 1 as id")`,
+#(authorize) $ROLE = 'analyst'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
@@ -209,8 +212,8 @@ source: gated is duckdb.sql("select 1 as id")`,
 given:
   ROLE :: string
 
-#(authorize) "$NOPE = 'x'"
-source: gated is duckdb.sql("select 1 as id")`,
+#(authorize) $NOPE = 'x'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { ModelCompilationError } = await import("../errors");
@@ -240,8 +243,8 @@ source: gated is duckdb.sql("select 1 as id")`,
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.sql("select 1 as id")`,
+#(authorize) $ROLE = 'analyst'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
@@ -267,8 +270,8 @@ source: gated is duckdb.sql("select 1 as id")`,
 given:
   ROLE :: string
 
-#(authorize) "$NOPE = 'x'"
-source: gated is duckdb.sql("select 1 as id")`,
+#(authorize) $NOPE = 'x'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { ModelCompilationError } = await import("../errors");

@@ -2,6 +2,10 @@
 name: malloy-analysis-report
 description: Combine validated Malloy queries into a notebook report or dashboard. Use when the user asks to "create a report", "build a dashboard", "combine these into a report", or wants a persistent multi-query artifact.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Creating Reports
 
@@ -85,9 +89,10 @@ run: source -> {
 A `# dashboard` cell composes nested views, useful for KPIs alongside a trend in a single cell. Each `nest:` is a tile; any top-level `aggregate:` measures render as KPI cards. For a fixed grid, use `# dashboard { columns=N }` with `# colspan` on each tile (see `skill:malloy-charts`):
 
 ```malloy
-# dashboard
+# dashboard { columns=2 }
 run: source -> {
   nest:
+    # colspan=2
     # big_value
     kpis is {
       aggregate:

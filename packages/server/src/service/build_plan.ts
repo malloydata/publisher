@@ -1,10 +1,16 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type {
    AtomicField,
    BuildGraph as MalloyBuildGraph,
    BuildNode,
    MalloyConfig,
    Connection as MalloyConnection,
+   ModelDef,
+   ModelMaterializer,
    PersistSource,
+   SourceDef,
 } from "@malloydata/malloy";
 import { Annotations } from "@malloydata/malloy";
 import { components } from "../api";
@@ -17,19 +23,34 @@ import {
 } from "../materialization_metrics";
 import { errMessage } from "../utils";
 import {
+   createGateClassificationDeps,
+   collectEntryPointGates,
+   resolveGateShape,
+   type GateClassificationDeps,
+   type GraftScope,
+} from "./gate_classification";
+import { malloyGivenToApi, type MalloyGiven } from "./given";
+import {
    resolveIncrementalDeclaration,
    type IncrementalDeclaration,
 } from "./incremental_declaration";
-import { assertMaterializationEligible } from "./materialization_eligibility";
+import {
+   assertColocatedPersistNotAuthorizeGated,
+   assertMaterializationEligible,
+   isAuthorizeAttributedToEntryPoint,
+} from "./materialization_eligibility";
 import { Model } from "./model";
+import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+import type { RollupPlan } from "./preaggregation_synthesis";
 import { quoteIdentifier } from "./quoting";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
+type WireRefusedSource = components["schemas"]["RefusedSource"];
 type WireColumn = components["schemas"]["Column"];
 type BuildPlan = components["schemas"]["BuildPlan"];
 type WireFreshness = components["schemas"]["Freshness"];
-type WirePackageMaterialization =
+export type WirePackageMaterialization =
    components["schemas"]["PackageMaterializationConfig"];
 type QueryMetadata = components["schemas"]["QueryMetadata"];
 
@@ -48,7 +69,7 @@ interface FreshnessLayer {
  * reads by path, plus the subtree read that a property collection like
  * `queryMetadata { … }` needs.
  */
-interface ReadableTag {
+export interface ReadableTag {
    text(...path: string[]): string | undefined;
    tag(...path: string[]): ReadableTag | undefined;
    entries?(): Iterable<[string, { text(): string | undefined }]>;
@@ -65,7 +86,7 @@ export interface BuildPlanPackage {
    getMalloyConfig(): MalloyConfig;
    getMalloyConnection(name: string): Promise<MalloyConnection>;
    /**
-    * The package-level `materialization` config (from malloy-publisher.json),
+    * The package-level `materialization` config (from publisher.json),
     * used as the least-specific layer when resolving per-source freshness /
     * schedule. Optional so existing fixtures/callers that don't track it still
     * typecheck (they resolve without a package default).
@@ -101,6 +122,42 @@ export interface CompiledBuildPlan {
     * dropped.
     */
    droppedPersistSources?: { name: string; modelPath: string }[];
+   /**
+    * sourceID -> the rollup it was synthesized from, for the sources that were
+    * synthesized rather than authored. Absent for an ordinary `#@ persist`
+    * source, which is what makes it the provenance signal the wire plan's
+    * `origin`/`preaggregate` fields report.
+    */
+   preaggregatePlans?: Record<string, RollupPlan>;
+   /**
+    * sourceID -> this source's entry-point `#(authorize)` gate classification,
+    * computed HERE (compile time) because this is where the compiled
+    * `{modelDef, materializer}` pair a classification needs exists — see
+    * {@link classifyPersistSourceGate}. Consumed by a relaxation of the
+    * colocated `#@ persist` refusal (`assertColocatedPersistNotAuthorizeGated`)
+    * that decides whether to admit a gated source; recording the outcome here
+    * changes no refusal on its own. Optional so existing fixtures/callers
+    * that don't track it still typecheck.
+    */
+   sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
+}
+
+/** {@link CompiledBuildPlan.sourceGateOutcomes}'s per-source classification. */
+export type PersistSourceGateClassification = "row_level" | "rejected";
+
+/**
+ * `classification` is the entry-point gate's enforcement shape, per
+ * `gate_classification.ts`'s vocabulary (every `#(authorize)` gate is a row
+ * predicate). `attributed` is `false` when {@link isAuthorizeAttributedToEntryPoint}'s
+ * deep walk finds a note reachable only through a join — see that function's
+ * doc for why that must gate the relaxation independently of
+ * `classification`: `collectEntryPointGates` does not trace joins, so a
+ * join-carried gate can be entirely invisible to `classification` while still
+ * being real and enforced-against today.
+ */
+export interface PersistSourceGateOutcome {
+   classification: PersistSourceGateClassification;
+   attributed: boolean;
 }
 
 /** Output columns of a persist source, degrading to [] if unavailable. */
@@ -184,6 +241,7 @@ export function projectToPublicColumns(
    } catch (err) {
       recordEligibilityRefused("public_surface_unknown");
       throw new MaterializationEligibilityError({
+         reason: "public_surface_unknown",
          message:
             `Source '${persistSource.name}' cannot be materialized into a ` +
             `storage destination: its public column surface could not be ` +
@@ -391,16 +449,63 @@ export function resolveQueryMetadata(
    source: PersistSource,
    packageMaterialization: WirePackageMaterialization | null | undefined,
 ): QueryMetadata | null {
+   return composeDeclaredQueryMetadata({
+      packageDeclaration: packageMaterialization?.queryMetadata ?? null,
+      modelTag: safeModelTag(source),
+      sourceTag: safeSourceTag(source),
+   });
+}
+
+/**
+ * The author-declared layers of one statement's metadata, composed
+ * most-specific-wins PER PROPERTY: source `#@ queryMetadata.*` > model-file
+ * `## queryMetadata.*` > package `queryMetadata`.
+ *
+ * The package and model-file layers each have a deprecated
+ * `materialization.`-prefixed spelling, still read, sitting UNDERNEATH its
+ * canonical form — so a file declaring both resolves to the canonical one. That
+ * is the OPPOSITE of freshness, where the prefixed spelling IS canonical; the
+ * ordering note in the body is where that trap is spelled out.
+ *
+ * Takes tags rather than a {@link PersistSource} so the SERVE path can compose
+ * the same layers from a loaded model, where no `PersistSource` exists. A
+ * declaration describes the source's traffic, not only its build, so a served
+ * query carries it too; {@link resolveQueryMetadata} is the build-path caller,
+ * which still reads both tags off the persist source it is building.
+ *
+ * A layer whose tag is absent contributes nothing rather than clearing what a
+ * less specific layer set — so a package-wide `team` survives a source that only
+ * overrides `workload`, and a model with no `##` tag does not erase the package
+ * default. Null when no layer declares anything, so absence always means
+ * "declared nowhere" rather than "declared empty".
+ */
+export function composeDeclaredQueryMetadata(layers: {
+   /**
+    * The package's declared bag — a bag, not the materialization policy that
+    * carries it on the wire. Nothing here needs a schedule or a freshness
+    * window, and threading the policy object through would say this layer is
+    * about materialization when it is not.
+    */
+   packageDeclaration?: QueryMetadata | null;
+   modelTag?: ReadableTag;
+   sourceTag?: ReadableTag;
+}): QueryMetadata | null {
    // Least specific first, so a more specific layer overwrites property by
    // property.
-   const layers: QueryMetadata[] = [
-      packageMaterialization?.queryMetadata ?? {},
-      ...modelTagLayers(safeModelTag(source))
-         .map(tagQueryMetadataLayer)
-         .reverse(),
-      tagQueryMetadataLayer(safeSourceTag(source)),
+   //
+   // `modelTagLayers` yields [envelope, bare], which is most-specific-first for
+   // freshness — there the envelope is the canonical spelling and the bare form
+   // is the legacy one. Query metadata migrates the other way: the bare `##
+   // queryMetadata.*` is canonical and `## materialization.queryMetadata.*` is
+   // deprecated. So the list is consumed as-is rather than reversed, putting the
+   // deprecated spelling underneath. Reversing it let the spelling we tell
+   // authors to stop writing silently override the one we tell them to write.
+   const ordered: QueryMetadata[] = [
+      layers.packageDeclaration ?? {},
+      ...modelTagLayers(layers.modelTag).map(tagQueryMetadataLayer),
+      tagQueryMetadataLayer(layers.sourceTag),
    ];
-   const resolved: QueryMetadata = Object.assign({}, ...layers);
+   const resolved: QueryMetadata = Object.assign({}, ...ordered);
    return Object.keys(resolved).length > 0 ? resolved : null;
 }
 
@@ -573,6 +678,88 @@ function detectDroppedPersistSources(
    return dropped;
 }
 
+/**
+ * Classify one persist source's entry-point `#(authorize)` gate(s) and decide
+ * whether it is `attributed` — see {@link PersistSourceGateOutcome}'s doc.
+ *
+ * Calls `gate_classification.ts`'s standalone functions directly, rather than
+ * standing up a throwaway `Model` — a build-plan compile has exactly the
+ * `{modelDef, materializer}` shape those functions operate on (a compiled
+ * `ModelDef` plus the live `ModelMaterializer` that produced it), and nothing
+ * else. `materializer` MUST be the same one that compiled `modelDef` — see
+ * `liftGateCondition`'s doc for why a fresh `loadModel` cannot substitute (it
+ * mints a new given identity per call).
+ *
+ * Gate GROUPS: each `GateEntry` `collectEntryPointGates` returns is one AND'd
+ * group (its own OR-disjunction already folded by `resolveGateShape`'s
+ * `gateFilterText`); groups are classified independently here and combined
+ * with enforcement's own dominance rule — refuse if ANY group rejects, else
+ * `row_level`. No entry-point gate at all (`groups.length === 0`) is
+ * vacuously `row_level` (no group to reject) — the source is unrestricted at
+ * its entry point; `attributed` is what still catches a gate hiding behind a
+ * join in that case.
+ *
+ * Fails CLOSED: a throw anywhere in classification (this function's own
+ * `try`, not `resolveGateShape`'s internal one — that already degrades a
+ * lift/classify failure to `{shape: "rejected"}` without throwing) records
+ * `rejected` + `attributed: false`, never a partial/optimistic result.
+ *
+ * Deterministic and network-free: `collectEntryPointGates` reads only the
+ * already-compiled `modelDef` and struct annotations (no I/O), and
+ * `resolveGateShape`'s lift (`liftGateCondition`) compiles a one-row PROBE
+ * query through the SAME already-loaded `materializer` — a pure in-memory
+ * semantic recompile that only generates SQL text, never opens the warehouse
+ * connection or executes anything against it. Load time DOES compile a probe
+ * per entry point/gate group (`validateAuthorizeProbes`, `./authorize`), but
+ * that call returns `Promise<void>` and keeps no classification result: the
+ * only survivor is `SerializedModel.authorizeWarnings: string[]` — so no
+ * `row_level`/`rejected` outcome is reachable from that call. This
+ * compile-time call is the only place that outcome is actually computed.
+ */
+export async function classifyPersistSourceGate(
+   persistSource: PersistSource,
+   modelDef: ModelDef,
+   materializer: ModelMaterializer,
+   deps: GateClassificationDeps,
+   cacheScope: string,
+): Promise<PersistSourceGateOutcome> {
+   try {
+      const entryStruct = persistSource._sourceDef as SourceDef;
+      const groups = collectEntryPointGates(
+         entryStruct,
+         modelDef,
+         new Set(),
+         // This IS the entry point — see `collectEntryPointGates`'s
+         // `treatAsOwnGate` doc.
+         true,
+      );
+      const graftScope: GraftScope = { modelDef, materializer, cacheScope };
+      let classification: PersistSourceGateClassification = "row_level";
+      for (const group of groups) {
+         const shape = await resolveGateShape(
+            group,
+            modelDef,
+            graftScope,
+            deps,
+         );
+         if (shape.shape === "rejected") {
+            classification = "rejected";
+            break;
+         }
+      }
+      return {
+         classification,
+         attributed: isAuthorizeAttributedToEntryPoint(persistSource),
+      };
+   } catch (err) {
+      logger.warn("Failed to classify persist source gate; refusing", {
+         sourceID: persistSource.sourceID,
+         error: errMessage(err),
+      });
+      return { classification: "rejected", attributed: false };
+   }
+}
+
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
@@ -581,6 +768,8 @@ export async function compilePackageBuildPlan(
    const allSources: Record<string, PersistSource> = {};
    const sourceModelPaths: Record<string, string> = {};
    const droppedPersistSources: { name: string; modelPath: string }[] = [];
+   const preaggregatePlans: Record<string, RollupPlan> = {};
+   const sourceGateOutcomes: Record<string, PersistSourceGateOutcome> = {};
 
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
@@ -595,9 +784,81 @@ export async function compilePackageBuildPlan(
          modelPath,
          pkg.getMalloyConfig(),
       );
-      const malloyModel = await runtime
-         .loadModel(modelURL, { importBaseURL })
-         .getModel();
+      // Held onto (rather than chained straight into `.getModel()`) because
+      // the gate classification below needs the SAME live materializer that
+      // compiled this model — see `classifyPersistSourceGate`'s doc.
+      const materializer = runtime.loadModel(modelURL, { importBaseURL });
+      const malloyModel = await materializer.getModel();
+
+      // Pre-aggregation, at the build-plan seam. Runs BEFORE the two `continue`s
+      // below on purpose: a model can declare `#@ preaggregate` while having no
+      // `#@ persist` source of its own (no graphs) and no `experimental.persistence`
+      // flag, and in both cases the annotation should still produce a rollup —
+      // the SYNTHESIZED model declares the flags it needs and is the only thing
+      // holding a persist source. Skipping here would make a valid annotation a
+      // silent no-op, which the publish gate exists to prevent.
+      const synthesized = await tryCompileSynthesizedPreaggregation({
+         packagePath: pkg.getPackagePath(),
+         modelPath,
+         malloyConfig: pkg.getMalloyConfig(),
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         contents: (malloyModel as any)._modelDef?.contents ?? {},
+      });
+      if (synthesized) {
+         const rollupPlan = synthesized.model.getBuildPlan();
+         const rollupNames = new Set(
+            synthesized.plans.map((p) => p.rollupSourceName),
+         );
+         // Graphs wholesale, because they carry the dependency edges: when the
+         // base is ITSELF a `#@ persist` source the rollup's node `dependsOn`
+         // it, and pruning that would let a rollup build before the table it
+         // reads exists.
+         allGraphs.push(...rollupPlan.graphs);
+         // Sources: only the rollups. The synthesized model imports the
+         // author's, so a persist source declared there also appears in this
+         // plan — but under the SAME sourceID, since a sourceID embeds the
+         // model that DECLARES a source rather than the one importing it. The
+         // normal path below adds those from the author's own plan, so leaving
+         // them out here avoids re-deriving an identical entry.
+         const planByName = new Map(
+            synthesized.plans.map((p) => [p.rollupSourceName, p]),
+         );
+         // Lazily built on the first rollup source: same reasoning as the
+         // author-model loop below.
+         let rollupClassificationCtx:
+            | { modelDef: ModelDef; deps: GateClassificationDeps }
+            | undefined;
+         for (const [sourceID, source] of Object.entries(rollupPlan.sources)) {
+            if (!rollupNames.has(source.name)) continue;
+            allSources[sourceID] = source;
+            // The AUTHOR's model path, not the synthesized one: a rollup is
+            // declared by no file, and the model carrying the annotations is
+            // where someone would go to change it (see api-doc's
+            // PersistSourcePlan.modelPath).
+            sourceModelPaths[sourceID] = modelPath;
+            const rollup = planByName.get(source.name);
+            if (rollup) preaggregatePlans[sourceID] = rollup;
+            if (!rollupClassificationCtx) {
+               const rollupGivens = Array.from(
+                  synthesized.model.givens.values(),
+               ) as unknown as MalloyGiven[];
+               rollupClassificationCtx = {
+                  modelDef: synthesized.model._modelDef,
+                  deps: createGateClassificationDeps(
+                     rollupGivens.map(malloyGivenToApi),
+                     `${modelPath}#preaggregate`,
+                  ),
+               };
+            }
+            sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
+               source,
+               rollupClassificationCtx.modelDef,
+               synthesized.materializer,
+               rollupClassificationCtx.deps,
+               `${modelPath}#preaggregate`,
+            );
+         }
+      }
 
       // getBuildPlan() THROWS "Model must have ##! experimental.persistence"
       // on any model that lacks the flag — it does NOT return empty. So a
@@ -636,9 +897,34 @@ export async function compilePackageBuildPlan(
       if (buildPlan.graphs.length === 0) continue;
 
       allGraphs.push(...buildPlan.graphs);
+      // Lazily built on the first persist source: avoids reading
+      // `malloyModel.givens`/`._modelDef` for a model that declares none (a
+      // model can have the persistence flag and yet build no persist source).
+      let classificationCtx:
+         | { modelDef: ModelDef; deps: GateClassificationDeps }
+         | undefined;
       for (const [sourceID, source] of Object.entries(buildPlan.sources)) {
          allSources[sourceID] = source;
          sourceModelPaths[sourceID] = modelPath;
+         if (!classificationCtx) {
+            const givens = Array.from(
+               malloyModel.givens.values(),
+            ) as unknown as MalloyGiven[];
+            classificationCtx = {
+               modelDef: malloyModel._modelDef,
+               deps: createGateClassificationDeps(
+                  givens.map(malloyGivenToApi),
+                  modelPath,
+               ),
+            };
+         }
+         sourceGateOutcomes[sourceID] = await classifyPersistSourceGate(
+            source,
+            classificationCtx.modelDef,
+            materializer,
+            classificationCtx.deps,
+            modelPath,
+         );
       }
    }
 
@@ -675,6 +961,8 @@ export async function compilePackageBuildPlan(
       connections,
       sourceModelPaths,
       droppedPersistSources,
+      preaggregatePlans,
+      sourceGateOutcomes,
    };
 }
 
@@ -686,6 +974,10 @@ export function deriveBuildPlan(
    sourceNames?: string[],
    sourceModelPaths?: Record<string, string>,
    packageMaterialization?: WirePackageMaterialization | null,
+   options?: {
+      preaggregatePlans?: Record<string, RollupPlan>;
+      sourceGateOutcomes?: Record<string, PersistSourceGateOutcome>;
+   },
 ): BuildPlan {
    const include = sourceNames ? new Set(sourceNames) : null;
 
@@ -700,43 +992,144 @@ export function deriveBuildPlan(
    }));
 
    const wireSources: Record<string, WirePersistSourcePlan> = {};
+   const refusedSources: Record<string, WireRefusedSource> = {};
    for (const [sourceID, source] of Object.entries(sources)) {
       if (include && !include.has(source.name)) continue;
-      const annotationFields = deriveAnnotationFields(source);
-      // EFFECTIVE per-source freshness, resolved most-specific-wins
-      // (source > model-file > package) and reported verbatim (null = unset at
-      // every level). Freshness is a dotted/nested tag key, so it comes from
-      // resolveFreshness rather than the scalar annotationFields map, and is
-      // valid in both scope modes. Per-source `sharing`/`schedule` are NOT
-      // emitted (retired from the contract); if a source declares either it is
-      // rejected at publish (Package.persistencePolicyWarnings) — the raw keys
-      // still ride `annotationFields` so the validator can detect them.
-      wireSources[sourceID] = {
-         name: source.name,
-         sourceID: source.sourceID,
-         connectionName: source.connectionName,
-         dialect: source.dialectName,
-         sourceEntityId: computeSourceEntityId(source, connectionDigests),
-         sql: source.getSQL(),
-         // Reported verbatim, and no longer inert: the mode is resolved and
-         // validated alongside `watermark=`/`merge_key=` (see
-         // resolveIncrementalDeclaration, collected per source in
-         // computePackageBuildPlan). The resolution itself is deliberately NOT a
-         // wire field — the control plane reads the free-form annotationFields.
-         refresh: annotationFields.refresh ?? null,
-         freshness: resolveFreshness(source, packageMaterialization),
-         // EFFECTIVE per-source query metadata, resolved per property across the
-         // same layer stack as freshness. A property collection rather than a
-         // scalar, so it comes from resolveQueryMetadata rather than the
-         // annotationFields map.
-         queryMetadata: resolveQueryMetadata(source, packageMaterialization),
-         columns: deriveColumns(source),
-         annotationFields,
-         modelPath: sourceModelPaths?.[sourceID],
-      };
+      // One unreadable source must not cost the package its plan (the same
+      // fallback collectIncrementalDeclarations takes). getSQL() and
+      // computeSourceEntityId below throw for a source the colocated tier
+      // deliberately admits — one referencing a given with no default — and an
+      // escaping throw leaves colocatedSourceEligibility unknown, which drops
+      // EVERY colocated binding for the package rather than this one source.
+      try {
+         const annotationFields = deriveAnnotationFields(source);
+
+         // Tier-appropriate eligibility, BEFORE touching getSQL()/
+         // computeSourceEntityId() below: a free-parameter or given-referencing
+         // source fails those calls, so a refused source must be diverted into
+         // `refusedSources` (which needs neither) rather than attempted here. The
+         // tier mirrors the build path's own choice (deriveSelfInstructions /
+         // executeInstructedBuild): a declared `storage=` gets the full,
+         // unconditional storage-destination gate; a plain `#@ persist` gets the
+         // colocated gate, which — unlike the storage one — admits a proven
+         // row-level, fully-attributed `#(authorize)` gate. Using the storage
+         // gate for every source regardless of declared tier (the existing
+         // `SourceEligibility.refused`, kept for its own serve-binding purpose)
+         // would misreport a now-buildable colocated source as refused.
+         const declaresStorage = !!annotationFields.storage;
+         const rollup = options?.preaggregatePlans?.[sourceID];
+         // A rollup's own eligibility gate refuses UNCONDITIONALLY when its base is
+         // gated (assertColocatedPersistNotAuthorizeGated's origin === "preaggregate"
+         // branch) — that refusal governs whether the rollup MATERIALIZES, enforced
+         // separately at build time (materialization_service.ts). Synthesis is
+         // unaffected by it: the plan still reports the rollup Malloy synthesized, so
+         // a gate stops materialization without also hiding the rollup from the plan.
+         // See preaggregation_seams.spec.ts's "gate stops materialization, not
+         // synthesis" test and docs/materialization.md.
+         if (!rollup) {
+            try {
+               if (declaresStorage) {
+                  assertMaterializationEligible(source);
+               } else {
+                  assertColocatedPersistNotAuthorizeGated(
+                     source,
+                     source.name,
+                     "persist",
+                     options?.sourceGateOutcomes?.[sourceID],
+                  );
+               }
+            } catch (err) {
+               // Only an eligibility refusal is reportable as one; an unexpected
+               // internal throw would otherwise reach the host as a SECURITY
+               // refusal it never earned.
+               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               refusedSources[sourceID] = {
+                  name: source.name,
+                  sourceID: source.sourceID,
+                  modelPath: sourceModelPaths?.[sourceID],
+                  tier: declaresStorage ? "storage" : "colocated",
+                  reason: err.reason || "authorize",
+                  message: errMessage(err),
+               };
+               continue;
+            }
+         } else {
+            try {
+               assertColocatedPersistNotAuthorizeGated(
+                  source,
+                  source.name,
+                  "preaggregate",
+                  options?.sourceGateOutcomes?.[sourceID],
+               );
+            } catch (err) {
+               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               // Deliberately no `continue`: this sourceID lands in BOTH refusedSources
+               // (it will never materialize) and wireSources below (Malloy still
+               // synthesized it) — both true at once, only for the preaggregate tier.
+               refusedSources[sourceID] = {
+                  name: source.name,
+                  sourceID: source.sourceID,
+                  modelPath: sourceModelPaths?.[sourceID],
+                  tier: "preaggregate",
+                  reason: err.reason || "authorize",
+                  message: errMessage(err),
+               };
+            }
+         }
+         // EFFECTIVE per-source freshness, resolved most-specific-wins
+         // (source > model-file > package) and reported verbatim (null = unset at
+         // every level). Freshness is a dotted/nested tag key, so it comes from
+         // resolveFreshness rather than the scalar annotationFields map, and is
+         // valid in both scope modes. Per-source `sharing`/`schedule` are NOT
+         // emitted (retired from the contract); if a source declares either it is
+         // rejected at publish (Package.persistencePolicyWarnings) — the raw keys
+         // still ride `annotationFields` so the validator can detect them.
+         // Provenance. A synthesized rollup is an ordinary persist source in every
+         // mechanical respect, so nothing downstream can tell it apart from an
+         // authored one — which is why the plan has to say. `preaggregate` carries
+         // what the rollup covers, since a query never names it and this is the only
+         // place its grain and measure set are visible at all.
+         wireSources[sourceID] = {
+            name: source.name,
+            sourceID: source.sourceID,
+            connectionName: source.connectionName,
+            dialect: source.dialectName,
+            origin: rollup ? "preaggregate" : "persist",
+            preaggregate: rollup
+               ? {
+                    baseSourceName: rollup.baseSourceName,
+                    grainDimensions: rollup.grainDimensions,
+                    measures: rollup.measures.map((m) => m.name),
+                 }
+               : null,
+            sourceEntityId: computeSourceEntityId(source, connectionDigests),
+            sql: source.getSQL(),
+            // Reported verbatim, and no longer inert: the mode is resolved and
+            // validated alongside `watermark=`/`merge_key=` (see
+            // resolveIncrementalDeclaration, collected per source in
+            // computePackageBuildPlan). The resolution itself is deliberately NOT a
+            // wire field — the control plane reads the free-form annotationFields.
+            refresh: annotationFields.refresh ?? null,
+            freshness: resolveFreshness(source, packageMaterialization),
+            // EFFECTIVE per-source query metadata, resolved per property across the
+            // same layer stack as freshness. A property collection rather than a
+            // scalar, so it comes from resolveQueryMetadata rather than the
+            // annotationFields map.
+            queryMetadata: resolveQueryMetadata(source, packageMaterialization),
+            columns: deriveColumns(source),
+            annotationFields,
+            modelPath: sourceModelPaths?.[sourceID],
+         };
+      } catch (err) {
+         logger.warn("Failed to project a persist source into the build plan", {
+            sourceID,
+            sourceName: source.name,
+            error: errMessage(err),
+         });
+      }
    }
 
-   return { graphs: wireGraphs, sources: wireSources };
+   return { graphs: wireGraphs, sources: wireSources, refusedSources };
 }
 
 /**
@@ -753,6 +1146,7 @@ export async function computePackageBuildPlan(
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
    sourceEligibility: SourceEligibility;
+   colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
 }> {
    const compiled = await compilePackageBuildPlan(pkg, signal);
@@ -770,11 +1164,16 @@ export async function computePackageBuildPlan(
               undefined,
               compiled.sourceModelPaths,
               pkg.getMaterializationConfig?.() ?? null,
+              {
+                 preaggregatePlans: compiled.preaggregatePlans,
+                 sourceGateOutcomes: compiled.sourceGateOutcomes,
+              },
            );
    return {
       plan,
       droppedPersistSources,
       sourceEligibility: collectSourceEligibility(compiled.sources),
+      colocatedSourceEligibility: collectColocatedSourceEligibility(compiled),
       incrementalDeclarations,
    };
 }
@@ -853,4 +1252,114 @@ function collectSourceEligibility(
       }
    }
    return { eligible, refused };
+}
+
+/**
+ * Which sources may be served from a COLOCATED (same-connection) materialized
+ * table, decided HERE for the same reason as {@link SourceEligibility}: the
+ * serve side (a manifest bind, whether self-produced or host-supplied) cannot
+ * recompile the model to re-derive this, so it needs a positive answer to
+ * check against.
+ *
+ * Keyed by `sourceEntityId`, NOT source name — deliberately unlike
+ * {@link SourceEligibility}, whose own doc admits the name key only because
+ * that is what a `storage=` serve binding carries. A colocated binding
+ * (`FreshnessManifest`) carries no name at all, only `sourceEntityId`, so a
+ * name key here would either be unusable at the binding boundary or require
+ * resolving a bare name back to a source — exactly the ambiguity the package
+ * permits: two different models may each declare a source of the same name,
+ * and a name-keyed positive check would let ONE of them being eligible
+ * authorize a binding for the OTHER, ineligible one.
+ *
+ * A `sourceEntityId` collision between two DIFFERENT sources is real, not
+ * merely theoretical: it is `makeBuildId(connectionDigest, getSQL())`, and
+ * `getSQL()` deliberately excludes annotation bytes, so two persist sources on
+ * the same connection with identical compiled SQL but different gates — one
+ * eligible, one refused — collide on the same id. Refusal therefore MUST
+ * dominate eligibility for a given id: a source is recorded eligible only if
+ * every source sharing its id was, and one refusal anywhere retracts the id
+ * from `eligibleEntityIds` for good, regardless of iteration order.
+ */
+export type ColocatedSourceEligibility = {
+   /** sourceEntityId of colocated sources examined and found eligible. */
+   eligibleEntityIds: Set<string>;
+   /** sourceEntityId -> why it was refused; for the operator-facing log. */
+   refused: Record<string, string>;
+};
+
+function collectColocatedSourceEligibility(
+   compiled: CompiledBuildPlan,
+): ColocatedSourceEligibility {
+   const eligibleEntityIds = new Set<string>();
+   const refused: Record<string, string> = {};
+   for (const [sourceID, source] of Object.entries(compiled.sources)) {
+      const origin = compiled.preaggregatePlans?.[sourceID]
+         ? "preaggregate"
+         : "persist";
+      try {
+         assertColocatedPersistNotAuthorizeGated(
+            source,
+            source.name,
+            origin,
+            compiled.sourceGateOutcomes?.[sourceID],
+         );
+      } catch (err) {
+         // Gate BEFORE computeSourceEntityId, matching the build path's own
+         // convention: the colocated gate never calls getSQL(), so it still
+         // gives a clean refusal even when getSQL() would throw for an
+         // unrelated reason. If computing the id ALSO throws there is
+         // nothing to key this refusal under, so the source is dropped —
+         // same "unreadable, so silent" fallback as an incremental
+         // declaration that fails to resolve.
+         let sourceEntityId: string;
+         try {
+            sourceEntityId = computeSourceEntityId(
+               source,
+               compiled.connectionDigests,
+            );
+         } catch (idErr) {
+            // Dropped, not refused: bindColocatedServeManifest will report this
+            // id as never examined, so the log is the only place the operator
+            // can learn it WAS examined and refused.
+            logger.warn(
+               "Dropping a refused colocated source: its content address could not be computed",
+               {
+                  sourceID,
+                  sourceName: source.name,
+                  refusal: errMessage(err),
+                  error: errMessage(idErr),
+               },
+            );
+            continue;
+         }
+         refused[sourceEntityId] = errMessage(err);
+         // A same-id source already recorded eligible by an earlier
+         // iteration must be retracted: refusal dominates regardless of
+         // which one this loop happens to see first.
+         eligibleEntityIds.delete(sourceEntityId);
+         continue;
+      }
+      // The colocated tier admits a given-referencing source, whose getSQL()
+      // (and so its content address) can throw; an escaping throw here would
+      // cost the package its whole plan, not just this source's binding.
+      let sourceEntityId: string;
+      try {
+         sourceEntityId = computeSourceEntityId(
+            source,
+            compiled.connectionDigests,
+         );
+      } catch (err) {
+         logger.warn(
+            "Dropping an eligible colocated source: its content address could not be computed",
+            { sourceID, sourceName: source.name, error: errMessage(err) },
+         );
+         continue;
+      }
+      // A refusal recorded for this id (from an earlier or a LATER
+      // iteration, see above) must win, so only add when none exists yet.
+      if (!(sourceEntityId in refused)) {
+         eligibleEntityIds.add(sourceEntityId);
+      }
+   }
+   return { eligibleEntityIds, refused };
 }

@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1.4
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
 
 # Java for generate-api-types scripts
 FROM amazoncorretto:21.0.8 AS java-base
@@ -17,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # lockfile (the source of truth); the default below is a fallback for plain
 # `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
 # by the CI consistency check.
-ARG DUCKDB_VERSION=1.5.3
+ARG DUCKDB_VERSION=1.5.5
 RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
     ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
     duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
@@ -44,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 # Copy package files first for better layer caching
 COPY package.json bun.lock api-doc.yaml ./
+COPY scripts/add-license-headers.mjs ./scripts/
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
 COPY packages/sdk/package.json ./packages/sdk/package.json
@@ -151,7 +154,7 @@ RUN ADBC_ARCH="$(dpkg --print-architecture)" && \
     test -n "$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.so -print -quit)"
 
 # Runtime config
-ARG DUCKDB_VERSION=1.5.3
+ARG DUCKDB_VERSION=1.5.5
 ENV NODE_ENV=production
 # Nobody starts an agent session inside the container, so the .mcp.json the
 # server writes into its working directory could never be read. The git-working-

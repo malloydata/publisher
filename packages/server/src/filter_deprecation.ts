@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Minimal structural type the helper needs from an HTTP response. Kept
  * narrower than `express.Response` so tests can pass a tiny stub instead

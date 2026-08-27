@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { QueryClient } from "@tanstack/react-query";
 
 // Global QueryClient instance - isolated to avoid circular dependencies

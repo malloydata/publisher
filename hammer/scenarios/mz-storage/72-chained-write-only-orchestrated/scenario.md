@@ -3,6 +3,10 @@ id: chained-write-only-orchestrated
 tags: orchestration, chained, kill-switch
 package: cwoo
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # `write-only` must govern serving, not whether an orchestrated chained build resolves
 

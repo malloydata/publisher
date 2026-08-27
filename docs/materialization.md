@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Materialization (Malloy Persistence)
 
 Materialization pre-builds a Malloy source into a physical table so queries read the table instead of recomputing the source. In Publisher it is driven by **Malloy Persistence**: you annotate a source `#@ persist`, and Publisher builds it, records a manifest, and serves queries from the built table.
@@ -45,6 +50,90 @@ source: summary_fresh is order_summary extend {
 ```
 
 Reach for it when a reader must not see stale rows, and remember what it costs: the opted-out source recomputes its whole upstream on every query, so it forgoes exactly the work persistence was there to save. It also keeps the extension from being materialized itself, which matters today because a plain extension of a persisted source is currently treated as a second build target for the same table.
+
+### `#(authorize)`-gated sources and materialization
+
+A source protected by an `#(authorize)` gate — its own, or one carried from a joined or derived
+source — is refused for `storage=` and for pre-aggregation, unconditionally. A **colocated**
+`#@ persist` (no `storage=`) is different: it is admitted when the gate is *proven* to be the entry
+point's own row filter, and refused otherwise.
+
+- **`storage=`** refuses at build time, unconditionally, alongside an unbound parameter or a given
+  reference (see [persist-storage-tutorial.md § Eligibility refusals](persist-storage-tutorial.md#eligibility-refusals-refused-at-build-time)):
+  a materialized-once table is served frozen to every caller, and the served shape carries no gate
+  to re-evaluate. This refusal is unaffected by anything below.
+- **A colocated `#@ persist`** is not served frozen with respect to the gate at all: persistence
+  changes only where the rows are read FROM, never whether the entry point's own `#(authorize)` is
+  re-evaluated — the substitution swaps only the source's relation SQL, and the gate applies as the
+  reading query's own `WHERE` on top of it, so filtered rows come back filtered. When the compiler can
+  *prove* the gate is the entry point's own row-level filter and nothing else is reachable beneath it,
+  the source is eligible and serves correctly filtered from the materialized table. It is still
+  refused when that cannot be proven — a gate reachable only through a join (join-only gate
+  attribution is not traced), an inherited gate the compiler cannot attribute cleanly, or a gate that
+  does not classify as a row filter at all. Drop `#@ persist` from the source, or restructure it so the
+  condition is the entry point's own proven row-level gate.
+- **`#@ preaggregate`** refuses unconditionally, regardless of the gate's classification. A rollup
+  synthesizes a colocated `#@ persist` over an import of the annotated base, and none of the
+  pre-aggregation modules has any `#(authorize)` awareness of its own — so this refusal is the only
+  thing standing between a gated source and the pre-aggregation tier. It also groups *across* the
+  gated column, so the column is not even present in the rolled-up result to filter afterwards, even
+  in principle. A refused rollup names `#@ preaggregate` and the gated source rather than the
+  synthesized rollup's own name, which the author never wrote.
+
+Every refusal names the source and the remedy; a package carrying one fails to build (or, for
+`storage=`, fails that materialization run) rather than silently serving the gated source to
+everyone.
+
+### The freshness contract for a gated colocated persist source
+
+Admitting a proven row-level gate applies unconditionally. The refusal it relaxes never fired at
+*load*: it fires inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`), so a
+package with a colocated `#@ persist` on an `#(authorize)`-gated source already loads, appears in
+`plan.sources`, and serves live — what 422'd was its *materialization run*, not the package.
+
+**So such packages already exist.** On upgrade, a run that used to fail succeeds when the gate proves
+row-level and attributed to the entry point, and the next auto-run or scheduled build materializes the
+source and binds it for serving **with no author action** — a source that served live yesterday serves
+from a possibly-stale artifact afterwards, subject to the staleness below.
+
+What goes stale between rebuilds is the **row data**, not the gate. The gate expression and the
+querying principal's attributes (givens, roles) are still evaluated live, on every query, against the
+frozen table — only the column values the gate filters ON are frozen at build time. So a row whose
+access decision changes (say, it changes owner) keeps being served under the OLD decision to the
+principal who no longer should see it, until the next rebuild recomputes that column. This is a
+narrower staleness than an ordinary persisted source's (which goes stale on every column), but for a
+gated source it is a staleness that maps directly onto who can read what — treat it accordingly.
+
+Because row-data-dependent revocation is only as fresh as the artifact, a gated colocated persist
+source needs a declaration that says how long a stale access decision may be served. Two controls are
+on offer, and only one of them **bounds** that.
+
+**`materialization.freshness` — `{ "window": …, "fallback": "live" }` — is the bound.** The serve path
+re-evaluates freshness per query, so once an artifact's data ages past the window it drops out of the
+serving set and the query recomputes live, correctly filtered — whether or not any rebuild ever lands.
+That is a ceiling no refresh cadence can offer: a build that fails, or a scheduler that is off, leaves
+a schedule-only source serving its old decisions indefinitely. The cost is that `freshness` is
+[mutually exclusive with `schedule`](#the-persistence-policy-the-publish-gate), which is why advice
+framed around a cron steers away from it — for a gated source, take the ceiling. (The window is
+enforced from the freshness fields a control plane stamps on the manifest it distributes; a standalone
+Publisher's own post-build load binds its entries un-gated.)
+
+**A full rebuild is the refresh that actually re-reads the gate column.** A source with no incremental
+declaration rebuilds its whole table on every run, so every run recomputes the values the gate filters
+on. An incremental source needs `reseed` to do the same.
+
+**`refresh="incremental"` does not bound revocation.** The [delta](#incremental-refresh) wraps the
+seed's own SQL in a predicate over `[covered_through, frontier)`, so a row whose access decision
+changes *without its watermark advancing* falls outside every future delta and is never re-read.
+Take `orders`, gated with `#(authorize) org_id = $ORG` and declared
+`refresh="incremental" watermark="order_date"`: order 7 (`order_date` 2026-01-02) moves from org 1 to
+org 2, every later run advances past that date, and principal `ORG: 1` keeps reading it
+indefinitely — while the entry
+reports `refresh: delta` and an advancing `coveredThrough`, so the cadence reads as healthy.
+`merge_key=` does not close it: it changes how a delta is applied, not which rows the delta reads.
+
+A gated source with neither a freshness window nor a full-rebuild cadence is a source whose
+revocations have no bound at all.
 
 ## The persistence policy (the publish gate)
 
@@ -105,7 +194,7 @@ Where the frontier comes from depends on the watermark's type: a `date` or `time
 
 Add `merge_key="col,…"` when a row can be **restated** with a new watermark value — an order that moves to a later day. Publisher then applies the delta as a `MERGE` on the declared identity columns instead of deleting the watermark range and re-inserting it, which is the only strategy that tolerates a row changing which range it belongs to. Without it, a refresh replaces the range wholesale, which is correct exactly when a row's watermark value never changes.
 
-**An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish or PATCH answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, an unsupported dialect, or `storage=` alongside it. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key, and a keyless delta.
+**An invalid declaration fails the package, it does not downgrade it.** The rules below are checked wherever a package is admitted — a publish or PATCH answers 400, and a package **load** fails outright, the same severity a model that does not compile has. So a broken declaration cannot sit in a log while the source quietly rebuilds in full forever: `watermark=` without `refresh="incremental"`, `merge_key=` without `watermark=`, a malformed key value, a watermark that names no materialized column (or names an aggregate, or a type with no ordering), a `calculate:` field, or an unsupported dialect. Every rejection is reported at once, so a model with two broken declarations takes one republish to fix. What is _legal but probably unintended_ stays a warning on the package instead: an unrecognized `#@ persist` key, and a keyless delta.
 
 Details that decide whether a run advances or rebuilds:
 
@@ -113,7 +202,8 @@ Details that decide whether a run advances or rebuilds:
 - **`forceRefresh` never re-seeds.** It means one thing — build even though the content address is unchanged — and an incremental source is exempt from that carry-forward anyway, so the flag has nothing to say about how one is built. Ask for a full rebuild with `reseed` (`malloy-pub materialize --reseed`, or per source with `BuildInstruction.reseed`). Keeping them separate is what lets a schedule drive deltas at all, since the scheduler forces on every single fire.
 - **Two sources that compile to identical SQL share everything.** The content address that keys the boundary is a hash of the connection and the canonical SQL — not the source name, not `name=`, not the model file — so a copy-pasted source body collapses onto one table and one boundary however you name it. If their declarations also differ, neither can ever advance: each refresh finds the other's lineage recorded and rebuilds. Publisher warns when this happens and names both sources, since nothing in the model text shows it.
 - **Anything unproven falls back to a full rebuild**, which is always correct and merely expensive: no recorded boundary, a boundary describing a different table or watermark, a table whose columns no longer match what the source computes, or `MERGE` asked for on Postgres 14 or older (it requires 15).
-- **Postgres, BigQuery, and Snowflake only**, and not in combination with `storage=`. Declaring it elsewhere is a rejection rather than a silent full refresh, so it never looks like it is advancing when it is not — which does mean a DuckDB source has to say `refresh="full"` to be served at all.
+- **Postgres, BigQuery, and Snowflake only**, and that is the SOURCE's dialect — the engine that has to express the bounded range. Declaring it elsewhere is a rejection rather than a silent full refresh, so it never looks like it is advancing when it is not — which does mean a DuckDB source has to say `refresh="full"` to be served at all.
+- **`storage=` is supported, and the delta is split across the two engines.** The source warehouse computes the bounded range (the predicate is pushed into its own query, so it never streams rows it will not keep) and the DML lands in the destination, which is where the table is. Everything an author declares means the same thing either way. Two differences worth knowing: a stored table holds exactly the source's public columns, so the rename/`except:` rebuild below does not arise from `getSQL()` projecting more than the schema describes — though changing which columns are public still rebuilds, since the stored table's shape no longer matches; and a CHAINED stored source — one reading another stored source's table — still rebuilds every refresh, reported under its own reason code, because its parent's delta can restate rows below the child's own frontier where no delta of the child's would revisit them.
 
 ### Driving it from a control plane
 
@@ -213,8 +303,12 @@ The same package definition behaves differently depending on who drives material
 
 ## Attribute a build's cost
 
-`materialization.queryMetadata` (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — so the backend's own reporting can separate build cost from query traffic. Publisher adds `class=materialize` plus the package, source, trigger and run id by itself. See [query-metadata.md](query-metadata.md).
+`materialization.queryMetadata` (and the per-source `#@ persist queryMetadata.*`) tags every statement a build issues — the staging CTAS, the swap, the rename — and every statement a _query_ against the source issues, so the backend's own reporting can attribute both. Separating build cost from query traffic is the context layer's job, not the declaration's: publisher adds `class=materialize` plus the package, source, trigger and run id to a build, and `class=interactive` with none of those to a served query. The block is named for materialization historically; it declares what the source is, not only how it is built. See [query-metadata.md](query-metadata.md).
 
 ## Tune for cost and performance
 
 The materialization history (`list` + `get` above) records per-run timings and how many sources were built vs. reused — enough to decide what to persist, what to stop persisting, and how to schedule it. The [`malloy-materialization-tuning`](../skills/malloy-materialization-tuning/SKILL.md) skill walks an agent through reading those signals and proposing (recommendations-only) changes.
+
+## Pre-aggregation
+
+`#@ persist` stores a source you wrote. [Pre-aggregation](preaggregation.md) stores a rollup Publisher derives for you: annotate a measure with a grain, and covered queries read a small pre-grouped table instead of the base, with no change to the queries themselves. Rollups appear in the same build plan (as `origin: "preaggregate"`) and build through the same manifest and scheduler described above.

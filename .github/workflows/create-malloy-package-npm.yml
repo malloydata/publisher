@@ -1,12 +1,25 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 name: create-malloy-package
 
 # create-malloy-package versions on its own line, like the skills package.
 # release.yml bumps sdk, app, and server in lockstep and is deliberately not used
 # here: a scaffolder change should not need a server release.
 
-# Run on demand only. The package's tests run in build.yml on every PR, so this
-# workflow exists solely to publish, which should never happen automatically on
-# a push or a PR.
+# Publishing is on demand only. The package's tests run in cross-platform-tests.yml
+# (reached from build.yml, which is what runs on a PR) on every
+# PR, so publishing is all the dispatch path exists for and it should never
+# happen automatically on a push or a PR.
+#
+# The `pull_request` trigger below does NOT change that. It runs one job,
+# `check_version`, which asks the registry a question and publishes nothing;
+# `check_pack` and `publish` are both gated to `workflow_dispatch` so the
+# dispatch path behaves exactly as it did before this trigger existed. It is
+# here because a forgotten version bump used to be invisible until release time:
+# release.yml's `publish-packages` skips a package whose version is already on
+# npm and the release stays green, so a scaffolder change merged without a bump
+# simply never shipped.
 #
 # The "Release (NPM + Docker)" workflow also triggers this one, so a single
 # release publishes every package. It dispatches this file through the Actions
@@ -17,14 +30,289 @@ name: create-malloy-package
 # rather than reddening the release.
 on:
   workflow_dispatch:
+  # Only for `check_version`. The paths are the ones that change what this
+  # package PUBLISHES — its own directory, and packages/skills/package.json,
+  # whose version the publish job bakes into the shipped dependency range even
+  # though no skills file enters the tarball — plus this file, so a change to the
+  # check itself is exercised by the PR that makes it.
+  pull_request:
+    paths:
+      - "packages/create-malloy-package/**"
+      - "packages/skills/package.json"
+      - ".github/workflows/create-malloy-package-npm.yml"
 
 env:
   BUN_VERSION: 1.3.13
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # See the sibling step in skills-npm.yml; this is the same check against this
+  # package's own version, and the two are kept textually parallel on purpose so
+  # they can be diffed. The differences are the package directory, the watched
+  # paths, and this being its own job rather than a step — `check_pack` below is
+  # dispatch-only, so there was no PR job to add it to.
+  check_version:
+    name: Require a version bump when the published content changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # This job only asks a registry two questions. Every call it makes is
+    # --max-time bounded, but a bound per call is not a bound on the job, and
+    # without this a hung step would sit on a runner for GitHub's 6-hour default
+    # blocking a PR on a check that can neither pass nor fail.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The check diffs this PR against its base, which needs the merge base
+          # in the clone. The default depth-1 checkout of a pull_request is a
+          # merge commit with no parents fetched, so `origin/<base>` does not
+          # resolve and the diff cannot be computed.
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # The question is "is the declared version ahead of npm", NOT "did this PR
+      # change the version". Between a release-prep merge and the dispatch, main
+      # legitimately carries a bumped version that no open PR touched, and a
+      # did-it-change check would redden every PR opened in that window.
+      - name: Check the version against npm
+        env:
+          # Through env rather than interpolated into the script body, as every
+          # other registry-facing step in this repo does.
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          # Scoped to the paths this package's PUBLISHED content is built from,
+          # which is deliberately NARROWER than the `paths:` trigger above:
+          # almost nothing in this workflow file changes a published byte, so
+          # demanding a version bump for it would force a content-free publish and
+          # make every future edit here require a release.
+          #
+          # "Almost": BUN_VERSION at the top of this file pins the bundler that
+          # `prepack` runs to emit dist/index.js, the only JS in the tarball. So a
+          # BUN_VERSION bump does change what ships, and this check reports "no
+          # published scaffolder content changed" for it. Accepted rather than
+          # closed, because the consequence is mild and bounded — the tarball
+          # stays one bundler behind until the next real release, not broken — and
+          # watching the whole file to catch one line would demand a release for
+          # every comment edit. It is the same shape as the bun.lock gap and is
+          # recorded beside it in CONTEXT.md. Hoisting BUN_VERSION somewhere
+          # watched is what would close it properly.
+          #
+          # The file is in the trigger, so a
+          # workflow-only PR reaches this step and must be skipped here.
+          #
+          # packages/skills/package.json IS in scope, unlike the rest of the
+          # skills tree. Only its version reaches this tarball, through the range
+          # the publish job bakes in below, so a skills version bump changes what
+          # this package ships and a skill edit does not.
+          #
+          # Enumerated rather than the whole package directory, because this
+          # package declares `files: ["dist","templates"]` and `dist` is built by
+          # `bun build src/index.ts` — so `tests/`, `scripts/`, `tsconfig.json`
+          # and `eslint.config.mjs` ship in nothing. Watching the directory
+          # wholesale made a test-only PR demand a version bump, which is the
+          # same content-free publish the paragraph above refuses to force for a
+          # workflow edit. README.md and LICENSE are in scope because npm always
+          # includes them regardless of `files`.
+          PATHS=(
+            packages/create-malloy-package/src
+            packages/create-malloy-package/templates
+            packages/create-malloy-package/package.json
+            packages/create-malloy-package/README.md
+            packages/create-malloy-package/LICENSE
+            packages/skills/package.json
+          )
+
+          # Assert every entry exists, because `git diff -- does/not/exist` exits
+          # 0 with EMPTY output, which lands in the skip branch below and reports
+          # "no published content changed". So a typo or a rename does not fail
+          # this check, it silently switches it off for good while the trigger
+          # keeps firing — and this list is now enumerated, so there is more to
+          # get wrong. release.yml's publish_pkg guards its own path list the same
+          # way and for the same stated reason: an entry that cannot match
+          # silently stops guarding.
+          for p in "${PATHS[@]}"; do
+            [ -e "$p" ] && continue
+            echo "::error title=Version::watched path '${p}' does not exist in this checkout, so the scoping diff can never match it and this check would silently pass everything. Fix the PATHS list in this workflow."
+            exit 1
+          done
+
+          # Fails CLOSED: if the diff cannot be computed the check RUNS, it does
+          # not skip. A skip is the outcome that lets an unbumped change through,
+          # so it has to be reached deliberately and never by accident.
+          SCOPED=1
+          CHANGED=""
+          if ! git rev-parse --verify --quiet "origin/${BASE_REF}" >/dev/null; then
+            echo "::warning title=Version::could not resolve origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
+            SCOPED=0
+          elif ! CHANGED="$(git diff --name-only "origin/${BASE_REF}...HEAD" -- "${PATHS[@]}")"; then
+            echo "::warning title=Version::could not diff against origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
+            SCOPED=0
+          fi
+
+          if [ "$SCOPED" = 1 ] && [ -z "$CHANGED" ]; then
+            echo "::notice title=Version::no published scaffolder content changed in this PR (checked ${PATHS[*]}); no version bump required"
+            exit 0
+          fi
+
+          MANIFEST=packages/create-malloy-package/package.json
+
+          # Read the name rather than hardcoding it, so a rename cannot leave
+          # this quietly checking a package nobody publishes — the same reason
+          # the publish job's steps read it.
+          #
+          # Read through `if !`, and then VALIDATED. Both halves matter, and
+          # release.yml's publish_pkg carries the same pair for the same reasons:
+          #
+          #  - A bare assignment under `set -e` dies with a raw Node stack trace,
+          #    no annotation and no line saying which file was unreadable.
+          #  - `node -p` prints the string "undefined" with exit 0 for a MISSING
+          #    field, which is worse than a crash because it looks like an answer.
+          #    Measured, before this guard existed: with the version field gone,
+          #    `npm view "$NAME@undefined" version` E404s (read as "free"), and
+          #    `sort -V` ranks the literal string "undefined" ABOVE every real
+          #    version — so this check passed GREEN on a manifest that npm would
+          #    refuse to publish. With the name gone it queried the npm package
+          #    literally called `undefined`, which exists at 0.1.0, and reported a
+          #    confident comparison against it.
+          if ! NAME="$(node -p "require('./${MANIFEST}').name" 2>&1)" \
+             || ! DECLARED="$(node -p "require('./${MANIFEST}').version" 2>&1)"; then
+            # :- on both. `if ! A=... || ! B=...` SHORT-CIRCUITS, so when the
+            # first read fails the second assignment never runs and DECLARED is
+            # never bound — and this body runs under `set -euo pipefail`, so an
+            # unbound expansion aborts the step here, before the annotation. That
+            # is precisely the raw-stack-trace-no-annotation failure the comment
+            # above says this block prevents. Measured: "DECLARED: unbound
+            # variable", no ::error, no [node] log.
+            printf '%s\n' "${NAME:-}${DECLARED:-}" | sed 's/^/[node] /'
+            echo "::error title=Version::could not read ${MANIFEST} (logged above)"
+            exit 1
+          fi
+          if [ -z "$NAME" ] || [ "$NAME" = "undefined" ]; then
+            echo "::error title=Version::${MANIFEST} declares no usable package name, so there is nothing to ask the registry about"
+            exit 1
+          fi
+          # A version, not merely a non-empty string. This is also what keeps a
+          # crafted value out of the `::` lines below: DECLARED is fully
+          # PR-controlled on a pull_request run, and a JSON \n escape in it would
+          # otherwise become a real newline that could forge a workflow command
+          # or emit `::stop-commands::` and suppress the genuine error. Measured
+          # before this guard: a version field could inject an `::add-mask::` and
+          # a forged `::error`, and swallow the real one.
+          if [[ ! "$DECLARED" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            printf '%s\n' "$DECLARED" | sed 's/^/[manifest] /'
+            echo "::error title=Version::the version in ${MANIFEST} (logged above) is not a plain major.minor.patch with an optional -prerelease or +build, so it cannot be compared with the registry"
+            exit 1
+          fi
+          SPEC="$NAME@$DECLARED"
+
+          # Named once, so the error below cannot claim this PR touched published
+          # content when the scoping diff is the very thing that failed.
+          if [ "$SCOPED" = 1 ]; then
+            WHY="this PR changes published scaffolder content"
+          else
+            WHY="this PR's changed paths could not be determined"
+          fi
+
+          # Two questions, because passing the first does not imply the second.
+          #
+          # 1. Is this exact version already on npm? This is the precise
+          #    predicate release.yml skips on, so it is the one that decides
+          #    whether the release would silently drop this package.
+          if PUBLISHED="$(npm view "$SPEC" version 2>&1)" && [ -n "$PUBLISHED" ]; then
+            echo "::error title=Version::${WHY}, and $SPEC is already on npm — so a release would SKIP this package and stay green. Bump the version in packages/create-malloy-package/package.json."
+            exit 1
+          elif [[ "$PUBLISHED" != *E404* ]]; then
+            # Registry output is untrusted text, and a line starting with "::"
+            # would otherwise be parsed as a workflow command. Prefix rather
+            # than indent: the runner trims leading whitespace before matching.
+            printf '%s\n' "$PUBLISHED" | sed 's/^/[npm] /'
+            echo "::error title=Version::could not ask npm whether $SPEC is taken; an unanswered registry is not a green light"
+            exit 1
+          fi
+
+          # 2. Is it above the current `latest`? A version that is merely FREE
+          #    can still be below `latest` — a number skipped by an explicit
+          #    dispatch, or one that was unpublished — and publishing it moves
+          #    the dist-tag `npm create` resolves BACKWARDS with nothing
+          #    failing. release.yml's `prepare` carries the long version of this
+          #    reasoning for the sdk line.
+          if ! LATEST_OUTPUT="$(npm view "$NAME" dist-tags.latest 2>&1)" || [ -z "$LATEST_OUTPUT" ]; then
+            # E404 here means the PACKAGE does not exist, not that the registry
+            # failed — so there is no `latest` to be below and the version is
+            # free. Without this branch a package that has never been published
+            # reddens every PR with "could not ask npm", which is precisely the
+            # `Adding a published package` path in CONTEXT.md, and it also breaks
+            # on a rename — the case the comment above claims reading the name
+            # from disk protects against. The PyPI sibling in python-sdk.yml has
+            # always handled this; these two now match it.
+            if [[ "$LATEST_OUTPUT" == *E404* ]]; then
+              echo "::notice title=Version::$NAME is not on npm at all, so $DECLARED is free"
+              exit 0
+            fi
+            printf '%s\n' "$LATEST_OUTPUT" | sed 's/^/[npm] /'
+            echo "::error title=Version::could not ask npm for $NAME dist-tags.latest"
+            exit 1
+          fi
+          # tail -n 1, as the server-pin step below does: the capture folds
+          # stderr in so a failure has something to show, and npm writes routine
+          # warnings there on a successful run too (unknown env config, update
+          # notices, retries). Comparing the raw capture would fail a correct PR
+          # reporting `latest is npm warn ...`.
+          LATEST="$(printf '%s\n' "$LATEST_OUTPUT" | tail -n 1)"
+          # `sort -V` ranks a PRERELEASE ABOVE its own release: verified,
+          # `printf '0.2.0\n0.2.0-rc.1\n' | sort -V | tail -1` is `0.2.0-rc.1`.
+          # The regex above deliberately accepts a -prerelease, so without this
+          # branch a declared `0.1.7-rc.1` against a latest of `0.1.7` passes the
+          # test below and reports "free and above latest (0.1.7)" for a version
+          # semver puts BELOW it. The test is skipped rather than repaired
+          # because it is asking the wrong question of a prerelease: the npm
+          # publish jobs route a hyphenated version to the `next` dist-tag, so it
+          # cannot move `latest` backwards at all, which is the failure this test
+          # names. Implementing real semver ordering in shell to reach the same
+          # answer is not worth it.
+          if [[ "$DECLARED" == *-* ]]; then
+            echo "::notice title=Version::$SPEC is free; skipping the above-latest test because it is a prerelease, which does not move the latest dist-tag"
+            exit 0
+          fi
+          if [ "$DECLARED" != "$(printf '%s\n%s\n' "$LATEST" "$DECLARED" | sort -V | tail -1)" ]; then
+            echo "::error title=Version::packages/create-malloy-package/package.json declares $DECLARED, which is BELOW npm's latest ($LATEST). Publishing it would move the latest dist-tag backwards. Bump above $LATEST."
+            exit 1
+          fi
+
+          if [ "$SCOPED" = 0 ]; then
+            echo "::notice title=Version::$SPEC is free and above latest ($LATEST); checked unscoped because this PR's changed paths could not be determined"
+          else
+            echo "::notice title=Version::$SPEC is free and above latest ($LATEST)"
+          fi
+
   check_pack:
     name: Verify the published tarball
+    # A frozen-lockfile install, a build, the package's suite, and up to three
+    # cold `npx` installs of the pinned server. Generous, but bounded: `publish`
+    # needs this job, so a hang here withholds the publish for GitHub's 6-hour
+    # default and a release's poll budget expires long before that.
+    timeout-minutes: 45
+    # Dispatch-only, as it was before this workflow gained a `pull_request`
+    # trigger: these steps are a full frozen-lockfile install, a build and the
+    # package's suite, and cross-platform-tests.yml already runs that suite on
+    # every PR (`Run create-malloy-package tests` at :169, plus the Linux-only
+    # e2e at :177) — reached through build.yml, which is the workflow that
+    # triggers, but NOT defined in it: grep build.yml for this package and you
+    # get nothing. Named precisely because the next person to trim
+    # cross-platform-tests.yml will otherwise check build.yml, find no reference,
+    # and conclude the coverage was never there. Only
+    # `check_version` above is new PR work. `publish` needs this job, and a
+    # skipped `needs` skips the dependent, which is correct here: `publish`
+    # carries the same dispatch guard.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -86,8 +374,131 @@ jobs:
       - name: Test
         run: bun run --cwd packages/create-malloy-package test
 
+      # The old hand-policed server pin's error message ended with "and confirm
+      # the new server still honours --host", and a human did that. Deriving the
+      # pin (see the publish job) removes the prompt, so this became automatic or
+      # it was simply gone.
+      #
+      # Why --host specifically, out of every flag: the server accepts an unknown
+      # flag without a word and falls back to binding 0.0.0.0. So the release that
+      # renames or drops it does not fail a generated workspace, it silently makes
+      # it serve an unauthenticated REST API and MCP endpoint on every interface,
+      # while its own package.json, AGENTS.md and README all still say 127.0.0.1.
+      # scaffold.ts carries the long version.
+      #
+      # THIS IS A DOCUMENTATION CHECK, NOT A PARSING ONE, and the step name says
+      # so. It proves --host is still in `--help`; it cannot prove `parseArgs`
+      # still handles it, so a rename inside parseArgs that left the usage line
+      # alone would pass here. The parsing IS covered for the repo's own build —
+      # packages/create-malloy-package/tests/e2e/scaffold.e2e.spec.ts boots a real
+      # server with `--host 127.0.0.1` and asserts neither port answers on the
+      # machine's LAN address, and cross-platform-tests.yml runs that on Linux
+      # every PR. What is uncovered, and what this step is for, is the PUBLISHED
+      # pin: a version resolved from the registry at publish time that no test in
+      # this repo has ever run.
+      #
+      # IN check_pack, NOT the publish job, and that placement is the point. `npx`
+      # here resolves a MUTABLE dist-tag with no lockfile behind it and installs
+      # ~40 transitive dependencies with lifecycle scripts enabled. The publish
+      # job holds `id-token: write`, and GitHub injects the OIDC request token
+      # into every step of such a job, so anything executing there can mint a
+      # publish token for @malloy-publisher/*. This job has `contents: read` and
+      # nothing else. Do not move it back for convenience.
+      #
+      # `--help` is deliberately not a boot: it prints usage and process.exit(0)s
+      # before anything binds a port or touches storage. It is not cheap, though —
+      # ESM evaluates the server's whole import graph (native duckdb bindings, the
+      # OTel stack, the cloud SDKs) before parseArgs runs, so measured cold it is
+      # ~30s and ~1.1 GB of npx cache, and any top-level failure anywhere in that
+      # graph fails this step.
+      - name: Verify the pinned server still documents --host
+        run: |
+          set -euo pipefail
+
+          if ! NPM_OUTPUT="$(npm view @malloy-publisher/server dist-tags.latest 2>&1)" || [ -z "$NPM_OUTPUT" ]; then
+            printf '%s\n' "$NPM_OUTPUT" | sed 's/^/[npm] /'
+            echo "::error title=Server pin::could not ask npm for @malloy-publisher/server dist-tags.latest"
+            exit 1
+          fi
+          SERVER_VERSION="$(printf '%s\n' "$NPM_OUTPUT" | tail -n 1)"
+          # Resolved independently of the publish job's substitution, so this and
+          # that can in principle disagree if `latest` moves in between. That is
+          # fine and is not worth coordinating: this asks a question about the
+          # server, and the publish job re-reads and re-verifies its own value.
+          if [[ ! "$SERVER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Server pin::@malloy-publisher/server latest reads '${SERVER_VERSION}', which is not a plain major.minor.patch"
+            exit 1
+          fi
+
+          # Retried, and that is not belt and braces. `publish` has
+          # `needs: check_pack`, and a skipped `needs` skips the dependent, so a
+          # single blip in this ~40-dependency cold install does not just fail a
+          # check — it silently withholds the scaffolder publish, and in a release
+          # `publish-packages` then sits out its full 25-minute poll budget before
+          # saying so. In a release this runs MINUTES after publish-npm pushed
+          # this exact version, so an npm CDN read-after-write lag is a likely
+          # transient, alongside a registry 5xx and a flaky native duckdb build.
+          #
+          # Three attempts with a backoff, and the LAST failure is the one
+          # reported, so the annotations below still name the real cause. A
+          # persistent problem still fails, which is the point: this is about not
+          # confusing "npm was briefly unavailable" with "the server dropped
+          # --host". --max-time is on npx's side via npm's own timeouts; the retry
+          # bounds the total.
+          USAGE=""
+          npx_ok=0
+          for attempt in 1 2 3; do
+            if USAGE="$(npx -y "@malloy-publisher/server@${SERVER_VERSION}" --help 2>&1)"; then
+              npx_ok=1
+              break
+            fi
+            # Do not retry a Node-floor failure: it is deterministic, and three
+            # cold installs to reach the same answer costs 90s for nothing.
+            if grep -q 'PUBLISHER_UNSUPPORTED_NODE' <<<"$USAGE"; then
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::notice title=Server pin::npx --help for @malloy-publisher/server@${SERVER_VERSION} failed on attempt ${attempt}; retrying"
+              sleep $((attempt * 15))
+            fi
+          done
+          if [ "$npx_ok" = 0 ]; then
+            printf '%s\n' "$USAGE" | sed 's/^/[server] /'
+            # assertSupportedNodeVersion() runs at server.ts:100, BEFORE
+            # parseArgs at :212, so `--help` exits non-zero on a Node below the
+            # server's floor. Today this job pins Node 24 and the floor is 20, so
+            # it cannot fire — but when the floor rises past the pinned Node the
+            # failure looks nothing like its cause, and "cannot confirm --host"
+            # would send someone to the wrong file.
+            if grep -q 'PUBLISHER_UNSUPPORTED_NODE' <<<"$USAGE"; then
+              echo "::error title=Server pin::@malloy-publisher/server@${SERVER_VERSION} requires a newer Node than this job pins (see the PUBLISHER_UNSUPPORTED_NODE line above). This is a Node floor problem, not a --host problem: raise node-version in this workflow."
+              exit 1
+            fi
+            echo "::error title=Server pin::@malloy-publisher/server@${SERVER_VERSION} --help failed, so it cannot be confirmed to document --host"
+            exit 1
+          fi
+
+          # Anchored on the DESCRIPTION column, not merely on the line start.
+          # `^[[:space:]]+--host[[:space:]]` looked stricter than it is: it also
+          # matches a continuation line such as
+          #     "        --host is deprecated; use --bind"
+          # which is exactly the shape this server's own help printer emits for a
+          # wrapped description, so a server that replaced the flag and explained
+          # itself in prose would have passed. Requiring the `<value>` placeholder
+          # and a run of spaces before the description matches the real option
+          # line (`  --host <string>        Host to bind ...`) and not prose.
+          if ! grep -qE '^[[:space:]]+--host[[:space:]]+<[^>]+>[[:space:]]{2,}[^[:space:]]' <<<"$USAGE"; then
+            printf '%s\n' "$USAGE" | sed 's/^/[server] /'
+            echo "::error title=Server pin::@malloy-publisher/server@${SERVER_VERSION} no longer documents --host as an option taking a value (usage above). Every workspace this scaffolder generates passes --host, and the server binds 0.0.0.0 on an unknown flag without a word — so publishing this would silently expose generated workspaces on every interface. Fix startCommandFor in scaffold.ts before releasing."
+            exit 1
+          fi
+          echo "::notice title=Server pin::@malloy-publisher/server@${SERVER_VERSION} still documents --host"
+
   publish:
     name: Publish to NPM
+    # Same reasoning as check_version and check_pack above: a hung step in a job
+    # holding id-token: write should not sit on a runner for six hours.
+    timeout-minutes: 30
     # workflow_dispatch offers every branch in the ref dropdown, and the
     # definition that runs is the one on the ref you pick. npm's trusted
     # publisher matches on this file's name, so the filename is effectively the
@@ -209,6 +620,126 @@ jobs:
             exit 1
           fi
           echo "::notice title=Version::$SPEC is not on npm yet"
+
+      # SERVER_VERSION pins the server every generated workspace boots, and it
+      # used to be bumped by hand with nothing but the guard below to catch a
+      # miss. That is how the scaffolder came to hand every new workspace a
+      # server six patches stale (QA CR-11), and how 0.0.250 went red 25 minutes
+      # into a release, after skills had already published.
+      #
+      # So derive it here instead, exactly as the skills dep above is derived:
+      # read npm's current `latest`, substitute it into the runner's working tree
+      # ONLY (never committed), and assert the substitution took. The value in
+      # the repo becomes a dev default — what a `bun run` from a clone boots —
+      # rather than published truth.
+      #
+      # This is only correct because release.yml's `publish-packages` waits for
+      # `publish-npm`. On `needs: prepare` alone this job races the server
+      # publish, and `latest` here would be a release behind, so every generated
+      # workspace would pin the previous server. Narrowing that `needs:` back
+      # re-breaks this silently rather than loudly.
+      - name: Resolve SERVER_VERSION for publishing
+        id: server_pin
+        run: |
+          # Explicit, rather than relying on the runner's default `bash -e {0}`,
+          # so the body behaves the same when it is extracted and run directly.
+          # Note this does NOT cover the substitution below — see the assertion
+          # after it.
+          set -euo pipefail
+
+          if ! NPM_OUTPUT="$(npm view @malloy-publisher/server dist-tags.latest 2>&1)" || [ -z "$NPM_OUTPUT" ]; then
+            # Prefixed, not indented: registry output is untrusted text and the
+            # runner trims leading whitespace before matching "::" as a command.
+            printf '%s\n' "$NPM_OUTPUT" | sed 's/^/[npm] /'
+            echo "::error title=Server pin::could not ask npm for @malloy-publisher/server dist-tags.latest"
+            exit 1
+          fi
+          # tail -n 1, as the skills step above does: the capture folds stderr
+          # in so a failure has something to show, and npm writes routine
+          # warnings there on a successful run too (unknown env config, update
+          # notices, retries). Using the raw capture would substitute
+          # `npm warn ...` into the source.
+          LATEST="$(printf '%s\n' "$NPM_OUTPUT" | tail -n 1)"
+
+          # Validate before it reaches `sed`, and refuse anything that is not a
+          # plain major.minor.patch. Two reasons, and the second is the one that
+          # is easy to miss:
+          #
+          # - This value is interpolated into a sed replacement in a job holding
+          #   id-token: write. A `latest` carrying `|`, `&` or a newline would
+          #   otherwise be substituted as sed syntax.
+          # - A prerelease must never become the pin. `latest` should never hold
+          #   one — this repo routes hyphenated versions to `next` — but the
+          #   registry is not ours to constrain, and a generated workspace
+          #   pinning an rc is not something a user can be expected to notice.
+          if [[ ! "$LATEST" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Server pin::@malloy-publisher/server latest reads '${LATEST}', which is not a plain major.minor.patch, so it will not be pinned into a generated workspace"
+            exit 1
+          fi
+
+          FILE=packages/create-malloy-package/src/scaffold.ts
+          PREVIOUS="$(sed -n 's/^export const SERVER_VERSION = "\(.*\)";$/\1/p' "$FILE")"
+          sed -i "s|^export const SERVER_VERSION = \".*\";\$|export const SERVER_VERSION = \"${LATEST}\";|" "$FILE"
+
+          # sed exits 0 when it matches nothing, so `set -e` above does NOT catch
+          # a substitution that did not apply — the same trap the skills-dep step
+          # names ("sed exits 0 when it matches nothing, so without this the
+          # notice below would announce a rewrite that never happened"). Assert it
+          # here rather than leaning on the verify step below, which is meant to be
+          # an independent second read and not the only assertion. Measured: with
+          # the declaration removed from the file this step otherwise exits 0 and
+          # announces `SERVER_VERSION <unreadable> -> <latest>`.
+          if ! grep -qxF "export const SERVER_VERSION = \"${LATEST}\";" "$FILE"; then
+            echo "::error title=Server pin::the SERVER_VERSION substitution did not apply to ${FILE}, so this would publish a scaffolder pinning the wrong server"
+            grep -n "SERVER_VERSION" "$FILE" || true
+            exit 1
+          fi
+
+          echo "server_version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Server pin::SERVER_VERSION ${PREVIOUS:-<unreadable>} -> ${LATEST} (npm latest), in this runner's tree only"
+
+      # Kept as its own step, and it is not the tautology it looks like. The
+      # substitution above writes; this READS the file back with the same
+      # expression the old hand-policing guard used, and re-asks the registry. So
+      # it still catches everything it caught before — plus a substitution that
+      # silently matched nothing (`sed` exits 0 either way), a file that grew a
+      # second SERVER_VERSION line, and a `latest` that moved between the two
+      # steps.
+      #
+      # The protection is the same one it always was, and it must survive any
+      # rewrite of this pair: a scaffolder published AHEAD of its pinned server
+      # generates workspaces whose `npm start` cannot resolve at all, under a
+      # version that can never be replaced.
+      - name: Verify the pinned server version is current on npm
+        env:
+          # Through env rather than interpolated into the script body: a ${{ }}
+          # expression is substituted before bash parses the line.
+          EXPECTED: ${{ steps.server_pin.outputs.server_version }}
+        run: |
+          set -euo pipefail
+
+          FILE=packages/create-malloy-package/src/scaffold.ts
+          MATCHES="$(grep -c '^export const SERVER_VERSION = ".*";$' "$FILE" || true)"
+          if [ "$MATCHES" != "1" ]; then
+            echo "::error title=Server pin::${FILE} has ${MATCHES} SERVER_VERSION declarations; expected exactly 1, so the substitution cannot be verified"
+            exit 1
+          fi
+          SERVER_VERSION="$(sed -n 's/^export const SERVER_VERSION = "\(.*\)";$/\1/p' "$FILE")"
+          if [ "$SERVER_VERSION" != "$EXPECTED" ]; then
+            echo "::error title=Server pin::the substitution did not apply — ${FILE} reads '${SERVER_VERSION}' but npm latest resolved to '${EXPECTED}'. This would publish a scaffolder pinning the wrong server."
+            exit 1
+          fi
+          if ! NPM_OUTPUT="$(npm view @malloy-publisher/server dist-tags.latest 2>&1)" || [ -z "$NPM_OUTPUT" ]; then
+            printf '%s\n' "$NPM_OUTPUT" | sed 's/^/[npm] /'
+            echo "::error title=Server pin::could not re-ask npm for @malloy-publisher/server dist-tags.latest"
+            exit 1
+          fi
+          LATEST="$(printf '%s\n' "$NPM_OUTPUT" | tail -n 1)"
+          if [ "$SERVER_VERSION" != "$LATEST" ]; then
+            echo "::error title=Server pin::SERVER_VERSION is $SERVER_VERSION but @malloy-publisher/server latest is now $LATEST — it moved while this job ran. Re-run rather than publishing a stale pin."
+            exit 1
+          fi
+          echo "::notice title=Server pin::SERVER_VERSION $SERVER_VERSION matches npm latest"
 
       # Read the dependency ranges back out of a real tarball rather than trusting
       # the two steps above, since an npm version cannot be republished. With

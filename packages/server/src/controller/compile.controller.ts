@@ -1,5 +1,9 @@
-import type { GivenValue, LogMessage } from "@malloydata/malloy";
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import type { GivenValue } from "@malloydata/malloy";
 import { EnvironmentStore } from "../service/environment_store";
+import type { CompileScope, TaggedLogMessage } from "../service/environment";
 
 export class CompileController {
    private environmentStore: EnvironmentStore;
@@ -12,10 +16,11 @@ export class CompileController {
       environmentName: string,
       packageName: string,
       modelName: string,
-      source: string,
+      source: string | undefined,
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
-   ): Promise<{ status: string; problems: LogMessage[]; sql?: string }> {
+      scope: CompileScope = "append",
+   ): Promise<{ status: string; problems: TaggedLogMessage[]; sql?: string }> {
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -26,6 +31,7 @@ export class CompileController {
          source,
          includeSql,
          givens,
+         scope,
       );
 
       // Determine overall status based on presence of errors

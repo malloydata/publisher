@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -9,8 +12,9 @@ import {
    type QuerySlotHandle,
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
+import { filterPublisherOwnedRenderLogs } from "../../service/dashboard";
 import { EnvironmentStore } from "../../service/environment_store";
-import { type ErrorDetails } from "../error_messages";
+import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
    buildMalloyUri,
    classifyToolError,
@@ -48,7 +52,12 @@ const executeQueryShape = {
          "Package containing the model. Call malloy_getContext with just environmentName to list its packages.",
       ),
    modelPath: z.string().describe("Path to the .malloy model file"),
-   query: z.string().optional().describe("Ad-hoc Malloy query code"),
+   query: z
+      .string()
+      .optional()
+      .describe(
+         `Ad-hoc Malloy query code. Runs in restricted mode: it may not use ${RESTRICTED_CONSTRUCTS} — put those in a model file and reload instead.`,
+      ),
    sourceName: z
       .string()
       .optional()
@@ -82,6 +91,7 @@ const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return
 - Never sum or count the returned rows to state a total when _limit_hit or _rows_truncated is set. Aggregate in the query instead.
 - _returned_rows: 0 with _rows_truncated set means one row was too large to send, NOT that nothing matched. Do not report it as an empty result.
 - Use source, view, and field names exactly as malloy_getContext returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a second statement) in query.
+- query is RESTRICTED: no raw SQL/import/##! (see its param doc).
 
 ## Response
 A JSON object, the same shape Credible's execute_query and an in-package data app receive:
@@ -162,7 +172,7 @@ export function registerExecuteQueryTool(
          }
 
          // --- Execute Query ---
-         const { model, environment } = modelResult;
+         const { model, environment, pkg } = modelResult;
          logger.info(
             `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
          );
@@ -184,6 +194,10 @@ export function registerExecuteQueryTool(
                environment: environmentName,
                // Minted here because the envelope below returns it.
                correlationId: mintCorrelationId(),
+               // The package owns its manifest, so the least-specific
+               // author-declared layer is read here; the model knows only its
+               // own file and its package's NAME.
+               packageDeclaration: pkg.getDeclaredQueryMetadata(),
                // The environment owns the connection configs, so the default
                // and enforced layers are read here rather than from the model.
                connectionMetadata: (connectionName: string) => {
@@ -254,7 +268,9 @@ export function registerExecuteQueryTool(
             const { validateRenderTags } = await import(
                "@malloydata/render-validator"
             );
-            const renderLogs = validateRenderTags(result);
+            const renderLogs = filterPublisherOwnedRenderLogs(
+               validateRenderTags(result),
+            );
 
             const resultUri = buildMalloyUri(
                {

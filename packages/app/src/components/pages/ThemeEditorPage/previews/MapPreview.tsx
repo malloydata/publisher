@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { ResolvedTheme } from "@malloy-publisher/sdk";
 import { Box, Typography } from "@mui/material";
 import { geoAlbersUsa, geoPath } from "d3-geo";

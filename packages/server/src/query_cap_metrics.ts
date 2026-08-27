@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Centralized telemetry for row-cap / byte-cap rejections (HTTP 413).
  *

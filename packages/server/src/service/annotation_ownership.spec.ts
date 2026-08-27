@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Compile-backed cover for model-annotation ownership.
  *
@@ -58,9 +61,9 @@ const isFilterTag = (text: string) => text.startsWith("##(filters)");
 
 /**
  * Every `##` in the folded lineage, ancestral-first. Note this is NOT how
- * `fileLevelAuthorize` reads the fold: that takes `.notes`, the top link only,
- * which is a separate pre-existing bug (see the commit message). This is the
- * complete set, used here only to prove an import's tag really is reachable.
+ * `source_extraction.ts`'s file-level `##(authorize)` detection reads the
+ * fold: that takes `.notes`, the top link only. This is the complete set,
+ * used here only to prove an import's tag really is reachable.
  */
 const foldedTexts = (def: ModelDef): string[] =>
    annotationTexts(modelAnnotations(def)) ?? [];
@@ -167,8 +170,9 @@ source: local is orders extend { dimension: two is 2 }`,
          '## title="Sales report"',
       ]);
       expect(ownModelNotes(def).filter(isFilterTag)).toEqual([]);
-      // …and the folded reader, which file-level `##(authorize)` uses, still
-      // sees it. That asymmetry is the whole point of the pair.
+      // …and the folded reader, which file-level `##(authorize)` DETECTION
+      // uses (to refuse a stray tag declared in an import too), still sees
+      // it. That asymmetry is the whole point of the pair.
       expect(foldedTexts(def).filter(isFilterTag)).toHaveLength(1);
    });
 });

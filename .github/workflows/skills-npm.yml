@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 name: skills
 
 # The skills package versions on its own line. release.yml bumps sdk, app, and
@@ -33,12 +36,280 @@ env:
 
 jobs:
   check_pack:
+    # A frozen-lockfile install, a build, the package's suite, and the registry
+    # check below. Bounded for the reason its siblings are: every registry call
+    # here is bounded individually, but a bound per call is not a bound on the
+    # job, and a hung step would sit on a runner for GitHub's 6-hour default
+    # blocking a PR on a check that can neither pass nor fail.
+    timeout-minutes: 30
     name: Verify the published tarball
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The bump check below diffs this PR against its base, which needs the
+          # merge base in the clone. The default depth-1 checkout of a
+          # pull_request is a merge commit with no parents fetched, so
+          # `origin/<base>` does not resolve and the diff cannot be computed.
+          fetch-depth: 0
+
+      # Before the install, deliberately. The two things this job does are a
+      # six-minute frozen-lockfile install plus build and tests, and a question
+      # the registry can answer in seconds; the publish job puts its version
+      # checks first for the same reason. A forgotten bump should fail in
+      # seconds.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # A missing version bump is the quietest way to lose a release, and until
+      # this step nothing in CI asked for one. release.yml's `publish-packages`
+      # decides purely on the version in main's package.json: if that version is
+      # already on npm the package is SKIPPED and the release stays green, so a
+      # skill edit merged without a bump simply never ships and nothing anywhere
+      # goes red. The publish workflow's own "Verify this version is not already
+      # published" step does ask, but it runs at dispatch time — long after the
+      # review where the bump could have been added.
+      #
+      # The question is "is the declared version ahead of npm", NOT "did this PR
+      # change the version". Between a release-prep merge and the dispatch, main
+      # legitimately carries a bumped version that no open PR touched, and a
+      # did-it-change check would redden every PR opened in that window.
+      - name: Require a version bump when the published content changes
+        if: github.event_name == 'pull_request'
+        env:
+          # Through env rather than interpolated into the script body, as every
+          # other registry-facing step in this repo does.
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          # Scoped to the paths this package's PUBLISHED content is built from,
+          # which is deliberately NARROWER than this workflow's own `paths:`
+          # trigger and narrower than release.yml's "main moved" guard. Both of
+          # those watch this workflow file, correctly — a dispatch runs whatever
+          # definition main holds — but that is a question about which code will
+          # run, and this is a question about the tarball. Editing this file
+          # changes no published byte, so demanding a version bump for it would
+          # force a content-free publish and make every future edit here require
+          # a skills release. Note this file is in the trigger, so a
+          # workflow-only PR DOES reach this step and must be skipped here.
+          #
+          # `bun.lock` and the root `package.json` do change the published bytes
+          # — dist/ is emitted by tsc, whose version bun resolves from the
+          # lockfile — which is why release.yml's guard lists them. They are
+          # absent here because they are not in this workflow's `paths:` trigger,
+          # so a lockfile-only PR never reaches this job to begin with. Widening
+          # the trigger to catch them would run a full install, build and test
+          # suite on every dependency bump; that case stays covered by the
+          # publisher-release skill's step 2. A named gap, not an oversight.
+          #
+          # `packages/skills` is watched wholesale, unlike the scaffolder's
+          # enumerated list, because almost everything in it does reach the
+          # tarball: this package declares `files: ["skills","dist"]`, `dist` is
+          # built by `tsc -p tsconfig.build.json` from `src/`, and
+          # `scripts/copy-skills.ts` is what copies the repo-root skills tree in
+          # AND stamps the version into each file. Only `eslint.config.mjs` and
+          # the non-build `tsconfig.json` ship in nothing, which is not worth
+          # enumerating around.
+          PATHS=(skills packages/skills)
+
+          # Minus the files the packer refuses to ship, or this asks for a bump
+          # nobody can justify. `packages/skills/scripts/exclusions.ts` is the one
+          # place that list lives — the copy, the pack audit and the tests all
+          # read it — and it excludes skills/README.md outright, because that file
+          # documents the internal upstream-sync process and the published package
+          # ships its own README. So editing it changes no published byte, and
+          # demanding a version for it forces exactly the content-free publish the
+          # scoping above exists to prevent. Measured on the PR that added this
+          # check: it corrected one sentence in that README and went red.
+          #
+          # The other two exclusions need no entry here. `credible-*` must never be
+          # committed to this repo at all (skills/README.md states the rule and
+          # `git ls-files | grep credible-` must stay empty), and no dotfile under
+          # skills/ is content. Adding them would mean a pathspec that cannot match,
+          # which the assertion below is about.
+          #
+          # The second entry is governed by packaging, not by exclusions.ts:
+          # tsconfig.build.json excludes `src/**/*.spec.ts` from the `tsc` that
+          # emits dist/, and dist/ is the only thing `files` ships from this
+          # directory — so a spec change publishes nothing. Without it, adding a
+          # test to this package demands a version bump and a content-free
+          # publish, which is the same over-inclusive scope the scaffolder's
+          # enumerated PATHS already avoid for its tests/ directory. Measured:
+          # the PR that added workflow-exclusions.spec.ts went red on exactly
+          # this.
+          #
+          # `src/*.spec.ts`, not `src/**/*.spec.ts`: a git pathspec is fnmatch
+          # WITHOUT FNM_PATHNAME, so `*` already crosses `/` and `**` is not
+          # special — verified, the `**` form silently matches nothing and the
+          # exclusion would quietly do nothing at all.
+          EXCLUDE=(':!skills/README.md' ':!packages/skills/src/*.spec.ts')
+
+          # Assert every entry exists, because `git diff -- does/not/exist` exits
+          # 0 with EMPTY output, which lands in the skip branch below and reports
+          # "no published content changed". So a typo or a rename does not fail
+          # this check, it silently switches it off for good while the trigger
+          # keeps firing. release.yml's publish_pkg guards its own path list the
+          # same way and for the same stated reason: an entry that cannot match
+          # silently stops guarding.
+          for p in "${PATHS[@]}"; do
+            [ -e "$p" ] && continue
+            echo "::error title=Version::watched path '${p}' does not exist in this checkout, so the scoping diff can never match it and this check would silently pass everything. Fix the PATHS list in this workflow."
+            exit 1
+          done
+
+          # Fails CLOSED: if the diff cannot be computed the check RUNS, it does
+          # not skip. A skip is the outcome that lets an unbumped change through,
+          # so it has to be reached deliberately and never by accident.
+          SCOPED=1
+          CHANGED=""
+          if ! git rev-parse --verify --quiet "origin/${BASE_REF}" >/dev/null; then
+            echo "::warning title=Version::could not resolve origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
+            SCOPED=0
+          elif ! CHANGED="$(git diff --name-only "origin/${BASE_REF}...HEAD" -- "${PATHS[@]}" "${EXCLUDE[@]}")"; then
+            echo "::warning title=Version::could not diff against origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
+            SCOPED=0
+          fi
+
+          if [ "$SCOPED" = 1 ] && [ -z "$CHANGED" ]; then
+            echo "::notice title=Version::no published skills content changed in this PR (checked ${PATHS[*]}, excluding ${EXCLUDE[*]}); no version bump required"
+            exit 0
+          fi
+
+          MANIFEST=packages/skills/package.json
+
+          # Read the name rather than hardcoding it, so a rename cannot leave
+          # this quietly checking a package nobody publishes — the same reason
+          # the publish job's steps read it.
+          #
+          # Read through `if !`, and then VALIDATED. Both halves matter, and
+          # release.yml's publish_pkg carries the same pair for the same reasons:
+          #
+          #  - A bare assignment under `set -e` dies with a raw Node stack trace,
+          #    no annotation and no line saying which file was unreadable.
+          #  - `node -p` prints the string "undefined" with exit 0 for a MISSING
+          #    field, which is worse than a crash because it looks like an answer.
+          #    Measured, before this guard existed: with the version field gone,
+          #    `npm view "$NAME@undefined" version` E404s (read as "free"), and
+          #    `sort -V` ranks the literal string "undefined" ABOVE every real
+          #    version — so this check passed GREEN on a manifest that npm would
+          #    refuse to publish. With the name gone it queried the npm package
+          #    literally called `undefined`, which exists at 0.1.0, and reported a
+          #    confident comparison against it.
+          if ! NAME="$(node -p "require('./${MANIFEST}').name" 2>&1)" \
+             || ! DECLARED="$(node -p "require('./${MANIFEST}').version" 2>&1)"; then
+            # :- on both. `if ! A=... || ! B=...` SHORT-CIRCUITS, so when the
+            # first read fails the second assignment never runs and DECLARED is
+            # never bound — and this body runs under `set -euo pipefail`, so an
+            # unbound expansion aborts the step here, before the annotation. That
+            # is precisely the raw-stack-trace-no-annotation failure the comment
+            # above says this block prevents. Measured: "DECLARED: unbound
+            # variable", no ::error, no [node] log.
+            printf '%s\n' "${NAME:-}${DECLARED:-}" | sed 's/^/[node] /'
+            echo "::error title=Version::could not read ${MANIFEST} (logged above)"
+            exit 1
+          fi
+          if [ -z "$NAME" ] || [ "$NAME" = "undefined" ]; then
+            echo "::error title=Version::${MANIFEST} declares no usable package name, so there is nothing to ask the registry about"
+            exit 1
+          fi
+          # A version, not merely a non-empty string. This is also what keeps a
+          # crafted value out of the `::` lines below: DECLARED is fully
+          # PR-controlled on a pull_request run, and a JSON \n escape in it would
+          # otherwise become a real newline that could forge a workflow command
+          # or emit `::stop-commands::` and suppress the genuine error. Measured
+          # before this guard: a version field could inject an `::add-mask::` and
+          # a forged `::error`, and swallow the real one.
+          if [[ ! "$DECLARED" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            printf '%s\n' "$DECLARED" | sed 's/^/[manifest] /'
+            echo "::error title=Version::the version in ${MANIFEST} (logged above) is not a plain major.minor.patch with an optional -prerelease or +build, so it cannot be compared with the registry"
+            exit 1
+          fi
+          SPEC="$NAME@$DECLARED"
+
+          # Named once, so the error below cannot claim this PR touched published
+          # content when the scoping diff is the very thing that failed.
+          if [ "$SCOPED" = 1 ]; then
+            WHY="this PR changes published skills content"
+          else
+            WHY="this PR's changed paths could not be determined"
+          fi
+
+          # Two questions, because passing the first does not imply the second.
+          #
+          # 1. Is this exact version already on npm? This is the precise
+          #    predicate release.yml skips on, so it is the one that decides
+          #    whether the release would silently drop this package.
+          if PUBLISHED="$(npm view "$SPEC" version 2>&1)" && [ -n "$PUBLISHED" ]; then
+            echo "::error title=Version::${WHY}, and $SPEC is already on npm — so a release would SKIP this package and stay green. Bump the version in packages/skills/package.json."
+            exit 1
+          elif [[ "$PUBLISHED" != *E404* ]]; then
+            # Registry output is untrusted text, and a line starting with "::"
+            # would otherwise be parsed as a workflow command. Prefix rather
+            # than indent: the runner trims leading whitespace before matching.
+            printf '%s\n' "$PUBLISHED" | sed 's/^/[npm] /'
+            echo "::error title=Version::could not ask npm whether $SPEC is taken; an unanswered registry is not a green light"
+            exit 1
+          fi
+
+          # 2. Is it above the current `latest`? A version that is merely FREE
+          #    can still be below `latest` — a number skipped by an explicit
+          #    dispatch, or one that was unpublished — and publishing it moves
+          #    the dist-tag `npm install` resolves BACKWARDS with nothing
+          #    failing. release.yml's `prepare` carries the long version of this
+          #    reasoning for the sdk line.
+          if ! LATEST_OUTPUT="$(npm view "$NAME" dist-tags.latest 2>&1)" || [ -z "$LATEST_OUTPUT" ]; then
+            # E404 here means the PACKAGE does not exist, not that the registry
+            # failed — so there is no `latest` to be below and the version is
+            # free. Without this branch a package that has never been published
+            # reddens every PR with "could not ask npm", which is precisely the
+            # `Adding a published package` path in CONTEXT.md, and it also breaks
+            # on a rename — the case the comment above claims reading the name
+            # from disk protects against. The PyPI sibling in python-sdk.yml has
+            # always handled this; these two now match it.
+            if [[ "$LATEST_OUTPUT" == *E404* ]]; then
+              echo "::notice title=Version::$NAME is not on npm at all, so $DECLARED is free"
+              exit 0
+            fi
+            printf '%s\n' "$LATEST_OUTPUT" | sed 's/^/[npm] /'
+            echo "::error title=Version::could not ask npm for $NAME dist-tags.latest"
+            exit 1
+          fi
+          # tail -n 1, as the scaffolder's server-pin step does: the capture
+          # folds stderr in so a failure has something to show, and npm writes
+          # routine warnings there on a successful run too (unknown env config,
+          # update notices, retries). Comparing the raw capture would fail a
+          # correct PR reporting `latest is npm warn ...`.
+          LATEST="$(printf '%s\n' "$LATEST_OUTPUT" | tail -n 1)"
+          # `sort -V` ranks a PRERELEASE ABOVE its own release: verified,
+          # `printf '0.2.0\n0.2.0-rc.1\n' | sort -V | tail -1` is `0.2.0-rc.1`.
+          # The regex above deliberately accepts a -prerelease, so without this
+          # branch a declared `0.1.7-rc.1` against a latest of `0.1.7` passes the
+          # test below and reports "free and above latest (0.1.7)" for a version
+          # semver puts BELOW it. The test is skipped rather than repaired
+          # because it is asking the wrong question of a prerelease: the npm
+          # publish jobs route a hyphenated version to the `next` dist-tag, so it
+          # cannot move `latest` backwards at all, which is the failure this test
+          # names. Implementing real semver ordering in shell to reach the same
+          # answer is not worth it.
+          if [[ "$DECLARED" == *-* ]]; then
+            echo "::notice title=Version::$SPEC is free; skipping the above-latest test because it is a prerelease, which does not move the latest dist-tag"
+            exit 0
+          fi
+          if [ "$DECLARED" != "$(printf '%s\n%s\n' "$LATEST" "$DECLARED" | sort -V | tail -1)" ]; then
+            echo "::error title=Version::packages/skills/package.json declares $DECLARED, which is BELOW npm's latest ($LATEST). Publishing it would move the latest dist-tag backwards. Bump above $LATEST."
+            exit 1
+          fi
+
+          if [ "$SCOPED" = 0 ]; then
+            echo "::notice title=Version::$SPEC is free and above latest ($LATEST); checked unscoped because this PR's changed paths could not be determined"
+          else
+            echo "::notice title=Version::$SPEC is free and above latest ($LATEST)"
+          fi
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -59,6 +330,8 @@ jobs:
 
   publish:
     name: Publish to NPM
+    # Bounded like the jobs above, and this one holds id-token: write.
+    timeout-minutes: 30
     # workflow_dispatch offers every branch in the ref dropdown, and the
     # definition that runs is the one on the ref you pick. npm's trusted
     # publisher matches on this file's name, so the filename is effectively the

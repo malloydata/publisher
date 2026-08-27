@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import * as path from "path";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
@@ -22,20 +25,24 @@ export type PackageReloadMode = "in-place" | "reinstalled";
  * retired — see Package.persistencePolicyWarnings), plus the incremental-refresh
  * gate (a `refresh="incremental"` source must declare a watermark that names a
  * real, orderable, non-aggregate output column, on a supported dialect — see
- * Package.incrementalPolicyWarnings), plus persist-target
+ * Package.incrementalPolicyWarnings), plus the pre-aggregation gate (a
+ * `#@ preaggregate` must sit on a measure that can be re-aggregated, at a grain
+ * of dimensions its source declares — see Package.preaggregatePolicyWarnings),
+ * plus persist-target
  * collisions ONLY when `PERSIST_COLLISION_ENFORCE` is set (otherwise those are
  * surfaced warn-only so a pre-existing latent collision doesn't block a routine
  * re-publish — see Package.formatPersistenceCollisionRejections). At
  * startup/reload these are warn-only instead (fail-safe; see
- * Package.loadViaWorker) — except the incremental-refresh gate, which fails the
- * load there too, so a package that never passes through this endpoint still
- * gets its rejection.
+ * Package.loadViaWorker) — except the incremental-refresh and pre-aggregation
+ * gates, which fail the load there too, so a package that never passes through
+ * this endpoint still gets its rejection.
  */
 function formatPublishRejections(
    pkg: {
       formatInvalidExplores(exploresOverride?: string[]): string;
       formatInvalidPersistencePolicy(): string;
       formatInvalidIncrementalPolicy(): string;
+      formatInvalidPreaggregatePolicy(): string;
       formatPersistenceCollisionRejections(): string;
    },
    exploresOverride?: string[],
@@ -44,6 +51,7 @@ function formatPublishRejections(
       pkg.formatInvalidExplores(exploresOverride),
       pkg.formatInvalidPersistencePolicy(),
       pkg.formatInvalidIncrementalPolicy(),
+      pkg.formatInvalidPreaggregatePolicy(),
       pkg.formatPersistenceCollisionRejections(),
    ]
       .filter(Boolean)

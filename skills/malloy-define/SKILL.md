@@ -2,6 +2,10 @@
 name: malloy-define
 description: Propose a source plan and field definitions for a Malloy semantic model. Covers picking which sources to model and at what grain, then proposing the specific renames, dimensions, and measures per source, every proposal backed by querying the data.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Propose sources and definitions
 
@@ -125,7 +129,7 @@ Show the source query and additional fields.
 
 | Field | Logic | Evidence |
 |-------|-------|----------|
-| days_since_last_order | days(now - last_order_date) | Recency metric |
+| days_since_last_order | days(last_order_date::timestamp to now) | Recency metric (cast: a date column will not measure against a timestamp) |
 | is_repeat_buyer | total_orders > 1 | 62% of customers are repeat |
 | buyer_frequency | total_orders buckets | Distribution: 1 (38%), 2-4 (35%), 5-19 (22%), 20+ (5%) |
 

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Lightweight client entry point for better code splitting
 // This module contains essential client functionality without heavy UI components
 

@@ -1,0 +1,7 @@
+# The bundle is a committed generated artifact whose line positions are the point:
+# entries sit one per line so two branches editing different skills merge without
+# a conflict. Git's default core.autocrlf would hand a Windows checkout CRLF here,
+# which rewrites every line of a 470KB file and puts the contributor's diff and
+# their regeneration permanently at odds. Pinning eol needs no per-clone setup,
+# unlike a merge driver: git applies it at checkout and commit in every clone.
+skills_bundle.json text eol=lf

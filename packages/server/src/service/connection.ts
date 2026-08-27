@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import "@malloydata/db-bigquery";
 import type { BigQueryConnection } from "@malloydata/db-bigquery";
 import "@malloydata/db-databricks";
@@ -31,7 +34,11 @@ import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import fs from "fs/promises";
 import { components } from "../api";
-import { getExtensionFetchPolicy } from "../config";
+import {
+   getDuckDBMemoryLimit,
+   getDuckDBTempDirectory,
+   getExtensionFetchPolicy,
+} from "../config";
 import {
    catalogFormatRangeForEngine,
    isCatalogFormatInRange,
@@ -53,6 +60,7 @@ import {
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
 } from "./connection_config";
+import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { CloudStorageCredentials } from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
@@ -92,6 +100,79 @@ export type InternalConnection = ApiConnection & {
 const extensionSessionPinned = new WeakSet<Connection>();
 
 /**
+ * Sessions that already carry their resource limits, mapped to the spill
+ * directory they were given, so the funnel can be reached twice for one
+ * connection without re-issuing the SETs — while a caller that owns a directory
+ * can still re-point one that was set from the global default.
+ */
+const sessionLimitsApplied = new WeakMap<
+   DuckDBConnection,
+   string | undefined
+>();
+
+/**
+ * Bound ONE DuckDB session's memory, and name where it spills.
+ *
+ * Applied to every Publisher-owned session, which is the point rather than mere
+ * thoroughness: DuckDB sizes `memory_limit` per INSTANCE from the container, and
+ * Publisher runs several in one process. Each independently claims most of the
+ * container, so the process commits a multiple of what it has and the kernel
+ * kills it while every session still believes it is inside its budget. Bounding
+ * only the session running the largest job fixes nothing — the SUM is what
+ * overcommits.
+ *
+ * Both settings are opt-in and independent; unset leaves DuckDB's own default.
+ * See {@link getDuckDBMemoryLimit} for why the limit is absolute, not derived.
+ *
+ * `tempDirectory` names a directory the SESSION owns — a build session's
+ * disposable working directory, unique per build and removed with it, so its
+ * spill can neither outlive the build nor collide with another one. It takes
+ * precedence over the configured default AND over a directory already applied
+ * from that default, because the two are reached in an order this function
+ * cannot see: an attach carries a session through the funnel below, which knows
+ * nothing of the caller's directory. Latching the first value silently cost the
+ * build its own directory on precisely the destination type that reaches
+ * production, so the override is the property, not a convenience.
+ *
+ * Failures are NOT swallowed, unlike the extension pin below. A configured value
+ * DuckDB rejects is an operator error in a resource bound, and continuing would
+ * open a session on the unbounded default while the configuration says otherwise.
+ */
+export async function applySessionResourceLimits(
+   connection: DuckDBConnection,
+   { tempDirectory }: { tempDirectory?: string } = {},
+): Promise<void> {
+   const memoryLimit = getDuckDBMemoryLimit();
+   const temp = tempDirectory ?? getDuckDBTempDirectory();
+   if (sessionLimitsApplied.has(connection)) {
+      const applied = sessionLimitsApplied.get(connection);
+      // Only a session-owned directory can revise an earlier decision, and only
+      // the directory: the memory bound is identical either way.
+      if (tempDirectory === undefined || tempDirectory === applied) {
+         return;
+      }
+      await connection.runSQL(
+         `SET temp_directory = '${escapeSQL(tempDirectory)}'`,
+      );
+      sessionLimitsApplied.set(connection, tempDirectory);
+      return;
+   }
+   if (temp !== undefined) {
+      // Before `memory_limit`: a limit low enough to force spill must never be in
+      // effect while the directory is still DuckDB's default.
+      await connection.runSQL(`SET temp_directory = '${escapeSQL(temp)}'`);
+   }
+   if (memoryLimit !== undefined) {
+      await connection.runSQL(`SET memory_limit = '${escapeSQL(memoryLimit)}'`);
+   }
+   sessionLimitsApplied.set(connection, temp);
+   logger.debug("Applied DuckDB session resource limits", {
+      memoryLimit: memoryLimit ?? "<duckdb default>",
+      tempDirectory: temp ?? "<duckdb default>",
+   });
+}
+
+/**
  * Pin the extension-management PRAGMAs on a Publisher-owned DuckDB session.
  * Publisher installs the extensions it needs explicitly (see
  * {@link installAndLoadExtension}), so DuckDB's own IMPLICIT auto-install
@@ -125,6 +206,11 @@ export async function applyExtensionSessionSettings(
       alwaysDisableAutoinstall = false,
    }: { alwaysDisableAutoinstall?: boolean } = {},
 ): Promise<void> {
+   // Ahead of the autoinstall guard below, which returns early in the common
+   // case: the resource limits must not inherit the extension policy's
+   // conditions. This is the one funnel every Publisher-owned session reaches,
+   // so it is where "every session is bounded" is actually enforced.
+   await applySessionResourceLimits(connection);
    const policy = getExtensionFetchPolicy();
    const disableAutoinstall =
       alwaysDisableAutoinstall || policy === "local-only";
@@ -840,6 +926,20 @@ async function federateBigQuery(
       );
    }
 
+   // Config-load validation rejects impersonateServiceAccount on attached
+   // databases, but a materialization build federating from a BigQuery SOURCE
+   // connection arrives here with that connection's own config — which may
+   // legitimately carry impersonation for the serve path. The DuckDB BIGQUERY
+   // secret takes a key, not a token, so name the limitation instead of
+   // falling through to the generic "service account key required".
+   if (bq.impersonateServiceAccount) {
+      throw new Error(
+         `BigQuery connection '${config.name}' uses impersonateServiceAccount, ` +
+            `which cannot federate through DuckDB: the DuckDB BIGQUERY secret ` +
+            `authenticates with a service account key, not a token. Federated ` +
+            `builds from this source require serviceAccountKeyJson.`,
+      );
+   }
    let projectId = bq.defaultProjectId;
    let serviceAccountJson: string | undefined;
    if (bq.serviceAccountKeyJson) {
@@ -1809,6 +1909,11 @@ export function buildEnvironmentMalloyConfig(
 
    const malloyConfig = new MalloyConfig(assembled.pojo, {
       config: contextOverlay({ rootDirectory: environmentPath }),
+      // Resolves `authClient: {gcpImpersonation: "<sa-email>"}` references on
+      // bigquery connections to live Impersonated clients (see
+      // gcp_impersonation.ts). Registered unconditionally: the overlay is only
+      // consulted when a connection actually carries the reference.
+      gcpImpersonation: gcpImpersonationOverlay(),
    });
 
    async function attachOnce(

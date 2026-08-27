@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import lunr from "lunr";
@@ -265,6 +268,7 @@ const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes an
 ## Contract rules
 - Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
 - Start broad and narrow down: environments, then packages, then sources, then a query.
+- An error, stale, or note field means the data did not load or predates the files: read it before trusting a number.
 
 ## Parameters
 All optional. Supply what you know and omit the rest; each combination answers at its own level.
@@ -371,12 +375,49 @@ export function registerGetContextTool(
                   false,
                );
                const packages = await environment.listPackages();
-               const results = packages.map((pkg) => ({
-                  kind: "package" as const,
-                  name: pkg.name,
-                  description: pkg.description,
-                  environmentName,
-               }));
+               // A stale package is SERVING, so it is in the listing above and
+               // looks healthy there. Marking it here is the point: an agent
+               // that reads a normal-looking listing and queries it gets
+               // confident numbers from the model compiled BEFORE the last
+               // save. `error` carries why the reload failed, the same field
+               // the failed-load entries below use, and `stale: true` is what
+               // separates "still answering, from an older model" from "not
+               // there at all".
+               const staleErrors = environment.getStaleCompileErrors();
+               const results: Array<{
+                  kind: "package";
+                  name: string | undefined;
+                  description?: string;
+                  environmentName: string;
+                  error?: string;
+                  stale?: boolean;
+               }> = packages.map((pkg) => {
+                  const stale = pkg.name
+                     ? staleErrors.get(pkg.name)
+                     : undefined;
+                  return {
+                     kind: "package" as const,
+                     name: pkg.name,
+                     description: pkg.description,
+                     environmentName,
+                     // Spread so a current package's entry stays byte-identical
+                     // to what it was before staleness was reported at all.
+                     ...(stale && { error: stale.message, stale: true }),
+                  };
+               });
+               // listPackages() omits packages that failed to load, which
+               // reads as "does not exist" to an agent. List them with their
+               // load error instead, so a broken package is distinguishable
+               // from an absent one. (Messages are already secret-redacted
+               // where they are recorded.)
+               for (const [name, message] of environment.getFailedPackages()) {
+                  results.push({
+                     kind: "package" as const,
+                     name,
+                     environmentName,
+                     error: message,
+                  });
+               }
                return jsonResource(
                   buildMalloyUri(
                      { environment: environmentName },
@@ -431,6 +472,44 @@ export function registerGetContextTool(
             "get-context",
          );
 
+         // A stale package answers every tier below exactly like a current one:
+         // the index is the last model that compiled, so the names are real and
+         // the queries succeed, and the numbers are from before the last save.
+         // Nothing else in this payload can say so, and telling the agent to go
+         // call malloy_getStatus is weaker than saying it here, where it is
+         // already looking. Attached to tiers 3 and 4 alike, because tier 4 is
+         // the path that goes straight from a question to field names to a
+         // query.
+         //
+         // Best effort: this is a health annotation, so a lookup that fails
+         // must not take discovery down with it. Logged, never thrown.
+         let staleNote: string | undefined;
+         try {
+            const environment = await environmentStore.getEnvironment(
+               environmentName,
+               false,
+            );
+            const stale = environment.getStaleCompileErrors().get(packageName);
+            if (stale) {
+               staleNote = `This package is STALE: its most recent reload failed to compile at ${stale.failedAt}, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call malloy_reloadPackage; malloy_getStatus has the compile error.`;
+            }
+         } catch (error) {
+            logger.debug("[MCP Tool getContext] staleness lookup failed", {
+               environmentName,
+               packageName,
+               error: error instanceof Error ? error.message : String(error),
+            });
+         }
+         /**
+          * Spread into a payload to attach `note`. Returns {} when there is
+          * nothing to say, so a healthy package's payload stays byte-identical
+          * to what it was before notes existed.
+          */
+         const noteFor = (extra?: string) => {
+            const note = [staleNote, extra].filter(Boolean).join(" ");
+            return note ? { note } : {};
+         };
+
          // Tier 3: package but no query -> list the package's sources as an
          // overview the agent can then query or drill into.
          const sanitized = query ? sanitize(query) : "";
@@ -451,7 +530,21 @@ export function registerGetContextTool(
                   modelPath: e.modelPath,
                   doc: e.doc,
                }));
-            return jsonResource(uri, { results });
+            // An empty enumeration is ambiguous to an agent: "no data here" and
+            // "the package exposes nothing" look identical. The package DID
+            // load (a failed load throws out of getPackageIndex above), so an
+            // empty result means its models expose no sources: a curation gap
+            // (explores/export {}), not an empty database. Say so, only in the
+            // empty case, so the populated payload stays byte-identical.
+            if (results.length === 0 && !sourceName) {
+               return jsonResource(uri, {
+                  results,
+                  ...noteFor(
+                     "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call malloy_getStatus for load errors and stale packages.",
+                  ),
+               });
+            }
+            return jsonResource(uri, { results, ...noteFor() });
          }
 
          // Tier 4: retrieval over the package's entities. With an
@@ -545,6 +638,7 @@ export function registerGetContextTool(
             return jsonResource(uri, {
                retrieval: "semantic",
                results: semanticResults,
+               ...noteFor(),
             });
          }
 
@@ -578,7 +672,9 @@ export function registerGetContextTool(
 
          return jsonResource(
             uri,
-            configured ? { retrieval: "lexical", results } : { results },
+            configured
+               ? { retrieval: "lexical", results, ...noteFor() }
+               : { results, ...noteFor() },
          );
       },
    );

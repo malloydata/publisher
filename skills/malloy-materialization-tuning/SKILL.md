@@ -2,6 +2,10 @@
 name: malloy-materialization-tuning
 description: Optimize a package's Malloy Persistence materializations for cost and performance using the malloy-pub CLI and the materialization history. Recommend what to persist, what to stop persisting, and how to schedule/scope it. Use when the user asks to make a package cheaper or faster, tune persistence, decide what to materialize, or review persist/schedule choices.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Tuning materializations for cost and performance
 
@@ -60,7 +64,7 @@ Look across several runs, not one: the pattern over the recent history (how ofte
 
 Weigh rebuild cost against query benefit. Common findings:
 
-- **Persist candidate:** an expensive, frequently-queried source that is _not_ persisted (recomputed on every query). Recommend adding `#@ persist name="…"`. Strongest when the source is a heavy aggregate/join reused by many queries and its inputs change slowly.
+- **Persist candidate:** an expensive, frequently-queried source that is _not_ persisted (recomputed on every query). Recommend adding `#@ persist name="…"`. Strongest when the source is a heavy aggregate/join reused by many queries and its inputs change slowly. If the source carries an `#(authorize)` gate, check which case it is first. A gate reached only through a `join_*`, or inherited from a base it cannot be attributed to, makes the colocated persist **refuse with a 422** - so do not recommend persisting it at all. Where the gate is provably the source's own row filter the persist is admitted, and then only recommend it alongside a freshness window (`freshness.fallback="live"`): the gating column freezes at build time, so without one a revoked row can be served under its old access decision indefinitely (see `skill:malloy-materialization`, which also covers where that window does and does not bind).
 - **Removal candidate:** a persisted source that is cheap to compute, rarely queried, or rebuilt far more often than it is read. Recommend dropping the `#@ persist` annotation (and its table): the storage + rebuild cost is not buying anything.
 - **Cadence mismatch:** a `SCHEDULER` cadence out of step with how fast the data changes or how long a build takes. If most scheduled runs are all-reused (nothing changed), the cron is too frequent, so loosen it. If queries routinely read stale data, tighten it. If the build's `durationMs` approaches the interval, the cadence is too aggressive.
 - **Scope mismatch:** `scope: version` re-materializes per published version (right when versions must be isolated, e.g. a schedule); `scope: package` reuses one lineage across versions (cheaper when versions can share). A schedule _requires_ `version`. If a package carries a schedule it does not need, clearing the schedule frees it to use the cheaper package scope.

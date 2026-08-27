@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -12,6 +15,7 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
+import { accessSync, constants as fsConstants, mkdirSync } from "node:fs";
 
 /**
  * Path to the publisher.config.json file shipped inside the published
@@ -269,6 +273,115 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
       backpressureEnabled,
    };
 };
+
+/**
+ * DuckDB `memory_limit` for every Publisher-owned DuckDB session and instance,
+ * as a FLAT value (`'1GB'`, `'512MB'`). `off` or unset leaves DuckDB's own
+ * default. Sizing guidance and the full rationale live in
+ * `docs/configuration.md`; what matters at this call site is why the value is
+ * absolute rather than derived.
+ *
+ * DuckDB sizes its default from the container INDEPENDENTLY per instance, so N
+ * instances in one process commit N times that share and the kernel kills the
+ * process while each of them still believes it is inside its budget. Publisher
+ * cannot fix that by computing bytes from the container and dividing: the
+ * divisor is not known when a session opens (a build, a package sandbox and the
+ * gate session all come and go independently, and nothing bounds concurrent
+ * builds), and revising the division as instances appear would shrink a live
+ * cap underneath a running query. An absolute per-session value is the only
+ * thing that bounds the sum without needing to know N.
+ *
+ * Read per session rather than at startup so a malformed value surfaces on the
+ * session that used it; {@link assertDuckDBResourceConfig} is what makes that a
+ * boot failure instead.
+ */
+/**
+ * Whether an operator explicitly opted out with the documented `off` sentinel,
+ * as distinct from never having set the variable.
+ *
+ * Both resolve to "no limit", so the difference is invisible to
+ * {@link getDuckDBMemoryLimit} — but only one of them is a decision. The startup
+ * warning about unbounded instances is worth making to someone who has never
+ * seen it and worthless to someone who opted out on purpose, and a warning with
+ * no way to acknowledge it is the kind people learn to filter.
+ */
+export const isDuckDBMemoryLimitDisabled = (): boolean =>
+   process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim().toLowerCase() === "off";
+
+export const getDuckDBMemoryLimit = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim();
+   if (raw === undefined || raw === "" || raw.toLowerCase() === "off") {
+      return undefined;
+   }
+   return raw;
+};
+
+/**
+ * Directory DuckDB spills to. A materialization build overrides this with its
+ * own disposable working directory; every other session and instance uses this.
+ *
+ * No `off` sentinel, unlike {@link getDuckDBMemoryLimit}: a directory named
+ * `off` is a legal path, and unset already means "DuckDB's default".
+ *
+ * Setting a `memory_limit` does not by itself create spill on the `storage=`
+ * build path — that pipeline pushes its SQL to the source warehouse and streams
+ * the result into the destination, with nothing to spill. Local compute, and so
+ * spill, is the chained-build and serve paths.
+ */
+export const getDuckDBTempDirectory = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
+/**
+ * Validate the DuckDB resource settings at boot, and create the spill directory.
+ *
+ * Both are otherwise read on the first session that opens, which is the wrong
+ * moment to discover a typo: `/health` and `/health/readiness` never touch
+ * DuckDB, so the pod reports ready and then fails every query and package load.
+ * `getExtensionFetchPolicy` resolves the same tradeoff the same way.
+ *
+ * The directory is created rather than merely checked because
+ * `SET temp_directory` accepts a path that does not exist and only fails at the
+ * first spill, with an IO error that names the directory but not the variable
+ * that set it. Creating it here turns both that and an unwritable path into a
+ * startup failure naming the variable.
+ */
+export function assertDuckDBResourceConfig(): void {
+   const memoryLimit = getDuckDBMemoryLimit();
+   if (
+      memoryLimit !== undefined &&
+      // Anchored to the units DuckDB actually accepts rather than any letters:
+      // trailing garbage like `1GBB` passes a `[a-zA-Z]+` shape and is then
+      // rejected by DuckDB, which is the late failure this check exists to pull
+      // forward. A bare byte count is correctly rejected too — DuckDB refuses
+      // `1073741824` with "Unknown unit for memory" — so a unit is required.
+      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i.test(memoryLimit)
+   ) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKDB_MEMORY_LIMIT: expected a size like ` +
+            `"1GB" or "512MB" (or "off" to disable), got "${memoryLimit}"`,
+      );
+   }
+   const tempDirectory = getDuckDBTempDirectory();
+   if (tempDirectory !== undefined) {
+      try {
+         mkdirSync(tempDirectory, { recursive: true });
+         // `recursive: true` returns silently when the directory already exists,
+         // whatever its permissions — the common Kubernetes case of a volume
+         // mounted with the wrong ownership, and the one the promise above would
+         // otherwise miss. Checked explicitly so an unwritable mount fails the
+         // boot rather than the first spill.
+         accessSync(tempDirectory, fsConstants.W_OK);
+      } catch (error) {
+         const detail = error instanceof Error ? error.message : String(error);
+         throw new Error(
+            `Cannot use PUBLISHER_DUCKDB_TEMP_DIRECTORY "${tempDirectory}": ` +
+               `${detail}`,
+         );
+      }
+   }
+}
 
 /**
  * Settings for the optional embedding provider behind semantic

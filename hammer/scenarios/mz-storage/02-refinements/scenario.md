@@ -3,6 +3,10 @@ id: refinements
 tags: serve-correctness
 package: d1
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A source's dimensions, measures and views are all re-declared over the stored table
 

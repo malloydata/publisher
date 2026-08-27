@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Put this server in the host's MCP config, so an agent opened here finds the
  * `malloy_*` tools without being told how.
@@ -11,11 +14,17 @@
  * register itself, which is the only reason getting-started had to teach
  * `claude mcp add` before a reader could ask a question.
  *
- * Creates only, never edits, and never reads. The file may hold other servers
- * and their credentials, reading it can block when it is a FIFO, and a boot
- * that rewrites it would churn version-controlled files. The scaffolder can
- * afford to merge because it runs once at the user's request; a server boot
- * cannot.
+ * Creates only, never edits. An existing REGULAR file is read once, bounded,
+ * solely to compare its `mcpServers.malloy.url` against this run's endpoint,
+ * because a file naming a dead port fails the NEXT agent session silently (a
+ * failed boot can write the file and die; the successful retry on another port
+ * then skips it). Nothing else is read or logged from it: it may hold other
+ * servers and their credentials. The lstat gate keeps the old safety
+ * properties: a FIFO is not a regular file so the read cannot block, a symlink
+ * is never read through, and an oversized file is skipped. A boot still never
+ * rewrites the file, which would churn version-controlled files; the mismatch
+ * is warned about instead. The scaffolder can afford to merge because it runs
+ * once at the user's request; a server boot cannot.
  *
  * A symlink named `.mcp.json` is never written through. `wx` (`O_EXCL`) refuses
  * one on POSIX whether or not its target exists, but Windows resolves the
@@ -64,7 +73,17 @@ export type McpConfigOutcome =
         staleConfig: string | undefined;
      }
    | { action: "created"; file: string }
-   | { action: "exists"; file: string; endpoint: string }
+   | {
+        action: "exists";
+        file: string;
+        endpoint: string;
+        /**
+         * The malloy URL the existing file names, set ONLY when it parses and
+         * differs from this run's endpoint. Presence means "the file points
+         * agents somewhere this server is not", which the logger warns about.
+         */
+        existingUrl?: string;
+     }
    | { action: "failed"; file: string; problem: string; endpoint: string };
 
 /** Pinned rather than `Record<string, string>`, so `type` cannot drift. */
@@ -171,6 +190,32 @@ function findGitWorkTreeRoot(dir: string): string | undefined {
       const parent = path.dirname(current);
       if (parent === current) return undefined;
       current = parent;
+   }
+}
+
+/**
+ * The malloy URL an existing config names, when it differs from this run's
+ * endpoint; undefined otherwise (matching, absent, unreadable, unparseable).
+ *
+ * Guarded so the old never-read safety properties survive: lstat first, and
+ * only a REGULAR file under 64 KiB is opened — a FIFO cannot block the boot, a
+ * symlink is never read through, and a surprise multi-megabyte file is
+ * skipped. Only the one URL is extracted; the rest of the file (which may hold
+ * other servers and their credentials) is never surfaced. Never throws.
+ */
+function conflictingMalloyUrl(
+   file: string,
+   endpoint: string,
+): string | undefined {
+   try {
+      const stats = fs.lstatSync(file);
+      if (!stats.isFile() || stats.size > 64 * 1024) return undefined;
+      const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+      const url = (parsed as { mcpServers?: { malloy?: { url?: unknown } } })
+         ?.mcpServers?.malloy?.url;
+      return typeof url === "string" && url !== endpoint ? url : undefined;
+   } catch {
+      return undefined;
    }
 }
 
@@ -304,6 +349,8 @@ export function ensureMcpConfig(options: {
       // this module exists to prevent, on the one platform where `wx` does not
       // prevent it. Caught by the cross-platform CI run, not by reasoning.
       // `wx` stays as the race-free backstop for the non-symlink case.
+      // (conflictingMalloyUrl lstat-gates on a regular file, so the symlink
+      // itself is never read through and existingUrl stays undefined here.)
       if (existing?.isSymlink) return { action: "exists", file, endpoint };
 
       const body =
@@ -316,9 +363,20 @@ export function ensureMcpConfig(options: {
       return { action: "created", file };
    } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
-      // EEXIST covers both an ordinary existing file and a dangling symlink, and
-      // the response to each is the same: leave it alone, unread.
-      if (code === "EEXIST") return { action: "exists", file, endpoint };
+      // EEXIST covers both an ordinary existing file and a dangling symlink.
+      // The response to each is the same, leave it alone, but a regular file is
+      // compared first: one pointing at a URL this server is not on breaks the
+      // NEXT session silently (the observed shape: a boot writes the file, dies
+      // on the REST port, and the retry on another port skips the rewrite).
+      if (code === "EEXIST") {
+         const existingUrl = conflictingMalloyUrl(file, endpoint);
+         return {
+            action: "exists",
+            file,
+            endpoint,
+            ...(existingUrl !== undefined && { existingUrl }),
+         };
+      }
       return {
          action: "failed",
          file,
@@ -375,11 +433,21 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
          );
          return;
       case "exists":
-         // States the endpoint rather than speculating that the file is wrong.
-         // This fires on every boot of a scaffolded package, where the file is
-         // almost always correct, so it must not read as a warning.
+         // Two tones on purpose. The mismatch case is a real warning: the file
+         // sends every agent opened here to a URL this server is not on, the
+         // observed way this happens being a boot that wrote the file and then
+         // died on its REST port, leaving the retry on another port to skip the
+         // rewrite. The matching/unreadable case fires on every boot of a
+         // scaffolded package, where the file is almost always correct, so it
+         // stays calm info and does not speculate that the file is wrong.
+         if (outcome.existingUrl !== undefined) {
+            logger.warn(
+               `${outcome.file} points agents at ${outcome.existingUrl}, but this server is at ${outcome.endpoint}. It was left alone (this run did not create it, and a boot never rewrites the file). An agent started here will reach whatever answers at the old URL, or nothing. To point it at this server: ${addCommand(outcome.endpoint)}`,
+            );
+            return;
+         }
          logger.info(
-            `Left the existing ${outcome.file} alone, unread. This server is at ${outcome.endpoint}. If an agent started here reaches a different Publisher than you expect, ask it to run malloy_getContext, which names the environment and packages it is actually talking to. To point it here: ${addCommand(outcome.endpoint)}`,
+            `Left the existing ${outcome.file} alone. This server is at ${outcome.endpoint}. If an agent started here reaches a different Publisher than you expect, ask it to run malloy_getContext, which names the environment and packages it is actually talking to. To point it here: ${addCommand(outcome.endpoint)}`,
          );
          return;
       case "failed":

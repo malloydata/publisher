@@ -3,6 +3,10 @@ id: join-across-two-persisted
 tags: serve-correctness, joins
 package: jt
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Join across two persisted sources: both legs routed to storage
 

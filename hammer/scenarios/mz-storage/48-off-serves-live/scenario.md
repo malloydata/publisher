@@ -3,6 +3,10 @@ id: off-serves-live
 tags: config, kill-switch, needs-attention
 package: obp
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Kill switch off: a storage= source serves LIVE, never a colocated build
 

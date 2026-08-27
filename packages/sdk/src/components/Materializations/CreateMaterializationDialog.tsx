@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import AddIcon from "@mui/icons-material/Add";
 import {
    Button,

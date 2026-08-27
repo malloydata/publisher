@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Box, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { useEffect, useMemo, useRef, useState } from "react";

@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Connections
 
 > What this is: how Publisher reaches databases and query engines — per-package DuckDB sandboxes,
@@ -7,6 +12,56 @@
 Publisher uses **connections** to reach databases and query engines. Connections are defined per-environment in `publisher.config.json`; each one has a unique `name` and a `type` (`bigquery`, `snowflake`, `postgres`, `mysql`, `duckdb`, `trino`, etc.) plus type-specific configuration under a matching `*Connection` key.
 
 For full setup details per connection type, see [docs.malloydata.dev/documentation/user_guides/publishing/connections](https://docs.malloydata.dev/documentation/user_guides/publishing/connections).
+
+## BigQuery service-account impersonation
+
+A BigQuery connection can run as a dedicated service account without holding any key
+material, by naming the account to impersonate:
+
+```json
+{
+  "name": "bigquery",
+  "type": "bigquery",
+  "bigqueryConnection": {
+    "defaultProjectId": "tenant-project",
+    "billingProjectId": "tenant-project",
+    "impersonateServiceAccount": "sa-viewer@tenant-project.iam.gserviceaccount.com"
+  }
+}
+```
+
+Every BigQuery call the connection makes — query execution **and** schema discovery
+(`/schemas`, `/tables`, `malloy_searchDatabaseSchema`) — then runs as that account, using
+short-lived tokens minted through the IAM Service Account Credentials API. Publisher's own
+credential (ambient ADC) is only the token minter, so in a multi-environment deployment each
+environment can be pinned to an identity that can read only its own data: cross-environment
+access fails at the IAM layer regardless of what the compiled query asks for, per-environment
+access is revocable with a single IAM binding, and BigQuery Cloud Audit Logs record both
+identities (`serviceAccountDelegationInfo`).
+
+Operator prerequisites:
+
+- `iamcredentials.googleapis.com` enabled in the project Publisher's credential belongs to.
+- Publisher's credential granted `roles/iam.serviceAccountTokenCreator` **on each target
+  service account** (a resource-level grant — no project-wide role needed).
+- The target account holds the data-access roles (e.g. `roles/bigquery.dataViewer` plus
+  `roles/bigquery.jobUser` in its project).
+
+Constraints:
+
+- Mutually exclusive with `serviceAccountKeyJson` — an auth client replaces the credential
+  entirely, so a key alongside it would be silently ignored; Publisher rejects the
+  combination at config load.
+- `billingProjectId` is required: with an impersonated credential the SDK resolves the
+  project through that credential, so the project that runs (and is billed for) jobs must be
+  named explicitly.
+- Not supported on DuckDB `attachedDatabases` entries or on federated materialization builds
+  that read a BigQuery source through DuckDB — DuckDB's `BIGQUERY` secret authenticates with
+  a service account key, not a token. Both cases are rejected with an explicit error.
+- If you also set the connection-level `fingerprint`, make it vary with the impersonated
+  identity: the fingerprint replaces the derived connection digest verbatim, and the derived
+  digest already incorporates the impersonation reference precisely so that two environments
+  with different identities never share persisted-table ids.
 
 ## Per-package DuckDB sandboxes
 

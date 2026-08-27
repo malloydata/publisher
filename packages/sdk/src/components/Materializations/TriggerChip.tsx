@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import ScheduleIcon from "@mui/icons-material/Schedule";
 import TouchAppIcon from "@mui/icons-material/TouchApp";
 import { Chip, Tooltip } from "@mui/material";

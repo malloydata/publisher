@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML Coverage Review (Step 7)
 
 > Compare the built Malloy model against the original LookML project. Show the user what was modeled, what was skipped, and why. This runs during Step 7 (REVIEW) when prior-art notes exist.

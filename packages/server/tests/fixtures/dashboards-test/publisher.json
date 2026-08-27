@@ -1,0 +1,5 @@
+{
+   "name": "dashboards-test",
+   "version": "1.0.0",
+   "description": "Fixture for dashboards/ discovery: the /dashboards endpoints"
+}

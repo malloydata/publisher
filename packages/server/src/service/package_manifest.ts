@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Pure parsing of the package manifest's (publisher.json) `materialization`
  * block. Kept side-effect free (no fs, no worker bootstrap) so it is unit
@@ -100,6 +103,119 @@ const SCOPE_ROOT_DEPRECATION =
    `older publisher still reads the right value.`;
 
 /**
+ * Resolve the package's per-query metadata from its two homes: the manifest root
+ * (canonical) and `materialization.queryMetadata` (the original home, now
+ * deprecated).
+ *
+ * The move is the opposite direction to {@link resolvePackageScope}, for the
+ * opposite reason. Scope is a build knob, so it belongs with the build knobs.
+ * Query metadata is not one: the properties ride every statement the package's
+ * sources issue, a served query as much as a build. Declaring them inside
+ * `materialization` describes a scope the feature does not have, and sends an
+ * author hunting through build settings for a way to label their traffic.
+ *
+ * A conflict WARNS and prefers the root, where scope THROWS. Scope decides
+ * whether an artifact is version-owned, so guessing could reuse a table across
+ * versions that was never meant to be shared — worth failing a load over. A tag
+ * is observability only, excluded from `sourceEntityId` and from build identity,
+ * so the worst a wrong guess yields is a mislabelled statement. Failing a load
+ * over a label would break the rule the whole feature rests on: a tag must never
+ * be the reason something refuses to run.
+ */
+export function resolvePackageQueryMetadata(
+   rootRaw: unknown,
+   materializationRaw: unknown,
+): { queryMetadata: unknown; home: QueryMetadataHome; warnings: string[] } {
+   const envelopeRaw =
+      materializationRaw && typeof materializationRaw === "object"
+         ? (materializationRaw as { queryMetadata?: unknown }).queryMetadata
+         : undefined;
+   const rootDeclared = rootRaw !== undefined && rootRaw !== null;
+   const envelopeDeclared = envelopeRaw !== undefined && envelopeRaw !== null;
+
+   if (rootDeclared && envelopeDeclared) {
+      // Both homes agreeing is the transition state the server itself writes,
+      // so it is not worth a word to an operator who cannot act on it.
+      if (sameQueryMetadataBag(rootRaw, envelopeRaw)) {
+         return { queryMetadata: rootRaw, home: "root", warnings: [] };
+      }
+      return {
+         queryMetadata: rootRaw,
+         home: "root",
+         warnings: [QUERY_METADATA_CONFLICT],
+      };
+   }
+   if (envelopeDeclared) {
+      return {
+         queryMetadata: envelopeRaw,
+         home: "envelope",
+         warnings: [QUERY_METADATA_ENVELOPE_DEPRECATION],
+      };
+   }
+   return { queryMetadata: rootRaw, home: "root", warnings: [] };
+}
+
+/**
+ * Whether two raw `queryMetadata` declarations say the same thing, INSENSITIVE
+ * to key order. `{team, tier}` and `{tier, team}` are the same bag; comparing
+ * serialized forms directly called them a conflict and sent an author off to
+ * reconcile two homes that already agreed.
+ *
+ * Runs on RAW, pre-validation input, so it cannot assume a flat string map — a
+ * value may be a number, a null, an array or an object. Compared through a
+ * key-sorted re-serialization that recurses, so nesting is handled rather than
+ * assumed away.
+ */
+function sameQueryMetadataBag(a: unknown, b: unknown): boolean {
+   return keySortedJson(a) === keySortedJson(b);
+}
+
+function keySortedJson(value: unknown): string {
+   if (value === null || typeof value !== "object") {
+      // `undefined` has no JSON form; name it so two absent values still match.
+      return JSON.stringify(value) ?? "undefined";
+   }
+   if (Array.isArray(value)) {
+      return `[${value.map(keySortedJson).join(",")}]`;
+   }
+   const entries = Object.entries(value as Record<string, unknown>).sort(
+      ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0),
+   );
+   return `{${entries
+      .map(
+         ([name, nested]) => `${JSON.stringify(name)}:${keySortedJson(nested)}`,
+      )
+      .join(",")}}`;
+}
+
+/**
+ * Which home a resolved bag came from. Carried so a parse warning about one of
+ * its properties can name the home the author actually wrote, rather than a
+ * hardcoded spelling that is wrong for whichever home did not win.
+ */
+export type QueryMetadataHome = "root" | "envelope";
+
+const QUERY_METADATA_HOME_LABELS: Record<QueryMetadataHome, string> = {
+   root: "queryMetadata",
+   envelope: "materialization.queryMetadata",
+};
+
+const QUERY_METADATA_ENVELOPE_DEPRECATION =
+   `"queryMetadata" inside "materialization" is deprecated: declare it at the ` +
+   `manifest root instead. It is not a build setting — the properties ride ` +
+   `every statement the package's sources issue, including served queries. The ` +
+   `enveloped form still works and will be removed in a future release; until ` +
+   `then the server keeps both homes in sync when it writes the manifest, so an ` +
+   `older publisher still reads the right value.`;
+
+const QUERY_METADATA_CONFLICT =
+   `Conflicting "queryMetadata" in publisher.json: the manifest root and ` +
+   `"materialization.queryMetadata" declare different bags, and the root wins. ` +
+   `Delete "materialization": { "queryMetadata": ... } — the server rewrites ` +
+   `both homes on its next manifest write, so an older publisher still reads ` +
+   `the right value.`;
+
+/**
  * The manifest's `materialization.freshness` block, surfaced verbatim for the
  * control plane (which owns the scheduling and query-time gating logic).
  * Fields are kept only when valid — an invalid value is dropped, never
@@ -171,7 +287,10 @@ function parseFreshness(raw: unknown): PackageFreshnessConfig | null {
  * plausible hand-edit, and without this it disappears with nothing anywhere to
  * point at.
  */
-function parseQueryMetadata(raw: unknown): {
+function parseQueryMetadata(
+   raw: unknown,
+   label = QUERY_METADATA_HOME_LABELS.envelope,
+): {
    metadata: Record<string, string> | null;
    warnings: string[];
 } {
@@ -185,7 +304,7 @@ function parseQueryMetadata(raw: unknown): {
          out[name] = value;
       } else {
          warnings.push(
-            `materialization.queryMetadata: property '${name}' must be a ` +
+            `${label}: property '${name}' must be a ` +
                `string (got ${value === null ? "null" : typeof value}); it is ` +
                `not attached to any statement`,
          );
@@ -227,15 +346,36 @@ export function parsePackageMaterialization(
 }
 
 /**
- * What the `materialization` parse tolerated but could not keep, for the
- * operator warnings array. Reads the same parse as
- * {@link parsePackageMaterialization} rather than re-deriving it, so the two
- * cannot disagree about what was dropped.
+ * The package's materialization config with `queryMetadata` taken from whichever
+ * home won (see {@link resolvePackageQueryMetadata}), so every consumer keeps
+ * reading one accessor and no caller has to know there are two homes.
+ *
+ * Returns a config even when the manifest has NO `materialization` block, which
+ * is the shape the canonical form produces: a package that declares tags at the
+ * root and nothing else has no build policy to express. Null only when neither
+ * home declares anything.
  */
-export function packageMaterializationWarnings(raw: unknown): string[] {
-   if (!raw || typeof raw !== "object") {
-      return [];
-   }
-   const { queryMetadata } = raw as { queryMetadata?: unknown };
-   return parseQueryMetadata(queryMetadata).warnings;
+export function materializationWithQueryMetadata(
+   parsed: PackageMaterializationConfig | null,
+   queryMetadataRaw: unknown,
+): PackageMaterializationConfig | null {
+   const queryMetadata = parseQueryMetadata(queryMetadataRaw).metadata;
+   if (!parsed && !queryMetadata) return null;
+   return {
+      schedule: parsed?.schedule ?? null,
+      freshness: parsed?.freshness ?? null,
+      queryMetadata,
+   };
+}
+
+/**
+ * Properties the winning `queryMetadata` home declared but could not keep,
+ * named after THAT home. Hardcoding the enveloped spelling pointed the author of
+ * a root-only manifest at a `materialization` block their file does not have.
+ */
+export function queryMetadataParseWarnings(
+   raw: unknown,
+   home: QueryMetadataHome = "root",
+): string[] {
+   return parseQueryMetadata(raw, QUERY_METADATA_HOME_LABELS[home]).warnings;
 }

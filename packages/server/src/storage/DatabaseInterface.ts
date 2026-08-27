@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { components } from "../api";
 
 /**
@@ -101,16 +104,14 @@ export interface ResourceRepository {
    // Incremental ledger
    getIncrementalLedgerEntry(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<IncrementalLedgerEntry | null>;
    upsertIncrementalLedgerEntry(
       entry: Omit<IncrementalLedgerEntry, "createdAt" | "advancedAt">,
    ): Promise<IncrementalLedgerEntry>;
    deleteIncrementalLedgerEntry(
       environmentId: string,
-      connectionName: string,
-      physicalTableName: string,
+      table: LedgerTableIdentity,
    ): Promise<void>;
 }
 
@@ -244,14 +245,73 @@ export interface IncrementalLedgerEntry {
     */
    physicalTableName: string;
    connectionName: string;
+   /**
+    * The storage destination the table lives in, absent when it lives in
+    * `connectionName`'s own warehouse. Part of the table's identity: a
+    * destination and a connection are separate namespaces that may share a name,
+    * and a source keeps its physical name when it moves between them.
+    */
+   storageDestinationName?: string;
    /** Audit: which run last advanced this boundary, and when. */
    advancedByMaterializationId: string | null;
    advancedAt: Date;
    createdAt: Date;
 }
 
+/**
+ * Which physical table a boundary belongs to. Three fields rather than two
+ * because where a table LIVES is not implied by the connection that computes it:
+ * a `storage=` source is read from its warehouse and materialized into a
+ * destination, so the pair (connection, table) does not identify it.
+ */
+export interface LedgerTableIdentity {
+   /** The connection whose SQL computes the table's rows. */
+   connectionName: string;
+   /** The storage destination holding it, absent when colocated. */
+   storageDestinationName?: string;
+   /** The table's logical (unquoted) name, as the manifest reports it. */
+   physicalTableName: string;
+}
+
 /** How a delta advances the serving table. */
 export type IncrementalStrategy = "merge" | "range_replace";
+
+/**
+ * One source that failed to build, reported beside `entries` rather than inside
+ * one.
+ *
+ * A failure carries the identifying fields it was instructed with, including the
+ * `physicalTableName` it was HEADED for, so a table name here is not evidence a
+ * table exists. Keeping these out of `entries` is what lets a consumer that
+ * resolves an entry to a real table -- serve bindings, reuse decisions, seeds for
+ * a downstream build -- do so without a per-entry check.
+ */
+export type SourceFailure = components["schemas"]["SourceFailure"];
+
+/**
+ * Whether a manifest entry records a FAILED source, in the deprecated shape.
+ *
+ * Two things make this necessary rather than redundant with `failures`, and both
+ * end when `ManifestEntry.error` is removed:
+ *
+ *  - 0.0.245 and 0.0.246 wrote a failed source INTO `entries`, with the required
+ *    `physicalTableName` naming a table the build never created. Those manifests
+ *    are at rest in `publisher.db` and in bound manifest files, and they outlive
+ *    the upgrade -- so a read boundary that trusted `entries` to be built-only
+ *    would bind that name. Auto-run physical names are stable
+ *    (`selfAssignTableName`), which makes it the PREVIOUS generation's real table:
+ *    served as though fresh, not a miss.
+ *  - This build mirrors the failure into `entries` for the same window, so the
+ *    shape is produced as well as read.
+ *
+ * Applied at the READ boundaries a persisted manifest enters through, not at each
+ * consumer: `splitManifestEntries` (both the host-manifest fetch and the
+ * local-store rebind) and `getMostRecentManifestEntries` (reuse and reference
+ * resolution). Delete this with the field.
+ */
+export function isLegacyFailedEntry(entry: { error?: string | null }): boolean {
+   return Boolean(entry?.error);
+}
 
 export interface MaterializationUpdate {
    status?: MaterializationStatus;

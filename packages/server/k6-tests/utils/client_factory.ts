@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { Params } from "k6/http";
 import { ConnectionsTestClient } from "../clients/connections-test.ts";
 import { ConnectionsClient } from "../clients/connections.ts";

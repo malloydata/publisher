@@ -1,5 +1,9 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { MalloyError } from "@malloydata/malloy";
 import { PUBLISHER_CONFIG_NAME } from "./constants";
+import type { EligibilityRefusalReason } from "./materialization_metrics";
 
 export function internalErrorToHttpError(error: Error) {
    if (error instanceof BadRequestError) {
@@ -13,6 +17,8 @@ export function internalErrorToHttpError(error: Error) {
    } else if (error instanceof PackageNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof ModelNotFoundError) {
+      return httpError(404, error.message);
+   } else if (error instanceof DashboardNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof NotQueryableError) {
       return httpError(404, error.message);
@@ -111,6 +117,18 @@ export class ModelNotFoundError extends Error {
    }
 }
 
+/**
+ * No dashboard with that slug in the package. Distinct from
+ * {@link ModelNotFoundError}: a `dashboards/*.malloy` with no `# artifact` tag
+ * is a shared include, so the file can exist as a model and still not be a
+ * dashboard.
+ */
+export class DashboardNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
 export class ConnectionNotFoundError extends Error {
    constructor(message: string) {
       super(message);
@@ -171,11 +189,19 @@ export class ModelCompilationError extends Error {
  * — a hard refuse, never a silent fallback. Kept a distinct class so the
  * givens/RLAC refusal is greppable for security review. Accepts a
  * message-bearing object to match {@link ModelCompilationError}'s ergonomics.
+ * `reason` is optional so an existing throw site need not be touched to keep
+ * compiling; every current throw site sets it, matching the same value it
+ * hands `recordEligibilityRefused` — a caller that needs the bounded reason
+ * (rather than parsing the message) reads it off the error instead of a
+ * second classification pass.
  */
 export class MaterializationEligibilityError extends Error {
-   constructor(error: { message: string }) {
+   readonly reason?: EligibilityRefusalReason;
+
+   constructor(error: { message: string; reason?: EligibilityRefusalReason }) {
       super(error.message);
       this.name = "MaterializationEligibilityError";
+      this.reason = error.reason;
    }
 }
 

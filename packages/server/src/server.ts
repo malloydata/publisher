@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Refuse to run on an unsupported Node. Imported first, and importing nothing
 // but node:fs itself, so the check pulls no application code into the graph.
 // It does not run before that graph: ESM evaluates every import ahead of this
@@ -18,6 +21,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
+import { DashboardController } from "./controller/dashboard.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -42,10 +46,14 @@ import {
 import { logger, loggerMiddleware, redactSensitive } from "./logger";
 
 import {
+   assertDuckDBResourceConfig,
+   getDuckDBMemoryLimit,
+   getDuckDBTempDirectory,
    getEmbeddingConfig,
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
+   isDuckDBMemoryLimitDisabled,
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
@@ -80,6 +88,11 @@ import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 import { classifySpaFallback } from "./spa_fallback";
+import {
+   RATE_LIMIT_ENV,
+   parseRateLimit,
+   rateLimitMiddleware,
+} from "./rate_limit";
 
 // The first statement this module runs. On an unsupported Node this exits
 // non-zero here, before any argument parsing, any storage init, and any
@@ -244,6 +257,10 @@ const isDevelopment = process.env["NODE_ENV"] === "development";
 export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
+// Opt-in per-client rate limiting (PUBLISHER_RATE_LIMIT). Mounted before any
+// route so the static-file, query, and SPA-fallback handlers are all behind
+// it; probes and /metrics are exempt inside the middleware.
+app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
 // Probe the V8 heap ceiling once at startup and warn if it's below
 // the recommended floor. The row/byte caps from Steps 1–3 still
 // bound per-request memory; this is a "your --max-old-space-size
@@ -265,6 +282,33 @@ const modelController = new ModelController(environmentStore);
 // an operator relying on `local-only` for a no-network guarantee. Logging the
 // resolved policy also records the posture the server booted with.
 logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
+// Validated and materialized here, not on the first session that opens one:
+// `/health` and `/health/readiness` never touch DuckDB, so a malformed limit or
+// an uncreatable spill directory would leave the pod reporting ready while every
+// query and package load failed. Also creates the directory, since
+// `SET temp_directory` accepts one that does not exist and only fails at the
+// first spill.
+assertDuckDBResourceConfig();
+const duckDBMemoryLimit = getDuckDBMemoryLimit();
+if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
+   // Warned rather than defaulted. A flat value that suits one container size
+   // badly constrains another, so the safe value is the operator's to pick — but
+   // an operator who never reads a release note would otherwise have no way to
+   // learn that this process runs several DuckDB instances which each size
+   // themselves against the whole container independently.
+   logger.warn(
+      "PUBLISHER_DUCKDB_MEMORY_LIMIT is unset: every DuckDB instance in this " +
+         "process sizes its memory_limit from the container independently, so " +
+         "their combined budget exceeds it and the process can be OOM-killed " +
+         "while each instance believes it is within budget. See " +
+         "docs/configuration.md.",
+   );
+} else {
+   logger.info(
+      `DuckDB session limits: memory_limit=${duckDBMemoryLimit ?? "off (explicitly disabled)"} ` +
+         `temp_directory=${getDuckDBTempDirectory() ?? "<duckdb default>"}`,
+   );
+}
 // Resolve the embedding config at boot so a malformed EMBEDDING_API_BASE /
 // EMBEDDING_DIMENSIONS fails loudly at startup (getEmbeddingConfig throws),
 // matching the sibling getters above, rather than surfacing as a warn on the
@@ -283,6 +327,7 @@ const memoryGovernor = memoryGovernorConfig
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
 const packageController = new PackageController(environmentStore);
+const dashboardController = new DashboardController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
@@ -1630,6 +1675,53 @@ app.get(
 );
 
 app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.listDashboards(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards/:dashboardName`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.getDashboard(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.dashboardName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks`,
    async (req, res) => {
       if (req.query.versionId) {
@@ -1835,6 +1927,10 @@ app.post(
             req.body.source,
             req.body.includeSql === true,
             req.body.givens as Record<string, GivenValue> | undefined,
+            // Scope defaults to "append" (the historical behavior); an
+            // invalid value is rejected by compileSource with a 400 naming
+            // the valid set, never silently consumed.
+            req.body.scope ?? "append",
          );
          res.status(200).json(result);
       } catch (error) {
@@ -2146,7 +2242,17 @@ mainServer.timeout = 600000;
 mainServer.keepAliveTimeout = 600000;
 mainServer.headersTimeout = 600000;
 
+// Resolved from the REST listen callback. The .mcp.json write below waits on
+// it, so a process whose REST port fails (the listener that dies is the one
+// bound SECOND to a busy port pair) can never leave a fresh .mcp.json behind
+// pointing at a server that is about to exit.
+let resolveRestBound: () => void = () => {};
+const restBound = new Promise<void>((resolve) => {
+   resolveRestBound = resolve;
+});
+
 mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
+   resolveRestBound();
    const address = mainServer.address() as AddressInfo;
    logger.info(
       `Publisher server listening at http://${address.address}:${address.port}`,
@@ -2221,37 +2327,89 @@ const mcpServer = mcpApp.listen(
       // Checked before process.cwd(), which can throw: someone who turned the
       // feature off should not get a warning about it.
       if (MCP_CONFIG_ENABLED) {
-         // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
-         // raises ENOENT once the working directory has been removed. A throw
-         // here is an uncaught exception inside a listen callback, which would
-         // kill a server that has already bound both ports. Everything the call
-         // needs is built inside the try for that reason, including the
-         // endpoint: it is the newest and least-exercised code in this block.
-         try {
-            // The host an agent should dial, which is NOT `localhost`: that name
-            // resolves to both loopback families while the server binds only one,
-            // so another local process can hold the same port on the other family
-            // and receive the agent's traffic instead.
-            const endpoint = mcpEndpoint(
-               resolveClientHost(this.address(), PUBLISHER_HOST),
-               boundPort,
-            );
-            // cwd, not server_root: the file is for whoever opens an agent here.
-            logMcpConfigOutcome(
-               ensureMcpConfig({
-                  dir: process.cwd(),
-                  endpoint,
-                  requestedPort: MCP_PORT,
+         // Deferred until the REST listener has ALSO bound. Both listens are
+         // issued back-to-back, so this callback can run while the REST port is
+         // about to fail EADDRINUSE; writing here used to leave a .mcp.json
+         // pointing at a process that died moments later, and the next boot on
+         // fresh ports skips the rewrite (create-never-edit), so the stale file
+         // silently broke the NEXT agent session.
+         const boundAddress = this.address();
+         void restBound.then(() => {
+            // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
+            // raises ENOENT once the working directory has been removed. A throw
+            // here would be an unhandled rejection on a server that has already
+            // bound both ports. Everything the call needs is built inside the
+            // try for that reason, including the endpoint: it is the newest and
+            // least-exercised code in this block.
+            try {
+               // The host an agent should dial, which is NOT `localhost`: that name
+               // resolves to both loopback families while the server binds only one,
+               // so another local process can hold the same port on the other family
+               // and receive the agent's traffic instead.
+               const endpoint = mcpEndpoint(
+                  resolveClientHost(boundAddress, PUBLISHER_HOST),
                   boundPort,
-               }),
-            );
-         } catch (error) {
-            logger.info(
-               `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(this.address(), PUBLISHER_HOST), boundPort))}`,
-            );
-         }
+               );
+               // cwd, not server_root: the file is for whoever opens an agent here.
+               logMcpConfigOutcome(
+                  ensureMcpConfig({
+                     dir: process.cwd(),
+                     endpoint,
+                     requestedPort: MCP_PORT,
+                     boundPort,
+                  }),
+               );
+            } catch (error) {
+               logger.info(
+                  `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(boundAddress, PUBLISHER_HOST), boundPort))}`,
+               );
+            }
+         });
       }
    },
+);
+
+// One actionable line and a clean exit for a listener that cannot bind,
+// instead of the raw uncaught-'error' crash dump (a ~40-line stack trace with
+// os.loadavg and memoryUsage for what is usually just a busy port). Closing
+// the sibling listener matters beyond tidiness: the two listens race, so the
+// OTHER port may already be bound and half a server must not linger.
+// (Line comments, not a JSDoc, and no star-slash sequence anywhere in them:
+// authorize_bypass_header.spec.ts strips block comments from this file with a
+// regex that pairs a route string's slash-star with the next closer, so a
+// block comment after the route table swallows the getQuery call it asserts
+// on.)
+function fatalListenError(
+   label: string,
+   requestedPort: number,
+   flag: string,
+   sibling: http.Server,
+): (error: NodeJS.ErrnoException) => void {
+   return (error) => {
+      if (error.code === "EADDRINUSE") {
+         logger.error(`Port ${requestedPort} in use; pass ${flag} <n>`);
+      } else {
+         logger.error(
+            `${label} listener failed on port ${requestedPort}: ${error.message}`,
+         );
+      }
+      try {
+         sibling.close();
+      } catch {
+         // Best effort: the process is exiting either way.
+      }
+      process.exit(1);
+   };
+}
+// Attached after both servers exist (an 'error' event is emitted on a later
+// tick, never synchronously out of listen(), so nothing is missed).
+mainServer.on(
+   "error",
+   fatalListenError("REST", PUBLISHER_PORT, "--port", mcpServer),
+);
+mcpServer.on(
+   "error",
+   fatalListenError("MCP", MCP_PORT, "--mcp_port", mainServer),
 );
 
 mcpServer.timeout = 600000;

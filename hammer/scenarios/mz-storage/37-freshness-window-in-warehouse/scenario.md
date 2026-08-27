@@ -3,6 +3,10 @@ id: freshness-window-in-warehouse
 tags: serve-correctness, freshness
 package: pcf
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Freshness window on the colocated serve path — ENFORCED
 

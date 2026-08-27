@@ -2,6 +2,10 @@
 name: malloy-model
 description: Build Malloy semantic models with base source and joined source files. Use when creating or modifying .malloy files, user asks to "create a malloy model", "add dimensions", "add measures", "create a source", or any Malloy model authoring task.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Building Malloy Models
 
@@ -50,7 +54,7 @@ extend {
   primary_key: customer_id
 
   dimension:
-    // Use dimension (not rename:) for cleaner column names
+    // A dimension is the lighter way to give a column a cleaner name
     order_type is `Type`
     full_name is concat(first_name, ' ', last_name)
     segment is lifetime_value ?
@@ -123,7 +127,7 @@ source: user_order_facts is from(
   primary_key: customer_id
 
   dimension:
-    days_since_last_order is days(now - last_order_date)
+    days_since_last_order is days(last_order_date to now)
     is_repeat_buyer is total_orders > 1
 
   measure:
@@ -176,11 +180,12 @@ source: customer_health is customers extend {
 - **Verify join paths** exist before referencing `a.b.field` (each hop needs explicit join)
 - **Pick syntax**: value BEFORE condition, `pick 'Small' when size < 10`
 - **`where:` vs `having:`**: Use `where:` for row filters, `having:` for aggregate filters
-- **Never use `rename:`**, it's incompatible with `include {}`. Always use `internal:` + `dimension:` for cleaner column names (e.g., mark `` `Type` `` as `internal`, add `dimension: order_type is \`Type\``)
+- **`rename:` composes with `include {}`, but only in one order**: the `extend { rename: }` must come before the `include {}`, which then names the field by its new name. Reversed, it fails with `Can't find field 'X' to set access modifier`. For a cleaner column name without a rename, `internal:` + `dimension:` is still the lighter move (mark `` `Type` `` as `internal`, add `` dimension: order_type is `Type` ``). See `skill:malloy-gotchas-modeling` § Field Management
 - **Mark raw columns `internal` when a derived dimension replaces them**
 - **Check for duplicate rows** before building measures
 - When both a combined table (all types) and filtered/split tables exist, prefer the split tables
 - **DRY: define measures/dimensions in base source files, not inline in views**
+- **Never write a threshold, tier boundary, or bucket cutoff you chose yourself.** Every boundary in a `pick` expression or filtered measure is user-supplied, distribution-derived (query `min`/`p25`/`p50`/`p75`/`p95` first and show the evidence; see `skill:malloy-define` § Data-driven proposals), or explicitly flagged as an assumption in its `#(doc)`. A hardcoded cutoff nobody confirmed is a business decision shipped as fact.
 
 ## Parameterizing sources with `given:` (preferred)
 
@@ -278,7 +283,7 @@ Pass `bypass_filters=true` (REST) or `bypassFilters: true` (POST body) to skip f
 
 ## Access Control: Source Gating with `#(authorize)`
 
-Gate query access to a source with `#(authorize)` over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`). Publisher evaluates a source's in-scope `#(authorize)` expressions against the request's supplied givens before running the query; if **any** expression returns `true` the request proceeds, otherwise it is denied with **403**. A source with no in-scope `#(authorize)` annotations is unrestricted.
+Gate query access to a source with `#(authorize)` over declared `given:` values (`given:` is Malloy's native runtime-parameter mechanism, the going-forward replacement for `#(filter)`). A gate is an `#(authorize)` annotation on its own line directly above the `source:` line, carrying an **unquoted, ordinary Malloy boolean expression**; Publisher grafts that expression onto the source as a row filter before running the query, so a caller it admits nowhere gets **200 with zero rows**, not a 403. A **403** means only that the gate could not be attached at all. A source with no `#(authorize)` annotation of its own or inherited is unrestricted.
 
 ```malloy
 ##! experimental.givens
@@ -286,21 +291,28 @@ Gate query access to a source with `#(authorize)` over declared `given:` values 
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
+#(authorize) $ROLE = 'analyst'
 source: orders is duckdb.table('orders.parquet') extend {
   measure: order_count is count()
 }
 ```
 
-- **Source-level** `#(authorize) "<expr>"` gates that one source. **File-level** `##(authorize) "<expr>"` applies to every source in the file. Multiple gates combine as an OR, access is granted if any one is true, so a permissive file-level gate is a **model-wide override**, not an added restriction.
-- **Entry point only: not joined, but inherited through `extend`.** The gate applies to the source a query enters through. A gate on a source reached only via `join_*` **never fires**, at any depth, so anything ungated that joins a locked base hands the base's rows to every caller. A source that `extend`s a locked base and declares no gate of its own **does** carry the base's gate; declaring its own replaces it. Pair a locked base (`#(authorize) "false"`) with curated extension sources, using access modifiers (`include { public: …, private: * }`), so an extension re-exposes only a curated column surface, and keep sensitive sources out of ungated joins.
-- The expression may reference only givens and literals, never a column of the gated source; the check runs against a synthetic probe row, not your data.
+- **Any legal Malloy boolean expression is a legal gate**, over givens, row fields (including through a join), literals, functions and operators: `org_id in $GROUPS`, `upper(region) = $REGION`, `` `cost center` in $GROUPS ``, `(org_id in $GROUPS or region = $REGION) and amount > $AMOUNTMIN`. There is no allowlist of accepted comparison shapes.
+- **A source may declare at most one `#(authorize)` annotation.** Declaring a second on the same source fails the load naming both. Spell OR inside the expression rather than stacking annotations. For a condition too long to read on one line, point the gate at an ordinary boolean dimension instead: `#(authorize) authorized` above the source, over `dimension: authorized is org_id in $GROUPS` inside it; validation follows the reference through.
+- **`#(authorize)` only gates from the `source:` line.** The same annotation on a `dimension:`/`measure:`/`join_*:`/`view:` line, or on a top-level `query:`, is refused at load naming the position rather than silently protecting nothing.
+- **Every given the gate references must be declared on the entry model's own surface, and must carry no default.** A given the model cannot resolve is refused at load. So is a referenced given declared *with* a default: a caller who supplies nothing would get that default and be admitted or excluded by a value the gate's own line never shows, so it is refused rather than reasoned about case by case. This follows a bare reference through, so a given reached one hop away via `#(authorize) authorized` is checked too.
+- **Two shapes load with a warning rather than a refusal.** A gate that references **no given** at all is a fixed predicate, not an access rule keyed on the caller. A gate that **negates a membership test** (`not (org_id in $GROUPS)`) matches every row for an *empty* given instead of none. Both warn and still load, so read the load warnings.
+- **Entry point only: not joined, but inherited through `extend`.** The gate applies to the source a query enters through. A gate on a source reached only via `join_*` **never fires**, at any depth, so anything ungated that joins a locked base hands the base's rows to every caller. A source that `extend`s a locked base and declares no gate of its own **does** carry the base's gate; declaring its own annotation replaces it. A source derived from a locked base via a query (`source: z is locked -> { … }`) instead **always carries the base's gate in addition to its own**: the derivation recurses into the base unconditionally, so an own gate does not replace it, and the two combine as separate AND'd entries. Pair a locked base (`#(authorize) false`) with curated extension sources, using access modifiers (`include { public: …, private: * }`), so an extension re-exposes only a curated column surface, and keep sensitive sources out of ungated joins.
+- **A derivation that drops a column the gate reads fails CLOSED.** `extend { except: org_id }`, or an `accept:` that omits it, leaves the grafted filter unable to compile, so the request is denied rather than served ungated. The one hole to know: dropping the gated column and then `rename:`-ing a *different* column onto that exact name grafts successfully and binds the gate to the wrong column. Narrow, but real, so don't recycle a gated column's name.
+- Comparing a row field to an array-typed given with `=`/`!=` (`org_id = $GROUPS`) compiles and loads cleanly, then fails at query execution with a warehouse conversion error. Use `in` for an array-typed given, not `=`.
+- **The quoted-string and file-level forms are refused at load and no longer exist.** `#(authorize) "<expr>"` on the `source:` line, in either quote (`'...'` is refused the same way), a file-level `##(authorize) "<expr>"` applying to every source in the file, and the earlier `internal dimension: authorized is <expr>` form are all retired; the load names the rewrite. Every `.malloy` file in a package compiles at load and any failure aborts the package, so a retired-form gate anywhere in the package is refused. Only a declaring file *outside* the package escapes that: it loads and denies every request instead, with no compile-time hint. See your deployment's reference documentation.
+- **A gated source can be persisted, but the gating column freezes.** `storage=` and `#@ preaggregate` refuse a gated source outright; a colocated `#@ persist` is admitted when the gate is provably the entry point's own row filter. The gate still runs live on every query, so rows come back filtered - but the column it filters ON is frozen at build time, so a row whose access decision changes keeps being served under the old decision until the next rebuild. Pair `#@ persist` on a gated source with a freshness window (`fallback="live"`), which is the only control that bounds that - and read `skill:malloy-materialization` for where that window binds, because on a standalone Publisher it does not.
 
 > **Trust caveat.** Givens are **caller-asserted**, anyone who can reach the query API can claim a favorable given, e.g. `{"ROLE":"admin"}`. `#(authorize)` is only a real boundary when it sits behind a trusted tier that sets givens from its own verified context, never directly from an untrusted caller. It is not, on its own, end-user authentication.
 >
 > **Forward direction.** Givens are how access control is built here, and the planned next step is **identity-bound ("secure") givens** - reserved values a trusted tier populates from a verified token or proxy header, which the caller cannot override - turning `#(authorize)` into a standalone boundary. Model access on `given:` + `#(authorize)` now; it is the surface that carries forward.
 
-Full syntax, OR/override semantics, validation, and the error contract are covered in your deployment's `#(authorize)` reference documentation.
+Full syntax, inheritance rules, validation, and the error contract are covered in your deployment's `#(authorize)` reference documentation.
 
 ## Join Syntax
 

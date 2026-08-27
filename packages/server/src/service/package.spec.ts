@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import "@malloydata/db-duckdb/native";
 import { MalloyConfig } from "@malloydata/malloy";
@@ -355,6 +358,10 @@ describe("service/package", () => {
                               message: "This is the error",
                            };
                         },
+                        // A notebook that failed to compile has no annotations
+                        // and no cells, so it resolves no title or description
+                        // and lists as its path.
+                        getNotebookListing: () => ({}),
                         setQueryBoundary: () => {},
                      } as unknown as Model,
                   ],
@@ -373,9 +380,11 @@ describe("service/package", () => {
             ]);
 
             const notebooks = await packageInstance.listNotebooks();
+            // No `@ts-expect-error` here, unlike listModels above: the
+            // `Notebook` schema now declares `environmentName`, which the
+            // response has always sent (issue #979).
             expect(notebooks).toEqual([
                {
-                  // @ts-expect-error TODO: Fix missing projectName type in API
                   environmentName: "testProject",
                   packageName: "testPackage",
                   path: "model2.malloynb",
@@ -607,6 +616,130 @@ describe("service/package", () => {
          });
 
          expect(boundSources(pkg)).toEqual(["all_rows"]);
+      });
+   });
+
+   // The colocated-tier analogue of the storage gate above — a positive
+   // eligibility check on `bindColocatedServeManifest`, keyed by
+   // sourceEntityId (what a colocated binding actually carries; see
+   // `ColocatedSourceEligibility`'s doc in build_plan.ts).
+   describe("bindColocatedServeManifest eligibility gate", () => {
+      const packageWith = (
+         eligibility:
+            | {
+                 eligibleEntityIds: Set<string>;
+                 refused: Record<string, string>;
+              }
+            | undefined,
+      ) => {
+         const pkg = new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage" },
+            [],
+            new Map(),
+         );
+         // Private by design: its only writer is the load path, which needs a
+         // compiled package. Set directly to isolate the filter.
+         (
+            pkg as unknown as {
+               colocatedSourceEligibility: typeof eligibility;
+            }
+         ).colocatedSourceEligibility = eligibility;
+         return pkg;
+      };
+
+      it("drops a refused source's entry and keeps its eligible neighbour", () => {
+         const pkg = packageWith({
+            eligibleEntityIds: new Set(["eid-eligible"]),
+            refused: { "eid-refused": "row_level but not attributed" },
+         });
+
+         pkg.bindColocatedServeManifest({
+            "eid-eligible": { tableName: "t_eligible" },
+            "eid-refused": { tableName: "t_refused" },
+         });
+
+         expect(pkg.getBuildManifestEntries()).toEqual({
+            "eid-eligible": { tableName: "t_eligible" },
+         });
+      });
+
+      it("refuses every entry when the build plan could not be computed", () => {
+         const pkg = packageWith(undefined);
+
+         pkg.bindColocatedServeManifest({
+            "eid-eligible": { tableName: "t_eligible" },
+         });
+
+         expect(pkg.getBuildManifestEntries()).toBeUndefined();
+      });
+
+      it("refuses an entry naming a source never examined (absence is not eligibility)", () => {
+         const pkg = packageWith({
+            eligibleEntityIds: new Set(["eid-known"]),
+            refused: {},
+         });
+
+         pkg.bindColocatedServeManifest({
+            "eid-known": { tableName: "t_known" },
+            "eid-unknown": { tableName: "t_unknown" },
+         });
+
+         expect(pkg.getBuildManifestEntries()).toEqual({
+            "eid-known": { tableName: "t_known" },
+         });
+      });
+   });
+
+   describe("getDeclaredQueryMetadata", () => {
+      const pkgWith = (metadata: Record<string, unknown>) =>
+         new Package(
+            "testProject",
+            "testPackage",
+            testPackageDirectory,
+            { name: "testPackage", ...metadata } as never,
+            [],
+            new Map(),
+         );
+
+      it("reads the canonical top-level field", () => {
+         expect(
+            pkgWith({
+               queryMetadata: { team: "finance" },
+            }).getDeclaredQueryMetadata(),
+         ).toEqual({ team: "finance" });
+      });
+
+      it("falls back to the deprecated materialization block", () => {
+         // An un-migrated client PATCHes the block and nothing else, so dropping
+         // the fallback would silently stop tagging that package's queries.
+         expect(
+            pkgWith({
+               materialization: { queryMetadata: { team: "finance" } },
+            }).getDeclaredQueryMetadata(),
+         ).toEqual({ team: "finance" });
+      });
+
+      it("prefers the canonical field when both are present", () => {
+         // Both homes are populated on the way out, so a client that sets only
+         // the new one must not have a stale block win over it.
+         expect(
+            pkgWith({
+               queryMetadata: { team: "finance" },
+               materialization: { queryMetadata: { team: "stale" } },
+            }).getDeclaredQueryMetadata(),
+         ).toEqual({ team: "finance" });
+      });
+
+      it("is null when neither home carries a bag", () => {
+         expect(pkgWith({}).getDeclaredQueryMetadata()).toBeNull();
+         expect(
+            pkgWith({
+               materialization: { schedule: null },
+            }).getDeclaredQueryMetadata(),
+         ).toBeNull();
       });
    });
 });

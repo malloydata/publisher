@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 <h1 align="center">Malloy Publisher</h1>
 
 <p align="center"><b>The open-source semantic model server for <a href="https://malloydata.dev">Malloy</a></b><br>
@@ -94,6 +99,15 @@ in place, so nothing needs converting first):
 
 ```bash
 npm create @malloy-publisher/malloy-package@latest sales -- --data ./orders.csv
+```
+
+`./orders.csv` is a placeholder for a file you actually have — pasting the line verbatim fails if
+no such file exists. Any plain delimited file with a header row works; this is the whole shape:
+
+```csv
+order_id,category,amount
+1001,Furniture,789
+1002,Electronics,489.95
 ```
 
 That path is relative to the directory you run the command in, so either move your file there first

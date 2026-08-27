@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Configuration
 
 > What this is: the complete runtime configuration reference — the config file, every environment
@@ -49,6 +54,19 @@ Do not author packages under `publisher_data/`. That is storage Publisher manage
 copies each configured package in (or symlinks it, under `--watch-env`), and `--init` deletes the
 whole tree.
 
+The copy is the part that surprises people: **without `--watch-env`, a local package is served
+from its boot-time copy, so edits to your source directory are never read**, however many times
+you save or reload — a `?reload=true` still answers 200, recompiled from the copy. Local authoring
+means starting the server with `--watch-env <env>`, which mounts the environment's local packages
+in place and live-reloads them.
+
+Adding `--watch-env` to a *later* boot is not enough on its own, and this is the one to watch for:
+the mount is decided when an environment is first loaded from config, so a package already copied
+into `publisher_data/` stays a copy, and the boot still logs `Watch mode active` over it. Pass
+`--watch-env <env> --init` once to re-mount (`--init` alone re-copies). After that, plain
+`--watch-env` boots keep watching. `publisher_data/<env>/<pkg>` shows which you got: a symlink is
+mounted, a real directory is a copy.
+
 A `location` can also be a `https://github.com/...`, `gs://`, or `s3://` URL, which Publisher
 downloads. Only local directories are eligible for `--watch-env`.
 
@@ -64,6 +82,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | --- | --- | --- | --- |
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST + static-app HTTP port. |
 | `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for both the REST and MCP servers. Set `127.0.0.1` to keep them loopback-only. |
+| `PUBLISHER_RATE_LIMIT` | _none_ | _unset_ | Maximum requests per minute one client may make to the REST server; over it, requests get `429` with `RateLimit-*` headers until the minute rolls over. Unset or `0` means no limit; any other value must be a non-negative integer or startup fails. `/health*` and `/metrics` are never limited. Clients are told apart by the connection's peer address, so behind a reverse proxy every client shares one bucket: rate-limit at the proxy there, or leave this unset. The MCP port is not covered. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the six MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`, `malloy_searchDatabaseSchema`) and the agent skills as MCP prompts. |
 | `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |
 | `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | _unset_ | Stops the server writing a `.mcp.json` into its working directory on startup. Accepts `1`/`true`/`yes`/`on` to disable and `0`/`false`/`no`/`off`/empty to leave on; anything else, including a value an env file left quotes around, is a startup error rather than a disable. See [The `.mcp.json` the server writes](#the-mcpjson-the-server-writes). |
@@ -92,6 +111,8 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | — | `0.7` | Low-water mark (fraction of `PUBLISHER_MAX_MEMORY_BYTES`). Hysteresis: back-pressure clears when RSS dips below this value. |
 | `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` | — | `5000` | RSS sampling interval (ms). Minimum 100. |
 | `PUBLISHER_MEMORY_BACKPRESSURE` | — | `true` | Set to `false` to disable the 503 behavior while keeping RSS monitoring — useful for a metrics-only rollout before enabling enforcement. |
+| `PUBLISHER_DUCKDB_MEMORY_LIMIT` | — | _unset_ | DuckDB `memory_limit` applied to **every** DuckDB session and instance Publisher owns, as a flat value (`1GB`, `512MB`) passed to DuckDB verbatim. `off` or unset leaves DuckDB's own default, which is roughly 80% of the container's memory computed **per instance** — so N instances in one process commit N times that share, and the kernel kills the process while each of them still believes it is inside its budget. Measured in a 3 GiB container: three instances each reported a 2.3 GiB limit, 6.9 GiB of committed budget against 3 GiB of real memory. **Sizing:** the divisor is not a number of builds. Count 1 metadata store + 1 serve-shape gate session + 1 environment lookup funnel + one sandbox per loaded package × `PACKAGE_LOAD_WORKERS` (package loads run in `worker_threads`, so same address space and same cgroup) + one per in-flight materialization build, and nothing bounds concurrent builds. Budget roughly (container memory − resident baseline) ÷ that count. DuckDB does not reserve the limit up front, so an idle instance costs far less than its budget — the limit caps what it may reach, and it is the sum of the caps that has to fit. Too low fails a query with a DuckDB out-of-memory error and leaves the process up, which is the intended trade against losing the pod and every package on it. Validated at startup. |
+| `PUBLISHER_DUCKDB_TEMP_DIRECTORY` | — | _unset_ | Where DuckDB spills. A materialization build overrides this with its own disposable working directory (unique per build, removed with the build); every other session and instance uses this. Unset leaves DuckDB's default of `.tmp` relative to the process working directory, whose default `max_temp_directory_size` is 90% of whatever filesystem that lands on — on a container with no ephemeral-storage limit, the node's shared disk. Created at startup if missing, since `SET temp_directory` accepts a path that does not exist and only fails at the first spill. Unlike the memory limit there is no `off` sentinel, because a directory named `off` is a legal path. Note that setting `PUBLISHER_DUCKDB_MEMORY_LIMIT` does not by itself create spill on the `storage=` build path: that pipeline pushes its SQL to the source warehouse and streams the result into the destination, with no join, sort or aggregation to spill. Local compute, and therefore spill, is the chained-build and serve paths. |
 | `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` | — | `false` | Opt-in: enable the standalone materialization scheduler, which fires each loaded package's `materialization.schedule` cron so a self-hosted Publisher rebuilds on a cadence with no control plane. **Never set this on a control-plane-driven (orchestrated) worker** — it is the primary guard against double-driving refresh. See [materialization.md](materialization.md). |
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS` | — | `60000` (1 min) | How often the scheduler sweeps for due schedules, in ms. Minimum `1000`. Only read when the scheduler is enabled. |
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK` | — | `10` | Stampede guard: max packages fired per sweep. A capped package fires on a later tick. Must be a positive integer. |

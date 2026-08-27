@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # The Publisher Console
 
 > What this is: a tour of the **Publisher Console**, the server's built-in web UI — how the core
@@ -7,6 +12,9 @@
 
 The Console is the default, no-code way to explore what a Publisher deployment serves. It's built
 from the [SDK](embedded-data-apps.md) but you don't need to know that — just open it and browse.
+(The Console is Publisher's own UI. It is not an [HTML data app](html-data-apps.md), which is a
+custom page _you_ author inside a package; see [choosing-a-surface.md](choosing-a-surface.md) for
+how the three in-package surfaces relate.)
 
 ## The resource hierarchy
 
@@ -19,6 +27,7 @@ Environment            e.g. "examples"
     │   ├── Source     a queryable entity (a table or a join graph)
     │   └── View       a saved, reusable query on a source
     ├── Notebook       a .malloynb file: markdown + live query cells
+    ├── Dashboard      a dashboards/*.malloy file: filter controls + a tiled grid
     └── Data Apps      an in-package HTML data app (the package's public/ dir)
 ```
 
@@ -28,7 +37,7 @@ The [REST and MCP APIs](api-overview.md) expose this exact hierarchy; the Consol
 
 - **Left sidebar** — **Home**, then an **Environments** list, and a **Settings** section
   (Visualization theme). Pick an environment to see its packages; pick a package to see its models,
-  notebooks, and data apps.
+  notebooks, dashboards, and data apps.
 - **Breadcrumbs** across the top track where you are: `environment › package › file`.
 - **Theme toggle** (top-right) switches light/dark when the deployment allows it (see
   [theming.md](theming.md)).
@@ -54,7 +63,13 @@ is a Console convenience.
 
 ## What you can do in the Console
 
-- **Browse a package** — see its models, notebooks, and README at a glance.
+- **Browse a package** — one section each for **Dashboards**, **Notebooks**, **Data Apps**,
+  **Semantic Models**, **Package Data** and **Materializations**, in that order, plus the package's
+  `README.malloynb` rendered underneath. Dashboards and Data Apps are hidden when the package has
+  none. Every kind has its own icon and its own color, so a row's type reads before its name does.
+  Notebooks and dashboards are listed by title, with a notebook's path beside it and a dashboard's
+  slug beside it; a notebook's title comes from its opening markdown heading unless a
+  `## title="…"` or a `#" ` doc comment overrides it.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
   every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
 - **Read a notebook** — a `.malloynb` renders its markdown and runs its query cells inline, including

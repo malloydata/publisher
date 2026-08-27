@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML Field Extraction (Step 4)
 
 > Read `.lkml` view files and extract field proposals for the Malloy model. Reference `_concepts.md` for type mapping. This runs during Step 4 (PROPOSE DEFINITIONS) to provide LookML-sourced field proposals alongside schema-derived proposals.
@@ -48,8 +53,8 @@ dimension: is_complete is status = 'complete'
 
 | LookML Measure Type | Malloy Equivalent | Notes |
 |---------------------|-------------------|-------|
-| `type: count` | `count()` | Malloy `count()` is always distinct |
-| `type: count_distinct` | `count(field)` | Direct mapping |
+| `type: count` | `count()` | Both count rows, so this is a direct mapping |
+| `type: count_distinct` | `count(field)` | `count(field)` is already distinct; `count(distinct field)` is deprecated |
 | `type: sum` | `sum(field)` | Direct mapping |
 | `type: average` | `avg(field)` | Direct mapping |
 | `type: min` / `max` | `min(field)` / `max(field)` | Direct mapping |
