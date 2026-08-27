@@ -108,8 +108,7 @@ import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import {
-   bareTableName,
-   quoteIdentifier,
+   quoteRenameTarget,
    quoteManifestTablePath,
    quoteTablePath,
 } from "./quoting";
@@ -337,17 +336,29 @@ const SENSITIVE_KEY =
    /pass(word)?|secret|private_?key|service_?account|access_?key|token|connection_?string|account/i;
 
 /** Collect credential string values (from sensitively-named keys) in a config. */
-function collectSensitiveValues(value: unknown, out: Set<string>): void {
+function collectSensitiveValues(
+   value: unknown,
+   out: Set<string>,
+   seen: WeakSet<object> = new WeakSet(),
+): void {
    if (value === null || typeof value !== "object") return;
+   // The callers pass a LIVE connection, not its config, so this walks driver
+   // and pool internals whose graph can contain a back-reference. Without this
+   // guard such a cycle recurses until the stack is exhausted, and the
+   // RangeError replaces the build error being redacted -- turning any failure
+   // on a cyclic connection into "Maximum call stack size exceeded". Mirrors the
+   // guard in redactSensitive.
+   if (seen.has(value)) return;
+   seen.add(value);
    if (Array.isArray(value)) {
-      for (const v of value) collectSensitiveValues(v, out);
+      for (const v of value) collectSensitiveValues(v, out, seen);
       return;
    }
    for (const [key, v] of Object.entries(value)) {
       if (typeof v === "string" && v.length >= 4 && SENSITIVE_KEY.test(key)) {
          out.add(v);
       } else {
-         collectSensitiveValues(v, out);
+         collectSensitiveValues(v, out, seen);
       }
    }
 }
@@ -393,7 +404,11 @@ export function redactConnectionSecrets(
    ...connections: unknown[]
 ): string {
    const secrets = new Set<string>();
-   for (const c of connections) collectSensitiveValues(c, secrets);
+   // One `seen` across every argument: the multi-connection sites hand in a
+   // source and a destination that share a subgraph, and walking it twice
+   // collects nothing new.
+   const seen = new WeakSet<object>();
+   for (const c of connections) collectSensitiveValues(c, secrets, seen);
    let redacted = redactPgSecrets(message);
    for (const s of secrets) {
       redacted = redacted.split(s).join("***");
@@ -1943,13 +1958,32 @@ export class MaterializationService {
                   // belongs to rather than to the whole command. A build that
                   // loses every source still fails, below.
                   //
-                  // Redacted against this source's own connection for the same
-                  // reason the run-level message is: a warehouse error can echo
-                  // the credentials it was handed, and this value is persisted.
-                  const reason = redactConnectionSecrets(
-                     errMessage(buildErr),
-                     connection,
-                  );
+                  // Redacted against this source's connection CONFIG, not the
+                  // live connection: a warehouse error can echo the credentials it
+                  // was handed, and this value is persisted. The config is where
+                  // the declared secrets are, and it is what every other redaction
+                  // site passes. Walking a live connection instead is both
+                  // unnecessary and unsound -- an enumerable accessor that throws
+                  // once its resource is gone (the state a build failure runs in)
+                  // escapes the walk and fails the whole run, taking the sources
+                  // that did materialize with it, and state held in a Map is not
+                  // walked at all, so a secret there passes through in the clear.
+                  //
+                  // A connection missing from the environment is not a reason to
+                  // leak: getApiConnection throws, so fall back to the
+                  // connection-free string redactor that redactConnectionSecrets
+                  // applies anyway.
+                  let reason: string;
+                  try {
+                     reason = redactConnectionSecrets(
+                        errMessage(buildErr),
+                        environment.getApiConnection(
+                           persistSource.connectionName,
+                        ),
+                     );
+                  } catch {
+                     reason = redactPgSecrets(errMessage(buildErr));
+                  }
                   // The manifest carries this reason to the control plane, but a
                   // build that lost a source no longer throws -- so without a log
                   // here the failure is invisible to anyone reading the server's
@@ -2427,7 +2461,6 @@ export class MaterializationService {
          if (applied) return applied;
       }
 
-      const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
       // The control plane sends the logical (unquoted) physical name; dialect-
       // quote each identifier here so a container path or quote-requiring name
@@ -2435,7 +2468,10 @@ export class MaterializationService {
       // echoes the logical name (below) so the CP stays in logical-name space.
       const quotedStaging = quoteTablePath(stagingTableName, dialect);
       const quotedPhysical = quotedPhysicalPath;
-      const quotedBareName = quoteIdentifier(bareName, dialect);
+      // Not the bare name unconditionally: on a dialect that resolves an
+      // unqualified rename target against the session, a bare target moves the
+      // finished table into the session's default container.
+      const quotedRenameTarget = quoteRenameTarget(physicalTableName, dialect);
 
       // The rebuild below replaces the table the boundary describes, so the
       // boundary is dropped BEFORE it starts rather than overwritten after: a
@@ -2469,7 +2505,7 @@ export class MaterializationService {
             runOptions,
          );
          await connection.runSQL(
-            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedBareName}`,
+            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedRenameTarget}`,
             runOptions,
          );
       } catch (err) {
@@ -3534,15 +3570,39 @@ export class MaterializationService {
 
       run(abortController.signal)
          .catch(async (err) => {
-            const message = errMessage(err);
-            const next = abortController.signal.aborted
-               ? "CANCELLED"
-               : "FAILED";
+            // Per-source build failures arrive already redacted (see the "Source
+            // failed to materialize" site). A whole-run throw carries no
+            // connection to redact against, but it can still echo a DSN -- a
+            // connect failure while resolving the package's connections does --
+            // and redactPgSecrets needs none, so it is the floor for both the log
+            // and the persisted record.
+            const message = redactPgSecrets(errMessage(err));
+            const cancelled = abortController.signal.aborted;
+            const next = cancelled ? "CANCELLED" : "FAILED";
+            // The materialization record carries the message to whoever polls
+            // it, but a background run's throw answers no request -- so without
+            // a log here the failure is invisible in the server's own output,
+            // and the stack, the only thing that locates the throw, is dropped.
+            if (cancelled) {
+               // The error too: an abort that races a genuine failure records
+               // "Cancelled", and this is then the only place the real one is
+               // reported.
+               logger.info("Materialization run cancelled", {
+                  materializationId: id,
+                  error: message,
+               });
+            } else {
+               logger.error("Materialization run failed", {
+                  materializationId: id,
+                  error: message,
+                  stack: err instanceof Error ? err.stack : undefined,
+               });
+            }
             try {
                await this.repository.updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),
-                  error: abortController.signal.aborted ? "Cancelled" : message,
+                  error: cancelled ? "Cancelled" : message,
                });
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {
