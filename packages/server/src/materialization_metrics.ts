@@ -175,7 +175,11 @@ const scheduledFireCounter = lazyCounter(
 const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
    "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|" +
-      "'runtime_live_fallback'|'blocked_by_row_level_gate').",
+      "'runtime_live_fallback'|'blocked_by_row_level_gate'). Covers the storage= " +
+      "tier only; a colocated #@ persist hit is in neither the numerator nor the " +
+      "denominator. NOTE 'live_fallback' here means the transform was INELIGIBLE, " +
+      "which QueryResult.servedFrom reports as null - that field's " +
+      "'live_fallback' is this counter's 'runtime_live_fallback'.",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -450,8 +454,25 @@ export function recordServeShapeTypeFallback(
  * BOTH the storage and pre-aggregation tiers before either was attempted — the
  * one outcome with no compile attempt behind it, so without this label a
  * blocked query recorded nothing at all rather than reading as a fallback.
- * This hit rate is the headline KPI of the storage tier — otherwise the
- * fallback side is only a DEBUG log.
+ * This hit rate is the headline KPI of the storage tier; the fallback side also
+ * logs its reason per query at INFO, which is the only per-query account of a
+ * miss there is.
+ *
+ * ⚠️ `live_fallback` here is NOT `QueryResult.servedFrom`'s `live_fallback`, and
+ * joining a dashboard across the two on that token is wrong in both directions.
+ * This label means the transform was ineligible, which that field reports as
+ * `null`; the run-time store failure that field calls `live_fallback` is
+ * `runtime_live_fallback` here. (`manifestBindingStatus` spends the same token on
+ * a third thing again — a configured `manifestLocation` whose fetch or bind
+ * failed.) Each surface is internally consistent and none means what the others
+ * do.
+ *
+ * Scope worth knowing before reading the hit rate as "did materialization work":
+ * this counter covers the `storage=` tier only. A COLOCATED `#@ persist` hit
+ * never reaches the routing decision, so it is absent from the numerator AND the
+ * denominator rather than counted as a miss — the rate is silent about that tier
+ * rather than pessimistic about it, which the "headline KPI" framing otherwise
+ * invites you to assume.
  */
 export function recordStorageServeRouting(
    outcome:

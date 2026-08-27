@@ -175,9 +175,18 @@ export class QueryController {
             queryCorrelationId,
             // How the answer was produced, and how long producing it took. A
             // storage-served answer is byte-identical to a live one, so without
-            // `servedFrom` a caller cannot tell that materialization did anything
-            // — and cannot show a user which of their sources is being served
-            // from the managed store.
+            // `servedFrom` a caller cannot tell that the `storage=` tier answered
+            // a query, or show a user which of their sources it is serving.
+            //
+            // Scoped to that tier deliberately, and it does NOT generalise to
+            // "did materialization do anything": a colocated `#@ persist` hit
+            // substitutes its table into the model and never reaches the routing
+            // decision this records, so it reports the same `null` a fully live
+            // query does. `null` also covers a query the transform declined,
+            // which is a storage-tier MISS wearing the same value as "no
+            // materialization anywhere". See the field's own description in
+            // `api-doc.yaml` for all three, and for why this enum's
+            // `live_fallback` is not the metric label of the same name.
             servedFrom,
             executionTimeMs,
             queryCostBytes,
