@@ -9,22 +9,17 @@ An analysis that lives in a chat transcript is not reproducible. The numbers wer
 six weeks later nobody can say what "revenue" excluded, which of four timestamps was the order
 date, or whether the last period was complete. The work is unauditable, so it gets redone.
 
-**A semantic model is the fix.** Not as a separate project after the analysis, but as the thing
-the analysis deposits into while it runs. Every field in it carries a decision someone made,
-written down where the next reader will find it. The model is what makes the analysis
-re-runnable and the numbers traceable.
-
-So: answer the question, codify what the answer assumed, answer the next one. After a handful
-of questions the `.malloy` file is a model - one where every field exists because a real
-question needed it, and every judgment call is on the record.
+**A semantic model is the fix** - not a project after the analysis, but the thing the analysis
+deposits into while it runs. Answer the question, codify what the answer assumed, answer the
+next one. After a handful of questions the `.malloy` file is a model where every field exists
+because a real question needed it, and every judgment call is on the record.
 
 > **Tool names** are bare here - `get_context`, `execute_query`, `search_database_schema`. The
 > exact prefixed name depends on the host; match against the tools you actually have.
 >
 > **Check which toolset you have before the first call**, because the query tool differs. A
 > Publisher host exposes `malloy_executeQuery`; a Credible host exposes `execute_query_draft`
-> for the local working copy and `execute_query` for the published model. Editing a local
-> `.malloy` file and querying the published model are different things - if you are iterating
+> for the local working copy and `execute_query` for the published model. If you are iterating
 > on a draft, run it against the draft. Say in your answer which one produced the numbers.
 
 ## The loop
@@ -171,20 +166,17 @@ of the query itself**, ask **in this order**:
 The first row is the one that matters. A definition is worth keeping less because it saves
 typing than because it stops the next reader misreading the number.
 
-**Leave behind** the ad-hoc: filters tied to one finding, calculations that answered exactly one
-question, view shapes specific to this narrative.
-
-**Codify thin.** A question that needed one measure codifies one measure. Do not model the
-neighbouring columns because they are there. An empty CODIFY is a fine outcome; say so and move
-on.
+**Codify thin, and leave the ad-hoc behind** - filters tied to one finding, calculations that
+answered exactly one question. A question that needed one measure codifies one measure, not the
+neighbouring columns as well. An empty CODIFY is a fine outcome; say so and move on.
 
 **Then say what you did**, in one line, every time:
 
 > Codified: `revenue is sum(sale_price)` excluding cancelled and returned, `category` via the
 > products join. Left ad-hoc: the `where: created_at > @2023` - just this question's window.
 
-That line is the contract. It shows the model growing, names what went in, and gives the reader
-a place to object. Never codify silently.
+That line shows the model growing and gives the reader a place to object. Never codify
+silently.
 
 **A decision becomes binding the moment you codify it. Stop and confirm it first.** While a
 judgment call lives in one ad-hoc query it is yours, and stating it is enough. Once it is in the
@@ -215,15 +207,13 @@ checking in, believe them - state each decision in a clause and keep going.
 
 ### Write it down twice
 
-**In the model, as a `#(doc)` annotation on the field.** This is the part that survives. Six
-months on it is the only thing between the next reader and a silent redefinition.
-
-**Use `#(doc)`, not a `//` comment, for anything a consumer needs.** `#(doc)` is
-machine-readable: Publisher renders it and retrieval tools read it, so a warning written there
-reaches the person about to misuse the field. A `//` comment reaches nobody but whoever opens
-the file. Keep `//` for what only a maintainer cares about - why there is no `primary_key:`,
-where a view came from. Put format tags on definitions too: bare `# currency` on the measure,
-with any scale (`# currency=usd0m`) only in views.
+**In the model, as a `#(doc)` on the field.** This is the part that survives - six months on it
+is the only thing between the next reader and a silent redefinition. Use `#(doc)`, never a `//`
+comment, for anything a consumer needs: `#(doc)` is machine-readable, so Publisher renders it
+and retrieval tools read it, while a `//` comment reaches nobody but whoever opens the file.
+Keep `//` for maintainer-only notes - why there is no `primary_key:`, where a view came from.
+Tag formats on the definition too: bare `# currency` on the measure, any scale
+(`# currency=usd0m`) only in views.
 
 ```malloy
 #(doc) Order line items joined to products. Grain is one row per line, not per order.
@@ -254,37 +244,29 @@ source: order_items is my_conn.table('ecommerce.order_items') extend {
 }
 ```
 
-One file per analytical domain, named for the domain - `order_revenue.malloy`, not
-`model.malloy`. It grows monotonically across the session.
+One file per analytical domain, named for it - `order_revenue.malloy`, not `model.malloy`. It
+grows monotonically across the session.
 
 **In a notes file, as the reasoning.** Keep an `analysis-notes.md` beside the model recording
 each question, what it found, what got codified and what was left ad-hoc, and every verification
 finding. The model carries the *what*; the notes carry the *why* and the evidence. It is also
 what lets you resume after losing context.
 
-**Save the view when a question is worth re-asking.** This is a first-class part of CODIFY, not
-an afterthought - a saved `view:` is what turns "we answered that once" into "re-run it". A
-trend someone will want again next month belongs in the file as a `view:` with its chart tag
-(`skill:malloy-charts`), and a set of views someone will want side by side belongs in a
-dashboard (`skill:malloy-dashboards`). A genuine one-off does not.
+**Save the view when a question is worth re-asking.** This is part of CODIFY, not an
+afterthought - a saved `view:` turns "we answered that once" into "re-run it". A trend wanted
+again next month belongs in the file as a `view:` with its chart tag (`skill:malloy-charts`);
+views wanted side by side belong in a dashboard (`skill:malloy-dashboards`). A genuine one-off
+does not.
 
-A saved view is binding - it is the shape people re-run and cite - so confirm it like any other
-codified decision. But do not hesitate over *whether* views belong here: they do.
+> **This departs from `skill:malloy-model` on purpose.** Its "no views in source files" rule
+> assumes a schema-first model, written before anyone asked a question, so its views would be
+> guesses. Here every view is a question that was asked and verified.
 
-> **This departs from `skill:malloy-model` on purpose.** That skill says base and joined source
-> files carry no views, because a schema-first model is written before anyone has asked a
-> question, so any view in it is guessed. Here every view is a question that was actually asked
-> and verified, so it belongs in the model file next to the measures it uses.
+**Two more of its rules do not apply. Skip them.** Access modifiers and curation - there is no
+discovery surface to curate when every field was paid for by a question. And one file per
+table - keep the single domain file until it genuinely gets unwieldy.
 
-**Two things from `skill:malloy-model` do NOT apply here. Skip them.**
-
-- **Access modifiers and curation** (`include { public: / internal: }`). An analysis-first model
-  is small and every field in it was paid for by a question. There is no discovery surface to
-  curate, so curating one is busywork.
-- **One file per table, plus a joined domain file.** Keep one file named for the domain. Split
-  only when it genuinely gets unwieldy - not on principle.
-
-Everything else from `skill:malloy-model` does apply: `#(doc)` on every field, verified join
+Everything else in `skill:malloy-model` does apply: `#(doc)` on every field, verified join
 cardinality, `nullif` on division, and a `given:` if the model ever needs a runtime parameter.
 
 ### Then loop
@@ -300,10 +282,9 @@ Each answered question makes the next sharper and the model slightly larger.
 
 ## When the analysis is going to be shared
 
-**Docs are not on this list - they happen in CODIFY, as you go.** A field goes into the file
-with its `#(doc)` already on it. Deferring docs to a hand-over step is how a session ends with a
-model nobody can read, because the hand-over often never comes and the reasoning is gone by then.
-The doc costs one line while the query is still in front of you.
+**Docs are not on this list - they happen in CODIFY, as you go.** A field goes into the file with
+its `#(doc)` already on it. Defer them to hand-over and the session ends with a model nobody can
+read, because hand-over often never comes and the reasoning is gone by then.
 
 When the user wants to hand it over:
 
@@ -314,8 +295,7 @@ When the user wants to hand it over:
    moved, something was codified wrong. This is the check that proves reproducibility, so do not
    skip it.
 4. **Structure**, only if one file has genuinely become unwieldy - base sources per table plus a
-   joined source per domain. `skill:malloy-model` has the layout. Do this because the file got
-   hard to work in, not on principle, and not just because it is being shared.
+   joined source per domain, per `skill:malloy-model`. Being shared is not itself a reason.
 
 **Still skip curation and access modifiers.** Sharing an analysis-first model does not turn it
 into a browsable catalogue.
@@ -341,9 +321,6 @@ RIGHT  Codify the two fields this question actually needed
 WRONG  Quietly pick one of four timestamps as "the order date"
 RIGHT  "Using created_at; shipped_at would drop 38% as nulls. OK?"
 
-WRONG  Codify a revenue definition without saying what it excludes
-RIGHT  Confirm it - codifying makes it everyone's definition
-
 WRONG  Analyse for six steps, then "shall I turn this into a model?"
 RIGHT  Codify after every question; the model already exists by the end
 
@@ -356,11 +333,8 @@ RIGHT  Run the aggregate - hand arithmetic drops everything below the cut
 WRONG  Codify the source-level `where:`, then mention it in the write-up
 RIGHT  Stop and confirm it - it scopes every question anyone asks later
 
-WRONG  The assumption lives in the chat transcript
-RIGHT  The assumption is a #(doc) on the field, and a line in the notes
-
-WRONG  Write the warning as a // comment nobody downstream can see
-RIGHT  #(doc) for what a consumer needs, // for what only a maintainer needs
+WRONG  The assumption lives in the chat transcript, or in a // comment
+RIGHT  #(doc) on the field for what a consumer needs, plus a line in the notes
 
 WRONG  Leave the answered question as a transcript table and move on
 RIGHT  Save it as a view - a question worth answering is usually worth re-asking
