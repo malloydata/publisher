@@ -4549,7 +4549,15 @@ export class Model {
                });
             } catch (shapeErr) {
                recordStorageServeRouting("live_fallback");
-               logger.debug(
+               // info, matching the storage-hit line above: the two halves of one
+               // routing decision, and this is the half an operator needs. A
+               // fallback is silent by design — the query succeeds, the rows are
+               // correct, only the tier is lost — so at debug the reason for a
+               // package that never serves from storage is unreadable in any
+               // deployment running at info. Volume is bounded by the same thing
+               // that bounds the hit line: one per routed query, on packages that
+               // declare `storage=` at all.
+               logger.info(
                   "storage serve-shape ineligible for this query; serving live",
                   {
                      modelPath: this.modelPath,
