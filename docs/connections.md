@@ -312,6 +312,56 @@ local forward endpoint (`127.0.0.1`), not the real database host, so the certifi
 Full verification (`verify-full`) can't work through the tunnel until per-connection
 `servername` override lands (see malloydata/malloy#2960).
 
+## Credentials in API responses
+
+A connection's credentials are write-only. `password`, `connectionString`, `serviceAccountKeyJson`,
+`privateKey`, `privateKeyPass`, `token`, `oauthClientSecret`, `accessToken`, `peakaKey`,
+`secretAccessKey`, `sessionToken`, `secret`, `clientSecret` and `sasUrl` are accepted when you create
+or update a connection, and no read returns them. The connection, environment and status endpoints
+return the non-secret fields only: host, port, database, user, region, an object store's key ID, a
+bastion's public host key.
+
+They are omitted rather than masked, so no client can round-trip a placeholder back into stored
+config as if it were the real credential.
+
+Each response lists what it withheld. `withheldFields` carries the dotted paths of the credentials
+this connection has stored, names only and never a value, for example
+`["postgresConnection.connectionString"]`. Without it a client cannot tell a credential that is set
+from one that was never configured, which is the difference between an empty box that keeps
+something and an empty box that leaves the connection with no credential at all. It is read-only and
+ignored on write.
+
+An update therefore does not have to resend a credential it cannot read. A `PATCH` that leaves one
+out keeps the stored value, sending the field replaces it, and sending it empty clears it. The same
+holds for credentials nested inside a DuckLake catalog or a DuckDB attached database, where entries
+are matched by name rather than by position.
+
+In the connection editor the credential boxes are always blank for an existing connection. Leave one
+blank to keep the stored value.
+
+Three things follow from this that are worth knowing before you rely on it:
+
+Supplying a credential for one method drops the stored credential of the other, rather than keeping
+both. Send a Postgres `password` and a stored `connectionString` is dropped; send a Snowflake
+`password` and a stored `privateKey` is dropped, or a `privateKey` and a stored `password` is dropped;
+send a Trino `password` and a stored `peakaKey` is dropped; point a DuckLake `storage` at GCS and a
+stored S3 secret is dropped; send a Databricks `token` and a stored `oauthClientSecret` is dropped.
+Each of those pairs is resolved by which one is present when the connection is opened (`peakaKey`
+short-circuits before `password` is read, and the Databricks driver prefers OAuth over a token), so
+keeping the old one would silently override the credential you just set.
+
+Only a credential you actually send does this, and only a non-empty one. Editing a host, or saving a
+form whose credential boxes you left alone, changes nothing about which method the connection uses.
+
+Renaming a DuckDB attached database needs its credential re-entered. Entries are matched by name, so a
+renamed entry has nothing to carry forward and the old secret is not recoverable through the API.
+
+Write access to a connection is as good as read access to its credential. Anyone who can `PATCH` a
+connection can point it at a host they control and have the stored credential sent there. Publisher
+does not authenticate either operation, so this is not a new boundary on a bare Publisher, but a
+deployment that gates reads and writes separately should gate connection writes as tightly as it
+gates credential reads.
+
 ## Example: mixed connections
 
 ```json

@@ -1142,9 +1142,14 @@ export const convertConnectionsToApiConnections = (
             return false;
          }
          if (!conn.name || typeof conn.name !== "string") {
+            // Type only. The connection config carries credentials, and the
+            // name is what is missing, so there is nothing safe left to
+            // identify it by. Metadata here reaches a log transport verbatim:
+            // logger.redactSensitive is applied at the request/response and
+            // axios-error call sites, not as a winston format.
             logger.warn(
                `Invalid connection: missing or invalid "name" field. Skipping.`,
-               { connection: conn },
+               { type: typeof conn.type === "string" ? conn.type : undefined },
             );
             return false;
          }

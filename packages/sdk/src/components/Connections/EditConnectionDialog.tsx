@@ -36,6 +36,30 @@ import {
    uiCreatableConnectionTypes,
 } from "./common";
 
+/**
+ * Credential fields the API deliberately never returns, so an edit form can
+ * never prefill them (see the server's connection_public_view.ts). Left blank
+ * they are omitted from the update and the server keeps the value it already
+ * holds; typed into, they replace it. Presence therefore cannot be validated
+ * here, and is validated server-side against the merged config instead.
+ */
+const SERVER_HELD_SECRETS = new Set([
+   "password",
+   "connectionString",
+   "privateKey",
+   "privateKeyPass",
+   "serviceAccountKeyJson",
+   "token",
+   "oauthClientSecret",
+   "accessToken",
+   "peakaKey",
+   "secret",
+   "secretAccessKey",
+   "sessionToken",
+   "clientSecret",
+   "sasUrl",
+]);
+
 type EditConnectionDialogProps = {
    connection: Connection;
    onSubmit: (connection: Connection) => Promise<unknown>;
@@ -67,6 +91,14 @@ export default function EditConnectionDialog({
 }: EditConnectionDialogProps) {
    const [open, setOpen] = useState(false);
    const [type, setType] = useState<Connection["type"]>(connection.type);
+   // One reader for withheldFields, so the form labels a box as holding a
+   // credential on the same evidence the submit path uses. Keyed by the dotted
+   // path the API reports, e.g. "postgresConnection.connectionString".
+   const withheldFields = React.useMemo(
+      () => new Set(connection.withheldFields ?? []),
+      [connection.withheldFields],
+   );
+
    const [attachedDatabases, setAttachedDatabases] = useState<
       Array<{
          name: string;
@@ -147,23 +179,16 @@ export default function EditConnectionDialog({
                   s3Config[field.name] = value;
                }
             });
-            // For updates, use existing values if not provided
+            // Carry forward the identifier, which the API still returns. The
+            // secret is not readable, so a blank one means "keep the stored
+            // value" and the server merges it; it cannot be checked here.
             const existingS3 =
                connection.ducklakeConnection?.storage?.s3Connection;
-            if (existingS3) {
-               if (!s3Config.accessKeyId && existingS3.accessKeyId) {
-                  s3Config.accessKeyId = existingS3.accessKeyId;
-               }
-               if (!s3Config.secretAccessKey && existingS3.secretAccessKey) {
-                  s3Config.secretAccessKey = existingS3.secretAccessKey;
-               }
+            if (existingS3 && !s3Config.accessKeyId && existingS3.accessKeyId) {
+               s3Config.accessKeyId = existingS3.accessKeyId;
             }
-            // Validate required fields
             if (!s3Config.accessKeyId) {
                throw new Error("S3 Access Key ID is required");
-            }
-            if (!s3Config.secretAccessKey) {
-               throw new Error("S3 Secret Access Key is required");
             }
             if (Object.keys(s3Config).length > 0) {
                storageConfig.s3Connection = s3Config;
@@ -178,23 +203,15 @@ export default function EditConnectionDialog({
                   gcsConfig[field.name] = value;
                }
             });
-            // For updates, use existing values if not provided
+            // Same split as S3 above: the key ID is readable, the secret is
+            // not, so a blank secret means "keep the stored value".
             const existingGcs =
                connection.ducklakeConnection?.storage?.gcsConnection;
-            if (existingGcs) {
-               if (!gcsConfig.keyId && existingGcs.keyId) {
-                  gcsConfig.keyId = existingGcs.keyId;
-               }
-               if (!gcsConfig.secret && existingGcs.secret) {
-                  gcsConfig.secret = existingGcs.secret;
-               }
+            if (existingGcs && !gcsConfig.keyId && existingGcs.keyId) {
+               gcsConfig.keyId = existingGcs.keyId;
             }
-            // Validate required fields
             if (!gcsConfig.keyId) {
                throw new Error("GCS Key ID is required");
-            }
-            if (!gcsConfig.secret) {
-               throw new Error("GCS Secret is required");
             }
             if (Object.keys(gcsConfig).length > 0) {
                storageConfig.gcsConnection = gcsConfig;
@@ -275,20 +292,14 @@ export default function EditConnectionDialog({
             const formValue = formData.get(field.name)?.toString();
             const existingValue = existingConfig[field.name];
 
-            // For password/secret fields, use existing value if form value is empty
-            const isPasswordField =
-               field.type === "password" ||
-               field.name === "password" ||
-               field.name === "secretAccessKey" ||
-               field.name === "secret" ||
-               field.name === "accessToken" ||
-               field.name === "privateKey";
-
+            // A credential is never read back from the API, so there is no
+            // existing value to fall back on and nothing is sent when the field
+            // is left blank: the server keeps what it already stored. Sending a
+            // placeholder here would store the placeholder as the credential.
             if (formValue) {
                connectionConfig[field.name] = formValue;
-            } else if (isPasswordField && existingValue) {
-               // Keep existing password/secret if not provided
-               connectionConfig[field.name] = existingValue;
+            } else if (SERVER_HELD_SECRETS.has(field.name)) {
+               // Leave it out entirely; absent means unchanged.
             } else if (formValue !== undefined) {
                connectionConfig[field.name] = formValue;
             } else if (existingValue) {
@@ -298,17 +309,22 @@ export default function EditConnectionDialog({
 
          // Validate required fields based on connection type
          if (type === "postgres") {
-            const hasConnectionString =
-               !!connectionConfig.connectionString?.trim();
-            if (!hasConnectionString) {
-               // All detailed fields are required if no connection string
-               const requiredFields = [
-                  "host",
-                  "port",
-                  "databaseName",
-                  "userName",
-                  "password",
-               ];
+            const detailFields = ["host", "port", "databaseName", "userName"];
+            // A stored connection string is not readable, so its absence from
+            // the form does not mean there is none. withheldFields is what
+            // separates "this connection is described by a connection string"
+            // from "this connection has nothing".
+            const hasStoredConnectionString = withheldFields.has(
+               "postgresConnection.connectionString",
+            );
+            const describedByConnectionString =
+               !!connectionConfig.connectionString?.trim() ||
+               hasStoredConnectionString;
+            // Something has to describe the connection. A connection string
+            // does it on its own; otherwise all four detail fields are
+            // required, and "the form mentions one of them" is not enough.
+            if (!describedByConnectionString) {
+               const requiredFields = detailFields;
                for (const fieldName of requiredFields) {
                   if (!connectionConfig[fieldName]) {
                      throw new Error(
@@ -316,10 +332,6 @@ export default function EditConnectionDialog({
                      );
                   }
                }
-            }
-         } else if (type === "bigquery") {
-            if (!connectionConfig.serviceAccountKeyJson) {
-               throw new Error("Service Account Key JSON is required");
             }
          } else if (type === "snowflake") {
             if (!connectionConfig.account) {
@@ -331,9 +343,6 @@ export default function EditConnectionDialog({
             if (!connectionConfig.warehouse) {
                throw new Error("Warehouse is required");
             }
-            if (!connectionConfig.password && !connectionConfig.privateKey) {
-               throw new Error("Either password or private key is required");
-            }
          } else if (type === "trino") {
             if (!connectionConfig.server) {
                throw new Error("Server is required");
@@ -341,25 +350,8 @@ export default function EditConnectionDialog({
             if (!connectionConfig.user) {
                throw new Error("User is required");
             }
-            // Password is required for HTTPS unless peakaKey is used
-            const server = connectionConfig.server.trim();
-            if (
-               server.startsWith("https://") &&
-               !connectionConfig.password &&
-               !connectionConfig.peakaKey
-            ) {
-               throw new Error(
-                  "Password is required for HTTPS connections (or use Peaka Key)",
-               );
-            }
          } else if (type === "mysql") {
-            const requiredFields = [
-               "host",
-               "port",
-               "database",
-               "user",
-               "password",
-            ];
+            const requiredFields = ["host", "port", "database", "user"];
             for (const fieldName of requiredFields) {
                if (!connectionConfig[fieldName]) {
                   throw new Error(
@@ -367,24 +359,12 @@ export default function EditConnectionDialog({
                   );
                }
             }
-         } else if (type === "motherduck") {
-            if (!connectionConfig.accessToken) {
-               throw new Error("Access Token is required");
-            }
          } else if (type === "databricks") {
             if (!connectionConfig.host) {
                throw new Error("Host is required");
             }
             if (!connectionConfig.path) {
                throw new Error("HTTP Path is required");
-            }
-            const hasOAuth =
-               connectionConfig.oauthClientId &&
-               connectionConfig.oauthClientSecret;
-            if (!connectionConfig.token && !hasOAuth) {
-               throw new Error(
-                  "Either Access Token or OAuth Client ID + Secret is required",
-               );
             }
          }
 
@@ -645,7 +625,11 @@ export default function EditConnectionDialog({
                                        placeholder={
                                           field.name === "region"
                                              ? "us-east-1"
-                                             : field.name === "secretAccessKey"
+                                             : field.name ===
+                                                    "secretAccessKey" &&
+                                                 withheldFields.has(
+                                                    "ducklakeConnection.storage.s3Connection.secretAccessKey",
+                                                 )
                                                ? "Leave empty to keep existing"
                                                : undefined
                                        }
@@ -680,7 +664,10 @@ export default function EditConnectionDialog({
                                           `gcs_${field.name}`,
                                        )}
                                        placeholder={
-                                          field.name === "secret"
+                                          field.name === "secret" &&
+                                          withheldFields.has(
+                                             "ducklakeConnection.storage.gcsConnection.secret",
+                                          )
                                              ? "Leave empty to keep existing"
                                              : undefined
                                        }
@@ -878,13 +865,23 @@ export default function EditConnectionDialog({
                            connection?.[attributesFieldName[type] ?? ""]?.[
                               field.name ?? ""
                            ] ?? "";
+                        // Wider than the submit path's check on purpose: a
+                        // password-typed field that nobody added to
+                        // SERVER_HELD_SECRETS still renders as a secret, so it
+                        // is never prefilled. It would, however, submit an
+                        // empty string, which reads as an explicit clear, so a
+                        // new secret field belongs in that set.
                         const isPasswordField =
                            field.type === "password" ||
-                           field.name === "password" ||
-                           field.name === "secretAccessKey" ||
-                           field.name === "secret" ||
-                           field.name === "accessToken" ||
-                           field.name === "privateKey";
+                           SERVER_HELD_SECRETS.has(field.name);
+                        // Whether THIS connection holds a value for THIS field,
+                        // rather than whether the field is the kind that can
+                        // hold one. Saying "leave empty to keep it" over a box
+                        // with nothing behind it is the confusion
+                        // withheldFields exists to remove.
+                        const isStored = withheldFields.has(
+                           `${attributesFieldName[type] ?? ""}.${field.name}`,
+                        );
                         return (
                            <TextField
                               key={field.name}
@@ -902,8 +899,15 @@ export default function EditConnectionDialog({
                               }
                               defaultValue={existingValue}
                               placeholder={
-                                 isPasswordField && existingValue
+                                 isStored
                                     ? "Leave empty to keep existing"
+                                    : undefined
+                              }
+                              helperText={
+                                 isPasswordField
+                                    ? isStored
+                                       ? "Stored value is not shown. Leave empty to keep it."
+                                       : "No value stored."
                                     : undefined
                               }
                            />
