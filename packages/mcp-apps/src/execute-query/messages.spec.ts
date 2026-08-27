@@ -3,6 +3,9 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   CONNECT_FAILED_HUMAN,
+   MALFORMED_PAYLOAD_AGENT,
+   MALFORMED_PAYLOAD_HUMAN,
    NO_PAYLOAD_AGENT,
    NO_PAYLOAD_HUMAN,
    RESULT_TOO_LARGE_AGENT,
@@ -48,5 +51,41 @@ describe("no-payload copy", () => {
 
    it("names this server's tool, not Credible's", () => {
       expect(NO_PAYLOAD_AGENT).toContain("malloy_executeQuery");
+   });
+});
+
+describe("malformed-payload copy", () => {
+   // A payload that parsed but was not an object. Distinct from truncation and
+   // from no payload, and it must not borrow either one's advice: both would send
+   // the reader after a problem they do not have.
+   it("does not tell the human to shrink the query", () => {
+      expect(MALFORMED_PAYLOAD_HUMAN).not.toMatch(/limit|filter|too large/i);
+   });
+
+   it("tells the agent a smaller query will not help", () => {
+      expect(MALFORMED_PAYLOAD_AGENT).toMatch(/not a size problem/i);
+      expect(MALFORMED_PAYLOAD_AGENT).toMatch(/will not help/i);
+   });
+
+   it("names this server's tool", () => {
+      expect(MALFORMED_PAYLOAD_AGENT).toContain("malloy_executeQuery");
+   });
+
+   it("is distinct from the other two failures", () => {
+      // Three failures, three messages. Reusing one would misdiagnose the others.
+      const all = [
+         RESULT_TOO_LARGE_HUMAN,
+         NO_PAYLOAD_HUMAN,
+         MALFORMED_PAYLOAD_HUMAN,
+         CONNECT_FAILED_HUMAN,
+      ];
+      expect(new Set(all).size).toBe(all.length);
+   });
+});
+
+describe("connect-failed copy", () => {
+   it("blames the client connection, not the query", () => {
+      expect(CONNECT_FAILED_HUMAN).toMatch(/connect/i);
+      expect(CONNECT_FAILED_HUMAN).not.toMatch(/limit|filter|too large/i);
    });
 });

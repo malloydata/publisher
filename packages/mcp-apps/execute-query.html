@@ -19,8 +19,13 @@ SPDX-License-Identifier: MIT
         so it carries no product palette and no licensed font.
 
         Chart colours are not set at all, here or in the renderer: Malloy's own
-        renderer defaults apply. The chart is rendered into a shadow root by
-        @malloydata/render and brings its own styles, so nothing here reaches it.
+        renderer defaults apply. The rendered tree is LIGHT DOM, so the reset and
+        the body colour and font-size below DO cascade into the rendered table
+        and chart. An earlier version of this comment claimed @malloydata/render
+        renders into a shadow root and that nothing here reaches it; measured on
+        a rendered dashboard and a rendered table, zero elements have a
+        shadowRoot. scrollbar_allowance.ts depends on that cascade, so the reset
+        is deliberately left unscoped.
       -->
       <style>
          * {

@@ -3,28 +3,50 @@
 
 import type { Result } from "@malloydata/malloy-interfaces";
 import { MalloyRenderer } from "@malloydata/render";
-import { buildCollapseWrapper } from "../shared/collapse_wrapper";
+import {
+   buildCollapseWrapper,
+   isChromeSuppressed,
+} from "../shared/collapse_wrapper";
 import { rehydrate, type ResultMeta } from "../shared/rehydrate";
 import { highlightMalloy } from "./highlight_malloy";
 import { horizontalScrollbarAllowance } from "./scrollbar_allowance";
 
-function notifySize() {
-   // Double rAF: the browser has to reflow after a display change before the
-   // measurement means anything. A single rAF can fire before layout settles.
-   requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-         const root = document.getElementById("root");
-         const height = root ? root.offsetHeight : document.body.offsetHeight;
-         window.parent.postMessage(
-            { type: "ui-size-change", payload: { height } },
-            "*",
-         );
-      });
-   });
+// Size reporting is the ext-apps SDK's job, not ours.
+//
+// This used to postMessage `{ type: "ui-size-change" }` at the host directly.
+// That string appears nowhere in @modelcontextprotocol/ext-apps: the protocol
+// channel is `ui/notifications/size-changed`, so a spec host discarded it as a
+// non-JSON-RPC message, which is exactly the log line mcp_app_init.ts keeps
+// visible on purpose. It never showed up as a bug because `App` defaults
+// `autoResize` to true and `connect()` installs its own ResizeObserver on
+// documentElement and body, so the sizing that worked was always the SDK's.
+//
+// Measured against a host that honours ONLY `ui/notifications/size-changed` and
+// ignores the raw message: a wide table sized to 36px collapsed and 1185px
+// opened, identical to a host that accepted both. The eight manual calls, their
+// double-rAF and the 420ms and 500ms follow-ups were inert.
+
+/**
+ * The card's timers and observer, so they can be cancelled when the card is
+ * replaced. Module scope because `renderError` can be called from outside
+ * `renderResult` (the payload path in app.ts) and has to be able to stop
+ * whatever the previous render left running.
+ */
+let activeTeardown: (() => void) | null = null;
+
+function stopActiveCard(): void {
+   activeTeardown?.();
+   activeTeardown = null;
 }
 
-/** The collapsed-header subject, shared by the result and error cards. */
+/** The collapsed-header subject for a successful result. */
 const CARD_SUBJECT = "Query Result";
+
+/**
+ * The subject for an error card, deliberately different from CARD_SUBJECT.
+ * The two shared one string, so a failure was offered as "Show Query Result".
+ */
+const ERROR_CARD_SUBJECT = "Query Error";
 
 function buildQueryExpando(query: string): {
    header: HTMLElement;
@@ -78,12 +100,9 @@ function buildQueryExpando(query: string): {
       // once it has finished, or the scrollbar appears mid-animation.
       body.classList.remove("scrollable");
       if (isOpen) {
-         setTimeout(() => {
-            body.classList.add("scrollable");
-            notifySize();
-         }, 420);
-      } else {
-         setTimeout(notifySize, 420);
+         // The max-height transition runs 400ms; only make the body scrollable
+         // once it has finished, or the scrollbar appears mid-animation.
+         setTimeout(() => body.classList.add("scrollable"), 420);
       }
    });
 
@@ -128,7 +147,15 @@ export function renderResult(
       root,
       subject: CARD_SUBJECT,
       defaultOpen: toolInput?.expanded === true,
-      onToggle: () => notifySize(),
+      // Re-measure on open, not just on render: see measureAndSize below. Two
+      // frames because the body has only just left `display: none` and a
+      // measurement taken before layout means nothing.
+      onToggle: (open) => {
+         if (!open) return;
+         requestAnimationFrame(() =>
+            requestAnimationFrame(() => measureAndSize()),
+         );
+      },
    });
 
    const frame = document.createElement("div");
@@ -158,6 +185,9 @@ export function renderResult(
    frame.appendChild(container);
 
    collapseBody.appendChild(frame);
+
+   const pollTimers: ReturnType<typeof setTimeout>[] = [];
+   let teardown: () => void = () => {};
 
    let errorReported = false;
    const reportRenderError = (e: unknown, phase: string) => {
@@ -243,55 +273,83 @@ export function renderResult(
    //
    // The arithmetic that turns those measurements into a height is in
    // scrollbar_allowance.ts and IS tested. The DOM assumptions above are not.
+   // Measuring is a named function because it has TWO triggers, and for a while
+   // it only had one. The card starts collapsed unless the agent passes
+   // `expanded=true`, so the first render happens while `.mcp-card-body` is
+   // `display: none` and every measurement in the subtree is 0. `rendered > 0`
+   // is then false, so nothing is assigned and the observer is never
+   // disconnected: the container keeps the literal 400px it was created with.
+   //
+   // Opening the card cannot fix that through the observer. `setOpen` toggles
+   // `is-open` on the WRAPPER, which is this container's ancestor, and a
+   // MutationObserver sees the node it observes and its descendants, never its
+   // ancestors. Measured: after the render settled while collapsed, zero
+   // mutation records reached the observer.
+   //
+   // In practice the card did still correct itself, because @malloydata/render
+   // re-renders when its subtree becomes visible and those mutations DO reach
+   // the observer: 22 records within 50ms of the click, height right by 100ms.
+   // That is the renderer's internal behaviour rescuing us, not this code
+   // working, and it is the same unpromised coupling the block below documents.
+   // So opening now re-measures explicitly and the accident is only a backstop.
+   const measureAndSize = (): boolean => {
+      if (checkForPluginErrors()) {
+         teardown();
+         return true;
+      }
+
+      const child = container.firstElementChild as HTMLElement | null;
+      const grandchild = child?.firstElementChild as HTMLElement | null;
+      if (!grandchild) return false;
+
+      let rendered = grandchild.scrollHeight || grandchild.offsetHeight || 0;
+      const greatGrandchild =
+         grandchild.firstElementChild as HTMLElement | null;
+      if (
+         greatGrandchild &&
+         grandchild.classList.contains("malloy-dashboard")
+      ) {
+         rendered =
+            greatGrandchild.scrollHeight || greatGrandchild.offsetHeight || 0;
+      }
+
+      if (rendered <= 0) return false;
+      // Reserve room for a horizontal scrollbar so a wide table's last row is
+      // not cropped behind it (scrollHeight excludes the scrollbar).
+      container.style.height = `${rendered + horizontalScrollbarAllowance(container)}px`;
+      teardown();
+      return true;
+   };
+
    const observer = new MutationObserver(() => {
-      setTimeout(() => {
-         if (checkForPluginErrors()) {
-            observer.disconnect();
-            notifySize();
-            return;
-         }
-
-         const child = container.firstElementChild as HTMLElement | null;
-         const grandchild = child?.firstElementChild as HTMLElement | null;
-         if (!grandchild) return;
-
-         let rendered = grandchild.scrollHeight || grandchild.offsetHeight || 0;
-         const greatGrandchild =
-            grandchild.firstElementChild as HTMLElement | null;
-         if (
-            greatGrandchild &&
-            grandchild.classList.contains("malloy-dashboard")
-         ) {
-            rendered =
-               greatGrandchild.scrollHeight ||
-               greatGrandchild.offsetHeight ||
-               0;
-         }
-
-         if (rendered > 0) {
-            // Reserve room for a horizontal scrollbar so a wide table's last row
-            // is not cropped behind it (scrollHeight excludes the scrollbar).
-            container.style.height = `${rendered + horizontalScrollbarAllowance(container)}px`;
-            observer.disconnect();
-            notifySize();
-         }
-      }, 100);
+      pollTimers.push(setTimeout(measureAndSize, 100));
    });
 
-   // The observer disconnects as soon as it measures a height, which can happen
-   // before SolidJS has committed an error plugin's element. Poll a few times
-   // after rendering stabilises to catch a late-arriving error element.
-   [500, 1000, 2000].forEach((delay) => {
-      setTimeout(() => checkForPluginErrors(), delay);
-   });
+   // Every timer and observer this card owns, torn down together. Previously
+   // nothing was: `renderError` clears `root.innerHTML`, so the observer and the
+   // polls below went on firing against a detached container for the life of the
+   // widget.
+   teardown = () => {
+      observer.disconnect();
+      for (const id of pollTimers) clearTimeout(id);
+      pollTimers.length = 0;
+   };
+   activeTeardown = teardown;
+
+   // The observer stops as soon as it measures a height, which can happen before
+   // SolidJS has committed an error plugin's element. Poll a few times after
+   // rendering stabilises to catch a late-arriving error element.
+   for (const delay of [500, 1000, 2000]) {
+      pollTimers.push(setTimeout(() => checkForPluginErrors(), delay));
+   }
    observer.observe(container, {
       childList: true,
       subtree: true,
       attributes: true,
    });
 
-   notifySize();
-   setTimeout(notifySize, 500);
+   // Measure once now in case the card is already open (`expanded=true`).
+   measureAndSize();
 }
 
 export function renderError(
@@ -299,15 +357,27 @@ export function renderError(
    message: string,
    query?: string,
 ) {
+   // Clearing root detaches the previous card's container, so anything still
+   // observing or polling it has to be stopped first. It was not, and those
+   // timers went on measuring a detached node for the life of the widget.
+   stopActiveCard();
    root.innerHTML = "";
 
+   // Errors start collapsed so the card stays compact while the agent reads the
+   // tool result and recovers. NOT under `chrome=none`: there the header is
+   // suppressed entirely, so a collapsed card has no control to open it and the
+   // error becomes unreachable. Measured: card 2px tall, the error text present
+   // in the DOM at a 0x0 rect, and zero clickable elements, so every failure
+   // this widget writes copy for rendered as an empty bordered box. A host that
+   // suppressed chrome has already made the compactness call, so the error opens.
+   const chromeSuppressed = isChromeSuppressed();
    const { body: collapseBody } = buildCollapseWrapper({
       root,
-      subject: CARD_SUBJECT,
-      // Errors always start collapsed, even under `chrome=none`, so the card
-      // stays compact while the agent reads the tool result and recovers.
-      forceCollapsed: true,
-      onToggle: () => notifySize(),
+      // Labelled as an error, not as a result. "Show Query Result" on a card
+      // containing an error reads as a result you have to click for.
+      subject: ERROR_CARD_SUBJECT,
+      forceCollapsed: !chromeSuppressed,
+      defaultOpen: chromeSuppressed,
    });
 
    if (query) {
@@ -329,6 +399,4 @@ export function renderError(
       box.textContent = message;
       collapseBody.appendChild(box);
    }
-
-   notifySize();
 }

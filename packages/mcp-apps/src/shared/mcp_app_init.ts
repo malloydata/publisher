@@ -52,6 +52,8 @@ export interface McpAppCallbacks {
    onToolResult: (payload: ExtractedPayload) => void;
    /** No content block carried a payload at all. A distinct failure. */
    onMissingPayload: () => void;
+   /** The `ui/initialize` handshake with the host failed. Nothing will arrive. */
+   onConnectFailed: (message: string) => void;
 }
 
 /**
@@ -80,6 +82,14 @@ export function initMcpApp(
       callbacks.onToolResult(payload);
    };
 
-   app.connect();
+   // `connect()` is async and its rejection was unhandled, so a failed
+   // handshake surfaced as an unhandled promise rejection in the host's console
+   // and the widget sat on "Waiting for query result..." indefinitely. There is
+   // nothing to retry against, so the only useful thing is to say so in the card.
+   app.connect().catch((error: unknown) => {
+      callbacks.onConnectFailed(
+         error instanceof Error ? error.message : String(error),
+      );
+   });
    return app;
 }

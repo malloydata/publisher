@@ -42,3 +42,32 @@ export const NO_PAYLOAD_AGENT =
    "The malloy_executeQuery result could not be displayed: the tool response carried no " +
    "result payload, in either a resource block or a text block. This is not a size problem, " +
    "so re-running with a smaller limit will not help. Read the tool result directly instead.";
+
+/**
+ * A payload arrived and parsed as JSON, but is not an object.
+ *
+ * A third distinct case, and it needs its own wording for the same reason the
+ * two above do. `JSON.parse("123")` and `JSON.parse("null")` both succeed, so
+ * the truncation branch never fired: a scalar then failed on the first property
+ * access inside the host's notification handler and a null returned early
+ * forever, and in both cases the card sat on "Waiting for query result..."
+ * saying nothing to anyone. It is not a size problem and there is no missing
+ * payload, so neither message above tells the truth about it.
+ */
+export const MALFORMED_PAYLOAD_HUMAN =
+   "This result could not be displayed: the tool returned a result payload that was not in the expected format.";
+
+/** The same case, worded so the agent does not retry a smaller query. */
+export const MALFORMED_PAYLOAD_AGENT =
+   "The malloy_executeQuery result could not be displayed: the tool response payload parsed as JSON " +
+   "but was not an object, so it carried no rows or schema to render. This is not a size problem, so " +
+   "re-running with a smaller limit will not help. Read the tool result directly instead.";
+
+/**
+ * The `ui/initialize` handshake with the host failed.
+ *
+ * Human-only: the agent already has the tool result, so nothing here is
+ * actionable for it. This failure is between the widget and the host.
+ */
+export const CONNECT_FAILED_HUMAN =
+   "This result could not be displayed: the widget could not connect to the chat client.";

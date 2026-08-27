@@ -90,6 +90,22 @@ function inlineWidgetAssets(): Plugin {
                const tag = new RegExp(
                   `<link[^>]*href="[^"]*${escapeRegExp(basename(key))}"[^>]*>`,
                );
+               // The same guard the script branch has, and for a worse failure.
+               // This branch replaced unconditionally and then deleted the asset,
+               // so a regex that missed dropped the stylesheet entirely and the
+               // build still went green. The dangling-reference check below could
+               // not catch it either: it requires a slash before the filename,
+               // which is the exact separator assumption the script branch was
+               // changed to stop depending on. Latent while no CSS asset is
+               // emitted, live the moment anything imports a stylesheet.
+               if (!tag.test(html)) {
+                  this.error(
+                     `inlineWidgetAssets: no <link> tag references ${key}; ` +
+                        "inlining would delete the stylesheet and leave the " +
+                        "widget unstyled with a passing build.",
+                  );
+                  return;
+               }
                // Function replacer, for the same reason as the script above.
                html = html.replace(
                   tag,

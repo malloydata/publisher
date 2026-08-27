@@ -3,6 +3,9 @@
 
 import { initMcpApp } from "../shared/mcp_app_init";
 import {
+   CONNECT_FAILED_HUMAN,
+   MALFORMED_PAYLOAD_AGENT,
+   MALFORMED_PAYLOAD_HUMAN,
    NO_PAYLOAD_AGENT,
    NO_PAYLOAD_HUMAN,
    RESULT_TOO_LARGE_AGENT,
@@ -30,8 +33,9 @@ const app = initMcpApp("Malloy Query Result", "1.0.0", {
    },
 
    onToolResult: (payload) => {
+      let parsed: unknown;
       try {
-         toolOutput = JSON.parse(payload.text);
+         parsed = JSON.parse(payload.text);
       } catch {
          // A payload that will not parse ~always means the host truncated an
          // oversized result. Tell the human how to shrink it, and hand the agent
@@ -39,6 +43,19 @@ const app = initMcpApp("Malloy Query Result", "1.0.0", {
          failCard(RESULT_TOO_LARGE_HUMAN, RESULT_TOO_LARGE_AGENT);
          return;
       }
+      // Parsing is not enough: a JSON scalar parses fine and then dies on the
+      // first property access, and `null` is typeof "object". Both left the card
+      // on "Waiting for query result..." forever, reporting nothing to the user
+      // and nothing to the agent.
+      if (
+         typeof parsed !== "object" ||
+         parsed === null ||
+         Array.isArray(parsed)
+      ) {
+         failCard(MALFORMED_PAYLOAD_HUMAN, MALFORMED_PAYLOAD_AGENT);
+         return;
+      }
+      toolOutput = parsed as Record<string, unknown>;
       if (!toolInput && toolInputWaitTimer === null) {
          toolInputWaitTimer = setTimeout(() => {
             toolInputWaitTimer = null;
@@ -52,6 +69,13 @@ const app = initMcpApp("Malloy Query Result", "1.0.0", {
    // returned to render, so telling the user to shrink the query would send them
    // after a problem they do not have.
    onMissingPayload: () => failCard(NO_PAYLOAD_HUMAN, NO_PAYLOAD_AGENT),
+
+   // The handshake failed, so no tool input or result is ever going to arrive.
+   // Say that in the card rather than leaving "Waiting for query result..." up
+   // forever. No agent message: the tool result reached the agent regardless,
+   // this failure is between the widget and the host.
+   onConnectFailed: (message) =>
+      renderError(root, `${CONNECT_FAILED_HUMAN} (${message})`),
 });
 
 /** Show a failure to the human and report the same case to the agent once. */

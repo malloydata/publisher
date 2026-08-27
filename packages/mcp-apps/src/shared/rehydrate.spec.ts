@@ -387,3 +387,49 @@ describe("rehydrate: nested results from nest:", () => {
       });
    });
 });
+
+describe("rehydrate: boolean coercion", () => {
+   // The regression this exists for, and it is the invisible-wrongness class the
+   // rest of this file was written for. The number branch coerces with
+   // `Number(value)` on the stated premise that a driver may return a number as
+   // text. Under that same premise a driver returns a boolean as text, and
+   // `Boolean("false")` is true, as were `Boolean("f")` and `Boolean("0")`. Every
+   // false-arriving-as-string read as true, so a filter or a grouped chart over
+   // the column was silently inverted: a normal-looking chart of wrong data.
+   const boolSchema = schemaOf(dim("flag", { kind: "boolean_type" }));
+
+   const cases: Array<[unknown, boolean]> = [
+      [true, true],
+      [false, false],
+      ["false", false],
+      ["FALSE", false],
+      [" false ", false],
+      ["f", false],
+      ["0", false],
+      ["no", false],
+      ["n", false],
+      ["", false],
+      ["true", true],
+      ["t", true],
+      ["1", true],
+      [1, true],
+      [0, false],
+   ];
+
+   for (const [input, expected] of cases) {
+      it(`coerces ${JSON.stringify(input)} to ${expected}`, () => {
+         expect(firstCell([{ flag: input }], boolSchema)).toEqual({
+            kind: "boolean_cell",
+            boolean_value: expected,
+         });
+      });
+   }
+
+   it("keeps null a null cell rather than false", () => {
+      // The null check runs before coercion and must keep doing so: an unknown
+      // flag is not a false one.
+      expect(firstCell([{ flag: null }], boolSchema)).toEqual({
+         kind: "null_cell",
+      });
+   });
+});

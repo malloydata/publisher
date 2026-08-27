@@ -19,6 +19,7 @@
    },
    "devDependencies": {
       "@eslint/js": "^8.57.0",
+      "@happy-dom/global-registrator": "^20.11.1",
       "@malloydata/malloy-interfaces": "^0.0.432",
       "@malloydata/render": "^0.0.432",
       "@modelcontextprotocol/ext-apps": "^1.7.5",

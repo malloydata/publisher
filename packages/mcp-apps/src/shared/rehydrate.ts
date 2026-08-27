@@ -81,6 +81,31 @@ function rehydrateRecord(
 }
 
 /**
+ * Coerce a boolean cell, tolerating the string forms a driver may send.
+ *
+ * `Boolean(value)` was wrong here, and wrong in the direction that renders a
+ * chart which is confidently incorrect rather than absent. The `number_type`
+ * branch above coerces with `Number(value)` precisely because a driver may hand
+ * back a number as text; under that same premise a driver hands back a boolean
+ * as text, and `Boolean("false")` is TRUE. So were `Boolean("f")` and
+ * `Boolean("0")`. Every false value arriving as a string read as true, and a
+ * filter or a grouped chart over it would have been silently inverted.
+ *
+ * A real boolean passes through. Anything else falls back to truthiness, so an
+ * unrecognised shape behaves as it did before rather than becoming false.
+ */
+const FALSE_STRINGS = new Set(["false", "f", "0", "n", "no", ""]);
+
+function coerceBoolean(value: unknown): boolean {
+   if (typeof value === "boolean") return value;
+   if (typeof value === "number") return value !== 0;
+   if (typeof value === "string") {
+      return !FALSE_STRINGS.has(value.trim().toLowerCase());
+   }
+   return Boolean(value);
+}
+
+/**
  * Convert a single compact value into a typed Cell based on the field's type.
  */
 function rehydrateValue(value: unknown, type: AtomicType): Cell {
@@ -114,7 +139,7 @@ function rehydrateValue(value: unknown, type: AtomicType): Cell {
       case "boolean_type":
          return {
             kind: "boolean_cell",
-            boolean_value: Boolean(value),
+            boolean_value: coerceBoolean(value),
          };
 
       case "date_type":
