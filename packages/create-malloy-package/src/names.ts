@@ -260,7 +260,7 @@ function describeUnsafeCharacter(name: string): string {
  * by hand, and names.spec.ts re-derives both sets from that package on every run.
  * A Malloy upgrade that adds a keyword or a standard function therefore fails the
  * suite instead of silently shipping packages the server cannot compile. To
- * regenerate: run `bun test src/names.spec.ts` and add the words it names.
+ * regenerate: run `bun test ./src/names.spec.ts` and add the words it names.
  */
 const MALLOY_RESERVED = new Set([
    // Grammar keywords (MalloyLexer).

@@ -46,7 +46,16 @@
 // is the thing that actually matters: which files an argument pulls in.
 
 import { describe, expect, it } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
@@ -80,21 +89,24 @@ const VALUE_FLAGS = new Set([
   "--timeout",
   "--rerun-each",
   "--retry",
-  "--bail",
   "-t",
   "--test-name-pattern",
   "--reporter",
   "--reporter-outfile",
   "--max-concurrency",
   "--path-ignore-patterns",
-  "--changed",
   "--coverage-reporter",
   "--coverage-dir",
   "--seed",
   "--shard",
-  "--parallel",
   "--parallel-delay",
 ]);
+
+// `--bail`, `--changed` and `--parallel` are deliberately NOT above. Their value
+// is optional, so bun reads `bun test --bail tests` as bail-with-no-value plus
+// the filter `tests`. Listing them would make this eat a real filter, which is
+// the silent direction: with one positional it fails somewhere unrelated, with
+// two the first goes unchecked.
 
 interface Invocation {
   /** Repo-relative directory the script runs in, "." for the root package. */
@@ -127,9 +139,43 @@ function isBunTest(segment: string): boolean {
   return /^bun\s+test(\s|$)/.test(withoutEnvPrefix(segment));
 }
 
+/**
+ * The segments of a shell command that a `bun test` could start.
+ *
+ * Splitting on `&&` alone was wrong, and wrong in the silent direction: a
+ * script joined with `;` or `||` disappeared from the parsed set entirely, so
+ * no assertion fired for it and the run still reported a clean sweep. That is
+ * this file's own version of the bug it guards.
+ */
+function commandSegments(command: string): string[] {
+  return command.split(/&&|\|\||;/);
+}
+
+/**
+ * Tokens of one command, quotes respected and stopping at the first redirection
+ * or pipe.
+ *
+ * Both halves matter for commands already idiomatic in this repo. A run piped
+ * into `tee` (cross-platform-tests.yml does this) would otherwise contribute
+ * `2>&1`, `|`, `tee` and a filename as "path filters", and `-t "explicit false"`
+ * (documented in the SDK's test README) would contribute a filter named
+ * `false"`. Both fail loudly rather than silently, but they fail on a legitimate
+ * edit with an error naming nothing real.
+ */
+function tokenize(command: string): string[] {
+  const tokens: string[] = [];
+  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(command)) !== null) {
+    if (/^(?:\d*[<>]|\||&)/.test(match[0])) break;
+    tokens.push(match[1] ?? match[2] ?? match[3]);
+  }
+  return tokens;
+}
+
 /** The positional path filters of one `bun test ...` command segment. */
 function filtersOf(segment: string): string[] {
-  const tokens = withoutEnvPrefix(segment).split(/\s+/).slice(2);
+  const tokens = tokenize(withoutEnvPrefix(segment)).slice(2);
   const filters: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -178,7 +224,7 @@ function invocations(): Invocation[] {
     for (const [script, command] of Object.entries(
       (manifest.scripts ?? {}) as Record<string, string>,
     )) {
-      for (const segment of command.split("&&")) {
+      for (const segment of commandSegments(command)) {
         if (!isBunTest(segment)) continue;
         found.push({ pkg, script, filters: filtersOf(segment) });
       }
@@ -202,13 +248,14 @@ function workflowInvocations(): Invocation[] {
     if (!/\.ya?ml$/.test(file)) continue;
     const lines = readFileSync(path.join(dir, file), "utf8").split("\n");
     lines.forEach((line, index) => {
-      const command = withoutRunPrefix(line);
-      if (!isBunTest(command)) return;
-      found.push({
-        pkg: `.github/workflows/${file}`,
-        script: `line ${index + 1}`,
-        filters: filtersOf(command),
-      });
+      for (const segment of commandSegments(withoutRunPrefix(line))) {
+        if (!isBunTest(segment)) continue;
+        found.push({
+          pkg: `.github/workflows/${file}`,
+          script: `line ${index + 1}`,
+          filters: filtersOf(segment),
+        });
+      }
     });
   }
   return found;
@@ -237,9 +284,86 @@ describe("reading a bun test command", () => {
     expect(withoutEnvPrefix(" bun test ./src ")).toBe("bun test ./src");
   });
 
+  it("splits on every shell separator, not just &&", () => {
+    // A `;`- or `||`-joined script used to vanish from the parsed set with no
+    // assertion firing, which reported a clean sweep while checking less.
+    expect(commandSegments("bun run copy-skills; bun test ./src").length).toBe(
+      2,
+    );
+    expect(commandSegments("a || bun test ./src").length).toBe(2);
+    expect(commandSegments("a && bun test ./src").length).toBe(2);
+  });
+
+  it("stops at a redirection or pipe", () => {
+    expect(filtersOf("bun test ./tests 2>&1 | tee out.log")).toEqual([
+      "./tests",
+    ]);
+    expect(filtersOf("bun test ./tests > out.log")).toEqual(["./tests"]);
+  });
+
+  it("keeps a quoted flag value in one token", () => {
+    expect(filtersOf('bun test -t "explicit false" ./src')).toEqual(["./src"]);
+  });
+
+  it("does not eat the filter after an optional-value flag", () => {
+    // bun reads these as flag-with-no-value plus a filter.
+    expect(filtersOf("bun test --bail ./tests")).toEqual(["./tests"]);
+    expect(filtersOf("bun test --parallel ./tests")).toEqual(["./tests"]);
+    expect(filtersOf("bun test --changed ./tests")).toEqual(["./tests"]);
+  });
+
   it("reads a workflow step written on one line", () => {
     expect(withoutRunPrefix("  - run: bun test ./src")).toBe("bun test ./src");
     expect(withoutRunPrefix("          bun test ./src")).toBe("bun test ./src");
+  });
+});
+
+// Everything above reasons about bun's matching rule from a model of it. This
+// checks the model against the real thing, on whatever platform the run happens
+// to be on.
+//
+// It exists for Windows specifically. The rest of this file is synthetic by
+// design, and synthetic cannot tell the difference between "./x anchors here"
+// and "./x is not recognised here, so it fell back to a substring and matched
+// anyway". The second would mean the anchoring silently does not apply on the
+// one platform where the retrying integration step populates `publisher_data/`
+// between attempts, and CI would stay green while the fix did nothing. A model
+// cannot answer that; running bun can.
+describe("the model against real bun", () => {
+  it("matches what bun collects on this platform", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "bun-test-filter-"));
+    try {
+      for (const rel of ["tests", path.join("nested", "tests")]) {
+        mkdirSync(path.join(dir, rel), { recursive: true });
+        writeFileSync(
+          path.join(dir, rel, "a.test.ts"),
+          'import{test,expect}from"bun:test";test("t",()=>{expect(1).toBe(1)});\n',
+        );
+      }
+
+      const collected = (filter: string) => {
+        const run = Bun.spawnSync({
+          cmd: [process.execPath, "test", filter],
+          cwd: dir,
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const out = run.stdout.toString() + run.stderr.toString();
+        const files = out.match(/across (\d+) files?/);
+        return files ? Number(files[1]) : 0;
+      };
+
+      // The bug, and the fix, as bun itself reports them.
+      expect(collected("tests")).toBe(2);
+      expect(collected("./tests")).toBe(1);
+
+      // And the model agrees about the file that separates them.
+      const nested = "nested/tests/a.test.ts";
+      expect(collects("tests", nested)).toBe(true);
+      expect(collects("./tests", nested)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -288,13 +412,19 @@ describe("bun test path filters", () => {
     (invocation: Invocation) => {
       for (const filter of invocation.filters) {
         const target = filter.replace(/^\.\//, "").replace(/\/+$/, "");
+        // Two of these name a file, not a directory. Appending a child segment
+        // to a file path asserts about something that cannot exist, so the
+        // positive leg would pass without meaning anything.
+        const own = /\.(test|spec)\.[cm]?[jt]sx?$/.test(target)
+          ? target
+          : `${target}/example.test.ts`;
 
-        it(`${filter} collects its own directory`, () => {
-          expect(collects(filter, `${target}/example.test.ts`)).toBe(true);
+        it(`${filter} collects its own path`, () => {
+          expect(collects(filter, own)).toBe(true);
         });
 
         it(`${filter} does not reach into publisher_data`, () => {
-          const copy = `publisher_data/examples/storefront/${target}/example.test.mjs`;
+          const copy = `publisher_data/examples/storefront/${own}`;
           expect(collects(filter, copy)).toBe(false);
         });
       }
