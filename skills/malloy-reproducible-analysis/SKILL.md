@@ -158,8 +158,8 @@ in one word.
 Run this after *every* answered question, while the query is still in front of you. Skipping it
 is how a session ends with a transcript and no model.
 
-Look at the query you just ran. For each dimension, measure, join, or filter, ask **in this
-order**:
+Look at the query you just ran. For each dimension, measure, join, filter, **and for the shape
+of the query itself**, ask **in this order**:
 
 | Codify it when | Example |
 |---|---|
@@ -215,22 +215,42 @@ checking in, believe them - state each decision in a clause and keep going.
 
 ### Write it down twice
 
-**In the model, as a comment on the field.** This is the part that survives. Six months on it is
-the only thing between the next reader and a silent redefinition.
+**In the model, as a `#(doc)` annotation on the field.** This is the part that survives. Six
+months on it is the only thing between the next reader and a silent redefinition.
+
+**Use `#(doc)`, not a `//` comment, for anything a consumer needs.** `#(doc)` is
+machine-readable: Publisher renders it and retrieval tools read it, so a warning written there
+reaches the person about to misuse the field. A `//` comment reaches nobody but whoever opens
+the file. Keep `//` for what only a maintainer cares about - why there is no `primary_key:`,
+where a view came from. Put format tags on definitions too: bare `# currency` on the measure,
+with any scale (`# currency=usd0m`) only in views.
 
 ```malloy
+#(doc) Order line items joined to products. Grain is one row per line, not per order.
 source: order_items is my_conn.table('ecommerce.order_items') extend {
   join_one: products is my_conn.table('ecommerce.products') on product_id = products.id
 
   dimension:
-    // Canonical order date. Data runs 2019-01-05 to 2026-03-14, so the final
-    // year is PARTIAL - never present it as a full period.
+    #(doc) Canonical order date. Data runs 2019-01-05 to 2026-03-14, so the final year is PARTIAL - never present it as a full period.
     order_date is created_at::date
 
   measure:
-    // Cancelled and returned are 25% of gross - excluding them is not optional.
+    #(doc) Revenue in USD, excluding cancelled and returned orders. Those are 25% of gross, so excluding them is not optional.
+    # currency
     net_revenue is sum(sale_price) { where: status != 'Cancelled' and status != 'Returned' }
+
+    #(doc) Distinct orders.
     order_count is count(order_id)
+
+  #(doc) Monthly revenue trend. The question asked on 2026-03-02.
+  # line_chart
+  view: revenue_trend is {
+    group_by: order_month is order_date.month
+    aggregate:
+      # currency=usd0m
+      net_revenue
+    order_by: order_month
+  }
 }
 ```
 
@@ -242,9 +262,30 @@ each question, what it found, what got codified and what was left ad-hoc, and ev
 finding. The model carries the *what*; the notes carry the *why* and the evidence. It is also
 what lets you resume after losing context.
 
-**Save the view when a question is worth re-asking.** A trend someone will want again next month
-belongs in the file as a `view:` with its chart tag - see `skill:malloy-charts`. A one-off does
-not.
+**Save the view when a question is worth re-asking.** This is a first-class part of CODIFY, not
+an afterthought - a saved `view:` is what turns "we answered that once" into "re-run it". A
+trend someone will want again next month belongs in the file as a `view:` with its chart tag
+(`skill:malloy-charts`), and a set of views someone will want side by side belongs in a
+dashboard (`skill:malloy-dashboards`). A genuine one-off does not.
+
+A saved view is binding - it is the shape people re-run and cite - so confirm it like any other
+codified decision. But do not hesitate over *whether* views belong here: they do.
+
+> **This departs from `skill:malloy-model` on purpose.** That skill says base and joined source
+> files carry no views, because a schema-first model is written before anyone has asked a
+> question, so any view in it is guessed. Here every view is a question that was actually asked
+> and verified, so it belongs in the model file next to the measures it uses.
+
+**Two things from `skill:malloy-model` do NOT apply here. Skip them.**
+
+- **Access modifiers and curation** (`include { public: / internal: }`). An analysis-first model
+  is small and every field in it was paid for by a question. There is no discovery surface to
+  curate, so curating one is busywork.
+- **One file per table, plus a joined domain file.** Keep one file named for the domain. Split
+  only when it genuinely gets unwieldy - not on principle.
+
+Everything else from `skill:malloy-model` does apply: `#(doc)` on every field, verified join
+cardinality, `nullif` on division, and a `given:` if the model ever needs a runtime parameter.
 
 ### Then loop
 
@@ -259,18 +300,25 @@ Each answered question makes the next sharper and the model slightly larger.
 
 ## When the analysis is going to be shared
 
-Do **not** do this during the loop. Documenting and curating a model that is still moving is
-wasted work, and it makes the loop feel like a chore. When the user wants to hand it over:
+**Docs are not on this list - they happen in CODIFY, as you go.** A field goes into the file
+with its `#(doc)` already on it. Deferring docs to a hand-over step is how a session ends with a
+model nobody can read, because the hand-over often never comes and the reasoning is gone by then.
+The doc costs one line while the query is still in front of you.
 
-1. **Docs.** Every codified field gets a doc string - grain, units, null handling. The original
-   question is usually the text.
-2. **Names.** Rename anything whose name only made sense inside one question.
+When the user wants to hand it over:
+
+1. **Names.** Rename anything whose name only made sense inside one question.
+2. **Doc pass.** Not writing docs from scratch - re-reading the ones you wrote for anything that
+   drifted as the model grew. Check grain, units, and null handling are each stated somewhere.
 3. **Re-verify.** Re-run the session's key queries against the finished sources. If a number
    moved, something was codified wrong. This is the check that proves reproducibility, so do not
    skip it.
-4. **Structure**, if it has outgrown one file - base sources per table plus a joined source per
-   domain. `skill:malloy-model` has the layout. Do this because the file got unwieldy, not on
-   principle.
+4. **Structure**, only if one file has genuinely become unwieldy - base sources per table plus a
+   joined source per domain. `skill:malloy-model` has the layout. Do this because the file got
+   hard to work in, not on principle, and not just because it is being shared.
+
+**Still skip curation and access modifiers.** Sharing an analysis-first model does not turn it
+into a browsable catalogue.
 
 ## When to do something else
 
@@ -309,5 +357,14 @@ WRONG  Codify the source-level `where:`, then mention it in the write-up
 RIGHT  Stop and confirm it - it scopes every question anyone asks later
 
 WRONG  The assumption lives in the chat transcript
-RIGHT  The assumption is a comment on the field, and a line in the notes
+RIGHT  The assumption is a #(doc) on the field, and a line in the notes
+
+WRONG  Write the warning as a // comment nobody downstream can see
+RIGHT  #(doc) for what a consumer needs, // for what only a maintainer needs
+
+WRONG  Leave the answered question as a transcript table and move on
+RIGHT  Save it as a view - a question worth answering is usually worth re-asking
+
+WRONG  Curate access modifiers and split one file per table to "do it properly"
+RIGHT  Skip both - they solve a schema-first problem this model does not have
 ```

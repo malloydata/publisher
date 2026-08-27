@@ -168,8 +168,26 @@ source: customer_health is customers extend {
 | **Dimensions** | Intrinsic to this table only | Cross-source (require joins) |
 | **Measures** | Single-table aggregations | Cross-source aggregations |
 | **Joins** | None (or only lookup joins intrinsic to the source) | Defines relationships between base sources |
-| **Views** | None (views belong in analysis) | None |
+| **Views** | None, in schema-first (see below) | None, in schema-first (see below) |
 | **One per** | Physical table or computed source | Analytical domain |
+
+**The "no views" rule is schema-first only.** It exists because a schema-first model gets
+built before anyone has asked a question, so any view in it is a guess. It does **not**
+apply to the analysis-first workflow (`skill:malloy-reproducible-analysis`), where every
+view is a question someone actually asked and got a verified answer to. There, **saving a
+view - or a dashboard - is the right call**, and it belongs in the model file next to the
+measures it uses. Judge a view by whether a real question produced it, not by which file it
+sits in. Analysis-first still models everything else properly: documented dimensions,
+measures, and joins, with the assumptions written down.
+
+**Two more rules on this page are schema-first only. Analysis-first should skip both:**
+
+- **Access modifiers and curation** (`include { public: / internal: }`). Curating a
+  discovery surface pays off in a model built to be browsed. An analysis-first model is
+  small and every field in it was paid for by a question, so there is nothing to curate.
+- **One file per table.** Splitting into base sources plus a joined domain file solves a
+  problem an analysis-first model does not have. Keep one file named for the domain, and
+  split only when it actually gets unwieldy.
 
 ## Key Rules
 
