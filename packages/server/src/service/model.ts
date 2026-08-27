@@ -112,6 +112,7 @@ import {
    type FilterParams,
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import { filterPublisherOwnedRenderLogs } from "./dashboard";
 import {
    docCommentTitleAndDescription,
    motlyTag,
@@ -3744,9 +3745,17 @@ export class Model {
          // ignores it. `warn` and `error` are the only severities the renderer
          // emits, so this is everything it reports, and `severity` keeps the two
          // apart for the operator.
-         const logs = validateRenderTags(result).filter(
-            (log) => log.severity === "error" || log.severity === "warn",
-         );
+         //
+         // Publisher-owned tags are dropped first. `# artifact` and `# drill`
+         // share the `#` namespace but mean nothing to the renderer, which
+         // reports each as `Unknown render tag` at WARN severity -- invisible
+         // while this filtered to errors, and a finding on every dashboard file
+         // the moment it stopped. The query-time paths already route through
+         // filterPublisherOwnedRenderLogs for the same reason; this is the
+         // third call site, not a second mechanism.
+         const logs = filterPublisherOwnedRenderLogs(
+            validateRenderTags(result),
+         ).filter((log) => log.severity === "error" || log.severity === "warn");
          if (logs.length > 0) {
             // An inert tag is not an invalid one, so don't call it "Invalid";
             // the per-finding messages already say which kind each is.
