@@ -49,19 +49,30 @@ export function quoteTablePath(tableName: string, dialect: string): string {
 
 /**
  * Dialects whose `ALTER TABLE ... RENAME TO` resolves an UNQUALIFIED target
- * against the session's current container rather than against the renamed
- * table's own. Snowflake does: renaming
- * `"MY_SCHEMA"."t_staging"` to a bare `"t"` moves the table to whatever schema
- * the session happens to be pointing at, so a persist source naming a schema
- * other than the connection's default silently materializes somewhere else --
- * and collides there with any same-named table, reporting "already exists"
- * against a target schema that is empty.
+ * against the SESSION's current container rather than against the renamed
+ * table's own — so a bare target MOVES the table. On these the target must be
+ * qualified, or a persist source naming a container other than the connection's
+ * default silently materializes into the default one, and collides there with
+ * any same-named table.
  *
- * Everywhere else the target MUST stay bare: Postgres, BigQuery and DuckDB all
- * reject a qualified rename target outright. Add a dialect here only once its
- * unqualified target is known to be session-relative.
+ * Everywhere else the target must stay bare, in several cases because a
+ * qualified one is rejected outright. Measured, one table per dialect, by
+ * renaming `s1.t_staging` to a bare `t` with the session pointed at `s2`:
+ *
+ * | dialect   | bare target      | qualified target        |
+ * | --------- | ---------------- | ----------------------- |
+ * | snowflake | moves to s2      | accepted, correct       |
+ * | mysql     | moves to s2      | accepted, correct       |
+ * | postgres  | stays in s1      | syntax error            |
+ * | duckdb    | stays in s1      | parser error            |
+ * | bigquery  | stays in s1      | "cannot contain dot"    |
+ * | trino     | stays in s1      | (bare already correct)  |
+ *
+ * Databricks is not covered by that sweep and stays out of the set, keeping its
+ * current behaviour; add it only once its bare target is shown to be
+ * session-relative.
  */
-const QUALIFIED_RENAME_TARGET_DIALECTS = new Set(["snowflake"]);
+const QUALIFIED_RENAME_TARGET_DIALECTS = new Set(["snowflake", "mysql"]);
 
 /**
  * Dialect-quote the TARGET of an `ALTER TABLE ... RENAME TO` for a (possibly

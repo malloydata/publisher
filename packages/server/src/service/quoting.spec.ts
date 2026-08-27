@@ -151,6 +151,12 @@ describe("quoteRenameTarget", () => {
       ).toBe('"WAREHOUSE"."MY_SCHEMA"."orders_v3"');
    });
 
+   it("qualifies the target on MySQL, which also resolves a bare one against the session", () => {
+      expect(quoteRenameTarget("mydb.orders_v3", "mysql")).toBe(
+         "`mydb`.`orders_v3`",
+      );
+   });
+
    it("keeps the target bare on dialects that reject a qualified one", () => {
       // Postgres, BigQuery and DuckDB all name the table within its existing
       // container and refuse a qualified rename target.
@@ -161,6 +167,8 @@ describe("quoteRenameTarget", () => {
          "`orders_v3`",
       );
       expect(quoteRenameTarget("main.orders_v3", "duckdb")).toBe('"orders_v3"');
+      // Trino resolves a bare target against the renamed table's own schema.
+      expect(quoteRenameTarget("s1.orders_v3", "trino")).toBe('"orders_v3"');
    });
 
    it("is a no-op on an already-unqualified name", () => {
