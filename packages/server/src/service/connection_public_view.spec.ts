@@ -110,9 +110,14 @@ function inlineProperties(
 }
 
 function readApiDoc(): string {
+   // Line endings normalised because every extractor below anchors on "\n".
+   // A CRLF checkout, which is what Windows CI gets, otherwise leaves each
+   // anchor unmatched and fails all twenty-odd parity cases at once while the
+   // contract is perfectly fine. These extractors are about the contract's
+   // CONTENT, so the newline convention is noise to them.
    return readFileSync(resolve(import.meta.dir, "../../../../api-doc.yaml"), {
       encoding: "utf8",
-   });
+   }).replace(/\r\n/g, "\n");
 }
 
 /** Every string anywhere in a JSON-serializable value. */

@@ -1519,10 +1519,13 @@ describe("an unclassified dialect fails loudly", () => {
       const { resolve } = await import("node:path");
       // Same resolution style as theme_key_parity.spec.ts, the other spec that
       // reads this file as the shared contract.
+      // Normalised for the same reason as connection_public_view.spec.ts: the
+      // anchor below is "\n    Connection:\n", which a CRLF checkout never
+      // matches, so this would fail on Windows CI over a newline convention.
       const apiDoc = readFileSync(
          resolve(import.meta.dir, "../../../../api-doc.yaml"),
          "utf8",
-      );
+      ).replace(/\r\n/g, "\n");
       // Anchor on the schema key rather than its description prose, which is
       // free text and has been reworded under this test.
       const start = apiDoc.indexOf("\n    Connection:\n");
