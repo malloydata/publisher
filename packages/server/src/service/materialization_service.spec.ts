@@ -2037,12 +2037,19 @@ describe("executeInstructedBuild", () => {
       compiled: unknown,
       instructions: BuildInstruction[],
       seed: Record<string, unknown>,
+      apiConnections?: Record<string, unknown>,
    ): Promise<ExecuteResult> {
-      // A stub BuildEnvironment: only the `storage=` branch touches it, and
-      // these tests exercise the default in-warehouse path, so it is never read.
+      // A stub BuildEnvironment. The `storage=` branch reads it, and so does the
+      // per-source failure path, which redacts against the connection's CONFIG.
+      // Left unsupplied it throws, as the real one does for an unknown name --
+      // which is the fallback these tests want to exercise.
       const environment = {
-         getApiConnection: () => {
-            throw new Error("no connection config in this test");
+         getApiConnection: (name: string) => {
+            const config = apiConnections?.[name];
+            if (!config) {
+               throw new Error("no connection config in this test");
+            }
+            return config;
          },
          getEnvironmentPath: () => "/tmp/env",
       };
@@ -2272,11 +2279,13 @@ describe("executeInstructedBuild", () => {
             throw new Error(`auth failed using ${secret} against analytics`);
          }
       });
+      // Deliberately carries NO secret: the secret is declared in the config
+      // below, so this test fails if the redaction walks the live connection
+      // instead of the config.
       const connection = {
          runSQL,
          toString: () => secret,
          name: "duckdb",
-         password: secret,
       } as unknown as MalloyConnection;
       const good = fakeSource({
          name: "good",
@@ -2318,12 +2327,92 @@ describe("executeInstructedBuild", () => {
             },
          ],
          {},
+         // The redaction reads the connection's CONFIG, which is where a declared
+         // secret lives.
+         {
+            duckdb: {
+               name: "duckdb",
+               type: "postgres",
+               postgresConnection: { password: secret },
+            },
+         },
       );
 
       expect(
          failures["cbadbbbbbbbbbbb"]?.reason,
          "a per-source reason must not echo the connection's secrets",
       ).not.toContain(secret);
+      expect(
+         failures["cbadbbbbbbbbbbb"]?.reason,
+         "and it must still say what went wrong",
+      ).toContain("auth failed");
+   });
+
+   it("still redacts a failed source's reason when the config is unavailable", async () => {
+      // getApiConnection throws for a connection the environment does not hold.
+      // Falling back to the unredacted message would reintroduce the leak the
+      // test above defends, so the fallback is the connection-free redactor --
+      // which is what catches a DSN echoed by a connect failure.
+      const dsn = "postgres://admin:hunter2@db.internal:5432/analytics";
+      const runSQL = sinon.stub().callsFake(async (sql: string) => {
+         if (String(sql).includes("bad_v1")) {
+            throw new Error(`connect failed: ${dsn}`);
+         }
+      });
+      const connection = { runSQL } as unknown as MalloyConnection;
+      // A surviving source, so this is a PARTIAL failure: a run that loses every
+      // source throws instead of recording per-source reasons.
+      const good = fakeSource({
+         name: "good",
+         sourceEntityId: "cgoodaaaaaaaaaa",
+      });
+      const bad = fakeSource({
+         name: "bad",
+         sourceEntityId: "cbadbbbbbbbbbbb",
+      });
+      const compiled = {
+         graphs: [
+            {
+               connectionName: "duckdb",
+               nodes: [
+                  [{ sourceID: "good", dependsOn: [] }],
+                  [{ sourceID: "bad", dependsOn: [] }],
+               ],
+            },
+         ],
+         sources: { good, bad },
+         connectionDigests: { duckdb: "dig" },
+         connections: new Map([["duckdb", connection]]),
+      };
+
+      // No apiConnections argument: getApiConnection throws.
+      const { failures } = await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "cgoodaaaaaaaaaa",
+               materializedTableId: "mt-g",
+               physicalTableName: "good_v1",
+               realization: "COPY",
+            },
+            {
+               sourceEntityId: "cbadbbbbbbbbbbb",
+               materializedTableId: "mt-b",
+               physicalTableName: "bad_v1",
+               realization: "COPY",
+            },
+         ],
+         {},
+      );
+
+      const reason = failures["cbadbbbbbbbbbbb"]?.reason ?? "";
+      expect(reason, "the run must not fail outright").not.toBe("");
+      expect(reason, "the DSN's password must not survive").not.toContain(
+         "hunter2",
+      );
+      expect(reason, "and it must still say what went wrong").toContain(
+         "connect failed",
+      );
    });
 
    it("keeps a failed source's entry out of the storage tables it reclaims", async () => {
@@ -3744,11 +3833,47 @@ describe("runInBackground (terminal recording)", () => {
 
          expect(errorStub.called).toBe(false);
          expect(infoStub.calledOnce).toBe(true);
-         const [message] = infoStub.firstCall.args as unknown as [string];
+         const [message, meta] = infoStub.firstCall.args as unknown as [
+            string,
+            { materializationId: string; error: string },
+         ];
          expect(message).toBe("Materialization run cancelled");
+         // An abort that races a genuine failure records "Cancelled", so this is
+         // the only place the real error is reported.
+         expect(meta.error).toBe("boom");
       } finally {
          errorStub.restore();
          infoStub.restore();
+      }
+   });
+
+   it("redacts a DSN from the run-level message it logs and records", async () => {
+      // A whole-run throw has no connection to redact against, but a connect
+      // failure while resolving the package's connections echoes the DSN.
+      const errorStub = sinon.stub(logger, "error");
+      try {
+         background().runInBackground("bg-6", async () => {
+            throw new Error(
+               "connect failed: postgres://admin:hunter2@db.internal:5432/analytics",
+            );
+         });
+         await flush();
+
+         const [, meta] = errorStub.firstCall.args as unknown as [
+            string,
+            { error: string },
+         ];
+         expect(meta.error).not.toContain("hunter2");
+         expect(meta.error).toContain("connect failed");
+
+         const recorded = ctx.repository.updateMaterialization.firstCall
+            .args[1] as { error?: string };
+         expect(
+            recorded.error,
+            "the persisted record must not carry it either",
+         ).not.toContain("hunter2");
+      } finally {
+         errorStub.restore();
       }
    });
 });
