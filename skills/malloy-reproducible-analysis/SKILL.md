@@ -15,11 +15,17 @@ written down where the next reader will find it. The model is what makes the ana
 re-runnable and the numbers traceable.
 
 So: answer the question, codify what the answer assumed, answer the next one. After a handful
-of questions the `.malloy` file is a model — one where every field exists because a real
+of questions the `.malloy` file is a model - one where every field exists because a real
 question needed it, and every judgment call is on the record.
 
 > **Tool names** are bare here - `get_context`, `execute_query`, `search_database_schema`. The
 > exact prefixed name depends on the host; match against the tools you actually have.
+>
+> **Check which toolset you have before the first call**, because the query tool differs. A
+> Publisher host exposes `malloy_executeQuery`; a Credible host exposes `execute_query_draft`
+> for the local working copy and `execute_query` for the published model. Editing a local
+> `.malloy` file and querying the published model are different things - if you are iterating
+> on a draft, run it against the draft. Say in your answer which one produced the numbers.
 
 ## The loop
 
@@ -48,11 +54,14 @@ can recognise a wrong one when it appears.
 Stalling to ask is worse than proceeding under a stated assumption. The assumptions that
 actually move the number get raised properly in ANSWER, below.
 
-**If the user genuinely has no question** - "what's in here?", "model my data" - profile briefly
-and offer three concrete ones, each a single sentence, with the shape of the data stated so they
-can judge. That is the fallback for an empty start, not the normal path. Opening with a
-row-count table and a menu of "analytical domains" asks someone to choose a scope before they
-have seen a single number.
+**A broad ask is still an ask.** "Analyse the sales data" is not an empty start - it is a
+question whose subject is given and whose metric is not. Pick the most obvious question about
+that subject, say in one line which one you picked, and answer it. Then let what you found
+suggest the next one.
+
+Never open with a row-count table and a menu of "analytical domains". That asks someone to
+choose a scope before they have seen a single number, and the menu is worth less than the first
+real answer would have been.
 
 ## 2. POINT - the smallest thing that runs
 
@@ -62,10 +71,14 @@ Define only enough to execute the query. One line is normal:
 source: order_items is my_conn.table('ecommerce.order_items')
 ```
 
-**Get column names by querying.** A schema tool may list tables reliably and still return no
-columns. Do not debug that - `run: source -> { select: * limit: 3 }` gives you the columns *and*
-real sample values, which is what you needed anyway. Sample values catch the type surprises a
-column list hides: a date stored as a string, a `total` that excludes tax.
+**Read the columns with `run: source -> { select: * limit: 3 }`.** Prefer it to a schema
+listing on the merits: it returns the columns *and* real values, and the values are what catch
+the surprises a column list hides - a date stored as a string, a `total` that excludes tax, a
+metric column that is null on every row.
+
+If a schema tool returns something you cannot explain - no columns, or no tables for a filter
+you can see matches - that is a bug in the tool. Report it to whoever owns the server. Do not
+write the workaround into your model or your notes as though it were a property of the data.
 
 No `primary_key:`, no dimensions, no measures, no joins - **not yet**. Those arrive in CODIFY,
 each one paid for by a question that needed it. Adding fields because the table has them is the
@@ -94,6 +107,15 @@ before writing views. Three that account for most first-attempt failures:
 - **Check fan-out**: compare `count()` to `count(key)`. A gap means a join is inflating
   your aggregates.
 - **Check the denominator** on any rate or percentage.
+- **Check that the metric is measured, not encoded.** Before trusting any figure, confirm the
+  column actually carries it: nulls on every row, a value that is only valid for one segment, a
+  range or bucket rather than a number, a sentinel like `0` or `-1` standing in for "unknown".
+  This is the one that silently produces a confident wrong answer.
+
+**Every number you present comes out of a query.** If you catch yourself adding up rows from a
+result you already printed, stop and run the aggregate instead. Hand arithmetic over a `limit:
+15` table silently drops everything below the cut, and nobody can re-run it. You have a query
+language and an execute tool - there is no number worth estimating by eye.
 
 Then answer in plain language, leading with the number that was asked for. If verification
 fails, fix it - never present a bad number with a caveat attached.
@@ -164,17 +186,32 @@ on.
 That line is the contract. It shows the model growing, names what went in, and gives the reader
 a place to object. Never codify silently.
 
-**A decision becomes binding the moment you codify it.** While a judgment call lives in one
-ad-hoc query it is yours and stating it is enough. Once it is a `measure:` in the file it is the
-definition everyone inherits, and nobody downstream sees the reasoning. So when what you are
-codifying *encodes* one of the decisions from ANSWER, confirm it rather than report it:
+**A decision becomes binding the moment you codify it. Stop and confirm it first.** While a
+judgment call lives in one ad-hoc query it is yours, and stating it is enough. Once it is in the
+file it is the definition everyone inherits, and nobody downstream sees the reasoning. So
+**stop, ask, and wait for an answer** before writing it down. Reporting it afterwards - "I used
+the midpoint, say if you'd rather have the floor" - is not confirming it. By then it is already
+the default.
+
+This is not only about measures. Confirm anything that changes what later questions return:
+
+| Confirm before codifying | Because it silently sets |
+|---|---|
+| A source-level `where:` | the scope of *every* later question against that source |
+| A `measure:` definition | the default value of that metric for everyone |
+| A `dimension:` that buckets, maps, or parses | which rows land in which group |
+| A `join_one:`/`join_many:` and its grain | whether aggregates fan out |
+| A saved `view:` | the shape people will re-run and cite |
+
+Ask with the numbers attached, not in the abstract:
 
 > I want to make `net_revenue` exclude cancelled and returned. That makes it the default revenue
 > number for every later question - $8.10M rather than $10.81M gross. Good, or does your
 > reporting treat returns differently?
 
 **One confirmation per decision, not per question.** Once the user has settled how revenue
-treats returns, it is settled: reuse it and stop asking.
+treats returns, it is settled: reuse it and stop asking. And if the user has told you to stop
+checking in, believe them - state each decision in a clause and keep going.
 
 ### Write it down twice
 
@@ -261,6 +298,15 @@ RIGHT  Confirm it - codifying makes it everyone's definition
 
 WRONG  Analyse for six steps, then "shall I turn this into a model?"
 RIGHT  Codify after every question; the model already exists by the end
+
+WRONG  Answer "analyse the sales data" with a row count and three suggested questions
+RIGHT  Pick the obvious question, say which one you picked, answer it
+
+WRONG  Add up the rows of a `limit: 15` table to get a total
+RIGHT  Run the aggregate - hand arithmetic drops everything below the cut
+
+WRONG  Codify the source-level `where:`, then mention it in the write-up
+RIGHT  Stop and confirm it - it scopes every question anyone asks later
 
 WRONG  The assumption lives in the chat transcript
 RIGHT  The assumption is a comment on the field, and a line in the notes
