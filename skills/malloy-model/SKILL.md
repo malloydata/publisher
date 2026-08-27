@@ -173,7 +173,7 @@ source: customer_health is customers extend {
 
 **The "no views" rule is schema-first only.** A schema-first model is built before anyone
 has asked a question, so any view in it is a guess. It does **not** apply to the
-analysis-first workflow (`skill:malloy-reproducible-analysis`), where every view is a
+analysis-first workflow (`skill:malloy-model-as-you-go`), where every view is a
 question that was asked and verified - there, **saving a view or a dashboard is the right
 call**, in the model file next to the measures it uses. Analysis-first still models
 everything else properly: documented dimensions, measures, and joins.
