@@ -1,6 +1,6 @@
 ---
 name: malloy-reproducible-analysis
-description: Make an analysis reproducible by codifying it as a semantic model as you go - every assumption written down, every number traceable to the query that produced it. Use when analyzing data that has no model yet, when a data question needs answering from raw tables, or when a past analysis needs to be made auditable and re-runnable.
+description: Answer a user's data question, and leave behind a semantic model that makes the answer reproducible - every assumption written down, every number traceable to the query that produced it. Use whenever a user asks a data question, wants a metric, a breakdown, or a trend, and the tables it must come from have no model yet.
 ---
 
 # Reproducible analysis
@@ -34,17 +34,25 @@ answer something.
 
 ---
 
-## 1. QUESTION - get a real question on the table
+## 1. QUESTION - the one you were asked
 
-**If the user brought a question, use it.** Skip to POINT. Do not make them pick tables first.
+This skill starts when someone asks a data question. **That question is the unit of work, and
+it is theirs.** Do not widen it into a modelling project, and do not quietly swap it for a more
+interesting one you found on the way. Answer what was asked.
 
-**If they didn't** - "model my data", "what's in here?" - profile quickly and quietly, then
-**propose questions, not tables**: three concrete ones, ranked, each a single sentence, with
-the shape of the data stated up front so they can judge.
+Restate it before you query: which metric, which breakdown, which filters, which time range.
+Decide what a right answer would look like - its shape, its rough magnitude, its grain - so you
+can recognise a wrong one when it appears.
 
-**Never open with a table inventory and a menu of domains.** A row-count table is not an
-insight, and choosing a scope before seeing a single number is guessing. The question list *is*
-the scope proposal - it just pays for itself immediately.
+**If the question is ambiguous, take the most reasonable reading and say which one you took.**
+Stalling to ask is worse than proceeding under a stated assumption. The assumptions that
+actually move the number get raised properly in ANSWER, below.
+
+**If the user genuinely has no question** - "what's in here?", "model my data" - profile briefly
+and offer three concrete ones, each a single sentence, with the shape of the data stated so they
+can judge. That is the fallback for an empty start, not the normal path. Opening with a
+row-count table and a menu of "analytical domains" asks someone to choose a scope before they
+have seen a single number.
 
 ## 2. POINT - the smallest thing that runs
 
@@ -239,8 +247,8 @@ wasted work, and it makes the loop feel like a chore. When the user wants to han
 ## Anti-patterns
 
 ```
-WRONG  Silent profiling, then a table inventory and a scope menu
-RIGHT  Quick profile, then three questions the data can answer
+WRONG  Turn "what's our default rate?" into a modelling project
+RIGHT  Answer it, then codify what the answer assumed
 
 WRONG  Propose every dimension and measure for each table in scope
 RIGHT  Codify the two fields this question actually needed
