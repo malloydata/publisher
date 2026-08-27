@@ -4,8 +4,11 @@
 /**
  * The bare (unqualified) name of a possibly container-qualified table path:
  * the segment after the last dot, e.g. `my_schema.my_table` -> `my_table` and
- * `my_table` -> `my_table`. Used as the RENAME target, which names a table
- * within its existing schema rather than re-stating the full path.
+ * `my_table` -> `my_table`.
+ *
+ * Not a rename target on its own: whether a bare target keeps the table in its
+ * own container or moves it to the session's is dialect-specific, which is what
+ * {@link quoteRenameTarget} decides.
  */
 export function bareTableName(tableName: string): string {
    const lastDot = tableName.lastIndexOf(".");
@@ -45,6 +48,55 @@ export function quoteTablePath(tableName: string, dialect: string): string {
       .split(".")
       .map((segment) => quoteIdentifier(segment, dialect))
       .join(".");
+}
+
+/**
+ * Dialects whose `ALTER TABLE ... RENAME TO` target must be QUALIFIED, because a
+ * bare one is either resolved against the session's current container -- moving
+ * the table -- or is resolved that way by some of the dialect's backends. A
+ * qualified target naming the table's own container is a no-op for placement, so
+ * this set is safe to widen and costly to leave narrow: the failure it prevents
+ * is a silent write to the wrong container.
+ *
+ * Measured, one table per dialect, by renaming `s1.t_staging` to a bare `t` with
+ * the session pointed at `s2`:
+ *
+ * | dialect   | bare target        | qualified target      |
+ * | --------- | ------------------ | --------------------- |
+ * | snowflake | moves to s2        | accepted, correct     |
+ * | mysql     | moves to s2        | accepted, correct     |
+ * | postgres  | stays in s1        | syntax error          |
+ * | duckdb    | stays in s1        | parser error          |
+ * | bigquery  | stays in s1        | "cannot contain dot"  |
+ * | trino     | stays in s1 (*)    | accepted, correct     |
+ *
+ * (*) Trino was measured against the `memory` connector, which ignores the
+ * target's container. That does not generalize: the engine's `RenameTableTask`
+ * fills a missing schema from the session, and connectors differ on whether they
+ * permit a cross-schema rename at all. Since Trino accepts a qualified target and
+ * a real deployment never runs on `memory`, it is qualified here rather than
+ * relying on one connector's behaviour.
+ *
+ * The three that reject a qualified target are why this cannot be unconditional.
+ * Databricks is not covered by the sweep and stays out, keeping its current
+ * behaviour; add it once measured.
+ */
+const QUALIFIED_RENAME_TARGET_DIALECTS = new Set([
+   "snowflake",
+   "mysql",
+   "trino",
+]);
+
+/**
+ * Dialect-quote the TARGET of an `ALTER TABLE ... RENAME TO` for a (possibly
+ * container-qualified) logical table path: the full path on the dialects that
+ * resolve a bare target against the session, and the bare name -- which names
+ * the table within its existing container -- on those that require it.
+ */
+export function quoteRenameTarget(tableName: string, dialect: string): string {
+   return QUALIFIED_RENAME_TARGET_DIALECTS.has(dialect)
+      ? quoteTablePath(tableName, dialect)
+      : quoteIdentifier(bareTableName(tableName), dialect);
 }
 
 /**

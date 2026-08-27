@@ -108,8 +108,7 @@ import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import {
-   bareTableName,
-   quoteIdentifier,
+   quoteRenameTarget,
    quoteManifestTablePath,
    quoteTablePath,
 } from "./quoting";
@@ -2427,7 +2426,6 @@ export class MaterializationService {
          if (applied) return applied;
       }
 
-      const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
       // The control plane sends the logical (unquoted) physical name; dialect-
       // quote each identifier here so a container path or quote-requiring name
@@ -2435,7 +2433,10 @@ export class MaterializationService {
       // echoes the logical name (below) so the CP stays in logical-name space.
       const quotedStaging = quoteTablePath(stagingTableName, dialect);
       const quotedPhysical = quotedPhysicalPath;
-      const quotedBareName = quoteIdentifier(bareName, dialect);
+      // Not the bare name unconditionally: on a dialect that resolves an
+      // unqualified rename target against the session, a bare target moves the
+      // finished table into the session's default container.
+      const quotedRenameTarget = quoteRenameTarget(physicalTableName, dialect);
 
       // The rebuild below replaces the table the boundary describes, so the
       // boundary is dropped BEFORE it starts rather than overwritten after: a
@@ -2469,7 +2470,7 @@ export class MaterializationService {
             runOptions,
          );
          await connection.runSQL(
-            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedBareName}`,
+            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedRenameTarget}`,
             runOptions,
          );
       } catch (err) {
