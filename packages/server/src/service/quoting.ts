@@ -48,6 +48,34 @@ export function quoteTablePath(tableName: string, dialect: string): string {
 }
 
 /**
+ * Dialects whose `ALTER TABLE ... RENAME TO` resolves an UNQUALIFIED target
+ * against the session's current container rather than against the renamed
+ * table's own. Snowflake does: renaming
+ * `"MY_SCHEMA"."t_staging"` to a bare `"t"` moves the table to whatever schema
+ * the session happens to be pointing at, so a persist source naming a schema
+ * other than the connection's default silently materializes somewhere else --
+ * and collides there with any same-named table, reporting "already exists"
+ * against a target schema that is empty.
+ *
+ * Everywhere else the target MUST stay bare: Postgres, BigQuery and DuckDB all
+ * reject a qualified rename target outright. Add a dialect here only once its
+ * unqualified target is known to be session-relative.
+ */
+const QUALIFIED_RENAME_TARGET_DIALECTS = new Set(["snowflake"]);
+
+/**
+ * Dialect-quote the TARGET of an `ALTER TABLE ... RENAME TO` for a (possibly
+ * container-qualified) logical table path: the full path on the dialects that
+ * resolve a bare target against the session, and the bare name -- which names
+ * the table within its existing container -- on those that require it.
+ */
+export function quoteRenameTarget(tableName: string, dialect: string): string {
+   return QUALIFIED_RENAME_TARGET_DIALECTS.has(dialect)
+      ? quoteTablePath(tableName, dialect)
+      : quoteIdentifier(bareTableName(tableName), dialect);
+}
+
+/**
  * Whether a table path already carries a dialect quote character, in which case
  * it is treated as canonical SQL that must not be re-quoted. The single
  * definition of "already quoted" shared by every bind site.
