@@ -513,9 +513,28 @@ function suppliedAt(patch: Record<string, unknown>, path: string): boolean {
 function exclusionsFor(patch: Record<string, unknown>): ReadonlySet<string> {
    const skip = new Set<string>();
    for (const slots of EXCLUSIVE_SLOTS) {
-      const selected = slots.filter((slot) =>
-         slot.selects.some((path) => suppliedAt(patch, path)),
+      // Which sub-object the patch actually SENT, for the one group whose slots
+      // are sub-objects rather than scalars. Selecting on the credential alone
+      // is not enough there: switching store and leaving the secret box blank
+      // sends `gcsConnection: {keyId}` with no credential in any slot, which
+      // reads as "selected nothing", and the stale sibling secret is then
+      // reinstated next to the new bucketUrl. `hasS3` beats GCS at connect
+      // time, so the connection authenticates against the store the operator
+      // just moved off. That is the documented editor flow, not a hypothetical.
+      //
+      // Only when exactly one is declared. A round-tripped read carries both,
+      // which is the case that made selecting on presence wrong in the first
+      // place, so that falls through to the credential check below. Flat groups
+      // are unaffected: their fields are scalars, so nothing is declared.
+      const declared = slots.filter((slot) =>
+         slot.fields.some((field) => isPlainObject(patch[field])),
       );
+      const selected =
+         declared.length === 1
+            ? declared
+            : slots.filter((slot) =>
+                 slot.selects.some((path) => suppliedAt(patch, path)),
+              );
       if (selected.length !== 1) continue;
       for (const slot of slots) {
          if (slot === selected[0]) continue;

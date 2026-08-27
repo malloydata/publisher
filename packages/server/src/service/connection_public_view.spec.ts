@@ -898,6 +898,89 @@ describe("mergeConnectionUpdate", () => {
       expect(storage.s3Connection?.secretAccessKey).toBeUndefined();
    });
 
+   it("drops a stale s3 secret when the store switches and the new secret is left blank", () => {
+      // The editor's documented flow: change storage type, leave the credential
+      // box empty because a blank box means keep what is stored. That sends
+      // gcsConnection with a keyId and NO secret, so no slot has a supplied
+      // credential. Reading that as "selected nothing" reinstated the stale S3
+      // secret next to a gs:// bucketUrl, and hasS3 beats hasGCS at connect
+      // time, so the connection kept using the store the operator had just
+      // moved off. Selecting on which sub-object was sent is what separates
+      // this from a round-tripped read, which carries both.
+      const storedS3 = {
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: {
+            storage: {
+               bucketUrl: "s3://old",
+               s3Connection: {
+                  region: "us-east-1",
+                  accessKeyId: "AK",
+                  secretAccessKey: "S3-SECRET",
+               },
+            },
+         },
+      } as unknown as ApiConnection;
+
+      const merged = mergeConnectionUpdate(storedS3, {
+         ducklakeConnection: {
+            storage: {
+               bucketUrl: "gs://new",
+               gcsConnection: { keyId: "KID" },
+            },
+         },
+      } as unknown as Partial<ApiConnection>);
+
+      const storage = (
+         merged as unknown as {
+            ducklakeConnection: {
+               storage: {
+                  bucketUrl?: string;
+                  s3Connection?: Record<string, unknown>;
+                  gcsConnection?: Record<string, unknown>;
+               };
+            };
+         }
+      ).ducklakeConnection.storage;
+      expect(storage.bucketUrl).toBe("gs://new");
+      expect(storage.s3Connection).toBeUndefined();
+      // And the slot the caller did select keeps what it holds: a blank secret
+      // box must never destroy a stored GCS credential.
+      expect(storage.gcsConnection?.keyId).toBe("KID");
+   });
+
+   it("keeps the selected slot's own stored secret when its box is left blank", () => {
+      // The other direction of the same rule. Declaring gcsConnection selects
+      // that slot, and a selected slot never drops its own fields, so the
+      // stored GCS secret survives an edit that only changes the key id.
+      const storedGcs = {
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: {
+            storage: {
+               bucketUrl: "gs://b",
+               gcsConnection: { keyId: "OLD", secret: "GCS-SECRET" },
+            },
+         },
+      } as unknown as ApiConnection;
+
+      const merged = mergeConnectionUpdate(storedGcs, {
+         ducklakeConnection: {
+            storage: { bucketUrl: "gs://b", gcsConnection: { keyId: "NEW" } },
+         },
+      } as unknown as Partial<ApiConnection>);
+
+      const gcs = (
+         merged as unknown as {
+            ducklakeConnection: {
+               storage: { gcsConnection: Record<string, unknown> };
+            };
+         }
+      ).ducklakeConnection.storage.gcsConnection;
+      expect(gcs.keyId).toBe("NEW");
+      expect(gcs.secret).toBe("GCS-SECRET");
+   });
+
    it("does not resurrect a databricks token when the patch switches to OAuth", () => {
       const storedToken = {
          name: "db",
