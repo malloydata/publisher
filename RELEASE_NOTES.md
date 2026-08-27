@@ -31,6 +31,16 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — every DuckDB session is now bounded
+
+DuckDB sizes its `memory_limit` from the container, at roughly 80%, and it does that **independently per instance**. Publisher runs several instances in one process — the metadata store, a serve-shape gate session, the environment lookup funnel, a sandbox per loaded package, and a disposable session for each materialization build — and none of them accounts for the resident runtime baseline or for any of the others. Measured in a 3 GiB container, three instances each reported a 2.3 GiB limit: 6.9 GiB of committed budget against 3 GiB of real memory. The process is then killed by the kernel while every instance still believes it is comfortably inside its budget, so none of them looks at fault and the growth presents as untracked native memory.
+
+Two new settings, `PUBLISHER_DUCKDB_MEMORY_LIMIT` and `PUBLISHER_DUCKDB_TEMP_DIRECTORY`, both **opt-in and no-ops when unset**, so nothing changes on upgrade. The limit is a flat absolute value rather than a share: Publisher cannot compute one, because the number of live instances is not known when a session opens and revising the division as instances appear would shrink a live cap underneath a running query. [docs/configuration.md](docs/configuration.md) has the sizing guidance — the divisor is not a number of builds — and the reasoning behind both.
+
+Unset now logs a startup warning naming the condition, so the oversubscription is discoverable without reading this file.
+
+One thing worth knowing before tuning: setting a `memory_limit` does **not** by itself introduce spill on the `storage=` build path. That pipeline pushes its SQL to the source warehouse and streams the result into the destination, with nothing to spill — measured at a flat peak across a 30× range of output, with zero bytes written to the temp directory at any limit, including one tight enough to fail. An over-tight limit fails the query and leaves the process up, which is the intended trade against losing the pod.
+
 ## [Unreleased] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
 
 This is the headline change of this release, and it supersedes every earlier section on this page
@@ -178,15 +188,14 @@ gate is the entry point's own row-level filter and nothing else is reachable ben
 are unaffected; they remain unconditionally refused for any `#(authorize)`-gated source regardless of
 classification. See [docs/materialization.md](docs/materialization.md#authorize-gated-sources-and-materialization).
 
-**This is not opt-in — read this before rolling out.** The refusal being relaxed never fired at
-package _load_; it fired inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`).
-A package with a colocated `#@ persist` on an `#(authorize)`-gated source therefore loads on the
-current release, appears in `plan.sources`, and serves live — what 422'd was its materialization run.
-So such packages already exist, and this release changes them: a run that used to fail now succeeds,
-and the next auto-run or scheduled build materializes the source and binds it for serving with no
-author action. A source that served live serves from a possibly-stale artifact afterwards, subject to
-the staleness below. `PERSIST_COLOCATED_RELAXATION_ENABLED=false` restores the unconditional refusal;
-it is read at package load, so an already-built artifact keeps serving until its package next loads.
+**This ships unconditionally — there is no flag.** The migration it causes is worth reading before you
+upgrade. The refusal being relaxed never fired at package _load_; it fired inside the build path
+(`deriveSelfInstructions` / `executeInstructedBuild`). A package with a colocated `#@ persist` on an
+`#(authorize)`-gated source therefore already loads, appears in `plan.sources`, and serves live — what
+422'd was its materialization run. So such packages already exist, and upgrading changes them: a run
+that used to fail succeeds, and the next auto-run or scheduled build materializes the source and binds
+it for serving **with no author action**. A source that served live yesterday serves from a
+possibly-stale artifact afterwards, subject to the staleness below.
 
 **What this does NOT make fresh: the row data the gate filters on, not the gate itself.** The gate
 expression and the querying principal's attributes are still evaluated live, every query, against the

@@ -21,9 +21,9 @@ Givens are deliberately simple; the leverage is in what they enable. Jump to the
 | --- | --- | --- |
 | **Interactive filters** | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI; changing one re-runs the cells. | [Notebook UI](#notebook-ui), below |
 | **Row-level filtering & access control** | A source scopes its own rows by a caller-supplied given (e.g. per-tenant), optionally made mandatory with a gate so callers can't opt out. | [Row-level access](row-level-access.md) |
-| **Source authorization** | `#(authorize)` boolean expressions over givens allow or deny access to a whole source (HTTP 403) — or, when the expression reads a row field, filter the rows returned instead. | [Authorize](authorize.md) |
+| **Source authorization** | An `#(authorize)` boolean expression over givens is grafted onto the source as a row filter, so a caller it admits nowhere gets a normal 200 with zero rows. A 403 means the gate could not be attached at all. | [Authorize](authorize.md) |
 
-> **Here for access control?** Givens are just the values your gates read. Skim [Declaring Givens](#declaring-givens) for the syntax, then go to [Authorize](authorize.md) to allow/deny a whole source, or [Row-level access](row-level-access.md) to scope which rows a caller sees. Both enforce policy only behind a trusted tier that sets givens from verified identity — givens are caller-asserted.
+> **Here for access control?** Givens are just the values your gates read. Skim [Declaring Givens](#declaring-givens) for the syntax, then go to [Authorize](authorize.md) to gate a source, or [Row-level access](row-level-access.md) to scope which rows a caller sees. Both enforce policy only behind a trusted tier that sets givens from verified identity — givens are caller-asserted.
 
 > **Runnable example.** [`examples/governed-analytics`](../examples/governed-analytics) is one small
 > package that exercises all three applications. It declares filter-control givens in
@@ -147,11 +147,15 @@ There is one exception. On a source guarded by `#(authorize)`, the authorize che
 
 The `/compile` endpoint (with `includeSql: true`) follows the same handling: a bad given is surfaced rather than silently omitting `sql`.
 
-### Row-level gate givens reach differently than inherited ones
+### A gate's givens must be on the gating model's own surface
 
-A whole-source (given-only) `#(authorize)` gate inherited from a base in another file still evaluates at request time using whatever values the caller supplied — Malloy merges a `given:` declaration only one `import` hop into a model's namespace, but the probe falls back to caller-supplied values regardless (see [authorize.md's Known limitations](authorize.md#known-limitations)).
-
-A [row-level gate](authorize.md#row-level-gates) is stricter, because its filter is compiled into the query at **package load** rather than evaluated by a separately-probed condition at request time: a given it references that is not on the gating model's own surface is refused at load, not silently guessed at or deferred to request time. Declare the given on that model, importing it if it lives elsewhere (`import { NAME } from "…"`).
+There is no longer a separate "whole-source (given-only)" gate class — every `#(authorize)` gate is a
+row filter, compiled into the query at **package load** rather than evaluated by a separately-probed
+condition at request time. That makes it stricter about where its givens live: a given the gate
+references that is not on the gating model's own surface is refused at load, rather than silently
+guessed at or deferred to request time. Malloy merges a `given:` declaration only one `import` hop
+into a model's namespace, so declare the given on the gating model, importing it by name if it lives
+elsewhere (`import { NAME } from "…"`).
 
 ## API
 

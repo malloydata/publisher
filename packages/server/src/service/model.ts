@@ -2171,11 +2171,11 @@ export class Model {
          this.gateClassificationDeps(),
       );
       // Widen `authorizeReferencedGivenNames` with whatever THIS
-      // classification resolved — the source-line form's given names are
-      // only knowable post-lift (via the compiled condition's own
-      // `refSummary`), unlike the dimension form's, which
-      // `computeAuthorizeReferencedGivenNames` already captures at
-      // construction time from `GateEntry.dimensionForm`. Without this, a
+      // classification resolved — a source-line gate's given names are only
+      // knowable post-lift, via the compiled condition's own `refSummary`.
+      // (`computeAuthorizeReferencedGivenNames` still captures names up front
+      // for every gate, but by TEXT-scanning `entry.exprs`, so it cannot see a
+      // name that only surfaces in the compiled condition.) Without this, a
       // source-line field-reference gate's opaque-403 backstop
       // (`authorizeReferencedGivenNames`, `model.ts`'s "Gate given unbound;
       // denying opaquely" check) never learns the given it reads, and a
@@ -4549,7 +4549,15 @@ export class Model {
                });
             } catch (shapeErr) {
                recordStorageServeRouting("live_fallback");
-               logger.debug(
+               // info, matching the storage-hit line above: the two halves of one
+               // routing decision, and this is the half an operator needs. A
+               // fallback is silent by design — the query succeeds, the rows are
+               // correct, only the tier is lost — so at debug the reason for a
+               // package that never serves from storage is unreadable in any
+               // deployment running at info. Volume is bounded by the same thing
+               // that bounds the hit line: one per routed query, on packages that
+               // declare `storage=` at all.
+               logger.info(
                   "storage serve-shape ineligible for this query; serving live",
                   {
                      modelPath: this.modelPath,

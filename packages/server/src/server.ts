@@ -46,10 +46,14 @@ import {
 import { logger, loggerMiddleware, redactSensitive } from "./logger";
 
 import {
+   assertDuckDBResourceConfig,
+   getDuckDBMemoryLimit,
+   getDuckDBTempDirectory,
    getEmbeddingConfig,
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
+   isDuckDBMemoryLimitDisabled,
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
@@ -278,6 +282,33 @@ const modelController = new ModelController(environmentStore);
 // an operator relying on `local-only` for a no-network guarantee. Logging the
 // resolved policy also records the posture the server booted with.
 logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
+// Validated and materialized here, not on the first session that opens one:
+// `/health` and `/health/readiness` never touch DuckDB, so a malformed limit or
+// an uncreatable spill directory would leave the pod reporting ready while every
+// query and package load failed. Also creates the directory, since
+// `SET temp_directory` accepts one that does not exist and only fails at the
+// first spill.
+assertDuckDBResourceConfig();
+const duckDBMemoryLimit = getDuckDBMemoryLimit();
+if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
+   // Warned rather than defaulted. A flat value that suits one container size
+   // badly constrains another, so the safe value is the operator's to pick — but
+   // an operator who never reads a release note would otherwise have no way to
+   // learn that this process runs several DuckDB instances which each size
+   // themselves against the whole container independently.
+   logger.warn(
+      "PUBLISHER_DUCKDB_MEMORY_LIMIT is unset: every DuckDB instance in this " +
+         "process sizes its memory_limit from the container independently, so " +
+         "their combined budget exceeds it and the process can be OOM-killed " +
+         "while each instance believes it is within budget. See " +
+         "docs/configuration.md.",
+   );
+} else {
+   logger.info(
+      `DuckDB session limits: memory_limit=${duckDBMemoryLimit ?? "off (explicitly disabled)"} ` +
+         `temp_directory=${getDuckDBTempDirectory() ?? "<duckdb default>"}`,
+   );
+}
 // Resolve the embedding config at boot so a malformed EMBEDDING_API_BASE /
 // EMBEDDING_DIMENSIONS fails loudly at startup (getEmbeddingConfig throws),
 // matching the sibling getters above, rather than surfacing as a warn on the

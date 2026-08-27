@@ -499,6 +499,33 @@ source: locked is duckdb.table('customers') extend { measure: c is count() }
       expect(err?.message).toContain('replace `#(authorize) "org_id = 999"`');
    });
 
+   it("refuses the SINGLE-quoted legacy form with the same paste-ready rewrite", async () => {
+      // Malloy takes either quote for a string literal, so `'...'` fails the
+      // same way `"..."` does -- a string where a boolean is required. The
+      // legacy detector matched only the double-quoted spelling, so this form
+      // got a bare "Filter expression must have boolean value" and no rewrite:
+      // the same bug class as the byte-identical rewrite, one spelling over.
+      await writeModel(
+         "legacy_single_quoted.malloy",
+         `#(authorize) 'org_id = 999'
+source: locked_sq is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "legacy_single_quoted.malloy",
+         getConnections(),
+      );
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(ModelCompilationError);
+      expect(err?.message).toContain("no longer accepted");
+      // The rewrite line, not a substring a broken message would also carry.
+      expect(err?.message).toContain("#(authorize) org_id = 999");
+      // Names the annotation as authored, single quotes included.
+      expect(err?.message).toContain("replace `#(authorize) 'org_id = 999'`");
+   });
+
    it("decodes the payload's escapes into the rewrite it emits", async () => {
       // The legacy payload was a Malloy STRING LITERAL whose contents were
       // the expression, so a gate comparing against a quoted value had to

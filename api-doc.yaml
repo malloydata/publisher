@@ -3188,21 +3188,69 @@ components:
             - bound
             - live_fallback
           description: >-
-            Server-computed, read-only: whether the configured build manifest
-            is currently bound to this package's served models. `unbound` = no
-            manifest configured, so the package serves live. `bound` = a manifest
-            was fetched and applied, so persist sources route to their
-            materialized physical tables. `live_fallback` = a `manifestLocation`
-            is configured but the fetch/bind failed or timed out, so the package
-            is serving live despite intending to be materialized-routed. Lets the
-            caller confirm the publisher actually bound the configured manifest
-            rather than inferring it from logs.
+            Server-computed, read-only: whether the CONFIGURED build manifest is
+            currently bound to this package's served models. `unbound` = no
+            manifest configured, so the package serves live. `bound` = the
+            configured manifest was fetched and applied. `live_fallback` = a
+            `manifestLocation` is configured but its fetch/bind failed or timed
+            out, so the configured manifest is NOT applied. Lets the caller
+            confirm the publisher actually bound the configured manifest rather
+            than inferring it from logs.
+
+            `bound` reports that the bind ran to completion, NOT that any query
+            routes to a materialized table: an entry whose source fails the
+            eligibility gate is dropped, and the storage tier serves live under a
+            `PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
+            and `storageServeBindings` for what actually bound.
+
+            An EMPTY manifest is a bind like any other: it is fetched and applied,
+            binds nothing, and reports `bound` with `manifestEntryCount` 0 and no
+            `storageServeBindings`, while the package serves entirely live. That
+            combination is the signature — `bound` with neither tier populated
+            means the manifest carried nothing, not that the bind was missed.
+
+            `live_fallback` does NOT imply the package is serving live. It says
+            the configured manifest was not applied — not that nothing is. A
+            failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
+            a failed REBIND leaves the previously bound manifest in place: its
+            colocated substitutions stay compiled in, its storage serve bindings
+            stay installed, and `boundManifestUri`, `manifestEntryCount` and
+            `storageServeBindings` all continue to describe it.
+
+            That rebind guarantee covers a failure BEFORE either tier applies —
+            the manifest fetch failing or timing out, which is what produces
+            `live_fallback` in practice. A failure partway through the recompile,
+            after the new models are installed but before the binding is
+            recorded, is out of scope: the new substitutions would be live while
+            these fields still described the previous manifest.
+
+            So the invariant to hold, whatever the status says: a non-null
+            `boundManifestUri` is a LIVE reference to the manifest whose tables
+            this package is currently serving from. A caller reclaiming
+            superseded physical tables must treat it as one regardless of
+            `manifestBindingStatus` — reading `live_fallback` as "not serving
+            from manifest tables" and reclaiming that generation would drop
+            tables out from under a package actively serving them.
+
+            Note this value is not the `live_fallback` on a query result's
+            `servedFrom`, which reports that ONE query degraded to the warehouse.
+            This one is about the package's binding, and as above does not imply
+            any query ran live.
         manifestEntryCount:
           type: integer
           readOnly: true
           description: >-
             Server-computed, read-only: number of sourceEntityId -> physical-table
-            entries currently bound (0 when unbound or on live fallback).
+            entries currently bound for the COLOCATED (same-connection tableName
+            substitution) tier only. 0 when unbound, or when the bound manifest
+            carried no colocated entries — so a fully bound `storage=`-only
+            manifest reports `bound` with a count of 0. Corroborate a
+            cross-connection bind with `storageServeBindings`, not this count.
+
+            Describes whatever is CURRENTLY bound, not the configured manifest: on
+            a failed rebind this keeps the previously bound manifest's count (as
+            `boundManifestUri` keeps its URI), because those entries really are
+            still bound.
         boundManifestUri:
           type: ["string", "null"]
           readOnly: true
@@ -3211,6 +3259,13 @@ components:
             served models. Usually equals `manifestLocation`, but can differ
             after an in-memory auto-load following a materialization build (no
             URI), in which case it is null. Null whenever the package is unbound.
+
+            It also diverges after a FAILED REBIND: `manifestLocation` then names
+            the configured manifest that did not apply, while this names the
+            manifest still bound and still served from. So a non-null value here
+            is a live reference regardless of `manifestBindingStatus` — see that
+            field for the invariant a caller reclaiming superseded physical
+            tables has to hold.
         storageServeBindings:
           type: array
           readOnly: true
@@ -3223,6 +3278,11 @@ components:
             query actually routes to these tables additionally depends on
             `PERSIST_STORAGE_MODE=on`; under `off`/`write-only` the bindings may
             be present but the serve path still runs live (see `warnings`).
+
+            Like `boundManifestUri`, this describes whatever is CURRENTLY bound
+            rather than the configured manifest: after a failed rebind it goes on
+            listing the previously bound manifest's sources, which are still
+            serving.
           items:
             type: object
             properties:
@@ -3675,6 +3735,16 @@ components:
             `given:` keyword
           items:
             $ref: "#/components/schemas/Given"
+        sourceText:
+          type: string
+          description: >-
+            The model file's Malloy text, verbatim, so a client can show the
+            code beside the compiled view of the same file without a second,
+            differently-shaped fetch. Named `sourceText`, not `source`, because
+            `sources` on this same object are the model's Malloy sources.
+            Optional twice over: absent from servers that predate it, and
+            omitted (with a server-side warning) when the file cannot be read,
+            so a compiled model is never withheld for want of its text.
 
     View:
       type: object
