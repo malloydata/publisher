@@ -262,7 +262,13 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: reload
           in: query
-          description: Load / reload the environment before returning result
+          description: |
+            Load / reload the environment before returning result.
+
+            Only the two spellings OpenAPI serializes a boolean as are accepted:
+            `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
+            parameter repeated) is refused with 400 rather than read as `false`,
+            which would answer 200 without recompiling.
           required: false
           schema:
             type: boolean
@@ -273,6 +279,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1394,7 +1402,13 @@ paths:
             $ref: "#/components/schemas/VersionIdPattern"
         - name: reload
           in: query
-          description: Load / reload the package before returning result
+          description: |
+            Load / reload the package before returning result.
+
+            Only the two spellings OpenAPI serializes a boolean as are accepted:
+            `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
+            parameter repeated) is refused with 400 rather than read as `false`,
+            which would answer 200 without recompiling.
           required: false
           schema:
             type: boolean
@@ -1405,6 +1419,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2533,12 +2549,18 @@ paths:
             When true, also drop the physical tables recorded in the
             materialization's manifest before deleting the record. Defaults to
             false (record-only delete; the caller owns table GC).
+
+            Only `true` and `false` are accepted. Any other value is refused
+            with 400 rather than read as `false`, which would delete the record,
+            leave the tables on disk, and still answer 204.
           schema:
             type: boolean
             default: false
       responses:
         "204":
           description: Materialization deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
