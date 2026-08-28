@@ -1134,6 +1134,48 @@ async function federatePostgres(
  * key-based ones have to stay byte-identical to what they were before chain auth
  * existed.
  */
+/**
+ * Whether a failure is object storage refusing an EXPIRED credential, as opposed to
+ * refusing a wrong one.
+ *
+ * Matched narrowly on purpose. The remedy this gates -- re-resolve and retry -- is
+ * right for a credential that was valid and aged out, and wrong for one that was
+ * never valid: retrying a bad access key hides a misconfiguration behind a silent
+ * second attempt. `ExpiredToken` is S3's own code for the first case.
+ */
+/** A connection whose object-storage secret can be re-resolved without a reattach. */
+interface RenewableStorageSecret {
+   setStorageSecretRenewer(renew: () => Promise<void>): void;
+}
+
+/**
+ * Whether a failed statement should re-resolve the storage credential and retry.
+ *
+ * Exported so the rule is tested as the rule, rather than as a copy of it living in
+ * a spec: a predicate mirrored into a test passes whether or not the caller uses it.
+ */
+export function shouldRenewStorageSecret(opts: {
+   error: unknown;
+   hasRenewer: boolean;
+   alreadyRenewing: boolean;
+}): boolean {
+   return (
+      opts.hasRenewer &&
+      !opts.alreadyRenewing &&
+      isExpiredCredentialError(opts.error)
+   );
+}
+
+export function isExpiredCredentialError(error: unknown): boolean {
+   const message =
+      error instanceof Error
+         ? error.message
+         : typeof error === "string"
+           ? error
+           : "";
+   return message.includes("ExpiredToken");
+}
+
 export function buildCloudStorageSecretSQL(
    secretName: string,
    credentials: CloudStorageCredentials,
@@ -1271,6 +1313,33 @@ async function attachCloudStorage(
       await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
    }
    await connection.runSQL(createSecretCommand);
+
+   // Only a chain secret can go stale: it stores the credentials it RESOLVED, and a
+   // web-identity assume-role yields about an hour of them. A key pair does not
+   // expire, so registering a renewer for one would only serve to retry a wrong key.
+   //
+   // `REFRESH true` is emitted and is supposed to cover this. Measured on DuckDB
+   // 1.5.3 and 1.5.5, on a pod whose identity still resolved -- a build in the same
+   // minute succeeded -- a serve read on the held secret failed with ExpiredToken.
+   // So the renewal is done here rather than relied upon, and this path simply stops
+   // firing if a later DuckDB honours REFRESH.
+   // Structural check rather than instanceof: attachCloudStorage is reached from the
+   // generic handler table as well as the DuckLake path, so the connection type is
+   // not known here and only some of them can renew.
+   const renewable = connection as unknown as Partial<RenewableStorageSecret>;
+   if (
+      credentials.provider === "credential_chain" &&
+      typeof renewable.setStorageSecretRenewer === "function"
+   ) {
+      renewable.setStorageSecretRenewer(async () => {
+         // Replaced in place on the LIVE connection: CREATE OR REPLACE SECRET is a
+         // statement, not a session property, so nothing is torn down and no query
+         // in flight is disturbed.
+         await connection.runSQL(
+            buildCloudStorageSecretSQL(secretName, credentials),
+         );
+      });
+   }
 
    logger.info(`Created ${storageType} secret: ${secretName}`);
    logger.info(`${storageType} connection configured for: ${attachedDb.name}`);
@@ -1523,6 +1592,65 @@ class AzureDuckDBConnection extends DuckDBConnection {
 
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
+   private storageSecretRenewer?: () => Promise<void>;
+   private renewingStorageSecret = false;
+
+   /** @see RenewableStorageSecret */
+   setStorageSecretRenewer(renew: () => Promise<void>): void {
+      this.storageSecretRenewer = renew;
+   }
+
+   /**
+    * Runs SQL, re-resolving an expired object-storage credential once and retrying.
+    *
+    * The tier's serve attach is idempotent and its secret lives as long as the
+    * connection, while the credentials a chain secret RESOLVED last about an hour.
+    * `REFRESH true` is emitted to cover exactly this and measurably does not (DuckDB
+    * 1.5.3 and 1.5.5), so a serve that has been up an hour starts failing every read
+    * with ExpiredToken while a build in the same minute succeeds -- the build gets a
+    * fresh session, and with it a fresh secret.
+    *
+    * Reactive rather than scheduled, and reactive rather than per-query, because
+    * resolving the secret costs an STS round trip. Per query that is one call per
+    * read, forever; on a timer it needs a TTL nobody reports back to us. On the error
+    * it is one call per connection per hour, and the error is the authoritative
+    * signal that the credential is actually gone.
+    *
+    * Once. A second failure is not an expiry.
+    */
+   async runSQL(
+      sql: string,
+      options?: Parameters<DuckDBConnection["runSQL"]>[1],
+   ): Promise<Awaited<ReturnType<DuckDBConnection["runSQL"]>>> {
+      try {
+         return await super.runSQL(sql, options);
+      } catch (error) {
+         // `renewingStorageSecret` guards the renewal's own statement, which runs
+         // through this same method: without it a failure there would recurse.
+         const renew = this.storageSecretRenewer;
+         if (
+            !shouldRenewStorageSecret({
+               error,
+               hasRenewer: !!renew,
+               alreadyRenewing: this.renewingStorageSecret,
+            }) ||
+            !renew
+         ) {
+            throw error;
+         }
+         logger.info(
+            "Object-storage credential expired; re-resolving and retrying once",
+            { connection: this.connectionName },
+         );
+         this.renewingStorageSecret = true;
+         try {
+            await renew();
+         } finally {
+            this.renewingStorageSecret = false;
+         }
+         return await super.runSQL(sql, options);
+      }
+   }
 
    constructor(options: PublisherDuckDBOptions) {
       super(options);

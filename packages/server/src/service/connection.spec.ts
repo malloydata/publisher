@@ -23,6 +23,7 @@ import {
    createEnvironmentConnections,
    resolveProxiedTls,
    testConnectionConfig,
+   isExpiredCredentialError,
 } from "./connection";
 import {
    DEFAULT_S3_CREDENTIAL_CHAIN,
@@ -2711,5 +2712,33 @@ describe("attach retry after a transient failure", () => {
       expect(secretAttempts).toBe(2);
 
       await config.releaseConnections().catch(() => {});
+   });
+});
+
+describe("isExpiredCredentialError", () => {
+   it("matches an expired credential and nothing else", () => {
+      // The remedy this gates -- re-resolve and retry -- is right for a credential
+      // that aged out and wrong for one that was never valid: retrying a bad key
+      // hides a misconfiguration behind a silent second attempt.
+      expect(
+         isExpiredCredentialError(
+            new Error(
+               "HTTP 400 ... ExpiredToken: The provided token has expired.",
+            ),
+         ),
+      ).toBe(true);
+      expect(
+         isExpiredCredentialError(new Error("InvalidAccessKeyId: no such key")),
+      ).toBe(false);
+      expect(
+         isExpiredCredentialError(new Error("AccessDenied: not authorized")),
+      ).toBe(false);
+      expect(
+         isExpiredCredentialError(new Error("HTTP 404 no such bucket")),
+      ).toBe(false);
+      expect(isExpiredCredentialError(undefined)).toBe(false);
+      expect(isExpiredCredentialError("ExpiredToken as a bare string")).toBe(
+         true,
+      );
    });
 });
