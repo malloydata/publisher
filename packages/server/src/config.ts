@@ -687,6 +687,56 @@ export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
 };
 
 /**
+ * Where an `s3` connection may select `provider: credential_chain` — host-resolved
+ * credentials rather than a configured key pair.
+ */
+export type S3CredentialChainPolicy = "any" | "destinations-only" | "off";
+
+/**
+ * Resolve the S3 credential-chain policy from `S3_CREDENTIAL_CHAIN_POLICY`; falls
+ * back to `any` when unset or empty.
+ *
+ * `credential_chain` makes DuckDB resolve the HOST's own credentials — on EKS the
+ * pod's IRSA role, on EC2 its instance profile. That is what the field is for, and
+ * on a single-tenant deployment it is unremarkable. It stops being unremarkable
+ * when the connection is authored by someone other than the operator: Publisher's
+ * connection create and test endpoints take an arbitrary body, so anyone who can
+ * reach them can ask the host to act as itself against any bucket its role permits.
+ * Publisher is documented as unauthenticated and localhost-only, so this is not a
+ * new bypass — but it raises what reaching the existing one is worth, and a
+ * deployment that fronts Publisher with its own authorization had no way to say so.
+ *
+ * - `any` (default): preserves prior behaviour. Any `s3` connection may name it.
+ * - `destinations-only`: permitted on a `storageDestinations` entry — which the
+ *   OPERATOR configures — and refused on an environment connection, which an
+ *   author may supply. The distinction is the point: a managed storage tier runs
+ *   on the host's identity by design, while a user connection naming it is asking
+ *   the host to lend that identity to an arbitrary bucket.
+ * - `off`: refused everywhere, for a deployment that mints no host-identity
+ *   access at all.
+ *
+ * Throws on an unrecognised value, for the same reason the extension policy does:
+ * a typo in a manifest should fail the boot rather than silently choose the
+ * permissive option.
+ */
+export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy => {
+   const raw = process.env.S3_CREDENTIAL_CHAIN_POLICY;
+   if (raw === undefined || raw.trim() === "") return "any";
+   const normalised = raw.trim().toLowerCase();
+   if (
+      normalised === "any" ||
+      normalised === "destinations-only" ||
+      normalised === "off"
+   ) {
+      return normalised;
+   }
+   throw new Error(
+      `Invalid value for S3_CREDENTIAL_CHAIN_POLICY: expected "any", ` +
+         `"destinations-only" or "off", got "${raw}"`,
+   );
+};
+
+/**
  * The three `#@ persist storage=<conn>` deployment modes, read from
  * `PERSIST_STORAGE_MODE`. This is a runtime kill switch — flipping DOWN must
  * never fail an already-loaded package, only change how `storage=` is honored:

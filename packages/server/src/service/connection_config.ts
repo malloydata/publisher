@@ -883,11 +883,17 @@ export function validateStorageDestinations(
          // resolveCloudStorageCredentials already enforces that pair too.
          const storage = destination.ducklakeConnection?.storage;
          if (storage?.s3Connection) {
-            resolveCloudStorageCredentials({
-               name,
-               type: "s3",
-               s3Connection: storage.s3Connection,
-            });
+            resolveCloudStorageCredentials(
+               {
+                  name,
+                  type: "s3",
+                  s3Connection: storage.s3Connection,
+               },
+               // The OPERATOR's own configuration, not an author's: a managed
+               // storage tier running on the host's identity is the intended use
+               // of credential_chain, so `destinations-only` permits it here.
+               "storage-destination",
+            );
          } else if (storage?.gcsConnection) {
             resolveCloudStorageCredentials({
                name,

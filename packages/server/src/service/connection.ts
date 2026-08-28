@@ -1153,7 +1153,18 @@ export function buildCloudStorageSecretSQL(
          );
       `;
    } else {
+      // One fallback, and it is this one -- the schema carries no `default:`,
+      // because a generated client would not apply it. Warned rather than silent:
+      // a bucket outside us-east-1 reached with no region fails as "no such
+      // bucket", which reads as a wrong name rather than a wrong region.
       const region = credentials.region || "us-east-1";
+      if (!credentials.region) {
+         logger.warn(
+            "S3 connection has no region; defaulting to us-east-1. A bucket in " +
+               "another region will not be found.",
+            { secretName },
+         );
+      }
 
       if (credentials.provider === "credential_chain") {
          // CHAIN is load-bearing, not decorative: with it omitted DuckDB

@@ -8,6 +8,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { Connection } from "@malloydata/malloy";
 import { components } from "../api";
+import { getS3CredentialChainPolicy } from "../config";
 import { logger } from "../logger";
 import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 
@@ -108,6 +109,10 @@ export function s3ConnectionToCredentials(s3Connection: {
 export function validateS3ProviderShape(
    s3Connection: ApiS3Connection,
    connectionName: string | undefined,
+   // Where this connection came from, which is what the credential-chain policy
+   // turns on. Defaults to "connection" so a caller that does not say is treated
+   // as the author-supplied case -- the one worth refusing.
+   origin: "connection" | "storage-destination" = "connection",
 ): void {
    const provider = s3Connection.provider as unknown;
    if (provider !== undefined) {
@@ -126,6 +131,23 @@ export function validateS3ProviderShape(
    }
 
    if (provider === "credential_chain") {
+      // Host-resolved credentials, gated by deployment policy. `destinations-only`
+      // draws the line where authorship changes hands: a storage destination is
+      // the operator's own configuration, while an environment connection may be
+      // supplied by whoever can reach the connection endpoints. See
+      // getS3CredentialChainPolicy for why that distinction is the useful one.
+      const policy = getS3CredentialChainPolicy();
+      if (
+         policy === "off" ||
+         (policy === "destinations-only" && origin === "connection")
+      ) {
+         throw new Error(
+            `S3 provider 'credential_chain' is not permitted for: ${connectionName}` +
+               ` (S3_CREDENTIAL_CHAIN_POLICY=${policy}). It resolves the host's own` +
+               ` credentials; supply an accessKeyId and secretAccessKey instead.`,
+         );
+      }
+
       // A static credential supplied alongside chain auth is rejected rather than
       // ignored: it would sit unused in the config, reading as the thing granting
       // access while something else actually does.
@@ -158,6 +180,9 @@ export function validateS3ProviderShape(
  */
 export function resolveCloudStorageCredentials(
    attachedDb: ApiAttachedDatabase,
+   // Forwarded to the shape validator, which is where the credential-chain policy
+   // is applied. Same default and same reason: unstated means author-supplied.
+   origin: "connection" | "storage-destination" = "connection",
 ): CloudStorageCredentials {
    if (attachedDb.type === "gcs") {
       if (!attachedDb.gcsConnection) {
@@ -187,7 +212,7 @@ export function resolveCloudStorageCredentials(
       );
    }
    const s3 = attachedDb.s3Connection;
-   validateS3ProviderShape(s3, attachedDb.name);
+   validateS3ProviderShape(s3, attachedDb.name, origin);
    if (
       s3.provider !== "credential_chain" &&
       (!s3.accessKeyId || !s3.secretAccessKey)

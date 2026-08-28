@@ -4747,8 +4747,15 @@ components:
           description: "AWS secret access key (required for `provider: config`)"
         region:
           type: string
-          description: AWS region (e.g., us-east-1)
-          default: us-east-1
+          description: >-
+            AWS region (e.g., us-east-1). Optional, and Publisher falls back to
+            us-east-1 when it is absent — but the fallback is applied in code, not
+            by this schema: a `default:` here would be documentation only, since
+            the generated clients leave an omitted property undefined rather than
+            filling it. Stated this way so a caller reading the schema does not
+            conclude the wire supplies it. A remote root in another region MUST
+            set this; omitting it reaches us-east-1 and fails as a missing bucket
+            rather than as a misconfiguration.
         endpoint:
           type: string
           description: Custom S3-compatible endpoint URL (optional, for MinIO, etc.)
