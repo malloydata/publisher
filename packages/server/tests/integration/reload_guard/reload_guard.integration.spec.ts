@@ -69,6 +69,32 @@ describe("collection routes refuse ?reload", () => {
       );
    });
 
+   it("the legacy /projects collections refuse it too", async () => {
+      // The legacy twins are the same routes under the pre-rename surface. The
+      // per-resource halves were guarded from the start; leaving the collection
+      // halves lenient just moves the original bug to the older path, where a
+      // caller sees 200 and a package the server never recompiled.
+      const packages = await body(
+         `/api/v0/projects/${MISSING_ENV}/packages?reload=true`,
+      );
+      expect(packages.status).toBe(400);
+      expect(packages.json.message).toContain(
+         `/api/v0/projects/${MISSING_ENV}/packages/{packageName}?reload=true`,
+      );
+
+      const projects = await body(`/api/v0/projects?reload=true`);
+      expect(projects.status).toBe(400);
+      expect(projects.json.message).toContain(
+         "/api/v0/projects/{projectName}?reload=true",
+      );
+   });
+
+   it("the legacy collections still list normally with no reload", async () => {
+      const res = await fetch(`${baseUrl}/api/v0/projects`);
+      expect(res.status).toBe(200);
+      expect(Array.isArray(await res.json())).toBe(true);
+   });
+
    it("refuses any value, not just reload=true", async () => {
       // A collection does not model `reload` at all, so `reload=false` is an
       // assertion about a parameter that has no meaning here rather than a
@@ -125,7 +151,9 @@ describe("collection routes refuse ?reload", () => {
                expect(status).toBe(400);
                // The message has to quote the value back and name a form that
                // works, or the caller cannot tell what it did wrong.
-               expect(json.message).toContain("Invalid reload value");
+               expect(json.message).toContain(
+                  `Invalid reload value ${JSON.stringify(value)}`,
+               );
                expect(json.message).toContain(`?reload=true`);
             }
          }
@@ -138,6 +166,22 @@ describe("collection routes refuse ?reload", () => {
          );
          expect(status).toBe(400);
          expect(json.message).toContain("Invalid reload value");
+      });
+
+      it("refuses an unusable dropTables the same way", async () => {
+         // The same `=== "true"` reading, on a DELETE: `?dropTables=1` read as
+         // false, so the record went away, the tables stayed, and the response
+         // was 204. The guard runs before the lookup, so a missing environment
+         // still reaches 400 rather than 404.
+         const res = await fetch(
+            `${baseUrl}/api/v0/environments/${MISSING_ENV}/packages/nope/materializations/m1?dropTables=1`,
+            { method: "DELETE" },
+         );
+         expect(res.status).toBe(400);
+         const json = (await res.json()) as { message: string };
+         expect(json.message).toContain(`Invalid dropTables value "1"`);
+         // The suggested fix must not tell a caller to GET a DELETE route.
+         expect(json.message).toContain("Fix: DELETE ");
       });
 
       it("accepts reload=false, and absent, without reloading", async () => {

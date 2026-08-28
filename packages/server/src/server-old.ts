@@ -44,11 +44,12 @@ import {
 } from "./errors";
 import { logger, redactSensitive } from "./logger";
 import { queryConcurrency } from "./query_concurrency";
+import { normalizeQueryArray } from "./query_param_utils";
 import {
-   invalidReloadMessage,
-   normalizeQueryArray,
-   parseReloadParam,
-} from "./query_param_utils";
+   booleanParamOr400,
+   optionalBooleanParamOr400,
+   setCollectionReloadError,
+} from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
 import { EnvironmentStore } from "./service/environment_store";
 
@@ -88,30 +89,6 @@ const setVersionIdError = (res: Response) => {
    res.status(status).json(json);
 };
 
-/**
- * The legacy twin of `server.ts`'s `reloadOr400`, sharing the same
- * {@link parseReloadParam} so "what is a valid `reload` value" has one
- * definition. These routes are exact twins of the modern ones, so a typo'd
- * value has to fail here the same way rather than silently answering 200
- * without recompiling. No known legacy client sends `reload` at all
- * (`@malloydata/db-publisher` does not), so nothing depends on the old
- * lenient reading.
- */
-const reloadOr400 = (
-   req: { query: ParsedQs; path: string },
-   res: Response,
-): boolean | undefined => {
-   const parsed = parseReloadParam(req.query.reload);
-   if (parsed.ok) {
-      return parsed.reload;
-   }
-   const { json, status } = internalErrorToHttpError(
-      new BadRequestError(invalidReloadMessage(req.query.reload, req.path)),
-   );
-   res.status(status).json(json);
-   return undefined;
-};
-
 // ─── route registration ────────────────────────────────────────────────────
 
 export function registerLegacyRoutes(
@@ -135,7 +112,14 @@ export function registerLegacyRoutes(
    void bodyParser; // keep the import; helper file reference for clarity
 
    // ── projects (== environments) ──────────────────────────────────────────
-   app.get(`${LEGACY_API_PREFIX}/projects`, async (_req, res) => {
+   app.get(`${LEGACY_API_PREFIX}/projects`, async (req, res) => {
+      if (req.query.reload !== undefined) {
+         setCollectionReloadError(
+            res,
+            `${LEGACY_API_PREFIX}/projects/{projectName}`,
+         );
+         return;
+      }
       try {
          res.status(200).json(await environmentStore.listEnvironments());
       } catch (error) {
@@ -163,7 +147,7 @@ export function registerLegacyRoutes(
    });
 
    app.get(`${LEGACY_API_PREFIX}/projects/:projectName`, async (req, res) => {
-      const reload = reloadOr400(req, res);
+      const reload = booleanParamOr400(req, res, "reload");
       if (reload === undefined) {
          return;
       }
@@ -616,6 +600,13 @@ export function registerLegacyRoutes(
             setVersionIdError(res);
             return;
          }
+         if (req.query.reload !== undefined) {
+            setCollectionReloadError(
+               res,
+               `${LEGACY_API_PREFIX}/projects/${req.params.projectName}/packages/{packageName}`,
+            );
+            return;
+         }
          try {
             res.status(200).json(
                await packageController.listPackages(req.params.projectName),
@@ -652,7 +643,7 @@ export function registerLegacyRoutes(
             setVersionIdError(res);
             return;
          }
-         const reload = reloadOr400(req, res);
+         const reload = booleanParamOr400(req, res, "reload");
          if (reload === undefined) {
             return;
          }
@@ -864,8 +855,17 @@ export function registerLegacyRoutes(
                   return;
                }
             }
-            const bypassFilters =
-               req.query.bypass_filters === "true" ? true : undefined;
+            // Absence must stay distinguishable from an explicit `false`:
+            // the Deprecation header fires on `bypassFilters !== undefined`.
+            const bypass = optionalBooleanParamOr400(
+               req,
+               res,
+               "bypass_filters",
+            );
+            if (!bypass.ok) {
+               return;
+            }
+            const bypassFilters = bypass.value;
             res.status(200).json(
                await modelController.executeNotebookCell(
                   req.params.projectName,
@@ -1017,12 +1017,16 @@ export function registerLegacyRoutes(
    app.delete(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
       async (req, res) => {
+         const dropTables = booleanParamOr400(req, res, "dropTables");
+         if (dropTables === undefined) {
+            return;
+         }
          try {
             await materializationController.deleteMaterialization(
                req.params.projectName,
                req.params.packageName,
                req.params.materializationId,
-               { dropTables: req.query.dropTables === "true" },
+               { dropTables },
             );
             res.status(204).send();
          } catch (error) {

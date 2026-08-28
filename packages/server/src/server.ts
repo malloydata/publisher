@@ -81,11 +81,14 @@ import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
 import {
-   invalidReloadMessage,
    normalizeQueryArray,
    parseNonNegativeIntParam,
-   parseReloadParam,
 } from "./query_param_utils";
+import {
+   booleanParamOr400,
+   optionalBooleanParamOr400,
+   setCollectionReloadError,
+} from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
@@ -865,57 +868,6 @@ const setVersionIdError = (res: express.Response) => {
    res.status(status).json(json);
 };
 
-/**
- * Refuse `reload` on a collection route, naming the single-resource route that
- * honors it.
- *
- * Reload recompiles one named resource, so a collection cannot serve the
- * request. Ignoring the parameter answers 200 with the list, which a caller
- * reads as a reload that worked: they edit a model, reload the collection, see
- * 200, and query a model the server never recompiled.
- *
- * `perResourceRoute` is the path to point at, with its `{name}` placeholder
- * already filled in as far as the caller's own params allow.
- */
-const setCollectionReloadError = (
-   res: express.Response,
-   perResourceRoute: string,
-) => {
-   const { json, status } = internalErrorToHttpError(
-      new BadRequestError(
-         `Reload recompiles one named resource, and this endpoint lists them. ` +
-            `Use GET ${perResourceRoute}?reload=true instead.`,
-      ),
-   );
-   res.status(status).json(json);
-};
-
-/**
- * Read `reload` on a route that honors it, answering 400 when it is unusable.
- *
- * Returns the boolean on success, or `undefined` after having already written
- * the error response -- so a caller does `const reload = reloadOr400(req, res);
- * if (reload === undefined) return;`.
- *
- * {@link parseReloadParam} owns which values are valid and why; this only turns
- * a refusal into the HTTP error, naming the caller's own path so the message is
- * actionable.
- */
-const reloadOr400 = (
-   req: express.Request,
-   res: express.Response,
-): boolean | undefined => {
-   const parsed = parseReloadParam(req.query.reload);
-   if (parsed.ok) {
-      return parsed.reload;
-   }
-   const { json, status } = internalErrorToHttpError(
-      new BadRequestError(invalidReloadMessage(req.query.reload, req.path)),
-   );
-   res.status(status).json(json);
-   return undefined;
-};
-
 app.use(
    cors({
       origin: "http://localhost:5173",
@@ -1161,7 +1113,7 @@ app.post(`${API_PREFIX}/environments`, async (req, res) => {
 });
 
 app.get(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
-   const reload = reloadOr400(req, res);
+   const reload = booleanParamOr400(req, res, "reload");
    if (reload === undefined) {
       return;
    }
@@ -1642,7 +1594,7 @@ app.get(
          setVersionIdError(res);
          return;
       }
-      const reload = reloadOr400(req, res);
+      const reload = booleanParamOr400(req, res, "reload");
       if (reload === undefined) {
          return;
       }
@@ -1854,8 +1806,13 @@ app.get(
                return;
             }
          }
-         const bypassFilters =
-            req.query.bypass_filters === "true" ? true : undefined;
+         // Absence must stay distinguishable from an explicit `false` here:
+         // the Deprecation header below fires on `bypassFilters !== undefined`.
+         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
+         if (!bypass.ok) {
+            return;
+         }
+         const bypassFilters = bypass.value;
 
          let givens: Record<string, GivenValue> | undefined;
          if (typeof req.query.givens === "string") {
@@ -2102,12 +2059,16 @@ app.post(
 app.delete(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
+      const dropTables = booleanParamOr400(req, res, "dropTables");
+      if (dropTables === undefined) {
+         return;
+      }
       try {
          await materializationController.deleteMaterialization(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables: req.query.dropTables === "true" },
+            { dropTables },
          );
          res.status(204).send();
       } catch (error) {
