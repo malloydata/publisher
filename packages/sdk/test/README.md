@@ -101,6 +101,50 @@ as props, the way the page hosts do through the URL. Several defects in that
 hook only appear on the second half of that loop, so a spec that treats the
 props as constant cannot see them.
 
+## Testing something that talks to the server
+
+Anything that calls `useServer()` needs `ServerProvider` replaced, because the
+real one builds axios clients against `window.location`. `test/serverProvider.tsx`
+is the one way to do it:
+
+```tsx
+import { cacheKeys, clearCache, mockServerProvider, pending, serverWrapper }
+   from "../../../test/serverProvider";
+
+const getDashboard = mock(() => pending());
+mockServerProvider({ dashboards: { getDashboard } });
+
+// AFTER the line above, never a static import: it would hoist past the stub.
+const { default: Dashboard } = await import("./Dashboard");
+
+render(<Dashboard resourceUri={URI} dashboard="ops" />, { wrapper: serverWrapper });
+```
+
+Three things that file exists to get right.
+
+`mock.module` is **process-global and cannot be undone**. `bun test` runs every
+spec in one process, so a stub registered here is the `ServerProvider` every
+later spec sees, in file order. Nothing in Bun scopes it to a file. That is
+survivable only while every spec registers the same shape, which is why the
+stub lives in one place rather than being hand-rolled per file: a spec that
+inherits someone else's stub still gets `{ server, apiClients }`, and fails on
+a missing client rather than on a missing property of `undefined`. If you ever
+need a spec to see the REAL `ServerProvider`, it cannot share a process with
+these — that would need its own `bun test` invocation.
+
+`serverWrapper` provides `globalQueryClient`, the same instance `ServerProvider`
+provides in production. It is not decoration: `useQueryWithApiError` passes that
+client to `useQuery` explicitly while `useQueries` resolves one from context, so
+a spec that supplies a fresh client sees only half its component's queries.
+Sharing one client is also why `clearCache()` belongs in `beforeEach` — the
+cache outlives the test that filled it.
+
+`cacheKeys(prefix)` reads the query keys back out as strings. Assert on the
+whole key, not just on the value you added: a key is the only thing standing
+between two requests that differ, so "the version is in there somewhere" passes
+for a key that also grew a slot it should not have. Note the two key shapes —
+`useQueryWithApiError` appends the server URL, plain `useQueries` does not.
+
 ## Where specs live, and what not to break
 
 Co-locate a spec with what it tests, matching the existing `*.spec.ts` files.

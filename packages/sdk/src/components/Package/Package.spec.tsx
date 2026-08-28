@@ -2,19 +2,24 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The dashboards listing follows the package's other listings, and only the
- * data apps stay unversioned.
+ * The dashboards listing follows the package's other listings; the data apps
+ * do not.
  *
- * Both exceptions used to be written down as one, so this pins the pair apart:
- * `/data-apps` serves static files and declares no `versionId` in the spec,
- * while `list-dashboards` declares one exactly as `list-notebooks` does.
+ * Two exceptions that look alike and are not: `/data-apps` serves static files
+ * and declares no `versionId` in the spec, while `list-dashboards` declares one
+ * exactly as `list-notebooks` does. Pinned as a pair, because the cost of
+ * confusing them is a listing that answers for the wrong version.
  */
 import { beforeEach, expect, it, mock } from "bun:test";
-import { QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import {
+   cacheKeys,
+   clearCache,
+   mockServerProvider,
+   pending,
+   serverWrapper,
+} from "../../../test/serverProvider";
 
-const pending = () => new Promise<never>(() => {});
 const listDashboards = mock(
    (_environmentName: string, _packageName: string, _versionId?: string) =>
       pending(),
@@ -23,61 +28,58 @@ const listDataApps = mock((_environmentName: string, _packageName: string) =>
    pending(),
 );
 
-mock.module("../ServerProvider", () => ({
-   ServerProvider: () => null,
-   useServer: () => ({
-      server: "http://localhost/api/v0",
-      apiClients: {
-         packages: { getPackage: pending },
-         notebooks: { listNotebooks: pending },
-         models: { listModels: pending },
-         databases: { listDatabases: pending },
-         dataApps: { listDataApps },
-         dashboards: { listDashboards },
-      },
-   }),
-}));
+mockServerProvider({
+   packages: { getPackage: pending },
+   notebooks: { listNotebooks: pending },
+   models: { listModels: pending },
+   databases: { listDatabases: pending },
+   dataApps: { listDataApps },
+   dashboards: { listDashboards },
+});
 
 const { default: Package } = await import("./Package");
-const { globalQueryClient } = await import("../../utils/queryClient");
 
-const wrapper = ({ children }: { children: ReactNode }) => (
-   <QueryClientProvider client={globalQueryClient}>
-      {children}
-   </QueryClientProvider>
+const packageAt = (versionId?: string) => (
+   <Package
+      resourceUri={
+         versionId === undefined
+            ? "publisher://environments/env/packages/pkg"
+            : `publisher://environments/env/packages/pkg?versionId=${versionId}`
+      }
+   />
 );
 
-const keyFor = (name: string) =>
-   globalQueryClient
-      .getQueryCache()
-      .getAll()
-      .map((query) => JSON.stringify(query.queryKey))
-      .find((key) => key.startsWith(`["${name}"`));
-
 beforeEach(() => {
-   globalQueryClient.clear();
+   clearCache();
    listDashboards.mockClear();
    listDataApps.mockClear();
 });
 
 it("lists a version's dashboards, and keys the listing on it", async () => {
-   render(
-      <Package resourceUri="publisher://environments/env/packages/pkg?versionId=v2" />,
-      { wrapper },
-   );
+   render(packageAt("v2"), { wrapper: serverWrapper });
 
    await waitFor(() => expect(listDashboards).toHaveBeenCalled());
    expect(listDashboards.mock.calls[0]).toEqual(["env", "pkg", "v2"]);
-   expect(keyFor("dashboards")).toContain('"v2"');
+   expect(cacheKeys("dashboards")[0]).toContain('"v2"');
+});
+
+it("keys an unversioned listing beside the package's other listings", async () => {
+   render(packageAt(), { wrapper: serverWrapper });
+
+   await waitFor(() => expect(listDashboards).toHaveBeenCalled());
+   expect(listDashboards.mock.calls[0]).toEqual(["env", "pkg", undefined]);
+   expect(cacheKeys("dashboards")[0]).toBe(
+      '["dashboards","env","pkg",null,"http://localhost/api/v0"]',
+   );
+   expect(cacheKeys("notebooks")[0]).toBe(
+      '["notebooks","env","pkg",null,"http://localhost/api/v0"]',
+   );
 });
 
 it("still leaves the data apps unversioned", async () => {
-   render(
-      <Package resourceUri="publisher://environments/env/packages/pkg?versionId=v2" />,
-      { wrapper },
-   );
+   render(packageAt("v2"), { wrapper: serverWrapper });
 
    await waitFor(() => expect(listDataApps).toHaveBeenCalled());
    expect(listDataApps.mock.calls[0]).toEqual(["env", "pkg"]);
-   expect(keyFor("data-apps")).not.toContain('"v2"');
+   expect(cacheKeys("data-apps")[0]).not.toContain('"v2"');
 });

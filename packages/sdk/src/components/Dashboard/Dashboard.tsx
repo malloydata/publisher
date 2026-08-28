@@ -119,10 +119,17 @@ export function Dashboard({
       isError,
       error,
    } = useQueryWithApiError({
-      // Keyed on the URI rather than its parts, the way `Notebook` is. The URI
-      // carries `?versionId=`, so the key cannot drift out of step with the
-      // request and two versions of one dashboard cannot share a cache entry.
-      queryKey: ["dashboard", resourceUri, dashboard],
+      // Every value the request is built from, so the key cannot drift out of
+      // step with it. A version that reached the request alone would leave two
+      // versions of one dashboard on a single cache entry, each able to serve
+      // the other's manifest.
+      queryKey: [
+         "dashboard",
+         environmentName,
+         packageName,
+         versionId,
+         dashboard,
+      ],
       queryFn: () =>
          apiClients.dashboards.getDashboard(
             environmentName,
@@ -176,7 +183,10 @@ export function Dashboard({
       // their starting VALUES alone, so two dashboards whose starting values
       // coincide (the common case: both empty) look like one document, and the
       // one you came from keeps filtering the one you drilled into.
-      documentKey: `${environmentName}/${packageName}/${dashboard}`,
+      // The version belongs in the identity too: a host that swaps versions
+      // under this component would otherwise carry the values a reader applied
+      // to one version into the other's queries.
+      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${dashboard}`,
       // Absent means autorun; only an explicit `autorun=false` batches.
       autorun: manifest?.autorun !== false,
    });
