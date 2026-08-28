@@ -1327,11 +1327,11 @@ async function attachCloudStorage(
    // expire, so registering a renewer for one would only serve to retry a wrong key.
    //
    // `REFRESH 'auto'` asks DuckDB to do this itself and is emitted, so this is a
-   // fallback rather than the mechanism. It is kept because upstream refresh is
-   // best-effort: the aws extension's own test that a secret is actually
-   // re-resolved is skipped, and duckdb-aws#97 reports expiry surviving an armed
-   // refresh. If DuckDB refreshes first, the retry never sees an expired
-   // credential and this path stays silent.
+   // fallback rather than the mechanism. It is kept because that refresh does not
+   // reach every read path: a direct object read re-resolves transparently and
+   // never surfaces an error, while a read through an attached DuckLake catalog
+   // has been seen to surface ExpiredToken from an equally armed secret. If DuckDB
+   // refreshes first, the retry never sees an expired credential and stays silent.
    // Structural check rather than instanceof: attachCloudStorage is reached from the
    // generic handler table as well as the DuckLake path, so the connection type is
    // not known here and only some of them can renew.
