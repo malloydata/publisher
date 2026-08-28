@@ -101,7 +101,7 @@ The grammar, in brief (full reference: Malloyyo's `creating-dashboards.md`):
 | Construct                                                                                                                | Meaning                                                                                                                                                                                                                                                                |
 | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `# artifact { title="…" givens {X=f'…'} autorun=false }` on a `query:`/`view:`                                           | Declares the dashboard. `title` falls back to the `#"` doc comment; `givens` sets per-dashboard starting control values; `autorun=false` batches filter changes behind an Apply button.                                                                                |
-| `## artifact { title tiles=["src -> view", …] dashboard_columns=N }` (model-level)                                       | Declares a **composite** dashboard: named existing views run separately and combined into one grid.                                                                                                                                                                    |
+| `## artifact { title tiles=["src -> view", …] dashboard_columns=N }` (model-level)                                       | Declares a **composite** dashboard: named existing views run separately and combined into one grid. **Publisher diverges here**, see §Where Publisher diverges.                                                                                                        |
 | `# dashboard {columns=N}` + `# colspan=K` + `# break`                                                                    | The renderer grid. Standard `@malloydata/render` tags — a layout tag above an `aggregate:`/`nest:` block applies to every item in the block.                                                                                                                           |
 | `given:` declarations with `# label=`, `control=select\|multiselect`, `range_min/max`, `suggest { query=… dimension=… }` | Typed filter inputs (`filter<string\|number\|timestamp\|date>`). Each given a dashboard's query references auto-renders as a control; the dashboard applies it via `where: field ~ $NAME`. Declarations are a model concern; each dashboard decides its own filtering. |
 | `# drill { to=[slug\|self] given=… }` on a source `dimension:`                                                           | Clickable cells: navigate to another dashboard seeding the clicked value into its given (the given is the dimension name verbatim unless `given=` overrides), or `self` to filter in place. Multiple destinations pop a menu.                                                        |
@@ -129,12 +129,28 @@ dashboard UI surface.
 | `# artifact` discovery, given/control specs                       | Ported from Malloyyo's `@malloyyo/mcp-engine` (`artifacts.ts`, `given-specs.ts`) into `service/dashboard.ts` + `service/motly.ts` + `service/given.ts`. Its `frame-runtime/` and `bundle.ts` are **not** ported (§Custom JSX components: cut) | Ported (MIT)                                     |
 
 **Sourcing strategy:** port the small MIT-licensed Malloyyo modules (with attribution) rather
-than depending on `@malloyyo/mcp-engine`, which is a private workspace package. Keep the
-annotation grammar **byte-compatible** — the grammar is the contract, the code is an
-implementation detail. The grammar **will** get a shared home: a malloydata package holding the
-`# artifact` grammar + given-spec introspection that both projects consume, so the formats
-cannot drift. That extraction is a committed follow-up (§[Follow-ups](#follow-ups)), not a
-prerequisite — this design ports first, and byte-compatibility keeps the later swap mechanical.
+than depending on `@malloyyo/mcp-engine`, which is a private workspace package. The grammar is the
+contract and the code is an implementation detail, so it was ported byte-compatibly and stayed that
+way until the grid width diverged (below). The grammar **will** get a shared home: a malloydata
+package holding the `# artifact` grammar + given-spec introspection that both projects consume, so
+the formats cannot drift. That extraction is a committed follow-up
+(§[Follow-ups](#follow-ups)), and the divergence is now an input to it rather than a detail.
+
+### Where Publisher diverges
+
+One property, deliberately. **Publisher does not read `dashboard_columns`.** The grid width is
+`# dashboard { columns=N }` beside the artifact tag, which is the tag `@malloydata/render` already
+reads on a tagged `query:`, so one spelling covers both and there is no second name to learn.
+Publisher reports `dashboard_columns` as a property it does not read rather than ignoring it, so a
+Malloyyo model repo says what it lost instead of quietly laying out at the default width.
+
+Publisher also reads the renderer's per-child dashboard tags (`# colspan`, `# break`, `# subtitle`,
+`# borderless`, and `# label`) off the view a tile names, and lays its own grid out from them.
+Malloyyo's composite has no per-tile layout, so this is additive: a model using it renders as
+Malloyyo does today, plus the layout.
+
+Both belong in the shared-home conversation. If that package keeps `dashboard_columns`, Publisher
+re-adds the reader; the enumeration lint is what makes either direction visible to an author.
 
 ## Guiding design principle: one engine, two document types
 
@@ -152,7 +168,7 @@ They are **not** merged into one format, because they serve different reading mo
 | Reading mode  | Narrative — author-ordered markdown + queries, read top-to-bottom; a data story | Operational — one grid behind a shared filter row, at a glance               |
 | Layout        | Vertical document flow                                                          | `# dashboard {columns=N}` grid                                               |
 | Interactivity | Filter controls, `autorun`/Apply, URL-addressable state, `# drill`              | Filter controls, `autorun`/Apply, URL-addressable state, `# drill`           |
-| Format        | Malloy's notebook format — also authored and run in the VS Code extension       | Plain Malloy — portable, byte-compatible with Malloyyo (the migration story) |
+| Format        | Malloy's notebook format — also authored and run in the VS Code extension       | Plain Malloy — portable, near-identical to Malloyyo's (the migration story)  |
 
 The Interactivity row repeats itself deliberately: it is the row where the principle below is
 already cashed out, and the two cells are the same because the code behind them is the same one.
@@ -357,7 +373,7 @@ Mirror `malloyyo lint` on the existing package-warnings surface (`Package.warnin
 the render-tag findings) rather than a new verb. Loud at load, where authors see it — not at
 click time. Advisory throughout: a finding never costs the package its dashboards.
 
-Checked: a plain `source -> view` or bare-name tile resolves; `dashboard_columns` is a positive
+Checked: a plain `source -> view` or bare-name tile resolves; the grid width is a positive
 integer; a tile filters by a given the entry file can actually bind (above); a `suggest`'s
 `query=` or `source=`/`dimension=` resolves in that file; every `# drill { to=… }` names a real
 dashboard or `self`, and a `to=self` has a given somewhere in the package to write the clicked
@@ -676,9 +692,11 @@ as a full snapshot rather than a patch, because the sandbox does not compile wit
 
 - **Grammar home (decided, not started).** The `# artifact` grammar + given-spec introspection
   get a shared malloydata package that both Publisher and Malloyyo consume, so the formats
-  cannot drift. The code was ported first, byte-compatibly (see §Sourcing strategy), which is
-  what keeps the later swap mechanical; extraction is taken up with the Malloyyo maintainers now
-  that the ported implementation has proven out.
+  cannot drift. The code was ported first and the grammar with it (see §Sourcing strategy), which
+  is what keeps the later swap mechanical; extraction is taken up with the Malloyyo maintainers now
+  that the ported implementation has proven out. The one property Publisher has since diverged on,
+  the grid width, is an input to that conversation rather than a fait accompli: if the shared home
+  keeps `dashboard_columns`, Publisher re-adds the reader.
 - **Embedding ([#931](https://github.com/malloydata/publisher/issues/931)).** Dashboards become
   embeddable in a host page the way HTML data apps are, and — since the two surfaces now share
   their interactivity — notebooks come along in the same issue. `Publisher.embed` itself needs

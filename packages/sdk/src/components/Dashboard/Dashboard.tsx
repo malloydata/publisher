@@ -80,6 +80,26 @@ const TILE_HEIGHT = 400;
  */
 const WHOLE_PAGE_HEIGHT = 20000;
 
+/** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
+const DEFAULT_COLUMNS = 2;
+
+/**
+ * The `grid-column` one tile occupies: its `# colspan`, and a `# break` forcing
+ * it to start a fresh row.
+ *
+ * Clamped to the grid width the same way @malloydata/render clamps it, so one
+ * view laid out as a composite tile and as a `nest:` under `# dashboard` lands
+ * in the same place. A break is `1 / span N` — an explicit start line, which is
+ * what pushes the tile down to the next row; the renderer's grid does the same.
+ */
+export function tileGridColumn(
+   tile: { colspan?: number; break?: boolean },
+   columns: number,
+): string {
+   const span = Math.min(tile.colspan ?? 1, columns);
+   return tile.break ? `1 / span ${span}` : `span ${span}`;
+}
+
 /**
  * A Malloyyo-style dashboard: a control row over one or more query results,
  * declared entirely by tags in a package's `dashboards/*.malloy`.
@@ -316,6 +336,7 @@ export function Dashboard({
 
    const modelPath = manifest.path;
    const tiles = manifest.tiles ?? [];
+   const columns = manifest.dashboardColumns ?? DEFAULT_COLUMNS;
 
    return (
       <Stack spacing={2}>
@@ -366,30 +387,43 @@ export function Dashboard({
                   display: "grid",
                   gridTemplateColumns: {
                      xs: "1fr",
-                     md: `repeat(${manifest.dashboardColumns ?? 2}, minmax(0, 1fr))`,
+                     md: `repeat(${columns}, minmax(0, 1fr))`,
                   },
                   gap: 2,
                }}
             >
                {tiles.map((tile, index) => (
-                  <DashboardTile
+                  <Box
                      // Position too, not the expression alone: `tiles=[…]` can
                      // repeat one, which is a typo rather than a request for two
                      // identical panels, and keying on the expression made the
                      // duplicate warn and reconcile onto its twin.
                      key={`${index}:${tile.query}`}
-                     environmentName={environmentName}
-                     packageName={packageName}
-                     versionId={versionId}
-                     modelPath={modelPath}
-                     tile={tile.query}
-                     givens={applied}
-                     declaredTypes={declaredTypes}
-                     givenNames={tile.givenNames}
-                     height={height ?? TILE_HEIGHT}
-                     maxResultSize={maxResultSize}
-                     drill={drill}
-                  />
+                     sx={{
+                        display: "grid",
+                        // Only above `md`: the narrow breakpoint is one column,
+                        // where a span would overflow the grid rather than widen
+                        // anything.
+                        gridColumn: { md: tileGridColumn(tile, columns) },
+                     }}
+                  >
+                     <DashboardTile
+                        environmentName={environmentName}
+                        packageName={packageName}
+                        versionId={versionId}
+                        modelPath={modelPath}
+                        tile={tile.query}
+                        label={tile.label}
+                        subtitle={tile.subtitle}
+                        borderless={tile.borderless}
+                        givens={applied}
+                        declaredTypes={declaredTypes}
+                        givenNames={tile.givenNames}
+                        height={height ?? TILE_HEIGHT}
+                        maxResultSize={maxResultSize}
+                        drill={drill}
+                     />
+                  </Box>
                ))}
             </Box>
          ) : (

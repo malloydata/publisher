@@ -156,6 +156,26 @@ describe("the version reaches what the manifest drives", () => {
       expect(cacheKeys("dashboardTile")[0]).toContain('"v2"');
    });
 
+   it("runs every composite tile against the same version", async () => {
+      // The composite branch wraps each tile in its own grid cell, so the prop
+      // is threaded at a different call site than the single-query form above.
+      getDashboard.mockImplementation(() =>
+         Promise.resolve({
+            data: {
+               ...manifest,
+               query: undefined,
+               tiles: [{ query: "by_month" }, { query: "by_region" }],
+            },
+         }),
+      );
+
+      render(dashboardAt("v2"), { wrapper: serverWrapper });
+
+      await waitFor(() => expect(cacheKeys("dashboardTile").length).toBe(2));
+      for (const key of cacheKeys("dashboardTile"))
+         expect(key).toContain('"v2"');
+   });
+
    it("runs the control's suggest query against the same version", async () => {
       render(dashboardAt("v2"), { wrapper: serverWrapper });
 

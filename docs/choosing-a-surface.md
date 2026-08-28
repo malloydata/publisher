@@ -35,7 +35,7 @@ The one-line version:
 | **Reading mode**     | Narrative: a data story, read top to bottom in author order                                                    | Operational: one grid behind a filter row, scanned at a glance                                                  | Whatever you design                                                                                            |
 | **Layout**           | Vertical document flow                                                                                         | Column grid via tags (`# colspan`, `# break`)                                                                   | Fully custom                                                                                                   |
 | **Authoring**        | Zero code: Malloy + markdown                                                                                   | Zero code: Malloy + layout tags (`# artifact`, `# dashboard {columns}`)                                         | Code: HTML/CSS/JS, hand-written or agent-written, no build step. The `malloy-html-data-apps` skills guide an agent through it |
-| **Portability**      | Malloy's notebook format: the same file the VS Code extension authors and runs                                 | Plain Malloy, byte-compatible with [Malloyyo](https://github.com/malloydata/malloyyo)                           | Standard web page; the `Publisher.*` runtime is Publisher-specific                                             |
+| **Portability**      | Malloy's notebook format: the same file the VS Code extension authors and runs                                 | Plain Malloy, near-identical to [Malloyyo](https://github.com/malloydata/malloyyo)'s (the grid width differs)   | Standard web page; the `Publisher.*` runtime is Publisher-specific                                             |
 | **Filters**          | Auto-rendered from the givens the file declares or imports: select, slider, date picker                                    | Auto-rendered from the givens the query references: select, slider, date picker                                 | You build the controls and pass givens through `Publisher.query` yourself                                      |
 | **Interactivity**    | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                       | URL-addressable filter state, Apply batching, `# drill` click-through and drill-in-place                        | Anything the web platform can do                                                                               |
 | **Embedding**        | SDK `<Notebook>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup] | SDK `<Dashboard>` for React hosts ([internal][sdk-internal]); iframe embedding is a [follow-up][embed-followup] | `Publisher.embed`: auto-resizing iframe in any host page                                                       |
@@ -96,17 +96,16 @@ layout. Filter controls render automatically from the givens the query reference
 makes dimension cells navigate between dashboards; filter state lives in the URL. The package
 page lists them, and the Console renders them at `dashboards/<name>`. How to write one:
 [dashboards.md](dashboards.md); the design behind it:
-[malloyyo-dashboards-design.md](malloyyo-dashboards-design.md). None of the bundled example
-packages ships a dashboard yet, so this is the one surface here you have to write before you can
-look at one; [A first dashboard](dashboards.md#a-first-dashboard) is a complete file to paste into
-any package.
+[malloyyo-dashboards-design.md](malloyyo-dashboards-design.md). The `storefront` example ships one
+at [`dashboards/overview.malloy`](../examples/storefront/dashboards/overview.malloy), which is a
+complete file to read or copy.
 
 **Pros**
 
 - Built for the _recurring look_: same numbers, same layout, different day, one grid behind a
   shared filter row.
 - Still zero code, still plain Malloy: versioned, reviewed, and linted with the model, and
-  byte-compatible with Malloyyo (the migration story).
+  near-identical to Malloyyo's, the grid width aside (the migration story).
 - A real grid: `# colspan` and `# break` lay tiles out across columns, which vertical cell flow
   cannot do.
 
