@@ -84,12 +84,11 @@ async function callGetContext(
    return JSON.parse(text) as GetContextPayload;
 }
 
-// This spec's setup is slow enough to need a raised timeout. `beforeAll` takes
-// no timeout argument in Bun -- passing one throws "beforeAll() expects a
-// function as the second argument" and the file errors out without running a
-// single test -- so the budget is set here instead. This covers the hooks too,
-// and unlike relying on `bun test --timeout` it still holds when the spec is
-// run on its own.
+// This spec's setup is slow enough to need a raised timeout, and it has to
+// cover the `beforeAll` hook, not just the tests. `setDefaultTimeout` does
+// both, and unlike the suite's `bun test --timeout` flag -- which only exists
+// via the `test:integration` script -- it still holds when this file is run on
+// its own.
 setDefaultTimeout(200_000);
 
 describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {

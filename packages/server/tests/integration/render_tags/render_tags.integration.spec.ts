@@ -122,6 +122,15 @@ describe("load-time render-tag validation", () => {
       expect(findingsOn("clean_dashboard")).toEqual([]);
    });
 
+   it("reports nothing for Publisher's own dashboard tags", () => {
+      // `# artifact` and `# drill` share the `#` namespace but mean nothing to
+      // the renderer, which reports each as `Unknown render tag` at WARN. That
+      // was invisible while this filtered to errors; surfacing `warn` without
+      // filterPublisherOwnedRenderLogs would put a finding on every dashboard
+      // file in every package.
+      expect(findingsOn("publisher_owned_tags")).toEqual([]);
+   });
+
    it("tags each finding with the model it came from", () => {
       expect(warnings.length).toBeGreaterThan(0);
       for (const w of warnings) {

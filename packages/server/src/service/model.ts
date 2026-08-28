@@ -3753,9 +3753,14 @@ export class Model {
          // the moment it stopped. The query-time paths already route through
          // filterPublisherOwnedRenderLogs for the same reason; this is the
          // third call site, not a second mechanism.
+         // No severity filter here. `warn` and `error` are the only two the
+         // renderer emits today, but filtering to that pair would make an
+         // unrecognized third vanish -- this same bug again, a finding the
+         // author cannot see any other way, dropped on the way out. The
+         // narrowing below surfaces anything unexpected as `warn` instead.
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-         ).filter((log) => log.severity === "error" || log.severity === "warn");
+         );
          if (logs.length > 0) {
             // An inert tag is not an invalid one, so don't call it "Invalid";
             // the per-finding messages already say which kind each is.

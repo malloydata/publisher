@@ -54,4 +54,20 @@ source: nums is duckdb.sql("SELECT 1 as one, 2 as two") extend {
       kpis
     nest: trend
   }
+
+  // Control: Publisher's own dashboard-grammar tags. The renderer does not know
+  // them and reports each as `Unknown render tag` at WARN, which was invisible
+  // while load-time validation filtered to errors and becomes a finding on
+  // every dashboard file the moment it stops. filterPublisherOwnedRenderLogs
+  // has to drop them, so this view must report nothing.
+  # artifact { title="Publisher owned" }
+  # dashboard { columns=2 }
+  view: publisher_owned_tags is {
+    nest:
+      # colspan=2
+      kpis
+    nest:
+      # drill
+      trend
+  }
 }
