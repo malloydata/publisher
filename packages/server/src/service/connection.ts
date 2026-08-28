@@ -1218,17 +1218,25 @@ export function buildCloudStorageSecretSQL(
          );
          // A chain secret stores the credentials it resolved, not a reference to
          // the provider that resolved them, so a temporary credential (a
-         // web-identity token yields about an hour) expires while the secret
-         // lives on. That is invisible on the build path, where the session
-         // lasts one build, and fatal on the serve path, where the attach is
-         // idempotent and the secret lives as long as the connection. REFRESH
-         // re-resolves it. It is not caller-configurable because a frozen
+         // web-identity assume-role lasts the role's MaxSessionDuration, an hour
+         // by default) expires while the secret lives on. That is invisible on
+         // the build path, where the session lasts one build, and fatal on the
+         // serve path, where the attach is idempotent and the secret lives as
+         // long as the connection.
+         //
+         // `auto` is the ONLY value that arms refresh: the aws extension stores
+         // the `refresh_info` that makes a secret refreshable under
+         // `if (refresh == "auto")` and ignores anything else, and httpfs then
+         // declines to refresh a secret that has no `refresh_info`. Any other
+         // value is accepted and silently does nothing -- and is worse than
+         // omitting the clause, which for a bare `sts`/`web_identity` chain
+         // arms it by default. Not caller-configurable because a frozen
          // snapshot of an expiring credential has no use.
          const clauses = [
             "TYPE s3",
             "PROVIDER credential_chain",
             `CHAIN '${chain}'`,
-            "REFRESH true",
+            "REFRESH 'auto'",
             `REGION '${region}'`,
          ];
          // Additive, not an alternative: an S3-compatible endpoint behind a host
@@ -1318,11 +1326,12 @@ async function attachCloudStorage(
    // web-identity assume-role yields about an hour of them. A key pair does not
    // expire, so registering a renewer for one would only serve to retry a wrong key.
    //
-   // `REFRESH true` is emitted and is supposed to cover this. Measured on DuckDB
-   // 1.5.3 and 1.5.5, on a pod whose identity still resolved -- a build in the same
-   // minute succeeded -- a serve read on the held secret failed with ExpiredToken.
-   // So the renewal is done here rather than relied upon, and this path simply stops
-   // firing if a later DuckDB honours REFRESH.
+   // `REFRESH 'auto'` asks DuckDB to do this itself and is emitted, so this is a
+   // fallback rather than the mechanism. It is kept because upstream refresh is
+   // best-effort: the aws extension's own test that a secret is actually
+   // re-resolved is skipped, and duckdb-aws#97 reports expiry surviving an armed
+   // refresh. If DuckDB refreshes first, the retry never sees an expired
+   // credential and this path stays silent.
    // Structural check rather than instanceof: attachCloudStorage is reached from the
    // generic handler table as well as the DuckLake path, so the connection type is
    // not known here and only some of them can renew.
@@ -1605,10 +1614,11 @@ class DuckLakeConnection extends DuckDBConnection {
     *
     * The tier's serve attach is idempotent and its secret lives as long as the
     * connection, while the credentials a chain secret RESOLVED last about an hour.
-    * `REFRESH true` is emitted to cover exactly this and measurably does not (DuckDB
-    * 1.5.3 and 1.5.5), so a serve that has been up an hour starts failing every read
-    * with ExpiredToken while a build in the same minute succeeds -- the build gets a
-    * fresh session, and with it a fresh secret.
+    * `REFRESH 'auto'` asks DuckDB to re-resolve it, which is the first line of
+    * defence; this is the second, for when that does not happen. Without either, a
+    * serve connection that has been up an hour fails every read with ExpiredToken
+    * while builds keep succeeding -- a build opens its own session, and with it a
+    * fresh secret, so the two paths fail independently.
     *
     * Reactive rather than scheduled, and reactive rather than per-query, because
     * resolving the secret costs an STS round trip. Per query that is one call per

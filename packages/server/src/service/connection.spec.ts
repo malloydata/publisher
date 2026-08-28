@@ -2555,12 +2555,20 @@ describe("buildCloudStorageSecretSQL", () => {
       });
 
       // The secret holds the credentials the chain resolved, not a live
-      // reference to the provider, so without REFRESH a serve attach stops
-      // reading about an hour after it was created.
-      it("emits REFRESH so a temporary credential is re-resolved", () => {
-         expect(chainSQL({ provider: "credential_chain" })).toContain(
-            "REFRESH true",
-         );
+      // reference to the provider, so without a working REFRESH a serve attach
+      // stops reading about an hour after it was created.
+      //
+      // `auto` is the only value that arms it. The aws extension stores the
+      // `refresh_info` that makes a secret refreshable under `if (refresh ==
+      // "auto")`, and httpfs declines to refresh a secret that has none, so any
+      // other value is accepted and silently does nothing. Asserting the VALUE
+      // rather than the presence of the clause is the point: this suite
+      // previously required only a `REFRESH` clause and passed against `REFRESH
+      // true`, which disables the thing the test is named for.
+      it("arms refresh with the only value that enables it", () => {
+         const sql = chainSQL({ provider: "credential_chain" });
+         expect(sql).toContain("REFRESH 'auto'");
+         expect(sql).not.toContain("REFRESH true");
       });
 
       it("composes with a custom endpoint", () => {
