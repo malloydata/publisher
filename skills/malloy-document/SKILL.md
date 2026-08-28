@@ -14,7 +14,7 @@ Add `#(doc)` tags to describe sources and fields in plain language so they are e
 | Tag | Purpose | Goes on |
 |-----|---------|---------|
 | `#(doc)` | Plain-language description for natural-language search | source, dimension, measure, view, join |
-| `#(filter)` | Declare a parameterizable filter (runtime/modeling concern, see `malloy-model`) | source |
+| `#(filter)` | Deprecated, prefer `given:`. Parameterizable filter (runtime/modeling concern, see `malloy-model`) | source |
 
 `#(doc)` is a standard Malloy annotation. It documents a field or source with a human-readable description that downstream tools can surface and search against.
 
@@ -75,9 +75,11 @@ These are governed models: a threshold nobody confirmed is an assumption, and an
 
 Do not hedge measured facts: `avg_energy is avg(energy)` needs no caveat. Hedge only where a domain expert could reasonably choose differently.
 
-## #(filter): see `malloy-model`
+## #(filter): deprecated, see `malloy-model`
 
-`#(filter)` is also a `#(...)`-shaped annotation, but unlike `#(doc)` it's a **runtime/modeling construct**: it shapes governance, query latency, and correctness, not discoverability. The full reference (syntax, filter types, `required` / `implicit` flags, and when each applies) lives in `malloy-model` § Parameterizable Filters with `#(filter)` alongside the other source-authoring constructs.
+`#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. See `skill:malloy-model` § Legacy: Parameterizable Filters.
+
+`#(filter)` is also a `#(...)`-shaped annotation, but unlike `#(doc)` it's a **runtime/modeling construct**: it shapes governance, query latency, and correctness, not discoverability. The full reference (syntax, filter types, `required` / `implicit` flags, and when each applies) lives in `malloy-model` § Legacy: Parameterizable Filters alongside the other source-authoring constructs, next to the `given:` guidance that replaces it.
 
 One rule worth knowing here: filters live on the source, never on the consumer. Ad-hoc reports and notebooks that import a source inherit its filters automatically; they do not (and cannot) declare new ones.
 
