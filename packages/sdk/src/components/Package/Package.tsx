@@ -130,15 +130,14 @@ export default function Package({
    });
    const dataApps = dataAppsQuery.data?.data ?? [];
 
-   // No versionId, for the same reason as data apps: the dashboards endpoint
-   // takes only env + package.
    const dashboardsQuery = useQueryWithApiError({
-      queryKey: ["dashboards", environmentName, packageName],
+      queryKey: ["dashboards", environmentName, packageName, versionId],
       queryFn: async () => {
          try {
             return await apiClients.dashboards.listDashboards(
                environmentName,
                packageName,
+               versionId,
             );
          } catch (e) {
             // Non-fatal for the same reasons as the data-apps list above: an

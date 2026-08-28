@@ -16,7 +16,7 @@ import { useServer } from "../ServerProvider";
 import { DashboardTile } from "./DashboardTile";
 
 export interface DashboardProps {
-   /** `publisher://environments/{env}/packages/{pkg}`, env and package only. */
+   /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
    resourceUri: string;
    /** The dashboard's slug, as listed by the dashboards endpoint. */
    dashboard: string;
@@ -110,6 +110,7 @@ export function Dashboard({
    // than here, so every hook still runs in the same order.
    const environmentName = parsed.environmentName ?? "";
    const packageName = parsed.packageName ?? "";
+   const versionId = parsed.versionId;
    const uriNamesBoth = !!parsed.environmentName && !!parsed.packageName;
 
    const {
@@ -118,12 +119,16 @@ export function Dashboard({
       isError,
       error,
    } = useQueryWithApiError({
-      queryKey: ["dashboard", environmentName, packageName, dashboard],
+      // Keyed on the URI rather than its parts, the way `Notebook` is. The URI
+      // carries `?versionId=`, so the key cannot drift out of step with the
+      // request and two versions of one dashboard cannot share a cache entry.
+      queryKey: ["dashboard", resourceUri, dashboard],
       queryFn: () =>
          apiClients.dashboards.getDashboard(
             environmentName,
             packageName,
             dashboard,
+            versionId,
          ),
       // No point asking for a dashboard under a name the URI never carried.
       enabled: uriNamesBoth,
@@ -180,7 +185,13 @@ export function Dashboard({
       options,
       isLoading: optionsLoading,
       failed: optionsFailed,
-   } = useSuggestOptions(environmentName, packageName, manifest?.path, specs);
+   } = useSuggestOptions(
+      environmentName,
+      packageName,
+      manifest?.path,
+      specs,
+      versionId,
+   );
 
    // A drill tag names its given as the model spells it, and `# drill` with no
    // `given=` falls back to the DIMENSION's spelling, which need not match. The
@@ -327,6 +338,7 @@ export function Dashboard({
             <DashboardTile
                environmentName={environmentName}
                packageName={packageName}
+               versionId={versionId}
                modelPath={modelPath}
                queryName={manifest.query}
                givens={applied}
@@ -358,6 +370,7 @@ export function Dashboard({
                      key={`${index}:${tile.query}`}
                      environmentName={environmentName}
                      packageName={packageName}
+                     versionId={versionId}
                      modelPath={modelPath}
                      tile={tile.query}
                      givens={applied}

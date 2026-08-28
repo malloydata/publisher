@@ -15,6 +15,8 @@ import { useServer } from "../ServerProvider";
 export interface DashboardTileProps {
    environmentName: string;
    packageName: string;
+   /** The package version the dashboard's URI named, when it named one. */
+   versionId?: string;
    modelPath: string;
    /** A named query (the single-query form). */
    queryName?: string;
@@ -67,6 +69,7 @@ export function tileTitle(tile: string): string {
 export function DashboardTile({
    environmentName,
    packageName,
+   versionId,
    modelPath,
    queryName,
    tile,
@@ -85,6 +88,7 @@ export function DashboardTile({
          "dashboardTile",
          environmentName,
          packageName,
+         versionId,
          modelPath,
          queryName,
          tile,
@@ -101,6 +105,7 @@ export function DashboardTile({
                queryName,
                query: tile !== undefined ? `run: ${tile}` : undefined,
                givens: requestGivens,
+               versionId,
             },
          ),
       ...CHART_RESULT_QUERY_OPTIONS,

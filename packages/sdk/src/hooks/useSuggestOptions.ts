@@ -86,6 +86,9 @@ export function useSuggestOptions(
    packageName: string,
    modelPath: string | undefined,
    specs: Given[],
+   // Trailing and optional because this hook is exported from the package, so
+   // a slot beside `packageName` where it belongs would break every caller.
+   versionId?: string,
 ): {
    options: Map<string, string[]>;
    isLoading: boolean;
@@ -122,6 +125,7 @@ export function useSuggestOptions(
             "givenSuggest",
             environmentName,
             packageName,
+            versionId,
             modelPath,
             spec.name,
             spec.suggest?.query,
@@ -140,13 +144,14 @@ export function useSuggestOptions(
                packageName,
                modelPath as string,
                suggest.query !== undefined
-                  ? { queryName: suggest.query, compactJson: true }
+                  ? { queryName: suggest.query, compactJson: true, versionId }
                   : {
                        query: buildSuggestQuery(
                           suggest.source as string,
                           suggest.dimension as string,
                        ),
                        compactJson: true,
+                       versionId,
                     },
             );
             return readOptionValues(
