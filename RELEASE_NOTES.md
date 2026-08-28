@@ -74,7 +74,7 @@ One thing worth knowing before tuning: setting a `memory_limit` does **not** by 
 
 ---
 
-## [Unreleased] — a versioned dashboard URI is now honoured
+## [0.2.1] — a versioned dashboard URI is now honoured
 
 `<Dashboard>` accepted a `?versionId=` in its `resourceUri` and dropped it. It now sends it, on the
 manifest fetch, on each tile's query, and on each control's suggest query, and each is cached per
@@ -94,7 +94,7 @@ declares no `versionId`.
 
 ---
 
-## [Unreleased] — one way to build a dashboard, and per-tile layout for it (BREAKING)
+## [0.2.1] — one way to build a dashboard, and per-tile layout for it (BREAKING)
 
 A Publisher dashboard is `## artifact { tiles=[…] }`. The `# artifact` on a `query:` still works and
 is still served, but it is no longer offered as a second way to build one: it is a rendered Malloy
