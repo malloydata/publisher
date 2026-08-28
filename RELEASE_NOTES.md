@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a colocated persist into a non-default schema now lands there (ACTION REQUIRED)
+## [0.2.0] — a colocated persist into a non-default schema now lands there (ACTION REQUIRED)
 
 A colocated `#@ persist name=` that names a container — `name="analytics.orders"`
 rather than `name="orders"` — was materialized into the connection's **default**
@@ -62,7 +62,7 @@ dropped once the rebuild is confirmed.
 Unaffected: `storage=` sources (a different write path), colocated sources whose
 `name=` carries no container, and every dialect other than the three above.
 
-## [Unreleased] — every DuckDB session is now bounded
+## [0.2.0] — every DuckDB session is now bounded
 
 DuckDB sizes its `memory_limit` from the container, at roughly 80%, and it does that **independently per instance**. Publisher runs several instances in one process — the metadata store, a serve-shape gate session, the environment lookup funnel, a sandbox per loaded package, and a disposable session for each materialization build — and none of them accounts for the resident runtime baseline or for any of the others. Measured in a 3 GiB container, three instances each reported a 2.3 GiB limit: 6.9 GiB of committed budget against 3 GiB of real memory. The process is then killed by the kernel while every instance still believes it is comfortably inside its budget, so none of them looks at fault and the growth presents as untracked native memory.
 
@@ -72,7 +72,7 @@ Unset now logs a startup warning naming the condition, so the oversubscription i
 
 One thing worth knowing before tuning: setting a `memory_limit` does **not** by itself introduce spill on the `storage=` build path. That pipeline pushes its SQL to the source warehouse and streams the result into the destination, with nothing to spill — measured at a flat peak across a 30× range of output, with zero bytes written to the temp directory at any limit, including one tight enough to fail. An over-tight limit fails the query and leaves the process up, which is the intended trade against losing the pod.
 
-## [Unreleased] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
+## [0.2.0] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
 
 This is the headline change of this release, and it supersedes every earlier section on this page
 that shows `#(authorize) "<expr>"` on a `source:` line — including the `[0.0.248]` and `[0.0.205]`
@@ -208,7 +208,7 @@ constant-`false` lock does not hold there and `includeSql` returns the ungrafted
 
 ---
 
-## [Unreleased] — a proven row-level `#(authorize)` gate can now be colocated-persisted
+## [0.2.0] — a proven row-level `#(authorize)` gate can now be colocated-persisted
 
 This supersedes the "A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED" bullet
 further down this file, before that section has even shipped: unconditional refusal is no longer the
@@ -240,7 +240,7 @@ either — its delta is bounded by the watermark, so a row that changes owner wi
 advancing is never re-read. Only a full rebuild recomputes the gate column. See
 [docs/materialization.md § freshness contract](docs/materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source).
 
-## [Unreleased] — `BuildPlan.refusedSources`, and a materialization-ordering fix
+## [0.2.0] — `BuildPlan.refusedSources`, and a materialization-ordering fix
 
 **`BuildPlan` gains a `refusedSources` collection**, alongside the existing `sources` map, so a host can tell
 "this package declares no persist source" from "every persist source was refused". It is a SEPARATE
@@ -274,7 +274,7 @@ Also added a routing-outcome label, `blocked_by_row_level_gate`, on `publisher_s
 previously a row-level-gated entry point that vetoed both the storage and pre-aggregation tiers recorded no
 routing outcome at all.
 
-## [Unreleased] — a gated `#@ preaggregate` rollup now reports its own refusal
+## [0.2.0] — a gated `#@ preaggregate` rollup now reports its own refusal
 
 `BuildPlan.refusedSources` gains a `preaggregate` tier. A gated rollup's pre-aggregation gate refuses
 unconditionally when its base is `#(authorize)`-gated (rollups group away the gate column, so there is
@@ -288,7 +288,7 @@ instruction before instructing it.
 
 ---
 
-## [Unreleased] — every `#(authorize)` gate is a row filter now, not just a field-referencing one (BREAKING)
+## [0.2.0] — every `#(authorize)` gate is a row filter now, not just a field-referencing one (BREAKING)
 
 This supersedes the "a gate that references only givens is unaffected" line in the section below, before
 that section has even shipped: there is no longer a separate given-only shape. A gate that reads no row
