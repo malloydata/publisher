@@ -41,10 +41,10 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    `suggest`. Both are per-file, and getting the suggest wrong does not error: the control still
    looks like a picker but has no options, and says so underneath, "Could not load the options for
    this control". The package warnings name it too. **A `suggest` naming a `query=` needs that
-   query's own source imported as well**, because an import is not transitive. The query resolves by
-   name, so the file compiles, the package loads, and the lint says nothing; the picker answers
-   `400 Undefined source '<name>'` only when a reader opens it. Import the source that suggest query
-   reads, not just the query.
+   query's own source imported as well**, because an import is not transitive: the query resolves by
+   name, so the file compiles and the package loads, but running the picker fails with
+   `Undefined source '<name>'`. The package warnings name this one too, saying which source to
+   import. Import the source that suggest query reads, not just the query.
 5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`), against the source text,
    before you save, at the path the file will have. **Editing one that already exists needs
    `"scope": "file"`**, which compiles your source AS that file; the default appends it instead, so

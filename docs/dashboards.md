@@ -267,10 +267,11 @@ Leave a suggest off and only that dropdown comes up empty; leave the dashboard's
 the grid stops loading. A package with no `explores` has curation off, so importing what the suggest
 names is enough for a `source=`.
 
-It is not enough for a `query=`, and this is the one failure in this family that nothing reports. An
-import is not transitive, so a suggest query resolves by _name_ while the source it reads does not:
-the file compiles, the package loads with no warning, the manifest lists the control, and the picker
-answers `400 Undefined source '…'` the moment a reader opens it. Import that source too.
+It is not enough for a `query=`. An import is not transitive, so a suggest query resolves by _name_
+while the source it reads does not: the file compiles, the package loads, the manifest lists the
+control, and the picker answers `400 Undefined source '…'` the moment a reader opens it. Nothing
+about the page looks wrong until someone uses it, which is why the package warnings call this one out
+by name and say which source to import. Import that source too.
 
 Which controls appear is decided per dashboard, by which givens its query references. Declaring ten
 and referencing two shows two. That is what lets one `CATEGORY` declaration scope revenue on one
