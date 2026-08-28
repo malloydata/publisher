@@ -11,7 +11,7 @@
  * confusing them is a listing that answers for the wrong version.
  */
 import { beforeEach, expect, it, mock } from "bun:test";
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import {
    cacheKeys,
    clearCache,
@@ -30,7 +30,9 @@ const listDataApps = mock((_environmentName: string, _packageName: string) =>
 
 mockServerProvider({
    packages: { getPackage: pending },
-   notebooks: { listNotebooks: pending },
+   // Resolved, not pending: the page withholds every section until the
+   // notebooks and dashboards listings have both settled.
+   notebooks: { listNotebooks: () => Promise.resolve({ data: [] }) },
    models: { listModels: pending },
    databases: { listDatabases: pending },
    dataApps: { listDataApps },
@@ -82,4 +84,30 @@ it("still leaves the data apps unversioned", async () => {
    await waitFor(() => expect(listDataApps).toHaveBeenCalled());
    expect(listDataApps.mock.calls[0]).toEqual(["env", "pkg"]);
    expect(cacheKeys("data-apps")[0]).not.toContain('"v2"');
+});
+
+it("says so when the dashboards listing fails, rather than showing none", async () => {
+   // Sending a version gives a host that refuses the parameter a way to fail
+   // this listing alone. Falling back to an empty list would report that as
+   // "no dashboards", which is a wrong answer wearing a right one's clothes.
+   listDashboards.mockImplementationOnce(() =>
+      Promise.reject({ response: { status: 501 } }),
+   );
+
+   render(packageAt("v2"), { wrapper: serverWrapper });
+
+   expect(await screen.findByText(/Could not list/)).toBeDefined();
+});
+
+it("keeps showing no section at all for an older server with no route", async () => {
+   // A 404 is a Publisher that predates the endpoint, which genuinely has no
+   // dashboards to list. Unchanged: no error, no section.
+   listDashboards.mockImplementationOnce(() =>
+      Promise.reject({ response: { status: 404 } }),
+   );
+
+   render(packageAt(), { wrapper: serverWrapper });
+
+   await waitFor(() => expect(listDashboards).toHaveBeenCalled());
+   expect(screen.queryAllByText(/Could not list/)).toHaveLength(0);
 });

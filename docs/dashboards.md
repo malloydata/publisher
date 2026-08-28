@@ -542,6 +542,13 @@ what a drill and a filter change mean:
 one it throws `useServer must be used within a ServerProvider`. Mount the provider once, near the root
 of your app, not per dashboard.
 
+Add `versionId` to the URI and every request the dashboard makes carries it: the manifest, each tile's
+query, and each control's suggest query, each cached per version. Omit it and nothing is sent, which is
+what the example below does. Publisher itself answers `501 Not Implemented` to a `versionId` on any
+route, as it does for notebooks and models, so this is for a host that resolves versions at its own
+routing layer — point one at Publisher and the page reports the 501 rather than quietly serving the
+latest.
+
 ```tsx
 import {
   Dashboard,

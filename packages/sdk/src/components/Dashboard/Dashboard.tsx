@@ -203,9 +203,12 @@ export function Dashboard({
       // their starting VALUES alone, so two dashboards whose starting values
       // coincide (the common case: both empty) look like one document, and the
       // one you came from keeps filtering the one you drilled into.
-      // The version belongs in the identity too: a host that swaps versions
-      // under this component would otherwise carry the values a reader applied
-      // to one version into the other's queries.
+      // The version belongs in that identity too, so a swap between versions
+      // drops the edits a reader made to the one they came from. Only the
+      // EDITS: `initial` is `startingValues` merged with `params`, so a host
+      // that round-trips givens through its own URL hands them straight back
+      // and they still apply across the swap. That one is the host's call, and
+      // this key neither can nor should overrule it.
       documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${dashboard}`,
       // Absent means autorun; only an explicit `autorun=false` batches.
       autorun: manifest?.autorun !== false,

@@ -74,6 +74,26 @@ One thing worth knowing before tuning: setting a `memory_limit` does **not** by 
 
 ---
 
+## [Unreleased] — a versioned dashboard URI is now honoured
+
+`<Dashboard>` accepted a `?versionId=` in its `resourceUri` and dropped it. It now sends it, on the
+manifest fetch, on each tile's query, and on each control's suggest query, and each is cached per
+version. `<Package>`'s dashboards listing sends it too, and a notebook's suggest queries — shared
+code, and the only part of `<Notebook>` that was still unversioned while its own fetch and its cell
+execution were not.
+
+Omit `versionId` and nothing is sent, so a URI without one behaves exactly as before. **Point a
+versioned URI at Publisher and the page now reports an error where it used to render the latest**:
+Publisher answers `501 Not Implemented` to a `versionId` on every route that declares one, and
+these calls no longer hide it. That is the same contract `<Notebook>` and `<Model>` have always
+had, and it is why the components are useful to a host that resolves versions at its own routing
+layer. See [docs/dashboards.md](docs/dashboards.md#rendering-one-in-your-own-react-app).
+
+The in-package HTML data apps stay unversioned, deliberately: `/data-apps` serves static files and
+declares no `versionId`.
+
+---
+
 ## [Unreleased] — one way to build a dashboard, and per-tile layout for it (BREAKING)
 
 A Publisher dashboard is `## artifact { tiles=[…] }`. The `# artifact` on a `query:` still works and

@@ -188,6 +188,10 @@ describe("the version reaches what the manifest drives", () => {
       // the version missing from it, a host swapping versions kept the values
       // the reader applied to the old one and filtered the new one by them —
       // the same confusion the keys above exist to prevent, one layer up.
+      //
+      // Mounted with no `givens` prop, which is the case the key governs. A
+      // host feeding its URL back in through `givens` re-supplies the values
+      // itself, and no `documentKey` can override that.
       const { rerender } = render(dashboardAt("v1"), {
          wrapper: serverWrapper,
       });
