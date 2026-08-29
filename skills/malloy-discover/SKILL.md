@@ -2,10 +2,6 @@
 name: malloy-discover
 description: Silent data discovery for Malloy modeling. Used at Step 1 of the modeling workflow. Scans tables, columns, distributions, and relationships without user interaction. The agent builds an internal picture before presenting anything.
 ---
-<!--
-Copyright (c) Credible Data Inc.
-SPDX-License-Identifier: MIT
--->
 
 # Data Discovery (Step 1, Silent)
 
@@ -58,7 +54,7 @@ SPDX-License-Identifier: MIT
 source: explore is my_conn.table('schema.table') extend {}
 ```
 
-**In analysis-first mode:** There is no temp file. The analysis `.malloy` file IS your working file. It grows throughout the session and becomes the input for formalizing into a model. See `skill:malloy-analyze` for that workflow.
+**In analysis-first mode:** There is no temp file. The analysis `.malloy` file IS your working file. It grows throughout the session and becomes the input for formalizing into a model. See `skill:malloy-analysis` for that workflow.
 
 ## What to Capture
 

@@ -85,6 +85,7 @@ function scannedFiles(): string[] {
       // skills_bundle.spec.ts asserts that, so the source tree is enough.
       path.join(REPO_ROOT, "README.md"),
       path.join(REPO_ROOT, "skills", "malloy-getting-started", "SKILL.md"),
+      path.join(REPO_ROOT, "skills", "malloy-publisher-setup", "SKILL.md"),
    ]) {
       if (fs.existsSync(rel)) files.push(rel);
    }
@@ -128,6 +129,7 @@ describe("the scaffolder command is pinned wherever it is written down", () => {
          "packages/create-malloy-package/src/scaffold.ts",
          "packages/create-malloy-package/templates/AGENTS.md",
          "skills/malloy-getting-started/SKILL.md",
+         "skills/malloy-publisher-setup/SKILL.md",
       ]) {
          expect(scanned).toContain(expected);
       }
