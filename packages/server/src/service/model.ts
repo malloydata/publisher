@@ -3760,6 +3760,7 @@ export class Model {
          // narrowing below surfaces anything unexpected as `warn` instead.
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
+            this.modelPath,
          );
          if (logs.length > 0) {
             // An inert tag is not an invalid one, so don't call it "Invalid";

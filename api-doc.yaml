@@ -1839,7 +1839,7 @@ paths:
         Retrieves everything a viewer needs to render one dashboard: the artifact
         tag's declarations plus the control contract derived from the givens its
         query references. Running the dashboard needs no further endpoint — its
-        query, each composite tile, and each control's suggest query all run
+        query, each tile, and each control's suggest query all run
         through the model query endpoint with `givens`, using the manifest's
         `path` as the model.
       parameters:
@@ -3518,7 +3518,7 @@ components:
         Everything a viewer needs to render one dashboard: the artifact tag's
         declarations plus the control contract derived from the givens its query
         references. Running needs no dashboard-specific endpoint — the query,
-        each composite tile, and each control's suggest query all run through
+        each tile, and each control's suggest query all run through
         the ordinary model query endpoint with `givens`.
       properties:
         resource:
@@ -3555,24 +3555,29 @@ components:
         query:
           type: string
           description: >-
-            Name of the tagged query to run. Present for the single-query form
-            only; a composite dashboard carries `tiles` instead. A NAME rather
-            than an expression, so it goes in the `queryName` field of a
-            `POST …/models/{path}/query` body. A tile's `query` is the other
-            shape and is not interchangeable with this one; see
-            `DashboardTile.query`.
+            Name of the tagged query whose single result IS the page. Set when the
+            `# artifact` tag sits on a `query:`; a dashboard authored the ordinary
+            way carries `tiles` instead and leaves this absent. A NAME rather than
+            an expression, so it goes in the `queryName` field of a
+            `POST …/models/{path}/query` body. A tile's `query` is the other shape
+            and is not interchangeable with this one; see `DashboardTile.query`.
         tiles:
           type: array
-          description:
-            Tiles of a composite dashboard, run separately and combined into one
-            grid. Present for the composite form only.
+          description: >-
+            The dashboard's tiles, each run as its own query and combined into one
+            grid. This is how a dashboard is normally authored, and the only form
+            that can span sources. Absent when the `# artifact` tag sits on a
+            `query:` instead, in which case `query` is set.
           items:
             $ref: "#/components/schemas/DashboardTile"
         dashboardColumns:
           type: integer
-          description:
-            Grid width — from the `# dashboard {columns=N}` render tag, or
-            `dashboard_columns=N` on a composite artifact tag
+          description: >-
+            Grid width, from the `# dashboard {columns=N}` render tag beside the
+            artifact tag. One spelling wherever the artifact tag sits: Publisher
+            reads it at model level to lay out `tiles`, and `@malloydata/render`
+            reads the same tag off a tagged `query:`. Absent means the viewer's
+            default.
         startingGivens:
           allOf:
             - $ref: "#/components/schemas/EncodedGivenValues"
@@ -3588,9 +3593,9 @@ components:
           type: array
           description: |
             The control row. Normally one entry per given the dashboard runs
-            with, which is what its `query` references on the single-query form
-            and the union over `tiles` on a composite, and which the entry file
-            can bind. A composite widens it to
+            with: the union over `tiles`, or what `query` references when the tag
+            sits on a query, and which the entry file
+            can bind. The row widens to
             every given the entry file surfaces when any tile is one discovery
             cannot resolve, because that tile's givens are otherwise absent from
             the row it filters by; see `DashboardTile.givenNames`. So an entry
@@ -3618,7 +3623,7 @@ components:
 
     DashboardTile:
       type: object
-      description: One tile of a composite dashboard
+      description: One tile of a dashboard
       properties:
         query:
           type: string
@@ -3643,6 +3648,39 @@ components:
             widens `DashboardManifest.givens` to every given the entry file
             surfaces, rather than the union over the resolvable tiles, so that
             the row actually contains the givens that tile filters by.
+        label:
+          type: string
+          description: >-
+            Heading for the tile, from a `# label` on the view or query it names.
+            Absent when it carries none, in which case a viewer derives one from
+            the run expression.
+        subtitle:
+          type: string
+          description:
+            Second line under the heading, from a `# subtitle` on the view or
+            query it names.
+        colspan:
+          type: integer
+          description: >-
+            Grid columns this tile spans, from a `# colspan=N` on the view or
+            query it names. Clamped to `dashboardColumns` at render time. Absent
+            means one column.
+        break:
+          type: boolean
+          description: >-
+            Start a new grid row at this tile, from a `# break` on the view or
+            query it names. Named for the tag, so every per-tile field on this
+            schema is spelled the way an author writes it. A generated client
+            escapes the attribute where the word is reserved (the Python client
+            exposes `break_`) while the wire key stays `break`.
+        borderless:
+          type: boolean
+          description: >-
+            Draw the result with no card around it, from a `# borderless` on the
+            view or query it names. Together with `label`, `subtitle`, `colspan`
+            and `break` this is the whole per-child tag set `@malloydata/render`
+            resolves for a `# dashboard` nest child, read the same way here so one
+            view presents identically as a tile and as a nest.
 
     DataApp:
       type: object

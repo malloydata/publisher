@@ -33,6 +33,7 @@ function facts(
       queries: [],
       givens: new Map(),
       viewGivens: new Map(),
+      viewAnnotations: new Map(),
       sourceFields: new Map(),
       drills: [],
       ...overrides,
@@ -162,17 +163,78 @@ describe("service/dashboard title and description together", () => {
 });
 
 describe("service/dashboard render-log filtering", () => {
+   const DASH = "dashboards/overview.malloy";
+   const PLAIN = "storefront.malloy";
+
    // Publisher's tags share the `#` namespace with the renderer's, which reports
    // anything it didn't consume — so without this filter every dashboard query
-   // would answer with a spurious warning about its own artifact tag.
+   // would answer with a spurious warning about its own artifact tag. Owned
+   // outright, so the model it ran against does not matter.
    it("drops unknown-tag complaints about tags Publisher owns", () => {
+      const owned = [
+         { message: "Unknown render tag 'artifact' on field 'root'" },
+         { message: "Unknown render tag 'artifact.title' on field 'root'" },
+         { message: "Unknown render tag 'drill' on field 'brand_name'" },
+      ];
+      expect(filterPublisherOwnedRenderLogs(owned, DASH)).toEqual([]);
+      expect(filterPublisherOwnedRenderLogs(owned, PLAIN)).toEqual([]);
+   });
+
+   // Every tile is a standalone query, and the renderer reads these only for the
+   // direct children of a `# dashboard` nest, so it calls them unknown on every
+   // tile of every dashboard. Measured against 0.0.432: without this, running the
+   // shipped storefront dashboard's `revenue_trend` tile answers with both.
+   it("drops the unknown-tag line for the layout tags Publisher consumed", () => {
       expect(
-         filterPublisherOwnedRenderLogs([
-            { message: "Unknown render tag 'artifact' on field 'root'" },
-            { message: "Unknown render tag 'artifact.title' on field 'root'" },
-            { message: "Unknown render tag 'drill' on field 'brand_name'" },
-         ]),
+         filterPublisherOwnedRenderLogs(
+            [
+               { message: "Unknown render tag 'colspan' on field 'root'" },
+               { message: "Unknown render tag 'break' on field 'root'" },
+               { message: "Unknown render tag 'subtitle' on field 'root'" },
+               { message: "Unknown render tag 'borderless' on field 'root'" },
+            ],
+            DASH,
+         ),
       ).toEqual([]);
+   });
+
+   // The suppression is scoped to dashboard models because this filter runs on
+   // EVERY query the server answers. On an ordinary model there is no grid and
+   // no tile, so a top-level layout tag really does nothing and the renderer's
+   // warning is the only thing that says so.
+   it("keeps a top-level layout tag on a model that is not a dashboard", () => {
+      const kept = [
+         { message: "Unknown render tag 'colspan' on field 'root'" },
+         { message: "Unknown render tag 'borderless' on field 'root'" },
+      ];
+      expect(filterPublisherOwnedRenderLogs(kept, PLAIN)).toEqual(kept);
+   });
+
+   // Scoped to the top-level result, which is the shape a tile has. A colspan on
+   // a nest that is not a dashboard child is a real mistake nothing reads, so it
+   // survives even inside a dashboard file.
+   it("keeps a layout tag reported against a nest rather than the result", () => {
+      const kept = [
+         { message: "Unknown render tag 'colspan' on field 'by_month'" },
+      ];
+      expect(filterPublisherOwnedRenderLogs(kept, DASH)).toEqual(kept);
+   });
+
+   // Only the unknown-tag line. On the form where the renderer DOES lay out, its
+   // own colspan findings tell an author the value was refused or ignored, and
+   // suppressing those would be the bug this filter prevents.
+   it("keeps the renderer's own findings about those same tags", () => {
+      const kept = [
+         {
+            message:
+               "Invalid # colspan on 'kpis': expected a positive integer, got 0.",
+         },
+         {
+            message:
+               "Ignored # colspan on 'kpis': colspan only applies in columns mode.",
+         },
+      ];
+      expect(filterPublisherOwnedRenderLogs(kept, DASH)).toEqual(kept);
    });
 
    it("keeps every other render finding, including real unknown tags", () => {
@@ -181,7 +243,7 @@ describe("service/dashboard render-log filtering", () => {
          { message: "Invalid number suffix 'nope' on field 'amount'" },
          { message: undefined },
       ];
-      expect(filterPublisherOwnedRenderLogs(kept)).toEqual(kept);
+      expect(filterPublisherOwnedRenderLogs(kept, DASH)).toEqual(kept);
    });
 });
 
@@ -529,7 +591,7 @@ describe("service/dashboard manifest (composite form)", () => {
             modelPath: "dashboards/seasonality.malloy",
             modelAnnotations: [
                "##! experimental.givens\n",
-               '## artifact { title="Seasonality" tiles=["orders -> by_month", "users -> signups"] dashboard_columns=4 }\n',
+               '## artifact { title="Seasonality" tiles=["orders -> by_month", "users -> signups"] } dashboard { columns=4 }\n',
             ],
          }),
       );
@@ -659,6 +721,308 @@ describe("service/dashboard manifest (composite form)", () => {
    });
 });
 
+describe("service/dashboard per-tile layout", () => {
+   // The layout tags sit on the VIEW, not on the tile entry, which is the whole
+   // point: the same three tags @malloydata/render resolves for the children of
+   // a `# dashboard` nest, so one view lays out identically whichever way it is
+   // consumed. A tile entry is a string in an annotation and could never have
+   // carried a second grammar without reintroducing what this collapses.
+   const withViews = (
+      annotation: string,
+      views: Record<string, string[]>,
+   ): DashboardModelFacts =>
+      facts({
+         modelAnnotations: [annotation],
+         viewGivens: new Map(Object.keys(views).map((key) => [key, []])),
+         viewAnnotations: new Map(Object.entries(views)),
+         sourceFields: new Map([
+            ["orders", new Set(["kpi", "by_month", "detail"])],
+         ]),
+      });
+
+   // The WHOLE per-child set @malloydata/render resolves, not a useful subset. A
+   // tag that works as a nest and is dropped as a tile is the inconsistency this
+   // grammar exists to remove, so the set is asserted rather than sampled: if the
+   // renderer grows a fifth, this is what should fail.
+   it("carries every per-child tag from the view onto the tile", () => {
+      const manifest = build(
+         withViews(
+            '## artifact { tiles=["orders -> kpi", "orders -> by_month"] } dashboard { columns=12 }\n',
+            {
+               "orders -> kpi": [
+                  "# colspan=3\n",
+                  '# label="Revenue"\n',
+                  '# subtitle="Last 90 days"\n',
+               ],
+               "orders -> by_month": [
+                  "# colspan=9\n",
+                  "# break\n",
+                  "# borderless\n",
+               ],
+            },
+         ),
+      );
+      expect(manifest?.tiles).toEqual([
+         {
+            query: "orders -> kpi",
+            givenNames: [],
+            colspan: 3,
+            label: "Revenue",
+            subtitle: "Last 90 days",
+         },
+         {
+            query: "orders -> by_month",
+            givenNames: [],
+            colspan: 9,
+            break: true,
+            borderless: true,
+         },
+      ]);
+   });
+
+   it("leaves an untagged view with no layout at all", () => {
+      const manifest = build(
+         withViews('## artifact { tiles=["orders -> detail"] }\n', {
+            "orders -> detail": [],
+         }),
+      );
+      expect(manifest?.tiles).toEqual([
+         { query: "orders -> detail", givenNames: [] },
+      ]);
+   });
+
+   // A tile can name a model-level `query:` as well as a source view, and the
+   // tags are read off whichever it names. Missing this half would have made the
+   // layout silently depend on which kind of thing a tile pointed at.
+   it("reads the layout off a model-level named query too", () => {
+      const manifest = build(
+         facts({
+            modelAnnotations: ['## artifact { tiles=["totals"] }\n'],
+            queries: [
+               { name: "totals", annotations: ["# colspan=6\n"], givens: [] },
+            ],
+         }),
+      );
+      expect(manifest?.tiles).toEqual([
+         { query: "totals", givenNames: [], colspan: 6 },
+      ]);
+   });
+
+   // Dropped rather than clamped or rounded, matching how the renderer treats
+   // the same value on the same tag. The lint is what says so; a reader that
+   // silently repaired the value would leave the two disagreeing about one tag,
+   // which is how the grid width came to have two spellings.
+   it("drops a colspan that is not a positive integer", () => {
+      for (const bad of ['"wide"', "0", "-2", "2.5"]) {
+         const manifest = build(
+            withViews('## artifact { tiles=["orders -> kpi"] }\n', {
+               "orders -> kpi": [`# colspan=${bad}\n`],
+            }),
+         );
+         expect(manifest?.tiles).toEqual([
+            { query: "orders -> kpi", givenNames: [] },
+         ]);
+      }
+   });
+
+   // The likelier loss than an over-wide colspan: the layout is written and the
+   // width is forgotten, the viewer falls back to a narrow default, and every
+   // tile is clamped to it. Nothing else says so — the manifest looks fine.
+   it("reports a colspan on a dashboard that declares no grid width", () => {
+      const f = withViews('## artifact { tiles=["orders -> kpi"] }\n', {
+         "orders -> kpi": ["# colspan=6\n"],
+      });
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(f, manifest).map((x) => x.message)).toEqual([
+         expect.stringContaining("declares no # dashboard { columns=N }"),
+      ]);
+   });
+
+   it("reports a colspan wider than the grid as clamped", () => {
+      const f = withViews(
+         '## artifact { tiles=["orders -> kpi"] } dashboard { columns=4 }\n',
+         { "orders -> kpi": ["# colspan=8\n"] },
+      );
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(f, manifest).map((x) => x.message)).toEqual([
+         expect.stringContaining("clamped to 4"),
+      ]);
+   });
+
+   it("reports an unreadable colspan without printing the word undefined", () => {
+      const f = withViews('## artifact { tiles=["orders -> kpi"] }\n', {
+         "orders -> kpi": ["# colspan=@2024-13-01\n"],
+      });
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      const messages = lintDashboard(f, manifest).map((x) => x.message);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("could not be read");
+      expect(messages[0]).not.toContain("undefined");
+   });
+
+   it("says nothing about a colspan that fits", () => {
+      const f = withViews(
+         '## artifact { tiles=["orders -> kpi"] } dashboard { columns=4 }\n',
+         { "orders -> kpi": ["# colspan=2\n"] },
+      );
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      expect(lintDashboard(f, manifest)).toEqual([]);
+   });
+});
+
+describe("service/dashboard artifact-tag enumeration", () => {
+   const lintOf = (f: DashboardModelFacts) => {
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      return lintDashboard(f, manifest).map((finding) => finding.message);
+   };
+
+   // `readArtifactTag` looks properties up by name, so a misspelling is not an
+   // error there — it is never asked for, and the dashboard serves as if the
+   // line were not written. Enumerating is the only way that becomes visible.
+   it("names a property the reader does not read", () => {
+      expect(
+         lintOf(
+            facts({
+               queries: [
+                  {
+                     name: "overview",
+                     annotations: ['# artifact { titel="Typo" }\n'],
+                     givens: [],
+                  },
+               ],
+            }),
+         ),
+      ).toEqual([
+         expect.stringContaining("`titel` in the artifact tag does nothing"),
+      ]);
+   });
+
+   // Scoped to Publisher on purpose: Malloyyo's own `# artifact` reference is
+   // not in this repo, and a property inert here may well mean something there.
+   it("scopes the claim to Publisher", () => {
+      expect(
+         lintOf(
+            facts({
+               queries: [
+                  {
+                     name: "overview",
+                     annotations: ["# artifact { whatever=1 }\n"],
+                     givens: [],
+                  },
+               ],
+            }),
+         )[0],
+      ).toContain("does nothing in Publisher");
+   });
+
+   // `tiles=` on a query-level tag is the one wrong-position case worth its own
+   // wording: the property is real, it is the position that makes it inert, and
+   // "does nothing" alone would read as though composites were unsupported.
+   it("tells a query-level tiles= where the tag belongs", () => {
+      const message = lintOf(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ['# artifact { tiles=["orders -> a"] }\n'],
+                  givens: [],
+               },
+            ],
+         }),
+      )[0];
+      expect(message).toContain("`tiles` in the artifact tag does nothing");
+      expect(message).toContain("## artifact");
+   });
+
+   // The keys under `givens` are the author's own given names, so descending
+   // into it would warn about every control on the page.
+   it("treats givens as opaque", () => {
+      expect(
+         lintOf(
+            facts({
+               modelAnnotations: [
+                  "## artifact { tiles=[\"orders -> a\"] givens { WHATEVER=f'x' } }\n",
+               ],
+               viewGivens: new Map([["orders -> a", []]]),
+               givens: new Map([given("WHATEVER", "filter<string>", [])]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+
+   it("says nothing about every property the reader does read", () => {
+      expect(
+         lintOf(
+            facts({
+               modelAnnotations: [
+                  '## artifact { title="T" tiles=["orders -> a"] autorun=false }\n',
+               ],
+               viewGivens: new Map([["orders -> a", []]]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+
+   // The grid width is a SIBLING of the artifact tag, and writing it inside the
+   // braces is the mistake this grammar invites most. Pinned because the tag
+   // still parses, the dashboard still builds, and the width silently reverts to
+   // the default.
+   it("says where the grid width goes when it is written inside the braces", () => {
+      expect(
+         lintOf(
+            facts({
+               modelAnnotations: [
+                  '## artifact { tiles=["orders -> a"] dashboard { columns=12 } }\n',
+               ],
+               viewGivens: new Map([["orders -> a", []]]),
+            }),
+         ),
+      ).toEqual([expect.stringContaining("close the artifact braces first")]);
+   });
+
+   // Half a migration to `tiles=`: the model-level tag is written, the query
+   // still carries its own, and discovery falls through to the query. Before
+   // this the page kept serving and nothing was said, because the lint that owns
+   // this diagnosis runs only when NO dashboard was built.
+   it("reports a tiles-less model tag that a query-level artifact rescued", () => {
+      expect(
+         lintOf(
+            facts({
+               modelAnnotations: ['## artifact { title="Migrating" }\n'],
+               queries: [
+                  {
+                     name: "overview",
+                     annotations: ["# artifact\n"],
+                     givens: [],
+                  },
+               ],
+            }),
+         ),
+      ).toEqual([
+         expect.stringContaining(
+            "declares no tiles=, so it builds nothing and this dashboard is " +
+               "the query's own '# artifact' instead",
+         ),
+      ]);
+   });
+
+   it("stays silent when the model tag does declare tiles", () => {
+      expect(
+         lintOf(
+            facts({
+               modelAnnotations: ['## artifact { tiles=["orders -> a"] }\n'],
+               viewGivens: new Map([["orders -> a", []]]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+});
+
 describe("service/dashboard lint", () => {
    /** Lint a facts bundle through the manifest the same file would produce. */
    function lint(f: DashboardModelFacts) {
@@ -672,7 +1036,7 @@ describe("service/dashboard lint", () => {
          lint(
             facts({
                modelAnnotations: [
-                  '## artifact { tiles=["orders -> by_brand"] dashboard_columns=2 }\n',
+                  '## artifact { tiles=["orders -> by_brand"] } dashboard { columns=2 }\n',
                ],
                viewGivens: new Map([["orders -> by_brand", ["BRAND"]]]),
                sourceFields: new Map([["orders", new Set(["by_brand"])]]),
@@ -805,7 +1169,7 @@ describe("service/dashboard lint", () => {
       ).toEqual([]);
    });
 
-   it("flags a dashboard_columns that is not a positive integer", () => {
+   it("flags a grid width that is not a positive integer", () => {
       // `numeric()` returns undefined for these, so the manifest simply omits
       // the grid width — invisible without the warning.
       for (const value of ["wide", "0", "-3", "2.5"]) {
@@ -813,13 +1177,15 @@ describe("service/dashboard lint", () => {
             lint(
                facts({
                   modelAnnotations: [
-                     `## artifact { tiles=["orders -> a"] dashboard_columns=${value} }\n`,
+                     `## artifact { tiles=["orders -> a"] } dashboard { columns=${value} }\n`,
                   ],
                   viewGivens: new Map([["orders -> a", []]]),
                }),
             ),
          ).toEqual([
-            expect.stringContaining("dashboard_columns must be a positive"),
+            expect.stringContaining(
+               "# dashboard { columns=… } must be a positive",
+            ),
          ]);
       }
    });
@@ -1309,6 +1675,105 @@ describe("service/dashboard silent-vanish lint", () => {
    });
 });
 
+describe("service/dashboard suggest source lint", () => {
+   const lintOf = (f: DashboardModelFacts) => {
+      const manifest = build(f);
+      if (!manifest) throw new Error("expected a dashboard");
+      return lintDashboard(f, manifest).map((finding) => finding.message);
+   };
+
+   /** A dashboard whose one tile filters by BRAND, whose suggest names a query. */
+   const withSuggestQuery = (
+      overrides: Partial<DashboardModelFacts>,
+   ): DashboardModelFacts =>
+      facts({
+         modelAnnotations: ['## artifact { tiles=["orders -> a"] }\n'],
+         viewGivens: new Map([["orders -> a", ["BRAND"]]]),
+         givens: new Map([
+            given("BRAND", "filter<string>", [
+               "# suggest { query=brand_suggest dimension=brand }\n",
+            ]),
+         ]),
+         ...overrides,
+      });
+
+   // An import is not transitive, so importing a suggest QUERY without the
+   // source it reads leaves a control that resolves, loads clean, and then
+   // answers "Undefined source" the first time a reader opens it. Measured
+   // against the compiler before this was written: the query's structRef stays
+   // the source's NAME, and that name is absent from the file's own sources.
+   it("reports a suggest query whose own source is not imported", () => {
+      expect(
+         lintOf(
+            withSuggestQuery({
+               queries: [
+                  {
+                     name: "brand_suggest",
+                     annotations: [],
+                     givens: [],
+                     sourceName: "order_items",
+                  },
+               ],
+               sourceFields: new Map([["orders", new Set(["a"])]]),
+            }),
+         ),
+      ).toEqual([
+         expect.stringContaining(
+            'reads source "order_items" that this file does not import',
+         ),
+      ]);
+   });
+
+   it("stays silent once that source is imported too", () => {
+      expect(
+         lintOf(
+            withSuggestQuery({
+               queries: [
+                  {
+                     name: "brand_suggest",
+                     annotations: [],
+                     givens: [],
+                     sourceName: "order_items",
+                  },
+               ],
+               sourceFields: new Map([
+                  ["orders", new Set(["a"])],
+                  ["order_items", new Set(["brand"])],
+               ]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+
+   // A query whose source is inlined in its own definition carries no name to
+   // dangle, so there is nothing to check and nothing to report.
+   it("stays silent when the suggest query inlines its source", () => {
+      expect(
+         lintOf(
+            withSuggestQuery({
+               queries: [
+                  { name: "brand_suggest", annotations: [], givens: [] },
+               ],
+               sourceFields: new Map([["orders", new Set(["a"])]]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+
+   // The pre-existing check, which this one sits beside: a name that resolves
+   // to nothing at all is a different mistake with a different fix.
+   it("still reports a suggest query the file does not define", () => {
+      expect(
+         lintOf(
+            withSuggestQuery({
+               queries: [],
+               sourceFields: new Map([["orders", new Set(["a"])]]),
+            }),
+         ),
+      ).toEqual([expect.stringContaining("which this file does not define")]);
+   });
+});
+
 describe("service/dashboard given-tag lint", () => {
    const messages = (f: DashboardModelFacts) =>
       lintGivenTags([f]).map((finding) => finding.message);
@@ -1365,27 +1830,29 @@ describe("service/dashboard grid width and hostile literals", () => {
          queries: [{ name: "overview", annotations: [annotation], givens: [] }],
       });
 
-   // BOTH spellings reach the manifest, but only `dashboard_columns` was ever
-   // checked, and `# dashboard { columns=N }` is the form the shipped example
-   // dashboards use, so a bad value there was dropped with no finding at all.
-   it("validates the # dashboard { columns= } spelling", () => {
+   const composite = (annotation: string) =>
+      facts({
+         modelAnnotations: [annotation],
+         viewGivens: new Map([["orders -> totals", []]]),
+         sourceFields: new Map([["orders", new Set(["totals"])]]),
+      });
+
+   it("validates the width on a query-level artifact", () => {
       expect(
          lintOf(singleQuery('# artifact dashboard { columns="wide" }\n')),
       ).toEqual([expect.stringContaining("# dashboard { columns=… } must be")]);
    });
 
-   it("validates the composite dashboard_columns spelling", () => {
+   // Same tag, same reader, at model level. One spelling means the composite
+   // has no second code path to get wrong, which is what the two used to.
+   it("validates the width on a composite", () => {
       expect(
          lintOf(
-            facts({
-               modelAnnotations: [
-                  '## artifact { tiles=["orders -> totals"] dashboard_columns="wide" }\n',
-               ],
-               viewGivens: new Map([["orders -> totals", []]]),
-               sourceFields: new Map([["orders", new Set(["totals"])]]),
-            }),
+            composite(
+               '## artifact { tiles=["orders -> totals"] } dashboard { columns="wide" }\n',
+            ),
          ),
-      ).toEqual([expect.stringContaining("dashboard_columns must be")]);
+      ).toEqual([expect.stringContaining("# dashboard { columns=… } must be")]);
    });
 
    // The lint said the value was dropped while `Tag.numeric()` (parseFloat)
@@ -1406,43 +1873,12 @@ describe("service/dashboard grid width and hostile literals", () => {
       }
    });
 
-   // The two spellings are read with `??`, so a bad value in one is not always
-   // a fallback to the renderer default: when the other spelling is good, the
-   // grid quietly uses it, and the finding must say so.
-   it("names the width actually used when the other spelling supplies one", () => {
-      const both = singleQuery(
-         '# artifact { dashboard_columns="wide" } dashboard { columns=6 }\n',
-      );
-      expect(build(both)?.dashboardColumns).toBe(6);
-      expect(lintOf(both)).toEqual([
-         expect.stringContaining("The grid uses 6 instead."),
-      ]);
-   });
-
-   it("still says renderer default when neither spelling is usable", () => {
-      const neither = singleQuery(
-         '# artifact { dashboard_columns="wide" } dashboard { columns="wider" }\n',
-      );
-      expect(build(neither)?.dashboardColumns).toBeUndefined();
-      for (const m of lintOf(neither)) {
-         expect(m).toContain("falls back to the renderer default");
-      }
-   });
-
-   // The same strictness, on the OTHER spelling. Both reach the manifest, and a
-   // mutation sweep showed only the render-tag half was pinned: reverting the
-   // composite half to raw `Tag.numeric()` failed nothing. Enumerating the set
-   // is the point, not testing one member of it twice.
-   it("keeps an invalid composite dashboard_columns off the manifest too", () => {
-      const composite = (annotation: string) =>
-         facts({
-            modelAnnotations: [annotation],
-            viewGivens: new Map([["orders -> totals", []]]),
-            sourceFields: new Map([["orders", new Set(["totals"])]]),
-         });
+   // The same strictness at model level: the reader is shared, but a test that
+   // only ever exercises the query position cannot show that.
+   it("keeps an invalid composite width off the manifest too", () => {
       for (const bad of ['"12abc"', "1e999", "0", "-4", "2.5"]) {
          const f = composite(
-            `## artifact { tiles=["orders -> totals"] dashboard_columns=${bad} }\n`,
+            `## artifact { tiles=["orders -> totals"] } dashboard { columns=${bad} }\n`,
          );
          expect(build(f)?.dashboardColumns).toBeUndefined();
          const manifest = build(f);
@@ -1451,24 +1887,36 @@ describe("service/dashboard grid width and hostile literals", () => {
       }
    });
 
-   it("keeps a valid composite dashboard_columns ON the manifest", () => {
-      const f = facts({
-         modelAnnotations: [
-            '## artifact { tiles=["orders -> totals"] dashboard_columns=4 }\n',
-         ],
-         viewGivens: new Map([["orders -> totals", []]]),
-         sourceFields: new Map([["orders", new Set(["totals"])]]),
-      });
+   it("keeps a valid composite width ON the manifest", () => {
+      const f = composite(
+         '## artifact { tiles=["orders -> totals"] } dashboard { columns=4 }\n',
+      );
       expect(build(f)?.dashboardColumns).toBe(4);
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
       expect(lintDashboard(f, manifest)).toEqual([]);
    });
 
-   it("accepts a valid width in either spelling", () => {
+   it("accepts a valid width", () => {
       expect(
          lintOf(singleQuery("# artifact dashboard { columns=6 }\n")),
       ).toEqual([]);
+   });
+
+   // The spelling this grammar dropped. Nothing reads it, so without the
+   // enumeration lint a package carrying it serves a default-width grid and says
+   // nothing — the exact failure that made two spellings worth collapsing.
+   it("names dashboard_columns as doing nothing, and what to write instead", () => {
+      const f = composite(
+         '## artifact { tiles=["orders -> totals"] dashboard_columns=4 }\n',
+      );
+      expect(build(f)?.dashboardColumns).toBeUndefined();
+      expect(lintOf(f)).toEqual([
+         expect.stringContaining(
+            "`dashboard_columns` in the artifact tag does nothing in Publisher",
+         ),
+      ]);
+      expect(lintOf(f)[0]).toContain("# dashboard { columns=N }");
    });
 
    // `Tag.text()` THROWS on a bad date literal rather than returning undefined.

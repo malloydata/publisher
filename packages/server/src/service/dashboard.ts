@@ -8,20 +8,27 @@
  *
  * Ported from Malloyyo's `@malloyyo/mcp-engine` (`artifacts.ts`,
  * `given-specs.ts` — MIT) rather than depended on: that is a private workspace
- * package. The *grammar* is the contract and is kept byte-compatible, so one
- * model repo works unchanged in both products; the code is an implementation
- * detail a shared malloydata package is expected to absorb later. See
- * `docs/malloyyo-dashboards-design.md` §Sourcing strategy.
+ * package. The *grammar* is the contract, so one model repo largely works
+ * unchanged in both products; the code is an implementation detail a shared
+ * malloydata package is expected to absorb later. One property deliberately
+ * diverges, the grid width; see `docs/malloyyo-dashboards-design.md`
+ * §Where Publisher diverges.
  *
- * Two forms of dashboard, distinguished only by where the tag sits:
+ * A dashboard is `## artifact { tiles=[…] }` at model level: named views that
+ * run separately and combine into one grid Publisher lays out. That is the form
+ * to author, and the only one that can span sources — a nest's pipeline starts
+ * from its own query's source, so no single Malloy result spans two.
  *
- * - `# artifact` on a `query:` — a single-query dashboard. The renderer grid
- *   comes from the sibling `# dashboard {columns=N}` render tag.
- * - `## artifact { tiles=[…] }` at model level — a composite dashboard, whose
- *   named views run separately and combine into one grid.
+ * `# artifact` on a `query:` is also served, and is the same thing a notebook
+ * cell shows: one Malloy result that @malloydata/render lays out from the query's
+ * own `# dashboard {columns=N}`. That is Malloy's rendering feature rather than a
+ * second dashboard grammar, and the docs no longer offer it as an alternative.
  *
- * A `dashboards/*.malloy` carrying neither is a shared include: skipped, not an
- * error.
+ * Both read the same grid-width spelling and the same per-tile layout tags, so a
+ * view carries its own layout whichever way it is consumed.
+ *
+ * A `dashboards/*.malloy` carrying neither tag is a shared include: skipped, not
+ * an error.
  */
 
 import { isSourceDef } from "@malloydata/malloy";
@@ -99,8 +106,8 @@ export type DashboardSuggestSpec = GivenSuggestSpec;
  */
 export type DashboardGivenSpec = MalloyGivenApi;
 
-/** One tile of a composite dashboard. */
-export interface DashboardTileSpec {
+/** One tile of a dashboard: what to run, and how to present it. */
+export interface DashboardTileSpec extends DashboardTileLayout {
    /** The run expression exactly as written in `tiles=[…]` (`"orders -> by_month"`). */
    query: string;
    /**
@@ -113,6 +120,36 @@ export interface DashboardTileSpec {
    givenNames?: string[];
 }
 
+/**
+ * Per-tile presentation, read off the view or query a tile names rather than off
+ * the tile entry in `tiles=[…]`.
+ *
+ * Exactly @malloydata/render's per-child dashboard tags (its
+ * `DashboardChildConfig`) plus the universal `# label`, so one view presents the
+ * same whether it is named as a tile or nested under a `# dashboard` query. Keep
+ * it the whole set: a tag honored on one form and dropped on the other is a
+ * silent divergence, and this reader is the only place it can be prevented.
+ */
+export interface DashboardTileLayout {
+   /** `# label`: the tile's heading. */
+   label?: string;
+   /** `# subtitle`: a second line under the heading. */
+   subtitle?: string;
+   /** `# colspan=N`: grid columns this tile spans. */
+   colspan?: number;
+   /**
+    * `# break`: start a new grid row at this tile.
+    *
+    * Spelled for the tag rather than for any one language: a generated client
+    * escapes the attribute where the word is reserved (Python gets `break_`)
+    * and the wire key stays `break`, so the name an author writes is the name
+    * every other surface shows.
+    */
+   break?: boolean;
+   /** `# borderless`: draw the result with no card around it. */
+   borderless?: boolean;
+}
+
 export interface DashboardManifest {
    /** The filename basename — the slug, the `# drill` target, the URL segment. */
    name: string;
@@ -122,7 +159,7 @@ export interface DashboardManifest {
    query?: string;
    /** Set for the composite (`tiles=[…]`) form only. */
    tiles?: DashboardTileSpec[];
-   /** Grid width: `# dashboard {columns=N}`, or `dashboard_columns=N` on a composite. */
+   /** Grid width: `# dashboard {columns=N}`, beside the artifact tag. */
    dashboardColumns?: number;
    /**
     * Per-dashboard starting values for controls, in the shape the query
@@ -148,9 +185,9 @@ export interface DashboardManifest {
 /**
  * MOTLY tags the dashboard grammar owns.
  *
- * These share the `#` namespace with `@malloydata/render`'s tags but mean
- * nothing to the renderer, which reports every tag property it did not consume
- * as `Unknown render tag '<name>' on field '<field>'`. Without this list every
+ * These share the `#` namespace with `@malloydata/render`'s tags, and the
+ * renderer reports every tag property it did not consume as
+ * `Unknown render tag '<name>' on field '<field>'`. Without this list every
  * dashboard query would answer with a spurious render warning — `artifact` sits
  * on the query itself, and `drill` on the dimensions it makes clickable.
  *
@@ -161,7 +198,29 @@ export interface DashboardManifest {
  */
 const PUBLISHER_OWNED_TAGS = ["artifact", "drill"];
 
-const UNKNOWN_RENDER_TAG = /^Unknown render tag '([^']+)'/;
+/**
+ * The renderer's own per-child dashboard tags, which Publisher also reads for a
+ * tile ({@link DashboardTileLayout}).
+ *
+ * It resolves these only for the direct children of a `# dashboard` nest, and a
+ * tile is a standalone query, so without this every tile of every dashboard
+ * answers `Unknown render tag 'colspan'` for a tag Publisher did consume.
+ *
+ * Dropped only ON THE TOP-LEVEL RESULT of a DASHBOARD file, which is the shape a
+ * tile has and the only place a tile runs. A `# colspan` on a nest that is not a
+ * dashboard child is still a real mistake nothing else reads, and it reports
+ * against that nest's field name, so it survives. Nor is the renderer's own
+ * `Invalid # colspan` / `Ignored # colspan` touched: this matches only the
+ * unknown-tag line.
+ *
+ * The model scope matters because this filter runs on EVERY query the server
+ * answers, not only on tiles. Suppressing by shape alone would have taken the
+ * warning away from an ordinary query that puts one of these at top level, where
+ * there is no grid and the tag really does nothing.
+ */
+const RENDERER_CHILD_TAGS = ["colspan", "break", "subtitle", "borderless"];
+
+const UNKNOWN_RENDER_TAG = /^Unknown render tag '([^']+)' on field '([^']*)'/;
 
 /**
  * Drop "unknown render tag" complaints about tags Publisher owns, leaving every
@@ -170,11 +229,23 @@ const UNKNOWN_RENDER_TAG = /^Unknown render tag '([^']+)'/;
  */
 export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
    logs: T[],
+   /** The model this query ran against, which decides whether a tile could
+    * have produced it. Required rather than optional so a new call site cannot
+    * silently widen the suppression back to every query. */
+   modelPath: string,
 ): T[] {
+   const couldBeATile = isDashboardModelPath(modelPath);
    return logs.filter((log) => {
       const match = UNKNOWN_RENDER_TAG.exec(log.message ?? "");
       if (!match) return true;
-      return !PUBLISHER_OWNED_TAGS.includes(match[1].split(".")[0]);
+      const [, tag, field] = match;
+      const root = tag.split(".")[0];
+      if (PUBLISHER_OWNED_TAGS.includes(root)) return false;
+      return !(
+         couldBeATile &&
+         RENDERER_CHILD_TAGS.includes(root) &&
+         field === "root"
+      );
    });
 }
 
@@ -222,6 +293,35 @@ export function matchesDocumentedDashboardName(slug: string): boolean {
    return /^[a-zA-Z0-9_-]+$/.test(slug);
 }
 
+/**
+ * Artifact-tag properties {@link readArtifactTag} reads, per form. The lint
+ * enumerates against these, so anything added to the reader belongs here too —
+ * kept adjacent for that reason.
+ */
+const COMPOSITE_ARTIFACT_PROPERTIES: readonly string[] = [
+   "title",
+   "tiles",
+   "givens",
+   "autorun",
+];
+const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
+   COMPOSITE_ARTIFACT_PROPERTIES.filter((property) => property !== "tiles");
+
+/**
+ * Properties that reach the artifact tag by mistake, and what to write instead.
+ *
+ * `dashboard` is the likelier of the two now: the grid width is a SIBLING tag, so
+ * closing the artifact braces after it (`## artifact { … dashboard { columns=12 } }`)
+ * reads naturally and puts it somewhere nothing looks.
+ */
+const ARTIFACT_PROPERTY_REPLACEMENTS: Record<string, string> = {
+   dashboard_columns:
+      "Write the grid width as `# dashboard { columns=N }` beside the artifact tag.",
+   dashboard:
+      "The grid width is a sibling of the artifact tag, not a property of it: " +
+      "close the artifact braces first, as `## artifact { … } dashboard { columns=N }`.",
+};
+
 /** The `artifact` sub-tag read into the manifest fields it contributes. */
 interface ArtifactTagData {
    title?: string;
@@ -247,9 +347,10 @@ function readArtifactTag(
          .array("tiles")
          ?.map((tile) => tagText(tile))
          .filter((tile): tile is string => tile !== undefined),
-      // The composite form carries its grid width inside the artifact tag; the
-      // single-query form gets it from the `# dashboard` render tag, which the
-      // renderer reads too.
+      // One spelling for both forms: the `# dashboard { columns=N }` render tag
+      // sitting beside the artifact tag, which is also what the renderer reads
+      // on a single query. Publisher lays out the composite grid itself, so on
+      // that form it is Publisher reading it, at model level.
       //
       // Read through the same strict reader the lint validates with, and
       // require a positive integer here as well. `Tag.numeric()` is parseFloat,
@@ -257,17 +358,18 @@ function readArtifactTag(
       // null against a field the spec declares an integer. That put a value on
       // the wire in the very case the lint was reporting as dropped, so the two
       // disagreed about the same tag.
-      dashboardColumns:
-         positiveInteger(tagNumeric(artifact, "dashboard_columns")) ??
-         positiveInteger(tagNumeric(tag.tag("dashboard"), "columns")),
+      dashboardColumns: positiveInteger(
+         tagNumeric(tag.tag("dashboard"), "columns"),
+      ),
       givens,
       autorun,
    };
 }
 
 /**
- * A grid width, or undefined when the value is not one. Kept beside the lint's
- * own check so the manifest and the finding can never disagree about a tag.
+ * A grid width or a colspan, or undefined when the value is not one. Kept beside
+ * the lint's own check so the manifest and the finding can never disagree about
+ * a tag.
  */
 function positiveInteger(value: number | undefined): number | undefined {
    return value !== undefined && Number.isInteger(value) && value >= 1
@@ -301,6 +403,13 @@ export interface DashboardModelFacts {
       annotations: string[];
       /** Names of the givens this query references. */
       givens: string[];
+      /**
+       * The source this query reads, when it reads one BY NAME. A query imported
+       * without its source keeps the name and resolves as a query, so nothing
+       * upstream reports it; running it is what fails. `undefined` when the
+       * source is inlined in the query's own definition, which cannot dangle.
+       */
+      sourceName?: string;
    }[];
    /**
     * Given declarations this file can actually *bind*, keyed by name.
@@ -325,6 +434,15 @@ export interface DashboardModelFacts {
     * what lets the lint call out a tile that names nothing.
     */
    viewGivens: Map<string, string[]>;
+   /**
+    * Annotation texts on each source view, keyed the way
+    * {@link DashboardModelFacts.viewGivens} is. The per-tile layout tags live
+    * here; a model-level named query's are in `queries[].annotations` already.
+    *
+    * Raw rather than pre-read into a {@link DashboardTileLayout}: the lint has to
+    * report values the reader drops, which a derived map no longer carries.
+    */
+   viewAnnotations: Map<string, string[]>;
    /** Field names per source, for validating `suggest { source= dimension= }`. */
    sourceFields: Map<string, Set<string>>;
    /**
@@ -450,9 +568,12 @@ export function readDashboardModelFacts(
          givens: (query.givenUsage ?? [])
             .map((usage) => registry[usage.id]?.name)
             .filter((name): name is string => name !== undefined),
+         sourceName:
+            typeof query.structRef === "string" ? query.structRef : undefined,
       }));
 
    const viewGivens = new Map<string, string[]>();
+   const viewAnnotations = new Map<string, string[]>();
    const sourceFields = new Map<string, Set<string>>();
    const drills: DashboardDrill[] = [];
    for (const obj of Object.values(modelDef.contents)) {
@@ -476,9 +597,16 @@ export function readDashboardModelFacts(
          if (field.type === "turtle") {
             const refs = new Set(sourceGivens);
             collectGivenRefs((field as TurtleDef).pipeline, refs);
-            viewGivens.set(
-               normalizeTileExpression(`${sourceName} -> ${fieldName}`),
-               Array.from(refs),
+            const key = normalizeTileExpression(
+               `${sourceName} -> ${fieldName}`,
+            );
+            viewGivens.set(key, Array.from(refs));
+            viewAnnotations.set(
+               key,
+               [
+                  ...(field.annotations?.blockNotes ?? []),
+                  ...(field.annotations?.notes ?? []),
+               ].map((note) => note.text),
             );
             continue;
          }
@@ -502,9 +630,37 @@ export function readDashboardModelFacts(
       queries,
       givens,
       viewGivens,
+      viewAnnotations,
       sourceFields,
       drills,
    };
+}
+
+/**
+ * Read the per-tile presentation tags off one view's annotations, or undefined
+ * when it carries none of them.
+ *
+ * Validated the way @malloydata/render validates the same tags for the children
+ * of a `# dashboard` nest: colspan a positive integer, break and borderless by
+ * presence. A bad colspan is dropped rather than clamped, matching the renderer
+ * and leaving the lint to say so; clamping to the grid width happens at render
+ * time, where the width is known.
+ */
+function readTileLayout(
+   annotations: string[],
+): DashboardTileLayout | undefined {
+   const tag = motlyTag(annotations);
+   if (!tag) return undefined;
+   const layout: DashboardTileLayout = {};
+   const label = tagText(tag, "label");
+   if (label !== undefined) layout.label = label;
+   const subtitle = tagText(tag, "subtitle");
+   if (subtitle !== undefined) layout.subtitle = subtitle;
+   const colspan = positiveInteger(tagNumeric(tag, "colspan"));
+   if (colspan !== undefined) layout.colspan = colspan;
+   if (tag.has("break")) layout.break = true;
+   if (tag.has("borderless")) layout.borderless = true;
+   return Object.keys(layout).length > 0 ? layout : undefined;
 }
 
 /**
@@ -567,6 +723,32 @@ function resolveTileGivens(
    // guarantee an "unknown given" error.
    return referencedTileGivens(tile, facts)?.filter((name) =>
       facts.givens.has(name),
+   );
+}
+
+/**
+ * The layout a tile inherits from the view or query it names, or undefined when
+ * that view declares none. Resolved the same way {@link referencedTileGivens}
+ * is, so a tile expression discovery cannot resolve gets no layout either —
+ * which is right: there is no single view to have tagged one.
+ */
+function resolveTileLayout(
+   tile: string,
+   facts: DashboardModelFacts,
+): DashboardTileLayout | undefined {
+   const annotations = tileAnnotations(tile, facts);
+   return annotations && readTileLayout(annotations);
+}
+
+/** The annotations on whatever a tile expression names, for the two readers of them. */
+function tileAnnotations(
+   tile: string,
+   facts: DashboardModelFacts,
+): string[] | undefined {
+   const normalized = normalizeTileExpression(tile);
+   return (
+      facts.viewAnnotations.get(normalized) ??
+      facts.queries.find((query) => query.name === normalized)?.annotations
    );
 }
 
@@ -693,7 +875,12 @@ export function buildDashboardManifest(
    if (composite?.tiles?.length) {
       const tiles = composite.tiles.map((query) => {
          const givenNames = resolveTileGivens(query, facts);
-         return givenNames ? { query, givenNames } : { query };
+         const layout = resolveTileLayout(query, facts);
+         return {
+            query,
+            ...(givenNames ? { givenNames } : {}),
+            ...layout,
+         };
       });
       const doc = docCommentTitleAndDescription(
          facts.modelAnnotations,
@@ -867,37 +1054,107 @@ export function lintDashboard(
       );
    }
 
-   // The grid width has two spellings and BOTH reach the manifest (see
-   // readArtifactTag), so both are checked here. Checking only the artifact-tag
-   // spelling left `# dashboard { columns=… }`, the form the shipped examples
-   // use, silently dropped on a bad value.
-   for (const [tag, key, written] of [
-      [artifactTag, "dashboard_columns", "dashboard_columns"],
-      [ownTag?.tag("dashboard"), "columns", "# dashboard { columns=… }"],
-   ] as const) {
-      // A bad value is invisible in the manifest, because `positiveInteger`
-      // drops it there too, which is exactly why it needs saying aloud. Both
-      // sides go through the same helper so they cannot disagree about a tag.
-      if (!tag?.has(key)) continue;
-      if (positiveInteger(tagNumeric(tag, key)) !== undefined) continue;
-      // What actually happens depends on the OTHER spelling, because the two
-      // are read with `??`. Saying "falls back to the renderer default" was
-      // right only when neither spelling supplied a usable value; when this one
-      // is bad and the other is good, the grid quietly uses the other, and a
-      // finding naming a default the author never sees is worse than none.
-      // `tagText` returns undefined for exactly the bad-literal case this guard
-      // exists for, and `JSON.stringify(undefined)` is the literal text
-      // `undefined`, so the author was told the value was "undefined" rather
-      // than what they wrote. Say the value is unreadable instead of naming a
-      // value nobody typed.
-      const raw = tagText(tag, key);
+   // The same tiles-less `## artifact`, on a file a query-level `# artifact`
+   // rescued. `lintUndiscoveredDashboard` owns this diagnosis but package.ts
+   // runs it only when NO dashboard was built, so the rescued case reached
+   // nobody: a half-finished migration to `tiles=` keeps serving the old
+   // one-query page with the new tag entirely inert, which is the silent shape
+   // this file exists to prevent.
+   if (!manifest.tiles) {
+      const modelArtifact = motlyTag(facts.modelAnnotations)?.tag("artifact");
+      if (modelArtifact) {
+         add(
+            `${describeTilelessModelArtifact(modelArtifact)}, so it builds ` +
+               `nothing and this dashboard is the query's own '# artifact' ` +
+               `instead. ${NAME_THE_TILES}`,
+         );
+      }
+   }
+
+   // Every property `readArtifactTag` does not read, named. The reader looks up
+   // sub-paths by name, so a misspelling or a property on the wrong form is not
+   // an error there — it is simply never asked for, and the dashboard serves as
+   // if the author had not written it. `dashboard_columns`, which this grammar
+   // no longer has, is the case that made it worth enumerating.
+   //
+   // Top level only, and `givens` is opaque: its keys are the author's own given
+   // names, so descending into it would warn about every control on the page.
+   const knownProperties = manifest.tiles
+      ? COMPOSITE_ARTIFACT_PROPERTIES
+      : QUERY_ARTIFACT_PROPERTIES;
+   for (const property of Object.keys(artifactTag?.dict ?? {})) {
+      if (knownProperties.includes(property)) continue;
+      // Scoped to Publisher, because Malloyyo's `# artifact` reference is not in
+      // this repo and a property inert here may well mean something there.
       add(
-         `${written} must be a positive integer, got ` +
-            `${raw === undefined ? "a value that could not be read" : JSON.stringify(raw)}. ` +
-            (manifest.dashboardColumns === undefined
-               ? `The grid falls back to the renderer default.`
-               : `The grid uses ${manifest.dashboardColumns} instead.`),
+         `\`${property}\` in the artifact tag does nothing in Publisher` +
+            (ARTIFACT_PROPERTY_REPLACEMENTS[property]
+               ? `. ${ARTIFACT_PROPERTY_REPLACEMENTS[property]}`
+               : property === "tiles"
+                 ? `: a dashboard whose tag sits on a query is that one query's ` +
+                   `result. Move the tag to model level (\`## artifact\`) to ` +
+                   `combine separate queries into a grid.`
+                 : `.`),
       );
+   }
+
+   // Per-tile layout, from the tag on the view a tile names rather than from the
+   // tile entry, which is what lets one view lay out the same as a composite tile
+   // and as a `nest:`. Publisher's grid always has a width (the manifest's, or
+   // the SDK default), so unlike the renderer there is no "colspan outside
+   // columns mode" case to report — only a value the reader dropped, and one
+   // wider than the grid, which renders clamped.
+   for (const { query: tile } of manifest.tiles ?? []) {
+      const tag = motlyTag(tileAnnotations(tile, facts) ?? []);
+      if (!tag?.has("colspan")) continue;
+      const colspan = positiveInteger(tagNumeric(tag, "colspan"));
+      if (colspan === undefined) {
+         const raw = tagText(tag, "colspan");
+         add(
+            `# colspan on "${tile}" must be a positive integer, got ` +
+               `${raw === undefined ? "a value that could not be read" : JSON.stringify(raw)}. ` +
+               `The tile spans one column.`,
+         );
+         continue;
+      }
+      const columns = manifest.dashboardColumns;
+      // Undeclared is the likelier loss, not the safer one: the viewer falls back
+      // to a narrow default and clamps every colspan to it, so an author who
+      // wrote the layout and forgot the width gets one tile per row with nothing
+      // said. Reported without naming the default, which belongs to the viewer.
+      if (columns === undefined) {
+         add(
+            `# colspan=${colspan} on "${tile}" needs a grid to span. This ` +
+               `dashboard declares no # dashboard { columns=N }, so it lays out ` +
+               `at the viewer's default width and every colspan is clamped to it.`,
+         );
+      } else if (colspan > columns) {
+         add(
+            `# colspan=${colspan} on "${tile}" exceeds the ${columns} columns ` +
+               `of this dashboard and is clamped to ${columns}. Widen ` +
+               `# dashboard { columns=… } or lower the colspan.`,
+         );
+      }
+   }
+
+   // A bad grid width is invisible in the manifest, because `positiveInteger`
+   // drops it there too, which is exactly why it needs saying aloud. Both sides
+   // go through the same helper so they cannot disagree about a tag.
+   const columnsTag = ownTag?.tag("dashboard");
+   if (columnsTag?.has("columns")) {
+      if (positiveInteger(tagNumeric(columnsTag, "columns")) === undefined) {
+         // `tagText` returns undefined for exactly the bad-literal case this
+         // guard exists for, and `JSON.stringify(undefined)` is the literal text
+         // `undefined`, so the author was told the value was "undefined" rather
+         // than what they wrote. Say the value is unreadable instead of naming a
+         // value nobody typed.
+         const raw = tagText(columnsTag, "columns");
+         add(
+            `# dashboard { columns=… } must be a positive integer, got ` +
+               `${raw === undefined ? "a value that could not be read" : JSON.stringify(raw)}. ` +
+               `The grid falls back to the default.`,
+         );
+      }
    }
 
    for (const { query: tile } of manifest.tiles ?? []) {
@@ -1002,15 +1259,36 @@ export function lintDashboard(
          }
          continue;
       }
-      if (
-         suggest.query !== undefined &&
-         !facts.queries.some((query) => query.name === suggest.query)
-      ) {
-         add(
-            `given "${spec.name}" suggests options from query ` +
-               `"${suggest.query}", which this file does not define.`,
-            "error",
+      if (suggest.query !== undefined) {
+         const named = facts.queries.find(
+            (query) => query.name === suggest.query,
          );
+         if (!named) {
+            add(
+               `given "${spec.name}" suggests options from query ` +
+                  `"${suggest.query}", which this file does not define.`,
+               "error",
+            );
+         } else if (
+            named.sourceName !== undefined &&
+            !facts.sourceFields.has(named.sourceName)
+         ) {
+            // The half resolving by name cannot catch. An import is not
+            // transitive, so importing the suggest query alone leaves the source
+            // it reads out of this file: the query resolves, the file compiles,
+            // the package loads clean, and the picker answers
+            // "Undefined source" the first time a reader opens it. Measured
+            // both ways on a hand-authored dashboard before this was added.
+            add(
+               `given "${spec.name}" suggests options from query ` +
+                  `"${suggest.query}", which reads source ` +
+                  `"${named.sourceName}" that this file does not import. The ` +
+                  `query resolves by name, so the package loads, but the ` +
+                  `control answers "Undefined source '${named.sourceName}'" ` +
+                  `and offers no options. Import that source here too.`,
+               "error",
+            );
+         }
       }
       if (suggest.source !== undefined) {
          const fields = facts.sourceFields.get(suggest.source);
@@ -1103,21 +1381,30 @@ export function lintUndiscoveredDashboard(
    // query-level artifact tag follows, so the file produces nothing at all.
    const modelArtifact = motlyTag(facts.modelAnnotations)?.tag("artifact");
    if (modelArtifact) {
-      const tiles = modelArtifact.array("tiles");
       findings.push({
          subject,
          message:
-            (tiles === undefined
-               ? `Model-level '## artifact' declares no tiles=, `
-               : `Model-level '## artifact' declares an empty tiles=, `) +
-            `so this file produces no dashboard. A composite dashboard needs ` +
-            `tiles=["source -> view", …]; for a single-query dashboard put ` +
-            `the '# artifact' tag on the query instead.`,
+            `${describeTilelessModelArtifact(modelArtifact)}, so this file ` +
+            `produces no dashboard. ${NAME_THE_TILES}`,
          severity: "error" as const,
       });
    }
    return findings;
 }
+
+/**
+ * What is wrong with a model-level `## artifact` that builds no composite.
+ * Shared between the two lints that report it so they cannot disagree about the
+ * diagnosis; each supplies its own consequence, since only one of them is on a
+ * file that produced nothing at all.
+ */
+function describeTilelessModelArtifact(modelArtifact: Tag): string {
+   return modelArtifact.array("tiles") === undefined
+      ? `Model-level '## artifact' declares no tiles=`
+      : `Model-level '## artifact' declares an empty tiles=`;
+}
+
+const NAME_THE_TILES = `Name the views to show: tiles=["source -> view", …].`;
 
 /**
  * Report a given whose own annotations do not parse as MOTLY.

@@ -18,7 +18,7 @@ Most of these skills are **shared, open-source Malloy skills** kept in sync with
 
 ## Shared vs Publisher-specific
 
-- **Shared engine skills** (identical to upstream): `malloy-model`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
+- **Shared engine skills** (identical to upstream): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
 - **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI) and `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly and are never synced upstream to `ms2data/agent-skills`.
 
 ## Tool names in shared skills
@@ -27,7 +27,7 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 
 ## Adding or updating a skill
 
-- Update a shared skill **upstream first** (in `ms2data/agent-skills`), then copy it here, which keeps the two byte-identical. Editing only this copy makes the next sync a conflict.
+- Update a shared skill **upstream first** (in `ms2data/agent-skills`), then copy it here, which keeps the two byte-identical. Editing only this copy makes the next sync a conflict. **This direction is being reversed**: under the consolidation proposed in `ms2data/service#6177`, this repo becomes the source of truth and `agent-skills` vendors from a Publisher tag with a CI drift check, so the hand-carry goes away. `malloy-model-as-you-go` and the `malloy-model` hunk that scopes its "no views" rule to schema-first were authored here on that basis; mirror them upstream by hand until the vendoring script lands.
 - **Any edit under `skills/` means regenerating the MCP bundle** (`cd packages/server && bun run src/mcp/skills/build_skills_bundle.ts ../../skills`) and committing the resulting `src/mcp/skills/skills_bundle.json`. It is a committed generated asset, and `skills_bundle.spec.ts` fails the build when it drifts from this tree. The bundle is committed indented so that two PRs touching different skills merge cleanly; if you do hit a conflict in it, resolve it by regenerating from the merged `skills/` tree, never by editing the JSON by hand.
 - A new skill directory needs a `.claude/skills/<name>` symlink (`ln -s ../../skills/<name> .claude/skills/<name>`) so Claude Code discovers it.
 - A shared skill may only `skill:`-reference other shared skills; refer to a host wrapper in neutral prose so a verbatim copy never leaves a dangling reference.

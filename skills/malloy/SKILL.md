@@ -41,7 +41,8 @@ Every skill in this deployment, by what it is for. Start at a driver; it routes 
 
 | Skill | Use when... |
 |-------|-------------|
-| `skill:malloy-analyze` | Exploratory data analysis: profiling, building views and dashboards |
+| `skill:malloy-model-as-you-go` | After answering a question, writing down what it assumed: a `#(doc)`'d field in the model, an `extend` in the notebook, or a stated assumption plus snippet, depending on what the session can write |
+| `skill:malloy-analyze` | Open-ended exploration with no intent to keep anything: profiling, hypotheses, views |
 | `skill:malloy-charts` | Chart selection and renderer reference for Malloy visualizations |
 | `skill:malloy-notebooks` | Building Malloy notebooks (.malloynb) |
 | `skill:malloy-analysis-report` | Combining validated queries into a notebook report or dashboard |
