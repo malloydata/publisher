@@ -6,7 +6,9 @@ import fs from "fs";
 import path from "path";
 import {
    getPersistCollisionEnforce,
+   findEnvironmentConfigError,
    getPublisherConfig,
+   UNNAMED_ENVIRONMENT,
    getPublisherConfigDir,
    type PublisherConfig,
 } from "./config";
@@ -68,8 +70,17 @@ describe("Config Environment Variable Substitution", () => {
    });
 
    describe("Scenario 1: ${VAR} present in config but value not available", () => {
-      it("should throw error when environment variable is not defined", () => {
-         // The correct behavior: throw an error when a required variable is missing
+      // An unset variable inside an environment skips THAT environment and is
+      // reported against it, rather than throwing out of the whole parse.
+      //
+      // These two tests previously asserted a throw, and the throw was real, but
+      // every caller sat behind `EnvironmentStore.reloadEnvironmentManifest`,
+      // which caught it and returned an empty config. The user-visible result was
+      // a server that bound both ports, reported serving, served nothing, and
+      // reported load_errors=0 with the variable name nowhere in the output. The
+      // throw was never reaching anyone; it was only discarding the other
+      // environments on the way past.
+      it("reports the environment as failed when an environment variable is not defined", () => {
          const locationWithVar = "./path/${UNDEFINED_VAR}/end" as const;
 
          const config: PublisherConfig = {
@@ -89,13 +100,22 @@ describe("Config Environment Variable Substitution", () => {
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-         // Should throw an error about the missing environment variable
-         expect(() => getPublisherConfig(testServerRoot)).toThrow(
-            "Environment variable '${UNDEFINED_VAR}' is not set in configuration file",
-         );
+         const result = getPublisherConfig(testServerRoot);
+
+         // The environment does not load...
+         expect(result.environments).toEqual([]);
+         // ...and the reason is reported against it, naming the variable, so it
+         // can be counted as a load error instead of vanishing.
+         expect(result.environmentConfigErrors).toEqual([
+            {
+               name: "test-project",
+               message:
+                  "Environment variable '${UNDEFINED_VAR}' is not set in configuration file",
+            },
+         ]);
       });
 
-      it("should throw error for undefined variables in gs:// URLs", () => {
+      it("reports the environment as failed for undefined variables in gs:// URLs", () => {
          const locationWithVar = "gs://${BUCKET_NAME}/packages" as const;
 
          const config: PublisherConfig = {
@@ -115,9 +135,176 @@ describe("Config Environment Variable Substitution", () => {
 
          fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-         // Should throw an error about the missing environment variable
+         const result = getPublisherConfig(testServerRoot);
+
+         expect(result.environments).toEqual([]);
+         expect(result.environmentConfigErrors).toEqual([
+            {
+               name: "test-project",
+               message:
+                  "Environment variable '${BUCKET_NAME}' is not set in configuration file",
+            },
+         ]);
+      });
+
+      it("keeps the healthy environments and fails only the one with the unset variable", () => {
+         process.env.GOOD_PATH = "good";
+
+         fs.writeFileSync(
+            configPath,
+            JSON.stringify(
+               {
+                  frozenConfig: false,
+                  environments: [
+                     {
+                        name: "healthy",
+                        packages: [
+                           { name: "p1", location: "./${GOOD_PATH}/p1" },
+                        ],
+                     },
+                     {
+                        name: "broken",
+                        packages: [
+                           { name: "p2", location: "./${MISSING_VAR}/p2" },
+                        ],
+                     },
+                  ],
+               },
+               null,
+               2,
+            ),
+         );
+
+         const result = getPublisherConfig(testServerRoot);
+
+         // This is the whole point of attributing per environment: one bad
+         // variable no longer discards the environments that were fine.
+         expect(result.environments.map((e) => e.name)).toEqual(["healthy"]);
+         expect(result.environmentConfigErrors).toEqual([
+            {
+               name: "broken",
+               message:
+                  "Environment variable '${MISSING_VAR}' is not set in configuration file",
+            },
+         ]);
+
+         delete process.env.GOOD_PATH;
+      });
+
+      it("ignores a losing deprecated projects key when environments is present", () => {
+         // `environments` wins over the deprecated `projects`, so a broken entry
+         // in the losing key must NOT be reported: that environment is never
+         // loaded, and a load error for it would send an operator chasing a
+         // config block the server ignored.
+         process.env.GOOD_PATH = "good";
+
+         fs.writeFileSync(
+            configPath,
+            JSON.stringify(
+               {
+                  frozenConfig: false,
+                  projects: [
+                     {
+                        name: "legacy-ignored",
+                        packages: [
+                           { name: "p", location: "./${MISSING_LEGACY_VAR}/p" },
+                        ],
+                     },
+                  ],
+                  environments: [
+                     {
+                        name: "healthy",
+                        packages: [{ name: "p", location: "./${GOOD_PATH}/p" }],
+                     },
+                  ],
+               },
+               null,
+               2,
+            ),
+         );
+
+         const result = getPublisherConfig(testServerRoot);
+
+         expect(result.environments.map((e) => e.name)).toEqual(["healthy"]);
+         expect(result.environmentConfigErrors).toBeUndefined();
+
+         delete process.env.GOOD_PATH;
+      });
+
+      it("exposes the reason for a named environment via findEnvironmentConfigError", () => {
+         // The lookup callers use: they find an environment absent from
+         // `environments` and would otherwise report a generic absence.
+         const config = {
+            environmentConfigErrors: [
+               {
+                  name: "broken",
+                  message: "Environment variable '${X}' is not set",
+               },
+            ],
+         };
+
+         expect(findEnvironmentConfigError(config, "broken")).toBe(
+            "Environment variable '${X}' is not set",
+         );
+         expect(findEnvironmentConfigError(config, "healthy")).toBeUndefined();
+         // A config with no failures at all must not claim one.
+         expect(findEnvironmentConfigError({}, "broken")).toBeUndefined();
+      });
+
+      it("omits name for a nameless entry, so the placeholder cannot be looked up", () => {
+         // The placeholder is a display string. If it doubled as the stored key,
+         // asking for an environment literally called "(unnamed environment)"
+         // would match a real failure belonging to a different entry.
+         fs.writeFileSync(
+            configPath,
+            JSON.stringify(
+               {
+                  frozenConfig: false,
+                  environments: [
+                     {
+                        packages: [
+                           { name: "p", location: "./${NO_SUCH_VAR}/p" },
+                        ],
+                     },
+                  ],
+               },
+               null,
+               2,
+            ),
+         );
+
+         const result = getPublisherConfig(testServerRoot);
+
+         expect(result.environmentConfigErrors).toHaveLength(1);
+         expect(result.environmentConfigErrors?.[0].name).toBeUndefined();
+         expect(result.environmentConfigErrors?.[0].message).toContain(
+            "${NO_SUCH_VAR}",
+         );
+         expect(
+            findEnvironmentConfigError(result, UNNAMED_ENVIRONMENT),
+         ).toBeUndefined();
+         expect(findEnvironmentConfigError(result, "")).toBeUndefined();
+      });
+
+      it("still throws when the unset variable is outside the environment list", () => {
+         // Bounds the narrowing: only an environment entry gets its own failure.
+         // There is nothing narrower than the file to blame a top-level value on,
+         // so that case keeps failing the whole parse.
+         fs.writeFileSync(
+            configPath,
+            JSON.stringify(
+               {
+                  frozenConfig: false,
+                  theme: { mapColor: "${MISSING_TOP_LEVEL_VAR}" },
+                  environments: [],
+               },
+               null,
+               2,
+            ),
+         );
+
          expect(() => getPublisherConfig(testServerRoot)).toThrow(
-            "Environment variable '${BUCKET_NAME}' is not set in configuration file",
+            "Environment variable '${MISSING_TOP_LEVEL_VAR}' is not set in configuration file",
          );
       });
    });

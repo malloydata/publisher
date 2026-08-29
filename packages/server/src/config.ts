@@ -122,10 +122,28 @@ export type Environment = {
    storageDestinations?: Connection[];
 };
 
+/**
+ * An environment whose config could not be resolved, and why. Carried out of
+ * config parsing so the failure can be reported as a load error against the
+ * environment it belongs to, rather than vanishing into an empty config.
+ */
+export type EnvironmentConfigError = {
+   /**
+    * Absent when the failing entry had no usable `name`. Optional rather than a
+    * placeholder string so it cannot double as a lookup key: a caller asking
+    * `findEnvironmentConfigError(config, "(unnamed environment)")` must not
+    * match a real failure. The placeholder is a display concern; see
+    * {@link UNNAMED_ENVIRONMENT}.
+    */
+   name?: string;
+   message: string;
+};
+
 export type PublisherConfig = {
    frozenConfig: boolean;
    theme?: Theme;
    environments: Environment[];
+   environmentConfigErrors?: EnvironmentConfigError[];
 };
 
 export type ProcessedEnvironment = {
@@ -146,6 +164,7 @@ export type ProcessedPublisherConfig = {
    frozenConfig: boolean;
    theme?: Theme;
    environments: ProcessedEnvironment[];
+   environmentConfigErrors?: EnvironmentConfigError[];
 };
 
 /**
@@ -874,6 +893,102 @@ function processConfigValue(value: unknown): unknown {
    return value;
 }
 
+export const UNNAMED_ENVIRONMENT = "(unnamed environment)";
+
+function readEnvironmentName(entry: unknown): string | undefined {
+   if (!entry || typeof entry !== "object") return undefined;
+   const name = (entry as Record<string, unknown>).name;
+   return typeof name === "string" && name.length > 0 ? name : undefined;
+}
+
+/**
+ * Substitute env vars, attributing a failure to one environment where it
+ * belongs to one.
+ *
+ * `substituteEnvVars` throws on an unset variable, and substitution used to run
+ * over the whole parsed config in a single call, so one unset variable anywhere
+ * discarded every environment in the file. The caller reported that as an empty
+ * config, which reaches `/status` as `loadErrors: []` and the readiness line as
+ * `load_errors=0`: a server that says it is healthy, serves nothing, and names
+ * nothing. A mistyped variable name was indistinguishable from an empty config
+ * file.
+ *
+ * Each environment entry is substituted on its own so a thrown variable takes
+ * only its own environment down and is reported against that environment's
+ * name, which is the same shape as every other per-environment config failure
+ * (a reserved `duckdb` connection name, an unmountable package location).
+ * Anything outside the environment list still fails the whole file, because
+ * there is nothing narrower to blame it on.
+ *
+ * Both spellings of the key are handled: the `projects` to `environments`
+ * rename is applied by the caller AFTER substitution, so an old config still
+ * arrives here under the old key.
+ */
+function processConfigWithEnvironmentAttribution(raw: unknown): {
+   processed: unknown;
+   environmentConfigErrors: EnvironmentConfigError[];
+} {
+   const environmentConfigErrors: EnvironmentConfigError[] = [];
+
+   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return {
+         processed: processConfigValue(raw),
+         environmentConfigErrors,
+      };
+   }
+
+   // Which key actually supplies the environments, matching the back-compat rule
+   // the caller applies after substitution: `environments` wins, `projects` is
+   // the deprecated fallback used only in its absence. Attributing failures from
+   // the losing key would report a load error for an environment that is never
+   // loaded.
+   const source = raw as Record<string, unknown>;
+   const environmentKey =
+      "environments" in source
+         ? "environments"
+         : "projects" in source
+           ? "projects"
+           : undefined;
+
+   const result: Record<string, unknown> = {};
+   for (const [key, value] of Object.entries(raw)) {
+      if (
+         (key === "environments" || key === "projects") &&
+         Array.isArray(value)
+      ) {
+         // Both spellings substitute per entry so neither can fail the whole
+         // file, but only the winning key's failures are reported: an entry under
+         // the losing key is never loaded, so an error for it would send an
+         // operator chasing a config block the server ignored.
+         const isEnvironmentSource = key === environmentKey;
+         const kept: unknown[] = [];
+         for (const entry of value) {
+            try {
+               kept.push(processConfigValue(entry));
+            } catch (error) {
+               if (!isEnvironmentSource) continue;
+               const name = readEnvironmentName(entry);
+               // Collected, not logged. This runs per parse and once per broken
+               // entry, so logging here reprinted every broken environment on
+               // any read, including a request for an unrelated environment that
+               // was not loaded yet. The caller that owns the durable record
+               // logs it, where a repeat can be told from a new failure.
+               environmentConfigErrors.push({
+                  ...(name ? { name } : {}),
+                  message:
+                     error instanceof Error ? error.message : String(error),
+               });
+            }
+         }
+         result[key] = kept;
+         continue;
+      }
+      result[key] = processConfigValue(value);
+   }
+
+   return { processed: result, environmentConfigErrors };
+}
+
 /**
  * Absolute directory that a relative package `location` is resolved against:
  * the one holding the active config file.
@@ -950,7 +1065,8 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    }
 
    // Process environment variables in config values
-   const processedConfig = processConfigValue(rawConfig);
+   const { processed: processedConfig, environmentConfigErrors } =
+      processConfigWithEnvironmentAttribution(rawConfig);
 
    // TODO: Remove this during projects cleanup
    // Back-compat: the top-level key was renamed `projects` → `environments`.
@@ -1023,6 +1139,9 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       frozenConfig,
       ...(instanceTheme ? { theme: instanceTheme } : {}),
       environments,
+      ...(environmentConfigErrors.length > 0
+         ? { environmentConfigErrors }
+         : {}),
    } as PublisherConfig;
 };
 
@@ -1214,6 +1333,26 @@ export const convertConnectionsToApiConnections = (
       }));
 };
 
+/**
+ * The reason an environment's config could not be resolved, if that is why it is
+ * missing from a manifest.
+ *
+ * Callers look an environment up by name in `environments` and report a generic
+ * absence when it is not there ("could not be resolved to a path", "not found").
+ * When the cause is an unresolved config value the specific reason is known, and
+ * saying it is the difference between a user checking a variable name and a user
+ * checking a filesystem path that was never the problem.
+ */
+export function findEnvironmentConfigError(
+   config: Pick<ProcessedPublisherConfig, "environmentConfigErrors">,
+   environmentName: string,
+): string | undefined {
+   if (!environmentName) return undefined;
+   return config.environmentConfigErrors?.find(
+      (candidate) => candidate.name === environmentName,
+   )?.message;
+}
+
 export const getProcessedPublisherConfig = (
    serverRoot: string,
 ): ProcessedPublisherConfig => {
@@ -1313,6 +1452,9 @@ export const getProcessedPublisherConfig = (
       frozenConfig: rawConfig.frozenConfig ?? false,
       ...(rawConfig.theme ? { theme: rawConfig.theme } : {}),
       environments: validEnvironments,
+      ...(rawConfig.environmentConfigErrors
+         ? { environmentConfigErrors: rawConfig.environmentConfigErrors }
+         : {}),
    };
 };
 

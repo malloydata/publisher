@@ -6,6 +6,8 @@ import { EventEmitter } from "events";
 import { RequestHandler } from "express";
 import path from "path";
 import { components } from "../api";
+import { findEnvironmentConfigError } from "../config";
+import { redactPgSecrets } from "../pg_helpers";
 import { internalErrorToHttpError } from "../errors";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
@@ -206,10 +208,13 @@ export class WatchModeController {
          res.status(status).json({ error: (error as Error).message });
          return;
       }
+      // Through the store's read-and-sync rather than the static: this endpoint
+      // is the documented watch-mode iteration loop, so it can plausibly be the
+      // only traffic a server sees, and calling the static directly reported the
+      // reason in the 404 below while leaving /status and the readiness count
+      // saying nothing was wrong.
       const environmentManifest =
-         await EnvironmentStore.reloadEnvironmentManifest(
-            this.environmentStore.serverRootPath,
-         );
+         await this.environmentStore.readEnvironmentManifest();
       const environment = environmentManifest.environments.find(
          (e) => e.name === watchName,
       );
@@ -218,8 +223,16 @@ export class WatchModeController {
          !environment.packages ||
          environment.packages.length === 0
       ) {
+         const configError = findEnvironmentConfigError(
+            environmentManifest,
+            watchName,
+         );
          res.status(404).json({
-            error: `Environment ${watchName} not found or has no packages`,
+            error: configError
+               ? `Environment ${watchName} could not be loaded: ${redactPgSecrets(
+                    configError,
+                 )}`
+               : `Environment ${watchName} not found or has no packages`,
          });
          return;
       }
