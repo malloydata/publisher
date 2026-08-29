@@ -127,13 +127,12 @@ docker run -d \
 
 **Tags:**
 
-- `:latest` — most recent stable release.
-- `:X.Y.Z` — pinned to a specific release; recommended for production.
-- `:next` — pre-release builds; not recommended for production.
+- `:latest`: most recent stable release.
+- `:X.Y.Z`: pinned to a specific release; recommended for production.
 
-`*-dev` tags (e.g. `:0.0.198-dev`) are frozen — no new ones are being published, and `:next` is the
-current pre-release channel. Existing `*-dev` tags still resolve in the registry; don't use them for
-new deployments.
+There is no pre-release channel today. The `*-dev` tags (e.g. `:0.0.198-dev`) are frozen at
+0.0.198-dev6 (May 2026) and the `:next` tag has been retired. Old `*-dev` tags still resolve in the
+registry, so an existing deployment pinned to one keeps working; don't use them for new deployments.
 
 ### Docker Compose
 
