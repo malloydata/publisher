@@ -1,0 +1,22 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// {{sourceName}}: a starter Malloy model over {{tablePath}}, served by Publisher.
+//
+// This model was scaffolded against a warehouse table whose columns are not known
+// ahead of time, so it starts with just a row count. Build it out for your columns:
+// group_by a column to break the count down, and define measures like
+// `total_amount is amount.sum()`. Validate edits with malloy_compile and run new
+// views by name with malloy_reloadPackage. The malloy-modeling skill walks through
+// turning a raw table into a semantic model.
+//
+// `{{connectionName}}` is the connection defined in publisher.config.json. Its
+// credentials come from the environment, not from that file.
+
+source: {{sourceName}} is {{connectionName}}.table('{{tablePath}}') extend {
+  measure: record_count is count()
+
+  view: overview is {
+    aggregate: record_count
+  }
+}

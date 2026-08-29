@@ -1,0 +1,30 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// A starter Malloy model over the `{{connectionName}}` connection, served by
+// Publisher.
+//
+// This file has no source in it yet, on purpose. The connection was scaffolded
+// without a table name, and guessing one would produce a model that compiles
+// against nothing and fails at the first query. Nothing here is wrong; it is
+// waiting for one line.
+//
+// To fill it in, find a table and then uncomment the block below:
+//
+//   1. Start the server, so the connection is live.
+//   2. Ask your agent what is in the warehouse. It has the
+//      malloy_searchDatabaseSchema tool for exactly this, which searches the
+//      configured connection's schema in plain language ("orders", "anything
+//      with revenue in it"). The malloy-connections skill covers the rest.
+//   3. Put the table path in the source below.
+//
+// Validate edits with malloy_compile and run new views by name with
+// malloy_reloadPackage.
+//
+// source: {{sourceName}} is {{connectionName}}.table('schema.table') extend {
+//   measure: record_count is count()
+//
+//   view: overview is {
+//     aggregate: record_count
+//   }
+// }
