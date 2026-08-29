@@ -1,0 +1,232 @@
+<!doctype html>
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
+<html lang="en">
+   <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Malloy Query Result</title>
+      <!--
+        Every style the card uses. The collapsible chrome was previously built
+        with inline `element.style.*` on the grounds that some hosts drop this
+        block; tested in Claude Desktop over an mcp-remote bridge, it does not,
+        so those styles live here now with the rest.
+
+        Colours are neutral on purpose: this ships in the open-source Publisher,
+        so it carries no product palette and no licensed font.
+
+        Chart colours are not set at all, here or in the renderer: Malloy's own
+        renderer defaults apply. The rendered tree is LIGHT DOM, so the reset and
+        the body colour and font-size below DO cascade into the rendered table
+        and chart. An earlier version of this comment claimed @malloydata/render
+        renders into a shadow root and that nothing here reaches it; measured on
+        a rendered dashboard and a rendered table, zero elements have a
+        shadowRoot. scrollbar_allowance.ts depends on that cascade, so the reset
+        is deliberately left unscoped.
+      -->
+      <style>
+         * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+         }
+         html,
+         body {
+            overflow: hidden;
+            background: transparent;
+         }
+         body {
+            font-family:
+               system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+               sans-serif;
+            font-size: 13px;
+            color: #333333;
+            line-height: 1.5;
+            background: transparent;
+         }
+         #root {
+            padding: 0;
+         }
+         .loading {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 16px;
+            color: #9a9a9a;
+            font-size: 13px;
+         }
+         .error-box {
+            padding: 12px 16px;
+            background: #f7f7f7;
+            border: 1px solid #e2e2e2;
+            border-radius: 8px;
+            color: #6b6b6b;
+            font-size: 13px;
+            font-family:
+               ui-monospace, SFMono-Regular, Menlo, Consolas,
+               "Liberation Mono", monospace;
+            white-space: pre-wrap;
+            word-break: break-word;
+         }
+         .warning-box {
+            padding: 8px 12px;
+            background: #fdf6e3;
+            border-bottom: 1px solid #e0ce9a;
+            color: #7a6320;
+            font-size: 12px;
+         }
+         /* The collapsible card: border, header, chevron, body.
+            `is-open` on the wrapper drives all three together. */
+         .mcp-card {
+            border: 1px solid #e2e2e2;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #ffffff;
+         }
+         .mcp-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            user-select: none;
+            background: #ffffff;
+            border-bottom: none;
+         }
+         .mcp-card.is-open .mcp-card-header {
+            border-bottom: 1px solid #e2e2e2;
+         }
+         .mcp-card-chevron {
+            display: inline-block;
+            width: 10px;
+            font-size: 9px;
+            color: #9a9a9a;
+            transform: rotate(0deg);
+            transition: transform 0.12s;
+         }
+         .mcp-card.is-open .mcp-card-chevron {
+            transform: rotate(90deg);
+         }
+         .mcp-card-label {
+            font-size: 12px;
+            font-weight: 500;
+            color: #6b6b6b;
+         }
+         .mcp-card-meta {
+            margin-left: auto;
+            font-family:
+               ui-monospace, SFMono-Regular, Menlo, Consolas,
+               "Liberation Mono", monospace;
+            font-size: 11px;
+            color: #9a9a9a;
+         }
+         .mcp-card-body {
+            display: none;
+         }
+         .mcp-card.is-open .mcp-card-body {
+            display: block;
+         }
+         .mcp-card.is-open .mcp-card-body--flex {
+            display: flex;
+         }
+
+         /* Wraps the query expando and the rendered result as one unit. */
+         .result-frame {
+            overflow: hidden;
+         }
+
+         /* The error box sits directly under the query expando inside the
+            frame, so it takes a top rule instead of a full border there. */
+         .error-box--in-frame {
+            border: none;
+            border-radius: 0;
+            border-top: 1px solid #e2e2e2;
+         }
+         .malloy-result {
+            width: 100%;
+         }
+
+         /* Collapsible "Malloy query" source preview. */
+         .query-expando-header {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 6px 10px;
+            background: #ffffff;
+            cursor: pointer;
+            font-size: 11px;
+            color: #9a9a9a;
+            user-select: none;
+            border-bottom: 1px solid #e2e2e2;
+         }
+         .query-expando-header:hover {
+            color: #333333;
+         }
+         .query-expando-header svg {
+            flex-shrink: 0;
+         }
+         .query-expando-arrow {
+            margin-left: 2px;
+            font-size: 14px;
+            display: inline-flex;
+            transition: transform 0.4s ease;
+         }
+         .query-expando-arrow.open {
+            transform: rotate(180deg);
+         }
+         .query-expando-body {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.4s ease;
+            border-bottom: 0 solid #e2e2e2;
+         }
+         .query-expando-body.open {
+            max-height: 220px;
+            border-bottom-width: 1px;
+         }
+         .query-expando-body.scrollable {
+            overflow: auto;
+         }
+         .query-expando-code {
+            font-family:
+               ui-monospace, SFMono-Regular, Menlo, Consolas,
+               "Liberation Mono", monospace;
+            font-size: 12px;
+            background: #ffffff;
+            color: #24292e;
+            padding: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.6;
+         }
+         /* Malloy token colours, approximating a github-light palette.
+            See src/execute-query/highlight_malloy.ts. */
+         .query-expando-code .mh-kw {
+            color: #d73a49;
+         }
+         .query-expando-code .mh-str {
+            color: #032f62;
+         }
+         .query-expando-code .mh-cmt {
+            color: #6a737d;
+            font-style: italic;
+         }
+         .query-expando-code .mh-num {
+            color: #005cc5;
+         }
+         .query-expando-code .mh-fn {
+            color: #6f42c1;
+         }
+      </style>
+   </head>
+
+   <body>
+      <div id="root">
+         <div class="loading">Waiting for query result...</div>
+      </div>
+      <script type="module" src="./src/execute-query/app.ts"></script>
+   </body>
+</html>

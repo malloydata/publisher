@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { MalloyError } from "@malloydata/malloy";
 import { registerExecuteQueryTool } from "./execute_query_tool";
+import { EXECUTE_QUERY_UI_URI, hasExecuteQueryWidget } from "../ui_resources";
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
@@ -12,7 +13,8 @@ import {
    ServiceUnavailableError,
 } from "../../errors";
 
-// Capture the handler registerExecuteQueryTool passes to McpServer.tool, so it
+// Capture the handler registerExecuteQueryTool passes to McpServer.registerTool,
+// so it
 // can be exercised against a mocked EnvironmentStore. Mirrors the pattern in
 // compile_tool.spec.ts and reload_package_tool.spec.ts.
 type Handler = (params: Record<string, unknown>) => Promise<{
@@ -24,16 +26,35 @@ type Handler = (params: Record<string, unknown>) => Promise<{
    }>;
 }>;
 
-function captureHandler(store: Partial<EnvironmentStore>): Handler {
-   let handler: Handler | undefined;
+/** What registerExecuteQueryTool passes to McpServer.registerTool. */
+interface Registration {
+   name: string;
+   config: {
+      description?: string;
+      inputSchema?: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
+   };
+   handler: Handler;
+}
+
+function captureRegistration(store: Partial<EnvironmentStore>): Registration {
+   let registration: Registration | undefined;
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
-         handler = h;
+      registerTool: (
+         name: string,
+         config: Registration["config"],
+         handler: Handler,
+      ) => {
+         registration = { name, config, handler };
       },
    };
    registerExecuteQueryTool(fakeServer as never, store as EnvironmentStore);
-   if (!handler) throw new Error("handler was not registered");
-   return handler;
+   if (!registration) throw new Error("tool was not registered");
+   return registration;
+}
+
+function captureHandler(store: Partial<EnvironmentStore>): Handler {
+   return captureRegistration(store).handler;
 }
 
 function parse(result: { content: Array<{ resource?: { text: string } }> }) {
@@ -361,5 +382,67 @@ describe("malloy_executeQuery per-query metadata", () => {
          default: undefined,
          enforced: { tenant: "acme" },
       });
+   });
+});
+
+/**
+ * The tool moved from the legacy `tool(name, description, shape, cb)` overload to
+ * `registerTool(name, config, cb)` so it could carry `_meta` for its MCP Apps
+ * widget. That switch touches the tool's public surface, so the surface is pinned
+ * here: the description's shape, which some clients truncate, and the input
+ * schema, which is the contract every caller and skill is written against.
+ */
+describe("malloy_executeQuery registration", () => {
+   const registration = () => captureRegistration({});
+
+   it("registers under the name callers and skills use", () => {
+      expect(registration().name).toBe("malloy_executeQuery");
+   });
+
+   it("keeps the contract rules ahead of the reference sections", () => {
+      // A client that truncates a long description must lose the reference, not
+      // the rules the agent cannot self-correct without.
+      const description = registration().config.description ?? "";
+      const contract = description.indexOf("## Contract rules");
+      const response = description.indexOf("## Response");
+      expect(contract).toBeGreaterThan(-1);
+      expect(response).toBeGreaterThan(contract);
+   });
+
+   it("keeps the whole input contract", () => {
+      // Exact, not a subset: a dropped parameter breaks callers silently, and an
+      // added one belongs in the OpenAPI spec and the skills at the same time.
+      expect(
+         Object.keys(registration().config.inputSchema ?? {}).sort(),
+      ).toEqual([
+         "environmentName",
+         // A rendering hint for MCP Apps clients, ignored by the server.
+         "expanded",
+         "filterParams",
+         "givens",
+         "modelPath",
+         "packageName",
+         "query",
+         "queryName",
+         "sourceName",
+      ]);
+   });
+
+   it("advertises a widget exactly when one is served", () => {
+      // The invariant, rather than either state on its own: whether the bundle
+      // is built varies with how the repo was set up, but the tool's `_meta` and
+      // the server's resource registration must never disagree. If they do, the
+      // tool either points at a resource that does not exist, or a served widget
+      // is never used. Asserted against the same predicate registerUiResources
+      // consults, so both read one cached answer.
+      const meta = registration().config._meta;
+      if (hasExecuteQueryWidget()) {
+         expect(meta).toEqual({
+            ui: { resourceUri: EXECUTE_QUERY_UI_URI },
+            "openai/outputTemplate": EXECUTE_QUERY_UI_URI,
+         });
+      } else {
+         expect(meta).toBeUndefined();
+      }
    });
 });

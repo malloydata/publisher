@@ -15,6 +15,7 @@ import {
 } from "./tools/reload_package_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
+import { hasExecuteQueryWidget, registerUiResources } from "./ui_resources";
 import skillsBundle from "./skills/skills_bundle.json";
 
 export const testServerInfo = {
@@ -53,6 +54,38 @@ Task-specific guidance is served as prompts you can fetch by name: malloy-gettin
 
 Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
 
+/**
+ * Appended to the instructions ONLY when this server actually serves the widget.
+ *
+ * Everything else about MCP Apps is gated both ways on the bundle being present:
+ * no extension is declared, no resource is registered, and the tool carries no
+ * `_meta`. This sentence was the one place that was not, and it went to every
+ * client. On a server with no bundle it described a capability that does not
+ * exist and, worse, told the agent to call `resources/list` to check, which on
+ * exactly that server answers `-32601 Method not found`, as docs/ai-agents.md
+ * says. So it sent an agent to make a call that errors, on the server that
+ * deliberately advertises nothing.
+ *
+ * A module-scope string literal, selected by a boolean, so MCP_INSTRUCTIONS stays
+ * within the STATIC constraint above: nothing here interpolates environment,
+ * request, or configuration data.
+ */
+const MCP_APPS_INSTRUCTION = ` This server also serves an MCP Apps widget, so a client that supports it renders a malloy_executeQuery result inline in the conversation as the chart the model describes. The expanded=true parameter opens that card by default; set it when the result answers the question being asked, and leave it closed for a wide table or a query using nest:.`;
+
+/**
+ * The orientation a connecting client receives, with the widget sentence added
+ * only when this server actually serves one.
+ *
+ * A function rather than a conditional at the call site so both branches can be
+ * asserted without a filesystem: the absent branch is the one that matters and it
+ * is the harder of the two to reach by accident.
+ */
+export function buildInstructions(servesWidget: boolean): string {
+   return servesWidget
+      ? MCP_INSTRUCTIONS + MCP_APPS_INSTRUCTION
+      : MCP_INSTRUCTIONS;
+}
+
 export function initializeMcpServer(
    environmentStore: EnvironmentStore,
 ): McpServer {
@@ -60,8 +93,18 @@ export function initializeMcpServer(
    const startTime = performance.now();
 
    const mcpServer = new McpServer(testServerInfo, {
-      instructions: MCP_INSTRUCTIONS,
+      // Consults the same cached predicate registerUiResources uses below, so the
+      // instructions and the registration cannot disagree about whether this
+      // server has a widget.
+      instructions: buildInstructions(hasExecuteQueryWidget()),
    });
+
+   // Before the tools, and before the transport connects: this declares the
+   // MCP Apps UI extension, and registerCapabilities throws once connected.
+   // Returns an empty list when the widget bundle was not built, in which case
+   // the tools register without their widget metadata and every client sees
+   // exactly today's behaviour.
+   const uiResources = registerUiResources(mcpServer);
 
    registerExecuteQueryTool(mcpServer, environmentStore);
    registerGetContextTool(mcpServer, environmentStore);
@@ -90,6 +133,7 @@ export function initializeMcpServer(
    const endTime = performance.now();
    logger.info(`[MCP Init] Finished initializeMcpServer`, {
       duration: formatDuration(endTime - startTime),
+      uiResources: uiResources.length,
    });
 
    return mcpServer;
