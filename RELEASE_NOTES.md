@@ -31,6 +31,40 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a boolean query param you misspell now fails instead of doing nothing
+
+`reload`, `dropTables` and `bypass_filters` were each read as `=== "true"`, so
+every other spelling — `?reload=1`, `?dropTables=yes`, `?reload=TRUE`, or the
+parameter repeated — quietly read as `false`. The request then succeeded while
+doing nothing of what it asked.
+
+The worst of the three was `dropTables`. `DELETE
+…/materializations/{id}?dropTables=1` deleted the materialization record, left
+its physical tables on disk, and answered `204 No Content`, so nothing in the
+response said half the operation had been skipped. `reload=1` on a package cost
+callers more often: they edited a model, saw `200`, and queried the model the
+server had never recompiled.
+
+All three now accept only `true` and `false` — the two spellings `api-doc.yaml`
+already declared — and refuse anything else with `400`, quoting the value back
+and naming a form that works. `bypass_filters` was already declared in the spec
+as an enum of exactly those two, so this makes the server match its own
+contract.
+
+Separately, `reload` on a **collection** route (`GET /environments`,
+`GET …/packages`, and their legacy `/projects` twins) now answers `400` naming
+the per-resource route. Reload recompiles one named resource, so a collection
+never could; it used to answer `200` with the list, which reads as a reload that
+worked.
+
+**Who is affected.** Anyone sending a non-`true`/`false` value to these three
+params, or sending `reload` to a collection route, gets a `400` where they used
+to get success. Every such request was already a silent no-op, so no working
+behaviour changes — but a client that ignored the response body and trusted the
+status will now see the failure it was previously missing. Generated clients
+send real booleans and are unaffected. `api-doc.yaml` now documents the `400` on
+each of these routes.
+
 ## [0.2.0] — a colocated persist into a non-default schema now lands there (ACTION REQUIRED)
 
 A colocated `#@ persist name=` that names a container — `name="analytics.orders"`

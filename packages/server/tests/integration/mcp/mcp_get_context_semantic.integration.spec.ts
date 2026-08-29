@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   setDefaultTimeout,
+} from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
    Notification,
@@ -77,6 +84,13 @@ async function callGetContext(
    return JSON.parse(text) as GetContextPayload;
 }
 
+// This spec's setup is slow enough to need a raised timeout, and it has to
+// cover the `beforeAll` hook, not just the tests. `setDefaultTimeout` does
+// both, and unlike the suite's `bun test --timeout` flag -- which only exists
+// via the `test:integration` script -- it still holds when this file is run on
+// its own.
+setDefaultTimeout(200_000);
+
 describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
    beforeAll(async () => {
       // A local OpenAI-compatible /embeddings endpoint with deterministic
@@ -124,7 +138,7 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
 
       env = await setupE2ETestEnvironment();
       mcpClient = env.mcpClient;
-   }, 200000);
+   });
 
    afterAll(async () => {
       await cleanupE2ETestEnvironment(env);

@@ -45,6 +45,11 @@ import {
 import { logger, redactSensitive } from "./logger";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
+import {
+   booleanParamOr400,
+   optionalBooleanParamOr400,
+   setCollectionReloadError,
+} from "./route_params";
 import { processStorageDestinationsOrThrow } from "./service/connection_config";
 import { EnvironmentStore } from "./service/environment_store";
 
@@ -107,7 +112,14 @@ export function registerLegacyRoutes(
    void bodyParser; // keep the import; helper file reference for clarity
 
    // ── projects (== environments) ──────────────────────────────────────────
-   app.get(`${LEGACY_API_PREFIX}/projects`, async (_req, res) => {
+   app.get(`${LEGACY_API_PREFIX}/projects`, async (req, res) => {
+      if (req.query.reload !== undefined) {
+         setCollectionReloadError(
+            res,
+            `${LEGACY_API_PREFIX}/projects/{projectName}`,
+         );
+         return;
+      }
       try {
          res.status(200).json(await environmentStore.listEnvironments());
       } catch (error) {
@@ -135,10 +147,14 @@ export function registerLegacyRoutes(
    });
 
    app.get(`${LEGACY_API_PREFIX}/projects/:projectName`, async (req, res) => {
+      const reload = booleanParamOr400(req, res, "reload");
+      if (reload === undefined) {
+         return;
+      }
       try {
          const environment = await environmentStore.getEnvironment(
             req.params.projectName,
-            req.query.reload === "true",
+            reload,
          );
          res.status(200).json(await environment.serialize());
       } catch (error) {
@@ -584,6 +600,13 @@ export function registerLegacyRoutes(
             setVersionIdError(res);
             return;
          }
+         if (req.query.reload !== undefined) {
+            setCollectionReloadError(
+               res,
+               `${LEGACY_API_PREFIX}/projects/${req.params.projectName}/packages/{packageName}`,
+            );
+            return;
+         }
          try {
             res.status(200).json(
                await packageController.listPackages(req.params.projectName),
@@ -620,12 +643,16 @@ export function registerLegacyRoutes(
             setVersionIdError(res);
             return;
          }
+         const reload = booleanParamOr400(req, res, "reload");
+         if (reload === undefined) {
+            return;
+         }
          try {
             res.status(200).json(
                await packageController.getPackage(
                   req.params.projectName,
                   req.params.packageName,
-                  req.query.reload === "true",
+                  reload,
                ),
             );
          } catch (error) {
@@ -828,8 +855,17 @@ export function registerLegacyRoutes(
                   return;
                }
             }
-            const bypassFilters =
-               req.query.bypass_filters === "true" ? true : undefined;
+            // Absence must stay distinguishable from an explicit `false`:
+            // the Deprecation header fires on `bypassFilters !== undefined`.
+            const bypass = optionalBooleanParamOr400(
+               req,
+               res,
+               "bypass_filters",
+            );
+            if (!bypass.ok) {
+               return;
+            }
+            const bypassFilters = bypass.value;
             res.status(200).json(
                await modelController.executeNotebookCell(
                   req.params.projectName,
@@ -981,12 +1017,16 @@ export function registerLegacyRoutes(
    app.delete(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/materializations/:materializationId`,
       async (req, res) => {
+         const dropTables = booleanParamOr400(req, res, "dropTables");
+         if (dropTables === undefined) {
+            return;
+         }
          try {
             await materializationController.deleteMaterialization(
                req.params.projectName,
                req.params.packageName,
                req.params.materializationId,
-               { dropTables: req.query.dropTables === "true" },
+               { dropTables },
             );
             res.status(204).send();
          } catch (error) {

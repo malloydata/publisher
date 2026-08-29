@@ -191,6 +191,10 @@ paths:
         Retrieves a list of all environments currently hosted on this Malloy Publisher server.
         Each environment contains metadata about its packages, connections, and configuration.
         This endpoint is typically used to discover available environments and their basic information.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-environment: use `GET /environments/{environmentName}?reload=true`.
       responses:
         "200":
           description: A list of all available environments
@@ -200,6 +204,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -256,7 +262,13 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: reload
           in: query
-          description: Load / reload the environment before returning result
+          description: |
+            Load / reload the environment before returning result.
+
+            Only the two spellings OpenAPI serializes a boolean as are accepted:
+            `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
+            parameter repeated) is refused with 400 rather than read as `false`,
+            which would answer 200 without recompiling.
           required: false
           schema:
             type: boolean
@@ -267,6 +279,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1286,6 +1300,10 @@ paths:
         Retrieves a list of all Malloy packages within the specified environment. Each package
         contains models, notebooks, databases, and other resources. This endpoint is useful
         for discovering available packages and their basic metadata.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-package: use `GET /environments/{environmentName}/packages/{packageName}?reload=true`.
       parameters:
         - name: environmentName
           in: path
@@ -1302,6 +1320,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1382,7 +1402,13 @@ paths:
             $ref: "#/components/schemas/VersionIdPattern"
         - name: reload
           in: query
-          description: Load / reload the package before returning result
+          description: |
+            Load / reload the package before returning result.
+
+            Only the two spellings OpenAPI serializes a boolean as are accepted:
+            `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
+            parameter repeated) is refused with 400 rather than read as `false`,
+            which would answer 200 without recompiling.
           required: false
           schema:
             type: boolean
@@ -1393,6 +1419,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2521,12 +2549,18 @@ paths:
             When true, also drop the physical tables recorded in the
             materialization's manifest before deleting the record. Defaults to
             false (record-only delete; the caller owns table GC).
+
+            Only `true` and `false` are accepted. Any other value is refused
+            with 400 rather than read as `false`, which would delete the record,
+            leave the tables on disk, and still answer 204.
           schema:
             type: boolean
             default: false
       responses:
         "204":
           description: Materialization deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -2997,9 +3031,11 @@ components:
           description: >-
             Non-fatal findings collected when the package loaded, none of which
             stop the model compiling or the package loading. Render-tag
-            findings: a render annotation (e.g. `# big_value` or `# currency`)
-            misconfigured for the field it sits on, so it renders as
-            "[object Object]" or an inline error at query time. Materialization
+            findings: a render annotation (e.g. `# big_value`, `# currency` or
+            `# colspan`) the renderer cannot apply as written, either malformed
+            for the field it sits on, so it renders as "[object Object]" or an
+            inline error at query time, or inert where it sits and silently
+            ignored. Materialization
             findings: a `storage=` source not served from storage, a `#@ persist`
             source that was not recognized as materializable, a persist-target
             collision, and materialization-config problems that degrade
@@ -3090,9 +3126,15 @@ components:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Render findings are surfaced here only at
-                  `error` severity; lower-severity render findings remain on the
-                  query-time `renderLogs` surface. Materialization and dashboard
+                  Finding severity. Render-tag findings use both: `error` for
+                  a tag malformed for the field it sits on, which renders as
+                  "[object Object]" or an inline error at query time, and `warn`
+                  for one that is well-formed but inert where it sits and so is
+                  silently ignored (e.g. `# colspan` outside
+                  `# dashboard { columns=N }`), where nothing looks broken at
+                  query time and the layout simply is not what was written.
+                  Those are the only two severities the renderer emits, so no
+                  render finding is withheld. Materialization and dashboard
                   findings use both: `error` for something that cannot work as
                   written, such as a tile naming a view the source does not
                   have, and `warn` for something that works but not as the
