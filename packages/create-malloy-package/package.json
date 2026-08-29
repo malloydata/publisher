@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/create-malloy-package",
    "description": "Scaffold a Malloy Publisher package and a local agent workspace, so one command takes you from nothing to an agent that can query your data.",
-   "version": "0.0.9",
+   "version": "0.0.10",
    "license": "MIT",
    "type": "module",
    "engines": {
