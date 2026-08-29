@@ -15,6 +15,7 @@ import { components } from "../api";
 import {
    getProcessedPublisherConfig,
    getPublisherConfigDir,
+   getUnresolvedPublisherConfigPath,
    isPublisherConfigFrozen,
    ProcessedEnvironment,
    ProcessedPublisherConfig,
@@ -815,6 +816,7 @@ export class EnvironmentStore {
          logger.info(
             `Environment store successfully initialized in ${formatDuration(initializationDuration)}`,
          );
+         this.logUnconfiguredNotice();
          this.emitReadinessLine();
       } catch (error) {
          markNotReady();
@@ -836,6 +838,43 @@ export class EnvironmentStore {
             // A failed stderr write must not mask the logged error above.
          }
       }
+   }
+
+   /**
+    * Say why an empty server is empty, once, beside the readiness line.
+    *
+    * A server that loaded nothing reports `serving` with `environments=0
+    * packages=0 load_errors=0`, and every one of those numbers is accurate:
+    * nothing failed, because nothing was asked for. Without this line there is
+    * no output at all naming the config path that was checked, so an operator
+    * who forgot to mount one sees a healthy server and an empty catalog.
+    *
+    * `info`, not `warn`, because booting unconfigured is a supported mode
+    * rather than a fault: a deployment can mount no config and create its
+    * environments over the API afterwards, which is what Credible's workers do.
+    * Levelling this at `warn` would alarm on every one of those boots. The
+    * sibling case (falling back to the bundled default) logs at `info` too.
+    *
+    * Gated on having zero environments, so a server that took its environments
+    * from the database rather than a config file stays quiet: it has data, and
+    * the missing file is then not worth remarking on.
+    *
+    * Runtime creation is unconditionally available in this branch: with no
+    * config file, `frozenConfig` takes its default of false.
+    */
+   private logUnconfiguredNotice(): void {
+      if (this.environments.size > 0) {
+         return;
+      }
+      const checkedPath = getUnresolvedPublisherConfigPath(this.serverRootPath);
+      if (!checkedPath) {
+         return;
+      }
+      logger.info(
+         `Serving with no environments: no ${PUBLISHER_CONFIG_NAME} was found at ${checkedPath}. ` +
+            `Create one there (in Docker, mount it at that path) or pass --config <path>. ` +
+            `Environments can also be created at runtime through the API.`,
+      );
    }
 
    /**
