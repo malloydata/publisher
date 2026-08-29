@@ -16,6 +16,7 @@ import {
 } from "../errors";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
+import { assertSafePackageName } from "../path_safety";
 import { runWithQueryTimeout } from "../query_timeout";
 import { testConnectionConfig } from "../service/connection";
 import { validateDuckdbApiSurface } from "../service/connection_config";
@@ -815,6 +816,19 @@ export class ConnectionController {
          throw new BadRequestError(
             "Connection type is required and must be a string",
          );
+      }
+
+      // duckdb/ducklake derive a `<name>.duckdb` filename from the name, so an
+      // unsafe name is a bad request (400), consistent with the checks above,
+      // rather than a test that runs and "fails". Only these two types touch
+      // the filesystem; other types accept any name. Empty names fall through
+      // to the service, which reports the missing-name test failure.
+      if (
+         (connectionConfig.type === "duckdb" ||
+            connectionConfig.type === "ducklake") &&
+         connectionConfig.name
+      ) {
+         assertSafePackageName(connectionConfig.name);
       }
 
       try {

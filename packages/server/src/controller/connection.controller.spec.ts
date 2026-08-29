@@ -850,3 +850,26 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
       ).rejects.toBeInstanceOf(QueryTimeoutError);
    });
 });
+
+describe("ConnectionController.testConnectionConfiguration name validation", () => {
+   afterEach(() => sinon.restore());
+
+   const controller = () =>
+      new ConnectionController({} as unknown as EnvironmentStore);
+
+   it.each([
+      ["duckdb", "../evil"],
+      ["ducklake", "foo/../bar"],
+      ["duckdb", ".hidden"],
+   ])(
+      "rejects a path-traversal %s connection name (%p) with BadRequestError",
+      async (type, name) => {
+         // duckdb/ducklake derive a <name>.duckdb filename, so an unsafe name
+         // is a 400 rather than a test that runs and "fails". This throws
+         // before the service (and any filesystem access) is reached.
+         await expect(
+            controller().testConnectionConfiguration({ name, type } as never),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      },
+   );
+});
