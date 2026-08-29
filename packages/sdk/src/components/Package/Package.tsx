@@ -5,6 +5,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CloseIcon from "@mui/icons-material/Close";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
+   Alert,
    Box,
    Container,
    Dialog,
@@ -130,15 +131,14 @@ export default function Package({
    });
    const dataApps = dataAppsQuery.data?.data ?? [];
 
-   // No versionId, for the same reason as data apps: the dashboards endpoint
-   // takes only env + package.
    const dashboardsQuery = useQueryWithApiError({
-      queryKey: ["dashboards", environmentName, packageName],
+      queryKey: ["dashboards", environmentName, packageName, versionId],
       queryFn: async () => {
          try {
             return await apiClients.dashboards.listDashboards(
                environmentName,
                packageName,
+               versionId,
             );
          } catch (e) {
             // Non-fatal for the same reasons as the data-apps list above: an
@@ -287,6 +287,32 @@ export default function Package({
                {/* First: the at-a-glance artifact a visitor most likely wants,
                    ahead of the notebooks and models it is built on. Hidden when
                    empty, like Data Apps. */}
+               {/* A listing that FAILED renders identically to a package with
+                   no dashboards: `dashboards` falls back to `[]` and the
+                   section hides itself. Only `pkgQuery` reaches the error page,
+                   so nothing else here would say a word. Now that the listing
+                   carries a `versionId`, a host that resolves it on some routes
+                   and refuses it on others has a new way in, and "this package
+                   has no dashboards" is the wrong thing to conclude from a
+                   transport error. The 404 above stays swallowed: that one is
+                   an older Publisher with no route, which genuinely has none. */}
+               {/* A listing that FAILED renders identically to a package with
+                   no dashboards: `dashboards` falls back to `[]` and the
+                   section hides itself. Only `pkgQuery` reaches the error page,
+                   so nothing else here would say a word. Now that the listing
+                   carries a `versionId`, a host that resolves it on some routes
+                   and refuses it on others has a new way in, and "this package
+                   has no dashboards" is the wrong thing to conclude from a
+                   transport error. The 404 above stays swallowed: that one is
+                   an older Publisher with no route, which genuinely has none. */}
+               {dashboardsQuery.isError && (
+                  <Box sx={{ mb: 4 }}>
+                     <Alert severity="warning">
+                        Could not list this package&apos;s dashboards, so any it
+                        has are missing from this page.
+                     </Alert>
+                  </Box>
+               )}
                {dashboards.length > 0 && (
                   <PackageSection title="Dashboards" count={dashboards.length}>
                      {dashboards.map((dashboard) => {

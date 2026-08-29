@@ -16,7 +16,7 @@ import { useServer } from "../ServerProvider";
 import { DashboardTile } from "./DashboardTile";
 
 export interface DashboardProps {
-   /** `publisher://environments/{env}/packages/{pkg}`, env and package only. */
+   /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
    resourceUri: string;
    /** The dashboard's slug, as listed by the dashboards endpoint. */
    dashboard: string;
@@ -130,6 +130,7 @@ export function Dashboard({
    // than here, so every hook still runs in the same order.
    const environmentName = parsed.environmentName ?? "";
    const packageName = parsed.packageName ?? "";
+   const versionId = parsed.versionId;
    const uriNamesBoth = !!parsed.environmentName && !!parsed.packageName;
 
    const {
@@ -138,12 +139,23 @@ export function Dashboard({
       isError,
       error,
    } = useQueryWithApiError({
-      queryKey: ["dashboard", environmentName, packageName, dashboard],
+      // Every value the request is built from, so the key cannot drift out of
+      // step with it. A version that reached the request alone would leave two
+      // versions of one dashboard on a single cache entry, each able to serve
+      // the other's manifest.
+      queryKey: [
+         "dashboard",
+         environmentName,
+         packageName,
+         versionId,
+         dashboard,
+      ],
       queryFn: () =>
          apiClients.dashboards.getDashboard(
             environmentName,
             packageName,
             dashboard,
+            versionId,
          ),
       // No point asking for a dashboard under a name the URI never carried.
       enabled: uriNamesBoth,
@@ -191,7 +203,13 @@ export function Dashboard({
       // their starting VALUES alone, so two dashboards whose starting values
       // coincide (the common case: both empty) look like one document, and the
       // one you came from keeps filtering the one you drilled into.
-      documentKey: `${environmentName}/${packageName}/${dashboard}`,
+      // The version belongs in that identity too, so a swap between versions
+      // drops the edits a reader made to the one they came from. Only the
+      // EDITS: `initial` is `startingValues` merged with `params`, so a host
+      // that round-trips givens through its own URL hands them straight back
+      // and they still apply across the swap. That one is the host's call, and
+      // this key neither can nor should overrule it.
+      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${dashboard}`,
       // Absent means autorun; only an explicit `autorun=false` batches.
       autorun: manifest?.autorun !== false,
    });
@@ -200,7 +218,13 @@ export function Dashboard({
       options,
       isLoading: optionsLoading,
       failed: optionsFailed,
-   } = useSuggestOptions(environmentName, packageName, manifest?.path, specs);
+   } = useSuggestOptions(
+      environmentName,
+      packageName,
+      manifest?.path,
+      specs,
+      versionId,
+   );
 
    // A drill tag names its given as the model spells it, and `# drill` with no
    // `given=` falls back to the DIMENSION's spelling, which need not match. The
@@ -348,6 +372,7 @@ export function Dashboard({
             <DashboardTile
                environmentName={environmentName}
                packageName={packageName}
+               versionId={versionId}
                modelPath={modelPath}
                queryName={manifest.query}
                givens={applied}
@@ -388,6 +413,7 @@ export function Dashboard({
                      <DashboardTile
                         environmentName={environmentName}
                         packageName={packageName}
+                        versionId={versionId}
                         modelPath={modelPath}
                         tile={tile.query}
                         label={tile.label}

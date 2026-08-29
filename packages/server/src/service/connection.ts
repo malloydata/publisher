@@ -61,7 +61,11 @@ import {
    normalizeSnowflakePrivateKey,
 } from "./connection_config";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
-import { CloudStorageCredentials } from "./gcs_s3_utils";
+import {
+   CloudStorageCredentials,
+   DEFAULT_S3_CREDENTIAL_CHAIN,
+   resolveCloudStorageCredentials,
+} from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
 
@@ -1122,65 +1126,61 @@ async function federatePostgres(
    return { handle: alias, sourceType: "postgres" };
 }
 
-async function attachCloudStorage(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   const isGCS = attachedDb.type === "gcs";
-   const isS3 = attachedDb.type === "s3";
+/**
+ * Assembles the CREATE OR REPLACE SECRET for a GCS or S3 storage root.
+ *
+ * Split out from `attachCloudStorage` so the emitted statement can be asserted
+ * without a live DuckDB: the S3 arm now picks between four shapes, and the three
+ * key-based ones have to stay byte-identical to what they were before chain auth
+ * existed.
+ */
+/**
+ * Whether a failure is object storage refusing an EXPIRED credential, as opposed to
+ * refusing a wrong one.
+ *
+ * Matched narrowly on purpose. The remedy this gates -- re-resolve and retry -- is
+ * right for a credential that was valid and aged out, and wrong for one that was
+ * never valid: retrying a bad access key hides a misconfiguration behind a silent
+ * second attempt. `ExpiredToken` is S3's own code for the first case.
+ */
+/** A connection whose object-storage secret can be re-resolved without a reattach. */
+interface RenewableStorageSecret {
+   setStorageSecretRenewer(renew: () => Promise<void>): void;
+}
 
-   if (!isGCS && !isS3) {
-      throw new Error(`Invalid cloud storage type: ${attachedDb.type}`);
-   }
-
-   const storageType = attachedDb.type?.toUpperCase() || "";
-   let credentials: CloudStorageCredentials;
-
-   if (isGCS) {
-      if (!attachedDb.gcsConnection) {
-         throw new Error(
-            `GCS connection configuration missing for: ${attachedDb.name}`,
-         );
-      }
-      if (!attachedDb.gcsConnection.keyId || !attachedDb.gcsConnection.secret) {
-         throw new Error(
-            `GCS keyId and secret are required for: ${attachedDb.name}`,
-         );
-      }
-      credentials = {
-         type: "gcs",
-         accessKeyId: attachedDb.gcsConnection.keyId,
-         secretAccessKey: attachedDb.gcsConnection.secret,
-      };
-   } else {
-      if (!attachedDb.s3Connection) {
-         throw new Error(
-            `S3 connection configuration missing for: ${attachedDb.name}`,
-         );
-      }
-      if (
-         !attachedDb.s3Connection.accessKeyId ||
-         !attachedDb.s3Connection.secretAccessKey
-      ) {
-         throw new Error(
-            `S3 accessKeyId and secretAccessKey are required for: ${attachedDb.name}`,
-         );
-      }
-      credentials = {
-         type: "s3",
-         accessKeyId: attachedDb.s3Connection.accessKeyId,
-         secretAccessKey: attachedDb.s3Connection.secretAccessKey,
-         region: attachedDb.s3Connection.region,
-         endpoint: attachedDb.s3Connection.endpoint,
-         sessionToken: attachedDb.s3Connection.sessionToken,
-      };
-   }
-
-   await installAndLoadExtension(connection, "httpfs");
-
-   const secretName = sanitizeSecretName(
-      `${attachedDb.type}_${attachedDb.name}`,
+/**
+ * Whether a failed statement should re-resolve the storage credential and retry.
+ *
+ * Exported so the rule is tested as the rule, rather than as a copy of it living in
+ * a spec: a predicate mirrored into a test passes whether or not the caller uses it.
+ */
+export function shouldRenewStorageSecret(opts: {
+   error: unknown;
+   hasRenewer: boolean;
+   alreadyRenewing: boolean;
+}): boolean {
+   return (
+      opts.hasRenewer &&
+      !opts.alreadyRenewing &&
+      isExpiredCredentialError(opts.error)
    );
+}
+
+export function isExpiredCredentialError(error: unknown): boolean {
+   const message =
+      error instanceof Error
+         ? error.message
+         : typeof error === "string"
+           ? error
+           : "";
+   return message.includes("ExpiredToken");
+}
+
+export function buildCloudStorageSecretSQL(
+   secretName: string,
+   credentials: CloudStorageCredentials,
+): string {
+   const isGCS = credentials.type === "gcs";
    const escapedKeyId = escapeSQL(credentials.accessKeyId);
    const escapedSecret = escapeSQL(credentials.secretAccessKey);
 
@@ -1195,9 +1195,65 @@ async function attachCloudStorage(
          );
       `;
    } else {
+      // One fallback, and it is this one -- the schema carries no `default:`,
+      // because a generated client would not apply it. Warned rather than silent:
+      // a bucket outside us-east-1 reached with no region fails as "no such
+      // bucket", which reads as a wrong name rather than a wrong region.
       const region = credentials.region || "us-east-1";
+      if (!credentials.region) {
+         logger.warn(
+            "S3 connection has no region; defaulting to us-east-1. A bucket in " +
+               "another region will not be found.",
+            { secretName },
+         );
+      }
 
-      if (credentials.endpoint) {
+      if (credentials.provider === "credential_chain") {
+         // CHAIN is load-bearing, not decorative: with it omitted DuckDB
+         // resolves against `config` alone, which is the one provider that
+         // cannot work in a container. So Publisher names an order rather than
+         // passing through only what the caller set.
+         const chain = escapeSQL(
+            credentials.chain?.trim() || DEFAULT_S3_CREDENTIAL_CHAIN,
+         );
+         // A chain secret stores the credentials it resolved, not a reference to
+         // the provider that resolved them, so a temporary credential (a
+         // web-identity assume-role lasts the role's MaxSessionDuration, an hour
+         // by default) expires while the secret lives on. That is invisible on
+         // the build path, where the session lasts one build, and fatal on the
+         // serve path, where the attach is idempotent and the secret lives as
+         // long as the connection.
+         //
+         // `auto` is the ONLY value that arms refresh: the aws extension stores
+         // the `refresh_info` that makes a secret refreshable under
+         // `if (refresh == "auto")` and ignores anything else, and httpfs then
+         // declines to refresh a secret that has no `refresh_info`. Any other
+         // value is accepted and silently does nothing -- and is worse than
+         // omitting the clause, which for a bare `sts`/`web_identity` chain
+         // arms it by default. Not caller-configurable because a frozen
+         // snapshot of an expiring credential has no use.
+         const clauses = [
+            "TYPE s3",
+            "PROVIDER credential_chain",
+            `CHAIN '${chain}'`,
+            "REFRESH 'auto'",
+            `REGION '${region}'`,
+         ];
+         // Additive, not an alternative: an S3-compatible endpoint behind a host
+         // role is a real combination, and the key-based branches below can only
+         // express one modifier at a time.
+         if (credentials.endpoint) {
+            clauses.push(
+               `ENDPOINT '${escapeSQL(credentials.endpoint)}'`,
+               "URL_STYLE 'path'",
+            );
+         }
+         createSecretCommand = `
+            CREATE OR REPLACE SECRET ${secretName} (
+               ${clauses.join(",\n               ")}
+            );
+         `;
+      } else if (credentials.endpoint) {
          const escapedEndpoint = escapeSQL(credentials.endpoint);
          createSecretCommand = `
             CREATE OR REPLACE SECRET ${secretName} (
@@ -1232,11 +1288,67 @@ async function attachCloudStorage(
       }
    }
 
+   return createSecretCommand;
+}
+
+async function attachCloudStorage(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   const storageType = attachedDb.type?.toUpperCase() || "";
+   const credentials = resolveCloudStorageCredentials(attachedDb);
+
+   await installAndLoadExtension(connection, "httpfs");
+   // `credential_chain` is implemented by the `aws` extension and resolves when
+   // the secret is created, so the extension has to be loaded first. The
+   // DuckLake attach path already loads it, but the generic attach path reaches
+   // this same function through the handler table and does not. `aws` is baked
+   // into the image, so this stays within EXTENSION_FETCH_POLICY=local-only.
+   if (credentials.provider === "credential_chain") {
+      await installAndLoadExtension(connection, "aws");
+   }
+
+   const secretName = sanitizeSecretName(
+      `${attachedDb.type}_${attachedDb.name}`,
+   );
+   const createSecretCommand = buildCloudStorageSecretSQL(
+      secretName,
+      credentials,
+   );
+
    if (await doesSecretExistInDuckDB(connection, secretName)) {
       // Force refresh attachments using this storage
       await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
    }
    await connection.runSQL(createSecretCommand);
+
+   // Only a chain secret can go stale: it stores the credentials it RESOLVED, and a
+   // web-identity assume-role yields about an hour of them. A key pair does not
+   // expire, so registering a renewer for one would only serve to retry a wrong key.
+   //
+   // `REFRESH 'auto'` asks DuckDB to do this itself and is emitted, so this is a
+   // fallback rather than the mechanism. It is kept because that refresh does not
+   // reach every read path: a direct object read re-resolves transparently and
+   // never surfaces an error, while a read through an attached DuckLake catalog
+   // has been seen to surface ExpiredToken from an equally armed secret. If DuckDB
+   // refreshes first, the retry never sees an expired credential and stays silent.
+   // Structural check rather than instanceof: attachCloudStorage is reached from the
+   // generic handler table as well as the DuckLake path, so the connection type is
+   // not known here and only some of them can renew.
+   const renewable = connection as unknown as Partial<RenewableStorageSecret>;
+   if (
+      credentials.provider === "credential_chain" &&
+      typeof renewable.setStorageSecretRenewer === "function"
+   ) {
+      renewable.setStorageSecretRenewer(async () => {
+         // Replaced in place on the LIVE connection: CREATE OR REPLACE SECRET is a
+         // statement, not a session property, so nothing is torn down and no query
+         // in flight is disturbed.
+         await connection.runSQL(
+            buildCloudStorageSecretSQL(secretName, credentials),
+         );
+      });
+   }
 
    logger.info(`Created ${storageType} secret: ${secretName}`);
    logger.info(`${storageType} connection configured for: ${attachedDb.name}`);
@@ -1489,6 +1601,66 @@ class AzureDuckDBConnection extends DuckDBConnection {
 
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
+   private storageSecretRenewer?: () => Promise<void>;
+   private renewingStorageSecret = false;
+
+   /** @see RenewableStorageSecret */
+   setStorageSecretRenewer(renew: () => Promise<void>): void {
+      this.storageSecretRenewer = renew;
+   }
+
+   /**
+    * Runs SQL, re-resolving an expired object-storage credential once and retrying.
+    *
+    * The tier's serve attach is idempotent and its secret lives as long as the
+    * connection, while the credentials a chain secret RESOLVED last about an hour.
+    * `REFRESH 'auto'` asks DuckDB to re-resolve it, which is the first line of
+    * defence; this is the second, for when that does not happen. Without either, a
+    * serve connection that has been up an hour fails every read with ExpiredToken
+    * while builds keep succeeding -- a build opens its own session, and with it a
+    * fresh secret, so the two paths fail independently.
+    *
+    * Reactive rather than scheduled, and reactive rather than per-query, because
+    * resolving the secret costs an STS round trip. Per query that is one call per
+    * read, forever; on a timer it needs a TTL nobody reports back to us. On the error
+    * it is one call per connection per hour, and the error is the authoritative
+    * signal that the credential is actually gone.
+    *
+    * Once. A second failure is not an expiry.
+    */
+   async runSQL(
+      sql: string,
+      options?: Parameters<DuckDBConnection["runSQL"]>[1],
+   ): Promise<Awaited<ReturnType<DuckDBConnection["runSQL"]>>> {
+      try {
+         return await super.runSQL(sql, options);
+      } catch (error) {
+         // `renewingStorageSecret` guards the renewal's own statement, which runs
+         // through this same method: without it a failure there would recurse.
+         const renew = this.storageSecretRenewer;
+         if (
+            !shouldRenewStorageSecret({
+               error,
+               hasRenewer: !!renew,
+               alreadyRenewing: this.renewingStorageSecret,
+            }) ||
+            !renew
+         ) {
+            throw error;
+         }
+         logger.info(
+            "Object-storage credential expired; re-resolving and retrying once",
+            { connection: this.connectionName },
+         );
+         this.renewingStorageSecret = true;
+         try {
+            await renew();
+         } finally {
+            this.renewingStorageSecret = false;
+         }
+         return await super.runSQL(sql, options);
+      }
+   }
 
    constructor(options: PublisherDuckDBOptions) {
       super(options);
@@ -1934,6 +2106,19 @@ export function buildEnvironmentMalloyConfig(
             connection,
             metadata.attachedDatabases,
          );
+         // Drop a rejected run from the cache so a later lookup can retry, rather
+         // than replaying one transient failure for the life of the process. Every
+         // attach handler reaches the network — postgres opens a real connection,
+         // bigquery and snowflake authenticate, and a cloud-storage secret under
+         // `credential_chain` resolves credentials at CREATE — and the loop in
+         // attachDatabasesToDuckDB rethrows, so without this the first blip is
+         // permanent and only rebuilding the environment clears it. Mirrors the
+         // eviction on proxyConnectionCache below.
+         attachPromise.catch(() => {
+            if (attachPromises.get(connection) === attachPromise) {
+               attachPromises.delete(connection);
+            }
+         });
          attachPromises.set(connection, attachPromise);
       }
       await attachPromise;
