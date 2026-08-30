@@ -207,12 +207,11 @@ real data usually springs:
 - A column named `date`, `hour`, `number`, `source`, `type`, `count` or another
   Malloy reserved word has to be backticked, or it fails with cascading errors on
   lines that look unrelated.
-- `avg(score::number)`, which `malloy-modeling` gives as a quick reminder, is only
+- `avg(score::number)`, which `malloy-gotchas-modeling` covers, is only
   right on a clean column. `::number` is a strict cast, so a column carrying `'NA'`,
   `'N/A'`, `''` or `'-'` compiles and then throws at query time
   (`Could not convert string 'NA' to DOUBLE`). The fix is
-  `avg(nullif(score, 'NA')::number)`. Where the two skills disagree,
-  `malloy-gotchas-modeling` is the correct one.
+  `avg(nullif(score, 'NA')::number)`.
 
 When something does not compile, reach for `malloy-debug` rather than guessing at the
 error: it covers reading Malloy's messages, and why fixing the first error usually

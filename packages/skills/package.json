@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/skills",
    "description": "Agent skills for Malloy and the Malloy Publisher",
-   "version": "0.1.11",
+   "version": "0.1.12",
    "license": "MIT",
    "type": "module",
    "main": "dist/index.js",
@@ -34,6 +34,7 @@
    },
    "scripts": {
       "copy-skills": "bun run scripts/copy-skills.ts",
+      "build-index": "bun run scripts/build-index.ts",
       "build": "bun run copy-skills && bunx tsc -p tsconfig.build.json",
       "prepack": "bun run build",
       "prepublishOnly": "bun run scripts/check-pack.ts",

@@ -274,7 +274,7 @@ over:
 | Porting prior art (LookML, dbt, a metrics doc): the definitions exist and are agreed, the job is translation | `skill:malloy-lookml-review`, then `skill:malloy-model` |
 | The user names the sources they want built outright, before any question | `skill:malloy-model` |
 | A model already exists, the question rests on no judgment call, and nothing is worth keeping | `skill:malloy-analysis` alone |
-| Open-ended exploration with no intent to keep anything | `skill:malloy-analyze` |
+| Open-ended exploration with no intent to keep anything | `skill:malloy-analysis` |
 
 ## Anti-patterns
 

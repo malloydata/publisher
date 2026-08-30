@@ -7,7 +7,6 @@
     "malloy-analysis",
     "malloy-analysis-pitfalls",
     "malloy-analysis-report",
-    "malloy-analyze",
     "malloy-charts",
     "malloy-dashboards",
     "malloy-debug",
@@ -32,6 +31,7 @@
     "malloy-patterns",
     "malloy-phrase-detection",
     "malloy-publish",
+    "malloy-publisher-setup",
     "malloy-queries",
     "malloy-review",
     "malloy-scope"
