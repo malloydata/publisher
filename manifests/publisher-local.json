@@ -1,0 +1,52 @@
+{
+  "name": "publisher-local",
+  "description": "Every skill a local Malloy Publisher ships: building and reviewing models, answering data questions, authoring notebooks, dashboards and in-package HTML data apps, and operating a package.",
+  "trigger_hint": "when the user asks about modeling data, building a semantic model, creating Malloy sources, answering a data question over a model, or mentions Malloy",
+  "auto_discovered": [
+    "malloy",
+    "malloy-analysis",
+    "malloy-analysis-pitfalls",
+    "malloy-analysis-report",
+    "malloy-analyze",
+    "malloy-charts",
+    "malloy-dashboards",
+    "malloy-debug",
+    "malloy-define",
+    "malloy-discover",
+    "malloy-document",
+    "malloy-getting-started",
+    "malloy-gotchas-modeling",
+    "malloy-gotchas-queries",
+    "malloy-gotchas-rendering",
+    "malloy-html-data-app-embedding",
+    "malloy-html-data-app-runtime",
+    "malloy-html-data-apps",
+    "malloy-lookml-review",
+    "malloy-materialization",
+    "malloy-materialization-tuning",
+    "malloy-model",
+    "malloy-model-as-you-go",
+    "malloy-modeling",
+    "malloy-notebook-chat",
+    "malloy-notebooks",
+    "malloy-patterns",
+    "malloy-phrase-detection",
+    "malloy-publish",
+    "malloy-queries",
+    "malloy-review",
+    "malloy-scope"
+  ],
+  "supporting": [],
+  "groups": {
+    "html-apps": [
+      "malloy-html-data-apps",
+      "malloy-html-data-app-runtime",
+      "malloy-html-data-app-embedding"
+    ],
+    "lookml": ["malloy-lookml-review"],
+    "materialization": [
+      "malloy-materialization",
+      "malloy-materialization-tuning"
+    ]
+  }
+}

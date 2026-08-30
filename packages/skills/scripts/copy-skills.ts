@@ -14,17 +14,39 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isExcluded } from "./exclusions";
 import { locateFrontmatterClose } from "./frontmatter";
+import { manifestPath, manifestSkillNames } from "./manifest";
 
 const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = path.join(packageDir, "..", "..", "skills");
 const destination = path.join(packageDir, "skills");
+
+// What ships is the manifest, not whatever happens to be in skills/. A skill
+// added to the tree but not the manifest is a deliberate non-ship (work in
+// progress, or a host-specific skill), and used to be published anyway.
+const shipping = new Set(manifestSkillNames());
+const missing = [...shipping].filter(
+   (name) => !fs.existsSync(path.join(source, name, "SKILL.md")),
+);
+if (missing.length > 0) {
+   console.error(
+      `${manifestPath} names ${missing.length} skill(s) with no SKILL.md in ` +
+         `${source}: ${missing.join(", ")}`,
+   );
+   process.exit(1);
+}
 
 fs.rmSync(destination, { recursive: true, force: true });
 fs.cpSync(source, destination, {
    recursive: true,
    filter: (from: string) => {
       const relative = path.relative(source, from);
-      return relative === "" || !isExcluded(relative);
+      if (relative === "") return true;
+      if (isExcluded(relative)) return false;
+      // Keep the manifest's skills and everything under them; drop the rest.
+      // path.sep rather than "/" so this holds on Windows, which the
+      // cross-platform job actually runs.
+      const [top] = relative.split(path.sep);
+      return shipping.has(top);
    },
 });
 
