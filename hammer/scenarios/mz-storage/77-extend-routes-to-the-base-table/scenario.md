@@ -1,6 +1,6 @@
 ---
 id: extend-routes-to-the-base-table
-tags: serve-correctness, storage, needs-attention
+tags: serve-correctness, storage
 package: erb
 ---
 
@@ -125,15 +125,3 @@ Expect:
 | ---------- | ------------ | --------------- |
 | 2026-01-01 | 150          | 75              |
 | 2026-01-02 | 200          | 200             |
-
-## Note (since=2026-08-13)
-
-> Asserts the design intent for the storage tier: no second table for the
-> extension, but a routed read for it.
->
-> `deriveServeBindings` emits one binding per manifest ENTRY, keyed on
-> `entry.sourceName`. A base and its extension share one content address and
-> therefore one entry, so only one of the two names can be bound and the other
-> serves live. The colocated tier is immune — it substitutes through the
-> same-connection manifest, which is keyed by content address, so every alias
-> resolves.

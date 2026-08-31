@@ -110,28 +110,8 @@ Expect:
 | daily          | esi_daily | A      |
 | daily_with_avg | esi_daily | A      |
 
-## Note (since=2026-08-13)
+## Note (since=2026-08-31)
 
-> Rewritten. This scenario previously asserted exactly ONE plan row, i.e. that the
-> extension must not appear as a build-plan source at all, and was tagged `known-red`
-> pending malloydata/malloy PR 3012 (which would have keyed `persist` on a source's OWN
-> annotation).
->
-> PR 3012 was **closed unmerged**. Its replacement, malloydata/malloy#3029, deliberately
-> leaves `Model.getBuildPlan()` unchanged and documents one-table-many-sources as "the
-> normal case, not an edge case"; the grouping lives in the new `Runtime.getBuildTargets`,
-> which reports one target carrying every source that maps onto it. So the old expectation
-> was not merely waiting on an upstream fix — it asserted the opposite of the design, and
-> meeting it would break serving: the publisher finds an extension's read binding by
-> looking the address up in `buildPlan.sources`, so an extension absent from the plan
-> cannot be routed.
->
-> What the old prose got right, and what has since been fixed: the duplicate plan entry
-> was a landmine for a host that materializes per SOURCE. That is now handled on both
-> sides of the build — the publisher writes each physical table once and refuses (or warns
-> on) two definitions colliding on one table, and it binds every source sharing an address
-> so the extension routes instead of one alias silently winning by build order.
->
 > Residual, deliberately not asserted here: the wire build plan reports per-source rows, so
 > a host that mints a physical name per source has to group by `sourceEntityId` first or it
 > will ask for two tables for one address. The publisher cannot resolve that on the host's

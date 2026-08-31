@@ -102,16 +102,3 @@ Expect:
 | -------------- | --------- | ------ |
 | daily          | esc_daily | A      |
 | daily_with_avg | esc_daily | A      |
-
-## Note (since=2026-08-13)
-
-> Rewritten alongside its external twin, `extended-source-inherits-persist`, for the same
-> reason: this asserted exactly ONE plan row — that the extension must not be a plan source
-> at all — pending malloydata/malloy PR 3012, which was **closed unmerged**. Its
-> replacement, malloydata/malloy#3029, leaves `Model.getBuildPlan()` unchanged and states
-> that one table with several sources is the ordinary case. See that scenario's note for the
-> full reasoning.
->
-> The real defect the old prose named — a host materializing per SOURCE issuing two CTAS to
-> one warehouse table — is fixed in the build loop, which now writes each physical table
-> once and refuses (or warns on) two distinct definitions colliding on one table.
