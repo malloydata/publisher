@@ -27,6 +27,7 @@ import {
    extractRefinements,
    extractViews,
    narrowSchemaToPublic,
+   serveShapeDiagnostics,
    sliceSourceRange,
    type ServeBinding,
 } from "./materialization_serve_transform";
@@ -1085,5 +1086,42 @@ describe("buildChainedStorageBuildModel (stack-on-parent transient build model)"
          ]),
       );
       expect(byMonth).toEqual({ "2026-01": 375, "2026-02": 99 });
+   });
+});
+
+describe("serveShapeDiagnostics", () => {
+   const binding = (sourceName: string): ServeBinding => ({
+      sourceName,
+      destinationName: "credible",
+      virtualHandle: `${sourceName}#h`,
+      tablePath: `main.${sourceName}`,
+      schema: [{ name: "n", type: "BIGINT" }],
+   });
+
+   // Both live failures this exists for produce the SAME compiler error, so the
+   // sets are what separate them. Asserted as a pair for that reason: either one
+   // alone leaves the two indistinguishable, which is the state this replaces.
+   it("distinguishes a source that is not materialized from one withheld as stale", () => {
+      const all = [binding("_fact"), binding("rollup")];
+
+      // Nothing stale: everything bound is in the shape. A query naming
+      // `wrapper` finds it in neither set -- it carries no `#@ persist`.
+      const allFresh = serveShapeDiagnostics(all, all);
+      expect(allFresh.shapeSources).toEqual(["_fact", "rollup"]);
+      expect(allFresh.staleSources).toEqual([]);
+
+      // `rollup` is bound but past its freshness window, so it is absent from
+      // the shape for a reason the compiler's message cannot express.
+      const oneStale = serveShapeDiagnostics(all, [binding("_fact")]);
+      expect(oneStale.shapeSources).toEqual(["_fact"]);
+      expect(oneStale.staleSources).toEqual(["rollup"]);
+   });
+
+   it("reports every bound source as stale when the gate withholds them all", () => {
+      const all = [binding("a"), binding("b")];
+      expect(serveShapeDiagnostics(all, [])).toEqual({
+         shapeSources: [],
+         staleSources: ["a", "b"],
+      });
    });
 });

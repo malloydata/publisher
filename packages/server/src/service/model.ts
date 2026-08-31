@@ -68,6 +68,7 @@ import {
    sliceSourceRange,
    type ServeBinding,
    type SourceLocation,
+   serveShapeDiagnostics,
 } from "./materialization_serve_transform";
 import { evaluateManifestFreshness } from "./freshness";
 import { deserializeError } from "../package_load/package_load_pool";
@@ -4595,6 +4596,17 @@ export class Model {
                // deployment running at info. Volume is bounded by the same thing
                // that bounds the hit line: one per routed query, on packages that
                // declare `storage=` at all.
+               // The compiler names the symbol it could not resolve, which is a
+               // symptom rather than a reason: a source is absent from the shape
+               // either because it carries no `#@ persist` or because the
+               // freshness gate dropped it, and "Reference to undefined object"
+               // reads the same way for both. The two sets that distinguish them
+               // are already known here, so they are reported alongside rather
+               // than left to be reconstructed from the package definition.
+               const { shapeSources, staleSources } = serveShapeDiagnostics(
+                  this.serveBindings,
+                  this.freshServeBindings(Date.now()),
+               );
                logger.info(
                   "storage serve-shape ineligible for this query; serving live",
                   {
@@ -4603,6 +4615,12 @@ export class Model {
                         shapeErr instanceof Error
                            ? shapeErr.message
                            : String(shapeErr),
+                     // What the shape DID offer. A name the query wants that is
+                     // absent from both this and `staleSources` is not
+                     // materialized at all.
+                     shapeSources,
+                     // Bound, but withheld by the freshness gate for this query.
+                     staleSources,
                   },
                );
             }

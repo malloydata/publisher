@@ -367,6 +367,30 @@ function serveShapeFragment(binding: ServeBinding): string {
  * join/view that reaches a non-materialized source) does not compile against
  * this model, and the serve path falls back to serving it live.
  */
+/**
+ * The two source sets that explain a serve-shape fallback.
+ *
+ * The compiler names the symbol it could not resolve, which is a symptom shared
+ * by both reasons a source can be missing from the shape: it carries no
+ * `#@ persist`, or the freshness gate withheld it. "Reference to undefined
+ * object" reads identically either way, so the sets are reported next to it.
+ *
+ * A name the query wants that appears in NEITHER is not materialized at all.
+ */
+export function serveShapeDiagnostics(
+   allBindings: ServeBinding[],
+   freshBindings: ServeBinding[],
+): { shapeSources: string[]; staleSources: string[] } {
+   const shapeSources = freshBindings.map((b) => b.sourceName);
+   const fresh = new Set(shapeSources);
+   return {
+      shapeSources,
+      staleSources: allBindings
+         .map((b) => b.sourceName)
+         .filter((name) => !fresh.has(name)),
+   };
+}
+
 export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
    modelText: string;
 } {
