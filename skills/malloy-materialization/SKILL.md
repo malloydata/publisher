@@ -123,13 +123,19 @@ bound, only the first is:
 
 - **`materialization.freshness` `{ "window": "24h", "fallback": "live" }` is the bound.** The serve path
   re-checks freshness per query, so once the artifact ages past the window it drops out of the serving set
-  and the query recomputes live, correctly filtered - whether or not a rebuild ever lands. Two details
+  and the query recomputes live, correctly filtered - whether or not a rebuild ever lands. Three details
   decide whether you actually get that. **`fallback` must be `live`**: under `stale_ok` a stale artifact
   keeps being served, which voids the bound, and window and fallback resolve *independently* per layer,
-  so a package-level `stale_ok` silently defeats a window you set on the source. And prefer the
+  so a package-level `stale_ok` silently defeats a window you set on the source. Prefer the
   **per-source** spelling `#@ persist name="..." freshness.window="24h" freshness.fallback="live"` over
   the package-wide `materialization.freshness` key: the gated source is what needs the bound, and setting
-  it package-wide forces every other persisted source to recompute once stale too.
+  it package-wide forces every other persisted source to recompute once stale too. And **a
+  content-identical sibling shares the artifact, so it shares the window**: reuse is keyed on the
+  content-addressed `sourceEntityId`, which folds the connection and the SQL but *not* the source name, so
+  two persist sources whose bodies compute the same SQL resolve to one table carrying one freshness
+  policy. The tightest window any of them declares governs all of them - a sibling declaring nothing
+  cannot loosen yours, and yours pulls that sibling's reads off the table once it lapses. If two sources
+  need genuinely different windows, give them genuinely different SQL.
 - **A cron alone is not a bound.** A failed build or a stopped scheduler leaves the source serving its old
   decisions indefinitely. `freshness` and `schedule` are mutually exclusive; for a gated source, take the
   window.
