@@ -2895,6 +2895,72 @@ describe("executeInstructedBuild", () => {
       }
    });
 
+   it("builds only the last of several same-address instructions with no sourceID", async () => {
+      // `sourceID` is optional on the wire, and without it the address index is the
+      // only route back to an instruction — it holds one per address, so the LAST
+      // instruction wins and the earlier names are never built. Nothing can
+      // attribute them: an address maps to every one of them equally.
+      //
+      // Pinned because the sibling test stamps a sourceID on both instructions and
+      // therefore proves the opposite behaviour. The condition is still reported —
+      // the shared-address counter fires either way.
+      const warn = sinon.stub(logger, "warn");
+      try {
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const base = fakeSource({
+            name: "base",
+            sourceEntityId: "bsharedddddddddd",
+         });
+         const ext = fakeSource({
+            name: "ext",
+            sourceEntityId: "bsharedddddddddd",
+         });
+
+         await callExecute(
+            compiledWith(
+               { base, ext },
+               [["base", "ext"]],
+               new Map([["duckdb", connection]]),
+            ),
+            [
+               {
+                  sourceEntityId: "bsharedddddddddd",
+                  materializedTableId: "mt-g0",
+                  physicalTableName: "rollup__g000",
+                  realization: "COPY",
+               },
+               {
+                  sourceEntityId: "bsharedddddddddd",
+                  materializedTableId: "mt-g1",
+                  physicalTableName: "rollup__g001",
+                  realization: "COPY",
+               },
+            ],
+            {},
+         );
+
+         const creates = createsFrom(runSQL);
+         expect(creates.filter((c) => c.includes("rollup__g001"))).toHaveLength(
+            1,
+         );
+         expect(creates.filter((c) => c.includes("rollup__g000"))).toHaveLength(
+            0,
+         );
+         expect(
+            warn
+               .getCalls()
+               .some((c) =>
+                  String(c.args[0]).includes(
+                     "One content address was instructed to build more than one table",
+                  ),
+               ),
+         ).toBe(true);
+      } finally {
+         warn.restore();
+      }
+   });
+
    it("meters a table collision apart from a per-source-naming host", async () => {
       // Two conditions, two counters, on purpose. A host minting a table per source
       // is wasteful but correct; two definitions sharing one table answers a query
@@ -2924,17 +2990,23 @@ describe("executeInstructedBuild", () => {
       }
    });
 
-   it("refuses that collision under PERSIST_COLLISION_ENFORCE", async () => {
+   it("refuses that collision under PERSIST_COLLISION_ENFORCE, before any write", async () => {
+      // The refusal is the whole point of the flag, so it has to land before the
+      // first CTAS: a mid-loop throw would leave the pair's first table already
+      // replaced, and nothing puts the overwritten rows back — the failure path
+      // reclaims storage tables only, and a reclaim cannot restore data.
       const prev = process.env.PERSIST_COLLISION_ENFORCE;
       process.env.PERSIST_COLLISION_ENFORCE = "true";
+      const runSQL = sinon.stub().resolves();
       try {
-         const promise = collidingBuild(sinon.stub().resolves());
+         const promise = collidingBuild(runSQL);
          await expect(promise).rejects.toThrow(
             /both materialize into table 'rollup'/,
          );
          await expect(promise).rejects.toBeInstanceOf(
             MaterializationEligibilityError,
          );
+         expect(createsFrom(runSQL)).toHaveLength(0);
       } finally {
          if (prev === undefined) delete process.env.PERSIST_COLLISION_ENFORCE;
          else process.env.PERSIST_COLLISION_ENFORCE = prev;

@@ -169,8 +169,10 @@ const sharedAddressInstructionCounter = lazyCounter(
    "publisher_materialization_shared_address_instructions_total",
    "Content addresses that arrived with more than one instruction naming a " +
       "DIFFERENT physical table. The host minted a table per source where " +
-      "several sources share one artifact; each is built and only one is " +
-      "recorded, so the rest are orphaned. Wasteful, not wrong.",
+      "several sources share one artifact. With a sourceID on each instruction " +
+      "every table is built and only one is recorded, so the rest are orphaned; " +
+      "without one the last instruction wins and the earlier names are never " +
+      "built. Wasteful, not wrong — the table's CONTENT is the same either way.",
 );
 const tableCollisionCounter = lazyCounter(
    "publisher_materialization_table_collision_total",
