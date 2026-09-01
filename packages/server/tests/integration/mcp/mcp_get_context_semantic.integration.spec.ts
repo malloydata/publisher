@@ -61,13 +61,26 @@ const ENV_KEYS = [
 
 interface GetContextPayload {
    retrieval?: string;
-   results?: Array<{
-      kind: string;
-      name: string;
-      source?: string;
-      score?: number;
+   sources?: Array<{
+      source_info: { resource_id: { source: string } };
+      relevance?: number;
+      entities?: Array<{
+         entity_type: string;
+         name: string;
+         relevance?: number;
+      }>;
    }>;
    error?: string;
+}
+
+/** The response's entities as one flat list, each tagged with its source. */
+function rankedEntities(payload: GetContextPayload) {
+   return (payload.sources ?? []).flatMap((card) =>
+      (card.entities ?? []).map((entity) => ({
+         ...entity,
+         source: card.source_info.resource_id.source,
+      })),
+   );
 }
 
 async function callGetContext(
@@ -177,14 +190,14 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
          expect(payload.retrieval).toBe("semantic");
          expect(stubRequests).toBeGreaterThan(0);
 
-         const results = payload.results ?? [];
-         expect(results.length).toBeGreaterThan(0);
-         for (const r of results) {
-            expect(typeof r.score).toBe("number");
+         const entities = rankedEntities(payload);
+         expect(entities.length).toBeGreaterThan(0);
+         for (const entity of entities) {
+            expect(typeof entity.relevance).toBe("number");
          }
          // The bigram embedding puts "total sales revenue" on top of the
          // total_sales measure ("total sales" once humanized).
-         expect(results.some((r) => r.name === "total_sales")).toBe(true);
+         expect(entities.some((e) => e.name === "total_sales")).toBe(true);
       },
       { timeout: 60000 },
    );
@@ -215,11 +228,16 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
             sourceName: "order_items",
          });
          expect(payload.retrieval).toBe("semantic");
-         const results = payload.results ?? [];
-         // Non-empty, or the per-result loop below pins nothing.
-         expect(results.length).toBeGreaterThan(0);
-         for (const r of results) {
-            expect(r.source).toBe("order_items");
+         // One card, for the source the drill-down named.
+         expect(payload.sources).toHaveLength(1);
+         expect(payload.sources?.[0].source_info.resource_id.source).toBe(
+            "order_items",
+         );
+         const entities = rankedEntities(payload);
+         // Non-empty, or the per-entity loop below pins nothing.
+         expect(entities.length).toBeGreaterThan(0);
+         for (const entity of entities) {
+            expect(entity.source).toBe("order_items");
          }
       },
       { timeout: 30000 },
@@ -238,10 +256,10 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
                query: "top selling products",
             });
             expect(payload.retrieval).toBe("lexical");
-            const results = payload.results ?? [];
-            expect(results.length).toBeGreaterThan(0);
-            for (const r of results) {
-               expect(r.score).toBeUndefined();
+            const entities = rankedEntities(payload);
+            expect(entities.length).toBeGreaterThan(0);
+            for (const entity of entities) {
+               expect(entity.relevance).toBeUndefined();
             }
          } finally {
             stubFailing = false;

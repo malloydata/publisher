@@ -122,15 +122,29 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       const { tools } = await client.listTools();
       const description =
          tools.find((t) => t.name === "malloy_getContext")?.description ?? "";
+      // snake_case throughout since the response converged on the hosted
+      // retrieval API's shape: one shape, one parser, one mental model across
+      // a local server and a hosted one.
       for (const term of [
-         "kind",
+         "entity_type",
          "sources",
+         "source_info",
+         "resource_id",
+         "entities",
          "joins",
          "sourceName",
          "relationship",
-         "alsoIn",
-         "belowCutoffCount",
-         "retrievalReason",
+         "also_in",
+         "ranking",
+         "total_available",
+         "below_cutoff_count",
+         "total_entities",
+         "retrieval_reason",
+         // Not agent-actionable — an agent writes Malloy from name and
+         // sourceName, never from a composite key — but pinned on the same
+         // rule anyway, since a harness that cannot identify an entity
+         // cannot score retrieval at all.
+         "entity_id",
       ]) {
          expect(description).toContain(term);
       }
