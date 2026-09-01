@@ -126,7 +126,8 @@ bound, only the first is:
   and the query recomputes live, correctly filtered - whether or not a rebuild ever lands. Three details
   decide whether you actually get that. **`fallback` must be `live`**: under `stale_ok` a stale artifact
   keeps being served, which voids the bound, and window and fallback resolve *independently* per layer,
-  so a package-level `stale_ok` silently defeats a window you set on the source. Prefer the
+  so a package-level `stale_ok` silently defeats a window you set on the source. That is a statement about
+  **layers**, which do not combine - not about siblings, below. Prefer the
   **per-source** spelling `#@ persist name="..." freshness.window="24h" freshness.fallback="live"` over
   the package-wide `materialization.freshness` key: the gated source is what needs the bound, and setting
   it package-wide forces every other persisted source to recompute once stale too. And **a
@@ -134,8 +135,16 @@ bound, only the first is:
   content-addressed `sourceEntityId`, which folds the connection and the SQL but *not* the source name, so
   two persist sources whose bodies compute the same SQL resolve to one table carrying one freshness
   policy. The tightest window any of them declares governs all of them - a sibling declaring nothing
-  cannot loosen yours, and yours pulls that sibling's reads off the table once it lapses. If two sources
-  need genuinely different windows, give them genuinely different SQL.
+  cannot loosen yours, and yours pulls that sibling's reads off the table once it lapses. A sibling's
+  `stale_ok` cannot void your bound either: the fold keeps whichever fallback bounds staleness, so the
+  layer rule above does not carry over here. If two sources need genuinely different windows, give them
+  genuinely different SQL.
+
+  Both of those are properties of the **host** that assembles the manifest, not of the annotation. Where
+  the host does not fold, which sibling's policy reaches the wire is unspecified; and a host that folds at
+  manifest-assembly time typically applies it when a version's manifest is next published rather than
+  retroactively to manifests already distributed - so you can declare the window correctly and not have it
+  in force yet.
 - **A cron alone is not a bound.** A failed build or a stopped scheduler leaves the source serving its old
   decisions indefinitely. `freshness` and `schedule` are mutually exclusive; for a gated source, take the
   window.
