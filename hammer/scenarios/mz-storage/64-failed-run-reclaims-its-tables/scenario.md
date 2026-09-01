@@ -8,21 +8,27 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A part-way failed build reclaims the tables it created
+# A part-way failed build leaves no table unreachable
 
-A run that fails commits NO manifest, and manifest-driven GC only drops names a
-manifest records — so a table an earlier source in that run already wrote would be
-unreachable forever. For DuckLake that is data plus Parquet files at rest. The build
-now reclaims those before rethrowing.
+Manifest-driven GC only drops names a manifest records. So the danger in a build
+that fails half way is not the failure — it is a table an earlier source already
+wrote that no manifest ever names. For DuckLake that is data plus Parquet files at
+rest, unreachable forever: no manifest names it, so no sweep can ever find it.
 
-`b` is chained on `a` so the order is deterministic: `a` builds, then `b`'s CTAS fails
-because its caller-assigned name points at a schema nobody provisioned.
+**The rule: every table a run writes ends up named by a manifest, or gone.** There
+are two ways to honour it, and the publisher uses each where it fits.
 
-The second half is the guard that makes the reclaim safe. Auto-run assigns STABLE
-names, so a rebuild writes in place over the very table the previous manifest still
-serves — dropping that to tidy up would take a working source offline. So a name any
-`MANIFEST_FILE_READY` run still references is kept, and only unreferenced names (the
-generational ones, where the leak actually bites) are dropped.
+A run that produces SOMETHING commits a manifest and records both halves — the
+sources that built, and a `failures` entry naming each source that did not and
+why. The tables it wrote are named, so they are reachable, and the sources that
+did materialize stay usable rather than being thrown away with the one that
+failed. That is this scenario.
+
+A run that produces NOTHING has no manifest to record anything in, so it reclaims
+instead — see the Note for why that path is not reachable from here.
+
+`b` is chained on `a` so the order is deterministic: `a` builds, then `b`'s CTAS
+fails because its caller-assigned name points at a schema nobody provisioned.
 
 ## Publisher
 
@@ -54,65 +60,84 @@ source: b is a -> {
 }
 ```
 
-## Build refused (orchestrated, pkg=prt)
+## Build (orchestrated, pkg=prt)
 
-`a` builds into an unreferenced generational name; `b` then fails because
-`nosuchschema` does not exist. The run ends FAILED with no manifest.
+`a` builds; `b` then fails because `nosuchschema` does not exist. The run does NOT
+fail — it reaches `MANIFEST_FILE_READY` and commits a manifest recording `a`'s
+table and `b`'s reason.
 
 - a -> prt_a__g1 @ lake
-- b -> nosuchschema.prt_b__g1 @ lake
+- b -> nosuchschema.prt_b__g1 @ lake (failed)
 
-## Connection lake_probe (rows=0)
+## Connection lake_probe (rows=1)
 
-`prt_a__g1` is gone — reclaimed on the failure path. Without that it would be
-unreachable forever: no manifest names it, so no GC can ever find it.
+`prt_a__g1` SURVIVES, and that is the point: the committed manifest names it, so
+it is reachable to manifest-driven GC like any other recorded table. Dropping it
+would also have thrown away a source that built perfectly well.
 
 ```sql
 SELECT table_name FROM information_schema.tables WHERE table_name = 'prt_a__g1'
 ```
 
-## Build (orchestrated, pkg=prt)
+## Connection lake_probe (rows=0)
 
-Now a SUCCESSFUL build, so a committed manifest references `prt_a__g2`.
-
-- a -> prt_a__g2 @ lake
-
-## Connection lake_probe (rows=1)
+Nothing was left behind for `b`. Its entry is a recorded FAILURE carrying the name
+it was headed for, not a table that exists — which is why the step above has to
+assert against `failures` rather than read that name and call it built.
 
 ```sql
-SELECT table_name FROM information_schema.tables WHERE table_name = 'prt_a__g2'
+SELECT table_name FROM information_schema.tables WHERE table_name = 'prt_b__g1'
 ```
 
 ## Build refused (orchestrated, pkg=prt)
 
-A failing run that rebuilds `a` at the SAME name the live manifest serves — the
-stable-name case. `b` fails again.
+Instructing ONLY the source that cannot build. Every instructed source fails, so
+the run produced nothing — and a build with no output must not report itself as a
+success with errors attached. It reaches FAILED.
 
-- a -> prt_a__g2 @ lake
 - b -> nosuchschema.prt_b__g2 @ lake
 
 ## Connection lake_probe (rows=1)
 
-`prt_a__g2` SURVIVES. A live manifest still references it, so reclaim leaves it alone
-rather than taking a working source offline.
+The earlier run's table is untouched by the failed one. A run reclaims only what
+IT created, never a table an earlier successful run wrote and a live manifest may
+still serve.
 
 ```sql
-SELECT table_name FROM information_schema.tables WHERE table_name = 'prt_a__g2'
+SELECT table_name FROM information_schema.tables WHERE table_name = 'prt_a__g1'
 ```
 
-## Note (since=2026-07-24)
+## Note (since=2026-09-01)
 
-> Reclaim is deliberately ORCHESTRATED-ONLY. The still-referenced check reads this
-> environment and package only, and a BuildID carries no environment input — so two
-> environments sharing a destination can resolve a source to the same physical name,
-> and a reclaim trusting a per-environment check could drop a table another
-> environment is serving. That exact shape caused a cross-environment data-loss
-> incident on the hosted side. Generational (host-assigned) names remove the
-> collision instead of racing it, and auto-run's stable names are overwritten in
-> place by the next build, so skipping them forgoes little.
+> **The failure-path reclaim is no longer reachable from this harness, and may not
+> be reachable at all.** Worth a decision, because the guards below were written
+> for a path that now almost never runs.
 >
-> The durable fix is refusing a colliding persist target at validation time —
-> today `persistenceCollisionWarnings` only looks WITHIN a package, so a
-> cross-package or cross-environment collision is undetected (see
-> `cross-environment-same-name`). Widening reclaim before that lands would be
-> unsafe.
+> `builtThisRun` and `builtSources` are appended together, so "every source failed"
+> — the throw that ends a run producing nothing — always implies there is nothing
+> to reclaim. The only remaining trigger is an error that escapes the per-source
+> `try` AFTER a source has already built, and the per-source `try` wraps
+> `buildOneSource` entirely: a bad destination, a failed CTAS and a missing schema
+> are all captured as per-source failures. What is left is
+> `assertMaterializationEligible` on a later storage-targeted source — real in
+> production, where a host instructs by `sourceID` a source that a model edit has
+> since made ineligible, but not expressible here: `## Build (orchestrated)`
+> resolves every source through the build plan's `sourceEntityId`, and a refused
+> source has no plan entry to resolve (see `host-binding-honors-row-level-access`).
+>
+> So `reclaimStorageTablesFromFailedRun` is currently pinned by unit tests only.
+> Either the step grows a way to instruct by `sourceID`, or the reclaim's own
+> guards should be re-read against how rarely it now fires.
+>
+> Those guards, retained for whenever it does: reclaim is ORCHESTRATED-ONLY. The
+> still-referenced check reads this environment and package only, and a BuildID
+> carries no environment input — so two environments sharing a destination can
+> resolve a source to the same physical name, and a reclaim trusting a
+> per-environment check could drop a table another environment is serving. That
+> exact shape caused a cross-environment data-loss incident on the hosted side.
+> Generational (host-assigned) names remove the collision instead of racing it, and
+> auto-run's stable names are overwritten in place by the next build, so skipping
+> them forgoes little. The durable fix is refusing a colliding persist target at
+> validation time — today `persistenceCollisionWarnings` only looks WITHIN a
+> package, so a cross-package or cross-environment collision is undetected (see
+> `cross-environment-same-name`).
