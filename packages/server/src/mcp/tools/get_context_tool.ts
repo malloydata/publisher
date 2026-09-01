@@ -46,7 +46,47 @@ interface Entity {
    aliases?: string[];
 }
 
-/** One tier-4 result. `score` (cosine) rides only on semantic results. */
+/**
+ * A stable, package-scoped identity for one entity: `kind:source:name`.
+ *
+ * The response already carries `kind`, `name` and `source` separately, so this
+ * adds no information — it adds AGREEMENT. Every consumer that wants to say
+ * "the same entity" across two responses was assembling this string itself,
+ * and they did not assemble it the same way: a harness scoring retrieval
+ * against a fixed list of expected entities is comparing identity, so a
+ * one-character difference in how it joins the parts reads as a total miss on
+ * a call that returned exactly the right thing.
+ *
+ * `Entity.id` cannot serve. It is a per-build sequence number, so it is not
+ * stable across a reload, let alone across two deployments of the same model.
+ *
+ * Two invariants worth keeping, because both have already cost someone a day:
+ *
+ * - ALWAYS three colon-separated segments. A form that drops the middle
+ *   segment when there is no source produces two ids of different shape for
+ *   one caller to parse, and the caller that splits on ":" and reads [1] as
+ *   the source gets the name instead, silently.
+ * - A container is its own source, so a source is `source:orders:orders`.
+ *   Same reason: shape before brevity. A model-level named query with no
+ *   declared source follows the same rule.
+ *
+ * Scoped to the package, not global: `environmentName` and `packageName` ride
+ * on the result beside this, and entity results in one response never span
+ * packages. Callers that need a global key join the three.
+ */
+export function entityId(
+   kind: string,
+   source: string | undefined,
+   name: string,
+): string {
+   return `${kind}:${source ?? name}:${name}`;
+}
+
+/**
+ * One ranked entity, INTERNAL to ranking. `score` (cosine) rides only on
+ * semantic results. This never reaches the wire: toSourceResults converts a
+ * list of these into the response shape, which is where identity is assigned.
+ */
 interface ResultEntity {
    kind: string;
    name: string;
@@ -190,24 +230,155 @@ function groupSiblings(results: ResultEntity[], limit: number): ResultEntity[] {
 }
 
 /**
- * The source-context entries for a result set: one per distinct source behind
- * a result, in the order those sources first appear, so the most relevant
- * source's guidance reads first. Keyed on the sources present rather than on
- * "the first hit", so re-ranking never moves which entry carries what.
+ * ── The response shape, and why it is this one ──────────────────────────────
+ *
+ * Publisher and the Credible platform both expose a `get_context`, and until
+ * now they answered in shapes that shared no field name: Publisher a flat
+ * ranked `results[]` of entities, Credible a `sources[]` whose entries nest
+ * their entities. Anything that consumed both — an eval harness scoring
+ * retrieval, a skill, an agent moving between a local server and the hosted
+ * one — needed two parsers and two mental models, and a harness written
+ * against one silently scored zero against the other.
+ *
+ * So this converges on Credible's shape, per its `GetContextResponse` in
+ * `apis/retrieval-public-api.yaml`: source-centric, snake_case, identity in a
+ * structured `resource_id`. Publisher moves because it is the smaller
+ * contract — no SDK surface exposes it, and its consumers are agents that
+ * re-read the tool description each session rather than compiled clients.
+ *
+ * ONLY SERIALIZATION CHANGES HERE. Ranking, sibling grouping, alias collapse
+ * and the relevance floor all still run over the flat `ResultEntity[]` the
+ * earlier commits built; this converts that list at the boundary. A ranking
+ * bug and a shape bug stay separately reviewable, and separately revertible.
+ *
+ * Three deliberate divergences, each because the alternative loses something:
+ *
+ * 1. `entity_type` is a SUPERSET of Credible's enum. Credible allows
+ *    view/measure/dimension. Publisher also retrieves `join` — the whole
+ *    point of this PR's first commit, since an agent that cannot see a
+ *    declared join concludes the model has none — and `query`, for a
+ *    model-level named query. Narrowing to Credible's three would delete
+ *    that. A `source` never appears as an entity_type: a source is the
+ *    container, which is exactly Credible's own structure.
+ * 2. Publisher-only fields ride along rather than being dropped:
+ *    `source_info.joins` (complete, so empty is authoritative),
+ *    `entity_id`, `relationship`, `aliases`, `also_in`, and the response-level
+ *    `retrieval` / `retrieval_reason` / `below_cutoff_count` / `total_entities`.
+ *    Credible has no home for these and they are load-bearing here.
+ * 3. Credible fields Publisher cannot honestly fill are OMITTED, not sent
+ *    empty: `summary`, `prominence`, `values`, `values_indexed` and
+ *    `match_reason` need an LLM summarizer, query-usage telemetry, or a
+ *    dimensional value index, none of which Publisher has. Credible's own
+ *    spec omits null fields, so absence is already in-contract. They stay
+ *    platform-only until Publisher can mean something by them.
  */
-function contextForResults(
+interface CredibleResourceId {
+   environment: string;
+   package: string;
+   model_path: string;
+   source: string;
+}
+
+interface CredibleSourceInfo {
+   resource_id: CredibleResourceId;
+   docs?: string;
+   /** Publisher extension. Complete, so `[]` means "declares none". */
+   joins: SourceContextJoin[];
+}
+
+interface CredibleEntity {
+   name: string;
+   /** Credible's view/measure/dimension, plus Publisher's join and query. */
+   entity_type: string;
+   relevance?: number;
+   description?: string;
+   /** Publisher extension. Stable `kind:source:name`; see {@link entityId}. */
+   entity_id: string;
+   relationship?: Relationship;
+   aliases?: string[];
+   also_in?: string[];
+}
+
+interface CredibleSourceResult {
+   source_info: CredibleSourceInfo;
+   relevance?: number;
+   entities?: CredibleEntity[];
+}
+
+/**
+ * Group a ranked entity list into Credible's source-centric shape.
+ *
+ * Source order is the order sources first appear in the ranked list, which
+ * keeps the best-matching source first without re-sorting — the ranking is
+ * already correct and re-deriving it here could disagree with it. Entities
+ * keep their rank order within a source for the same reason.
+ *
+ * A `kind: "source"` hit becomes the CONTAINER carrying a relevance, not a row
+ * in its own `entities`. That is what Credible's shape means by a source, and
+ * it is why the source's score has somewhere to live once entities nest.
+ */
+function toSourceResults(
    results: ResultEntity[],
    sourceContext: Map<string, SourceContextEntry>,
-): SourceContextEntry[] {
-   const seen = new Set<string>();
-   const entries: SourceContextEntry[] = [];
+   environmentName: string,
+   packageName: string,
+): CredibleSourceResult[] {
+   const bySource = new Map<string, CredibleSourceResult>();
+
+   const containerFor = (r: ResultEntity): CredibleSourceResult | undefined => {
+      const name = r.source;
+      if (!name) return undefined;
+      let entry = bySource.get(name);
+      if (!entry) {
+         const ctx = sourceContext.get(name);
+         entry = {
+            source_info: {
+               resource_id: {
+                  environment: environmentName,
+                  package: packageName,
+                  model_path: ctx?.modelPath ?? r.modelPath,
+                  source: name,
+               },
+               ...(ctx?.doc ? { docs: ctx.doc } : {}),
+               joins: ctx?.joins ?? [],
+            },
+         };
+         bySource.set(name, entry);
+      }
+      return entry;
+   };
+
    for (const r of results) {
-      if (!r.source || seen.has(r.source)) continue;
-      seen.add(r.source);
-      const entry = sourceContext.get(r.source);
-      if (entry) entries.push(entry);
+      const entry = containerFor(r);
+      if (!entry) continue;
+      if (r.kind === "source") {
+         // The source itself matched: its score belongs on the container, and
+         // its full (untruncated) doc supersedes the truncated context copy.
+         if (r.score !== undefined) entry.relevance = r.score;
+         if (r.doc) entry.source_info.docs = r.doc;
+         continue;
+      }
+      const entity: CredibleEntity = {
+         name: r.name,
+         entity_type: r.kind,
+         entity_id: entityId(r.kind, r.source, r.name),
+         ...(r.score !== undefined ? { relevance: r.score } : {}),
+         ...(r.doc ? { description: r.doc } : {}),
+         ...(r.relationship ? { relationship: r.relationship } : {}),
+         ...(r.aliases ? { aliases: r.aliases } : {}),
+         ...(r.alsoIn ? { also_in: r.alsoIn } : {}),
+      };
+      (entry.entities ??= []).push(entity);
+      // A source with no hit of its own still ranks by its best entity, so a
+      // caller reading source relevance never sees a matched source at null.
+      if (
+         r.score !== undefined &&
+         (entry.relevance === undefined || r.score > entry.relevance)
+      ) {
+         entry.relevance = r.score;
+      }
    }
-   return entries;
+   return Array.from(bySource.values());
 }
 
 /** Cut over-long context text on a word boundary, marking that it was cut. */
@@ -570,7 +741,7 @@ async function getPackageIndex(
  * first and the reference material last, and the reference stays terse to buy
  * room for it. Full prose belongs in docs/ai-agents.md, not here.
  */
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in names the model actually defines. Start here when you do not know the environment or package names.
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the model entities most relevant to a plain-English question, so you ground a query in names the model defines. Start here when you do not know the environment or package names.
 
 ## Contract rules
 - Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
@@ -581,17 +752,18 @@ const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes an
 
 ## Parameters
 All optional; supply what you know.
-- none: the environments and their package names.
+- none: environments and their packages.
 - environmentName: that environment's packages.
 - + packageName: that package's sources, each with its joins.
-- + query: what you need, in plain English; returns the most relevant sources, views, queries, joins and fields.
-- sourceName: drill down into one source. Its own entity comes back only when relevant; its doc and joins always arrive in sources.
-- limit: caps results (max 50; retrieval defaults to 10).
+- + query: what you need, in plain English.
+- sourceName: drill down into one source.
+- limit: caps entities (max 50; retrieval defaults to 10).
 
 ## Response
-results[]: kind (source/view/query/dimension/measure/join), name, source, modelPath, doc — these map onto malloy_executeQuery; pass a view or query as queryName with sourceName. A join adds relationship, traversed as joinName.fieldName. alsoIn names other sources holding the same concept at the same score; choose by their docs.
-sources[]: per source behind a result — its doc (may be truncated) and full joins.
-With an embedding provider, ranking is semantic and entities carry a score. belowCutoffCount counts matches below the floor: 0 with no results means nothing is related. A "lexical" retrieval adds a retrievalReason; only "indexing" is worth retrying.
+sources[], best first. source_info: resource_id {environment, package, model_path, source}, docs, complete joins (empty = declares none). entities[] nest under it.
+entities[]: name, entity_type (dimension/measure/view/join/query), description, relevance, entity_id ("kind:source:name"). Query one with its source as sourceName; a view or query as queryName. A join adds relationship, traversed as joinName.fieldName. also_in names equal-scoring sources; choose by their docs. A source matching on its own carries relevance, no entity row.
+ranking: relevance (search) or prominence (listing). returned vs total_available shows capping.
+Semantic ranking fills relevance. No sources = nothing cleared the floor: not modelled here. below_cutoff_count of total_entities were rejected. A "lexical" retrieval adds retrieval_reason; only "indexing" is worth retrying.
 
 ## Worked example
 {"environmentName":"examples","packageName":"storefront","query":"revenue by product category"}`;
@@ -828,11 +1000,15 @@ export function registerGetContextTool(
             // Enumeration: return every source unless the caller sets an explicit
             // limit. slice(0, undefined) keeps the whole list, so discovery is
             // not silently capped the way ranked retrieval (tier 4) is.
-            const results = Array.from(byId.values())
+            const inScope = Array.from(byId.values())
                .filter((e) => e.kind === "source")
-               .filter((e) => !sourceName || e.source === sourceName)
-               .slice(0, limit)
-               .map((e) => ({
+               .filter((e) => !sourceName || e.source === sourceName);
+            // The overview is where an agent decides how to combine sources,
+            // so each one states its relationships here rather than making
+            // that a second call. toSourceResults carries the complete joins
+            // list onto every entry, so empty means none declared.
+            const sources = toSourceResults(
+               inScope.slice(0, limit).map((e) => ({
                   kind: e.kind,
                   name: e.name,
                   source: e.source,
@@ -840,26 +1016,40 @@ export function registerGetContextTool(
                   packageName,
                   modelPath: e.modelPath,
                   doc: e.doc,
-                  // The overview is where an agent decides how to combine
-                  // sources, so each one states its relationships here rather
-                  // than making that a second call. Empty means none declared.
-                  joins: sourceContext.get(e.name)?.joins ?? [],
-               }));
+               })),
+               sourceContext,
+               environmentName,
+               packageName,
+            );
+            // A listing is deterministic catalog order, not a ranking, and
+            // Publisher has no query-usage signal to fill Credible's
+            // `prominence` with -- so it names the ordering and omits the
+            // score, rather than inventing a number nobody should rank on.
+            const listingEnvelope = {
+               ranking: "prominence" as const,
+               total_available: inScope.length,
+               returned: sources.length,
+            };
             // An empty enumeration is ambiguous to an agent: "no data here" and
             // "the package exposes nothing" look identical. The package DID
             // load (a failed load throws out of getPackageIndex above), so an
             // empty result means its models expose no sources: a curation gap
             // (explores/export {}), not an empty database. Say so, only in the
             // empty case, so the populated payload stays byte-identical.
-            if (results.length === 0 && !sourceName) {
+            if (sources.length === 0 && !sourceName) {
                return jsonResource(uri, {
-                  results,
+                  sources,
+                  ...listingEnvelope,
                   ...noteFor(
                      "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call malloy_getStatus for load errors and stale packages.",
                   ),
                });
             }
-            return jsonResource(uri, { results, ...noteFor() });
+            return jsonResource(uri, {
+               sources,
+               ...listingEnvelope,
+               ...noteFor(),
+            });
          }
 
          // Tier 4: retrieval over the package's entities. With an
@@ -876,6 +1066,10 @@ export function registerGetContextTool(
          const scoped = Boolean(sourceName);
          let semanticResults: ResultEntity[] | undefined;
          let belowCutoffCount = 0;
+         // The denominator belowCutoffCount is read against; see
+         // SemanticSearchResult. Undefined on the lexical path, where there
+         // is no floor and so no count to anchor.
+         let totalEntities: number | undefined;
          // Why a configured server answered lexically. Without it "lexical"
          // is a dead end: an agent cannot tell a cold index, which clears in
          // seconds and is worth retrying, from a down provider, which is not.
@@ -954,6 +1148,7 @@ export function registerGetContextTool(
                         ? ranked.slice(0, max)
                         : groupSiblings(ranked, max);
                      belowCutoffCount = semantic.belowCutoffCount;
+                     totalEntities = semantic.totalEntities;
                   } else {
                      retrievalReason =
                         REASON_BY_UNAVAILABLE[semantic.unavailable];
@@ -978,14 +1173,27 @@ export function registerGetContextTool(
          }
 
          if (semanticResults !== undefined) {
-            const sources = contextForResults(semanticResults, sourceContext);
+            const sources = toSourceResults(
+               semanticResults,
+               sourceContext,
+               environmentName,
+               packageName,
+            );
             return jsonResource(uri, {
+               sources,
+               ranking: "relevance" as const,
+               total_available: sources.length,
+               returned: sources.length,
                retrieval: "semantic",
                // Always present on a semantic response, including 0: the
-               // reading depends on being able to tell 0 from absent.
-               belowCutoffCount,
-               results: semanticResults,
-               ...(sources.length > 0 ? { sources } : {}),
+               // reading depends on being able to tell 0 from absent. Paired
+               // with total_entities, without which the count is a bare number
+               // an agent cannot scale -- see SemanticSearchResult for why
+               // the ratio, not the count, carries the signal.
+               below_cutoff_count: belowCutoffCount,
+               ...(totalEntities !== undefined
+                  ? { total_entities: totalEntities }
+                  : {}),
                ...noteFor(),
             });
          }
@@ -1020,19 +1228,30 @@ export function registerGetContextTool(
                ...(e.aliases ? { aliases: e.aliases } : {}),
             }));
 
-         const sources = contextForResults(results, sourceContext);
-         const context = sources.length > 0 ? { sources } : {};
+         const sources = toSourceResults(
+            results,
+            sourceContext,
+            environmentName,
+            packageName,
+         );
+         const envelope = {
+            sources,
+            ranking: "relevance" as const,
+            total_available: sources.length,
+            returned: sources.length,
+         };
          return jsonResource(
             uri,
             configured
                ? {
+                    ...envelope,
                     retrieval: "lexical",
-                    ...(retrievalReason ? { retrievalReason } : {}),
-                    results,
-                    ...context,
+                    ...(retrievalReason
+                       ? { retrieval_reason: retrievalReason }
+                       : {}),
                     ...noteFor(),
                  }
-               : { results, ...context, ...noteFor() },
+               : { ...envelope, ...noteFor() },
          );
       },
    );

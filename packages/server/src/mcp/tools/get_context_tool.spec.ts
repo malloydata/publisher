@@ -17,6 +17,7 @@ import {
    registerGetContextTool,
 } from "./get_context_tool";
 import { embeddingText } from "./embedding_index";
+import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { PackageNotFoundError } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -160,6 +161,42 @@ function parse(result: { content: Content }) {
    return JSON.parse(result.content[0].resource!.text);
 }
 
+/**
+ * The response's entities as one ranked list, un-nested from `sources[]`.
+ *
+ * The payload is source-centric (Credible's GetContextResponse shape), but
+ * most of what this file tests -- ranking order, sibling grouping, alias
+ * collapse, the relevance floor -- is about the ranked ENTITY list that feeds
+ * serialization. Walking the nesting inside each of those tests would bury the
+ * behaviour under structure, so they read the list and the shape gets its own
+ * tests below.
+ *
+ * Field names are the wire's, not the old flat payload's, so a test still
+ * asserts on what actually ships. `source` is lifted from the containing
+ * `resource_id` because an un-nested entity has lost it otherwise. Source
+ * order then entity order reproduces the original ranking.
+ */
+function rankedEntities(payload: {
+   sources?: {
+      source_info: { resource_id: { source: string } };
+      entities?: Record<string, unknown>[];
+   }[];
+}) {
+   return (payload.sources ?? []).flatMap((s) =>
+      (s.entities ?? []).map((e) => ({
+         ...e,
+         source: s.source_info.resource_id.source,
+      })),
+   ) as Record<string, any>[];
+}
+
+/** The sources a response returned, by name, in response order. */
+function sourceNames(payload: {
+   sources?: { source_info: { resource_id: { source: string } } }[];
+}) {
+   return (payload.sources ?? []).map((s) => s.source_info.resource_id.source);
+}
+
 function textBlock(result: { content: Content }) {
    return result.content.find((b) => b.type === "text")?.text;
 }
@@ -291,7 +328,13 @@ const mockLongDocModel = {
          name: "rooms",
          annotations: [`#(doc) ${LONG_SOURCE_DOC}`],
          schema: {
-            fields: [{ kind: "dimension", name: "room_key", annotations: [] }],
+            fields: [
+               { kind: "dimension", name: "room_key", annotations: [] },
+               // Shares no token with the source's name or doc, so a query for
+               // it reaches the source only as the field's parent -- which is
+               // the case where the doc is carried rather than returned.
+               { kind: "dimension", name: "occupancy_pct", annotations: [] },
+            ],
          },
       },
    ],
@@ -486,30 +529,40 @@ describe("get_context discovery tiers", () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
-      const { results } = parse(
+      const payload = parse(
          await handler({
             environmentName: "malloy-samples",
             packageName: "ecommerce",
          }),
       );
-      expect(results).toEqual([
-         {
-            kind: "source",
-            name: "order_items",
-            source: "order_items",
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            modelPath: "ecommerce.malloy",
-            doc: "One row per product sold on an order.",
-            joins: [
-               {
-                  name: "current_building",
-                  relationship: "one",
-                  doc: "Building this asset sits in.",
+      // The whole listing payload, pinned: this is the response contract, in
+      // the platform's shape. A listing has no relevance to report and no
+      // entities under each source -- it is the catalog, not a search.
+      expect(payload).toEqual({
+         sources: [
+            {
+               source_info: {
+                  resource_id: {
+                     environment: "malloy-samples",
+                     package: "ecommerce",
+                     model_path: "ecommerce.malloy",
+                     source: "order_items",
+                  },
+                  docs: "One row per product sold on an order.",
+                  joins: [
+                     {
+                        name: "current_building",
+                        relationship: "one",
+                        doc: "Building this asset sits in.",
+                     },
+                  ],
                },
-            ],
-         },
-      ]);
+            },
+         ],
+         ranking: "prominence",
+         total_available: 1,
+         returned: 1,
+      });
    });
 
    it("tier 3: a populated listing of a current package carries no note", async () => {
@@ -552,7 +605,7 @@ describe("get_context discovery tiers", () => {
             packageName: "ecommerce",
          }),
       );
-      expect(payload.results).toHaveLength(1);
+      expect(payload.sources).toHaveLength(1);
       expect(payload.note).toContain("STALE");
       expect(payload.note).toContain("2026-08-13T00:00:00.000Z");
       expect(payload.note).toContain("malloy_reloadPackage");
@@ -603,7 +656,7 @@ describe("get_context discovery tiers", () => {
             packageName: "curated-empty",
          }),
       );
-      expect(payload.results).toEqual([]);
+      expect(payload.sources).toEqual([]);
       expect(payload.note).toContain("curation gap");
       expect(payload.note).toContain("malloy_getStatus");
    });
@@ -612,17 +665,18 @@ describe("get_context discovery tiers", () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
-      const { results } = parse(
-         await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "state",
-         }),
+      const results = rankedEntities(
+         parse(
+            await handler({
+               environmentName: "malloy-samples",
+               packageName: "ecommerce",
+               query: "state",
+            }),
+         ),
       );
       expect(
          results.some(
-            (r: { name: string; kind: string }) =>
-               r.name === "state" && r.kind === "dimension",
+            (r) => r.name === "state" && r.entity_type === "dimension",
          ),
       ).toBe(true);
    });
@@ -634,145 +688,77 @@ describe("get_context discovery tiers", () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
-      const { results } = parse(
+      const results = rankedEntities(
+         parse(
+            await handler({
+               environmentName: "malloy-samples",
+               packageName: "ecommerce",
+               query: "building",
+            }),
+         ),
+      );
+      const join = results.find((r) => r.name === "current_building");
+      expect(join).toBeDefined();
+      // `join` is not one of Credible's three entity types. Publisher keeps it
+      // because an agent that cannot see a declared join concludes the model
+      // has none and burns calls bridging the tables itself.
+      expect(join!.entity_type).toBe("join");
+      expect(join!.relationship).toBe("one");
+      // A join nests under the source that DECLARES it, so a drill-down on
+      // that source sees it.
+      expect(join!.source).toBe("order_items");
+      expect(join!.description).toBe("Building this asset sits in.");
+      expect(join!.entity_id).toBe("join:order_items:current_building");
+   });
+
+   it("identifies every entity as kind:source:name, container included", async () => {
+      // The response already carries kind, name and source, so this adds no
+      // information -- it adds agreement. Consumers comparing entities across
+      // two responses were each assembling the key themselves, and a
+      // one-character disagreement reads as a total miss on a call that
+      // returned the right thing.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const listed = parse(
          await handler({
             environmentName: "malloy-samples",
             packageName: "ecommerce",
-            query: "building",
          }),
       );
-      const join = results.find(
-         (r: { name: string }) => r.name === "current_building",
+      // A source's identity is its resource_id, which is how Credible's shape
+      // names a source; it needs no entity row and gets none.
+      expect(listed.sources[0].source_info.resource_id).toEqual({
+         environment: "malloy-samples",
+         package: "ecommerce",
+         model_path: "ecommerce.malloy",
+         source: "order_items",
+      });
+
+      const results = rankedEntities(
+         parse(
+            await handler({
+               environmentName: "malloy-samples",
+               packageName: "ecommerce",
+               query: "state",
+            }),
+         ),
       );
-      expect(join).toBeDefined();
-      expect(join.kind).toBe("join");
-      expect(join.relationship).toBe("one");
-      // `source` names the source that DECLARES the join, so a drill-down on
-      // that source sees it.
-      expect(join.source).toBe("order_items");
-      expect(join.doc).toBe("Building this asset sits in.");
+      const field = results.find((r) => r.name === "state");
+      expect(field!.entity_id).toBe("dimension:order_items:state");
+      // The invariant a caller splitting on ":" depends on, across every kind.
+      // Shape before brevity: a form that dropped the middle segment for an
+      // entity with no source would hand callers two id shapes to parse.
+      for (const r of results) {
+         expect(r.entity_id.split(":")).toHaveLength(3);
+         expect(r.entity_id).toBe(`${r.entity_type}:${r.source}:${r.name}`);
+      }
    });
 
    it("tier 4: does not recurse into a join's own schema", async () => {
       // The joined source's fields are already indexed under that source.
       // Recursing would re-index every one of them once per join that
       // reaches it, which is the redundancy this tool can least afford.
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => mockPackage),
-      });
-      const { results } = parse(
-         await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "Zzyzx",
-         }),
-      );
-      expect(results).toEqual([]);
-   });
-
-   it("tier 3: a package listing still returns only sources, not joins", async () => {
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => mockPackage),
-      });
-      const { results } = parse(
-         await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-         }),
-      );
-      expect(results.map((r: { kind: string }) => r.kind)).toEqual(["source"]);
-   });
-
-   it("delivers the parent source's doc and joins alongside a field hit", async () => {
-      // A field hit used to arrive with only its own doc: the source's grain
-      // and population rules reached the agent only when the source itself
-      // happened to rank for the same query, so guidance placement depended
-      // on query phrasing rather than on where the modeller wrote it.
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => mockPackage),
-      });
-      const { results, sources } = parse(
-         await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "state",
-         }),
-      );
-      // The hit itself is a field, carrying only its own (empty) doc...
-      expect(results[0].kind).toBe("dimension");
-      expect(results[0].doc).toBe("");
-      // ...and the source context arrives regardless.
-      expect(sources).toEqual([
-         {
-            name: "order_items",
-            modelPath: "ecommerce.malloy",
-            doc: "One row per product sold on an order.",
-            joins: [
-               {
-                  name: "current_building",
-                  relationship: "one",
-                  doc: "Building this asset sits in.",
-               },
-            ],
-         },
-      ]);
-   });
-
-   it("reports each source once, however many of its entities matched", async () => {
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => mockPackage),
-      });
-      const { results, sources } = parse(
-         await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            // Matches the source, the join, and (via the source doc) more.
-            query: "order building state",
-         }),
-      );
-      expect(results.length).toBeGreaterThan(1);
-      expect(sources).toHaveLength(1);
-      expect(sources[0].name).toBe("order_items");
-   });
-
-   it("truncates a long source doc in context but not in the result itself", async () => {
-      // The context copy exists to deliver the caveat, not to reproduce the
-      // model file; a source that is itself the hit still returns in full.
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => mockLongDocPackage),
-      });
-      const { results, sources } = parse(
-         await handler({
-            environmentName: "e",
-            packageName: "p",
-            query: "rooms",
-         }),
-      );
-      const sourceHit = results.find(
-         (r: { kind: string }) => r.kind === "source",
-      );
-      expect(sourceHit.doc).toBe(LONG_SOURCE_DOC.trim());
-      expect(sourceHit.doc.length).toBeGreaterThan(500);
-
-      expect(sources[0].doc.length).toBeLessThanOrEqual(501);
-      expect(sources[0].doc.endsWith("…")).toBe(true);
-      expect(sources[0].doc).toStartWith("Rooms in the facilities inventory.");
-   });
-
-   it("reports an empty joins list for a source that declares none", async () => {
-      // The authoritative negative: without it an agent cannot tell "no joins
-      // declared" from "joins exist but were not returned", and we watched
-      // agents spend queries probing for a relationship that was never there.
-      const handler = captureHandler({
-         getEnvironment: async () => envWith(async () => mockLongDocPackage),
-      });
-      const { results } = parse(
-         await handler({ environmentName: "e", packageName: "p" }),
-      );
-      expect(results[0].joins).toEqual([]);
-   });
-
-   it("omits the sources block entirely when nothing matched", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
@@ -783,8 +769,144 @@ describe("get_context discovery tiers", () => {
             query: "Zzyzx",
          }),
       );
-      expect(payload.results).toEqual([]);
-      expect(payload).not.toHaveProperty("sources");
+      expect(payload.sources).toEqual([]);
+   });
+
+   it("tier 3: a package listing still returns only sources, not joins", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+         }),
+      );
+      // A listing is sources and nothing else: no entity rows at all, so a
+      // join can never appear as one.
+      expect(sourceNames(payload)).toEqual(["order_items"]);
+      expect(rankedEntities(payload)).toEqual([]);
+   });
+
+   it("delivers the parent source's doc and joins alongside a field hit", async () => {
+      // A field hit used to arrive with only its own doc: the source's grain
+      // and population rules reached the agent only when the source itself
+      // happened to rank for the same query, so guidance placement depended
+      // on query phrasing rather than on where the modeller wrote it.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "state",
+         }),
+      );
+      // The hit itself is a field carrying only its own (empty) doc...
+      const hit = rankedEntities(payload)[0];
+      expect(hit.entity_type).toBe("dimension");
+      expect(hit.description).toBeUndefined();
+      // ...and its source's guidance arrives regardless, on the container the
+      // field now nests inside, which is what makes placement independent of
+      // how the question was phrased.
+      expect(payload.sources[0].source_info).toEqual({
+         resource_id: {
+            environment: "malloy-samples",
+            package: "ecommerce",
+            model_path: "ecommerce.malloy",
+            source: "order_items",
+         },
+         docs: "One row per product sold on an order.",
+         joins: [
+            {
+               name: "current_building",
+               relationship: "one",
+               doc: "Building this asset sits in.",
+            },
+         ],
+      });
+   });
+
+   it("reports each source once, however many of its entities matched", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            // Matches the source, the join, and (via the source doc) more.
+            query: "order building state",
+         }),
+      );
+      expect(rankedEntities(payload).length).toBeGreaterThan(1);
+      expect(sourceNames(payload)).toEqual(["order_items"]);
+   });
+
+   it("truncates a long source doc in context but not in the result itself", async () => {
+      // The context copy exists to deliver the caveat, not to reproduce the
+      // model file; a source that is itself the hit still returns in full.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockLongDocPackage),
+      });
+      const matched = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "rooms",
+         }),
+      );
+      // The source itself ranked, so its docs come back whole.
+      expect(matched.sources[0].source_info.docs).toBe(LONG_SOURCE_DOC.trim());
+      expect(matched.sources[0].source_info.docs.length).toBeGreaterThan(500);
+
+      // Reached only as the parent of a field hit, the same doc is the
+      // truncated context copy: enough to deliver the caveat, not the file.
+      const viaField = parse(
+         await handler({
+            environmentName: "e",
+            packageName: "p",
+            query: "occupancy_pct",
+         }),
+      );
+      const docs = viaField.sources[0].source_info.docs;
+      expect(docs.length).toBeLessThanOrEqual(501);
+      expect(docs.endsWith("…")).toBe(true);
+      expect(docs).toStartWith("Rooms in the facilities inventory.");
+   });
+
+   it("reports an empty joins list for a source that declares none", async () => {
+      // The authoritative negative: without it an agent cannot tell "no joins
+      // declared" from "joins exist but were not returned", and we watched
+      // agents spend queries probing for a relationship that was never there.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockLongDocPackage),
+      });
+      const payload = parse(
+         await handler({ environmentName: "e", packageName: "p" }),
+      );
+      expect(payload.sources[0].source_info.joins).toEqual([]);
+   });
+
+   it("returns sources as an empty array, never absent, when nothing matched", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+            query: "Zzyzx",
+         }),
+      );
+      // `sources` is the result set now, not a context block beside one, so
+      // it is always present -- required in Credible's schema. Absent and
+      // empty would otherwise be two spellings of a true negative, and a
+      // caller has to distinguish "nothing matched" from "old server".
+      expect(payload.sources).toEqual([]);
+      expect(payload.returned).toBe(0);
+      expect(payload.total_available).toBe(0);
    });
 
    it("collapses a raw column into its documented alias, naming the raw one", async () => {
@@ -796,19 +918,19 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () =>
             ({ getPackage: async () => mockAliasPackage }) as never,
       });
-      const { results } = parse(
-         await handler({
-            environmentName: "e",
-            packageName: "p",
-            query: "site",
-         }),
+      const results = rankedEntities(
+         parse(
+            await handler({
+               environmentName: "e",
+               packageName: "p",
+               query: "site",
+            }),
+         ),
       );
-      const sites = results.filter(
-         (r: { name: string }) => r.name.toLowerCase() === "site",
-      );
+      const sites = results.filter((r) => r.name.toLowerCase() === "site");
       expect(sites).toHaveLength(1);
       expect(sites[0].name).toBe("site");
-      expect(sites[0].doc).toBe("Campus site the building sits on.");
+      expect(sites[0].description).toBe("Campus site the building sits on.");
       expect(sites[0].aliases).toEqual(["SITE"]);
    });
 
@@ -817,16 +939,18 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () =>
             ({ getPackage: async () => mockAliasPackage }) as never,
       });
-      const { results } = parse(
-         await handler({
-            environmentName: "e",
-            packageName: "p",
-            query: "height",
-         }),
+      const results = rankedEntities(
+         parse(
+            await handler({
+               environmentName: "e",
+               packageName: "p",
+               query: "height",
+            }),
+         ),
       );
-      const height = results.find((r: { name: string }) => r.name === "height");
+      const height = results.find((r) => r.name === "height");
       expect(height).toBeDefined();
-      expect(height.aliases).toBeUndefined();
+      expect(height!.aliases).toBeUndefined();
    });
 
    it("never sees a field the model hid with an access modifier", async () => {
@@ -862,16 +986,16 @@ describe("get_context discovery tiers", () => {
                }),
             }) as never,
       });
-      const { results } = parse(
-         await handler({
-            environmentName: "e",
-            packageName: "p",
-            query: "site",
-         }),
+      const results = rankedEntities(
+         parse(
+            await handler({
+               environmentName: "e",
+               packageName: "p",
+               query: "site",
+            }),
+         ),
       );
-      expect(results.some((r: { name: string }) => r.name === "SITE")).toBe(
-         false,
-      );
+      expect(results.some((r) => r.name === "SITE")).toBe(false);
       expect(results[0].aliases).toBeUndefined();
    });
 
@@ -894,20 +1018,24 @@ describe("get_context discovery tiers", () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockManySourcePackage),
       });
-      const { results } = parse(
+      const payload = parse(
          await handler({ environmentName: "e", packageName: "p" }),
       );
-      expect(results).toHaveLength(12);
+      expect(payload.sources).toHaveLength(12);
+      expect(payload.total_available).toBe(12);
    });
 
    it("tier 3: honors an explicit limit when given", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockManySourcePackage),
       });
-      const { results } = parse(
+      const payload = parse(
          await handler({ environmentName: "e", packageName: "p", limit: 5 }),
       );
-      expect(results).toHaveLength(5);
+      expect(payload.sources).toHaveLength(5);
+      // returned against total_available is how a caller sees it was capped.
+      expect(payload.returned).toBe(5);
+      expect(payload.total_available).toBe(12);
    });
 
    it("tier 4: without a provider the payload has no retrieval marker or scores", async () => {
@@ -922,12 +1050,19 @@ describe("get_context discovery tiers", () => {
          }),
       );
       expect(payload.retrieval).toBeUndefined();
-      // `sources` is metadata every caller benefits from, so it rides on the
-      // unconfigured payload too; the marker and scores stay provider-only.
-      expect(Object.keys(payload)).toEqual(["results", "sources"]);
-      for (const r of payload.results) {
-         expect(r.score).toBeUndefined();
+      // The shape is the shape with or without a provider: source cards and
+      // their joins are metadata every caller benefits from. Only the marker
+      // and the relevance scores are provider-only.
+      expect(Object.keys(payload)).toEqual([
+         "sources",
+         "ranking",
+         "total_available",
+         "returned",
+      ]);
+      for (const r of rankedEntities(payload)) {
+         expect(r.relevance).toBeUndefined();
       }
+      expect(payload.sources[0].relevance).toBeUndefined();
    });
 });
 
@@ -968,6 +1103,10 @@ describe("get_context semantic retrieval", () => {
       "current building: Building this asset sits in.": [0, 1],
       "where do customers live": [1, 0],
       "what building is this in": [0, 1],
+      // Points away from both entity axes, so it scores about -0.707 against
+      // every facet in the package and nothing clears the floor. This is the
+      // true negative: the question is not modelled here at all.
+      "seismic retrofit of bridge pilings": [-1, -1],
    };
 
    /** A provider over an explicit text -> vector map. Unknown text throws, */
@@ -994,6 +1133,7 @@ describe("get_context semantic retrieval", () => {
             apiKey: "test",
             model: "stub-model",
             baseUrl: "https://stub.example.com/v1",
+            minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
          },
          fetchStub,
       );
@@ -1048,16 +1188,13 @@ describe("get_context semantic retrieval", () => {
       expect(first.retrieval).toBe("lexical");
 
       const payload = await callUntilSemantic(handler, params);
-      expect(payload.results[0].name).toBe("state");
-      expect(payload.results[0].kind).toBe("dimension");
-      expect(payload.results[0].score).toBeCloseTo(1.0, 3);
+      const results = rankedEntities(payload);
+      expect(results[0].name).toBe("state");
+      expect(results[0].entity_type).toBe("dimension");
+      expect(results[0].relevance).toBeCloseTo(1.0, 3);
       // "order items" is orthogonal to the query: below the similarity
       // floor, so it must not pad the results.
-      expect(
-         payload.results.some(
-            (r: { name: string }) => r.name === "order_items",
-         ),
-      ).toBe(false);
+      expect(results.some((r) => r.name === "order_items")).toBe(false);
    });
 
    it("ranks a join semantically and writes it to the embedding index", async () => {
@@ -1068,13 +1205,13 @@ describe("get_context semantic retrieval", () => {
          packageName: "join-pkg",
          query: "what building is this in",
       });
-      const join = payload.results.find(
-         (r: { name: string }) => r.name === "current_building",
+      const join = rankedEntities(payload).find(
+         (r) => r.name === "current_building",
       );
       expect(join).toBeDefined();
-      expect(join.kind).toBe("join");
-      expect(join.relationship).toBe("one");
-      expect(join.score).toBeCloseTo(1.0, 3);
+      expect(join!.entity_type).toBe("join");
+      expect(join!.relationship).toBe("one");
+      expect(join!.relevance).toBeCloseTo(1.0, 3);
 
       // The vector cache holds it under its own kind, so it survives a
       // restart and takes part in the incremental hash diff like any other
@@ -1102,19 +1239,39 @@ describe("get_context semantic retrieval", () => {
          packageName: "context-pkg",
          query: "where do customers live",
       });
-      expect(
-         payload.results.some((r: { kind: string }) => r.kind === "source"),
-      ).toBe(false);
+      // The source itself never cleared the floor, so it is in the response
+      // only as the parent of a field that did. Its relevance is therefore
+      // derived from its best entity, which is what Credible's schema
+      // specifies when source-level matching is unavailable -- a matched
+      // source is never reported at null for a caller ranking sources.
+      expect(payload.sources[0].relevance).toBeCloseTo(1.0, 3);
       expect(payload.sources).toEqual([
          {
-            name: "order_items",
-            modelPath: "ecommerce.malloy",
-            doc: "One row per product sold on an order.",
-            joins: [
+            relevance: 1,
+            // ...and it is still the container its field hit nests in, which
+            // is what carries the doc through regardless of the source's score.
+            source_info: {
+               resource_id: {
+                  environment: "specs",
+                  package: "context-pkg",
+                  model_path: "ecommerce.malloy",
+                  source: "order_items",
+               },
+               docs: "One row per product sold on an order.",
+               joins: [
+                  {
+                     name: "current_building",
+                     relationship: "one",
+                     doc: "Building this asset sits in.",
+                  },
+               ],
+            },
+            entities: [
                {
-                  name: "current_building",
-                  relationship: "one",
-                  doc: "Building this asset sits in.",
+                  name: "state",
+                  entity_type: "dimension",
+                  entity_id: "dimension:order_items:state",
+                  relevance: 1,
                },
             ],
          },
@@ -1134,10 +1291,10 @@ describe("get_context semantic retrieval", () => {
       };
       const first = parse(await handler(params));
       expect(first.retrieval).toBe("lexical");
-      expect(first.retrievalReason).toBe("indexing");
+      expect(first.retrieval_reason).toBe("indexing");
 
       const warm = await callUntilSemantic(handler, params);
-      expect(warm).not.toHaveProperty("retrievalReason");
+      expect(warm).not.toHaveProperty("retrieval_reason");
    });
 
    it("reports a dead provider as provider-error, then as cooldown", async () => {
@@ -1156,13 +1313,13 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider({ fail: true }));
       const failed = parse(await handler(params));
       expect(failed.retrieval).toBe("lexical");
-      expect(failed.retrievalReason).toBe("provider-error");
+      expect(failed.retrieval_reason).toBe("provider-error");
 
       const cooled = parse(await handler(params));
-      expect(cooled.retrievalReason).toBe("cooldown");
+      expect(cooled.retrieval_reason).toBe("cooldown");
    });
 
-   it("reports belowCutoffCount on semantic responses, never on lexical ones", async () => {
+   it("reports below_cutoff_count on semantic responses, never on lexical ones", async () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
@@ -1175,15 +1332,42 @@ describe("get_context semantic retrieval", () => {
       // reporting a count would be meaningless.
       const first = parse(await handler(params));
       expect(first.retrieval).toBe("lexical");
-      expect(first).not.toHaveProperty("belowCutoffCount");
+      expect(first).not.toHaveProperty("below_cutoff_count");
 
       // order_items and its join are orthogonal to this query, so they are
       // dropped by the floor and counted rather than silently missing.
       const payload = await callUntilSemantic(handler, params);
-      expect(payload.results.map((r: { name: string }) => r.name)).toEqual([
-         "state",
-      ]);
-      expect(payload.belowCutoffCount).toBe(2);
+      expect(rankedEntities(payload).map((r) => r.name)).toEqual(["state"]);
+      expect(payload.below_cutoff_count).toBe(2);
+      // The denominator ships with it. Without it the count is a bare number
+      // an agent cannot scale: 2 rejected is a tight match out of 3 and a
+      // catastrophe out of 200, and nothing else in the response says which.
+      expect(payload.total_entities).toBe(3);
+   });
+
+   it("reports the true negative as below_cutoff_count === total_entities, not 0", async () => {
+      // The contract this replaces said "0 with no results means nothing is
+      // related". That state is unreachable: every entity in scope is either
+      // at-or-above the floor (and could be a hit) or below it (and is
+      // counted), so zero-below means every entity was above, which would
+      // have produced hits. Measured against a real provider, an ecommerce
+      // package asked about seismic retrofits returned 0 results with
+      // below_cutoff_count equal to its full entity count -- which the old
+      // wording told the agent to read as "too diffuse, rephrase", the exact
+      // opposite of the truth. Pin the reachable shape so the description
+      // cannot drift back.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         environmentName: "specs",
+         packageName: "cutoff-pkg",
+         query: "seismic retrofit of bridge pilings",
+      };
+
+      const payload = await callUntilSemantic(handler, params);
+      expect(payload.sources).toEqual([]);
+      expect(payload.total_entities).toBeGreaterThan(0);
+      expect(payload.below_cutoff_count).toBe(payload.total_entities);
    });
 
    it("collapses the same concept across sibling sources into one marked row", async () => {
@@ -1209,12 +1393,10 @@ describe("get_context semantic retrieval", () => {
          packageName: "sibling-pkg",
          query: "site of the building",
       });
-      const sites = payload.results.filter(
-         (r: { name: string }) => r.name === "site",
-      );
+      const sites = rankedEntities(payload).filter((r) => r.name === "site");
       expect(sites).toHaveLength(1);
-      expect(sites[0].alsoIn).toHaveLength(2);
-      expect([sites[0].source, ...sites[0].alsoIn].sort()).toEqual(
+      expect(sites[0].also_in).toHaveLength(2);
+      expect([sites[0].source, ...sites[0].also_in].sort()).toEqual(
          [...SIBLING_SOURCES].sort(),
       );
    });
@@ -1236,9 +1418,10 @@ describe("get_context semantic retrieval", () => {
          query: "site of the building",
          sourceName: "fclt_building",
       });
-      expect(payload.results).toHaveLength(1);
-      expect(payload.results[0].source).toBe("fclt_building");
-      expect(payload.results[0].alsoIn).toBeUndefined();
+      const drilled = rankedEntities(payload);
+      expect(drilled).toHaveLength(1);
+      expect(drilled[0].source).toBe("fclt_building");
+      expect(drilled[0].also_in).toBeUndefined();
    });
 
    it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
@@ -1259,11 +1442,11 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider({ fail: true }));
       const payload = parse(await handler({ ...params, query: "state" }));
       expect(payload.retrieval).toBe("lexical");
-      expect(
-         payload.results.some((r: { name: string }) => r.name === "state"),
-      ).toBe(true);
-      for (const r of payload.results) {
-         expect(r.score).toBeUndefined();
+      expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
+         true,
+      );
+      for (const r of rankedEntities(payload)) {
+         expect(r.relevance).toBeUndefined();
       }
    });
 
@@ -1280,9 +1463,9 @@ describe("get_context semantic retrieval", () => {
          }),
       );
       expect(payload.retrieval).toBe("lexical");
-      expect(
-         payload.results.some((r: { name: string }) => r.name === "state"),
-      ).toBe(true);
+      expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
+         true,
+      );
    });
 
    it("degrades to lexical (never throws) when the real config is malformed", async () => {
@@ -1307,9 +1490,9 @@ describe("get_context semantic retrieval", () => {
             }),
          );
          expect(payload.retrieval).toBe("lexical");
-         expect(
-            payload.results.some((r: { name: string }) => r.name === "state"),
-         ).toBe(true);
+         expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
+            true,
+         );
       } finally {
          if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
          else process.env.EMBEDDING_API_KEY = saved.key;

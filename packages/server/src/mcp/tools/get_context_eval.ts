@@ -33,15 +33,34 @@ interface EvalCase {
 }
 
 interface ResultEntity {
-   kind: string;
+   entity_type: string;
    name: string;
    source?: string | null;
 }
 
+interface SourceResult {
+   source_info: { resource_id: { source: string } };
+   entities?: ResultEntity[];
+}
+
 interface GetContextPayload {
    retrieval?: string;
-   results?: ResultEntity[];
+   sources?: SourceResult[];
    error?: string;
+}
+
+/**
+ * The ranked entity list, un-nested from the source-centric payload. Ranking
+ * is what this eval measures, and source order then entity order is the order
+ * the ranking produced, so a rank index means here what it always meant.
+ */
+function rankedEntities(payload: GetContextPayload): ResultEntity[] {
+   return (payload.sources ?? []).flatMap((s) =>
+      (s.entities ?? []).map((e) => ({
+         ...e,
+         source: s.source_info.resource_id.source,
+      })),
+   );
 }
 
 // Ground truth verified against the bundled examples (storefront) and the
@@ -184,12 +203,12 @@ async function callGetContext(
    });
    const text = await res.text();
    const dataLine = text.split("\n").find((l) => l.startsWith("data: "));
-   if (!dataLine) return { results: [] };
+   if (!dataLine) return { sources: [] };
    const msg = JSON.parse(dataLine.slice(6)) as {
       result?: { content?: { resource?: { text?: string } }[] };
    };
    const payloadText = msg.result?.content?.[0]?.resource?.text;
-   if (!payloadText) return { results: [] };
+   if (!payloadText) return { sources: [] };
    return JSON.parse(payloadText) as GetContextPayload;
 }
 
@@ -259,7 +278,7 @@ async function main(): Promise<void> {
          query: c.query,
          limit: K,
       });
-      const results = payload.results ?? [];
+      const results = rankedEntities(payload);
       const mode = payload.retrieval ?? "lexical (no provider)";
       modesSeen.add(mode);
 
@@ -267,14 +286,14 @@ async function main(): Promise<void> {
       const rank = results.findIndex(
          (r) =>
             r.name.toLowerCase().includes(c.expect.toLowerCase()) &&
-            (c.expectKind === undefined || r.kind === c.expectKind),
+            (c.expectKind === undefined || r.entity_type === c.expectKind),
       );
       const hit = rank >= 0;
       if (hit) hits++;
       const top =
          results
             .slice(0, 3)
-            .map((r) => `${r.kind}:${r.name}`)
+            .map((r) => `${r.entity_type}:${r.name}`)
             .join(", ") || "(none)";
       const tag = hit ? `HIT@${rank + 1}` : "MISS  ";
       const gap = c.gap ? " [gap]" : "";
