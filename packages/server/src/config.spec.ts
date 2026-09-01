@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import {
+   DEFAULT_EMBEDDING_MIN_SIMILARITY,
+   getEmbeddingConfig,
    getPersistCollisionEnforce,
    getPublisherConfig,
    getPublisherConfigDir,
@@ -1534,5 +1536,61 @@ describe("PERSIST_COLLISION_ENFORCE", () => {
    it("throws on a value that is neither, rather than guessing", () => {
       process.env.PERSIST_COLLISION_ENFORCE = "enabled";
       expect(() => getPersistCollisionEnforce()).toThrow(/expected a boolean/i);
+   });
+});
+
+describe("EMBEDDING_MIN_SIMILARITY", () => {
+   // The floor is a property of the embedding model, not of Publisher:
+   // cosine similarity is not calibrated across models, so an operator
+   // pointing EMBEDDING_API_BASE at a different endpoint needs to retune it
+   // without a rebuild. It is an env var rather than a publisher.config.json
+   // field because picking up a config change needs --init, which wipes
+   // publisher_data and the embedding cache with it -- a full paid re-embed
+   // on every tuning pass, for a value meant to be tuned iteratively.
+   const saved = { ...process.env };
+   beforeEach(() => {
+      process.env.EMBEDDING_API_KEY = "test-key";
+   });
+   afterEach(() => {
+      process.env = { ...saved };
+   });
+
+   it("defaults to 0.20, the hosted pipeline's min_score", () => {
+      delete process.env.EMBEDDING_MIN_SIMILARITY;
+      expect(getEmbeddingConfig()?.minSimilarity).toBe(
+         DEFAULT_EMBEDDING_MIN_SIMILARITY,
+      );
+      expect(DEFAULT_EMBEDDING_MIN_SIMILARITY).toBe(0.2);
+   });
+
+   it("takes an operator override", () => {
+      process.env.EMBEDDING_MIN_SIMILARITY = "0.35";
+      expect(getEmbeddingConfig()?.minSimilarity).toBe(0.35);
+   });
+
+   it("accepts 0, which disables the floor rather than meaning unset", () => {
+      process.env.EMBEDDING_MIN_SIMILARITY = "0";
+      expect(getEmbeddingConfig()?.minSimilarity).toBe(0);
+   });
+
+   // Rejected, never clamped and never ignored: a floor of 1 returns nothing
+   // and a negative one returns everything, and both read as a broken index
+   // rather than a bad setting. An invalid value must not go on to drive
+   // retrieval.
+   it.each([
+      ["1", /in \[0, 1\)/],
+      ["1.5", /in \[0, 1\)/],
+      ["-0.1", /in \[0, 1\)/],
+      ["high", /expected a finite number/i],
+   ])("rejects %s at startup", (value, message) => {
+      process.env.EMBEDDING_MIN_SIMILARITY = value;
+      expect(() => getEmbeddingConfig()).toThrow(message);
+   });
+
+   it("names the variable and a working value in the error", () => {
+      process.env.EMBEDDING_MIN_SIMILARITY = "2";
+      expect(() => getEmbeddingConfig()).toThrow(
+         /EMBEDDING_MIN_SIMILARITY.*Fix: EMBEDDING_MIN_SIMILARITY=0\.35/s,
+      );
    });
 });

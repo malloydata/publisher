@@ -18,10 +18,16 @@ import {
  * dropped, so a query about something the package does not model returns
  * an empty result rather than the k least-unrelated entities. Agents are
  * taught to treat an empty result as "not in this package"; unfiltered
- * top-k would destroy that signal. 0.20 matches the hosted retrieval
- * pipeline's min_score; tune against get_context_eval.ts.
+ * top-k would destroy that signal.
+ *
+ * The value now travels on the provider (`provider.minSimilarity`), because
+ * cosine similarity is not calibrated across embedding models and the right
+ * floor is a property of the model that produced the vectors. Operators set
+ * it with `EMBEDDING_MIN_SIMILARITY`; the default is unchanged at 0.20, which
+ * matches the hosted retrieval pipeline's min_score. Tune against
+ * get_context_eval.ts.
  */
-export const MIN_SIMILARITY = 0.2;
+export { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 /**
  * Packages with more entities than this stay lexical: the first embed of
  * such a package would take minutes of provider calls and rate limits.
@@ -87,13 +93,32 @@ export type SemanticSearchResult =
    | {
         hits: SemanticHit[];
         /**
-         * Entities whose best facet matched, but below MIN_SIMILARITY, under
-         * the same scope as `hits`. Makes a thin result legible: 0 alongside
-         * no hits is a true negative ("this package models nothing like
-         * that"), while a large number means the question is diffusely
-         * related to many entities and wants rephrasing or splitting.
+         * Entities whose best facet scored below the floor, under the same
+         * scope as `hits`. Always read against {@link totalEntities}: every
+         * entity in scope is either at-or-above the floor (and so eligible to
+         * be a hit) or below it (and so counted here), so the two partition
+         * the package and the count means nothing on its own.
+         *
+         * The ratio is the signal. A small fraction is a tight match. A large
+         * fraction is a weak one. `belowCutoffCount === totalEntities` is the
+         * true negative -- nothing cleared the floor -- and it necessarily
+         * comes with `hits: []`.
+         *
+         * Note what this rules out: `belowCutoffCount: 0` alongside empty
+         * hits cannot occur, because zero entities below the floor means
+         * every entity was above it, which would have produced hits. Only an
+         * empty package reaches 0-with-no-hits. An earlier version of this
+         * contract named that state as the true negative, which sent agents
+         * looking for a signal they could never observe while the real true
+         * negative (a large count) read as "too diffuse, rephrase" -- the
+         * exact misreading this field exists to prevent.
          */
         belowCutoffCount: number;
+        /**
+         * Entities weighed for this query, under the same scope as `hits`:
+         * the denominator that makes `belowCutoffCount` interpretable.
+         */
+        totalEntities: number;
      }
    | { unavailable: SemanticUnavailableReason };
 
@@ -827,37 +852,47 @@ export async function trySemanticSearch(args: {
             provider.model,
             queryVector.length,
             ...(sourceName !== undefined ? [sourceName] : []),
-            MIN_SIMILARITY,
+            provider.minSimilarity,
             limit,
          ],
       );
 
-      // How many entities matched, but only below the floor. Without it an
-      // empty result is indistinguishable from "this package models nothing
-      // like that", and we watched analysts conclude the latter from the
-      // former. Zero here means a true negative; a large number means the
-      // question is diffusely related to many entities and should be
-      // rephrased or split. Counted as a second statement deliberately: a
-      // single statement carrying the count on result rows loses it in
-      // exactly the case that matters most, when no row clears the floor.
-      const belowCutoff = await db.get<{ n: number }>(
-         `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM (
+      // How many entities were weighed, and how many fell below the floor.
+      // Without them an empty result is indistinguishable from "this package
+      // models nothing like that", and we watched analysts conclude the
+      // latter from the former.
+      //
+      // Both counts, because one alone is not interpretable. Every entity in
+      // scope is either at-or-above the floor (so it could be a hit) or below
+      // it (so it is counted here), which means `below` is only meaningful
+      // against `total`: 7-of-52 is a tight match, 47-of-52 is a stretch, and
+      // 52-of-52 is the true negative. Reporting `below` on its own invites
+      // reading a large number as "too diffuse, rephrase" at exactly the
+      // moment it means the opposite.
+      //
+      // Counted as a second statement deliberately: a single statement
+      // carrying the counts on result rows loses them in exactly the case
+      // that matters most, when no row clears the floor. Both aggregates come
+      // from ONE statement over ONE scan so they cannot disagree.
+      const cutoffCounts = await db.get<{ total: number; below: number }>(
+         `SELECT CAST(COUNT(*) AS INTEGER) AS total,
+                 CAST(COUNT(*) FILTER (WHERE score < ?) AS INTEGER) AS below
+          FROM (
             SELECT MAX(list_cosine_similarity(embedding, CAST(? AS FLOAT[]))) AS score
             FROM entity_embeddings
             WHERE environment_name = ? AND package_name = ?
               AND embedding_model = ? AND dims = ?
               ${sourceName !== undefined ? "AND entity_source = ?" : ""}
             GROUP BY entity_kind, entity_source, entity_name
-         )
-         WHERE score < ?`,
+         )`,
          [
+            provider.minSimilarity,
             JSON.stringify(queryVector),
             environmentName,
             packageName,
             provider.model,
             queryVector.length,
             ...(sourceName !== undefined ? [sourceName] : []),
-            MIN_SIMILARITY,
          ],
       );
 
@@ -999,7 +1034,8 @@ export async function trySemanticSearch(args: {
             name: row.entity_name,
             score: row.score,
          })),
-         belowCutoffCount: belowCutoff?.n ?? 0,
+         belowCutoffCount: cutoffCounts?.below ?? 0,
+         totalEntities: cutoffCounts?.total ?? 0,
       };
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

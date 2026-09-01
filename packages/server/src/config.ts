@@ -399,10 +399,30 @@ export interface EmbeddingConfig {
     * unset; the vector length then comes from the provider's response.
     */
    dimensions?: number;
+   /**
+    * Cosine-similarity floor a match must clear to be returned at all.
+    * See {@link DEFAULT_EMBEDDING_MIN_SIMILARITY}.
+    */
+   minSimilarity: number;
 }
 
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
+
+/**
+ * Default cosine-similarity floor for semantic retrieval.
+ *
+ * Tunable because the right value is a property of the embedding model, not
+ * of Publisher: cosine similarity is not calibrated across models, so a floor
+ * that separates signal from noise for one endpoint does not for another.
+ * Measured against `text-embedding-3-small` on a 52-entity model, on-topic
+ * questions score 0.79-0.88 while wholly unrelated ones still reach 0.23-0.43,
+ * so this default is deliberately permissive: it lets a few weak matches
+ * through rather than discarding a real one. Operators who would rather see
+ * nothing than see noise should raise it; `belowCutoffCount` alongside
+ * `totalEntities` in each response is the measurement to tune against.
+ */
+export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
 
 /**
  * Embedding-provider settings for semantic `malloy_getContext` retrieval,
@@ -447,7 +467,21 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
       );
    }
 
-   return { apiKey, model, baseUrl, dimensions };
+   const minSimilarity =
+      parseFloatEnv("EMBEDDING_MIN_SIMILARITY") ??
+      DEFAULT_EMBEDDING_MIN_SIMILARITY;
+   // Rejected rather than clamped: a floor of 1 returns nothing and a
+   // negative one returns everything, and both look like a broken index
+   // rather than a bad setting. An invalid value must never go on to drive
+   // retrieval.
+   if (minSimilarity < 0 || minSimilarity >= 1) {
+      throw new Error(
+         `Invalid EMBEDDING_MIN_SIMILARITY: expected a number in [0, 1), got ${minSimilarity}. ` +
+            `Fix: EMBEDDING_MIN_SIMILARITY=0.35 (default ${DEFAULT_EMBEDDING_MIN_SIMILARITY})`,
+      );
+   }
+
+   return { apiKey, model, baseUrl, dimensions, minSimilarity };
 };
 
 /**

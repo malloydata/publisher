@@ -3,6 +3,7 @@
 
 import { beforeEach, describe, expect, it } from "bun:test";
 import type { EmbeddingProvider } from "../../service/embedding_provider";
+import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import {
    MAX_COLUMNS_IN_INDEX_TEXT,
    MAX_CACHED_SCHEMAS,
@@ -58,11 +59,17 @@ function fakeProvider(
       embedBatch: (texts: string[], timeoutMs: number) => Promise<number[][]>;
       model: string;
       dimensions: number | undefined;
+      minSimilarity: number;
    }> = {},
 ): EmbeddingProvider {
    return {
       model: overrides.model ?? "test-model",
       dimensions: overrides.dimensions,
+      // Required: the floor travels on the provider, and a double that omits
+      // it makes every `score >= provider.minSimilarity` compare against
+      // undefined, which is always false -- silently dropping every hit.
+      minSimilarity:
+         overrides.minSimilarity ?? DEFAULT_EMBEDDING_MIN_SIMILARITY,
       embedBatch:
          overrides.embedBatch ??
          (async (texts: string[]) =>

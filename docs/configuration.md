@@ -121,6 +121,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name sent to the endpoint. |
 | `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). |
 | `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. |
+| `EMBEDDING_MIN_SIMILARITY` | — | `0.2` | Cosine-similarity floor a match must clear to be returned at all, for both `malloy_getContext` and `malloy_searchDatabaseSchema`. Below it an entity is dropped rather than returned as a weak hit, which is what makes an empty result mean "not modelled here". Tunable because cosine similarity is not calibrated across embedding models, so the right floor belongs to the endpoint you point at, not to Publisher. Must be in `[0, 1)`; `0` disables the floor, and an out-of-range or non-numeric value is a startup error rather than a silent clamp. See "Tuning the floor" below. |
 | `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `malloy_searchDatabaseSchema` to send a connection's schema name, table names, column names and column types, plus the agent's search text, to the embedding endpoint for semantic ranking. Never row values. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. It is read when the tool is called, not at startup, so an unrecognised value does not stop the server: the tool logs a warning and ranks lexically for that call. See "Semantic ranking for malloy_searchDatabaseSchema" below. |
 | — | `--help`, `-h` | — | Print the full flag list. |
 
@@ -206,7 +207,7 @@ What to know before turning it on:
 - First query per package: the first question kicks off the embedding sync in the background and
   answers lexically; once the sync lands, later questions are ranked semantically. Responses carry
   a `retrieval` field (`"semantic"` or `"lexical"`) whenever the provider is configured, and a
-  lexical one adds `retrievalReason` saying why: `indexing` (still building — clears on its own,
+  lexical one adds `retrieval_reason` saying why: `indexing` (still building — clears on its own,
   worth one retry), `cooldown` (a recent provider failure is being short-circuited),
   `too-many-entities`, `provider-error`, or `unavailable`. Only `indexing` is worth retrying.
 - Checking readiness without watching the log: `GET /api/v0/environments/{env}/packages/{pkg}`
@@ -217,6 +218,20 @@ What to know before turning it on:
 - Failure behavior: if the endpoint is down, times out, or rejects the key, retrieval falls back
   to lexical (with a warning in the server log) and retries after a cool-down. A package with more
   than 5,000 entities stays lexical.
+- Tuning the floor (`EMBEDDING_MIN_SIMILARITY`, default `0.2`): a match below the floor is dropped
+  rather than returned as a weak hit, which is what lets an empty result mean "this package models
+  nothing like that". The right value is a property of the embedding model, not of Publisher —
+  cosine similarity is not calibrated across models, so a floor that separates signal from noise on
+  one endpoint will not on another, and the default is only known-reasonable for the default model.
+  Every semantic response carries the measurement to tune against: `below_cutoff_count` of
+  `total_entities` says how many entities were weighed and rejected. Ask a question the package
+  genuinely does not model and watch that ratio. It should be all of them; if a wholly unrelated
+  question still returns hits, the floor is too low for your model. Measured against
+  `text-embedding-3-small` on a 52-entity package, on-topic questions scored 0.79–0.88 while
+  wholly unrelated ones still reached 0.23–0.43, so the default is deliberately permissive: it
+  lets a few weak matches through rather than discarding a real one. Raise it if you would rather
+  see nothing than see noise. Changing it costs nothing — the cached vectors are unaffected, since
+  the floor is applied at query time, not at index time.
 - To measure the difference on your own models, see the eval script header in
   `packages/server/src/mcp/tools/get_context_eval.ts`.
 
