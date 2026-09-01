@@ -6,6 +6,7 @@ import fs from "fs";
 import path from "path";
 import {
    getPersistCollisionEnforce,
+   getProcessedPublisherConfig,
    getPublisherConfig,
    getPublisherConfigDir,
    type PublisherConfig,
@@ -966,6 +967,87 @@ describe("Config legacy 'projects' key back-compat", () => {
          expect(
             warnings.some((w) => w.includes('uses deprecated "projects" key')),
          ).toBe(false);
+      } finally {
+         logger.warn = originalWarn;
+      }
+   });
+});
+
+describe("getProcessedPublisherConfig credential logging", () => {
+   const testServerRoot = path.join(
+      process.cwd(),
+      "test-temp-config-log-redaction",
+   );
+   const configPath = path.join(testServerRoot, PUBLISHER_CONFIG_NAME);
+
+   beforeEach(() => {
+      if (!fs.existsSync(testServerRoot)) {
+         fs.mkdirSync(testServerRoot, { recursive: true });
+      }
+   });
+
+   afterEach(() => {
+      if (fs.existsSync(configPath)) {
+         fs.unlinkSync(configPath);
+      }
+      if (fs.existsSync(testServerRoot)) {
+         fs.rmdirSync(testServerRoot, { recursive: true });
+      }
+      delete process.env.TEST_LOG_REDACTION_PASSWORD;
+   });
+
+   it("keeps connection credentials out of the log when an environment is missing its name", async () => {
+      // The entry is skipped for a missing `name`, but it still carries every
+      // connection and storage destination, and `${VAR}` references are already
+      // substituted by the time the skip is logged. Nothing downstream saves it:
+      // redactSensitive is a call-site helper, not a winston format.
+      const secret = "pg-password-that-must-not-be-logged";
+      process.env.TEST_LOG_REDACTION_PASSWORD = secret;
+
+      const config = {
+         frozenConfig: false,
+         environments: [
+            {
+               // `name` deliberately absent: this is the path under test.
+               packages: [{ name: "p1", location: "./packages/p1" }],
+               connections: [
+                  {
+                     name: "pg",
+                     type: "postgres",
+                     postgresConnection: {
+                        password: "${TEST_LOG_REDACTION_PASSWORD}",
+                     },
+                  },
+               ],
+            },
+         ],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+      const { logger } = await import("./logger");
+      const originalWarn = logger.warn;
+      const calls: unknown[][] = [];
+      logger.warn = ((...args: unknown[]) => {
+         calls.push(args);
+         return logger;
+      }) as typeof logger.warn;
+
+      try {
+         const result = getProcessedPublisherConfig(testServerRoot);
+
+         expect(result.environments.length).toBe(0);
+
+         const skipWarning = calls.find(
+            (args) =>
+               typeof args[0] === "string" &&
+               args[0].includes('missing or invalid "name" field'),
+         );
+         expect(skipWarning).toBeDefined();
+
+         // Asserts on the whole payload rather than on the absence of one key,
+         // so re-introducing the config under a different key still fails here.
+         expect(JSON.stringify(skipWarning)).not.toContain(secret);
       } finally {
          logger.warn = originalWarn;
       }
