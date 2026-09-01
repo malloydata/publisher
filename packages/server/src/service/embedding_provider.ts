@@ -59,6 +59,16 @@ export class EmbeddingProvider {
       return this.config.model;
    }
 
+   /**
+    * Cosine-similarity floor for this provider's vectors. Carried on the
+    * provider because the right floor is a property of the embedding model
+    * (see DEFAULT_EMBEDDING_MIN_SIMILARITY), so it belongs with the model
+    * that produced the vectors rather than at each comparison site.
+    */
+   get minSimilarity(): number {
+      return this.config.minSimilarity;
+   }
+
    get dimensions(): number | undefined {
       return this.config.dimensions;
    }
@@ -216,6 +226,7 @@ export function getEmbeddingProvider(): EmbeddingProvider | null {
       config.model,
       config.dimensions ?? "",
       config.apiKey,
+      config.minSimilarity,
    ].join("\u0000");
    if (!cached || cached.fingerprint !== fingerprint) {
       cached = { fingerprint, provider: new EmbeddingProvider(config) };

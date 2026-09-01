@@ -8,7 +8,7 @@ import {
 } from "../../service/embedding_provider";
 // humanizeName and the similarity floor are shared with the package index on
 // purpose: a query is humanized the same way whichever index answers it.
-import { MIN_SIMILARITY, humanizeName } from "./embedding_index";
+import { humanizeName } from "./embedding_index";
 
 /**
  * Ranking layer for `malloy_searchDatabaseSchema`.
@@ -429,7 +429,7 @@ async function tryRankSemantically(args: {
          const score = cosineSimilarity(queryVector, vector);
          // Below the floor is dropped rather than returned as a weak hit, so
          // "nothing here matches" stays a distinguishable answer.
-         if (score >= MIN_SIMILARITY) scored.push({ ...table, score });
+         if (score >= provider.minSimilarity) scored.push({ ...table, score });
       }
       scored.sort((a, b) => b.score - a.score);
       return { hits: scored.slice(0, limit), matched: scored.length };

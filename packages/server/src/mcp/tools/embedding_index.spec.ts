@@ -21,7 +21,7 @@ import {
    EmbeddableEntity,
    MAX_DOC_CHUNKS,
    MAX_EMBEDDED_ENTITIES,
-   MIN_SIMILARITY,
+   DEFAULT_EMBEDDING_MIN_SIMILARITY,
    chunkDoc,
    entityFacets,
    getEmbeddingIndexStatus,
@@ -98,6 +98,7 @@ function mapProvider(
          apiKey: "test",
          model: options.model ?? "stub-model",
          baseUrl: "https://stub.example.com/v1",
+         minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
          dimensions: options.dimensions,
       },
       fetchStub,
@@ -265,7 +266,9 @@ describe("trySemanticSearch", () => {
       expect(ready.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
       expect(ready.hits[0].score).toBeCloseTo(1.0, 3);
       expect(ready.hits[1].score).toBeCloseTo(0.8, 3);
-      expect(ready.hits.every((h) => h.score >= MIN_SIMILARITY)).toBe(true);
+      expect(
+         ready.hits.every((h) => h.score >= DEFAULT_EMBEDDING_MIN_SIMILARITY),
+      ).toBe(true);
    });
 
    it("does not re-embed unchanged entities for a new package instance", async () => {
@@ -1040,7 +1043,11 @@ describe("trySemanticSearch", () => {
       // the cool-down so the failed sync has fully settled. This
       // converges with or without the finally bump, so it does not mask
       // the pin below.
-      let settled: SemanticSearchResult = { hits: [], belowCutoffCount: 0 };
+      let settled: SemanticSearchResult = {
+         hits: [],
+         belowCutoffCount: 0,
+         totalEntities: 0,
+      };
       for (let i = 0; i < 200; i++) {
          settled = await trySemanticSearch({
             ...base,
