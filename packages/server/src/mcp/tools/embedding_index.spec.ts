@@ -679,11 +679,9 @@ describe("trySemanticSearch", () => {
    });
 
    it("keeps a documented entity findable by its own name", async () => {
-      // The measured §3 failure, reduced: on a real 42-source model a field
-      // with a 547-char doc ranked 10th for its own plain name while
-      // short-doc siblings ranked 1st. Here alpha's doc points away from the
-      // query and its short-doc'd sibling beta points at it; alpha must
-      // still win on the name it is named.
+      // A long doc must not bury the entity's own name. Here alpha's doc
+      // points away from the query and its short-doc'd sibling beta points at
+      // it; alpha must still win on the name it is named.
       const { provider } = mapProvider({
          ...ENTITY_VECTORS,
          ...QUERY_VECTORS,

@@ -67,7 +67,7 @@ interface Entity {
  * `Entity.id` cannot serve. It is a per-build sequence number, so it is not
  * stable across a reload, let alone across two deployments of the same model.
  *
- * Two invariants worth keeping, because both have already cost someone a day:
+ * Two invariants callers depend on:
  *
  * - ALWAYS three colon-separated segments. A form that drops the middle
  *   segment when there is no source produces two ids of different shape for
@@ -256,12 +256,8 @@ const REASON_BY_UNAVAILABLE: Record<
  * names the others.
  *
  * A model with sibling source families returns the same field from each of
- * them at effectively the same score: `"site of the building"` returned
- * `SITE` at 0.96 from all three of `fac_building`, `fclt_building` and
- * `fclt_building_hist` — identical scores, presented as peers, with nothing
- * in the response to tell an agent they were near-duplicates or how to
- * choose. Agents picked one arbitrarily, and choosing wrong between sibling
- * families was the single largest failure class measured.
+ * them at effectively the same score, presented as independent peers with
+ * nothing to say they are near-duplicates or how to choose between them.
  *
  * Collapsing does double duty: it returns the wasted slots to genuinely
  * different concepts, and `alsoIn` makes the ambiguity explicit instead of
@@ -308,46 +304,28 @@ function groupSiblings(results: ResultEntity[], limit: number): ResultEntity[] {
 }
 
 /**
- * ── The response shape, and why it is this one ─────────────────────────
+ * The response shape: source-centric, snake_case, identity in a structured
+ * `resource_id`. It matches a hosted Malloy retrieval API's `get_context`, so
+ * one parser serves both and a retrieval score computed here is comparable to
+ * one computed there.
  *
- * A hosted Malloy retrieval API also exposes a `get_context`, and until now
- * the two answered in shapes that shared no field name: Publisher a flat
- * ranked `results[]` of entities, the hosted one a `sources[]` whose entries
- * nest their entities. Anything that consumed both, such as an eval harness
- * scoring retrieval, a skill, or an agent moving between a local server and a
- * hosted one, needed two parsers and two mental models, and a harness written
- * against one silently scored zero against the other.
+ * ONLY SERIALIZATION HAPPENS HERE. Ranking, sibling grouping, alias collapse
+ * and the relevance floor all run over the flat `ResultEntity[]` upstream;
+ * this converts that list at the boundary, so a ranking bug and a shape bug
+ * stay separately reviewable.
  *
- * So this converges on that published shape: source-centric, snake_case,
- * identity in a structured `resource_id`. Publisher moves because it is the
- * smaller contract. No SDK surface exposes it, and its consumers are agents
- * that re-read the tool description each session rather than compiled clients.
+ * Three deliberate divergences from the published shape:
  *
- * ONLY SERIALIZATION CHANGES HERE. Ranking, sibling grouping, alias collapse
- * and the relevance floor all still run over the flat `ResultEntity[]` the
- * earlier commits built; this converts that list at the boundary. A ranking
- * bug and a shape bug stay separately reviewable, and separately revertible.
- *
- * Three deliberate divergences, each because the alternative loses something:
- *
- * 1. `entity_type` is a SUPERSET of the published enum, which allows
- *    view/measure/dimension. Publisher also retrieves `join`, the whole point
- *    of this PR's first commit, since an agent that cannot see a declared join
- *    concludes the model has none, and `query`, for a model-level named query.
- *    Narrowing to the three would delete that. A `source` never appears as an
- *    entity_type: a source is the container, which is what the shape means by
- *    one.
- * 2. Publisher-only fields ride along rather than being dropped:
- *    `source_info.joins` (complete, so empty is authoritative),
- *    `entity_id`, `relationship`, `aliases`, `also_in`, and the response-level
- *    `retrieval` / `retrieval_reason` / `below_cutoff_count` / `total_entities`.
- *    The published shape has no home for these and they are load-bearing here.
- * 3. Published fields Publisher cannot honestly fill are OMITTED, not sent
- *    empty: `summary`, `prominence`, `values`, `values_indexed` and
- *    `match_reason` need an LLM summarizer, query-usage telemetry, or a
- *    dimensional value index, none of which Publisher has. That spec omits
- *    null fields, so absence is already in-contract. They stay hosted-only
- *    until Publisher can mean something by them.
+ * 1. `entity_type` is a SUPERSET of its enum, adding `join` (an agent that
+ *    cannot see a declared join concludes the model has none) and `query`
+ *    (a model-level named query). A `source` never appears as an entity_type:
+ *    a source is the container.
+ * 2. Publisher-only fields ride along: `source_info.joins`, `entity_id`,
+ *    `relationship`, `aliases`, `also_in`, and the response-level `retrieval`
+ *    / `retrieval_reason` / `below_cutoff_count` / `total_entities`.
+ * 3. Fields Publisher cannot honestly fill are OMITTED, not sent empty:
+ *    `summary`, `prominence`, `values`, `values_indexed`, `match_reason`.
+ *    That spec omits null fields, so absence is in-contract on both sides.
  */
 interface ResourceId {
    environment: string;
@@ -746,12 +724,8 @@ function malloyType(field: { type?: { kind?: string } }): string | undefined {
  * the same name, keeping the documented one and recording the rest.
  *
  * A model that renames a physical column without hiding the original leaves
- * both in the schema — `SITE` and `site` are one column, indexed twice — and
- * both then compete for the same scarce result slots. Measured across 8
- * representative queries on a 42-source model, 34% of returned slots were a
- * concept the same result set already contained, and the worst case spent
- * six of eight slots on one concept, three of them a raw column sitting
- * beside its own alias.
+ * both in the schema: `SITE` and `site` are one column, indexed twice, and
+ * both then compete for the same scarce result slots.
  *
  * Detection is by humanized name, and it has to be: the stable Malloy
  * interface gives a dimension only `{name, type, annotations}`, with no

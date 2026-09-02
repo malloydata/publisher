@@ -426,12 +426,10 @@ const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
  * Tunable because the right value is a property of the embedding model, not
  * of Publisher: cosine similarity is not calibrated across models, so a floor
  * that separates signal from noise for one endpoint does not for another.
- * Measured against `text-embedding-3-small` on a 52-entity model, on-topic
- * questions score 0.79-0.88 while wholly unrelated ones still reach 0.23-0.43,
- * so this default is deliberately permissive: it lets a few weak matches
- * through rather than discarding a real one. Operators who would rather see
- * nothing than see noise should raise it; `belowCutoffCount` alongside
- * `totalEntities` in each response is the measurement to tune against.
+ * Deliberately permissive, letting a few weak matches through rather than
+ * discarding a real one; operators who would rather see nothing than noise
+ * should raise it. `belowCutoffCount` against `totalEntities` in each
+ * response is the measurement to tune with. See docs/configuration.md.
  */
 export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
 

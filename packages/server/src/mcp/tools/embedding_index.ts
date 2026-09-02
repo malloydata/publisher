@@ -108,11 +108,8 @@ export type SemanticSearchResult =
          * Note what this rules out: `belowCutoffCount: 0` alongside empty
          * hits cannot occur, because zero entities below the floor means
          * every entity was above it, which would have produced hits. Only an
-         * empty package reaches 0-with-no-hits. An earlier version of this
-         * contract named that state as the true negative, which sent agents
-         * looking for a signal they could never observe while the real true
-         * negative (a large count) read as "too diffuse, rephrase" -- the
-         * exact misreading this field exists to prevent.
+         * empty package reaches 0-with-no-hits, so never wait on that
+         * combination as a signal.
          */
         belowCutoffCount: number;
         /**
@@ -199,11 +196,9 @@ export interface EntityFacet {
  * Split doc text into chunks that each keep their own embedding.
  *
  * A source doc is where modellers put grain caveats, population rules and
- * reporting conventions, and those facts were unreachable by their own
- * content: on a ~300-word doc, a rare token retrieved the source at rank 1
- * while near-verbatim business phrasing from the same doc did not retrieve it
- * at all. Averaged across everything the doc mentions, no single fact in it
- * is close to anything.
+ * reporting conventions. Averaged into one vector across everything the doc
+ * mentions, no single fact in it is close to anything, so those facts were
+ * unreachable by their own wording.
  *
  * It also fixes a silent loss. prepareEmbeddingInput caps input at
  * MAX_EMBED_INPUT_CHARS, so before chunking, everything past that cap was
@@ -283,12 +278,9 @@ export function chunkDoc(doc: string): string[] {
  * Split an entity into the units that get their own embedding.
  *
  * One vector per entity meant a long `#(doc)` dominated the average and the
- * entity stopped matching the plain name of the concept it describes.
- * Measured on a 42-source model: a field with a 547-char doc ranked 10th for
- * its own name while 14-16 char-doc siblings ranked 1st, and appending a
- * 64-char pointer to a doc dropped a field out of the top 12 entirely. So
- * documenting a field well made it harder to find, which is exactly backwards
- * for a tool whose quality is meant to track the model's.
+ * entity stopped matching the plain name of the concept it describes, so
+ * documenting a field well made it harder to find - backwards for a tool
+ * whose quality is meant to track the model's.
  *
  * Embedding the name on its own fixes that: the name facet matches the plain
  * name at full strength no matter how much documentation the entity carries,
