@@ -1080,6 +1080,14 @@ export class Package {
          // (alongside the load-path log) so an operator can see it on the status
          // API like the other persist warnings — see persistenceCollisionWarnings.
          ...this.persistenceCollisionWarnings().map((message) => ({ message })),
+         // `#@ preaggregate` on a field the source hides. These are the two
+         // violations that WARN at load rather than failing it, and this array is
+         // what makes that a warning rather than silence: without it the package
+         // loads, the rollup does not happen, and the only trace is a line in the
+         // server log. The operator-facing fact is the same one storageWarnings()
+         // reports for a mode-off rollup — it is not built, and queries are
+         // answered from the base — so it belongs in the same place.
+         ...this.preaggregateAccessWarnings().map((message) => ({ message })),
          // Incremental declarations that are LEGAL but probably not what the
          // author meant: an unrecognized persist key (the only guard against a
          // typo'd merge_key=, which degrades silently), and the keyless-delta
@@ -1100,7 +1108,14 @@ export class Package {
       // Surface what's bound for the cross-connection storage serve so a caller
       // can confirm a materialized source is routed (vs. inferring from logs).
       if (this.storageServeBindings.length > 0) {
+         // `origin` rides the projection for the same reason it rides the routing
+         // metric: this list now contains rows whose `sourceName` names nothing in
+         // any model file, and a caller resolving them against the package's
+         // models would read a miss as corruption. An added attribute breaks no
+         // consumer, where a caller that has to guess from the name shape would be
+         // guessing from a digest.
          metadata.storageServeBindings = this.storageServeBindings.map((b) => ({
+            origin: b.origin ?? "persist",
             sourceName: b.sourceName,
             storageDestinationName: b.destinationName,
             tablePath: b.tablePath,
@@ -1394,6 +1409,16 @@ export class Package {
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
       );
       const eligibility = this.sourceEligibility;
+      // Keyed by source NAME, and a rollup's name is generated — so a rollup
+      // binding passes this filter only because `collectSourceEligibility` walks
+      // the compiled sources, which INCLUDE the synthesized rollups, and records
+      // them under those generated names.
+      //
+      // That is load-bearing and easy to break from a distance: scoping
+      // `collectSourceEligibility` to authored sources would switch off every
+      // storage rollup in every package, with one warn line per binding as the
+      // only symptom and nothing else failing. Stated here because this is where
+      // the dependency is consumed rather than where it is created.
       const eligible = new Set(eligibility?.eligible ?? []);
       const allowed = derived.filter((binding) => {
          if (eligible.has(binding.sourceName)) return true;
@@ -1407,6 +1432,11 @@ export class Package {
             {
                packageName: this.packageName,
                sourceName: binding.sourceName,
+               // A rollup's name is generated, so on its own it names nothing an
+               // operator can look up. Saying what it is rescues the line.
+               ...(binding.origin === "preaggregate"
+                  ? { kind: "pre-aggregation rollup" }
+                  : {}),
                reason,
             },
          );

@@ -3355,10 +3355,19 @@ export class MaterializationService {
       // from the rebind model and falls back to recomputing its upstream from
       // raw. Correct-but-slower, and out of scope here; the serve path is where
       // an alias has to resolve.
-      const upstreams: ServeBinding[] = deriveServeBindings(
-         builtEntries,
-         {},
-      ).filter((b) => b.destinationName === destinationName);
+      const upstreams: ServeBinding[] = deriveServeBindings(builtEntries, {})
+         .filter((b) => b.destinationName === destinationName)
+         // A rollup is never an upstream: nothing can reference one, because its
+         // name is synthesized and appears in no model file. Inert if left in —
+         // but inert for a reason that expired once on the serve path, where these
+         // same bindings later acquired refinements and the assumption that they
+         // carry none stopped holding. Filtered so the set means what it is named,
+         // the parents a downstream could build on.
+         //
+         // It also restores the legible refusal below: a destination holding only
+         // rollups now reports "no materialized upstream is available" instead of
+         // proceeding and failing later on a compile against an absent parent.
+         .filter((b) => b.origin !== "preaggregate");
       if (upstreams.length === 0) {
          throw new MaterializationEligibilityError({
             message:

@@ -327,6 +327,40 @@ function isGivenBindingFailure(err: unknown): boolean {
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
 
+/**
+ * Whether a run-time store failure may be retried against the live warehouse,
+ * decided from the bindings that produced the serve shape.
+ *
+ * Extracted and exported for tests because it has been wrong in BOTH directions:
+ * first by letting a rollup veto, then by filtering rollups out so a package with
+ * only rollups could never degrade at all.
+ *
+ * The rule is one predicate. An AUTHORED binding votes, and one declaring
+ * anything but `live` vetoes for the whole shape — that is what the `every` was
+ * always for, and it is deliberately coarse (per package, not per query). A
+ * ROLLUP binding is permissive: it never vetoes and never enables on its own.
+ *
+ * A rollup is permissive because pre-aggregation has no correctness dimension,
+ * which is not a preference but published semantics: docs/preaggregation.md says
+ * a stale rollup "drops out of the serving set and queries recompute from the
+ * base. The answer is the same either way, which is what makes a refresh schedule
+ * a cost decision rather than a correctness one." A rollup that ERRORED on a store
+ * failure instead of recomputing would contradict that sentence. No correctness
+ * dimension, therefore no error dimension.
+ *
+ * The empty case stays false: nothing routed, so there is nothing to degrade.
+ */
+export function bindingsAllowDegradeToLive(
+   bindings: readonly ServeBinding[],
+): boolean {
+   return (
+      bindings.length > 0 &&
+      bindings.every(
+         (b) => b.origin === "preaggregate" || b.freshnessFallback === "live",
+      )
+   );
+}
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -4241,7 +4275,13 @@ export class Model {
     * shape-compile escalation in {@link compileServeShape} if they don't hold.
     */
    private serveBindingsWithRefinements(
-      bindings: ServeBinding[] = this.serveBindings,
+      // No default. This function resolves a binding back into the AUTHOR's model
+      // — by name, for its field list — which a rollup cannot survive: its source
+      // name names nothing there, so the fields come back undefined and the
+      // binding is dropped. Defaulting to `this.serveBindings` would hand the
+      // whole set, rollups included, to any future caller that omitted the
+      // argument. Every caller states which set it means.
+      bindings: ServeBinding[],
    ): ServeBinding[] {
       const contents = (
          this.modelDef as
@@ -5086,9 +5126,6 @@ export class Model {
          //    them because the shape is built from given-free sources; the live
          //    source may filter on them, and running it without them would serve
          //    unfiltered rows.
-         const authoredShapeBindings = serveShapeBindings.filter(
-            (b) => b.origin !== "preaggregate",
-         );
          const canDegradeToLive =
             !!serveVirtualMap &&
             !!liveRunnable &&
@@ -5096,16 +5133,7 @@ export class Model {
             !String((error as { code?: string })?.code ?? "").startsWith(
                "runtime-given-",
             ) &&
-            // The quorum is over the bindings for AUTHORED sources only. A rollup
-            // is not a source anyone queries, and its declared fallback says
-            // nothing about whether this query may be re-served live — the live
-            // path recomputes from the base either way. Counting rollups would let
-            // one, which typically declares no fallback at all, veto degradation
-            // for every ordinary source beside it, so adding rollups to the serve
-            // shape would have quietly turned graceful degradation into an error
-            // for packages that had it.
-            authoredShapeBindings.length > 0 &&
-            authoredShapeBindings.every((b) => b.freshnessFallback === "live");
+            bindingsAllowDegradeToLive(serveShapeBindings);
          // Both the original failure and a failure OF THE RETRY end here: record
          // the error metric, then map the error. A broad outage takes the source
          // warehouse down alongside the store, so the retry failing is ordinary —

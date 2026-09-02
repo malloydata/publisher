@@ -3325,12 +3325,37 @@ components:
             rather than the configured manifest: after a failed rebind it goes on
             listing the previously bound manifest's sources, which are still
             serving.
+
+
+            "Bound" is not the same as "serving", and an entry with
+            `origin: preaggregate` is where the two most often part: a rollup is
+            listed here once its table exists, but it is only offered to a query
+            through a composite re-exposing its base's name, so it does not serve
+            when something else already claims that name. Read `origin` before
+            treating a row as evidence that queries are being accelerated.
           items:
             type: object
             properties:
               sourceName:
                 type: string
-                description: The materialized source served from storage.
+                description: >-
+                  The materialized source served from storage.
+
+
+                  **It may name no source in any model file**, exactly as
+                  `ManifestEntry.sourceName` may: a pre-aggregation rollup is a
+                  persist source the publisher synthesized, so its name is
+                  generated. Check `origin` rather than resolving this against a
+                  package's models and reading a miss as corruption.
+              origin:
+                type: string
+                enum: [persist, preaggregate]
+                default: persist
+                description: >-
+                  What the bound source IS: `persist` for one a modeler annotated,
+                  which is the meaning of an absent value, and `preaggregate` for
+                  a rollup the publisher synthesized from `#@ preaggregate`
+                  measures. Mirrors `ManifestEntry.origin`.
               storageDestinationName:
                 type: string
                 description: >-
