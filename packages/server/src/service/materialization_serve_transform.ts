@@ -602,6 +602,25 @@ export function buildChainedStorageBuildModel(params: {
    downstreamDefText: string;
    destinationName: string;
 }): string {
+   // A rollup is never an upstream — nothing can reference one, its name being
+   // synthesized and absent from every model file — so one arriving here means a
+   // caller widened its set without deciding to.
+   //
+   // Asserted rather than filtered, and the distinction matters. Filtering would
+   // make a rollup here harmless, which it already is: `deriveServeBindings`
+   // attaches no refinements, so the fragments are bare virtual sources nothing
+   // references. But that is the SAME assumption that expired on the serve path,
+   // where these bindings later acquired refinements — at which point a rollup's
+   // merged measures would start entering BUILD models. An assertion fails loudly
+   // when the assumption stops holding; a filter would keep the damage silent.
+   const rollup = params.upstreams.find((b) => b.origin === "preaggregate");
+   if (rollup) {
+      throw new Error(
+         `buildChainedStorageBuildModel received a pre-aggregation rollup as an ` +
+            `upstream (${rollup.sourceName}). Rollups are not referenceable, so a ` +
+            `caller has widened its binding set without filtering by origin.`,
+      );
+   }
    const upstreamFragments = orderBindingsByJoinDeps(params.upstreams)
       .map(serveShapeFragment)
       .join("\n");

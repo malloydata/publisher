@@ -16,6 +16,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
+import { bindingsAllowDegradeToLive } from "./model";
 import {
    buildServeShapeModelForBindings,
    buildVirtualMap,
@@ -450,5 +451,57 @@ describe("THE INVARIANT, at the COMPILE-FAILURE path", () => {
       ).resolves.toBeDefined();
       expect(withoutGroup.modelText).toContain("source: plain is");
       expect(withoutGroup.modelText).not.toContain("compose(");
+   });
+});
+
+describe("a rollup neither vetoes nor enables degrade-to-live", () => {
+   // This predicate has been wrong in both directions, which is why it is
+   // extracted and tested rather than left inline. Counting rollups let one with
+   // no declared fallback veto degradation for the authored sources beside it;
+   // filtering them out then meant a package whose ONLY bindings are rollups —
+   // the documented common shape, since a rollup's base is typically an
+   // unpersisted table source — could never degrade at all, turning a store
+   // hiccup into a user-facing error on a query that used to answer live.
+   const b = (
+      origin: ServeBinding["origin"],
+      freshnessFallback?: ServeBinding["freshnessFallback"],
+   ): ServeBinding => ({
+      sourceName: "s",
+      origin,
+      destinationName: "lake",
+      virtualHandle: "h",
+      tablePath: "t",
+      schema: [{ name: "a", type: "BIGINT" }],
+      freshnessFallback,
+   });
+
+   it("a rollup-only shape CAN degrade, with no fallback declared", () => {
+      expect(bindingsAllowDegradeToLive([b("preaggregate")])).toBe(true);
+   });
+
+   it("a rollup does not rescue an authored source that refuses", () => {
+      // The `every` exists so one authored source declaring anything but `live`
+      // keeps its neighbours from degrading. A rollup must not weaken that.
+      expect(
+         bindingsAllowDegradeToLive([b("preaggregate"), b("persist", "fail")]),
+      ).toBe(false);
+   });
+
+   it("a rollup does not veto an authored source that permits", () => {
+      expect(
+         bindingsAllowDegradeToLive([b("preaggregate"), b("persist", "live")]),
+      ).toBe(true);
+   });
+
+   it("authored-only behaviour is unchanged in both directions", () => {
+      expect(bindingsAllowDegradeToLive([b("persist", "live")])).toBe(true);
+      expect(bindingsAllowDegradeToLive([b("persist", "stale_ok")])).toBe(
+         false,
+      );
+      expect(bindingsAllowDegradeToLive([b("persist")])).toBe(false);
+   });
+
+   it("nothing routed means nothing to degrade", () => {
+      expect(bindingsAllowDegradeToLive([])).toBe(false);
    });
 });
