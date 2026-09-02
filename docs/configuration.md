@@ -211,10 +211,17 @@ What to know before turning it on:
   worth one retry), `cooldown` (a recent provider failure is being short-circuited),
   `too-many-entities`, `provider-error`, or `unavailable`. Only `indexing` is worth retrying.
 - Checking readiness without watching the log: `GET /api/v0/environments/{env}/packages/{pkg}`
-  carries an `embeddingIndex` object with `status` (`indexing` / `ready` / `cooldown` / `oversize`),
-  `embeddedRows`, `totalEntities`, and `lastSyncedAt`. Poll it until `ready` before measuring
-  retrieval quality, so you are not measuring a half-built index. It is absent when no provider is
-  configured, and reading it takes no locks, so polling cannot slow an indexing run.
+  carries an `embeddingIndex` object with `status` (`indexing` / `ready` / `cooldown` /
+  `too-many-entities`, the same words `retrieval_reason` uses), `embeddedRows`, `totalEntities`,
+  `embeddedEntities`, and `lastSyncedAt`. Poll it until `ready` before measuring retrieval quality,
+  so you are not measuring a half-built index. `ready` means every entity the package exposes has a
+  vector under the model you have configured now, so a server pointed at a new `EMBEDDING_MODEL`
+  reports `indexing` until it has re-embedded rather than reporting rows retrieval would reject.
+  Two things worth knowing: the sync runs on a `malloy_getContext` question, so a package nothing
+  has queried stays at `indexing` rather than warming on its own; and the first read after a
+  package loads or reloads builds that package's entity index, which is work a plain metadata read
+  would not otherwise do. It is absent when no provider is configured, and reading it takes no
+  locks, so polling cannot slow an indexing run.
 - Failure behavior: if the endpoint is down, times out, or rejects the key, retrieval falls back
   to lexical (with a warning in the server log) and retries after a cool-down. A package with more
   than 5,000 entities stays lexical.

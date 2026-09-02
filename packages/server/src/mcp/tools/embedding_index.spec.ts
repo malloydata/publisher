@@ -426,40 +426,135 @@ describe("trySemanticSearch", () => {
 
       const cold = await getEmbeddingIndexStatus(
          db,
+         provider,
          "env",
          "status",
-         entities.length,
+         entities,
       );
       expect(cold.status).toBe("indexing");
       expect(cold.embeddedRows).toBe(0);
+      expect(cold.embeddedEntities).toBe(0);
       expect(cold.lastSyncedAt).toBeUndefined();
 
       await searchReady(args);
 
       const warm = await getEmbeddingIndexStatus(
          db,
+         provider,
          "env",
          "status",
-         entities.length,
+         entities,
       );
       expect(warm.status).toBe("ready");
       // alpha contributes a name row and a doc row, beta only a name row, so
       // rows exceed entities on a documented model.
       expect(warm.embeddedRows).toBe(3);
       expect(warm.totalEntities).toBe(2);
+      expect(warm.embeddedEntities).toBe(2);
       expect(warm.lastSyncedAt).toBeDefined();
    });
 
-   it("reports a package past the embedding cap as oversize, not as indexing", async () => {
-      // A permanent condition an operator must act on, not a transient one to
-      // wait out: reporting it as "indexing" would poll forever.
+   it("is not ready when the rows belong to a different embedding model", async () => {
+      // The search path filters on embedding_model, so rows written by an
+      // earlier model cannot serve a query. Counting them reported ready
+      // while retrieval had nothing -- and the documented use of this field
+      // is an operator checking that an upgrade re-embedded.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+      });
+      const entities = [entity("alpha", "src"), entity("beta", "src")];
+      await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "model-switch",
+         query: "find alpha",
+         limit: 10,
+         entities,
+      });
+      expect(
+         (
+            await getEmbeddingIndexStatus(
+               db,
+               provider,
+               "env",
+               "model-switch",
+               entities,
+            )
+         ).status,
+      ).toBe("ready");
+
+      // Same rows, a provider on a different model: nothing usable.
+      const { provider: other } = mapProvider(
+         { ...ENTITY_VECTORS, ...QUERY_VECTORS },
+         { model: "other-model" },
+      );
       const status = await getEmbeddingIndexStatus(
          db,
+         other,
+         "env",
+         "model-switch",
+         entities,
+      );
+      expect(status.status).toBe("indexing");
+      expect(status.embeddedRows).toBe(0);
+      expect(status.embeddedEntities).toBe(0);
+      expect(status.totalEntities).toBe(2);
+   });
+
+   it("is not ready when an edit swapped entities without changing the count", async () => {
+      // The failure a row count cannot see: remove two entities, add two
+      // others, and the total is unchanged while the new ones have no vector.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+      });
+      const before = [entity("alpha", "src"), entity("beta", "src")];
+      await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "swapped",
+         query: "find alpha",
+         limit: 10,
+         entities: before,
+      });
+      expect(
+         (await getEmbeddingIndexStatus(db, provider, "env", "swapped", before))
+            .status,
+      ).toBe("ready");
+
+      const after = [entity("alpha", "src"), entity("gamma", "src")];
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "swapped",
+         after,
+      );
+      expect(status.status).toBe("indexing");
+      expect(status.totalEntities).toBe(2);
+      expect(status.embeddedEntities).toBe(1);
+   });
+
+   it("reports a package past the cap as too-many-entities, not as indexing", async () => {
+      // A permanent condition an operator must act on, not a transient one to
+      // wait out: reporting it as "indexing" would poll forever. Named the
+      // same as getContext's retrieval_reason for the identical condition.
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
          "env",
          "huge",
-         MAX_EMBEDDED_ENTITIES + 1,
+         Array.from({ length: MAX_EMBEDDED_ENTITIES + 1 }, (_, i) =>
+            entity(`e${i}`, "src"),
+         ),
       );
-      expect(status.status).toBe("oversize");
+      expect(status.status).toBe("too-many-entities");
    });
 
    it("counts the entities that matched only below the floor", async () => {

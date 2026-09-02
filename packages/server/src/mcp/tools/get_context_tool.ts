@@ -1560,6 +1560,8 @@ export async function getPackageEmbeddingStatus(
    packageName: string,
 ): Promise<EmbeddingIndexStatus | undefined> {
    if (!embeddingConfigured()) return undefined;
+   const provider = getEmbeddingProvider();
+   if (!provider) return undefined;
    const pkgIndex = await getPackageIndex(
       environmentStore,
       environmentName,
@@ -1567,8 +1569,9 @@ export async function getPackageEmbeddingStatus(
    );
    return getEmbeddingIndexStatus(
       environmentStore.storageManager.getDuckDbConnection(),
+      provider,
       environmentName,
       packageName,
-      pkgIndex.entityCount,
+      Array.from(pkgIndex.byId.values()),
    );
 }

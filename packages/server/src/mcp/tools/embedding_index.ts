@@ -1144,13 +1144,27 @@ export async function trySemanticSearch(args: {
    }
 }
 
+/** The identity fields getEmbeddingIndexStatus needs from a live entity. */
+export interface IndexedEntity {
+   kind: string;
+   name: string;
+   source: string | undefined;
+}
+
 /** What a package's semantic index is currently doing. */
 export interface EmbeddingIndexStatus {
-   status: "indexing" | "ready" | "cooldown" | "oversize";
-   /** Rows cached for this package, across all entities and facets. */
+   status: "indexing" | "ready" | "cooldown" | "too-many-entities";
+   /**
+    * Rows cached for this package under the provider's CURRENT model, across
+    * all entities and facets. Rows left by an earlier model are excluded,
+    * because the search path excludes them too and a number that counted them
+    * would not agree with `status`.
+    */
    embeddedRows: number;
    /** Entities the package currently exposes to retrieval. */
    totalEntities: number;
+   /** Current entities with at least one usable vector. */
+   embeddedEntities: number;
    /** Most recent row write, absent when nothing is cached yet. */
    lastSyncedAt?: string;
 }
@@ -1168,30 +1182,62 @@ export interface EmbeddingIndexStatus {
  */
 export async function getEmbeddingIndexStatus(
    db: DuckDBConnection,
+   provider: EmbeddingProvider,
    environmentName: string,
    packageName: string,
-   entityCount: number,
+   entities: IndexedEntity[],
 ): Promise<EmbeddingIndexStatus> {
+   const entityCount = entities.length;
+   // Scoped to the provider's current model, because the search path is
+   // (see trySemanticSearch) and the stale-row heal purges anything else.
+   // Counting rows this query would reject is what let an index report ready
+   // while retrieval had nothing to serve.
+   const scope = [environmentName, packageName, provider.model];
+   const dimsClause = provider.dimensions !== undefined ? " AND dims = ?" : "";
+   const dimsParam =
+      provider.dimensions !== undefined ? [provider.dimensions] : [];
+
    const row = await db.get<{ n: number; last: string | null }>(
       `SELECT CAST(COUNT(*) AS INTEGER) AS n,
               CAST(MAX(updated_at) AS VARCHAR) AS last
        FROM entity_embeddings
-       WHERE environment_name = ? AND package_name = ?`,
-      [environmentName, packageName],
+       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?${dimsClause}`,
+      [...scope, ...dimsParam],
    );
    const embeddedRows = row?.n ?? 0;
    const lastSyncedAt = row?.last ?? undefined;
-   const meta = syncMeta.get(metaKey(environmentName, packageName));
 
+   // Which entities are covered, not just how many rows exist. A row count
+   // alone cannot see an edit that removes two entities and adds two others:
+   // the total is unchanged while the two new ones have no vector at all.
+   const covered = await db.all<{
+      entity_kind: string;
+      entity_source: string;
+      entity_name: string;
+   }>(
+      `SELECT DISTINCT entity_kind, entity_source, entity_name
+       FROM entity_embeddings
+       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?${dimsClause}`,
+      [...scope, ...dimsParam],
+   );
+   const coveredKeys = new Set(
+      covered.map((r) =>
+         entityRowKey(r.entity_kind, r.entity_source, r.entity_name),
+      ),
+   );
+   const embeddedEntities = entities.filter((e) =>
+      coveredKeys.has(entityRowKey(e.kind, sourceColumn(e.source), e.name)),
+   ).length;
+
+   const meta = syncMeta.get(metaKey(environmentName, packageName));
    const status: EmbeddingIndexStatus["status"] =
       entityCount > MAX_EMBEDDED_ENTITIES
-         ? "oversize"
+         ? "too-many-entities"
          : meta && inCooldown(meta)
            ? "cooldown"
-           : // Rows exist and nothing is mid-write: the cache is serving.
-             // An entity with no doc has one row, so a synced package always
-             // has at least as many rows as entities.
-             embeddedRows >= entityCount && !meta?.mutex.isLocked()
+           : // Every current entity has a usable vector and nothing is
+             // mid-write: the cache is serving what retrieval will read.
+             embeddedEntities >= entityCount && !meta?.mutex.isLocked()
              ? "ready"
              : "indexing";
 
@@ -1199,6 +1245,7 @@ export async function getEmbeddingIndexStatus(
       status,
       embeddedRows,
       totalEntities: entityCount,
+      embeddedEntities,
       ...(lastSyncedAt ? { lastSyncedAt } : {}),
    };
 }
