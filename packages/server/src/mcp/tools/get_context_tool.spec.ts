@@ -1540,6 +1540,69 @@ describe("get_context semantic retrieval", () => {
       expect(cooled.retrieval_reason).toBe("cooldown");
    });
 
+   // A source that matches on its own terms becomes the CARD, not a row under
+   // it, so returned-entities and matched-rows are different units. Pairing
+   // them reported a cut that never happened. Both directions pinned here.
+   const truncModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: ["#(doc) Orders placed by customers."],
+            schema: {
+               fields: [
+                  { kind: "dimension", name: "state", annotations: [] },
+                  { kind: "dimension", name: "city", annotations: [] },
+               ],
+            },
+         },
+      ],
+      getQueries: () => [],
+   };
+   const TRUNC_VECTORS: Record<string, number[]> = {
+      orders: [1, 0],
+      "orders: Orders placed by customers.": [1, 0],
+      state: [1, 0],
+      city: [1, 0],
+      "where do customers live": [1, 0],
+   };
+   const truncStore = () =>
+      semanticStoreFor({
+         listModels: async () => [{ path: "orders.malloy" }],
+         getModel: () => truncModel,
+      });
+
+   it("stays silent on the semantic path when a matched source fills no slot", async () => {
+      _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
+      const handler = captureHandler(truncStore());
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "trunc-pkg",
+         query: "where do customers live",
+         limit: 10,
+      });
+
+      // Three rows matched (the source and its two fields) and all three came
+      // back; the source became the card, leaving two nested entities.
+      expect(payload.sources).toHaveLength(1);
+      expect(payload.sources[0].relevance).toBeCloseTo(1.0, 3);
+      expect(rankedEntities(payload)).toHaveLength(2);
+      expect("warnings" in payload).toBe(false);
+   });
+
+   it("still reports a real cut on the semantic path", async () => {
+      _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
+      const handler = captureHandler(truncStore());
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "trunc-cut-pkg",
+         query: "where do customers live",
+         limit: 1,
+      });
+
+      expect(payload.warnings.join(" ")).toContain("Returned 1 of 3");
+      expect(payload.warnings.join(" ")).toContain("Raise limit");
+   });
+
    it("reports below_cutoff_count on semantic responses, never on lexical ones", async () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());

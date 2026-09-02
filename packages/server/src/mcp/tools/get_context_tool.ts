@@ -457,14 +457,6 @@ function toSourceResults(
    return Array.from(bySource.values());
 }
 
-/** How many entities the cards carry in total. */
-function entityCountIn(cards: SourceCard[]): number {
-   return cards.reduce(
-      (total, card) => total + (card.entities?.length ?? 0),
-      0,
-   );
-}
-
 /** Cut over-long context text on a word boundary, marking that it was cut. */
 function truncateDoc(doc: string, max: number): string {
    if (doc.length <= max) return doc;
@@ -1456,10 +1448,16 @@ export function registerGetContextTool(
                ...(totalEntities !== undefined
                   ? { total_entities: totalEntities }
                   : {}),
+               // Both counts in ranked ROWS, the unit the cap spends and the
+               // unit the lexical path below already uses. entityCountIn
+               // counts nested entities, which excludes a source that matched
+               // on its own terms -- toSourceResults turns that into the card
+               // rather than a row under it -- so pairing it with a row count
+               // reported a cut that never happened whenever a source ranked.
                ...warningsFor(
                   truncationWarning(
-                     entityCountIn(sources),
-                     semanticMatchCount ?? entityCountIn(sources),
+                     semanticResults.length,
+                     semanticMatchCount ?? semanticResults.length,
                   ),
                ),
             });
