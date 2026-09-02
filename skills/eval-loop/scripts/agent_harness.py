@@ -160,6 +160,87 @@ def manifest_skills(manifest: str, repo_root: pathlib.Path) -> list[str]:
             + list(data.get("supporting") or []))
 
 
+# --- One `claude -p` invocation, retried ------------------------------------
+#
+# Both spawners in this tree run the same command shape and parse the same
+# stream-json lines. They differ only in what counts as a reply worth keeping,
+# so that is the parameter and everything else is shared. Two copies of the
+# subprocess-and-parse dance is how one of them silently loses the retry.
+
+
+def no_events(events: list[dict[str, Any]], text: str) -> bool:
+    """Nothing came back at all: a dead process, a rate limit, a killed CLI.
+
+    The predicate for an agent whose output IS the measurement. An agent that
+    emitted events but no text produced a real (bad) attempt, and re-running it
+    would replace a datum with a second roll of the dice.
+    """
+    return not events
+
+
+def no_text(events: list[dict[str, Any]], text: str) -> bool:
+    """No usable reply, however many events arrived.
+
+    The predicate for an agent that is instrumentation rather than subject -- a
+    judge, a clusterer. There is nothing to salvage from a run with no text, so
+    a retry can only help.
+    """
+    return not text.strip()
+
+
+def run_cli(cmd: list[str], *, cwd: str, timeout: int,
+            retry_when: Any = no_events, retries: int = 2,
+            backoff: float = 20.0,
+            env: dict[str, str] | None = None) -> tuple[list[dict[str, Any]],
+                                                        str, str, int, float]:
+    """Run one stream-json `claude -p` command; retry while `retry_when` holds.
+
+    An empty result is nearly always transient overnight -- a rate limit or a
+    killed process -- and recording it as the agent's considered reply turns a
+    retryable blip into a permanent hole in the run.
+
+    Returns (events, assistant_text, stderr, attempts, wall_seconds). A timeout
+    or a crash comes back as empty events with the reason in stderr; naming the
+    failure is the caller's job, because the two callers put it in different
+    places in their own records.
+    """
+    events: list[dict[str, Any]] = []
+    text, stderr, attempt, wall = "", "", 1, 0.0
+    for attempt in range(1, retries + 2):
+        t0 = time.time()
+        try:
+            p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                               timeout=timeout, env=env)
+            stdout, stderr = p.stdout, p.stderr
+        except subprocess.TimeoutExpired:
+            stdout, stderr = "", f"timeout after {timeout}s"
+        except OSError as exc:                      # claude not on PATH, etc.
+            stdout, stderr = "", str(exc)
+        wall = round(time.time() - t0, 1)
+
+        events, text = [], ""
+        for line in stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            events.append(e)
+            if e.get("type") == "assistant":
+                for c in e["message"].get("content") or []:
+                    if c.get("type") == "text":
+                        text += c["text"]
+
+        if not retry_when(events, text):
+            break
+        if attempt <= retries:
+            time.sleep(backoff * attempt)
+
+    return events, text, stderr, attempt, wall
+
+
 @dataclass
 class AgentResult:
     text: str = ""
@@ -282,12 +363,12 @@ def spawn_agent(prompt: str, *, skills: Iterable[str],
                 depth: int = 1,
                 save_transcript: pathlib.Path | None = None,
                 mcp_server: str = "publisher") -> AgentResult:
-    """Run one agent to completion, retrying an empty result.
+    """Run one agent to completion, retrying while it returns no usable text.
 
-    An empty stdout is not a considered answer -- overnight it is nearly always
-    a transient rate limit or a killed process. Recording it as an unparseable
-    reply turns a retryable blip into a permanent hole in the run, so it is
-    retried with backoff and the attempt count is reported.
+    The retry and its reasoning live in `run_cli`, which the answerer in
+    `run_baseline.py` shares; this adds the workspace, the skills and the
+    accounting. `no_text` is the right predicate here because everything
+    spawned this way is instrumentation rather than the thing being measured.
     """
     # The MCP server's NAME is part of the OAuth cache key and of every tool
     # name (mcp__<server>__<tool>), so a hosted target has to say what it is.
@@ -317,50 +398,23 @@ def spawn_agent(prompt: str, *, skills: Iterable[str],
         cmd += ["--add-dir", str(work)]
 
     res = AgentResult()
-    for attempt in range(1, retries + 2):
-        res.attempts = attempt
-        t0 = time.time()
-        try:
-            p = subprocess.run(cmd, cwd=run_cwd, capture_output=True, text=True,
-                               timeout=timeout, env=env)
-            stdout, stderr = p.stdout, p.stderr
-        except subprocess.TimeoutExpired:
-            stdout, stderr = "", f"timeout after {timeout}s"
-        res.wall_seconds = round(time.time() - t0, 1)
-
-        events, text = [], ""
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                e = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            events.append(e)
-            if e.get("type") == "assistant":
-                for c in e["message"].get("content") or []:
-                    if c.get("type") == "text":
-                        text += c["text"]
-
-        if text.strip():
-            result = next((e for e in reversed(events)
-                           if e.get("type") == "result"), {})
-            usage = result.get("usage") or {}
-            res.text = text
-            res.events = events
-            res.json = last_json_object(text)
-            res.cost_usd = result.get("total_cost_usd")
-            res.num_turns = result.get("num_turns")
-            res.input_tokens = usage.get("input_tokens")
-            res.output_tokens = usage.get("output_tokens")
-            res.error = None
-            break
-
+    events, text, stderr, res.attempts, res.wall_seconds = run_cli(
+        cmd, cwd=run_cwd, timeout=timeout, retry_when=no_text,
+        retries=retries, backoff=backoff, env=env)
+    res.events = events
+    if text.strip():
+        result = next((e for e in reversed(events)
+                       if e.get("type") == "result"), {})
+        usage = result.get("usage") or {}
+        res.text = text
+        res.json = last_json_object(text)
+        res.cost_usd = result.get("total_cost_usd")
+        res.num_turns = result.get("num_turns")
+        res.input_tokens = usage.get("input_tokens")
+        res.output_tokens = usage.get("output_tokens")
+        res.error = None
+    else:
         res.error = (stderr or "empty reply")[-300:]
-        res.events = events
-        if attempt <= retries:
-            time.sleep(backoff * attempt)
 
     if save_transcript is not None:
         save_transcript.parent.mkdir(parents=True, exist_ok=True)

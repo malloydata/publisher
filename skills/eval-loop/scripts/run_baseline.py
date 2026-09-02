@@ -122,7 +122,9 @@ from check_contamination import check as path_check  # noqa: E402
 import verify_goldens  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from agent_harness import build_workspace, default_manifest, manifest_skills, skills_roots  # noqa: E402
+from agent_harness import (build_workspace, default_manifest,  # noqa: E402
+                           manifest_skills, no_events, no_text,
+                           run_cli, skills_roots)
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 REPO_ROOT = SKILLS_ROOT.parent
@@ -338,7 +340,9 @@ def result_text(block: dict[str, Any]) -> str:
 def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
            tools: tuple[str, ...] = (), turns: int = 30,
            effort: str | None = None, timeout: int = 900,
-           skills: bool = True) -> list[dict[str, Any]]:
+           skills: bool = True, retry: int = 2,
+           backoff: float = 20.0,
+           retry_when: Any = no_events) -> list[dict[str, Any]]:
     """One `claude -p` run. With `skills=True` the workspace's
     `.claude/skills/` is loaded; see ISOLATION in the module docstring for how
     the answerer is confined once `--restricted` is off."""
@@ -361,22 +365,18 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
         cmd += ["--strict-mcp-config", "--mcp-config", mcp]
     if tools:
         cmd += ["--allowedTools", *tools]
-    try:
-        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                           timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return [{"type": "result", "subtype": "timeout", "is_error": True}]
-    events = []
-    for line in p.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+    # The subprocess, the stream-json parse and the retry are shared with
+    # `agent_harness.spawn_agent`; only the retry predicate differs. `no_events`
+    # retries a dead process or a rate limit and does NOT retry an attempt that
+    # came back with events but no text -- that is a real failed answer, and
+    # re-rolling it would put a second sample where the run records one.
+    events, _text, stderr, _attempts, _wall = run_cli(
+        cmd, cwd=cwd, timeout=timeout, retry_when=no_events,
+        retries=retry, backoff=backoff)
     if not events:
-        events = [{"type": "result", "subtype": "no_output", "is_error": True,
-                   "stderr": p.stderr[-500:]}]
+        subtype = "timeout" if "timeout after" in (stderr or "") else "no_output"
+        events = [{"type": "result", "subtype": subtype, "is_error": True,
+                   "stderr": (stderr or "")[-500:]}]
     return events
 
 
@@ -832,8 +832,14 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
                                    prefix="judge-"))
     else:
         work = tempfile.mkdtemp(prefix="judge-")
+    # `no_text` rather than the answerer's `no_events`: a judge that emitted
+    # events but no verdict text parses as needs_human, which drops the case
+    # from every aggregate. The judge is instrumentation, so a retry can only
+    # help -- the measurement-integrity argument against retrying applies to
+    # the answerer alone.
     events = claude(prompt, work, a.judge_model, mcp=None, turns=3,
-                    timeout=300, skills=bool(a.judge_skills))
+                    timeout=300, skills=bool(a.judge_skills),
+                    retry_when=no_text)
     shutil.rmtree(work, ignore_errors=True)
 
     text = ""
