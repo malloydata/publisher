@@ -26,6 +26,13 @@ A manifest can name such a source without anyone being careless: a source that w
 given-free when it was built acquires a `given` on the next model edit, and the old
 manifest still points at a real, correct table until convergence catches up.
 
+Givens are the shape that needs this. `#(authorize)` does not: it is evaluated on the
+original model surface before routing is chosen (`model.ts` `assertAuthorized`, then
+`assertAuthorizedForAllSources`), and a non-portable shape self-corrects through the
+fallback ladder. The serve transform has no `given` handling at all, and the storage
+serve path deliberately supplies no given values, so once a binding is accepted
+nothing downstream can re-impose the filter.
+
 This scenario builds a legitimate given-FREE source, then binds the given-FILTERED
 source to that same real table and queries it with `REGION=US`. A live serve returns
 US only.
@@ -35,6 +42,16 @@ at compile — the only place the compiled sources exist — and consulted here,
 bind path enforces it without the recompile the tier-split exists to avoid. A refused
 binding is dropped rather than fatal: that source serves live, which is always
 correct, and every other binding in the manifest still applies.
+
+Note what the refusal does NOT rest on. A refused `storage=` source is not in
+`BuildPlan.sources` at all — constructing a plan entry needs `getSQL()` and a content
+address, which a given-referencing source cannot reliably produce, so the plan diverts
+it to `BuildPlan.refusedSources` instead. It therefore has no serve handle a host
+could read off the plan, and the manifest below names it the only way left: by name,
+`(unplanned)`. The bind path is keyed on the source NAME against a positive eligible
+set, so it refuses either way — which is the point. Eligibility is established
+positively, so a source arriving by a handle the plan never issued is refused for
+exactly the same reason as one arriving by a handle it did.
 
 ## Publisher
 
@@ -65,9 +82,11 @@ source: all_rollup is base -> {
   aggregate: t is amount.sum()
 }
 
-// INELIGIBLE: row-level filtered by a given. Annotated so it is PLANNED (it has a
-// serve handle a host could name), but the eligibility gate refuses to build it —
-// `givens-refused` pins that refusal. No honest manifest can carry this source.
+// INELIGIBLE: row-level filtered by a given. Annotated, and query-shaped, so it is
+// a build root Malloy hands to the plan — but the storage-tier eligibility gate
+// refuses it there (`givens-refused` pins the same refusal on the build path), so it
+// lands in `refusedSources` and never reaches `sources`. No honest manifest can
+// carry this source.
 source: scoped is base extend {
   where: region ~ $REGION
 }
@@ -81,10 +100,36 @@ source: scoped_rollup is scoped -> {
 
 ## Publish (sources=all_rollup)
 
-Build ONLY the eligible source. `scoped_rollup` stays planned-but-unbuilt — building
-it is exactly what the eligibility gate refuses, so the run would fail.
+Build ONLY the eligible source. `scoped_rollup` is refused rather than built —
+building it is exactly what the eligibility gate refuses, so the run would fail.
 
 expect binding: all_rollup -> lake
+
+## Build targets
+
+The plan the host reads carries the eligible source and nothing else. Pinned so the
+premise below is asserted rather than assumed: if `scoped_rollup` ever reappears in
+`sources`, this says so instead of the scenario quietly changing meaning.
+
+Expect:
+
+| source     | writes  |
+| ---------- | ------- |
+| all_rollup | hbi_all |
+
+## Build refusals
+
+The positive half, and what separates this scenario from
+`host-binding-of-unplanned-source`: `scoped_rollup` was compiled, EXAMINED, and
+refused — with the tier it would have built under and the reason. There, the source
+is in neither collection, because Malloy never admitted it as a persist source at
+all, and the bind path can only report that it was never examined.
+
+Expect:
+
+| source        | tier    | reason |
+| ------------- | ------- | ------ |
+| scoped_rollup | storage | given  |
 
 ## Query the eligible source
 
@@ -106,8 +151,10 @@ Expect:
 
 The host authors a manifest vouching for `scoped_rollup` — the given-referencing
 source the build gate refuses — at the real `hbi_all` table, and binds it.
+`(unplanned)` says the premise out loud: the plan issued no handle for this source,
+so the step names it the way a host working from its own records would.
 
-- scoped_rollup -> hbi_all @ lake
+- scoped_rollup -> hbi_all @ lake (unplanned)
 
 ## Query the given-filtered source
 
@@ -128,16 +175,3 @@ Expect:
 | region | t   |
 | ------ | --- |
 | US     | 150 |
-
-## Note (since=2026-07-25)
-
-> Was a confirmed bypass before the bind-time eligibility check: querying with
-> `REGION=US` returned `[{EU,200},{US,150}]` from the stored table. Scope, so the
-> fix is not read as broader than it is:
-> `#(authorize)` is NOT affected — it is
-> evaluated on the original model surface before routing is chosen
-> (`model.ts` `assertAuthorized`, then `assertAuthorizedForAllSources`) — and a
-> non-portable shape self-corrects through the fallback ladder. GIVENS are the gap:
-> the serve transform has no `given` handling at all, and the storage serve path
-> deliberately supplies no given values, so nothing downstream can re-impose the
-> filter once a binding is accepted.

@@ -13,11 +13,12 @@ SPDX-License-Identifier: MIT
 
 ## Get Diagnostics
 
-**Claude Code (in VS Code terminal):** Call `mcp__ide__getDiagnostics` with the file URI.
+Hosts expose errors differently, so take the best path you actually have:
 
-**VS Code Copilot / Cursor:** Use the `ReadLints` tool on the file path, or open the file and check lints in the editor.
+1. **An editor-diagnostics tool**, if your host offers one - call it on the file and read the errors straight out.
+2. **Otherwise, compile by running.** Run any query against the source with your query tool and read the error it returns. Every host that can run Malloy can do this, including chat surfaces with no editor.
 
-**Claude Code (standalone terminal):** No IDE diagnostics available. Ask the user to open the file in VS Code with the Malloy extension and report the errors.
+Only ask the user to open the file in an editor when you know they have the model open in one. On a hosted chat surface there is no local checkout to open, and the query path above is the one that works.
 
 ## Strategy
 
