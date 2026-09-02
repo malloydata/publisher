@@ -1796,6 +1796,9 @@ export class MaterializationService {
       const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
       const builtSources: string[] = [];
+      // Declared sources already visited this run, by `sourceID`, so a source
+      // shared by several graphs builds once. See the guard in the walk below.
+      const seenSources = new Set<string>();
       try {
          for (const graph of graphs) {
             const connection = connections.get(graph.connectionName);
@@ -1893,6 +1896,29 @@ export class MaterializationService {
                   persistSource,
                   connectionDigests,
                );
+
+               // One build per declared source per run, across every graph.
+               // `compilePackageBuildPlan` accumulates each model's graphs into a
+               // single list, and a source declared in one model appears again in the
+               // graph of every model that imports it -- so `graphs` legitimately
+               // holds several nodes for the same source. `iterGraphSources` dedups
+               // only WITHIN one graph, so without this the source is built once per
+               // importing model, each a full CTAS of identical content: a package
+               // whose persist source is imported by N models pays N times its build
+               // cost, and an orchestrated caller's run timeout is what surfaces it.
+               // `deriveSelfInstructions` applies the same guard across the same
+               // graph list; the auto-run path is why this never showed there.
+               //
+               // Keyed on `sourceID` -- the declaring model plus source name -- not
+               // on the content `sourceEntityId`: a revisit through another graph is
+               // always the same declaration, whereas two DISTINCT sources can share
+               // one content address (identical SQL on one connection), and those
+               // hold separate instructions naming separate physical tables.
+               // Collapsing them here would leave one instructed table unbuilt and
+               // reported neither built nor failed. That collision is real but
+               // separate, and it has its own detection.
+               if (seenSources.has(persistSource.sourceID)) continue;
+               seenSources.add(persistSource.sourceID);
 
                // A caller-instructed destination that cannot be honored REFUSES; it
                // never falls through to a colocated build. Auto-run already applies

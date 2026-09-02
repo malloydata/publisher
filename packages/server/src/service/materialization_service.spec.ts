@@ -2664,6 +2664,84 @@ describe("executeInstructedBuild", () => {
       expect(rootIdx).toBeGreaterThan(midIdx);
    });
 
+   it("builds a source shared by two graphs exactly once", async () => {
+      // compilePackageBuildPlan pushes every model's graphs into one allGraphs
+      // list, so a persist source declared in one model and imported by another
+      // appears in BOTH models' graphs. iterGraphSources dedups per graph, so a
+      // shared source is yielded once per graph and built once per graph -- each
+      // a full reseed CTAS.
+      const runSQL = sinon.stub().resolves();
+      const connection = { runSQL } as unknown as MalloyConnection;
+      const shared = fakeSource({
+         name: "shared",
+         sourceEntityId: "bsharedaaaaaaaaa",
+      });
+      const consumer = fakeSource({
+         name: "consumer",
+         sourceEntityId: "bconsumerbbbbbbb",
+      });
+      const compiled = {
+         graphs: [
+            {
+               connectionName: "duckdb",
+               nodes: [[{ sourceID: "shared", dependsOn: [] }]],
+            },
+            {
+               connectionName: "duckdb",
+               nodes: [
+                  [
+                     {
+                        sourceID: "consumer",
+                        dependsOn: [{ sourceID: "shared", dependsOn: [] }],
+                     },
+                  ],
+               ],
+            },
+         ],
+         sources: { shared, consumer },
+         connectionDigests: { duckdb: "dig" },
+         connections: new Map([["duckdb", connection]]),
+      };
+
+      const { entries } = await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bsharedaaaaaaaaa",
+               materializedTableId: "mt-s",
+               physicalTableName: "shared_v1",
+               realization: "COPY",
+            },
+            {
+               sourceEntityId: "bconsumerbbbbbbb",
+               materializedTableId: "mt-c",
+               physicalTableName: "consumer_v1",
+               realization: "COPY",
+            },
+         ],
+         {},
+      );
+
+      const creates = runSQL
+         .getCalls()
+         .map((c) => c.args[0] as string)
+         .filter((s) => s.startsWith("CREATE TABLE"));
+      // The shared source builds ONCE, not once per graph that reaches it.
+      expect(creates.filter((s) => s.includes("shared_v1")).length).toBe(1);
+      // And the dedup does not swallow the second graph's own work: the
+      // consumer still builds, and still after the upstream it reads.
+      expect(creates.filter((s) => s.includes("consumer_v1")).length).toBe(1);
+      expect(creates.findIndex((s) => s.includes("consumer_v1"))).toBeGreaterThan(
+         creates.findIndex((s) => s.includes("shared_v1")),
+      );
+      // Both are reported built, so an orchestrated caller settles neither as
+      // missing.
+      expect(Object.keys(entries).sort()).toEqual([
+         "bconsumerbbbbbbb",
+         "bsharedaaaaaaaaa",
+      ]);
+   });
+
    it("seeds a downstream build with the QUOTED upstream reference (case-folding dialect)", async () => {
       // A carried/seeded upstream (built in a prior run or unit, e.g. via
       // referenceManifest) must reach the downstream's SQL generation as the
