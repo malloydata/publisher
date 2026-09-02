@@ -2170,3 +2170,99 @@ describe("get_context duplicate and visibility handling", () => {
       expect(text.split(doc).length - 1).toBe(2);
    });
 });
+
+/**
+ * Duplicate collapsing on the LEXICAL path, which is what an unconfigured
+ * server runs.
+ *
+ * A model whose sources extend a common base repeats every inherited field
+ * verbatim, so the duplicates score identically and fill the window with one
+ * concept. Measured on the bundled governed-analytics package, a search for
+ * "total order amount" spent 2 of 6 slots that way. Collapsing is not a
+ * property of the ranker that happens to be configured.
+ */
+describe("get_context lexical sibling collapse", () => {
+   const inheritedField = (doc: string) => ({
+      kind: "measure",
+      name: "total_amount",
+      annotations: [`#(doc) ${doc}`],
+   });
+   const siblingModel = (baseDoc: string, derivedDoc: string) => ({
+      getSourceInfos: () => [
+         {
+            name: "sales",
+            annotations: [],
+            schema: { fields: [inheritedField(baseDoc)] },
+         },
+         {
+            name: "sales_secured",
+            annotations: [],
+            schema: { fields: [inheritedField(derivedDoc)] },
+         },
+      ],
+      getQueries: () => [],
+   });
+   const handlerFor = (model: unknown) =>
+      captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+
+   it("collapses a field two sibling sources inherited unchanged", async () => {
+      const doc = "Total order amount.";
+      const payload = parse(
+         await handlerFor(siblingModel(doc, doc))({
+            environmentName: "specs",
+            packageName: "sib",
+            query: "total order amount",
+         }),
+      );
+      const rows = rankedEntities(payload).filter(
+         (e) => e.name === "total_amount",
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].also_in).toEqual(["sales_secured"]);
+   });
+
+   it("keeps them apart when their docs say different things", async () => {
+      // Different docs are different guidance, and the agent chooses between
+      // them by reading both. Collapsing here would hide the one that says
+      // the numbers are filtered.
+      const payload = parse(
+         await handlerFor(
+            siblingModel(
+               "Total order amount.",
+               "Total order amount visible to this caller, after the access gate.",
+            ),
+         )({
+            environmentName: "specs",
+            packageName: "sib",
+            query: "total order amount",
+         }),
+      );
+      const rows = rankedEntities(payload).filter(
+         (e) => e.name === "total_amount",
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows.every((r) => r.also_in === undefined)).toBe(true);
+   });
+
+   it("never collapses within a drill-down, where there are no siblings", async () => {
+      const doc = "Total order amount.";
+      const payload = parse(
+         await handlerFor(siblingModel(doc, doc))({
+            environmentName: "specs",
+            packageName: "sib",
+            query: "total order amount",
+            sourceName: "sales",
+         }),
+      );
+      expect(sourceNames(payload)).toEqual(["sales"]);
+      expect(
+         rankedEntities(payload).every((e) => e.also_in === undefined),
+      ).toBe(true);
+   });
+});

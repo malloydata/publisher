@@ -108,6 +108,13 @@ interface ResultEntity {
    /** Other sources carrying this same concept, when near-identically scored. */
    alsoIn?: string[];
    score?: number;
+   /**
+    * The lexical hit's score, normalized against the top hit so it shares the
+    * [0, 1] scale the semantic path uses. Internal to ranking: serialization
+    * never reads it, because a lexical relevance is not comparable between
+    * queries and publishing one would invite exactly that comparison.
+    */
+   lexicalScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
 }
@@ -251,17 +258,29 @@ const REASON_BY_UNAVAILABLE: Record<
  * near-identical scores group — a sibling that really is a worse match is a
  * ranked answer, not a duplicate.
  */
+/** The [0, 1] score this row was ranked on, whichever path produced it. */
+function rankScore(r: ResultEntity): number | undefined {
+   return r.score ?? r.lexicalScore;
+}
+
 function groupSiblings(results: ResultEntity[], limit: number): ResultEntity[] {
    const keptByConcept = new Map<string, ResultEntity>();
    const kept: ResultEntity[] = [];
    for (const r of results) {
       const key = `${r.kind}|${humanizeName(r.name)}`;
       const peer = keptByConcept.get(key);
+      const peerScore = rankScore(peer ?? r);
+      const rowScore = rankScore(r);
       if (
          peer &&
          r.source &&
          peer.source !== r.source &&
-         Math.abs((peer.score ?? 0) - (r.score ?? 0)) <= SIBLING_SCORE_EPSILON
+         // Unscored rows never group: with no score there is nothing to say
+         // the two are equally good, and collapsing on the name alone would
+         // hide a genuinely better match behind a worse one.
+         peerScore !== undefined &&
+         rowScore !== undefined &&
+         Math.abs(peerScore - rowScore) <= SIBLING_SCORE_EPSILON
       ) {
          peer.alsoIn = [...(peer.alsoIn ?? []), r.source];
          continue;
@@ -925,9 +944,14 @@ Semantic ranking fills relevance: no sources means nothing cleared the floor, an
 {"environmentName":"examples","packageName":"storefront","query":"revenue by category"}`;
 
 /**
- * Every tier of this tool answers with `results`, so an error keeps that key
- * (empty) alongside `error`. Callers can read `results` unconditionally without
- * branching on success first.
+ * An error keeps the empty collection its tier would have answered with, so a
+ * caller can read the payload unconditionally instead of branching on success
+ * first. BOTH keys, because the two tiers no longer answer alike: the
+ * environment and package listings still return `results`, while everything
+ * that returns sources returns `sources`, and an error is raised before the
+ * tier is known. One extra empty array is cheaper than an agent reading
+ * `sources.length === 0` on an error payload and concluding the package models
+ * nothing.
  *
  * Routed through classifyToolError for the same reason its three sibling tools
  * are: it homes each error class to real remediation, so an unknown package
@@ -942,6 +966,7 @@ function contextError(uri: string, identifier: string, error: unknown) {
       classifyToolError("getContext", identifier, error),
       {
          results: [],
+         sources: [],
       },
    );
 }
@@ -1457,7 +1482,17 @@ export function registerGetContextTool(
             .filter((e): e is Entity => e !== undefined)
             // Drill-down: narrow to one source when sourceName is set.
             .filter((e) => !sourceName || e.source === sourceName);
-         const results = matched.slice(0, max).map((e) => ({
+         // Normalized against the top hit, so the sibling epsilon means the
+         // same thing here as it does on the semantic path: lunr's raw scores
+         // are relative to the query, not on a fixed scale.
+         const topScore = hits[0]?.score ?? 0;
+         const scoreByRef = new Map(
+            hits.map((hit) => [
+               hit.ref,
+               topScore > 0 ? hit.score / topScore : undefined,
+            ]),
+         );
+         const scored: ResultEntity[] = matched.map((e) => ({
             kind: e.kind,
             name: e.name,
             source: e.source,
@@ -1468,7 +1503,15 @@ export function registerGetContextTool(
             ...(e.relationship ? { relationship: e.relationship } : {}),
             ...(e.aliases ? { aliases: e.aliases } : {}),
             ...(e.dataType ? { dataType: e.dataType } : {}),
+            ...(scoreByRef.get(e.id) !== undefined
+               ? { lexicalScore: scoreByRef.get(e.id) }
+               : {}),
          }));
+         // Grouped once, unwindowed, then windowed: see the semantic path for
+         // why calling it twice doubles every alsoIn. A drill-down is confined
+         // to one source, so it has no siblings to collapse.
+         const grouped = scoped ? scored : groupSiblings(scored, scored.length);
+         const results = grouped.slice(0, max);
 
          const sources = toSourceResults(
             results,
@@ -1483,7 +1526,7 @@ export function registerGetContextTool(
             returned: sources.length,
          };
          const lexicalWarnings = warningsFor(
-            truncationWarning(results.length, matched.length),
+            truncationWarning(results.length, grouped.length),
          );
          return jsonResource(
             uri,
