@@ -165,6 +165,80 @@ describe("a rollup is placed in a storage destination by its own line", () => {
    });
 });
 
+describe("the planner never plans what the source hides", () => {
+   // These two skips ARE the access control, not a tidy agreement with the
+   // validator. A rollup stores its grain and each measure's partial, and the
+   // serve path rebinds that table under the base's name with the stored columns
+   // declared — nothing on that path consults the author's model, so a field
+   // hidden on the source is not hidden on the rollup.
+   //
+   // Publish and load refuse these too, but a refusal is a message. What
+   // guarantees nothing is BUILT, and therefore that nothing can be served, is
+   // that no plan exists — which is what these assert. The measure case matters
+   // most in the sequence that produced it: a measure is public, the rollup
+   // builds, the author then marks it private. The table already exists at that
+   // point, and the serve leg matches on the PLAN, so the plan going away is what
+   // takes the table out of service.
+   const withAccess = async (body: string, include: string) => {
+      const text = `##! experimental { persistence composite_sources access_modifiers }
+source: orders is duckdb.sql("""${ROWS}""") extend {
+${body}
+} include {
+${include}
+}
+`;
+      const compiled = await loadTestModel(connections, text).getModel();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const contents = (compiled as any)._modelDef.contents;
+      return planSourcePreaggregation(
+         "orders",
+         contents["orders"] as ValidatableSource,
+      );
+   };
+
+   it("plans nothing for a hidden MEASURE", async () => {
+      expect(
+         await withAccess(
+            `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`,
+            "  public: category, amount, order_date\n  private: total",
+         ),
+      ).toEqual([]);
+   });
+
+   it("plans nothing for a hidden GRAIN DIMENSION", async () => {
+      // The asymmetric half: a measure is a field the loop already visits, while
+      // a grain dimension is a STRING that has to be resolved back to its field
+      // before its modifier can be read. Missing this left the grain case guarded
+      // only by the load gate, where the measure case was guarded three ways.
+      expect(
+         await withAccess(
+            `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`,
+            "  public: total, amount, order_date\n  private: category",
+         ),
+      ).toEqual([]);
+   });
+
+   it("plans normally when everything the rollup touches is public", async () => {
+      const plans = await withAccess(
+         `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`,
+         "  public: *",
+      );
+      expect(plans).toHaveLength(1);
+      expect(plans[0].grainDimensions).toEqual(["category"]);
+   });
+
+   it("a grain naming NO field is left alone, which is not the same as hidden", async () => {
+      // The validator refuses an unknown grain dimension; the planner has always
+      // kept it. Absence must not start reading as hidden, or this skip would
+      // silently change what an unknown grain does.
+      const plans = await withAccess(
+         `  measure:\n    #@ preaggregate grain="nonexistent"\n    total is sum(amount)`,
+         "  public: *",
+      );
+      expect(plans).toHaveLength(1);
+   });
+});
+
 describe("the plan groups by grain, not by measure", () => {
    it("two measures at one grain share one rollup", async () => {
       const plans = await planFor(`  #@ preaggregate grain="category"

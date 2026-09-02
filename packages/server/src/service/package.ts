@@ -58,6 +58,22 @@ import {
    deriveServeBindings,
    groupAliasesByName,
 } from "./materialization_serve_transform";
+import type { PreaggregateViolationCode } from "./preaggregation_validation";
+
+/**
+ * Pre-aggregation violations that REJECT a publish but only WARN at load.
+ *
+ * Both concern a field the source does not publicly expose. They are refused so
+ * an author is told, and warned rather than fatal at load because a package
+ * annotating a hidden field loaded before this validation existed — failing it
+ * now would stop an already-published package from loading because a new rule
+ * was added. What actually stops a hidden field reaching a rollup is the
+ * planner's own skip, not this gate.
+ */
+const PREAGG_LOAD_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
+   "non_public_measure",
+   "grain_dimension_not_public",
+]);
 import {
    ColocatedSourceEligibility,
    computePackageBuildPlan,
@@ -841,7 +857,19 @@ export class Package {
       // given on preaggregatePolicyWarnings: a declaration that cannot take
       // effect is invisible in the answers, so warning here would leave the
       // author believing they had a rollup.
-      const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
+      //
+      // Except the access-modifier pair, which is warn-at-load and reject-at-
+      // publish — see formatLoadFatalPreaggregatePolicy for why that split is
+      // about upgrade safety rather than severity, and why warning is safe here
+      // when it would not be for the others.
+      const accessWarnings = pkg.preaggregateAccessWarnings();
+      if (accessWarnings.length > 0) {
+         logger.warn(
+            `Package ${packageName} pre-aggregates a field the source hides`,
+            { packageName, detail: accessWarnings.join("\n") },
+         );
+      }
+      const invalidPreaggregate = pkg.formatLoadFatalPreaggregatePolicy();
       if (invalidPreaggregate) {
          logger.error(
             `Package ${packageName} has an invalid pre-aggregation declaration`,
@@ -1735,9 +1763,48 @@ export class Package {
     * publish.
     */
    public preaggregatePolicyWarnings(): string[] {
+      return this.preaggregateMessages(() => true);
+   }
+
+   /**
+    * The violations that fail a package LOAD, which is every one except the
+    * access-modifier pair.
+    *
+    * Those two are refused at publish and warned at load, following the same
+    * split persist-target collisions already use ("ALWAYS warn-only at load,
+    * never fail an already-published package"). The reason is upgrade safety
+    * rather than severity: before this validation existed a package annotating a
+    * hidden field LOADED — nothing read access modifiers, and the companion whose
+    * compile would have failed is swallowed — so making it load-fatal would stop
+    * an already-published package from loading because a new rule was added, and
+    * a permanent load failure is retried rather than abandoned.
+    *
+    * Safe to warn precisely because the refusal is not what enforces this: the
+    * planner skips a hidden measure and a hidden grain dimension outright
+    * (planSourcePreaggregation), so no plan exists, nothing is built, and nothing
+    * can be served. The message tells the author; the skip is the control. Which
+    * is also why that skip has its own tests rather than resting on this gate.
+    */
+   public formatLoadFatalPreaggregatePolicy(): string {
+      return this.preaggregateMessages(
+         (code) => !PREAGG_LOAD_WARN_ONLY.has(code),
+      ).join("\n");
+   }
+
+   /** The access-modifier violations, surfaced at load as warnings. */
+   public preaggregateAccessWarnings(): string[] {
+      return this.preaggregateMessages((code) =>
+         PREAGG_LOAD_WARN_ONLY.has(code),
+      );
+   }
+
+   private preaggregateMessages(
+      keep: (code: PreaggregateViolationCode) => boolean,
+   ): string[] {
       const messages: string[] = [];
       for (const [modelPath, model] of this.models) {
          for (const violation of model.preaggregateViolations()) {
+            if (!keep(violation.code)) continue;
             // The model path is prepended because the same source name can occur
             // in two models, and the author needs to know which file to open.
             messages.push(`${modelPath}: ${violation.message}`);
@@ -1748,7 +1815,9 @@ export class Package {
 
    /**
     * The {@link preaggregatePolicyWarnings} joined into one string, or "" when
-    * every `#@ preaggregate` in the package can take effect.
+    * every `#@ preaggregate` in the package can take effect. Used by the PUBLISH
+    * gate, which refuses all of them; the load gate uses
+    * {@link formatLoadFatalPreaggregatePolicy}.
     */
    public formatInvalidPreaggregatePolicy(): string {
       return this.preaggregatePolicyWarnings().join("\n");

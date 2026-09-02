@@ -532,9 +532,11 @@ export function recordServeShapeTypeFallback(
  *
  * `origin` separates the two kinds of storage hit. A lake-served pre-aggregation
  * rollup routes through the SAME serve shape as an authored `storage=` source, so
- * without this label it would be counted as an ordinary storage hit and inflate
- * that headline rate — silently, and by default, because the rollup needs no code
- * of its own to be counted. `persist` is an authored source, `preaggregate` a
+ * it is counted as a storage hit either way — the label makes the two SPLITTABLE,
+ * it does not stop the total from including rollups. A consumer summing by
+ * `outcome` alone therefore starts counting rollup hits in the headline rate
+ * without changing anything; it has to group by `origin` to get what it had
+ * before. `persist` is an authored source, `preaggregate` a
  * query answered by a rollup, and the label is absent for outcomes where the
  * distinction has no meaning (nothing routed, so nothing has an origin).
  *
