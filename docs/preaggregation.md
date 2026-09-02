@@ -200,8 +200,8 @@ name="analytics.orders_tbl"`, its rollups are created in `analytics` without bei
 the only option when the base is not persisted at all, which is common: the annotation
 goes on a measure, and the source it belongs to need not be materialized.
 
-A base that carries `storage=` lends its **destination** instead, and no namespace — see
-[Rollups in the managed store](#rollups-in-the-managed-store) below.
+A base that also carries `storage=` lends nothing — not its namespace, and not its
+destination. See [Rollups in the managed store](#rollups-in-the-managed-store) below.
 
 **Changing it does not move a table that already exists.** A namespace is not part of
 what identifies a rollup's contents, so a package whose rollups have already built keeps
@@ -246,31 +246,22 @@ A rollup stores its grain and each measure's partial, and the stored table is se
 under the base's name without the source's field visibility applying to it — so
 pre-aggregating a hidden field would publish it.
 
-**A rollup follows its base.** If the base carries `#@ persist storage=<name>`, its
-rollups are built into that destination without being told — a rollup of X belongs where
-X's rows live, and one left behind in the warehouse would be built by reading across the
-boundary the tier exists to avoid crossing. Writing `storage=` on the `#@ preaggregate`
-line overrides that, and is the only route when the base is not persisted at all — which
-is the common case, since a rollup's base is usually a table extended with measures, and
-Malloy admits only query-shaped sources as build roots.
+**Write it on the `#@ preaggregate` line.** A destination is not inherited from the
+base's `#@ persist storage=`, and the reason is worth knowing because the opposite reads
+as obviously right — a rollup of X belongs where X's rows live.
 
-> **An inherited destination builds a rollup that cannot be read. Prefer `storage=` on
-> the `#@ preaggregate` line.**
->
-> A base can only carry `#@ persist storage=` if it is query-shaped, and a base that
-> builds has a stored table and a serve binding of its own under its author name. Its
-> rollups have to be re-exposed under that same name, and one name cannot be rebound to
-> two shapes — so the rollups are dropped from the serve shape and every query is
-> answered from the base's stored table instead.
->
-> The rollups are still built, and still refreshed on every run. That is build time and
-> storage spent on tables nothing reads, and it applies to every rollup on such a base,
-> not to an unlucky one. Declaring `storage=` on the `#@ preaggregate` line and leaving
-> the base unpersisted has none of this problem.
->
-> Lifting the limitation means letting the base's own stored table join the composite as
-> its last member, which is possible only because it is in the same destination. Until
-> then, inheritance is a convenience worth avoiding.
+It does not work. A base can only carry `#@ persist storage=` if it is query-shaped, such
+a base builds a stored table of its own, and rollups are served by rebinding the base's
+name to a composite of them — so the base's own stored table already claims that name and
+its rollups cannot take it. Every inherited rollup would be built, refreshed, and never
+read. So a rollup goes to a destination because its own line says so, which is also the
+common case: a rollup's base is usually a table extended with measures, and Malloy admits
+only query-shaped sources as build roots, so most bases cannot carry `#@ persist` at all.
+
+A `name=` namespace *is* inherited, and the asymmetry is not about inheritance. Colocated
+rollups are offered through a companion model whose members Publisher names itself, with
+the base under an import alias, so nothing there is keyed on your source's name and there
+is no binding to collide with.
 
 **It belongs to the grain, like `namespace=`.** Two grains are two tables and can be
 placed differently — one in the store, one alongside the base. Measures sharing a grain
@@ -279,11 +270,6 @@ share its one table, so two of them naming different destinations is refused at 
 **`namespace=` and `storage=` cannot be combined.** Placement inside a destination is
 derived, not authored: a freshly provisioned catalog has no schema to create the table
 in. Writing both on one `#@ preaggregate` line is refused.
-
-Where the destination is *inherited* from the base's `#@ persist storage=`, a
-`namespace=` on the grain is ignored rather than refused — earlier versions told you to
-write one there, so a package that did keeps loading. It has no effect; delete it when
-you next touch the model.
 
 **Two grains on one base must agree on the destination.** Unlike `namespace=`, which may
 legitimately send two grains to two schemas, two grains bound to two different

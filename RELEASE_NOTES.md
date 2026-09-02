@@ -118,10 +118,9 @@ rows it overwrote.
 
 ## [Unreleased] — a pre-aggregation rollup can be built into and served from a storage destination
 
-`storage=` now works on a `#@ preaggregate` line, and is inherited from a sibling
-`#@ persist storage=` on the base. The rollup is built into that destination and served
-from it, and a query that names the base source is unchanged — it still knows no rollup
-exists.
+`storage=` now works on a `#@ preaggregate` line: the rollup is built into that
+destination and served from it, and a query that names the base source is unchanged — it
+still knows no rollup exists.
 
 ```malloy
 source: orders is orders_pg.table('public.orders') extend {
@@ -151,20 +150,11 @@ What is refused, and why each is a refusal rather than a silent choice:
   query through a single composite and every member of a composite must live on one
   connection. Such a base serves from its rollups not at all.
 
-**One limitation to know before you write the annotation.** A destination *inherited*
-from the base's `#@ persist storage=` builds rollups that cannot be read. Such a base is
-itself materialized and holds a serve binding under its own name, so its rollups — which
-need that same name — are dropped and queries are answered from the base's stored table.
-The rollups are still built and refreshed, so this is cost with no acceleration, and it
-applies to every rollup on such a base. Declare `storage=` on the `#@ preaggregate` line
-and leave the base unpersisted to avoid it.
-
-**Upgrading.** Earlier versions said that a `storage=` base "lends nothing" to its
-rollups and told you to name a `namespace=` explicitly. That guidance is now wrong — the
-destination is inherited — but a package written to it keeps loading: a `namespace=` on a
-grain whose destination was inherited is ignored rather than refused. It has no effect
-and can be deleted. Writing `namespace=` and `storage=` together on one `#@ preaggregate`
-line is refused.
+A destination is written on the `#@ preaggregate` line and is **not** inherited from the
+base's `#@ persist storage=`, which stays as it was: a `storage=` base lends its rollups
+nothing. Inheriting it would not work — a base that can carry that annotation builds a
+stored table of its own, and it claims the name its rollups would need to be served
+under, so every inherited rollup would be built, refreshed and never read.
 
 With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is not built — and not built
 alongside its base either, which would put a table in your warehouse under a generated

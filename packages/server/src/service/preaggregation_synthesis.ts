@@ -99,15 +99,17 @@ export interface RollupPlan {
     */
    namespace?: string;
    /**
-    * The storage destination this rollup is built into and served from: this
-    * grain's own `#@ preaggregate storage=`, else the base's sibling
-    * `#@ persist storage=`, else undefined for a colocated rollup built into the
-    * base's own warehouse.
+    * The storage destination this rollup is built into and served from — this
+    * grain's own `#@ preaggregate storage=`, and only ever that. Undefined for a
+    * colocated rollup built into the base's own warehouse.
     *
-    * Mutually exclusive with {@link namespace} in practice: placement inside a
-    * destination is derived rather than authored, so the combination is refused
-    * at publish (`namespace_with_storage`). {@link emitRollup} enforces the same
-    * precedence anyway, so a plan that somehow carried both cannot emit a
+    * NOT inherited from the base's `#@ persist storage=`; see
+    * {@link basePersistNamespace} for why a destination cannot usefully be.
+    *
+    * Mutually exclusive with {@link namespace}: placement inside a destination is
+    * derived rather than authored, so the combination is refused at publish
+    * (`namespace_with_storage`). {@link emitRollup} enforces the same precedence
+    * anyway, so a plan that somehow carried both cannot emit a
     * destination-qualified name the destination has no schema for.
     */
    storage?: string;
@@ -270,45 +272,44 @@ export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
  * {@link readPreaggregateAnnotation} does — a malformed line must not take the
  * package down.
  *
- * **A `storage=` base lends its DESTINATION, and no namespace.** A rollup of X
- * follows X to the store: the base's rows live there, so the rollup of them
- * belongs there too, and a rollup left behind in the warehouse would be built by
- * reading across the boundary the tier exists to avoid crossing.
+ * **A `storage=` base lends nothing — not its destination, and not a namespace.**
  *
- * The namespace is dropped rather than carried because the base's `name=` is a
- * name in the DESTINATION's catalog and placement inside a destination is
- * derived, not authored: a freshly provisioned catalog has no schema, and the
- * build emits a bare `CREATE OR REPLACE TABLE` with no `CREATE SCHEMA`. Carrying
- * it would aim the CREATE at a schema that need not exist. Declaring both is
- * refused outright at publish (`namespace_with_storage`); this is the inherited
- * case of the same rule, where there is nothing to refuse because the author
- * wrote only one of them.
+ * Not lending the DESTINATION is a deliberate limit rather than an oversight. A
+ * rollup of X does belong where X's rows live, so inheriting it reads as obviously
+ * right, and it is not: a base can only carry `#@ persist storage=` if it is
+ * query-shaped, such a base builds a stored table of its own, and the serve shape
+ * rebinds by author NAME — so the base's own binding claims the name its rollups
+ * need and they are dropped from the shape. Every inherited rollup would be built,
+ * refreshed, and unreadable. The destination is therefore written on the
+ * `#@ preaggregate` line, where the base is typically an unpersisted table source
+ * and nothing claims the name.
+ *
+ * (The colocated tier has no such problem, and the difference is not about
+ * inheritance: its companion composes members synthesis itself names, with the
+ * base under an import alias, so nothing is keyed on the author's source name.
+ * That is why a `name=` namespace inherits usefully and a destination does not.)
+ *
+ * Not lending the NAMESPACE is the older rule and unchanged: the base's `name=` is
+ * a name in the destination's catalog, so "beside it" has no shared meaning in the
+ * source warehouse where the rollup is built. Such an author names the namespace
+ * explicitly.
  */
-export function basePersistPlacement(source: ValidatableSource): {
-   namespace?: string;
-   storage?: string;
-} {
-   if (!source.annotations) return {};
+function basePersistNamespace(source: ValidatableSource): string | undefined {
+   if (!source.annotations) return undefined;
    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const tag = new Annotations(source.annotations as any).parseAsTag(
          "@",
       ).tag;
-      if (!tag.has("persist")) return {};
+      if (!tag.has("persist")) return undefined;
       // `#@ persist name="x"` parses as two SIBLING keys, not a nested one — the
       // same shape `readPreaggregateAnnotation` handles for `grain`. Nested form
       // first so a future nested spelling wins, sibling as the documented fallback.
       const storage = tag.text("persist", "storage") ?? tag.text("storage");
-      if (storage !== undefined && storage.trim() !== "") {
-         return { storage: storage.trim() };
-      }
-      return {
-         namespace: persistNamespace(
-            tag.text("persist", "name") ?? tag.text("name"),
-         ),
-      };
+      if (storage !== undefined && storage.trim() !== "") return undefined;
+      return persistNamespace(tag.text("persist", "name") ?? tag.text("name"));
    } catch {
-      return {};
+      return undefined;
    }
 }
 
@@ -316,8 +317,7 @@ export function planSourcePreaggregation(
    baseSourceName: string,
    source: ValidatableSource,
 ): RollupPlan[] {
-   const { namespace: inheritedNamespace, storage: inheritedStorage } =
-      basePersistPlacement(source);
+   const inheritedNamespace = basePersistNamespace(source);
    // Canonical grain -> the measures declared at it. Keyed on the sorted grain so
    // two authors writing the same dimensions in either order land in one entry.
    const byGrain = new Map<
@@ -389,9 +389,9 @@ export function planSourcePreaggregation(
          // Author's choice first, the base's namespace as the fallback: a rollup of
          // X belongs where X lives unless its author said otherwise.
          namespace: namespace ?? inheritedNamespace,
-         // Same precedence, same reason: a rollup of X follows X into the store
-         // unless its author placed this grain somewhere else.
-         storage: storage ?? inheritedStorage,
+         // The grain's own, and only the grain's own: a destination is never
+         // inherited from the base (see basePersistNamespace).
+         storage,
          grainDimensions,
          // Sorted so the emitted text does not depend on field order in the IR.
          measures: [...measures].sort((a, b) => a.name.localeCompare(b.name)),

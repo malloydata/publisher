@@ -8,7 +8,7 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A rollup follows its base into the store, and answers from there
+# A rollup is built into the store, and answers from there
 
 `storage=` on a `#@ preaggregate` line builds the rollup into the managed store instead
 of the source warehouse, and serves it from there. Nothing about the author's query
@@ -51,8 +51,8 @@ is fresh. Either one alone would pass while the other was broken.
 The base is a plain table source carrying an annotated measure — the standalone form.
 Pre-aggregation does not require `#@ persist`, and a preagg base usually cannot carry
 one at all, because Malloy admits only query-shaped sources as build roots and a table
-extended with measures is not one. So `storage=` has to work on the `#@ preaggregate`
-line itself, not only by inheritance from a base.
+extended with measures is not one. So the `#@ preaggregate` line is where a destination
+is written — it is never inherited from the base, which could not be served if it were.
 
 ```malloy
 ##! experimental { persistence composite_sources }

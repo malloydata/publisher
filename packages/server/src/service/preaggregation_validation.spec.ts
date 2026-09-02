@@ -567,17 +567,11 @@ describe("placing a rollup in a storage destination", () => {
       expect(violations[0].message).toContain("storage=store_a");
    });
 
-   it("namespace= against an INHERITED storage= still LOADS, because upgrades", async () => {
-      // Deliberately not refused. Publisher 0.2.x documented exactly this shape —
-      // of a `storage=` base, "name the namespace explicitly there" — so a package
-      // written to the shipped instruction carries both. Now that the destination
-      // is inherited rather than ignored, refusing the pair would turn that
-      // package into a LOAD FAILURE on upgrade, since a pre-aggregation violation
-      // fails the load outright.
-      //
-      // The namespace is harmless when ignored: placement inside a destination is
-      // derived either way. Refusing a newly written pair is a different case and
-      // is still refused, above.
+   it("a namespace= beside a storage= BASE is untouched, because nothing is inherited", async () => {
+      // The configuration the shipped docs describe: a `storage=` base lends
+      // nothing, so its rollups are colocated and a `namespace=` on the grain
+      // means exactly what it always did. No destination is in play for the
+      // refusal to fire against.
       expect(
          (
             await validateAnnotated(

@@ -90,42 +90,20 @@ async function planFor(body: string): Promise<RollupPlan[]> {
    return planSourcePreaggregation("orders", await compileOrders(body));
 }
 
-describe("a rollup follows its base into a storage destination", () => {
+describe("a rollup is placed in a storage destination by its own line", () => {
    const GRAIN = `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`;
+   const GRAIN_STORAGE = `  measure:\n    #@ preaggregate grain="category" storage=lake\n    total is sum(amount)`;
 
-   it("inherits the base's destination, where it used to lend nothing", async () => {
-      // The inversion. A rollup of X follows X to the store: the base's rows live
-      // there, so a rollup left behind in the warehouse would be built by reading
-      // across the very boundary the tier exists to avoid crossing.
-      const plans = planSourcePreaggregation(
-         "orders",
-         await compileAnnotatedOrders("#@ persist storage=lake", GRAIN),
-      );
-      expect(plans).toHaveLength(1);
-      expect(plans[0].storage).toBe("lake");
-   });
-
-   it("emits `storage=` with NO name=, so the destination assigns the table", async () => {
-      // Decision: placement inside a destination is derived, not authored. The
-      // resolver refuses a dotted `name=` outright because a fresh catalog has no
-      // schema, so emitting one would produce a refusal naming a generated source
-      // and a `name=` the author never wrote. Bare is safe because the build
-      // self-assigns from the source name, which carries the grain digest.
-      const plans = planSourcePreaggregation(
-         "orders",
-         await compileAnnotatedOrders("#@ persist storage=lake", GRAIN),
-      );
-      const emitted =
-         synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
-      expect(emitted).toContain("#@ persist storage=lake");
-      expect(emitted).not.toContain("name=");
-   });
-
-   it("a storage= base lends its destination and NOT its name='s namespace", async () => {
-      // The base's `name=` is a name in the DESTINATION's catalog, and carrying its
-      // namespace would aim the CREATE at a schema that need not exist there. This
-      // is the inherited case of the namespace_with_storage rule, where there is
-      // nothing to refuse because the author wrote only one of them.
+   it("a storage= base lends NOTHING — not its destination, not its namespace", async () => {
+      // Inheriting the destination reads as obviously right and is not. A base can
+      // only carry `#@ persist storage=` if it is query-shaped; such a base builds
+      // a stored table of its own; and the serve shape rebinds by author NAME, so
+      // the base's own binding claims the name its rollups need and they are
+      // dropped. Every inherited rollup would be built, refreshed, and unreadable.
+      //
+      // The namespace half is the older rule and unchanged: the base's `name=` is
+      // a name in the destination's catalog, which means nothing in the source
+      // warehouse where the rollup is built.
       const plans = planSourcePreaggregation(
          "orders",
          await compileAnnotatedOrders(
@@ -133,24 +111,33 @@ describe("a rollup follows its base into a storage destination", () => {
             GRAIN,
          ),
       );
-      expect(plans[0].storage).toBe("lake");
+      expect(plans).toHaveLength(1);
+      expect(plans[0].storage).toBeUndefined();
       expect(plans[0].namespace).toBeUndefined();
    });
 
-   it("the grain's own storage= beats the base's", async () => {
+   it("emits `storage=` with NO name=, so the destination assigns the table", async () => {
+      // Placement inside a destination is derived, not authored. The resolver
+      // refuses a dotted `name=` outright because a fresh catalog has no schema, so
+      // emitting one would produce a refusal naming a generated source and a
+      // `name=` the author never wrote. Bare is safe because the build self-assigns
+      // from the source name, which carries the grain digest.
       const plans = planSourcePreaggregation(
          "orders",
-         await compileAnnotatedOrders(
-            "#@ persist storage=base_store",
-            `  measure:\n    #@ preaggregate grain="category" storage=grain_store\n    total is sum(amount)`,
-         ),
+         await compileOrders(GRAIN_STORAGE),
       );
-      expect(plans[0].storage).toBe("grain_store");
+      expect(plans[0].storage).toBe("lake");
+      const emitted =
+         synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
+      expect(emitted).toContain("#@ persist storage=lake");
+      expect(emitted).not.toContain("name=");
    });
 
    it("a colocated base still lends its namespace, unchanged", async () => {
-      // The pre-existing path must not move: only a `storage=` base behaves
-      // differently now.
+      // The shipped path must not move. Only the destination was ever in question,
+      // and it is a `name=` namespace that inherits usefully — the colocated
+      // companion composes members synthesis itself names, so nothing is keyed on
+      // the author's source name and there is no binding to collide with.
       const plans = planSourcePreaggregation(
          "orders",
          await compileAnnotatedOrders(
