@@ -147,14 +147,22 @@ is usually committed:
 "postgresConnection": { "password": "${PGPASSWORD}" }
 ```
 
-Two things to know before relying on it. The substitution happens when the config file is
+One thing to know before relying on it: the substitution happens when the config file is
 *read*, which is the first boot on a fresh server root or any boot with `--init` — a normal
-boot loads the persisted copy and never sees the file. And a variable that is not set makes
-the whole config unreadable, which Publisher currently reports only as a log line before
-falling back to an empty manifest: the server starts, `operationalState` is `serving`, and
-`loadErrors` is empty, but no environment or package is served. If a boot comes up with
-nothing after a config edit, check the log for `Error reading publisher.config.json` before
-looking anywhere else.
+boot loads the persisted copy and never sees the file.
+
+A variable that is not set, like any config Publisher cannot parse, is a startup error. The
+server prints `PUBLISHER_INIT_FAILED` naming the file, the variable and the remedy, and does
+not begin serving:
+
+```
+PUBLISHER_INIT_FAILED error="Could not read publisher.config.json: Environment variable
+'${TYPOD_NAME}' is not set in configuration file. Fix the file, or move it aside to fall
+back to the bundled default."
+```
+
+A config file that is simply **absent** is not an error — Publisher falls back to its bundled
+default.
 
 `PUBLISHER_MAX_RESPONSE_BYTES` measures the shape the caller asked for, not one fixed shape.
 On the model-query endpoint that means two requests differing only in `compactJson` reach the

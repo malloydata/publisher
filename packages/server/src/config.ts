@@ -978,18 +978,14 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       rawConfig = JSON.parse(fileContent);
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error(
-         `Failed to parse ${publisherConfigPath}: ${message}. Using default empty config.`,
-         {
-            path: publisherConfigPath,
-            error: message,
-            stack: error instanceof Error ? error.stack : undefined,
-         },
-      );
-      return {
-         frozenConfig: false,
-         environments: [],
-      };
+      // Raised, not absorbed into an empty config. A file that exists and does
+      // not parse is an operator's typo, and returning `environments: []` for
+      // it produced a server that booted, reported "serving" with an empty
+      // loadErrors, and served nothing -- with the reason only in the log.
+      // Callers that can carry on without a config already catch this
+      // (isPublisherConfigFrozen defaults to false, getConnectionsFrom...
+      // returns none); the manifest read turns it into a refusal to start.
+      throw new Error(`Failed to parse ${publisherConfigPath}: ${message}`);
    }
 
    // Process environment variables in config values

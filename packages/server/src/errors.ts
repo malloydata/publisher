@@ -205,6 +205,28 @@ export class MaterializationEligibilityError extends Error {
    }
 }
 
+/**
+ * The config file exists but could not be turned into a manifest: malformed
+ * JSON, a shape the loader rejects, or a `${VAR}` reference to an unset
+ * environment variable.
+ *
+ * Distinct from the file being ABSENT, which is not an error: Publisher then
+ * falls back to the bundled DuckDB-only default. This is a file the operator
+ * wrote and Publisher cannot honour, so it must not degrade to serving nothing
+ * while reporting healthy.
+ */
+export class PublisherConfigError extends Error {
+   constructor(configName: string, cause: unknown) {
+      super(
+         `Could not read ${configName}: ${
+            cause instanceof Error ? cause.message : String(cause)
+         }. Fix the file, or move it aside to fall back to the bundled default.`,
+      );
+      this.name = "PublisherConfigError";
+      this.cause = cause;
+   }
+}
+
 export class FrozenConfigError extends Error {
    constructor(
       message = `Publisher config can't be updated when ${PUBLISHER_CONFIG_NAME} has { "frozenConfig": true }`,
