@@ -213,7 +213,7 @@ def walk_transcript(path: pathlib.Path) -> tuple[list[dict[str, Any]], str]:
                     for src in pl.get("sources") or []:
                         n += 1 + len(src.get("entities") or [])
                         info = src.get("source_info") or {}
-                        # Credible's shape carries the source text under
+                        # A hosted shape may carry the source text under
                         # `summary` (LLM-written) plus `docs`/`one_line_summary`;
                         # Publisher's under `docs`. Take every string field.
                         docs.append(" ".join(str(v) for v in info.values()

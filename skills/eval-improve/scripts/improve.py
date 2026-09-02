@@ -267,9 +267,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="shipped manifest whose skills the improving agent "
                          "loads, on top of skill:eval-improve. This is a "
                          "modeling task and the edit ladder's top rungs are "
-                         "documentation edits, so credible-document and the "
-                         "rest of the modeling manifest are the doctrine the "
-                         "edit is supposed to follow")
+                         "documentation edits, so the modeling manifest's "
+                         "skills are the doctrine the edit is supposed to "
+                         "follow")
     ap.add_argument("--skills-root", default=None,
                     help="checkout holding skills/ and manifests/ for the role "
                          "skills (a Publisher checkout); this checkout still "

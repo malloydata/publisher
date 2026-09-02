@@ -45,12 +45,12 @@ PER_TARGET = {"targets": [
         {"entityId": "measure:order_items:total_sales", "kind": "measure",
          "name": "total_sales", "source": "order_items", "rank": 1}]}]}
 
-# Transcribed from credibledata/service `apis/retrieval-public-api.yaml`,
+# Transcribed from a hosted retrieval API's published response schema,
 # GetContextResponse. Note what it does NOT carry: no `entityId`, no `kind`.
 # The identity has to be assembled from source_info.resource_id.source plus the
 # entity's own name and entity_type. NESTED above is a different, id-bearing
 # shape and is not this one -- keeping both is the point.
-CREDIBLE = {
+HOSTED = {
     "ranking": "relevance", "total_available": 1, "returned": 1,
     "sources": [{
         "source_info": {
@@ -69,7 +69,7 @@ CREDIBLE = {
 # The same exchange from a local Publisher, after malloydata/publisher#1028
 # converged its get_context on the shape above. Same skeleton; it additionally
 # states `entity_id` rather than leaving it to be assembled, and it retrieves
-# a `join`, which is outside Credible's three-value entity_type enum.
+# a `join`, which is outside that host's three-value entity_type enum.
 PUBLISHER = {
     "ranking": "relevance", "total_available": 1, "returned": 1,
     "retrieval": "semantic", "below_cutoff_count": 4, "total_entities": 31,
@@ -138,12 +138,12 @@ class EntityIds(unittest.TestCase):
                          ["source:order_items:order_items",
                           "measure:order_items:total_sales"])
 
-    def test_credibles_real_shape_yields_publisher_compatible_ids(self):
+    def test_hosted_real_shape_yields_publisher_compatible_ids(self):
         # The regression: SourceEntity carries a bare `name` and no `kind`, so
         # the generic sources-block rule read each one as a source and returned
         # source:total_sales:total_sales. Every id was unmatchable, so recall
         # and precision both scored 0 on a call that delivered the answer.
-        self.assertEqual(entity_ids(CREDIBLE),
+        self.assertEqual(entity_ids(HOSTED),
                          ["source:order_items:order_items",
                           "measure:order_items:total_sales",
                           "dimension:order_items:created_at"])
@@ -152,16 +152,16 @@ class EntityIds(unittest.TestCase):
         # The property that makes a set's expectedEntities portable between a
         # local Publisher and the platform. If this breaks, an A/B across the
         # two targets stops comparing and nothing says so -- the scores just
-        # diverge. Publisher states the ids; Credible's are assembled; the
+        # diverge. Publisher states the ids; the host's are assembled; the
         # entities both returned have to come out identical either way.
         shared = {"source:order_items:order_items",
                   "measure:order_items:total_sales",
                   "dimension:order_items:created_at"}
-        self.assertEqual(set(entity_ids(CREDIBLE)), shared)
+        self.assertEqual(set(entity_ids(HOSTED)), shared)
         self.assertEqual(set(entity_ids(PUBLISHER)) & shared, shared)
 
-    def test_publisher_keeps_the_join_credibles_enum_cannot_express(self):
-        # entity_type is a superset, not a copy: Credible allows
+    def test_publisher_keeps_the_join_a_hosted_enum_cannot_express(self):
+        # entity_type is a superset, not a copy: that host allows
         # view/measure/dimension, and narrowing to that would drop the join --
         # which retrieval returns precisely so an agent stops concluding the
         # model declares none. A set may expect one, so it has to score.

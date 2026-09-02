@@ -105,8 +105,8 @@ def find_skill(name: str, roots: Iterable[pathlib.Path]) -> pathlib.Path | None:
     return None
 
 
-# The same role under the two manifest layouts: Credible's private repo has one
-# manifest per surface; Publisher has one manifest with a group per role.
+# The same role under the two manifest layouts: a private skills repo may ship
+# one manifest per surface; Publisher ships one manifest with a group per role.
 ROLE_MANIFESTS = {
     "analysis": ("analysis-app", "publisher-local#analysis"),
     "modeling": ("modeling-app", "publisher-local#modeling"),
@@ -139,7 +139,7 @@ def manifest_skills(manifest: str, repo_root: pathlib.Path) -> list[str]:
     # `name#group` takes one named group of the manifest instead of the whole
     # set: Publisher ships one manifest for everything it has (publisher-local)
     # with `analysis` and `modeling` groups naming what each role loads, where
-    # Credible's private manifests are one per role.
+    # a private repo's manifests may be one per role.
     manifest, _, group = manifest.partition("#")
     path = repo_root / "manifests" / f"{manifest}.json"
     if not path.exists():

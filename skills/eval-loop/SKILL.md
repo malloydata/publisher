@@ -581,7 +581,7 @@ in a returned source's documentation). It is measured on the agent's real
 search text against real questions, so it needs no hand-written terms. Read
 it within an arm, to attribute a failure; it moves with the answerer, so a
 cross-arm comparison of retrieval *itself* is not this loop's job -- that is
-Credible's internal `eval-retrieval` skill, which ships to no customer.
+the engine-side `eval-retrieval` skill, which ships to no customer.
 Coverage (can the model answer this at all) is a property of the model and its
 data and is never reported under a retrieval heading.
 
@@ -594,7 +594,7 @@ model score.
 This loop is local. The ledger is files, the checkpoints are git, you are the
 conductor. Do not:
 
-- publish the model to remote Credible as a "true" checkpoint or learning
+- publish the model to a hosted platform as a "true" checkpoint or learning
   curve
 - start a Python orchestrator (`loop.py`, `improve_batch.py`); the only
   script in the tree is the contamination check

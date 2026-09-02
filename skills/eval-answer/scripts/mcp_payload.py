@@ -22,10 +22,10 @@ entity it finds anywhere. New nesting is picked up without a change here, which
 is the point: the failure mode being avoided is a parser that reports zero
 instead of raising.
 
-CREDIBLE'S SHAPE IS NOT A GUESS, AND IT IS NOT PUBLISHER'S
+THE SOURCE-CENTRIC SHAPE IS NOT A GUESS
 
-`apis/retrieval-public-api.yaml` (`GetContextResponse`) is source-centric where
-Publisher is entity-centric, and shares no field name with it:
+A hosted `GetContextResponse` is source-centric where Publisher was
+entity-centric, and shares no field name with it:
 
     {"sources": [{"source_info": {"resource_id": {"environment", "package",
                                                   "model_path", "source"}},
@@ -41,12 +41,13 @@ precision both read zero on a payload that had delivered the right answer.
 So this shape is matched explicitly, by `source_info`, rather than left to the
 generic walk. The generic walk stays for everything else.
 
-One divergence no parser can reconcile: a Credible entity `name` is a full
-Malloy field path, so a joined field arrives as `hiring_manager.employee_count`
-where Publisher reports `employee_count` on the joined source. The ids differ
-for the same logical entity, and a set's `expectedEntities` is therefore not
-portable across targets until one side emits a canonical id. Noted in the eval
-docs rather than papered over with a guess about which side to rewrite.
+One divergence no parser can reconcile: on some hosts an entity `name` is a
+full Malloy field path, so a joined field arrives as
+`hiring_manager.employee_count` where Publisher reports `employee_count` on the
+joined source. The ids differ for the same logical entity, and a set's
+`expectedEntities` is therefore not portable across those targets until both
+emit a canonical id. Noted here rather than papered over with a guess about
+which side to rewrite.
 """
 from __future__ import annotations
 
@@ -101,7 +102,7 @@ def entity_ids(payload: Any) -> list[str]:
         if prev is None or rank < prev[0]:
             found[ident] = (rank, seq)
 
-    def credible_source(node: dict[str, Any]) -> bool:
+    def source_result(node: dict[str, Any]) -> bool:
         """A `SourceResult`: the source, then its nested entities.
 
         Both targets take this path now -- Publisher's get_context converged on
@@ -123,9 +124,9 @@ def entity_ids(payload: Any) -> list[str]:
         for ent in node.get("entities") or []:
             if not isinstance(ent, dict):
                 continue
-            # Publisher states the id; Credible does not, so assemble it there.
-            # Preferring the stated one means the server, not this file, is the
-            # authority on how an entity is named.
+            # Publisher states the id; a host that does not gets one
+            # assembled. Preferring the stated one means the server, not this
+            # file, is the authority on how an entity is named.
             eid = ent.get("entity_id")
             if isinstance(eid, str) and eid:
                 take(eid, 1)
@@ -144,7 +145,7 @@ def entity_ids(payload: Any) -> list[str]:
         if not isinstance(node, dict):
             return
 
-        if credible_source(node):
+        if source_result(node):
             return
 
         # A `sources` entry describes a source and also carries its entities.

@@ -65,12 +65,15 @@ DIAGNOSE_TOOLS = ("mcp__publisher__malloy_getContext",
                   "mcp__publisher__malloy_executeQuery",
                   "mcp__publisher__malloy_compile",
                   "Read", "Grep", "Glob")
-# The platform target: Credible's hosted MCP, server named `credible` so the
-# OAuth token run_baseline.py's answerer cached is the one this agent finds.
-PLATFORM_DIAGNOSE_TOOLS = ("mcp__credible__get_context",
-                           "mcp__credible__execute_query",
-                           "mcp__credible__search_malloy_docs",
-                           "Read", "Grep", "Glob")
+# The platform target: a hosted MCP server. Its NAME has to match the one
+# run_baseline.py's answerer used, because that name is the OAuth cache key --
+# probe through a differently-named server and this agent finds no token.
+HOSTED_DIAGNOSE_TOOLS = ("get_context", "execute_query", "search_malloy_docs")
+
+
+def hosted_diagnose_tools(server: str) -> tuple[str, ...]:
+    return tuple(f"mcp__{server}__{t}" for t in HOSTED_DIAGNOSE_TOOLS) + (
+        "Read", "Grep", "Glob")
 NO_EDITS = ("Edit", "Write", "NotebookEdit")
 
 # Codes are written in the skill's tables as a backticked SHOUTY-KEBAB token in
@@ -203,18 +206,19 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
     r = spawn_agent(
         DIAGNOSE_PROMPT.format(
             environment=a.environment, package=a.package,
-            tools_name="Credible" if platform else "Publisher",
+            tools_name="the hosted platform" if platform else "Publisher",
             scope_line=scope_line,
             evidence=json.dumps(evidence_for(qid, case, events),
                                 indent=2)[:14000]),
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
         model=a.model,
         mcp_url=a.mcp_url,
-        tools=PLATFORM_DIAGNOSE_TOOLS if platform else DIAGNOSE_TOOLS,
+        tools=hosted_diagnose_tools(a.hosted_mcp_server) if platform
+        else DIAGNOSE_TOOLS,
         blocked=NO_EDITS,
         cwd=a.model_dir, turns=a.max_turns, timeout=a.timeout,
         retries=a.retries, save_transcript=d / "diagnosis.jsonl",
-        mcp_server="credible" if platform else "publisher")
+        mcp_server=a.hosted_mcp_server if platform else "publisher")
 
     d.mkdir(parents=True, exist_ok=True)
     (d / "diagnosis.md").write_text(r.text)
@@ -305,9 +309,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--no-cluster", action="store_true")
     ap.add_argument("--target", choices=("local", "platform"), default="local",
-                    help="platform: probe through Credible's hosted MCP "
-                         "(server `credible`, cached OAuth) instead of a "
-                         "local Publisher")
+                    help="platform: probe through a hosted MCP server "
+                         "(cached OAuth) instead of a local Publisher")
+    ap.add_argument("--hosted-mcp-server", default="hosted",
+                    help="platform only: the MCP server name. Must match the "
+                         "one the run's answerer used -- it is the OAuth cache "
+                         "key and the `mcp__<server>__<tool>` prefix")
     ap.add_argument("--scope", default=None, metavar="ENV/PACKAGE",
                     help="platform only: the package the run was scoped to, "
                          "so probes hit the same model")

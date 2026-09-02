@@ -77,17 +77,24 @@ from typing import Any
 ANSWER_TOOLS = ("mcp__publisher__malloy_getContext",
                 "mcp__publisher__malloy_executeQuery",
                 "mcp__publisher__malloy_compile")
-# The platform target: Credible's hosted MCP. Different server, different tool
-# names, same two operations. The answerer must authenticate once interactively
-# (`claude` + /mcp) so the OAuth token is cached before a headless run.
-PLATFORM_TOOLS = ("mcp__credible__get_context",
-                  "mcp__credible__execute_query",
-                  # The hosted surface ships these beside the two; a run that
-                  # withholds them measures a narrower product than the one
-                  # users get, and an un-granted tool surfaces as a
-                  # permission-prompt error mid-attempt.
-                  "mcp__credible__search_credible_docs",
-                  "mcp__credible__search_malloy_docs")
+# The platform target: a hosted MCP server exposing the same two operations
+# under its own names. The CLI addresses a tool as `mcp__<server>__<tool>`, so
+# both halves are configuration -- `--hosted-mcp-server` names the server (which
+# is also the OAuth cache key, so it must match what the user authenticated) and
+# `--hosted-tools` names the bare tools. Nothing here is specific to one vendor.
+#
+# Grant every tool the hosted surface ships, not just the two: a run that
+# withholds one measures a narrower product than users get, and an un-granted
+# tool surfaces mid-attempt as a permission-prompt error. Add a host's own
+# extras (its product-doc search, say) with --hosted-tools.
+#
+# The answerer must authenticate once interactively (`claude` + /mcp) so the
+# OAuth token is cached before a headless run.
+HOSTED_TOOLS_DEFAULT = ("get_context", "execute_query", "search_malloy_docs")
+
+
+def hosted_tools(server: str, bare: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(f"mcp__{server}__{t}" for t in bare)
 # `--restricted` used to do two jobs at once: hide the settings that load
 # skills, AND strip the host toolset down to nothing. Turning it off to get
 # skills restored the FULL default toolset -- Bash, Task, ToolSearch and the
@@ -207,7 +214,7 @@ def format_rows(rows: list[dict], limit: int = 60) -> str:
 
 def resource_json(text: str) -> dict[str, Any] | None:
     """The machine-readable part of a tool result. Publisher wraps it in a
-    '[Resource from publisher at ...]' preamble; Credible's hosted MCP returns
+    '[Resource from publisher at ...]' preamble; a hosted MCP may return
     the JSON body directly, so a bare parse is the fallback."""
     m = RESOURCE.search(text or "")
     if m:
@@ -346,7 +353,7 @@ name the specific data that is missing rather than substituting a proxy.
 
 Finish with the number or rows you found, and the final Malloy query you ran."""
 
-PLATFORM_PROMPT = """You are answering a business question against a published Malloy semantic model served by Credible.
+PLATFORM_PROMPT = """You are answering a business question against a published Malloy semantic model served by a hosted platform.
 
 Organization: {environment}
 Workspace: {package}
@@ -433,7 +440,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     "host_tool_uses": 0, "transcriptPath": None,
                     "breaches": ["server unreachable before the attempt"]}
         platform = a.target == "platform"
-        server = "credible" if platform else "publisher"
+        server = a.hosted_mcp_server if platform else "publisher"
         # The workspace holds the answerer's skills and nothing else, and it is
         # the cwd, so `Read` reaches the doctrine and never the eval set.
         if a.answerer_skills:
@@ -455,7 +462,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         t0 = time.time()
         events = claude(
             prompt, work, a.model, mcp=mcp,
-            tools=PLATFORM_TOOLS if platform else ANSWER_TOOLS,
+            tools=a.hosted_tools if platform else ANSWER_TOOLS,
             turns=a.max_turns, effort=a.effort, timeout=a.timeout,
             skills=bool(a.answerer_skills))
         elapsed = round(time.time() - t0, 1)
@@ -477,7 +484,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                 elif c.get("type") == "tool_use":
                     name = c["name"]
                     # Both surfaces: Publisher's malloy_getContext/
-                    # malloy_executeQuery and Credible's get_context/
+                    # malloy_executeQuery and a hosted server's get_context/
                     # execute_query.
                     if (name.endswith("malloy_getContext")
                             or name.endswith("__get_context")):
@@ -570,7 +577,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "error": res.get("subtype") if res.get("is_error") else None,
         "calls": calls,
         "breaches": isolation_breaches(
-            events, PLATFORM_TOOLS if a.target == "platform" else ANSWER_TOOLS)
+            events, a.hosted_tools if a.target == "platform" else ANSWER_TOOLS)
         + path_breaches(events, a.set_dir)
         + [f"invoked a skill outside the manifest: {sk}"
            for sk in sorted(set(foreign_skills))],
@@ -815,11 +822,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--effort", default=None)
     ap.add_argument("--target", choices=("local", "platform"), default="local",
                     help="local: a local Publisher serving working files. "
-                         "platform: Credible's hosted MCP over a PUBLISHED "
-                         "version -- real retrieval (pgvector + rerank), real "
+                         "platform: a hosted MCP server over a PUBLISHED "
+                         "version -- the deployed retrieval engine and its "
                          "indexes; requires --target-version, and a cached "
                          "OAuth login for the MCP URL (run `claude`, /mcp, "
                          "authenticate once)")
+    ap.add_argument("--hosted-mcp-server", default="hosted",
+                    help="platform only: the MCP server name, which is both "
+                         "the OAuth cache key and the `mcp__<server>__<tool>` "
+                         "prefix. Must match the name the answerer "
+                         "authenticated under")
+    ap.add_argument("--hosted-tools", default=",".join(HOSTED_TOOLS_DEFAULT),
+                    help="platform only: comma-separated BARE tool names the "
+                         "hosted server exposes; the server prefix is added. "
+                         f"Default: {','.join(HOSTED_TOOLS_DEFAULT)}")
     ap.add_argument("--target-version", default=None,
                     help="platform only: the published package version the "
                          "workspace serves. Required, because a platform run "
@@ -832,10 +848,10 @@ def main(argv: list[str] | None = None) -> int:
                          "the run also measures package selection")
     ap.add_argument("--environment", default="samples",
                     help="local: the Publisher environment. "
-                         "platform: the Credible ORGANIZATION")
+                         "platform: the hosted ORGANIZATION")
     ap.add_argument("--package", default="ecommerce",
                     help="local: the served package. "
-                         "platform: the Credible WORKSPACE")
+                         "platform: the hosted WORKSPACE")
     ap.add_argument("--mcp-url", default="http://localhost:4040/mcp")
     ap.add_argument("--publisher", default="http://localhost:4811",
                     help="Publisher REST base, used to re-execute the answerer's "
@@ -853,7 +869,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="the shipped manifest whose skills the answerer "
                          "loads, so the run measures the product rather than "
                          "a bare model. Default: analysis-app where that "
-                         "exists (Credible's repo), else publisher-local#analysis "
+                         "exists (a private skills repo), else publisher-local#analysis "
                          "(a Publisher checkout). name#group takes one group")
     ap.add_argument("--no-answerer-skills", action="store_true",
                     help="run the answerer with no skills at all. This is a "
@@ -890,6 +906,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="with --rebuild: reuse the answers but score them "
                          "again, for a judge or rubric change")
     a = ap.parse_args(argv)
+    # Resolved once here rather than per attempt: the answerer's granted tool
+    # list is part of what a run measured, so it must not vary within a run.
+    a.hosted_tools = hosted_tools(
+        a.hosted_mcp_server,
+        tuple(s.strip() for s in a.hosted_tools.split(",") if s.strip()))
 
     if a.from_run:
         # A re-score is a new run that shares the old run's answers: same

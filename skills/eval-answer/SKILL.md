@@ -100,7 +100,7 @@ not surface it; `derivable` or `absent` means there was nothing to surface. Thos
 look identical in an answer score and have opposite owners, which is what makes
 this number worth having. It uses the search terms the answerer chose, so it
 attributes a failure *within* an arm and does not compare retrieval across arms
--- that is Credible's internal `eval-retrieval` skill, not this one.
+-- that is the engine-side `eval-retrieval` skill, which does not ship here.
 
 ## Step 5: Distrust the golden
 

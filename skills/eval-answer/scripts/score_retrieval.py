@@ -3,8 +3,9 @@
 
   python score_retrieval.py --events events.jsonl --cases cases.jsonl [--json]
 
-Credible's internal `eval-retrieval` skill measures the ENGINE: fixed search terms
-replayed and judged, answerer-independent, for A/B-ing a retrieval change.
+An engine-side retrieval skill, which does not ship here, measures the ENGINE:
+fixed search terms replayed and judged, answerer-independent, for A/B-ing a
+retrieval change.
 
 This is the customer's question. For a case with a known answer, did the agent RECEIVE
 the entities the answer needs? It is mechanical, exact, and per-case, and it is

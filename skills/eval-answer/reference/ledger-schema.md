@@ -3,9 +3,10 @@
 The ledger is plain files in the model package's git repository. There is no
 eval API and no eval database. The conductor (`skill:eval-loop`) reads and
 writes these files directly; the stages share them as their contract.
-`eval-answer` writes `attempt`, `tool_call`, and `score`. Credible's internal
-`eval-retrieval` skill writes `retrieval_score` and `probe`, which stay in this
-contract so one validator covers every run directory.
+`eval-answer` writes `attempt`, `tool_call`, and `score`. An engine-side
+`eval-retrieval` skill, which does not ship here, writes `retrieval_score` and
+`probe`; both stay in this contract so one validator covers every run
+directory.
 `eval-diagnose` writes `issue` and `issue_status`. `eval-improve` writes
 `candidate`. `eval-loop` writes `gate`, further `issue_status`, and
 `checkpoint`.
@@ -83,7 +84,7 @@ One JSON object per line:
 
 ## Term files (`eval-retrieval` only)
 
-A customer set has no term file. Credible's internal `eval-retrieval` skill keeps
+A customer set has no term file. The engine-side `eval-retrieval` skill keeps
 `intents.jsonl` fixtures -- search term, entity type, a description of what the
 searcher meant, a validity flag -- beside its own scripts, for evaluating the
 engine against fixed inputs. Their shape and the `retrieval_score` events they
