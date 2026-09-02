@@ -58,7 +58,10 @@ import {
    deriveServeBindings,
    groupAliasesByName,
 } from "./materialization_serve_transform";
-import type { PreaggregateViolationCode } from "./preaggregation_validation";
+import type {
+   PreaggregateViolation,
+   PreaggregateViolationCode,
+} from "./preaggregation_validation";
 
 /**
  * Pre-aggregation violations that REJECT a publish but only WARN at load.
@@ -866,7 +869,10 @@ export class Package {
       if (accessWarnings.length > 0) {
          logger.warn(
             `Package ${packageName} pre-aggregates a field the source hides`,
-            { packageName, detail: accessWarnings.join("\n") },
+            {
+               packageName,
+               detail: accessWarnings.map((w) => w.message).join("\n"),
+            },
          );
       }
       const invalidPreaggregate = pkg.formatLoadFatalPreaggregatePolicy();
@@ -1087,7 +1093,7 @@ export class Package {
          // server log. The operator-facing fact is the same one storageWarnings()
          // reports for a mode-off rollup — it is not built, and queries are
          // answered from the base — so it belongs in the same place.
-         ...this.preaggregateAccessWarnings().map((message) => ({ message })),
+         ...this.preaggregateAccessWarnings(),
          // Incremental declarations that are LEGAL but probably not what the
          // author meant: an unrecognized persist key (the only guard against a
          // typo'd merge_key=, which degrades silently), and the keyless-delta
@@ -1822,25 +1828,50 @@ export class Package {
    }
 
    /** The access-modifier violations, surfaced at load as warnings. */
-   public preaggregateAccessWarnings(): string[] {
-      return this.preaggregateMessages((code) =>
+   public preaggregateAccessWarnings(): ApiPackageWarning[] {
+      return this.preaggregateFindings((code) =>
          PREAGG_LOAD_WARN_ONLY.has(code),
-      );
+      ).map(({ modelPath, violation }) => ({
+         model: modelPath,
+         // A source-level violation carries no field, so the source is the
+         // subject; a field-level one names the field.
+         subject: violation.fieldName ?? violation.sourceName,
+         message: violation.message,
+      }));
    }
 
    private preaggregateMessages(
       keep: (code: PreaggregateViolationCode) => boolean,
    ): string[] {
-      const messages: string[] = [];
+      return this.preaggregateFindings(keep).map(
+         // The model path is prepended because the same source name can occur
+         // in two models, and the author needs to know which file to open.
+         ({ modelPath, violation }) => `${modelPath}: ${violation.message}`,
+      );
+   }
+
+   /**
+    * Violations kept by `keep`, paired with the model that produced them.
+    *
+    * Structured rather than pre-formatted because the two consumers want
+    * different things: the publish/load gates want one prose blob, while the
+    * warnings array wants `{model, subject, message}` like every other member of
+    * it. Flattening first would make the second parse back out what the violation
+    * already carries.
+    */
+   private preaggregateFindings(
+      keep: (code: PreaggregateViolationCode) => boolean,
+   ): { modelPath: string; violation: PreaggregateViolation }[] {
+      const findings: {
+         modelPath: string;
+         violation: PreaggregateViolation;
+      }[] = [];
       for (const [modelPath, model] of this.models) {
          for (const violation of model.preaggregateViolations()) {
-            if (!keep(violation.code)) continue;
-            // The model path is prepended because the same source name can occur
-            // in two models, and the author needs to know which file to open.
-            messages.push(`${modelPath}: ${violation.message}`);
+            if (keep(violation.code)) findings.push({ modelPath, violation });
          }
       }
-      return messages;
+      return findings;
    }
 
    /**
