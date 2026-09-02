@@ -39,6 +39,25 @@ FAIL = {"no_match", "wrong", "refused_wrongly"}
 NEITHER = {"near_match", "needs_human"}
 
 
+def outcome(verdict: str | None) -> str:
+    """"pass" / "fail" / "neither" -- the ONE classification of a verdict.
+
+    Exported because the run package used to re-derive this in Malloy and got a
+    different answer: it read anything that was not `match` as a non-pass, so a
+    judge that hedged in one arm and not the other manufactured a flip. The
+    package now reads this column instead of re-deciding, on the same grounds
+    build_run_package already imports its scoring rather than reimplementing it.
+
+    Anything unrecognised is "neither", never "fail". A verdict vocabulary this
+    file has not been taught is not evidence that a case failed.
+    """
+    if verdict in PASS:
+        return "pass"
+    if verdict in FAIL:
+        return "fail"
+    return "neither"
+
+
 def verdicts(run: Path) -> dict[str, dict[str, Any]]:
     """qid -> the scored outcome, for cases this run actually scored."""
     out: dict[str, dict[str, Any]] = {}
@@ -56,7 +75,8 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             # near_match and needs_human are neither: counting either as a fail
             # would manufacture a flip every time the judge hedged in one run
             # and not the other.
-            "passed": True if v in PASS else (False if v in FAIL else None),
+            "outcome": outcome(v),
+            "passed": {"pass": True, "fail": False}.get(outcome(v)),
         }
     return out
 

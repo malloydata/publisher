@@ -260,6 +260,8 @@ include {
   public: phase
   #(doc) match, near_match, no_match, needs_human, or empty when not scorable.
   public: verdict
+  #(doc) pass, fail or neither: the verdict classified by the same function the gate uses (flip_table.outcome). Read this, never re-derive it from verdict - a second definition is how this package and the flip table came to disagree about what a flip is.
+  public: outcome
   #(doc) The judge's one-line why. Read this before re-running anything.
   public: reason
   #(doc) Judge confidence, 1 to 10. Five or below is forced to needs_human.
@@ -288,12 +290,12 @@ extend {
   measure:
     #(doc) Rows with a verdict, scorable or not.
     scored_count is count()
-    #(doc) Verdicts the gate counts: match and no_match only. near_match and needs_human are excluded, both being the judge declining to decide.
-    confident_count is count() { where: verdict ? 'match' | 'no_match' }
+    #(doc) Verdicts the gate counts: decided ones only. near_match and needs_human are excluded, both being the judge declining to decide.
+    confident_count is count() { where: outcome ? 'pass' | 'fail' }
     #(doc) Attempts the judge accepted. A near_match is NOT a pass: it means defensibly different, and an arguable verdict must not move a gate.
-    passed is count() { where: verdict = 'match' }
+    passed is count() { where: outcome = 'pass' }
     #(doc) Attempts the judge rejected.
-    failed is count() { where: verdict = 'no_match' }
+    failed is count() { where: outcome = 'fail' }
     #(doc) Defensibly different: neither a pass nor a fail. Watch this climb - it is the leading indicator of a rubric going vague.
     near_matches is count() { where: verdict = 'near_match' }
     #(doc) Verdicts referred to a human because the judge was not confident.
@@ -632,21 +634,27 @@ query: coverage_gaps is cases -> {
   order_by: coverage, qid
 }
 
-#(doc) The A/B gate: cases whose verdict is not the same in every arm.
+#(doc) The A/B gate: cases that moved between PASS and FAIL across arms.
 #(doc) A difference in pass RATE is not evidence -- two arms can score alike while
 #(doc) disagreeing on half the set. Counting the cases that actually moved is what
 #(doc) separates a real gain from noise, so this is the table an A/B is read from.
 #(doc) Written so it holds for any number of arms rather than two named ones.
+#(doc) The denominator is DECIDED arms, not all arms. An arm where the judge said
+#(doc) near_match or needs_human has not disagreed with an arm that said match; it
+#(doc) has declined to say. Counting it as a non-pass manufactures a flip every
+#(doc) time the judge hedged once and not twice, which is noise wearing a
+#(doc) verdict's clothes, and it is what this query used to do.
 query: flips is scores -> {
   group_by: qid, coverage is cases.coverage, split is cases.split,
             question is cases.question
   aggregate:
     arms is count()
+    arms_decided is confident_count
     arms_passed is passed
   nest: by_arm is {
-    group_by: arm is runs.label, verdict
+    group_by: arm is runs.label, verdict, outcome
   }
-  having: arms_passed > 0 and arms_passed < arms
+  having: arms_passed > 0 and arms_passed < arms_decided
   order_by: qid
 }
 
@@ -655,8 +663,9 @@ query: flips is scores -> {
 query: failed_everywhere is scores -> {
   group_by: qid, coverage is cases.coverage, question is cases.question,
             gap is cases.coverage_note
-  aggregate: arms is count(), arms_passed is passed
-  having: arms_passed = 0 and arms > 1
+  aggregate: arms is count(), arms_decided is confident_count,
+             arms_passed is passed
+  having: arms_passed = 0 and arms_decided > 1
   order_by: qid
 }
 
@@ -675,7 +684,7 @@ query: case_matrix is scores -> {
     arms is count()
     arms_passed is passed
   nest: by_arm is {
-    group_by: arm is runs.label, verdict, confidence,
+    group_by: arm is runs.label, verdict, outcome, confidence,
               where_to_fix is retrieval.where_to_fix,
               recall is retrieval.recall
     order_by: arm

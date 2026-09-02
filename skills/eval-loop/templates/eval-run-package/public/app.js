@@ -12,25 +12,28 @@
  * every earlier viewer flattened it into one blob of prose.
  *
  * Aggregate tables live in eval_run.malloynb, which Publisher renders. This
- * file holds no scoring logic; everything comes from eval_run.malloy.
+ * file holds no scoring logic; everything comes from eval_run.malloy. That
+ * includes classifying a verdict: the `outcome` column is decided once, in
+ * flip_table.outcome, and travels through the CSV. This file used to keep its
+ * own `undecided()` and the Malloy kept a third copy, which is how the package
+ * and the gate came to disagree about what a flip was.
  */
 
 const MODEL = 'eval_run.malloy';
 
 const MODES = [
   ['all',       'All',           () => true],
-  ['failures',  'Failures',      r => r.arms.some(a => a.verdict === 'no_match')],
-  ['undecided', 'Partly / human',r => r.arms.some(a => undecided(a.verdict))],
+  ['failures',  'Failures',      r => r.arms.some(a => a.outcome === 'fail')],
+  ['undecided', 'Partly / human',r => r.arms.some(a => a.outcome === 'neither')],
   ['different', 'Disagreements', r => r.arms.length > 1 &&
-      new Set(r.arms.filter(a => !undecided(a.verdict))
-                    .map(a => a.verdict === 'match')).size > 1],
+      new Set(r.arms.filter(a => a.outcome !== 'neither')
+                    .map(a => a.outcome === 'pass')).size > 1],
   ['refusal',   'Refusal',       r => r.coverage === 'absent' ||
       (r.tags || '').includes('answerable-sounds-unanswerable')],
   ['retrieval', 'Retrieval gaps',r => r.arms.some(a =>
       (a.required || []).some(e => e.status === 'missing'))],
 ];
 
-const undecided = v => v === 'near_match' || v === 'needs_human';
 const esc = s => String(s ?? '').replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const pct = x => x == null ? '—' : (100 * x).toFixed(0) + '%';

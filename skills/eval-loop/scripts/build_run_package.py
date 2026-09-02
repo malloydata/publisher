@@ -37,6 +37,7 @@ TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "eval-
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 from score_retrieval import delivery, groups, score_case  # noqa: E402
+from flip_table import outcome  # noqa: E402  (same directory)
 
 
 def read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -325,6 +326,10 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
                              "prediction": rendered[:40000]})
             scores.append({"attempt_key": ak, "run_id": run_id, "qid": qid,
                            "sample": e.get("sample"), "phase": e.get("phase"),
+                           # Classified here, by the same function the gate
+                           # uses, so the package cannot disagree with the
+                           # flip table about what a flip is.
+                           "outcome": outcome(s.get("verdict")),
                            **s})
 
             mine = tool_calls.get(kk, [])
@@ -429,7 +434,8 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     write_csv(data / "required.csv", required_rows, [
         "attempt_key", "run_id", "qid", "entity_id", "status"])
     write_csv(data / "scores.csv", scores, [
-        "attempt_key", "run_id", "qid", "sample", "phase", "verdict", "reason", "confidence",
+        "attempt_key", "run_id", "qid", "sample", "phase", "verdict", "outcome",
+        "reason", "confidence",
         "judge_version", "rubric_sha", "golden_revision", "gold_status",
         "contaminated", "artifactPath"])
     write_csv(data / "retrieval.csv", retr, [
