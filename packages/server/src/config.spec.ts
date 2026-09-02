@@ -1587,6 +1587,24 @@ describe("EMBEDDING_MIN_SIMILARITY", () => {
       expect(() => getEmbeddingConfig()).toThrow(message);
    });
 
+   it.each(["0.5abc", "0.5 0.6", "0x10", "1abc"])(
+      "rejects %s rather than reading a prefix of it",
+      (value) => {
+         // Number.parseFloat stops at the first character it cannot read, so
+         // these used to yield 0.5, 0.5, 0 and 1 -- an invalid setting that
+         // went on to drive retrieval, which is exactly what the docs promise
+         // does not happen.
+         process.env.EMBEDDING_MIN_SIMILARITY = value;
+         expect(() => getEmbeddingConfig()).toThrow(/expected a finite number/);
+      },
+   );
+
+   it.each(["0.50", ".5", "5e-1"])("accepts %s", (value) => {
+      // The forms a round-trip check like parseIntEnv's would wrongly reject.
+      process.env.EMBEDDING_MIN_SIMILARITY = value;
+      expect(getEmbeddingConfig()?.minSimilarity).toBeCloseTo(0.5, 6);
+   });
+
    it("names the variable and a working value in the error", () => {
       process.env.EMBEDDING_MIN_SIMILARITY = "2";
       expect(() => getEmbeddingConfig()).toThrow(
