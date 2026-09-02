@@ -929,22 +929,35 @@ export async function trySemanticSearch(args: {
    }
 
    try {
-      const rows = await db.all<{
-         entity_kind: string;
-         entity_source: string;
-         entity_name: string;
-         score: number;
+      // One statement, one pass over the vectors. The hits and the two
+      // cutoff counts all derive from the same scored set, so they cannot
+      // disagree, and the cosine work is done once rather than once per
+      // query: at the cap that is 5,000 entities and up to nine facets each.
+      //
+      // An entity scores as its BEST-matching facet, not as an average over
+      // them. A weighted name/doc blend would need a doc vector for every
+      // entity, and roughly half of a real model's entities have no doc at
+      // all, so any blend either penalises them or invents a neutral fill;
+      // MAX is also the only composition that stays well-defined as a doc
+      // splits into a variable number of chunks. The floor applies to that
+      // max, so it keeps meaning "nothing here is even weakly related", and
+      // can only ever be cleared by more facets, never blocked by them.
+      //
+      // MATERIALIZED pins the single evaluation rather than leaving it to the
+      // optimiser to inline `scored` into both branches. The LEFT JOIN ON
+      // TRUE is what keeps the counts in the case that matters most: with no
+      // row above the floor, one row still comes back carrying the counts and
+      // null hit columns, where an inner join would have dropped exactly the
+      // true negative these counts exist to explain.
+      const scan = await db.all<{
+         total: number;
+         below: number;
+         entity_kind: string | null;
+         entity_source: string | null;
+         entity_name: string | null;
+         score: number | null;
       }>(
-         // An entity scores as its BEST-matching facet, not as an average
-         // over them. A weighted name/doc blend would need a doc vector for
-         // every entity, and roughly half of a real model's entities have no
-         // doc at all, so any blend either penalises them or invents a
-         // neutral fill; MAX is also the only composition that stays
-         // well-defined as a doc splits into a variable number of chunks.
-         // The floor applies to that max, so it keeps meaning "nothing here
-         // is even weakly related", and can only ever be cleared by more
-         // facets, never blocked by them.
-         `SELECT * FROM (
+         `WITH scored AS MATERIALIZED (
             SELECT entity_kind, entity_source, entity_name,
                    MAX(list_cosine_similarity(embedding, CAST(? AS FLOAT[]))) AS score
             FROM entity_embeddings
@@ -952,10 +965,23 @@ export async function trySemanticSearch(args: {
               AND embedding_model = ? AND dims = ?
               ${sourceName !== undefined ? "AND entity_source = ?" : ""}
             GROUP BY entity_kind, entity_source, entity_name
+         ),
+         agg AS (
+            SELECT CAST(COUNT(*) AS INTEGER) AS total,
+                   CAST(COUNT(*) FILTER (WHERE score < ?) AS INTEGER) AS below
+            FROM scored
+         ),
+         hits AS (
+            SELECT entity_kind, entity_source, entity_name, score
+            FROM scored
+            WHERE score >= ?
+            ORDER BY score DESC, entity_name
+            LIMIT ?
          )
-         WHERE score >= ?
-         ORDER BY score DESC, entity_name
-         LIMIT ?`,
+         SELECT agg.total, agg.below,
+                hits.entity_kind, hits.entity_source, hits.entity_name, hits.score
+         FROM agg LEFT JOIN hits ON TRUE
+         ORDER BY hits.score DESC, hits.entity_name`,
          [
             JSON.stringify(queryVector),
             environmentName,
@@ -964,10 +990,19 @@ export async function trySemanticSearch(args: {
             queryVector.length,
             ...(sourceName !== undefined ? [sourceName] : []),
             provider.minSimilarity,
+            provider.minSimilarity,
             limit,
          ],
       );
 
+      const rows = scan
+         .filter((r) => r.entity_name !== null)
+         .map((r) => ({
+            entity_kind: r.entity_kind as string,
+            entity_source: r.entity_source as string,
+            entity_name: r.entity_name as string,
+            score: r.score as number,
+         }));
       // How many entities were weighed, and how many fell below the floor.
       // Without them an empty result is indistinguishable from "this package
       // models nothing like that", and we watched analysts conclude the
@@ -980,40 +1015,16 @@ export async function trySemanticSearch(args: {
       // 52-of-52 is the true negative. Reporting `below` on its own invites
       // reading a large number as "too diffuse, rephrase" at exactly the
       // moment it means the opposite.
-      //
-      // Counted as a second statement deliberately: a single statement
-      // carrying the counts on result rows loses them in exactly the case
-      // that matters most, when no row clears the floor. Both aggregates come
-      // from ONE statement over ONE scan so they cannot disagree.
-      const cutoffCounts = await db.get<{ total: number; below: number }>(
-         `SELECT CAST(COUNT(*) AS INTEGER) AS total,
-                 CAST(COUNT(*) FILTER (WHERE score < ?) AS INTEGER) AS below
-          FROM (
-            SELECT MAX(list_cosine_similarity(embedding, CAST(? AS FLOAT[]))) AS score
-            FROM entity_embeddings
-            WHERE environment_name = ? AND package_name = ?
-              AND embedding_model = ? AND dims = ?
-              ${sourceName !== undefined ? "AND entity_source = ?" : ""}
-            GROUP BY entity_kind, entity_source, entity_name
-         )`,
-         [
-            provider.minSimilarity,
-            JSON.stringify(queryVector),
-            environmentName,
-            packageName,
-            provider.model,
-            queryVector.length,
-            ...(sourceName !== undefined ? [sourceName] : []),
-         ],
-      );
+      const cutoffCounts = scan[0];
 
       // A sync or heal holding the package mutex right now may be
       // rewriting rows underneath the query that just ran: that snapshot
       // is unreliable (it can be partial or empty mid-write) and must
       // not be served as semantic. Completed writers are caught by the
       // generation re-check below; this catches the in-flight ones.
-      // Placed after the count so an unreliable snapshot invalidates the
-      // count too, rather than reporting a number read mid-write.
+      // Placed after the scan so an unreliable snapshot invalidates the hits
+      // and the counts together, rather than reporting a number read
+      // mid-write.
       if (meta.mutex.isLocked()) {
          return { unavailable: "indexing" };
       }

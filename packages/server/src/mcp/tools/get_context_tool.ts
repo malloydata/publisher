@@ -468,6 +468,17 @@ function toSourceResults(
    return Array.from(bySource.values());
 }
 
+/**
+ * Distinct sources across a ranked list, which is what `total_available`
+ * counts on a search tier. Taken over every matched row rather than over the
+ * windowed ones, so it can exceed `returned`: setting both from the returned
+ * cards made the pair read "N of N" on every search, including one the entity
+ * cap had cut, and a caller reading them saw nothing was left behind.
+ */
+function distinctSourceCount(rows: ResultEntity[]): number {
+   return new Set(rows.map((r) => r.source).filter(Boolean)).size;
+}
+
 /** Cut over-long context text on a word boundary, marking that it was cut. */
 function truncateDoc(doc: string, max: number): string {
    if (doc.length <= max) return doc;
@@ -840,14 +851,13 @@ function buildSourceContext(
    for (const e of entities) {
       if (e.kind !== "source") continue;
       const gates = governance.get(e.name);
+      const summary = oneLineSummary(e.doc);
       context.set(e.name, {
          name: e.name,
          modelPath: e.modelPath,
          doc: truncateDoc(e.doc, SOURCE_DOC_MAX_CHARS),
          joins: [],
-         ...(oneLineSummary(e.doc)
-            ? { oneLineSummary: oneLineSummary(e.doc) }
-            : {}),
+         ...(summary ? { oneLineSummary: summary } : {}),
          ...(gates?.givens.length ? { givens: gates.givens } : {}),
          ...(gates?.authorize.length ? { authorize: gates.authorize } : {}),
       });
@@ -1330,6 +1340,9 @@ export function registerGetContextTool(
          // How many entities matched before the limit cut the list, so a
          // capped response can say what it left behind.
          let semanticMatchCount: number | undefined;
+         // Distinct sources across everything that matched, so total_available
+         // can exceed the returned card count when the entity cap cut rows.
+         let semanticTotalSources: number | undefined;
          if (configured) {
             let provider: EmbeddingProvider | null = null;
             try {
@@ -1411,6 +1424,7 @@ export function registerGetContextTool(
                         ? ranked
                         : groupSiblings(ranked, ranked.length);
                      semanticMatchCount = grouped.length;
+                     semanticTotalSources = distinctSourceCount(grouped);
                      semanticResults = grouped.slice(0, max);
                      belowCutoffCount = semantic.belowCutoffCount;
                      totalEntities = semantic.totalEntities;
@@ -1447,7 +1461,7 @@ export function registerGetContextTool(
             return jsonResource(uri, {
                sources,
                ranking: "relevance" as const,
-               total_available: sources.length,
+               total_available: semanticTotalSources ?? sources.length,
                returned: sources.length,
                retrieval: "semantic",
                // Always present on a semantic response, including 0: the
@@ -1531,7 +1545,7 @@ export function registerGetContextTool(
          const envelope = {
             sources,
             ranking: "relevance" as const,
-            total_available: sources.length,
+            total_available: distinctSourceCount(grouped),
             returned: sources.length,
          };
          const lexicalWarnings = warningsFor(

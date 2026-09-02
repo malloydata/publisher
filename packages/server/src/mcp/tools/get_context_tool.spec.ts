@@ -1608,6 +1608,22 @@ describe("get_context semantic retrieval", () => {
          getModel: () => truncModel,
       });
 
+   it("reports more sources available than returned when the cap cuts", async () => {
+      // total_available and returned were both set from the returned cards,
+      // so the pair read "N of N" on every search including a cut one. Counted
+      // over everything that matched, the cap is visible in the numbers.
+      _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
+      const handler = captureHandler(truncStore());
+      const payload = await callUntilSemantic(handler, {
+         environmentName: "specs",
+         packageName: "avail-pkg",
+         query: "where do customers live",
+         limit: 10,
+      });
+      expect(payload.total_available).toBe(1);
+      expect(payload.returned).toBe(1);
+   });
+
    it("stays silent on the semantic path when a matched source fills no slot", async () => {
       _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
       const handler = captureHandler(truncStore());
