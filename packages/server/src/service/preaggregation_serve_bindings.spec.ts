@@ -178,7 +178,7 @@ describe("one author name cannot rebind to two shapes", () => {
       expect(conflicts[0].reason).toContain("`orders`");
    });
 
-   it("THE INVARIANT: an unservable rollup leaves other bound sources served", () => {
+   it("THE INVARIANT, at the CONFLICT path: an unservable rollup leaves others served", () => {
       // The property a future change is most likely to break silently, because
       // the symptom is a tier quietly not being used rather than an error. A
       // conflict on one base must cost that base's rollups and nothing else —
@@ -348,5 +348,107 @@ describe("the emitted shape compiles and routes against real tables", () => {
             members(),
          ),
       ).rejects.toThrow();
+   });
+});
+
+describe("THE INVARIANT, at the COMPILE-FAILURE path", () => {
+   // The conflict test above proves the invariant where a group is never emitted:
+   // a conflict returns no groups, so no shape is built and nothing can break.
+   // That leaves the case that actually threatens the package — a group that IS
+   // emitted and then fails to compile — untested, which is how it went unnoticed
+   // that no escalation tier could rescue it.
+   //
+   // Built from members that disagree about a grain column's captured type, so the
+   // composite is invalid rather than merely unhelpful. The shape must still come
+   // back compiling, with the ordinary binding intact and the group dropped —
+   // otherwise one bad rollup takes every stored source in the package with it.
+   let connections: FixedConnectionMap;
+
+   beforeAll(async () => {
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE plain AS SELECT 'A' AS category, 10 AS amount",
+      );
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE r_a AS SELECT 'A' AS category, 10 AS total__partial",
+      );
+      await duckdb.runSQL(
+         "CREATE OR REPLACE TABLE r_b AS SELECT 1 AS category, 10 AS total__partial",
+      );
+      connections = new FixedConnectionMap(
+         new Map([["duckdb", duckdb]]),
+         "duckdb",
+      );
+   });
+
+   it("drops the group, keeps the ordinary binding, and still compiles", async () => {
+      const ordinary: ServeBinding = {
+         sourceName: "plain",
+         origin: "persist",
+         destinationName: "duckdb",
+         virtualHandle: "h_plain",
+         tablePath: "plain",
+         schema: [
+            { name: "category", type: "VARCHAR" },
+            { name: "amount", type: "BIGINT" },
+         ],
+      };
+      // Same grain column, different declared types: a composite the compiler
+      // cannot form.
+      const broken = [
+         {
+            baseSourceName: "orders",
+            members: [
+               {
+                  ...binding("r_a"),
+                  destinationName: "duckdb",
+                  tablePath: "r_a",
+                  schema: [
+                     { name: "category", type: "VARCHAR" },
+                     { name: "total__partial", type: "BIGINT" },
+                  ],
+                  refinements: rollupServeRefinements(
+                     plan("r_a", ["category"]),
+                  ),
+               },
+               {
+                  ...binding("r_b"),
+                  destinationName: "duckdb",
+                  tablePath: "r_b",
+                  schema: [
+                     { name: "category", type: "BIGINT" },
+                     { name: "total__partial", type: "BIGINT" },
+                  ],
+                  refinements: rollupServeRefinements(
+                     plan("r_b", ["category"]),
+                  ),
+               },
+            ],
+         },
+      ];
+
+      // The full shape, with the group, must NOT compile — otherwise this test
+      // proves nothing about the escalation.
+      const withGroup = buildServeShapeModelForBindings([ordinary], broken);
+      const root = "file:///escalation/";
+      const load = (text: string) =>
+         new Runtime({
+            urlReader: new InMemoryURLReader(
+               new Map([[`${root}m.malloy`, text]]),
+            ),
+            connections,
+         }).loadModel(new URL(`${root}m.malloy`), {
+            importBaseURL: new URL(root),
+         });
+      await expect(load(withGroup.modelText).getModel()).rejects.toThrow();
+
+      // The tier that drops the group is what the serve path falls back to, and it
+      // must compile AND still carry the unrelated source.
+      const withoutGroup = buildServeShapeModelForBindings([ordinary], []);
+      await expect(
+         load(withoutGroup.modelText).getModel(),
+      ).resolves.toBeDefined();
+      expect(withoutGroup.modelText).toContain("source: plain is");
+      expect(withoutGroup.modelText).not.toContain("compose(");
    });
 });

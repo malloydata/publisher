@@ -138,15 +138,25 @@ with refusals for the parts that are still not supported, rather than as two cha
 
 What is refused, and why each is a refusal rather than a silent choice:
 
-- **`namespace=` with `storage=`.** Placement inside a destination is derived, not
-  authored — a freshly provisioned catalog has no schema to create the table in. The
-  refusal also fires when the destination was inherited from the base's `#@ persist`,
-  and names which of the two you actually wrote.
+- **`namespace=` with `storage=` on one line.** Placement inside a destination is
+  derived, not authored — a freshly provisioned catalog has no schema to create the
+  table in.
+- **`#@ preaggregate` on a measure the source does not publicly expose**, and a grain
+  naming a hidden dimension. A rollup stores its grain and each measure's partial, and
+  the stored table is served under the base's name without the source's field
+  visibility applying to it, so pre-aggregating a hidden field would publish it.
 - **Two measures at one grain naming different destinations.** One grain is one table.
 - **Two grains on one base naming different destinations.** Unlike `namespace=`, which
   may legitimately send two grains to two schemas, a base's rollups are offered to a
   query through a single composite and every member of a composite must live on one
   connection. Such a base serves from its rollups not at all.
+
+**Upgrading.** Earlier versions said that a `storage=` base "lends nothing" to its
+rollups and told you to name a `namespace=` explicitly. That guidance is now wrong — the
+destination is inherited — but a package written to it keeps loading: a `namespace=` on a
+grain whose destination was inherited is ignored rather than refused. It has no effect
+and can be deleted. Writing `namespace=` and `storage=` together on one `#@ preaggregate`
+line is refused.
 
 With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is not built — and not built
 alongside its base either, which would put a table in your warehouse under a generated

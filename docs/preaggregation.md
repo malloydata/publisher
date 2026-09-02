@@ -240,6 +240,12 @@ source: orders is orders_pg.table('public.orders') extend {
 Nothing about the query changes. It still names `orders` and still knows no rollup
 exists; only where the answer is read from moves.
 
+**A rollup may not store what the source hides.** `#@ preaggregate` on a measure the
+source does not publicly expose is refused, and so is a grain naming a hidden dimension.
+A rollup stores its grain and each measure's partial, and the stored table is served
+under the base's name without the source's field visibility applying to it — so
+pre-aggregating a hidden field would publish it.
+
 **A rollup follows its base.** If the base carries `#@ persist storage=<name>`, its
 rollups are built into that destination without being told — a rollup of X belongs where
 X's rows live, and one left behind in the warehouse would be built by reading across the
@@ -254,9 +260,12 @@ share its one table, so two of them naming different destinations is refused at 
 
 **`namespace=` and `storage=` cannot be combined.** Placement inside a destination is
 derived, not authored: a freshly provisioned catalog has no schema to create the table
-in. Declaring both is refused, and so is a `namespace=` on a grain whose destination was
-inherited from the base's `#@ persist storage=` — the refusal names which of the two you
-wrote, since only one of them need be yours.
+in. Writing both on one `#@ preaggregate` line is refused.
+
+Where the destination is *inherited* from the base's `#@ persist storage=`, a
+`namespace=` on the grain is ignored rather than refused — earlier versions told you to
+write one there, so a package that did keeps loading. It has no effect; delete it when
+you next touch the model.
 
 **Two grains on one base must agree on the destination.** Unlike `namespace=`, which may
 legitimately send two grains to two schemas, two grains bound to two different

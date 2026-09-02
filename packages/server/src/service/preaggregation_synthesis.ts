@@ -336,6 +336,18 @@ export function planSourcePreaggregation(
       );
       if (!declaration.declared || declaration.errors.length > 0) continue;
 
+      // Hidden measures never reach a rollup. Refused at publish
+      // (`non_public_measure`), and skipped here for the same reason every other
+      // refusal is: the planner and the validator must not disagree about what is
+      // buildable. This one is also the last line of defence — a rollup's stored
+      // table is served without the source's field visibility applying to it.
+      if (
+         (field as { accessModifier?: unknown }).accessModifier != null &&
+         (field as { accessModifier?: unknown }).accessModifier !== "public"
+      ) {
+         continue;
+      }
+
       const additivity = classifyMeasureAdditivity(field as never);
       if (!additivity.additive) continue;
 
