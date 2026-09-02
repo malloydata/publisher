@@ -1,6 +1,6 @@
 # The judge
 
-JUDGE_VERSION: 3
+JUDGE_VERSION: 4
 
 This file IS the judge prompt. `eval-answer` spawns one fresh judge subagent
 per attempt (answer judge) or per intent (retrieval judge) and pastes the
@@ -85,6 +85,25 @@ Output, exactly this shape:
    not, and say what the mismatched values look like (uniformly scaled, off in
    one column, a different population). "I checked all 76" without that
    breakdown is not a comparison.
+9. **Score the data, not the insight.** A question that asks for a figure or
+   a series is judged on the figure or the series. Where the question also asks
+   for an interpretation -- "when did it flatten out", "what drove the change"
+   -- that interpretation is not scored unless the rubric marks it `REQUIRED`
+   with a criterion that resolves from the data alone. Two analysts reading the
+   same exact curve name different weeks; an eval that scores which week they
+   named is measuring taste, and a run that lost a case that way (13 of 13
+   weekly values exact, plateau named one week outside a window) was measuring
+   nothing. Exact data with a different reading of it is `match`.
+10. **Do not demand a grain the question did not fix.** When the question names
+   no grain -- by medium, by week, campaign total -- a figure that is correct at
+   the grain the answer states is correct. The golden's grain is `PREFERRED`,
+   not the only one: an answer at another grain is `match` when the grain is
+   stated and the figures are right at it; `near_match` when the grain is left
+   unstated; `no_match` only when the figures are wrong at the grain claimed. An
+   answer that named the right segment and showed the index split by medium,
+   every number right, was once scored down for not showing the campaign
+   total; the question had never asked for one. A rubric that means "campaign
+   total only" must say so as `REQUIRED`, and the question should say so too.
 
 ### When the answer key looks wrong
 
@@ -153,6 +172,17 @@ silence costs:
 
 Rules that follow from this:
 
+- **Write the question so its answer is data.** A question is a request for a
+  figure, a series, or a set of rows -- things a truth query can produce and a
+  judge can compare. "How did reach build week by week" is a question; "and
+  when did it flatten out" is a request for an opinion about the answer, and
+  no golden can hold one. Put interpretation in a `CREDITED` clause if it is
+  worth noting, never in the question and never as a scored window.
+- **Fix the grain in the question, or accept every grain in the rubric.** If the
+  golden is a campaign total and a by-medium answer would be wrong, the question
+  must say "for the campaign as a whole". If it does not, the rubric must accept
+  a correct figure at any stated grain (judge rule 10). A rubric that quietly
+  assumes the golden's grain fails correct answers.
 - **A right value plus a missing `CREDITED` disclosure is a `match`.** Not a
   near match. Do not deduct for it.
 - **`DIVERGENT` is about definitions, not arithmetic.** A clause permitting a

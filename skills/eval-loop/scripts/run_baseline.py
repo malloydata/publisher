@@ -320,7 +320,9 @@ def path_breaches(events: list[dict[str, Any]],
         for c in e["message"].get("content") or []:
             if c.get("type") == "tool_use":
                 uses.append({"name": c["name"], "input": c.get("input") or {}})
-    r = path_check({"tool_uses": uses}, eval_paths=[str(set_dir)])
+    # Absolute, always: passed `--set .`, a relative path becomes the needle "."
+    # and matches every tool input, voiding every verdict in the run.
+    r = path_check({"tool_uses": uses}, eval_paths=[str(set_dir.resolve())])
     return list(r["reasons"])
 
 

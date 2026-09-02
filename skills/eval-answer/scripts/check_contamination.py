@@ -130,6 +130,13 @@ def check(
     # patterns that substring-match nothing.
     needles = list(DEFAULT_GOLD_PATHS) + list(gold_paths or ())
     needles.extend(list(DEFAULT_EVAL_PATHS) + list(eval_paths or ()))
+    # A needle like "." or "/" matches everything and voids every verdict in a
+    # run -- which is what happened the first time a caller passed `--set .`.
+    # Substring matching needs a needle that could only mean the eval set.
+    short = [n for n in needles if len(n.strip("./")) < 3]
+    if short:
+        raise ValueError(f"contamination path(s) too short to be meaningful: "
+                         f"{short!r}; pass an absolute path")
     model_needles = []
     if model_path:
         model_needles = [os.path.normpath(model_path), os.path.basename(model_path)]

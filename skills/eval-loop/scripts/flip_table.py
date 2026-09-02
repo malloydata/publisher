@@ -236,8 +236,11 @@ def main() -> int:
     print(f"\n{la}  vs  {lb}\n{'=' * (len(la) + len(lb) + 6)}")
     print(f"{len(shared)} cases, {scored} scored in both, {len(unscored)} not\n")
 
-    pa = len([q for q in shared if A[q]['passed']])
-    pb = len([q for q in shared if B[q]['passed']])
+    # Over the cases scored in BOTH arms, so the numerator and the printed
+    # denominator describe the same set (this once printed 19 / 17).
+    both = [q for q in shared if q not in unscored]
+    pa = len([q for q in both if A[q]['passed']])
+    pb = len([q for q in both if B[q]['passed']])
     print(f"  {la:<24} {pa:>3} / {scored} passed")
     print(f"  {lb:<24} {pb:>3} / {scored} passed")
     print(f"  {'difference':<24} {pb - pa:>+3}\n")
