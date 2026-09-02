@@ -96,6 +96,29 @@ source: s is duckdb.sql("""
 
   #@ preaggregate grain="b_dim, a_dim"
   measure: m_unsorted is amount.sum()
+
+  #@ preaggregate grain="a_dim" storage=credible
+  measure: m_storage is amount.sum()
+
+  #@ preaggregate { grain="a_dim" storage=credible }
+  measure: m_storage_braced is amount.sum()
+
+  #@ preaggregate storage=credible
+  measure: m_storage_no_grain is amount.sum()
+
+  #@ preaggregate grain="a_dim" storage=credible
+  #@ preaggregate grain="b_dim"
+  measure: m_grain_own_storage is amount.sum()
+
+  #@ preaggregate grain="a_dim" storage=""
+  measure: m_empty_storage is amount.sum()
+
+  #@ preaggregate grain="a_dim" storage=credible
+  #@ -preaggregate
+  measure: m_negated_storage is amount.sum()
+
+  #@ preaggregate grain="a_dim" namespace="ns_a" storage=credible
+  measure: m_namespace_and_storage is amount.sum()
 }
 
 // An extending source, to prove inherited annotations are still read.
@@ -363,4 +386,78 @@ describe("parseGrainDimensions", () => {
          expect(parseGrainDimensions(input)).toEqual(expected);
       });
    }
+});
+
+describe("#@ preaggregate reader: reading storage=", () => {
+   const storageOf = (name: string) =>
+      readPreaggregateAnnotation(lookup(name)).grains.map((g) => [
+         g.dimensions,
+         g.storage,
+      ]);
+
+   for (const name of ["m_storage", "m_storage_braced"]) {
+      it(`${name}: reads the destination`, () => {
+         // Both the documented sibling-key form and the nested form, for the same
+         // reason `grain` accepts both: authors write whichever the docs in front
+         // of them show.
+         expect(storageOf(name)).toEqual([[["a_dim"], "credible"]]);
+      });
+   }
+
+   it("binds to the grain on its own line, not to the measure", () => {
+      // A grain is a table, so two grains can genuinely be placed differently. A
+      // storage= scoped to the MEASURE would drag a second grain to a destination
+      // its author never named for it.
+      expect(storageOf("m_grain_own_storage")).toEqual([
+         [["a_dim"], "credible"],
+         [["b_dim"], undefined],
+      ]);
+   });
+
+   it("an empty destination is refused, not ignored", () => {
+      // The module's strictness rule: an author who typed the key meant something
+      // by it, and silently dropping it would build the rollup somewhere they did
+      // not choose.
+      const declaration = readPreaggregateAnnotation(lookup("m_empty_storage"));
+      expect(declaration.errors.map((e) => e.kind)).toEqual(["empty_storage"]);
+      expect(declaration.grains).toEqual([]);
+   });
+
+   it("a negation clears the destination with the grain it was written for", () => {
+      // storage= rides its own grain, so "everything above is off" needs no
+      // separate rule for it.
+      const declaration = readPreaggregateAnnotation(
+         lookup("m_negated_storage"),
+      );
+      expect(declaration.declared).toBe(false);
+      expect(declaration.grains).toEqual([]);
+   });
+
+   it("reads namespace= and storage= on one line, so both are visible to refuse", () => {
+      // The reader does NOT refuse the combination: whether the two can be
+      // declared together is a placement rule, and it is enforced in
+      // preaggregation_validation.ts where the base's inherited storage= is also
+      // in view. Reading both is what lets that refusal name each one.
+      const [grain] = readPreaggregateAnnotation(
+         lookup("m_namespace_and_storage"),
+      ).grains;
+      expect(grain.namespace).toBe("ns_a");
+      expect(grain.storage).toBe("credible");
+   });
+
+   it("storage= on a line with no grain is a missing grain, like any other", () => {
+      // Each note is its own grain declaration, so a key written on a line of its
+      // own belongs to no grain and cannot take effect. Refusing it as a missing
+      // grain is the same treatment `namespace=` alone gets, and it is what stops
+      // a two-line spelling from silently placing nothing.
+      const declaration = readPreaggregateAnnotation(
+         lookup("m_storage_no_grain"),
+      );
+      expect(declaration.errors.map((e) => e.kind)).toEqual(["missing_grain"]);
+      expect(declaration.grains).toEqual([]);
+   });
+
+   it("an undeclared storage= leaves the grain colocated", () => {
+      expect(storageOf("m_restated_grain")).toEqual([[["a_dim"], undefined]]);
+   });
 });

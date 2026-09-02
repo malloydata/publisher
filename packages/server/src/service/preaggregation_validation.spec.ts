@@ -50,6 +50,23 @@ async function validate(body: string) {
    );
 }
 
+/** Validate source `s` when `s` itself carries `annotation`. */
+async function validateAnnotated(annotation: string, body: string) {
+   const text = `##! experimental { persistence composite_sources }
+${annotation}
+source: s is duckdb.sql("""${COLUMNS}""") extend {
+${body}
+}
+`;
+   const compiled = await loadTestModel(connections, text).getModel();
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   const contents = (compiled as any)._modelDef.contents;
+   return validateSourcePreaggregation(
+      "s",
+      contents["s"] as Parameters<typeof validateSourcePreaggregation>[1],
+   );
+}
+
 /** The codes reported for a body, in order. */
 async function codesFor(body: string): Promise<PreaggregateViolationCode[]> {
    return (await validate(body)).map((v) => v.code);
@@ -480,5 +497,98 @@ describe("every message names its target and offers a fix", () => {
             expect(violation.sourceName).toBe("s");
          }
       }
+   });
+});
+
+describe("placing a rollup in a storage destination", () => {
+   it("two destinations at one grain is refused, naming both and who asked", async () => {
+      // A grain is one table, so it can be built in one store. Same
+      // unsatisfiability as two namespaces, and refused rather than resolved by
+      // field order, which would place a rollup somewhere nobody chose.
+      const violations =
+         await validate(`  #@ preaggregate grain="category" storage=store_a
+  measure: revenue is amount.sum()
+  #@ preaggregate grain="category" storage=store_b
+  measure: order_count is count()`);
+      expect(violations.map((v) => v.code)).toEqual(["conflicting_storage"]);
+      for (const fragment of [
+         "`store_a`",
+         "`revenue`",
+         "`store_b`",
+         "`order_count`",
+      ]) {
+         expect(violations[0].message).toContain(fragment);
+      }
+   });
+
+   it("the same destination at one grain is not a conflict", async () => {
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" storage=store_a
+  measure: revenue is amount.sum()
+  #@ preaggregate grain="category" storage=store_a
+  measure: order_count is count()`),
+      ).toEqual([]);
+   });
+
+   it("different destinations at DIFFERENT grains are not a conflict", async () => {
+      // Two grains are two tables, and they can genuinely be placed differently.
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" storage=store_a
+  measure: revenue is amount.sum()
+  #@ preaggregate grain="order_date" storage=store_b
+  measure: order_count is count()`),
+      ).toEqual([]);
+   });
+
+   it("namespace= and storage= written together is refused", async () => {
+      const violations =
+         await validate(`  #@ preaggregate grain="category" namespace="ns_a" storage=store_a
+  measure: revenue is amount.sum()`);
+      expect(violations.map((v) => v.code)).toEqual(["namespace_with_storage"]);
+      expect(violations[0].message).toContain('namespace="ns_a"');
+      expect(violations[0].message).toContain("storage=store_a");
+   });
+
+   it("namespace= against an INHERITED storage= is refused, and says where each came from", async () => {
+      // The case a message could easily get wrong: the author wrote only the
+      // `namespace=`, and the `storage=` arrived from the source's own
+      // `#@ persist`. Telling them they wrote both would send them looking for a
+      // line that does not exist.
+      const violations = await validateAnnotated(
+         "#@ persist storage=credible",
+         `  #@ preaggregate grain="category" namespace="ns_a"
+  measure: revenue is amount.sum()`,
+      );
+      expect(violations.map((v) => v.code)).toEqual(["namespace_with_storage"]);
+      expect(violations[0].message).toContain('namespace="ns_a"');
+      expect(violations[0].message).toContain("#@ persist storage=credible");
+      expect(violations[0].fieldName).toBe("revenue");
+   });
+
+   it("a namespace= with no storage anywhere is still fine", async () => {
+      // The colocated path must not acquire a refusal it never had.
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" namespace="ns_a"
+  measure: revenue is amount.sum()`),
+      ).toEqual([]);
+   });
+
+   it("an inherited storage= with no namespace= is fine — that is the feature", async () => {
+      expect(
+         (
+            await validateAnnotated(
+               "#@ persist storage=credible",
+               `  #@ preaggregate grain="category"
+  measure: revenue is amount.sum()`,
+            )
+         ).map((v) => v.code),
+      ).toEqual([]);
+   });
+
+   it("an empty storage= is refused rather than ignored", async () => {
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" storage=""
+  measure: revenue is amount.sum()`),
+      ).toEqual(["empty_storage"]);
    });
 });

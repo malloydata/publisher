@@ -1054,6 +1054,13 @@ export function deriveBuildPlan(
                continue;
             }
          } else {
+            // A rollup needs BOTH gates when it declares a destination, and the
+            // two answer different questions. The authorize refusal is
+            // unconditional for `origin === "preaggregate"` regardless of tier — a
+            // rollup groups ACROSS the gated column, so it can never be row-
+            // filtered afterwards — and the storage-destination gate is the same
+            // one an authored `#@ persist storage=` passes. Neither subsumes the
+            // other, so a storage rollup runs both.
             try {
                assertColocatedPersistNotAuthorizeGated(
                   source,
@@ -1061,6 +1068,7 @@ export function deriveBuildPlan(
                   "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
                );
+               if (declaresStorage) assertMaterializationEligible(source);
             } catch (err) {
                if (!(err instanceof MaterializationEligibilityError)) throw err;
                // Deliberately no `continue`: this sourceID lands in BOTH refusedSources
@@ -1070,7 +1078,9 @@ export function deriveBuildPlan(
                   name: source.name,
                   sourceID: source.sourceID,
                   modelPath: sourceModelPaths?.[sourceID],
-                  tier: "preaggregate",
+                  // The DESTINATION is what a storage rollup was refused for, so a
+                  // host reading `refusedSources` sees which tier it lost.
+                  tier: declaresStorage ? "storage" : "preaggregate",
                   reason: err.reason || "authorize",
                   message: errMessage(err),
                };

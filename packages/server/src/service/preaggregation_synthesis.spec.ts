@@ -90,6 +90,94 @@ async function planFor(body: string): Promise<RollupPlan[]> {
    return planSourcePreaggregation("orders", await compileOrders(body));
 }
 
+describe("a rollup follows its base into a storage destination", () => {
+   const GRAIN = `  measure:\n    #@ preaggregate grain="category"\n    total is sum(amount)`;
+
+   it("inherits the base's destination, where it used to lend nothing", async () => {
+      // The inversion. A rollup of X follows X to the store: the base's rows live
+      // there, so a rollup left behind in the warehouse would be built by reading
+      // across the very boundary the tier exists to avoid crossing.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders("#@ persist storage=credible", GRAIN),
+      );
+      expect(plans).toHaveLength(1);
+      expect(plans[0].storage).toBe("credible");
+   });
+
+   it("emits `storage=` with NO name=, so the destination assigns the table", async () => {
+      // Decision: placement inside a destination is derived, not authored. The
+      // resolver refuses a dotted `name=` outright because a fresh catalog has no
+      // schema, so emitting one would produce a refusal naming a generated source
+      // and a `name=` the author never wrote. Bare is safe because the build
+      // self-assigns from the source name, which carries the grain digest.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders("#@ persist storage=credible", GRAIN),
+      );
+      const emitted =
+         synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
+      expect(emitted).toContain("#@ persist storage=credible");
+      expect(emitted).not.toContain("name=");
+   });
+
+   it("a storage= base lends its destination and NOT its name='s namespace", async () => {
+      // The base's `name=` is a name in the DESTINATION's catalog, and carrying its
+      // namespace would aim the CREATE at a schema that need not exist there. This
+      // is the inherited case of the namespace_with_storage rule, where there is
+      // nothing to refuse because the author wrote only one of them.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist storage=credible name="analytics.orders_tbl"',
+            GRAIN,
+         ),
+      );
+      expect(plans[0].storage).toBe("credible");
+      expect(plans[0].namespace).toBeUndefined();
+   });
+
+   it("the grain's own storage= beats the base's", async () => {
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            "#@ persist storage=base_store",
+            `  measure:\n    #@ preaggregate grain="category" storage=grain_store\n    total is sum(amount)`,
+         ),
+      );
+      expect(plans[0].storage).toBe("grain_store");
+   });
+
+   it("a colocated base still lends its namespace, unchanged", async () => {
+      // The pre-existing path must not move: only a `storage=` base behaves
+      // differently now.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileAnnotatedOrders(
+            '#@ persist name="analytics.orders_tbl"',
+            GRAIN,
+         ),
+      );
+      expect(plans[0].namespace).toBe("analytics");
+      expect(plans[0].storage).toBeUndefined();
+   });
+
+   it("two grains on one base can be placed differently", async () => {
+      // A grain is a table, so this is a real capability rather than an accident:
+      // one grain to the store, one left colocated.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileOrders(
+            `  measure:\n    #@ preaggregate grain="category" storage=credible\n    #@ preaggregate grain="order_date"\n    total is sum(amount)`,
+         ),
+      );
+      const byGrain = Object.fromEntries(
+         plans.map((p) => [p.grainDimensions.join(","), p.storage]),
+      );
+      expect(byGrain).toEqual({ category: "credible", order_date: undefined });
+   });
+});
+
 describe("the plan groups by grain, not by measure", () => {
    it("two measures at one grain share one rollup", async () => {
       const plans = await planFor(`  #@ preaggregate grain="category"
@@ -717,23 +805,20 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       }
    });
 
-   it("CANARY: when two grains both cover a query, the FIRST member wins, not the smallest", async () => {
-      // Pinned because it bounds what multiple grains buy, and the natural
-      // assumption is the opposite. Members are emitted sorted by synthesized
-      // name (grain slug plus digest), and the resolver takes the first that
-      // covers the query — a name has nothing to do with size, so where two
-      // declared grains BOTH cover a query the larger can win.
+   it("when two grains both cover a query, the COARSER member wins", async () => {
+      // Members are emitted fewest-grain-dimensions first
+      // (`compareRollupBreadth`), and the resolver takes the first that covers,
+      // so of two covering rollups the coarser answers.
       //
-      // Built to make that visible: 200 distinct `a_dim`, 2 distinct `b_dim`, so
-      // the {b_dim} rollup is 2 rows and {a_dim, b_dim} is 200, and both answer a
-      // by-b_dim query. Dimensions are sorted into the slug, so `a_dim_b_dim`
-      // sorts BEFORE `b_dim` and the 200-row table is offered first.
+      // Built so the difference is a real one and not just an ordering: 200
+      // distinct `a_dim`, 2 distinct `b_dim`, so the {b_dim} rollup is 2 rows and
+      // {a_dim, b_dim} is 200, and both answer a by-b_dim query. This previously
+      // read the 200-row table, because members were ordered by synthesized name
+      // and the slug `a_dim_b_dim` sorts before `b_dim`.
       //
-      // Multiple grains still pay off for the case they exist for — grains that
-      // cover DIFFERENT queries — and docs/preaggregation.md says so without
-      // promising the smallest covering table. If this test starts failing
-      // because member order became size-aware, that is an improvement: update
-      // the doc's "Which rollup answers a query" note along with it.
+      // A dimension COUNT is a proxy for size, not a measurement: this test would
+      // pass just as well if the narrow grain were the larger table. What it pins
+      // is that grain breadth decides, and that a grain digest no longer does.
       const { load, manifest, tables } = await synthesizeAndBuild(
          `  dimension: a_dim is concat('a', amount::string)
   dimension: b_dim is pick 'even' when amount % 2 = 0 else 'odd'
@@ -752,8 +837,67 @@ describe("end to end: the emitted text builds, routes, and agrees with live", ()
       const sql = await load("synth.malloy")
          .loadQuery("run: orders -> { group_by: b_dim; aggregate: total }")
          .getSQL({ buildManifest: manifest });
-      expect(sql).toContain(combined as string);
-      expect(sql).not.toContain(narrow as string);
+      expect(sql).toContain(narrow as string);
+      expect(sql).not.toContain(combined as string);
+   });
+
+   it("an UNBUILT coarse rollup still wins the member race and recomputes from the base", async () => {
+      // Ordering by grain breadth changes WHICH member is offered first, and a
+      // member is offered whether or not its table exists. So the coarsest rollup
+      // now deterministically wins a race it previously won only by name luck —
+      // including when it is the one that never built.
+      //
+      // The failure mode being checked for is a wrong answer. There is none: the
+      // member is selected, the manifest has no entry for it, and with
+      // `strict: false` the rollup recomputes from the base inline, which is what
+      // the live path would have done anyway.
+      //
+      // The COST is real, and calling it "no regression" would undersell it. A
+      // built finer rollup goes unused for this query. Before breadth ordering the
+      // unbuilt member won by name luck, so the loss was intermittent; now it is
+      // CERTAIN for as long as the coarse grain is unbuilt. The shape that hits it
+      // is the ordinary one — an author adds a coarse grain to a package that
+      // already has a built finer rollup — and it lasts until the coarse rollup
+      // builds. Bounded, and strictly better than a wrong answer, but a real
+      // behaviour change inside that window rather than a wash.
+      //
+      // Filtering members by manifest presence is NOT the free fix it looks like:
+      // member order would then depend on the bound manifest, so the build leg and
+      // the serve leg would synthesize different text — the same reason
+      // `compareRollupBreadth` does not order on `rowCount`.
+      const { load, manifest, tables } = await synthesizeAndBuild(
+         `  dimension: a_dim is concat('a', amount::string)
+  dimension: b_dim is pick 'even' when amount % 2 = 0 else 'odd'
+  #@ preaggregate grain="b_dim"
+  #@ preaggregate grain="a_dim, b_dim"
+  measure: total is amount.sum()`,
+      );
+      const combined = tables.find((t) => t.includes("a_dim_b_dim")) as string;
+      const narrow = tables.find((t) => t !== combined) as string;
+      // Drop the coarse rollup's entry: built once, then never refreshed, or
+      // simply not built yet.
+      const partial: BuildManifest = {
+         strict: false,
+         entries: Object.fromEntries(
+            Object.entries(manifest.entries).filter(
+               ([, e]) => e.tableName !== narrow,
+            ),
+         ),
+      };
+      const query = "run: orders -> { group_by: b_dim; aggregate: total }";
+      const sql = await load("synth.malloy")
+         .loadQuery(query)
+         .getSQL({ buildManifest: partial });
+      // Neither table: the chosen member has no entry, so it inlines rather than
+      // falling to the built one.
+      expect(sql).not.toContain(narrow);
+      expect(sql).not.toContain(combined);
+      // And the answer is still right, which is the part that matters.
+      const served = await load("synth.malloy")
+         .loadQuery(query)
+         .run({ buildManifest: partial });
+      const live = await load("author.malloy").loadQuery(query).run();
+      expect(served.data.toObject()).toEqual(live.data.toObject());
    });
 
    it("CANARY: a query naming a VIEW does not route, because compose() drops views", async () => {
