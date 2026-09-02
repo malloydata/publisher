@@ -38,16 +38,6 @@
   ],
   "supporting": [],
   "groups": {
-    "html-apps": [
-      "malloy-html-data-apps",
-      "malloy-html-data-app-runtime",
-      "malloy-html-data-app-embedding"
-    ],
-    "lookml": ["malloy-lookml-review"],
-    "materialization": [
-      "malloy-materialization",
-      "malloy-materialization-tuning"
-    ],
     "analysis": [
       "malloy-getting-started",
       "malloy-analysis",
@@ -86,7 +76,13 @@
       "malloy-analysis-report",
       "malloy-analysis",
       "malloy-queries",
-      "malloy-phrase-detection"
+      "malloy-phrase-detection",
+      "malloy-html-data-apps",
+      "malloy-html-data-app-runtime",
+      "malloy-html-data-app-embedding",
+      "malloy-materialization-tuning",
+      "malloy-dashboards",
+      "malloy-getting-started"
     ]
   }
 }

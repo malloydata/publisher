@@ -113,6 +113,41 @@ describe("publisher-local manifest", () => {
       expect(onDisk.filter((name) => !shipped.includes(name))).toEqual([]);
    });
 
+   /**
+    * The point of a role group is that installing it gives an agent that role's
+    * doctrine and not the other's. An outward `skill:` reference defeats that
+    * twice over: a consumer that installs the group alone hits an instruction
+    * it cannot follow, and one that resolves the reference ends up holding the
+    * doctrine the group exists to withhold. `analysis` leaked into modeling
+    * this way (`malloy-getting-started` -> `malloy-gotchas-modeling`,
+    * `malloy-analysis-report` -> `malloy-model`), which is why both now name
+    * those skills in prose instead.
+    *
+    * `malloy` is the documented exception: it is the index of every Malloy
+    * skill, so its table necessarily has a row per skill, and 10+ skills point
+    * at it in turn, so it cannot be dropped from a group either. A catalogue
+    * row is not an instruction to go read something, which is what this test
+    * is really about.
+    */
+   it("keeps each group's references inside it, the malloy index aside", () => {
+      const escapes: string[] = [];
+      for (const [group, members] of Object.entries(manifest.groups ?? {})) {
+         const inGroup = new Set(members);
+         for (const member of members) {
+            if (member === "malloy") continue;
+            for (const file of markdownFiles(member)) {
+               const body = fs.readFileSync(file, "utf8");
+               for (const [, target] of body.matchAll(SKILL_REF)) {
+                  if (target === member || inGroup.has(target)) continue;
+                  if (!shipped.includes(target)) continue;
+                  escapes.push(`${group}: ${member} -> ${target}`);
+               }
+            }
+         }
+      }
+      expect([...new Set(escapes)].sort()).toEqual([]);
+   });
+
    it("puts every group member in the shipped set", () => {
       const strays: string[] = [];
       for (const [group, members] of Object.entries(manifest.groups ?? {})) {

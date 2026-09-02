@@ -88,7 +88,7 @@ This repository ships one, [`manifests/publisher-local.json`](../../manifests/pu
     "malloy-gotchas-modeling"
   ],
   "supporting": [],
-  "groups": { "html-apps": ["malloy-html-data-apps"] }
+  "groups": { "analysis": ["malloy-analysis", "malloy-queries"] }
 }
 ```
 
@@ -101,18 +101,16 @@ The skill list above is abridged; the real file names every directory under `ski
   an SDK `Skill` tool cannot invoke from one at all, so Publisher ships one flat set.
 - `trigger_hint` (optional): text the host uses to generate rule files for IDEs that drive
   skill loading from rules; falls back to `description` if omitted.
-- `groups` (optional): named subsets, so someone who wants fewer skills gets a filter rather
-  than a second directory. A group is either something to leave out (`html-apps`) or a role
-  to take alone (`analysis`, `modeling` — what an answering agent and a modeling agent each
-  load). Every member must also appear in `auto_discovered` or `supporting`.
-- A group is a **seed, not a closed set.** Its members carry `skill:` references that point
-  outside it, so a consumer installs the group and then follows those references one hop
-  (`resolve_closure` in `skills/eval-loop/scripts/agent_harness.py` is the worked example, and
-  it treats a reference it cannot resolve as fatal). Every reference lands inside the shipped
-  set — `manifest.spec.ts` § "are closed over the manifest" is what guarantees a consumer can
-  always resolve one — so the seed is safe to install without the whole manifest, but it is
-  not self-sufficient. Installing a group's directories and nothing else leaves the references
-  dangling.
+- `groups` (optional): a role a consumer can take on its own, so someone who wants fewer
+  skills gets a filter rather than a second directory. This repo names two, `analysis` and
+  `modeling`, being what an answering agent and a modeling agent each load. Every member must
+  also appear in `auto_discovered` or `supporting`. Groups may overlap.
+- **A group is installable on its own.** A member never `skill:`-references a skill outside
+  its group, so installing the group leaves nothing telling the agent to read what it does
+  not have. Where a skill needs to mention another role's doctrine, it names it in prose
+  instead of as a `skill:` reference. `manifest.spec.ts` holds groups to this, with one
+  documented exception: the `malloy` index has a table row per skill by definition, and is
+  itself referenced too widely to drop from a group.
 
 **Every channel resolves the manifest; none globs `skills/`.** The npm pack, the MCP prompt
 bundle, the `.claude/skills` symlinks, and the scaffolder all read the same list. The pack and
