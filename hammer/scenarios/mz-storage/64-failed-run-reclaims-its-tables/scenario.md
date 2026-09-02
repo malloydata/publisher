@@ -125,11 +125,13 @@ SELECT table_name FROM information_schema.tables WHERE table_name = 'prt_a__g1'
 > resolves every source through the build plan's `sourceEntityId`, and a refused
 > source has no plan entry to resolve (see `host-binding-honors-row-level-access`).
 >
-> So `reclaimStorageTablesFromFailedRun` is currently pinned by unit tests only.
-> Either the step grows a way to instruct by `sourceID`, or the reclaim's own
-> guards should be re-read against how rarely it now fires.
+> So `reclaimStorageTablesFromFailedRun` is pinned by unit tests only, and that is
+> where it stays: the harness being unable to name a path is not evidence production
+> cannot take it. The open option is growing the step so it can instruct by
+> `sourceID`; the guards are NOT up for removal on the strength of how rarely the
+> reclaim now fires, because each one closes a way to destroy live data.
 >
-> Those guards, retained for whenever it does: reclaim is ORCHESTRATED-ONLY. The
+> Those guards: reclaim is ORCHESTRATED-ONLY. The
 > still-referenced check reads this environment and package only, and a BuildID
 > carries no environment input — so two environments sharing a destination can
 > resolve a source to the same physical name, and a reclaim trusting a
