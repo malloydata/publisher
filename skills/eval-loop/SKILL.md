@@ -259,7 +259,7 @@ Two failure modes worth pre-empting, because both produce a clean-looking run:
 
 1. Health-check again.
 2. Spawn a *fresh* blind subagent. Give it only the question text and the
-   Malloy analysis tools. Tell it to follow `skill:malloy-analysis`. Do not
+   Malloy analysis tools. Tell it to follow the `malloy-analysis` skill. Do not
    mention eval, gold, scoring, or this skill.
 3. Keep a host-side tool-use log for that subagent (name, input path or
    command, MCP tool name). Publisher traces see MCP only; a Read of a gold
@@ -620,4 +620,5 @@ conductor. Do not:
   the judge.
 - `skill:eval-diagnose`: component, owner, issue events. No edit.
 - `skill:eval-improve`: smallest model edit, probe receipts, no self-accept.
-- `skill:malloy-analysis`: what the blind answerer follows.
+- The `malloy-analysis` skill: what the blind answerer follows. It is installed
+  from the `analysis` manifest group, not the `eval` group.

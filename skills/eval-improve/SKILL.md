@@ -105,8 +105,10 @@ You cannot append guidance to every field for free. Doc length trades
 against the entity's own rank. A declared join is invisible to retrieval;
 put the rule on the entities agents search for.
 
-Follow `skill:malloy-gotchas-modeling` so the edit does not introduce a
-new modeling mistake.
+Follow the `malloy-gotchas-modeling` skill so the edit does not introduce a
+new modeling mistake. `improve.py` installs it with the rest of the `modeling`
+manifest group, so it is loaded alongside this skill rather than reached from
+here.
 
 ## Step 4: Check what your edit did to the answer key
 
@@ -171,4 +173,5 @@ its instructions' mistakes. Report from the files on disk, not from memory.
 - `skill:eval-diagnose`: the issue this requires.
 - `skill:eval-loop`: the gate that accepts or reverts, then checkpoints on accept. Golden hold/repair lives there, not here.
 - `skill:eval-answer`: scoring after a blind re-answer.
-- `skill:malloy-gotchas-modeling`: mistakes an edit must not introduce.
+- The `malloy-gotchas-modeling` skill: mistakes an edit must not introduce.
+  It arrives with the `modeling` manifest group, not the `eval` group.

@@ -9,8 +9,8 @@ WHY SKILLS ARE INSTALLED, NOT PASTED
 `reference/judge.md` says of itself "This file IS the judge prompt", so the judge
 is pasted and that is its design. `eval-diagnose` and `eval-improve` are skills:
 they live in `skills/`, they are listed in the manifests, and they refer to each
-other as `skill:eval-improve`, `skill:malloy-gotchas-modeling`. Those references
-are meant to RESOLVE. Pasting a skill's text into a prompt leaves every one of
+other as `skill:eval-improve`, `skill:eval-diagnose`. Those references are
+meant to RESOLVE. Pasting a skill's text into a prompt leaves every one of
 them dangling, and it duplicates doctrine that then drifts from the file
 everybody else reads.
 
@@ -26,11 +26,17 @@ and it holds no skills) while diagnose and improve do not.
 
 THE CLOSURE
 
-Installing only the named skill is not enough: `eval-improve` says "Follow
-`skill:malloy-gotchas-modeling`", and if that is absent the instruction is a
-dead end the agent cannot act on. So references are followed transitively. The
-graph is cyclic -- eval-diagnose and eval-improve name each other -- hence the
-seen-set.
+Installing only the named skill is not enough: `eval-improve` says "the issue
+this requires" is `skill:eval-diagnose`, and if that is absent the instruction
+is a dead end the agent cannot act on. So references are followed transitively.
+The graph is cyclic -- eval-diagnose and eval-improve name each other -- hence
+the seen-set.
+
+A group's skills only `skill:`-reference inside their own group (enforced by
+`packages/skills/src/manifest.spec.ts`), so this closure never leaves the group.
+Doctrine from another role -- `malloy-gotchas-modeling` for an improver,
+`malloy-analysis` for an answerer -- is supplied by passing that manifest
+group's skills in `names`, not by reference-following.
 
 A skill named but not present on disk is reported rather than skipped. Silently
 omitting it reproduces the exact failure this module exists to remove.
@@ -181,11 +187,11 @@ def resolve_closure(names: Iterable[str],
     eval-improve name each other -- so `seen` is the guard.
 
     Depth defaults to 1 because the full transitive closure is not what anyone
-    wants: `eval-loop` cites `skill:malloy-analysis`, which reaches the whole
-    analysis library, and asking for eval-diagnose ends up installing fifteen
-    skills. Claude Code puts every installed skill's name and description in
-    the prompt, so that is both noise and a real hazard -- an agent told to
-    diagnose should not be choosing between eval-diagnose and malloy-analyze.
+    wants: the role skills handed in from a manifest group cite each other
+    freely, so following one of them reaches the whole library. Claude Code
+    puts every installed skill's name and description in the prompt, so that
+    is both noise and a real hazard -- an agent told to diagnose should not be
+    choosing between eval-diagnose and malloy-analyze.
     One hop covers what the named skill actually instructs the agent to follow,
     which is the reason to install anything beyond the skill itself.
     """

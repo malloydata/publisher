@@ -12,11 +12,12 @@ THIS SCRIPT CONTAINS NO MODELING DOCTRINE
 
 The edit-tier ranking, the expert test, the DISAGREEMENT rule, the warning that
 a false `primary_key` compiles and silently corrupts every aggregate -- all of
-that is in `skill:eval-improve` and `skill:malloy-gotchas-modeling`, and none of
-it is repeated here. The skills are installed into the agent's workspace and
-loaded by the CLI, so `skill:malloy-gotchas-modeling` resolves as a reference
-instead of being hand-pasted at a guessed path. What is left in this file is
-process: pick the clusters, isolate the tree, capture the diff, write the event.
+that is in `skill:eval-improve` and the `malloy-gotchas-modeling` skill, and
+none of it is repeated here. Both are installed into the agent's workspace and
+loaded by the CLI -- eval-improve by name, malloy-gotchas-modeling with the rest
+of the `modeling` manifest group -- instead of being hand-pasted at a guessed
+path. What is left in this file is process: pick the clusters, isolate the
+tree, capture the diff, write the event.
 
 THIS SCRIPT DOES NOT ACCEPT ANYTHING
 
@@ -275,7 +276,10 @@ def main(argv: list[str] | None = None) -> int:
                          "supplies the eval-* skills. Also EVAL_SKILLS_ROOT")
     ap.add_argument("--no-role-skills", action="store_true",
                     help="load only skill:eval-improve and its transitive "
-                         "closure, as runs before 2026-09-01 did")
+                         "closure, as runs before 2026-09-01 did. That closure "
+                         "is the eval-* skills alone, so the modeling doctrine "
+                         "the edit ladder assumes -- malloy-gotchas-modeling "
+                         "above all -- is NOT loaded")
     a = ap.parse_args(argv)
     a.roots = skills_roots(a.skills_root)
     repo = a.roots[0].parent if a.skills_root else SKILLS_ROOT.parent

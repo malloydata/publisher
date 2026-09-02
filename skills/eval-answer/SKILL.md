@@ -157,4 +157,5 @@ original answerer to "try again" with the new key in context.
 
 - `skill:eval-diagnose`: why it failed, after this record exists.
 - `skill:eval-improve`: smallest model edit, model-owned issues only.
-- `skill:malloy-analysis-pitfalls`: checks before you trust a result you ran.
+- The `malloy-analysis-pitfalls` skill: checks before you trust a result you ran.
+  The judge loads it by name; it is not part of the `eval` group.
