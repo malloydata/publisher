@@ -12,6 +12,7 @@ import {
    embeddingConfigured,
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
+import { referencedGivenNames } from "../../service/authorize";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
@@ -47,6 +48,9 @@ interface Entity {
    // Other spellings of this same field in the same source that were
    // collapsed into it (see collapseAliases). Present only when non-empty.
    aliases?: string[];
+   // Malloy type of a dimension or measure ("string", "number", "date", ...).
+   // What an agent needs to know before it filters or aggregates the field.
+   dataType?: string;
 }
 
 /**
@@ -104,6 +108,8 @@ interface ResultEntity {
    /** Other sources carrying this same concept, when near-identically scored. */
    alsoIn?: string[];
    score?: number;
+   /** Malloy type of a dimension or measure. */
+   dataType?: string;
 }
 
 /**
@@ -143,6 +149,44 @@ interface SourceContextEntry {
     * what an agent needs to stop probing for one and write it inline.
     */
    joins: SourceContextJoin[];
+   /**
+    * The source's doc reduced to its first line, capped, which is the short
+    * label a catalog view shows beside a source name. Absent when undocumented.
+    */
+   oneLineSummary?: string;
+   /**
+    * Model-level `given:` parameters in scope for this source. An agent spends
+    * them on malloy_executeQuery, so knowing they exist is what stops it
+    * guessing at a value the model already defaults.
+    */
+   givens?: SourceContextGiven[];
+   /**
+    * The `#(authorize)` gates in force on this source, and the givens each one
+    * reads. Retrieval that offered a gated source without saying so spent a
+    * slot on an entity the caller could not query, and the agent learned that
+    * only from the denial.
+    *
+    * Report-only, and never a predicate to evaluate caller-side: the list
+    * flattens gates carried in from elsewhere, they are AND-ed rather than
+    * OR-ed, and an unattributable gate reports the fail-closed placeholder
+    * "false" that no author wrote. Read it as "this source is gated, and these
+    * are the givens to supply". See docs/authorize.md.
+    */
+   authorize?: SourceContextAuthorize[];
+}
+
+/** A `given:` a caller may supply, as the model declares it. */
+interface SourceContextGiven {
+   name: string;
+   type?: string;
+   annotations?: string[];
+   default?: string;
+}
+
+/** One authorize gate, with the givens its expression reads. */
+interface SourceContextAuthorize {
+   expression: string;
+   given_names: string[];
 }
 
 /**
@@ -154,11 +198,12 @@ interface SourceContextEntry {
 export const SIBLING_SCORE_EPSILON = 0.03;
 
 /**
- * Ceiling on what the semantic query may fetch, matching the `limit`
- * parameter's own maximum. Sibling collapsing over-fetches to refill the
- * window, and this bounds the scan it can ask for.
+ * The most entities one call may return, and so also the ceiling on what the
+ * semantic query may fetch: sibling collapsing over-fetches to refill the
+ * window, and this bounds the scan it can ask for. Defined once because the
+ * parameter schema, the truncation warning and that scan must agree.
  */
-const SEMANTIC_MAX_LIMIT = 50;
+const MAX_LIMIT = 50;
 
 /**
  * Why a server that HAS an embedding provider answered lexically. Reported
@@ -283,7 +328,10 @@ interface ResourceId {
 
 interface SourceCardInfo {
    resource_id: ResourceId;
+   one_line_summary?: string;
    docs?: string;
+   givens?: SourceContextGiven[];
+   authorize?: SourceContextAuthorize[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
 }
@@ -294,6 +342,7 @@ interface SourceCardEntity {
    entity_type: string;
    relevance?: number;
    description?: string;
+   data_type?: string;
    /** Publisher extension. Stable `kind:source:name`; see {@link entityId}. */
    entity_id: string;
    relationship?: Relationship;
@@ -341,7 +390,12 @@ function toSourceResults(
                   model_path: ctx?.modelPath ?? r.modelPath,
                   source: name,
                },
+               ...(ctx?.oneLineSummary
+                  ? { one_line_summary: ctx.oneLineSummary }
+                  : {}),
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
+               ...(ctx?.givens ? { givens: ctx.givens } : {}),
+               ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
                joins: ctx?.joins ?? [],
             },
          };
@@ -366,6 +420,7 @@ function toSourceResults(
          entity_id: entityId(r.kind, r.source, r.name),
          ...(r.score !== undefined ? { relevance: r.score } : {}),
          ...(r.doc ? { description: r.doc } : {}),
+         ...(r.dataType ? { data_type: r.dataType } : {}),
          ...(r.relationship ? { relationship: r.relationship } : {}),
          ...(r.aliases ? { aliases: r.aliases } : {}),
          ...(r.alsoIn ? { also_in: r.alsoIn } : {}),
@@ -381,6 +436,14 @@ function toSourceResults(
       }
    }
    return Array.from(bySource.values());
+}
+
+/** How many entities the cards carry in total. */
+function entityCountIn(cards: SourceCard[]): number {
+   return cards.reduce(
+      (total, card) => total + (card.entities?.length ?? 0),
+      0,
+   );
 }
 
 /** Cut over-long context text on a word boundary, marking that it was cut. */
@@ -419,7 +482,7 @@ const getContextShape = {
       .number()
       .int()
       .positive()
-      .max(50)
+      .max(MAX_LIMIT)
       .optional()
       .describe(
          "Maximum results to return (max 50). Ranked retrieval defaults to 10; the listing tiers return everything unless you set this.",
@@ -476,11 +539,18 @@ export function sanitize(query: string): string {
  * full set; the optional source-level drill-down is applied by the caller
  * after retrieval.
  */
-async function collectEntities(pkg: Package): Promise<Entity[]> {
+async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // listModels() already returns only .malloy model files (notebooks are listed separately).
-   const models = await pkg.listModels();
+   // Sorted by path because a package can expose one source from several models
+   // and only the first is kept: filesystem order would otherwise decide which
+   // model_path a source reports, and which model's givens ride along with it,
+   // differently on two machines serving the same package.
+   const models = [...(await pkg.listModels())].sort((a, b) =>
+      (a.path ?? "").localeCompare(b.path ?? ""),
+   );
 
    const entities: Entity[] = [];
+   const governance = new Map<string, SourceGovernance>();
    let n = 0;
    for (const apiModel of models) {
       // path is optional in the generated API types; skip models without one.
@@ -492,9 +562,43 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
       // named queries come from getQueries().
       const sourceInfos = model.getSourceInfos() ?? [];
       const queries = model.getQueries() ?? [];
+      // The compiled ApiSource carries what SourceInfo does not: the givens in
+      // scope and the authorize gates in force. Keyed by name so the card can
+      // pick up its own, and read defensively because a spec's model stand-in
+      // implements only the two accessors above.
+      const apiSources = model.getSources?.() ?? [];
 
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
+         // First model wins, matching the entity dedupe below, so a source's
+         // identity and its governance always come from the same model.
+         if (!governance.has(sourceName)) {
+            const apiSource = apiSources.find((c) => c.name === sourceName);
+            if (apiSource) {
+               governance.set(sourceName, {
+                  givens: (apiSource.givens ?? []).flatMap((given) =>
+                     given.name
+                        ? [
+                             {
+                                name: given.name,
+                                ...(given.type ? { type: given.type } : {}),
+                                ...(given.annotations?.length
+                                   ? { annotations: given.annotations }
+                                   : {}),
+                                ...(given.default !== undefined
+                                   ? { default: given.default }
+                                   : {}),
+                             },
+                          ]
+                        : [],
+                  ),
+                  authorize: (apiSource.authorize ?? []).map((expression) => ({
+                     expression,
+                     given_names: referencedGivenNames(expression),
+                  })),
+               });
+            }
+         }
          entities.push({
             id: String(n++),
             kind: "source",
@@ -546,6 +650,9 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
                modelPath,
                doc: docText(field.annotations),
                embedDoc: docOnlyText(field.annotations),
+               ...(field.kind === "view"
+                  ? {}
+                  : { dataType: malloyType(field) }),
             });
          }
       }
@@ -574,7 +681,31 @@ async function collectEntities(pkg: Package): Promise<Entity[]> {
       seen.add(key);
       return true;
    });
-   return collapseAliases(deduped);
+   return { entities: collapseAliases(deduped), governance };
+}
+
+/** What the compiled model says about querying a source, beyond its schema. */
+interface SourceGovernance {
+   givens: SourceContextGiven[];
+   authorize: SourceContextAuthorize[];
+}
+
+/** The entities of a package, plus the per-source governance beside them. */
+interface CollectedModel {
+   entities: Entity[];
+   governance: Map<string, SourceGovernance>;
+}
+
+/**
+ * A field's Malloy type as a plain name: "string", "number", "date".
+ *
+ * The interface spells these `string_type`, `number_type` and so on, which is
+ * an encoding rather than a name an agent would write, so the suffix comes off.
+ * Absent when the interface reports no type, which a model stand-in does.
+ */
+function malloyType(field: { type?: { kind?: string } }): string | undefined {
+   const kind = field.type?.kind;
+   return kind ? kind.replace(/_type$/, "") : undefined;
 }
 
 /**
@@ -653,22 +784,50 @@ interface PackageIndex {
    sourceContext: Map<string, SourceContextEntry>;
 }
 
+/** Longest a one-line summary may be, matching the hosted API's own cap. */
+const ONE_LINE_SUMMARY_MAX_CHARS = 120;
+
 /**
- * Derive per-source context from the collected entities: the source's own doc
- * and every join declared on it. Built once per package alongside the index,
+ * A source's doc reduced to one line: its first sentence or line, capped.
+ *
+ * A catalog view wants a label, not a paragraph, and the full text is still
+ * on the card as `docs`. Undocumented sources get nothing rather than a
+ * fabricated summary, which is what an absent field means on both sides.
+ */
+function oneLineSummary(doc: string): string | undefined {
+   const firstLine = doc.split("\n")[0]?.trim();
+   if (!firstLine) return undefined;
+   const sentenceEnd = firstLine.search(/[.!?](\s|$)/);
+   const summary =
+      sentenceEnd === -1 ? firstLine : firstLine.slice(0, sentenceEnd + 1);
+   return summary.length > ONE_LINE_SUMMARY_MAX_CHARS
+      ? truncateDoc(summary, ONE_LINE_SUMMARY_MAX_CHARS)
+      : summary;
+}
+
+/**
+ * Derive per-source context from the collected entities: the source's own doc,
+ * every join declared on it, and the givens and gates that govern querying it. Built once per package alongside the index,
  * so attaching it to a response costs a lookup rather than a model walk.
  */
 function buildSourceContext(
-   entities: Entity[],
+   collected: CollectedModel,
 ): Map<string, SourceContextEntry> {
+   const { entities, governance } = collected;
    const context = new Map<string, SourceContextEntry>();
    for (const e of entities) {
       if (e.kind !== "source") continue;
+      const gates = governance.get(e.name);
       context.set(e.name, {
          name: e.name,
          modelPath: e.modelPath,
          doc: truncateDoc(e.doc, SOURCE_DOC_MAX_CHARS),
          joins: [],
+         ...(oneLineSummary(e.doc)
+            ? { oneLineSummary: oneLineSummary(e.doc) }
+            : {}),
+         ...(gates?.givens.length ? { givens: gates.givens } : {}),
+         ...(gates?.authorize.length ? { authorize: gates.authorize } : {}),
       });
    }
    for (const e of entities) {
@@ -705,7 +864,8 @@ async function getPackageIndex(
    const cached = indexCache.get(pkg);
    if (cached) return cached;
 
-   const entities = await collectEntities(pkg);
+   const collected = await collectEntities(pkg);
+   const { entities } = collected;
    const byId = new Map(entities.map((e) => [e.id, e]));
    const index = lunr(function () {
       this.ref("id");
@@ -726,7 +886,7 @@ async function getPackageIndex(
       byId,
       index,
       entityCount: entities.length,
-      sourceContext: buildSourceContext(entities),
+      sourceContext: buildSourceContext(collected),
    };
    indexCache.set(pkg, built);
    logger.debug("[MCP Tool getContext] Built and cached entity index", {
@@ -743,31 +903,26 @@ async function getPackageIndex(
  * first and the reference material last, and the reference stays terse to buy
  * room for it. Full prose belongs in docs/ai-agents.md, not here.
  */
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the entities most relevant to a plain-English question, so you ground a query in names the model defines. Start here when you do not know the environment or package names.
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the entities most relevant to a plain-English question, so you ground a query in names the model defines.
 
 ## Contract rules
 - Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
 - Start broad and narrow down: environments, then packages, then sources, then a query.
-- An error, stale, or note field means the data did not load or predates the files: read it before trusting a number.
+- Read warnings, and any error or stale field, before trusting a number: data may be missing, stale, or cut short.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline rather than probing for one.
 - Read a source's doc before querying it: it carries grain and population rules its fields do not.
+- A source with authorize is gated: supply the givens it names, or the query is denied.
 
 ## Parameters
-All optional; supply what you know.
-- none: environments and their packages.
-- environmentName: that environment's packages.
-- + packageName: that package's sources, each with its joins.
-- + query: what you need, in plain English.
-- sourceName: one source. Alone it returns that source's card with every entity, so [] means no such source; with a query it ranks inside it, so [] means nothing matched.
-- limit: caps entities (max 50; retrieval defaults to 10).
+All optional; supply what you know. No arguments lists the environments and their packages; environmentName lists that environment's packages; + packageName lists its sources with their joins; + query ranks its entities. sourceName alone returns one source's full card, so [] means no such source; with a query it ranks inside that source. limit caps entities (max 50; retrieval defaults to 10).
 
 ## Response
-sources[], best first. source_info: resource_id {environment, package, model_path, source}, docs, complete joins. entities[] nest under it, each with name, entity_type (dimension/measure/view/join/query), description, relevance, entity_id. Pass a source as sourceName, a view or query as queryName, and traverse a join as joinName.fieldName. also_in names equal-scoring sources; choose by their docs.
-ranking: relevance (search) or prominence (listing); returned of total_available sources.
-Semantic ranking fills relevance: no sources means nothing cleared the floor, below_cutoff_count of total_entities were rejected, and a "lexical" retrieval adds retrieval_reason (only "indexing" is worth a retry).
+sources[], best first. source_info: resource_id (environment/package/model_path/source), docs, one_line_summary, complete joins, givens, authorize (gates, report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relevance, entity_id. Pass a source as sourceName, a view or query as queryName; traverse a join as joinName.fieldName. also_in names equal-scoring sources; choose by their docs.
+ranking: relevance (search) or prominence (listing); returned of total_available sources; warnings[] says what was cut or stale.
+Semantic ranking fills relevance: no sources means nothing cleared the floor, and below_cutoff_count of total_entities were rejected. A "lexical" retrieval adds retrieval_reason; only "indexing" is worth a retry.
 
 ## Worked example
-{"environmentName":"examples","packageName":"storefront","query":"revenue by product category"}`;
+{"environmentName":"examples","packageName":"storefront","query":"revenue by category"}`;
 
 /**
  * Every tier of this tool answers with `results`, so an error keeps that key
@@ -985,14 +1140,32 @@ export function registerGetContextTool(
             });
          }
          /**
-          * Spread into a payload to attach `note`. Returns {} when there is
-          * nothing to say, so a healthy package's payload stays byte-identical
-          * to what it was before notes existed.
+          * Spread into a payload to attach `warnings`. Returns {} when there is
+          * nothing to say, so a healthy package's payload carries no key at all
+          * rather than an empty array a caller has to test.
+          *
+          * A list rather than one joined string: staleness and truncation are
+          * separate facts with separate remedies, and joining them made the
+          * second read as a continuation of the first.
           */
-         const noteFor = (extra?: string) => {
-            const note = [staleNote, extra].filter(Boolean).join(" ");
-            return note ? { note } : {};
+         const warningsFor = (...extra: (string | undefined)[]) => {
+            const warnings = [staleNote, ...extra].filter(
+               (warning): warning is string => Boolean(warning),
+            );
+            return warnings.length > 0 ? { warnings } : {};
          };
+
+         /**
+          * The warning for a capped result set, or undefined when nothing was
+          * cut. It names the remedy that works here: raising the limit, or
+          * narrowing the question. Telling an agent to "search more
+          * specifically" when the cut was a flat cap sends it to re-query at
+          * the one stage that cannot change the outcome.
+          */
+         const truncationWarning = (returned: number, matched: number) =>
+            matched > returned
+               ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
+               : undefined;
 
          // Tier 3: package but no query -> list the package's sources as an
          // overview the agent can then query or drill into.
@@ -1037,6 +1210,11 @@ export function registerGetContextTool(
                entityBudget -= 1;
                return true;
             });
+            // Counted in the same unit the cap spends, so the warning below is
+            // about the rows a caller actually lost.
+            const cappable = sourceName
+               ? inScope.filter((e) => e.kind !== "source").length
+               : inScope.length;
             // The overview is where an agent decides how to combine sources,
             // so each one states its relationships here rather than making
             // that a second call. toSourceResults carries the complete joins
@@ -1050,6 +1228,9 @@ export function registerGetContextTool(
                   packageName,
                   modelPath: e.modelPath,
                   doc: e.doc,
+                  ...(e.relationship ? { relationship: e.relationship } : {}),
+                  ...(e.aliases ? { aliases: e.aliases } : {}),
+                  ...(e.dataType ? { dataType: e.dataType } : {}),
                })),
                sourceContext,
                environmentName,
@@ -1079,7 +1260,7 @@ export function registerGetContextTool(
                return jsonResource(uri, {
                   sources,
                   ...listingEnvelope,
-                  ...noteFor(
+                  ...warningsFor(
                      "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call malloy_getStatus for load errors and stale packages.",
                   ),
                });
@@ -1087,7 +1268,12 @@ export function registerGetContextTool(
             return jsonResource(uri, {
                sources,
                ...listingEnvelope,
-               ...noteFor(),
+               ...warningsFor(
+                  truncationWarning(
+                     capped.length - (sourceName ? 1 : 0),
+                     cappable,
+                  ),
+               ),
             });
          }
 
@@ -1113,6 +1299,9 @@ export function registerGetContextTool(
          // is a dead end: an agent cannot tell a cold index, which clears in
          // seconds and is worth retrying, from a down provider, which is not.
          let retrievalReason: RetrievalReason | undefined;
+         // How many entities matched before the limit cut the list, so a
+         // capped response can say what it left behind.
+         let semanticMatchCount: number | undefined;
          if (configured) {
             let provider: EmbeddingProvider | null = null;
             try {
@@ -1144,9 +1333,7 @@ export function registerGetContextTool(
                      // returning fewer results than asked for. A drill-down
                      // is already confined to one source, so nothing there
                      // can collapse and the extra rows would be waste.
-                     limit: scoped
-                        ? max
-                        : Math.min(SEMANTIC_MAX_LIMIT, max * 3),
+                     limit: scoped ? max : Math.min(MAX_LIMIT, max * 3),
                      // "" means no drill-down, matching the lexical
                      // path's truthiness filter.
                      sourceName: sourceName || undefined,
@@ -1179,13 +1366,24 @@ export function registerGetContextTool(
                                  ? { relationship: e.relationship }
                                  : {}),
                               ...(e.aliases ? { aliases: e.aliases } : {}),
+                              ...(e.dataType ? { dataType: e.dataType } : {}),
                               score: Math.round(hit.score * 10_000) / 10_000,
                            },
                         ];
                      });
-                     semanticResults = scoped
-                        ? ranked.slice(0, max)
-                        : groupSiblings(ranked, max);
+                     // Grouped ONCE, with no window, then windowed. Sibling
+                     // collapse records the duplicates it merges ON the row it
+                     // keeps, so calling it twice appends every also_in twice;
+                     // and because it only ever drops rows past the limit, the
+                     // full run's first `max` rows are what a limited run
+                     // returns. That makes the ungrouped length the honest
+                     // denominator for the truncation warning: concepts
+                     // available, not rows before merging.
+                     const grouped = scoped
+                        ? ranked
+                        : groupSiblings(ranked, ranked.length);
+                     semanticMatchCount = grouped.length;
+                     semanticResults = grouped.slice(0, max);
                      belowCutoffCount = semantic.belowCutoffCount;
                      totalEntities = semantic.totalEntities;
                   } else {
@@ -1233,7 +1431,12 @@ export function registerGetContextTool(
                ...(totalEntities !== undefined
                   ? { total_entities: totalEntities }
                   : {}),
-               ...noteFor(),
+               ...warningsFor(
+                  truncationWarning(
+                     entityCountIn(sources),
+                     semanticMatchCount ?? entityCountIn(sources),
+                  ),
+               ),
             });
          }
 
@@ -1249,23 +1452,23 @@ export function registerGetContextTool(
          }
 
          // Defensive: skip any hit whose ref is missing from the entity map.
-         const results = hits
+         const matched = hits
             .map((hit) => byId.get(hit.ref))
             .filter((e): e is Entity => e !== undefined)
             // Drill-down: narrow to one source when sourceName is set.
-            .filter((e) => !sourceName || e.source === sourceName)
-            .slice(0, max)
-            .map((e) => ({
-               kind: e.kind,
-               name: e.name,
-               source: e.source,
-               environmentName,
-               packageName,
-               modelPath: e.modelPath,
-               doc: e.doc,
-               ...(e.relationship ? { relationship: e.relationship } : {}),
-               ...(e.aliases ? { aliases: e.aliases } : {}),
-            }));
+            .filter((e) => !sourceName || e.source === sourceName);
+         const results = matched.slice(0, max).map((e) => ({
+            kind: e.kind,
+            name: e.name,
+            source: e.source,
+            environmentName,
+            packageName,
+            modelPath: e.modelPath,
+            doc: e.doc,
+            ...(e.relationship ? { relationship: e.relationship } : {}),
+            ...(e.aliases ? { aliases: e.aliases } : {}),
+            ...(e.dataType ? { dataType: e.dataType } : {}),
+         }));
 
          const sources = toSourceResults(
             results,
@@ -1279,6 +1482,9 @@ export function registerGetContextTool(
             total_available: sources.length,
             returned: sources.length,
          };
+         const lexicalWarnings = warningsFor(
+            truncationWarning(results.length, matched.length),
+         );
          return jsonResource(
             uri,
             configured
@@ -1288,9 +1494,9 @@ export function registerGetContextTool(
                     ...(retrievalReason
                        ? { retrieval_reason: retrievalReason }
                        : {}),
-                    ...noteFor(),
+                    ...lexicalWarnings,
                  }
-               : { ...envelope, ...noteFor() },
+               : { ...envelope, ...lexicalWarnings },
          );
       },
    );

@@ -180,6 +180,14 @@ function parse(result: { content: Content }) {
  * `resource_id` because an un-nested entity has lost it otherwise. Source
  * order then entity order reproduces the original ranking.
  */
+interface SourceCardShape {
+   source_info: {
+      resource_id: { source: string };
+      [key: string]: unknown;
+   };
+   entities?: Record<string, unknown>[];
+}
+
 function rankedEntities(payload: {
    sources?: {
       source_info: { resource_id: { source: string } };
@@ -191,7 +199,21 @@ function rankedEntities(payload: {
          ...e,
          source: s.source_info.resource_id.source,
       })),
-   ) as Record<string, any>[];
+   ) as RankedEntity[];
+}
+
+/** One entity as the response ships it, tagged with the source it came from. */
+interface RankedEntity {
+   name: string;
+   entity_type: string;
+   source: string;
+   entity_id?: string;
+   description?: string;
+   data_type?: string;
+   relevance?: number;
+   relationship?: string;
+   aliases?: string[];
+   also_in?: string[];
 }
 
 /** The sources a response returned, by name, in response order. */
@@ -359,8 +381,8 @@ const mockTwoSourceModel = {
                { kind: "view", name: "by_month", annotations: [] },
                { kind: "dimension", name: "status", annotations: [] },
                { kind: "measure", name: "total_revenue", annotations: [] },
-               // Structural: collectEntities skips joins, so a drill-down must
-               // not start surfacing them just because the kind filter widened.
+               // A declared join is an entity of this source, so a drill-down
+               // shows what the agent can traverse.
                { kind: "join", name: "customer", annotations: [] },
             ],
          },
@@ -586,6 +608,7 @@ describe("get_context discovery tiers", () => {
                      model_path: "ecommerce.malloy",
                      source: "order_items",
                   },
+                  one_line_summary: "One row per product sold on an order.",
                   docs: "One row per product sold on an order.",
                   joins: [
                      {
@@ -603,9 +626,9 @@ describe("get_context discovery tiers", () => {
       });
    });
 
-   it("tier 3: a populated listing of a current package carries no note", async () => {
-      // Notes are for the ambiguous cases only; a healthy payload must stay
-      // byte-identical to what it was before notes existed.
+   it("tier 3: a populated listing of a current package carries no warnings", async () => {
+      // Warnings are for the ambiguous cases only; a healthy payload must stay
+      // byte-identical to what it was before warnings existed.
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
@@ -615,7 +638,7 @@ describe("get_context discovery tiers", () => {
             packageName: "ecommerce",
          }),
       );
-      expect("note" in payload).toBe(false);
+      expect("warnings" in payload).toBe(false);
    });
 
    it("tier 3: a stale package says its names predate the last save", async () => {
@@ -644,9 +667,9 @@ describe("get_context discovery tiers", () => {
          }),
       );
       expect(payload.sources).toHaveLength(1);
-      expect(payload.note).toContain("STALE");
-      expect(payload.note).toContain("2026-08-13T00:00:00.000Z");
-      expect(payload.note).toContain("malloy_reloadPackage");
+      expect(payload.warnings.join(" ")).toContain("STALE");
+      expect(payload.warnings.join(" ")).toContain("2026-08-13T00:00:00.000Z");
+      expect(payload.warnings.join(" ")).toContain("malloy_reloadPackage");
    });
 
    it("tier 4: retrieval against a stale package carries the note too", async () => {
@@ -674,7 +697,7 @@ describe("get_context discovery tiers", () => {
             query: "order items",
          }),
       );
-      expect(payload.note).toContain("STALE");
+      expect(payload.warnings.join(" ")).toContain("STALE");
    });
 
    it("tier 3: an empty listing says it is a curation gap, not an empty database", async () => {
@@ -695,8 +718,8 @@ describe("get_context discovery tiers", () => {
          }),
       );
       expect(payload.sources).toEqual([]);
-      expect(payload.note).toContain("curation gap");
-      expect(payload.note).toContain("malloy_getStatus");
+      expect(payload.warnings.join(" ")).toContain("curation gap");
+      expect(payload.warnings.join(" ")).toContain("malloy_getStatus");
    });
 
    it("tier 4: a query retrieves the matching entity", async () => {
@@ -788,7 +811,7 @@ describe("get_context discovery tiers", () => {
       // Shape before brevity: a form that dropped the middle segment for an
       // entity with no source would hand callers two id shapes to parse.
       for (const r of results) {
-         expect(r.entity_id.split(":")).toHaveLength(3);
+         expect(r.entity_id?.split(":")).toHaveLength(3);
          expect(r.entity_id).toBe(`${r.entity_type}:${r.source}:${r.name}`);
       }
    });
@@ -855,6 +878,7 @@ describe("get_context discovery tiers", () => {
             model_path: "ecommerce.malloy",
             source: "order_items",
          },
+         one_line_summary: "One row per product sold on an order.",
          docs: "One row per product sold on an order.",
          joins: [
             {
@@ -1124,7 +1148,10 @@ describe("get_context discovery tiers", () => {
       expect(payload.sources[0].source_info.docs).toBe("One row per order.");
       expect(
          payload.sources[0].entities.map(
-            (e: { entity_type: string; name: string }) => [e.entity_type, e.name],
+            (e: { entity_type: string; name: string }) => [
+               e.entity_type,
+               e.name,
+            ],
          ),
       ).toEqual([
          ["view", "by_month"],
@@ -1158,7 +1185,10 @@ describe("get_context discovery tiers", () => {
       );
       expect(
          payload.sources[0].entities.map(
-            (e: { entity_type: string; name: string }) => [e.entity_type, e.name],
+            (e: { entity_type: string; name: string }) => [
+               e.entity_type,
+               e.name,
+            ],
          ),
       ).toEqual([["dimension", "state"]]);
    });
@@ -1224,7 +1254,10 @@ describe("get_context discovery tiers", () => {
       // rather than the source row plus one field.
       expect(
          payload.sources[0].entities.map(
-            (e: { entity_type: string; name: string }) => [e.entity_type, e.name],
+            (e: { entity_type: string; name: string }) => [
+               e.entity_type,
+               e.name,
+            ],
          ),
       ).toEqual([
          ["view", "by_month"],
@@ -1247,9 +1280,9 @@ describe("get_context discovery tiers", () => {
          }),
       );
       expect("retrieval" in payload).toBe(false);
-      expect(
-         rankedEntities(payload).every((e) => !("relevance" in e)),
-      ).toBe(true);
+      expect(rankedEntities(payload).every((e) => !("relevance" in e))).toBe(
+         true,
+      );
    });
 });
 
@@ -1444,6 +1477,7 @@ describe("get_context semantic retrieval", () => {
                   model_path: "ecommerce.malloy",
                   source: "order_items",
                },
+               one_line_summary: "One row per product sold on an order.",
                docs: "One row per product sold on an order.",
                joins: [
                   {
@@ -1583,7 +1617,7 @@ describe("get_context semantic retrieval", () => {
       const sites = rankedEntities(payload).filter((r) => r.name === "site");
       expect(sites).toHaveLength(1);
       expect(sites[0].also_in).toHaveLength(2);
-      expect([sites[0].source, ...sites[0].also_in].sort()).toEqual(
+      expect([sites[0].source, ...(sites[0].also_in ?? [])].sort()).toEqual(
          [...SIBLING_SOURCES].sort(),
       );
    });
@@ -1688,5 +1722,451 @@ describe("get_context semantic retrieval", () => {
          _clearEmbeddingProviderForTests();
          _setEmbeddingProviderForTests(null);
       }
+   });
+});
+
+/**
+ * The card fields that come from the compiled model rather than from its
+ * schema: what governs querying a source, and what type a field carries.
+ *
+ * These exist because retrieval that names an entity without them sends an
+ * agent to write a query it cannot run. A gated source looks like any other
+ * until the denial arrives; a given the model defaults looks like a value the
+ * agent has to invent; and a field's type decides whether it can be filtered
+ * with a string or summed at all.
+ */
+describe("get_context source governance and field types", () => {
+   const gatedModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders_secured",
+            annotations: ["#(doc) Orders visible to this caller."],
+            schema: {
+               fields: [
+                  { kind: "measure", name: "order_count", annotations: [] },
+               ],
+            },
+         },
+         {
+            name: "sales",
+            annotations: [],
+            schema: {
+               fields: [{ kind: "dimension", name: "region", annotations: [] }],
+            },
+         },
+      ],
+      getQueries: () => [],
+      getSources: () => [
+         {
+            name: "orders_secured",
+            givens: [
+               { name: "ROLE", type: "string", default: "'analyst'" },
+               { name: "TENANT", type: "string" },
+            ],
+            authorize: ["$ROLE = 'admin' or $TENANT = 'acme'"],
+         },
+         {
+            name: "sales",
+            givens: [{ name: "REGION", type: "filter<string>" }],
+         },
+      ],
+   };
+   const gatedPackage = {
+      listModels: async () => [{ path: "governed.malloy" }],
+      getModel: () => gatedModel,
+   };
+
+   it("reports a source's authorize gates and the givens they read", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => gatedPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "specs",
+            packageName: "governed",
+         }),
+      );
+      const gated = payload.sources.find(
+         (c: SourceCardShape) =>
+            c.source_info.resource_id.source === "orders_secured",
+      );
+      expect(gated.source_info.authorize).toEqual([
+         {
+            expression: "$ROLE = 'admin' or $TENANT = 'acme'",
+            given_names: ["ROLE", "TENANT"],
+         },
+      ]);
+      expect(gated.source_info.givens).toEqual([
+         { name: "ROLE", type: "string", default: "'analyst'" },
+         { name: "TENANT", type: "string" },
+      ]);
+   });
+
+   it("omits authorize on an ungated source rather than sending it empty", async () => {
+      // Absence is the contract on both sides, and an empty array would read
+      // as "a gate with no expressions" to anything checking length.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => gatedPackage),
+      });
+      const payload = parse(
+         await handler({ environmentName: "specs", packageName: "governed" }),
+      );
+      const open = payload.sources.find(
+         (c: SourceCardShape) => c.source_info.resource_id.source === "sales",
+      );
+      expect("authorize" in open.source_info).toBe(false);
+      expect(open.source_info.givens).toEqual([
+         { name: "REGION", type: "filter<string>" },
+      ]);
+   });
+
+   it("omits both when the model exposes no compiled sources", async () => {
+      // getSources() is read defensively: a model that does not implement it
+      // must still list, not throw, and must not grow empty keys.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "malloy-samples",
+            packageName: "ecommerce",
+         }),
+      );
+      expect("givens" in payload.sources[0].source_info).toBe(false);
+      expect("authorize" in payload.sources[0].source_info).toBe(false);
+   });
+
+   it("carries a field's Malloy type, and only where a type exists", async () => {
+      const typedModel = {
+         getSourceInfos: () => [
+            {
+               name: "orders",
+               annotations: [],
+               schema: {
+                  fields: [
+                     {
+                        kind: "dimension",
+                        name: "status",
+                        type: { kind: "string_type" },
+                        annotations: [],
+                     },
+                     {
+                        kind: "measure",
+                        name: "revenue",
+                        type: { kind: "number_type" },
+                        annotations: [],
+                     },
+                     { kind: "view", name: "by_month", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "typed.malloy" }],
+               getModel: () => typedModel,
+            })),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "specs",
+            packageName: "typed",
+            sourceName: "orders",
+         }),
+      );
+      const byName = new Map(
+         (payload.sources[0].entities as RankedEntity[]).map((e) => [
+            e.name,
+            e,
+         ]),
+      );
+      expect(byName.get("status")?.data_type).toBe("string");
+      expect(byName.get("revenue")?.data_type).toBe("number");
+      // A view is a query, not a value, so it has no type to report.
+      expect("data_type" in (byName.get("by_month") ?? {})).toBe(false);
+   });
+
+   it("summarizes a source in one line, cut at its first sentence", async () => {
+      const wordy = `#(doc) One row per order. ${"Detail sentence. ".repeat(20)}`;
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "wordy.malloy" }],
+               getModel: () => ({
+                  getSourceInfos: () => [
+                     {
+                        name: "orders",
+                        annotations: [wordy],
+                        schema: { fields: [] },
+                     },
+                  ],
+                  getQueries: () => [],
+               }),
+            })),
+      });
+      const payload = parse(
+         await handler({ environmentName: "specs", packageName: "wordy" }),
+      );
+      const info = payload.sources[0].source_info;
+      expect(info.one_line_summary).toBe("One row per order.");
+      // The full text stays on the card; the summary is a label, not a
+      // replacement for it.
+      expect(info.docs.length).toBeGreaterThan(info.one_line_summary.length);
+   });
+
+   it("omits the summary for an undocumented source", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockTwoSourcePackage),
+      });
+      const payload = parse(
+         await handler({ environmentName: "specs", packageName: "sales" }),
+      );
+      const customers = payload.sources.find(
+         (c: SourceCardShape) =>
+            c.source_info.resource_id.source === "customers",
+      );
+      expect("one_line_summary" in customers.source_info).toBe(false);
+   });
+});
+
+/**
+ * What a capped response says about what it left out.
+ *
+ * A response cut to `limit` used to look identical to one that found exactly
+ * that many entities, so an agent stopped at a partial answer believing it was
+ * complete. The warning states the count and the remedy that works, which is
+ * raising the limit or narrowing the question -- not "search more
+ * specifically", which is advice about a stage that did not do the cutting.
+ */
+describe("get_context truncation reporting", () => {
+   const wideModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: [],
+            schema: {
+               fields: Array.from({ length: 12 }, (_, i) => ({
+                  kind: "measure",
+                  name: `revenue_${i}`,
+                  // Documented so a lexical search matches all twelve:
+                  // `revenue_0` is a single lunr token and the bare term
+                  // would not reach it.
+                  annotations: [`#(doc) Revenue measure ${i}.`],
+               })),
+            },
+         },
+      ],
+      getQueries: () => [],
+   };
+   const widePackage = {
+      listModels: async () => [{ path: "wide.malloy" }],
+      getModel: () => wideModel,
+   };
+
+   it("says how many entities a capped drill-down left out", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => widePackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "specs",
+            packageName: "wide",
+            sourceName: "orders",
+            limit: 4,
+         }),
+      );
+      expect(payload.sources[0].entities).toHaveLength(4);
+      expect(payload.warnings.join(" ")).toContain("Returned 4 of 12");
+      expect(payload.warnings.join(" ")).toContain("Raise limit");
+   });
+
+   it("says how many entities a capped search left out", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => widePackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "specs",
+            packageName: "wide",
+            query: "revenue",
+            limit: 3,
+         }),
+      );
+      expect(rankedEntities(payload)).toHaveLength(3);
+      expect(payload.warnings.join(" ")).toContain("Returned 3 of 12");
+   });
+
+   it("stays silent when nothing was cut", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => widePackage),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "specs",
+            packageName: "wide",
+            sourceName: "orders",
+            limit: 50,
+         }),
+      );
+      expect("warnings" in payload).toBe(false);
+   });
+});
+
+/**
+ * Duplicate and hidden entities, the classes that decide what a result window
+ * is actually worth. Each is a defect observed in a comparable retrieval
+ * service; these pin whether Publisher shares it.
+ */
+describe("get_context duplicate and visibility handling", () => {
+   const sharedSource = {
+      name: "orders",
+      annotations: ["#(doc) One row per order."],
+      schema: {
+         fields: [{ kind: "dimension", name: "status", annotations: [] }],
+      },
+   };
+
+   it("indexes a re-exported source once, from the same model every time", async () => {
+      // A package can expose one source from several models (an import, or a
+      // model that extends another). Only the first is kept, so which model
+      // that is has to be a property of the package rather than of the order
+      // the filesystem happened to list it in.
+      const pathsFor = async (models: string[]) => {
+         const handler = captureHandler({
+            getEnvironment: async () =>
+               envWith(async () => ({
+                  listModels: async () => models.map((path) => ({ path })),
+                  getModel: () => ({
+                     getSourceInfos: () => [sharedSource],
+                     getQueries: () => [],
+                  }),
+               })),
+         });
+         const payload = parse(
+            await handler({ environmentName: "specs", packageName: "dup" }),
+         );
+         expect(payload.sources).toHaveLength(1);
+         return payload.sources[0].source_info.resource_id.model_path;
+      };
+      expect(await pathsFor(["a.malloy", "b.malloy"])).toBe("a.malloy");
+      // Reversed listing, same answer: the choice does not follow the order.
+      expect(await pathsFor(["b.malloy", "a.malloy"])).toBe("a.malloy");
+   });
+
+   it("never returns a join declared inside another join's target", async () => {
+      // A joined source's own joins belong to that source, and it is indexed
+      // under its own name. Surfacing them here would offer a path the caller
+      // cannot write from this source, at a grain it did not ask for.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "nested.malloy" }],
+               getModel: () => ({
+                  getSourceInfos: () => [
+                     {
+                        name: "order_items",
+                        annotations: [],
+                        schema: {
+                           fields: [
+                              {
+                                 kind: "join",
+                                 name: "products",
+                                 relationship: "one",
+                                 annotations: [],
+                                 schema: {
+                                    fields: [
+                                       {
+                                          kind: "join",
+                                          name: "category",
+                                          relationship: "one",
+                                          annotations: [],
+                                          schema: { fields: [] },
+                                       },
+                                    ],
+                                 },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  getQueries: () => [],
+               }),
+            })),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "specs",
+            packageName: "nested",
+            sourceName: "order_items",
+         }),
+      );
+      const names = payload.sources[0].entities.map(
+         (e: { name: string }) => e.name,
+      );
+      expect(names).toEqual(["products"]);
+      // The card's join list is the source's own, and complete.
+      expect(payload.sources[0].source_info.joins).toEqual([
+         { name: "products", relationship: "one" },
+      ]);
+   });
+
+   it("treats an underscore-prefixed name as an ordinary field", async () => {
+      // Malloy has no naming convention for privacy; hiding a field is what
+      // `include { internal: ... }` is for, and the compiler drops those
+      // before this code sees them. Inventing a second rule here would hide a
+      // field its author never asked to hide.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "u.malloy" }],
+               getModel: () => ({
+                  getSourceInfos: () => [
+                     {
+                        name: "orders",
+                        annotations: [],
+                        schema: {
+                           fields: [
+                              {
+                                 kind: "dimension",
+                                 name: "_internal_key",
+                                 annotations: [],
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  getQueries: () => [],
+               }),
+            })),
+      });
+      const payload = parse(
+         await handler({
+            environmentName: "specs",
+            packageName: "u",
+            sourceName: "orders",
+         }),
+      );
+      expect(
+         payload.sources[0].entities.map((e: { name: string }) => e.name),
+      ).toEqual(["_internal_key"]);
+   });
+
+   it("states a source's doc once, not once per matching entity", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const result = await handler({
+         environmentName: "malloy-samples",
+         packageName: "ecommerce",
+         query: "order state",
+      });
+      const text = JSON.stringify(parse(result).sources);
+      const doc = "One row per product sold on an order.";
+      // Once as `docs`, once as the one-line summary derived from it, and
+      // never repeated onto the entities that nest under the card.
+      expect(text.split(doc).length - 1).toBe(2);
    });
 });

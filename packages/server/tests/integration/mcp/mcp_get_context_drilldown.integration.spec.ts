@@ -120,9 +120,9 @@ describe.serial("malloy_getContext drill-down (E2E, real model)", () => {
       expect(sources.length).toBeGreaterThan(0);
       // An overview names sources; nothing nests under them.
       expect(sources.every((c) => c.entities === undefined)).toBe(true);
-      expect(
-         sources.map((c) => c.source_info.resource_id.source),
-      ).toContain("products");
+      expect(sources.map((c) => c.source_info.resource_id.source)).toContain(
+         "products",
+      );
    });
 
    it("an unknown sourceName returns nothing rather than everything", async () => {

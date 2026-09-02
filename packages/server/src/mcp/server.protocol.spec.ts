@@ -140,6 +140,14 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          "below_cutoff_count",
          "total_entities",
          "retrieval_reason",
+         "warnings",
+         "data_type",
+         "one_line_summary",
+         // The two an agent cannot recover from a failed query: a gated
+         // source denies rather than erroring usefully, and a given it
+         // never supplies silently takes the model's default.
+         "givens",
+         "authorize",
          // Not agent-actionable — an agent writes Malloy from name and
          // sourceName, never from a composite key — but pinned on the same
          // rule anyway, since a harness that cannot identify an entity
