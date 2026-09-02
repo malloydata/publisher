@@ -10,6 +10,7 @@ import {
    EmbeddingProvider,
    EMBEDDING_BATCH_TIMEOUT_MS,
    EMBEDDING_QUERY_TIMEOUT_MS,
+   MAX_EMBED_INPUT_CHARS,
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
 
@@ -171,6 +172,22 @@ export const NAME_FACET = "name";
 export const CHUNK_TARGET_CHARS = 300;
 export const CHUNK_MAX_CHARS = 500;
 export const MAX_DOC_CHUNKS = 8;
+/**
+ * Ceiling the adaptive packing may grow a chunk to. Sits below
+ * MAX_EMBED_INPUT_CHARS with room for the `<name>: ` prefix entityFacets
+ * adds, so packing alone never produces a chunk that has to be split.
+ */
+export const CHUNK_HARD_MAX_CHARS = 768;
+/**
+ * The most doc text one entity can contribute, across every chunk.
+ *
+ * A fixed per-entity embedding budget and complete coverage of an unbounded
+ * doc cannot both hold. This names where coverage stops, so the loss is a
+ * stated bound rather than an invisible cut downstream; syncPackageEmbeddings
+ * warns whenever a doc exceeds it. Six thousand characters is far past any
+ * doc observed in a real model, and everything under it is embedded whole.
+ */
+export const MAX_DOC_CHARS = MAX_DOC_CHUNKS * CHUNK_HARD_MAX_CHARS;
 
 /** One embeddable unit of an entity: its name, or a chunk of its doc. */
 export interface EntityFacet {
@@ -193,17 +210,39 @@ export interface EntityFacet {
  * dropped with no signal — the tail of a long doc was not merely diluted, it
  * was never embedded at all.
  *
- * Splits on sentence boundaries and packs greedily toward CHUNK_TARGET_CHARS,
- * so a chunk is a few whole sentences rather than a cut phrase. A sentence
- * longer than the ceiling on its own is kept whole rather than cut
- * mid-clause; prepareEmbeddingInput still bounds what is sent. Past
- * MAX_DOC_CHUNKS the remainder is folded into the last chunk, so no text is
- * silently dropped the way the old cap dropped it.
+ * Splits on sentence boundaries and packs greedily toward a target that grows
+ * with the doc, so MAX_DOC_CHUNKS chunks cover the whole of it. A doc short
+ * enough for the plain CHUNK_TARGET_CHARS keeps that target, so ordinary docs
+ * chunk exactly as they did and cost no re-embed.
+ *
+ * Whole sentences are preserved, never cut. A chunk too long to embed once
+ * prefixed is split into further facets by entityFacets, so no text is lost
+ * between here and the provider. An earlier form folded an unbounded
+ * remainder into the last chunk and claimed nothing was dropped; the fold was
+ * then cut at MAX_EMBED_INPUT_CHARS and the tail vanished anyway. Coverage
+ * now stops at exactly one place, MAX_DOC_CHARS, and syncPackageEmbeddings
+ * warns when a doc reaches it.
  */
 export function chunkDoc(doc: string): string[] {
-   const text = doc.replace(/\s+/g, " ").trim();
-   if (!text) return [];
+   const full = doc.replace(/\s+/g, " ").trim();
+   if (!full) return [];
+   const text =
+      full.length > MAX_DOC_CHARS ? splitToFit(full, MAX_DOC_CHARS)[0] : full;
    if (text.length <= CHUNK_MAX_CHARS) return [text];
+
+   // Grow the target so the doc fits in MAX_DOC_CHUNKS, and grow the ceiling
+   // with it in the same proportion the two constants hold.
+   const target = Math.min(
+      Math.max(CHUNK_TARGET_CHARS, Math.ceil(text.length / MAX_DOC_CHUNKS)),
+      CHUNK_HARD_MAX_CHARS,
+   );
+   const ceiling = Math.min(
+      Math.max(
+         CHUNK_MAX_CHARS,
+         Math.round((target * CHUNK_MAX_CHARS) / CHUNK_TARGET_CHARS),
+      ),
+      CHUNK_HARD_MAX_CHARS,
+   );
 
    const sentences = text.split(/(?<=[.!?])\s+/);
    const chunks: string[] = [];
@@ -216,9 +255,8 @@ export function chunkDoc(doc: string): string[] {
       const joined = `${current} ${sentence}`;
       // Pack until the target, but never push a chunk past the ceiling.
       if (
-         joined.length <= CHUNK_TARGET_CHARS ||
-         (current.length < CHUNK_TARGET_CHARS &&
-            joined.length <= CHUNK_MAX_CHARS)
+         joined.length <= target ||
+         (current.length < target && joined.length <= ceiling)
       ) {
          current = joined;
          continue;
@@ -228,10 +266,15 @@ export function chunkDoc(doc: string): string[] {
    }
    if (current) chunks.push(current);
 
+   // Uneven sentence lengths can still overshoot the chunk count, so fold the
+   // tail as before. Nothing is truncated here: a chunk too long to embed
+   // with its prefix is SPLIT into further facets by entityFacets, which is
+   // the only place the prefix length is known.
    if (chunks.length > MAX_DOC_CHUNKS) {
-      const kept = chunks.slice(0, MAX_DOC_CHUNKS - 1);
-      kept.push(chunks.slice(MAX_DOC_CHUNKS - 1).join(" "));
-      return kept;
+      return [
+         ...chunks.slice(0, MAX_DOC_CHUNKS - 1),
+         chunks.slice(MAX_DOC_CHUNKS - 1).join(" "),
+      ];
    }
    return chunks;
 }
@@ -261,10 +304,40 @@ export function chunkDoc(doc: string): string[] {
 export function entityFacets(entity: EmbeddableEntity): EntityFacet[] {
    const name = humanizeName(entity.name) || entity.name;
    const facets: EntityFacet[] = [{ facet: NAME_FACET, text: name }];
-   chunkDoc(entity.embedDoc).forEach((chunk, i) => {
-      facets.push({ facet: `doc:${i}`, text: `${name}: ${chunk}` });
-   });
+   // The prefix is only known here, so this is the only place that can tell
+   // whether a chunk will fit the provider's input cap. A chunk that does not
+   // fit is split across facets rather than cut: prepareEmbeddingInput used
+   // to trim the overflow away with no signal, which is the loss chunking
+   // exists to remove.
+   const room = MAX_EMBED_INPUT_CHARS - name.length - 2;
+   let i = 0;
+   for (const chunk of chunkDoc(entity.embedDoc)) {
+      for (const piece of splitToFit(chunk, room)) {
+         facets.push({ facet: `doc:${i++}`, text: `${name}: ${piece}` });
+      }
+   }
    return facets;
+}
+
+/**
+ * Break text into pieces of at most `max` characters, on word boundaries
+ * where one is available. `max` at or below zero yields one piece, leaving
+ * the provider's own cap as the backstop: an entity name longer than the
+ * whole input budget has no room to give.
+ */
+function splitToFit(text: string, max: number): string[] {
+   if (max <= 0 || text.length <= max) return [text];
+   const pieces: string[] = [];
+   let rest = text;
+   while (rest.length > max) {
+      const head = rest.slice(0, max);
+      const lastSpace = head.lastIndexOf(" ");
+      const cut = lastSpace > max * 0.6 ? lastSpace : max;
+      pieces.push(rest.slice(0, cut).trimEnd());
+      rest = rest.slice(cut).trimStart();
+   }
+   if (rest) pieces.push(rest);
+   return pieces;
 }
 
 function contentHash(text: string): string {
@@ -553,6 +626,30 @@ async function syncPackageEmbeddings(
             r,
          ]),
       );
+
+      // A doc past MAX_DOC_CHARS cannot be covered inside the per-entity
+      // embedding budget, so its tail is not embedded and cannot be retrieved
+      // by its own wording. Say so once per sync, naming the entity: this is
+      // the one loss chunking does not remove, and it must not be silent.
+      for (const entity of entities) {
+         const docChars = entity.embedDoc.replace(/\s+/g, " ").trim().length;
+         if (docChars > MAX_DOC_CHARS) {
+            logger.warn(
+               "[MCP Tool getContext] Documentation past the per-entity limit is not embedded",
+               {
+                  environmentName,
+                  packageName,
+                  entity: entityRowKey(
+                     entity.kind,
+                     sourceColumn(entity.source),
+                     entity.name,
+                  ),
+                  docChars,
+                  embeddedChars: MAX_DOC_CHARS,
+               },
+            );
+         }
+      }
 
       // One desired row per (entity, facet). Hashing per facet is what keeps
       // the diff cheap under faceting: editing a doc re-embeds that entity's

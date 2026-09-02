@@ -22,6 +22,7 @@ import type { Package } from "../../service/package";
 import {
    CHUNK_MAX_CHARS,
    EmbeddableEntity,
+   MAX_DOC_CHARS,
    MAX_DOC_CHUNKS,
    MAX_EMBEDDED_ENTITIES,
    DEFAULT_EMBEDDING_MIN_SIMILARITY,
@@ -206,13 +207,60 @@ describe("chunkDoc / entityFacets", () => {
       }
    });
 
-   it("caps the chunk count, folding the remainder into the last chunk", () => {
-      // The bound on what one lavishly-documented entity can cost, and the
-      // reason the fold exists: the previous cap DROPPED the overflow.
+   it("covers a long doc within the chunk cap, as EMBEDDED text", () => {
+      // Asserted on what prepareEmbeddingInput actually sends, not on
+      // chunkDoc's return value. The earlier version of this test checked
+      // chunks.join(" ") and so passed while the folded last chunk was cut
+      // from 1,649 chars to 1,024 downstream and sentences 50-59 were never
+      // embedded at all.
       const doc = Array.from({ length: 60 }, (_, i) => sentence(i)).join(" ");
-      const chunks = chunkDoc(doc);
-      expect(chunks).toHaveLength(MAX_DOC_CHUNKS);
-      expect(chunks.join(" ")).toContain(sentence(59));
+      expect(chunkDoc(doc).length).toBeLessThanOrEqual(MAX_DOC_CHUNKS);
+
+      const embedded = entityFacets(entity("fclt_rooms", "src", doc)).map((f) =>
+         prepareEmbeddingInput(f.text),
+      );
+      for (let i = 0; i < 60; i++) {
+         expect(embedded.some((text) => text.includes(sentence(i)))).toBe(true);
+      }
+   });
+
+   it("never emits a facet prepareEmbeddingInput would cut", () => {
+      // The invariant that makes the coverage test above meaningful: if a
+      // facet could still exceed the provider input cap, coverage would be a
+      // property of this fixture rather than of the code. Asserted on facets
+      // rather than chunks, because a single over-long sentence is kept whole
+      // by chunkDoc and split into facets only once the prefix is known.
+      const runOn = `${"word ".repeat(400).trim()}.`;
+      for (const doc of [
+         Array.from({ length: 12 }, (_, i) => sentence(i)).join(" "),
+         Array.from({ length: 200 }, (_, i) => sentence(i)).join(" "),
+         runOn,
+      ]) {
+         for (const facet of entityFacets(entity("s", "src", doc))) {
+            expect(prepareEmbeddingInput(facet.text)).toBe(facet.text);
+         }
+      }
+   });
+
+   it("splits an over-long sentence across facets instead of cutting it", () => {
+      const runOn = `${"word ".repeat(400).trim()}.`;
+      const facets = entityFacets(entity("s", "src", runOn));
+      const docFacets = facets.filter((f) => f.facet !== "name");
+      expect(docFacets.length).toBeGreaterThan(1);
+      // Every word survives somewhere, which cutting at the input cap did not.
+      const rejoined = docFacets.map((f) => f.text).join(" ");
+      expect(rejoined.split("word").length - 1).toBe(400);
+   });
+
+   it("cuts a doc past the per-entity limit at one stated bound", () => {
+      // Past MAX_DOC_CHARS coverage genuinely stops -- a fixed embedding
+      // budget cannot cover an unbounded doc. Pin that it stops HERE, in
+      // chunkDoc where the bound is named, rather than downstream.
+      const doc = Array.from({ length: 800 }, (_, i) => sentence(i)).join(" ");
+      expect(doc.length).toBeGreaterThan(MAX_DOC_CHARS);
+      const covered = chunkDoc(doc).join(" ").length;
+      expect(covered).toBeLessThanOrEqual(MAX_DOC_CHARS);
+      expect(covered).toBeGreaterThan(MAX_DOC_CHARS * 0.9);
    });
 
    it("keeps an over-long single sentence whole rather than cutting it", () => {
