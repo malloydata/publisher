@@ -72,7 +72,10 @@ interface Entity {
  * - ALWAYS three colon-separated segments. A form that drops the middle
  *   segment when there is no source produces two ids of different shape for
  *   one caller to parse, and the caller that splits on ":" and reads [1] as
- *   the source gets the name instead, silently.
+ *   the source gets the name instead, silently. A colon inside a segment
+ *   would break the same caller the same way, and a backtick-quoted Malloy
+ *   identifier may contain one, so segments are percent-encoded. Ordinary
+ *   names contain neither ":" nor "%", so their ids are unchanged.
  * - A container is its own source, so a source is `source:orders:orders`.
  *   Same reason: shape before brevity. A model-level named query with no
  *   declared source follows the same rule.
@@ -86,7 +89,15 @@ export function entityId(
    source: string | undefined,
    name: string,
 ): string {
-   return `${kind}:${source ?? name}:${name}`;
+   return [kind, source ?? name, name].map(encodeIdSegment).join(":");
+}
+
+/**
+ * Percent-encode the two characters that would break `split(":")`: the
+ * separator itself, and the escape character, so the encoding is reversible.
+ */
+function encodeIdSegment(segment: string): string {
+   return segment.replace(/%/g, "%25").replace(/:/g, "%3A");
 }
 
 /**

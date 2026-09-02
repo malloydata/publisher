@@ -16,6 +16,7 @@ import * as path from "path";
 import {
    docOnlyText,
    docText,
+   entityId,
    sanitize,
    registerGetContextTool,
 } from "./get_context_tool";
@@ -814,6 +815,42 @@ describe("get_context discovery tiers", () => {
          expect(r.entity_id?.split(":")).toHaveLength(3);
          expect(r.entity_id).toBe(`${r.entity_type}:${r.source}:${r.name}`);
       }
+   });
+
+   it("keeps entity_id at three segments for a sourceless entity", () => {
+      // The case the docstring calls out as already costly and no test
+      // covered: a model-level named query declares no source, and a caller
+      // splitting on ":" must still read [1] as the source.
+      const id = entityId("query", undefined, "top_sellers");
+      expect(id).toBe("query:top_sellers:top_sellers");
+      expect(id.split(":")).toHaveLength(3);
+      // A container is its own source, so a source self-references.
+      expect(entityId("source", "orders", "orders")).toBe(
+         "source:orders:orders",
+      );
+   });
+
+   it("keeps entity_id at three segments when a name contains a colon", () => {
+      // A backtick-quoted Malloy identifier may contain ":". Unescaped, the
+      // id grew extra segments and a caller reading [1] as the source got a
+      // fragment of the name instead.
+      const id = entityId("dimension", "orders", "a:b");
+      expect(id.split(":")).toHaveLength(3);
+      expect(id.split(":").map(decodeURIComponent)).toEqual([
+         "dimension",
+         "orders",
+         "a:b",
+      ]);
+      // Reversible, so "%" in a name round-trips too.
+      expect(
+         entityId("dimension", "orders", "100%:done")
+            .split(":")
+            .map(decodeURIComponent)[2],
+      ).toBe("100%:done");
+      // Ordinary names are untouched.
+      expect(entityId("measure", "orders", "revenue")).toBe(
+         "measure:orders:revenue",
+      );
    });
 
    it("tier 4: does not recurse into a join's own schema", async () => {

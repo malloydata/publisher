@@ -350,16 +350,32 @@ function sourceColumn(source: string | undefined): string {
 }
 
 /**
- * The stable key for one entity: `kind|source|name`. Shared by the index
- * dedup, the WeakMap-free row identity, and the tool's result mapping so
- * the format lives in exactly one place. Pass "" for a sourceless entity.
+ * Separator for the composite in-memory keys below.
+ *
+ * NUL, not `|`, and for the same reason metaKey uses it: a Malloy identifier
+ * can be backtick-quoted, and the grammar's BQ_STRING excludes only quotes,
+ * backslash and control characters. `|` is therefore legal inside a source or
+ * field name, so joining on it let two different entities collide on one key
+ * -- `{source: "a|b", name: "c"}` and `{source: "a", name: "b|c"}` -- and a
+ * collision in the sync diff silently skips a delete or a re-embed. A control
+ * character cannot appear in an identifier, so it cannot collide.
+ */
+const KEY_SEPARATOR = "\u0000";
+
+/**
+ * The stable key for one entity. Shared by the index dedup, the WeakMap-free
+ * row identity, and the tool's result mapping so the format lives in exactly
+ * one place. Pass "" for a sourceless entity.
+ *
+ * In-memory only: nothing persists this string, so its shape can change
+ * without a migration. The database keys on the three columns directly.
  */
 export function entityRowKey(
    kind: string,
    source: string,
    name: string,
 ): string {
-   return `${kind}|${source}|${name}`;
+   return [kind, source, name].join(KEY_SEPARATOR);
 }
 
 /**
@@ -373,7 +389,7 @@ export function facetRowKey(
    name: string,
    facet: string,
 ): string {
-   return `${entityRowKey(kind, source, name)}|${facet}`;
+   return entityRowKey(kind, source, name) + KEY_SEPARATOR + facet;
 }
 
 // Sync state, two layers.
@@ -639,11 +655,9 @@ async function syncPackageEmbeddings(
                {
                   environmentName,
                   packageName,
-                  entity: entityRowKey(
-                     entity.kind,
-                     sourceColumn(entity.source),
-                     entity.name,
-                  ),
+                  entityKind: entity.kind,
+                  entitySource: sourceColumn(entity.source),
+                  entityName: entity.name,
                   docChars,
                   embeddedChars: MAX_DOC_CHARS,
                },
