@@ -529,6 +529,19 @@ export function recordServeShapeTypeFallback(
  * denominator rather than counted as a miss — the rate is silent about that tier
  * rather than pessimistic about it, which the "headline KPI" framing otherwise
  * invites you to assume.
+ *
+ * `origin` separates the two kinds of storage hit. A lake-served pre-aggregation
+ * rollup routes through the SAME serve shape as an authored `storage=` source, so
+ * without this label it would be counted as an ordinary storage hit and inflate
+ * that headline rate — silently, and by default, because the rollup needs no code
+ * of its own to be counted. `persist` is an authored source, `preaggregate` a
+ * query answered by a rollup, and the label is absent for outcomes where the
+ * distinction has no meaning (nothing routed, so nothing has an origin).
+ *
+ * An attribute rather than a new `outcome` value on purpose: an outcome enum is
+ * mirrored into consumers that generate strict clients from it, where an
+ * unexpected value throws on the consuming hop. An added attribute breaks no
+ * consumer.
  */
 export function recordStorageServeRouting(
    outcome:
@@ -536,8 +549,12 @@ export function recordStorageServeRouting(
       | "live_fallback"
       | "runtime_live_fallback"
       | "blocked_by_row_level_gate",
+   origin?: "persist" | "preaggregate",
 ): void {
-   storageServeRoutingCounter().add(1, { outcome });
+   storageServeRoutingCounter().add(1, {
+      outcome,
+      ...(origin ? { origin } : {}),
+   });
 }
 
 /**

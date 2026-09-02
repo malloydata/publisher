@@ -97,27 +97,27 @@ source: s is duckdb.sql("""
   #@ preaggregate grain="b_dim, a_dim"
   measure: m_unsorted is amount.sum()
 
-  #@ preaggregate grain="a_dim" storage=credible
+  #@ preaggregate grain="a_dim" storage=lake
   measure: m_storage is amount.sum()
 
-  #@ preaggregate { grain="a_dim" storage=credible }
+  #@ preaggregate { grain="a_dim" storage=lake }
   measure: m_storage_braced is amount.sum()
 
-  #@ preaggregate storage=credible
+  #@ preaggregate storage=lake
   measure: m_storage_no_grain is amount.sum()
 
-  #@ preaggregate grain="a_dim" storage=credible
+  #@ preaggregate grain="a_dim" storage=lake
   #@ preaggregate grain="b_dim"
   measure: m_grain_own_storage is amount.sum()
 
   #@ preaggregate grain="a_dim" storage=""
   measure: m_empty_storage is amount.sum()
 
-  #@ preaggregate grain="a_dim" storage=credible
+  #@ preaggregate grain="a_dim" storage=lake
   #@ -preaggregate
   measure: m_negated_storage is amount.sum()
 
-  #@ preaggregate grain="a_dim" namespace="ns_a" storage=credible
+  #@ preaggregate grain="a_dim" namespace="ns_a" storage=lake
   measure: m_namespace_and_storage is amount.sum()
 }
 
@@ -400,7 +400,7 @@ describe("#@ preaggregate reader: reading storage=", () => {
          // Both the documented sibling-key form and the nested form, for the same
          // reason `grain` accepts both: authors write whichever the docs in front
          // of them show.
-         expect(storageOf(name)).toEqual([[["a_dim"], "credible"]]);
+         expect(storageOf(name)).toEqual([[["a_dim"], "lake"]]);
       });
    }
 
@@ -409,7 +409,7 @@ describe("#@ preaggregate reader: reading storage=", () => {
       // storage= scoped to the MEASURE would drag a second grain to a destination
       // its author never named for it.
       expect(storageOf("m_grain_own_storage")).toEqual([
-         [["a_dim"], "credible"],
+         [["a_dim"], "lake"],
          [["b_dim"], undefined],
       ]);
    });
@@ -442,7 +442,7 @@ describe("#@ preaggregate reader: reading storage=", () => {
          lookup("m_namespace_and_storage"),
       ).grains;
       expect(grain.namespace).toBe("ns_a");
-      expect(grain.storage).toBe("credible");
+      expect(grain.storage).toBe("lake");
    });
 
    it("storage= on a line with no grain is a missing grain, like any other", () => {

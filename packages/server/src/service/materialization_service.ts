@@ -2144,6 +2144,19 @@ export class MaterializationService {
                      // boundary can never be read against different SQL.
                      sourceEntityId,
                   );
+                  // Stamp what this table was built FOR, here rather than inside
+                  // buildOneSource, because this is the scope that holds the
+                  // compiled plan the answer comes from.
+                  //
+                  // Not decorative. A manifest travels without its build plan, so
+                  // this is the only thing that tells a consumer a table belongs to
+                  // a source appearing in no model file — and the serve path needs
+                  // it: a rollup handled as an ordinary binding is looked up by
+                  // name in the author's model, finds nothing, and is silently
+                  // dropped rather than served (see preaggregation_serve_bindings).
+                  if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
+                     entry = { ...entry, origin: "preaggregate" as const };
+                  }
                } catch (buildErr) {
                   // One source failing does not end the build: the sources that
                   // did materialize stay usable, and this one records the reason
