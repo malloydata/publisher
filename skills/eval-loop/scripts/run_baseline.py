@@ -117,6 +117,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import doc_tokens, entity_ids, search_terms  # noqa: E402
+from publisher_rest import served_model_path, try_query  # noqa: E402
 from score_retrieval import score_case, summarise  # noqa: E402
 from check_contamination import check as path_check  # noqa: E402
 import verify_goldens  # noqa: E402
@@ -189,55 +190,6 @@ def judge_pins(judge_md: pathlib.Path) -> tuple[str, str | None]:
 # host is not the working tree. So resolve it through the Publisher's own
 # project location and snapshot it into the run directory, where `--rejudge` can
 # still find it after the served copy has moved on.
-
-
-def api(base: str, path: str, timeout: int = 30) -> Any:
-    with urllib.request.urlopen(f"{base.rstrip('/')}/{path.lstrip('/')}",
-                                timeout=timeout) as resp:
-        return json.loads(resp.read())
-
-
-def served_model_path(base: str, environment: str, package: str,
-                      model_path: str) -> pathlib.Path | None:
-    """Where the running Publisher reads this model from, or None."""
-    try:
-        for proj in api(base, "api/v0/projects"):
-            if proj.get("name") == environment and proj.get("location"):
-                p = pathlib.Path(proj["location"]) / package / model_path
-                return p if p.exists() else None
-    except Exception:  # noqa: BLE001 - absence is reported, never fatal
-        return None
-    return None
-
-
-def execute(base: str, environment: str, package: str, model_path: str,
-            malloy: str, timeout: int = 120) -> tuple[list[dict], str | None]:
-    """Run a Malloy query through Publisher's REST API. Returns (rows, error)."""
-    url = (f"{base.rstrip('/')}/api/v0/environments/"
-           f"{urllib.parse.quote(environment)}/packages/{urllib.parse.quote(package)}"
-           f"/models/{urllib.parse.quote(model_path, safe='')}/query")
-    req = urllib.request.Request(
-        url, data=json.dumps({"query": malloy}).encode(),
-        headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        return [], f"HTTP {exc.code}: {exc.read().decode()[:300]}"
-    except Exception as exc:  # noqa: BLE001
-        return [], str(exc)[:300]
-
-    try:
-        result = json.loads(raw["result"])
-        columns = [f["name"] for f in (result.get("schema") or {}).get("fields") or []]
-        rows = []
-        for record in (result.get("data") or {}).get("array_value") or []:
-            cells = [next((v for k, v in c.items() if k.endswith("_value")), None)
-                     for c in record.get("record_value") or []]
-            rows.append(dict(zip(columns, cells)))
-        return rows, None
-    except Exception as exc:  # noqa: BLE001
-        return [], f"unparseable result: {exc}"[:300]
 
 
 def format_rows(rows: list[dict], limit: int = 60) -> str:
@@ -764,7 +716,7 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
         # that file. Then the case's, then the run default.
         mp = (att.get("final_model_path") or case.get("modelPath")
               or a.model_path)
-        rows, err = execute(a.publisher, a.environment, a.package, mp, q)
+        rows, err = try_query(a.publisher, a.environment, a.package, mp, q)
         rendered = (f"(re-execution failed: {err})" if err else format_rows(rows))
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps({"query": q, "rendered": rendered}, indent=2))

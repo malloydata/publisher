@@ -63,58 +63,15 @@ import json
 import pathlib
 import re
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from typing import Any
+
+from publisher_rest import try_query    # the one direct path to a Publisher
 
 _TABLE_REF = re.compile(r"""duckdb\.table\(\s*['"](?:\.\./)?data/(\w+)\.\w+['"]\s*\)""")
 
 
 def rewrite_table_refs(malloy: str) -> str:
     return _TABLE_REF.sub(lambda m: m.group(1), malloy)
-
-
-def query(base: str, environment: str, package: str, model: str,
-          malloy: str) -> list[dict[str, Any]]:
-    url = (f"{base.rstrip('/')}/api/v0/environments/{urllib.parse.quote(environment)}"
-           f"/packages/{urllib.parse.quote(package)}"
-           f"/models/{urllib.parse.quote(model, safe='')}/query")
-    req = urllib.request.Request(url, data=json.dumps({"query": malloy}).encode(),
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=180) as r:
-        body = json.loads(r.read().decode())
-    result = body.get("result", body)
-    if isinstance(result, str):
-        result = json.loads(result)
-    # Publisher returns {schema, data}: `data` is Malloy's cell-typed envelope
-    # and the field names live in `schema.fields`, positionally.
-    if isinstance(result, dict) and "data" in result:
-        names = [f.get("name") for f in (result.get("schema") or {}).get("fields", [])]
-        return [_uncell(rc, names) for rc in
-                (result["data"].get("array_value", []) if isinstance(result["data"], dict)
-                 else result["data"])]
-    return result if isinstance(result, list) else []
-
-
-def _uncell(cell: Any, names: list[str] | None = None) -> Any:
-    """Collapse Malloy's typed cell envelope into plain values."""
-    if not isinstance(cell, dict) or "kind" not in cell:
-        return cell
-    k = cell["kind"]
-    if k == "record_cell":
-        vals = cell.get("record_value", [])
-        ns = names or [f"c{i}" for i in range(len(vals))]
-        return {n: _uncell(v) for n, v in zip(ns, vals)}
-    if k == "array_cell":
-        return [_uncell(v, names) for v in cell.get("array_value", [])]
-    if k == "null_cell":
-        return None
-    for key in ("number_value", "string_value", "boolean_value", "date_value",
-                "timestamp_value", "json_value"):
-        if key in cell:
-            return cell[key]
-    return cell
 
 
 def close_enough(want: Any, got: Any, places: int | None) -> bool:
@@ -138,12 +95,11 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
         return "error", "no canonicalQuery: this golden cannot be re-derived", None
     if a.rewrite:
         q = rewrite_table_refs(q)
-    try:
-        rows = query(a.publisher, a.environment, a.truth_package, a.truth_model, q)
-    except urllib.error.HTTPError as exc:
-        return "error", f"HTTP {exc.code}: {exc.read().decode()[:160]}", None
-    except Exception as exc:  # noqa: BLE001 -- report, never abort the sweep
-        return "error", str(exc)[:160], None
+    # try_query, not query: one bad golden reports and the sweep continues.
+    rows, err = try_query(a.publisher, a.environment, a.truth_package,
+                          a.truth_model, q)
+    if err:
+        return "error", err[:160], None
 
     want = g.get("value")
     places = want.get("round") if isinstance(want, dict) else None
