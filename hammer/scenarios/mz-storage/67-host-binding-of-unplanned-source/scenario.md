@@ -83,6 +83,19 @@ is the bind path that never consults it.
 
 cites: not recognized as a
 
+## Build refusals
+
+Nothing was refused — the premise, stated positively. `scoped` is not merely absent
+from `sources`; it is absent from BOTH collections, because Malloy never handed it to
+the plan as a persist source, so nothing ever examined it. That is the whole
+difference from `host-binding-honors-row-level-access`, where the same forged binding
+names a source the plan compiled and refused.
+
+Expect:
+
+| source |
+| ------ |
+
 ## Query the eligible source
 
 The real table, holding every region — correct for a source with no given in its

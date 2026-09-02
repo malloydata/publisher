@@ -34,6 +34,14 @@
 //                                        [body: `givens: NAME=v; OTHER=v` to supply runtime
 //                                        givens; `columns: exact` to assert the Expect table's
 //                                        columns are the COMPLETE result column set]
+//   ## Build [refused] (orchestrated, …) + `- <src> -> <name> @ <dest> [(failed)]` lines;
+//                                        `(failed)` = instructed but expected to FAIL, asserted
+//                                        against the manifest's `failures`. An unmarked source is
+//                                        asserted built AND absent from `failures`.
+//   ## Build refusals [(pkg=P)]          + GFM table `source [| tier | reason]` -> assert the
+//                                        compiled build plan's REFUSED sources (examined and
+//                                        refused, as opposed to never present). An EMPTY table
+//                                        asserts nothing was refused. Runs nothing.
 //   ## Build targets [(pkg=P)]           + GFM table `source | writes [| entity]` -> assert the
 //                                        compiled build plan's persist sources and the physical
 //                                        name each writes. An `entity` column groups by content
@@ -120,7 +128,12 @@ type Step =
         mode: PersistStorageMode;
         refused: boolean;
         strict: boolean;
-        sources: { src: string; name: string; dest: string }[];
+        sources: {
+           src: string;
+           name: string;
+           dest: string;
+           failed: boolean;
+        }[];
         references: { src: string; from?: string }[];
         cites?: string;
         excludes?: string;
@@ -162,6 +175,14 @@ type Step =
         expect?: Table;
         givens?: Record<string, string>;
         exactColumns: boolean;
+     }
+   | {
+        kind: "buildRefusals";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        expect: Table;
      }
    | {
         kind: "buildTargets";
@@ -637,12 +658,43 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                });
                break;
             }
+            // Tested before the `refused` prefix below: this asserts the plan's
+            // OTHER collection and runs nothing, where "## Build refused" runs a
+            // build and asserts it fails.
+            if (/^refusals\b/i.test(arg)) {
+               const expect = requireExpectTable(sec.body, sec.header);
+               if (!expect.cols.some((c) => c.name === "source")) {
+                  throw new Error(
+                     `section "## ${sec.header}" requires a "source" column ` +
+                        `(optionally "tier" and "reason"); got: ${expect.cols.map((c) => c.name).join(", ")}`,
+                  );
+               }
+               steps.push({
+                  kind: "buildRefusals",
+                  pub,
+                  env,
+                  pkg: (attrs.pkg as string) ?? defaultPackage,
+                  mode,
+                  expect,
+               });
+               break;
+            }
             const refused = /^refused\b/i.test(arg);
             const pkg =
                (attrs.pkg as string) ??
                (arg.replace(/^refused/i, "").trim() || defaultPackage);
             if (attrs.orchestrated) {
                const { sources, references } = parseOrchestratedBody(sec.body);
+               // `refused` asserts the RUN failed, so it records no per-source
+               // outcome to check `(failed)` against. Marking one there asks for
+               // an assertion the step cannot make; say which shape is meant.
+               if (refused && sources.some((src) => src.failed)) {
+                  throw new Error(
+                     `${sec.header}: \`(failed)\` is meaningless on a refused build — ` +
+                        `a refused run commits no manifest. Drop \`refused\` to assert ` +
+                        `a part-way failure, or drop \`(failed)\` to assert the whole run fails.`,
+                  );
+               }
                steps.push({
                   kind: "orchestratedBuild",
                   pub,
@@ -1102,23 +1154,53 @@ function requireExpectTable(body: string[], header: string): Table {
 }
 
 /**
- * Parse an orchestrated-build body: `- <src> -> <physicalName> @ <dest>` lines
- * (the sources this build produces, with caller-assigned/generational names) and
- * `reference: <upstreamSrc> [(from=<pub>)]` lines (upstreams to reuse, resolved by
- * source name at run time). References are collected package-wide (they map to the
- * build's `referenceManifest`), not nested under a source.
+ * Parse an orchestrated-build body: `- <src> -> <physicalName> @ <dest> [(failed)]`
+ * lines (the sources this build produces, with caller-assigned/generational names)
+ * and `reference: <upstreamSrc> [(from=<pub>)]` lines (upstreams to reuse, resolved
+ * by source name at run time). References are collected package-wide (they map to
+ * the build's `referenceManifest`), not nested under a source.
+ *
+ * Per-source `failed` — this source is instructed and EXPECTED to fail. The run
+ * still commits a manifest (a part-way failure records what built and why the rest
+ * did not), so the step asserts a recorded `failures` entry for it instead of a
+ * built table. Say it out loud in the markdown: an unmarked source is asserted
+ * BUILT and absent from `failures`, because a failed source is mirrored into
+ * `entries` carrying the physical name it was headed for, and a check reading only
+ * that name cannot tell the two apart.
  */
 function parseOrchestratedBody(body: string[]): {
-   sources: { src: string; name: string; dest: string }[];
+   sources: { src: string; name: string; dest: string; failed: boolean }[];
    references: { src: string; from?: string }[];
 } {
-   const sources: { src: string; name: string; dest: string }[] = [];
+   const sources: {
+      src: string;
+      name: string;
+      dest: string;
+      failed: boolean;
+   }[] = [];
    const references: { src: string; from?: string }[] = [];
    for (const raw of body) {
+      // Split a trailing (…) off first so the destination match stays simple.
       const line = raw.trim();
-      const s = line.match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
+      const withAttrs = line.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+      const head = withAttrs ? withAttrs[1] : line;
+      const s = head.match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
       if (s) {
-         sources.push({ src: s[1], name: s[2], dest: s[3] });
+         const attrs = withAttrs
+            ? withAttrs[2]
+                 .split(",")
+                 .map((a) => a.trim())
+                 .filter(Boolean)
+            : [];
+         let failed = false;
+         for (const a of attrs) {
+            if (a === "failed") failed = true;
+            else
+               throw new Error(
+                  `## Build (orchestrated): unknown attribute "${a}" on "${line}"`,
+               );
+         }
+         sources.push({ src: s[1], name: s[2], dest: s[3], failed });
          continue;
       }
       const r = line.match(
@@ -1460,11 +1542,12 @@ async function buildOrchestratedBody(
    step: {
       pkg: string;
       strict: boolean;
-      sources: { src: string; name: string; dest: string }[];
+      sources: { src: string; name: string; dest: string; failed: boolean }[];
       references: { src: string; from?: string }[];
    },
-): Promise<OrchestratedBody> {
+): Promise<{ body: OrchestratedBody; failedEids: Set<string> }> {
    const eids = await rest.sourceEntityIds(step.pkg);
+   const failedEids = new Set<string>();
    const sources = step.sources.map((s) => {
       const eid = eids[s.src];
       if (!eid) {
@@ -1472,6 +1555,7 @@ async function buildOrchestratedBody(
             `## Build (orchestrated): source '${s.src}' not in ${step.pkg} build plan (have: ${Object.keys(eids).join(", ")})`,
          );
       }
+      if (s.failed) failedEids.add(eid);
       return {
          sourceEntityId: eid,
          materializedTableId: `mt-${s.name}`,
@@ -1501,11 +1585,14 @@ async function buildOrchestratedBody(
       });
    }
    return {
-      buildInstructions: {
-         sources,
-         ...(referenceManifest.length ? { referenceManifest } : {}),
-         strictUpstreams: step.strict,
+      body: {
+         buildInstructions: {
+            sources,
+            ...(referenceManifest.length ? { referenceManifest } : {}),
+            strictUpstreams: step.strict,
+         },
       },
+      failedEids,
    };
 }
 
@@ -1814,7 +1901,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "orchestratedBuild": {
                const rest = await serverFor(step.pub, step.env);
-               const body = await buildOrchestratedBody(ctx, rest, step);
+               const { body, failedEids } = await buildOrchestratedBody(
+                  ctx,
+                  rest,
+                  step,
+               );
                const wire = body as unknown as Record<string, unknown>;
                if (step.refused) {
                   const outcome = await refusedOutcome(rest, step.pkg, wire);
@@ -1839,21 +1930,35 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   }
                } else {
                   const rec = await rest.build(step.pkg, wire);
-                  const entries =
-                     (
-                        rec.manifest as {
-                           entries?: Record<
-                              string,
-                              { physicalTableName?: string }
-                           >;
-                        } | null
-                     )?.entries ?? {};
-                  // Verify each built source landed in the caller-assigned name.
+                  const manifest = rec.manifest as {
+                     entries?: Record<string, { physicalTableName?: string }>;
+                     failures?: Record<string, { reason?: string }>;
+                  } | null;
+                  const entries = manifest?.entries ?? {};
+                  // A part-way failure still commits a manifest, and a failed
+                  // source is MIRRORED into `entries` carrying the physical name
+                  // it was headed for — a table that does not exist. The
+                  // physical-name check alone therefore cannot tell built from
+                  // failed, so `failures` is the authority in both directions.
+                  const failures = manifest?.failures ?? {};
                   for (const s of body.buildInstructions.sources) {
+                     if (failedEids.has(s.sourceEntityId)) {
+                        assert.ok(
+                           `failed ${s.physicalTableName}`,
+                           !!failures[s.sourceEntityId],
+                           `expected a recorded failure, got failures=${Object.keys(failures).join(", ") || "none"}`,
+                        );
+                        continue;
+                     }
                      assert.eq(
                         `built ${s.physicalTableName}`,
                         entries[s.sourceEntityId]?.physicalTableName,
                         s.physicalTableName,
+                     );
+                     assert.ok(
+                        `built ${s.physicalTableName}: not recorded as a failure`,
+                        !failures[s.sourceEntityId],
+                        failures[s.sourceEntityId]?.reason,
                      );
                   }
                }
@@ -1903,6 +2008,60 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                         out.rows,
                      );
                }
+               break;
+            }
+            case "buildRefusals": {
+               const rest = await serverFor(step.pub, step.env);
+               const pkg = (await rest.getPackage(step.pkg)) as {
+                  buildPlan?: {
+                     refusedSources?: Record<
+                        string,
+                        { name?: string; tier?: string; reason?: string }
+                     >;
+                  };
+               };
+               // The plan's second collection: sources compiled, EXAMINED and
+               // refused, distinct from a source the plan never contained at all
+               // (which is an absence, and reads as "never examined" — see
+               // host-binding-of-unplanned-source). An empty Expect table asserts
+               // exactly that nothing was refused, which is the only way to pin
+               // the absence side positively.
+               const refused = Object.values(
+                  pkg.buildPlan?.refusedSources ?? {},
+               );
+               // One row per DISTINCT source name, sorted both sides so the
+               // comparison is order-independent — plan iteration order is not a
+               // contract. `tier` and `reason` are opt-in columns, the same way
+               // `## Build targets` treats `entity`.
+               const actual = [
+                  ...new Map(
+                     refused
+                        .filter((r) => r.name)
+                        .map((r) => [
+                           r.name!,
+                           {
+                              source: r.name!,
+                              tier: r.tier ?? "",
+                              reason: r.reason ?? "",
+                           },
+                        ]),
+                  ).values(),
+               ].sort((a, b) => a.source.localeCompare(b.source));
+               const srcCol = step.expect.cols.findIndex(
+                  (c) => c.name === "source",
+               );
+               const expectSorted: Table = {
+                  cols: step.expect.cols,
+                  rows: [...step.expect.rows].sort((a, b) =>
+                     String(a[srcCol]).localeCompare(String(b[srcCol])),
+                  ),
+               };
+               compareRows(
+                  assert,
+                  `build refusals (${step.pkg})`,
+                  expectSorted,
+                  actual as unknown as Record<string, unknown>[],
+               );
                break;
             }
             case "buildTargets": {
