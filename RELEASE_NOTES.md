@@ -151,6 +151,14 @@ What is refused, and why each is a refusal rather than a silent choice:
   query through a single composite and every member of a composite must live on one
   connection. Such a base serves from its rollups not at all.
 
+**One limitation to know before you write the annotation.** A destination *inherited*
+from the base's `#@ persist storage=` builds rollups that cannot be read. Such a base is
+itself materialized and holds a serve binding under its own name, so its rollups — which
+need that same name — are dropped and queries are answered from the base's stored table.
+The rollups are still built and refreshed, so this is cost with no acceleration, and it
+applies to every rollup on such a base. Declare `storage=` on the `#@ preaggregate` line
+and leave the base unpersisted to avoid it.
+
 **Upgrading.** Earlier versions said that a `storage=` base "lends nothing" to its
 rollups and told you to name a `namespace=` explicitly. That guidance is now wrong — the
 destination is inherited — but a package written to it keeps loading: a `namespace=` on a
