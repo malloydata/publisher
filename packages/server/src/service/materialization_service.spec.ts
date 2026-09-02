@@ -2731,9 +2731,9 @@ describe("executeInstructedBuild", () => {
       // And the dedup does not swallow the second graph's own work: the
       // consumer still builds, and still after the upstream it reads.
       expect(creates.filter((s) => s.includes("consumer_v1")).length).toBe(1);
-      expect(creates.findIndex((s) => s.includes("consumer_v1"))).toBeGreaterThan(
-         creates.findIndex((s) => s.includes("shared_v1")),
-      );
+      expect(
+         creates.findIndex((s) => s.includes("consumer_v1")),
+      ).toBeGreaterThan(creates.findIndex((s) => s.includes("shared_v1")));
       // Both are reported built, so an orchestrated caller settles neither as
       // missing.
       expect(Object.keys(entries).sort()).toEqual([
