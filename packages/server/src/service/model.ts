@@ -4105,13 +4105,41 @@ export class Model {
          new Set(["dimension", "measure"]),
          new Set(),
       ];
-      // Skip escalation entirely when nothing beyond the base is carried.
-      const hasRefinements = enriched.some(
-         (b) => (b.refinements ?? []).length > 0,
-      );
-      const lastTier = keepKinds.length - 1;
+      // A pre-aggregation group is dropped WHOLE, in one final tier, and never
+      // thinned by the tiers above it.
+      //
+      // Thinning does nothing for a group: its measures are generated from its own
+      // plan and are the only reason its member exists, so a tier that removes
+      // them leaves a member that compiles and answers nothing. What CAN rescue
+      // the shape is removing the group, and until this tier existed nothing did
+      // — which mattered because a group that will not compile takes the whole
+      // package's storage serving with it. Base-only was documented as the
+      // guaranteed floor, and a group breached it: a composite whose members
+      // disagree about a grain column's captured type fails at every tier,
+      // including the one that carries no refinements at all.
+      const tiers: Array<{
+         keep: ReadonlySet<string>;
+         groups: RollupShapeGroup[];
+      }> = [
+         ...keepKinds.map((keep) => ({ keep, groups: rollupGroups })),
+         // Appended only when there is a group to drop, so a package with none
+         // keeps exactly the four tiers it had.
+         ...(rollupGroups.length > 0
+            ? [{ keep: new Set<string>(), groups: [] }]
+            : []),
+      ];
+      // Skip escalation entirely when nothing beyond the base is carried — but a
+      // GROUP is something beyond the base. Reading this off `enriched` alone left
+      // the pure-rollup case (no ordinary bindings at all) returning tier 0
+      // unprobed, so a broken group was not detected when the shape was built and
+      // surfaced instead as a per-query live fallback for everything in the
+      // package.
+      const nothingToEscalate =
+         rollupGroups.length === 0 &&
+         !enriched.some((b) => (b.refinements ?? []).length > 0);
+      const lastTier = tiers.length - 1;
       for (let tier = 0; tier <= lastTier; tier++) {
-         const keep = keepKinds[tier];
+         const { keep, groups } = tiers[tier];
          const shaped =
             tier === 0
                ? enriched
@@ -4125,13 +4153,11 @@ export class Model {
                          }
                        : b,
                  );
-         const materializer = this.buildServeShapeMaterializer(
-            shaped,
-            rollupGroups,
-         );
-         // Base-only (last tier) always compiles; trust it without a probe. And
-         // when there are no refinements at all, tier 0 IS the base — skip too.
-         if (tier === lastTier || (tier === 0 && !hasRefinements)) {
+         const materializer = this.buildServeShapeMaterializer(shaped, groups);
+         // The last tier is pure virtual bases with no composite, so it always
+         // compiles; trust it without a probe. And when there is nothing to
+         // escalate, tier 0 IS that shape — skip too.
+         if (tier === lastTier || (tier === 0 && nothingToEscalate)) {
             return materializer;
          }
          try {
@@ -4150,9 +4176,10 @@ export class Model {
          }
       }
       // Unreachable: the last tier returns above. Satisfy the type checker.
+      // Groups dropped, matching what that last tier is.
       return this.buildServeShapeMaterializer(
          enriched.map((b) => ({ ...b, refinements: [] })),
-         rollupGroups,
+         [],
       );
    }
 

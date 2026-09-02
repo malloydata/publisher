@@ -41,7 +41,6 @@ import {
    type AnnotatableMeasure,
 } from "./preaggregation_annotation";
 import { classifyMeasureAdditivity } from "./preaggregation_classifier";
-import { basePersistPlacement } from "./preaggregation_synthesis";
 
 /**
  * Why a declaration is refused. Stable identifiers so callers can count and
@@ -62,11 +61,13 @@ export type PreaggregateViolationCode =
    | "conflicting_storage"
    | "namespace_with_storage"
    | "non_additive_measure"
+   | "non_public_measure"
    // The grain does not resolve against the base source.
    | "unknown_grain_dimension"
    | "grain_dimension_is_measure"
    | "grain_dimension_is_view"
    | "grain_dimension_is_join"
+   | "grain_dimension_not_public"
    | "grain_path_through_join"
    | "grain_truncation_expression"
    | "truncation_on_non_temporal"
@@ -91,6 +92,33 @@ interface FieldLike {
    join?: string;
    expressionType?: string;
    annotations?: unknown;
+   accessModifier?: unknown;
+}
+
+/**
+ * A field the source does not publicly expose — `include { private: … }` or
+ * `internal:`.
+ *
+ * Pre-aggregation must refuse these, and the reason is an access-control leak
+ * rather than tidiness. A rollup is a table of its own: the grain's dimensions and
+ * each measure's partial are STORED, and the serve path rebinds that table under
+ * the base's name with the stored columns declared. Nothing in that path consults
+ * the author's model, so a field hidden on the source is not hidden on the rollup
+ * — a query refused live ("`total` is private") is answered from the table.
+ *
+ * The colocated tier does not have the hole, but only by accident: its companion
+ * imports the author's model, so a private reference fails to compile across the
+ * file boundary and no table is ever built. The storage tier plans from the
+ * compiled contents directly (so a companion that will not compile cannot disable
+ * it), which removed the only thing enforcing access modifiers. Hence a rule here,
+ * at the front, where it is a message rather than a silent difference between the
+ * two tiers.
+ *
+ * Mirrors `isAccessRestricted` in materialization_serve_transform.ts, which drops
+ * hidden fields, joins and views from the serve shape for the same reason.
+ */
+function isAccessRestricted(f: FieldLike): boolean {
+   return f.accessModifier != null && f.accessModifier !== "public";
 }
 
 /** The shape of a compiled source this module reads. */
@@ -222,6 +250,13 @@ function validateGrainDimension(
       );
    }
 
+   if (isAccessRestricted(field)) {
+      return violation(
+         "grain_dimension_not_public",
+         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which \`${sourceName}\` does not publicly expose. A rollup STORES its grain, and the stored table is served without the source's field visibility applying to it, so grouping by a hidden dimension would publish it. Group by a public dimension, or make \`${grainDimension}\` public.`,
+      );
+   }
+
    if (isView(field)) {
       return violation(
          "grain_dimension_is_view",
@@ -280,11 +315,6 @@ export function validateSourcePreaggregation(
    // unsatisfiable in exactly the way two namespaces are.
    const storagesByGrain = new Map<string, Map<string, string>>();
    const grainTextByKey = new Map<string, string>();
-   // What the source's own `#@ persist` places rollups into, when the preagg line
-   // does not say. Read once: a namespace declared on a grain conflicts with an
-   // INHERITED destination just as much as with one written beside it, and the
-   // author needs to be told which of the two they actually wrote.
-   const inherited = basePersistPlacement(source);
    for (const field of fields) {
       const name = fieldName(field);
       const declaration = readPreaggregateAnnotation(
@@ -319,6 +349,21 @@ export function validateSourcePreaggregation(
             sourceName,
             fieldName: name,
             message: `\`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, but it is a dimension, not a measure. Dimensions are named in a measure's \`grain=\`; annotate the measure you want pre-aggregated and list \`${name}\` in its grain.`,
+         });
+         continue;
+      }
+
+      // Hidden measures first: a rollup stores each measure's partial and serves
+      // it back under the measure's own name, with none of the source's field
+      // visibility applying to the stored table. So a private measure that is
+      // pre-aggregated is readable through its rollup while the live path refuses
+      // it. Refused rather than skipped, per this module's rule.
+      if (isAccessRestricted(field)) {
+         violations.push({
+            code: "non_public_measure",
+            sourceName,
+            fieldName: name,
+            message: `Measure \`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, but the source does not publicly expose it. A rollup stores the measure's partial aggregate and serves it back under the measure's name, without the source's field visibility applying to the stored table — so pre-aggregating a hidden measure would publish it. Make \`${name}\` public, or remove the annotation.`,
          });
          continue;
       }
@@ -441,14 +486,22 @@ export function validateSourcePreaggregation(
          });
          continue;
       }
-      if (inherited.storage !== undefined) {
-         violations.push({
-            code: "namespace_with_storage",
-            sourceName,
-            fieldName: namespaceMeasure,
-            message: `Measure \`${namespaceMeasure}\` declares \`#@ preaggregate namespace="${namespace}"\` at the grain \`${grainText}\`, but \`${sourceName}\` carries \`#@ persist storage=${inherited.storage}\`, so its rollups are built into that destination. A rollup there is placed by the destination, not by a namespace. Remove the \`namespace=\`, or drop \`storage=\` from the source's \`#@ persist\` to build its rollups alongside it.`,
-         });
-      }
+      // The INHERITED case is deliberately NOT refused, and the asymmetry is about
+      // upgrades rather than about placement.
+      //
+      // Publisher 0.2.x documented exactly this shape: of a `storage=` base, "a
+      // base that also carries `storage=` lends nothing … name the namespace
+      // explicitly there". A package written to that instruction carries
+      // `#@ persist storage=` on the source and `namespace=` on the preagg line —
+      // and now that the destination IS inherited, refusing the pair would turn
+      // that package into a load failure on upgrade, since a pre-aggregation
+      // violation fails the package load outright.
+      //
+      // Refusing a NEWLY WRITTEN pair is defensible; breaking a package that
+      // followed the shipped docs is not. The namespace is harmless when ignored
+      // — placement inside a destination is derived either way — so the inherited
+      // case keeps loading and the `namespace=` has no effect. The docs say so,
+      // and the release note carries the migration line.
    }
 
    // A v1 scope restriction rather than a mistake, so it is reported once for the
