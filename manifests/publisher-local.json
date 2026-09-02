@@ -3,6 +3,10 @@
   "description": "Every skill a local Malloy Publisher ships: building and reviewing models, answering data questions, authoring notebooks, dashboards and in-package HTML data apps, and operating a package.",
   "trigger_hint": "when the user asks about modeling data, building a semantic model, creating Malloy sources, answering a data question over a model, or mentions Malloy",
   "auto_discovered": [
+    "eval-answer",
+    "eval-diagnose",
+    "eval-improve",
+    "eval-loop",
     "malloy",
     "malloy-analysis",
     "malloy-analysis-pitfalls",
@@ -83,6 +87,12 @@
       "malloy-materialization-tuning",
       "malloy-dashboards",
       "malloy-getting-started"
+    ],
+    "eval": [
+      "eval-loop",
+      "eval-answer",
+      "eval-diagnose",
+      "eval-improve"
     ]
   }
 }

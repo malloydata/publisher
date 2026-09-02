@@ -37,6 +37,19 @@ Two rules make it work:
 - **Shared engine skills** (identical to upstream): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
 - **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI) and `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly and are never synced upstream to `ms2data/agent-skills`.
 
+## Evaluation skills
+
+`eval-loop`, `eval-answer`, `eval-diagnose` and `eval-improve` are the model-evaluation loop: a set
+of questions with goldens computed from raw tables, a blind answerer over the model, a judge, a
+diagnosis of each failure, and one smallest model edit gated by a re-run. They are shared skills
+(upstream: `ms2data/agent-skills`) and ship in the `eval` group. Their Python scripts import each
+other by path from `skills/eval-answer/scripts`, so they run in place from a checkout, not from the
+pack. `manifests/publisher-local.json`'s `analysis` and `modeling` groups are what the loop installs
+for the agents it measures. The engine-side evaluation of `get_context` itself (fixed-term replay,
+contract probes) is deliberately **not** here: it is Credible's question about its hosted engine and
+lives in an unlisted skill upstream. `credibledata/malloy-samples#23` is a set anyone can run the
+loop on.
+
 ## Tool names in shared skills
 
 Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query`, `search_malloy_docs`), plus a note that the exact prefixed name depends on the host. `search_database_schema` maps the same way if a shared skill starts using it. This Publisher server exposes them as **`malloy_getContext`**, **`malloy_executeQuery`**, **`malloy_searchDocs`**, and **`malloy_searchDatabaseSchema`** (and adds `malloy_compile` / `malloy_reloadPackage`, which are Publisher-only and appear only in the host/router skills). When a shared skill says `get_context`, use `malloy_getContext`; match each bare name to the tool you actually have. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
