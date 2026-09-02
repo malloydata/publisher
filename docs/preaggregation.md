@@ -254,6 +254,24 @@ line overrides that, and is the only route when the base is not persisted at all
 is the common case, since a rollup's base is usually a table extended with measures, and
 Malloy admits only query-shaped sources as build roots.
 
+> **An inherited destination builds a rollup that cannot be read. Prefer `storage=` on
+> the `#@ preaggregate` line.**
+>
+> A base can only carry `#@ persist storage=` if it is query-shaped, and a base that
+> builds has a stored table and a serve binding of its own under its author name. Its
+> rollups have to be re-exposed under that same name, and one name cannot be rebound to
+> two shapes — so the rollups are dropped from the serve shape and every query is
+> answered from the base's stored table instead.
+>
+> The rollups are still built, and still refreshed on every run. That is build time and
+> storage spent on tables nothing reads, and it applies to every rollup on such a base,
+> not to an unlucky one. Declaring `storage=` on the `#@ preaggregate` line and leaving
+> the base unpersisted has none of this problem.
+>
+> Lifting the limitation means letting the base's own stored table join the composite as
+> its last member, which is possible only because it is in the same destination. Until
+> then, inheritance is a convenience worth avoiding.
+
 **It belongs to the grain, like `namespace=`.** Two grains are two tables and can be
 placed differently — one in the store, one alongside the base. Measures sharing a grain
 share its one table, so two of them naming different destinations is refused at publish.
