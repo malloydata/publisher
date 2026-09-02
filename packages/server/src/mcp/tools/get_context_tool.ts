@@ -759,9 +759,11 @@ function malloyType(field: { type?: { kind?: string } }): string | undefined {
  * rather than a derivation. The heuristic covers the measured case (a pure
  * case/separator respelling inside one source) and stops there. Two
  * genuinely distinct fields whose names humanize identically would collapse,
- * but they would also have embedded near-identically, so what is lost is a
- * near-duplicate rather than a distinct concept — and the dropped name is
- * still reported in `aliases`.
+ * so the heuristic is narrowed by the one signal available: a spelling that
+ * carries its own, different `#(doc)` is kept as its own row, because that
+ * doc is what a caller would read to choose between them and a dropped entity
+ * leaves the index entirely. What folds is an undocumented spelling, or one
+ * repeating the kept doc, and its name is still reported in `aliases`.
  *
  * The real fix belongs in the model: Malloy's `include { internal: ... }`
  * hides the raw column outright, and the indexer already honours it, because
@@ -797,8 +799,20 @@ function collapseAliases(entities: Entity[]): Entity[] {
          if (aRaw !== bRaw) return aRaw ? 1 : -1;
          return a.name.localeCompare(b.name);
       });
-      keep.aliases = rest.map((e) => e.name);
-      for (const e of rest) {
+      // Only fold in a spelling that adds no documentation of its own, or
+      // repeats the kept one's. Two documented spellings whose docs DIFFER
+      // are the evidence available that they are two concepts rather than
+      // one column named twice, and the doc is exactly what a caller would
+      // read to tell them apart -- so collapsing there would destroy the
+      // thing that resolves the ambiguity. A dropped entity is removed from
+      // the index entirely, not merely hidden from a result, so its doc is
+      // unrecoverable; `aliases` carries only a name.
+      const folded = rest.filter(
+         (e) => !e.embedDoc || e.embedDoc === keep.embedDoc,
+      );
+      if (folded.length === 0) continue;
+      keep.aliases = folded.map((e) => e.name);
+      for (const e of folded) {
          dropped.set(entityRowKey(e.kind, e.source ?? "", e.name), e);
       }
    }

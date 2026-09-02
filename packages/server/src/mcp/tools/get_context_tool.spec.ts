@@ -327,6 +327,39 @@ const mockAliasPackage = {
    getModel: () => mockAliasModel,
 };
 
+// Two spellings that humanize identically but are NOT one column: a raw
+// amount and a filtered measure, each documented, and the docs are the only
+// thing that tells them apart.
+const mockDistinctSpellingModel = {
+   getSourceInfos: () => [
+      {
+         name: "orders",
+         annotations: [],
+         schema: {
+            fields: [
+               {
+                  kind: "dimension",
+                  name: "net_sales",
+                  annotations: ["#(doc) Gross sales less returns, all orders."],
+               },
+               {
+                  kind: "dimension",
+                  name: "netSales",
+                  annotations: [
+                     "#(doc) Completed orders only, excludes trials.",
+                  ],
+               },
+            ],
+         },
+      },
+   ],
+   getQueries: () => [],
+};
+const mockDistinctSpellingPackage = {
+   listModels: async () => [{ path: "d.malloy" }],
+   getModel: () => mockDistinctSpellingModel,
+};
+
 // Three parallel sources carrying the same concept, the shape that produced
 // the largest measured failure class.
 const SIBLING_SOURCES = ["fac_building", "fclt_building", "fclt_building_hist"];
@@ -1031,6 +1064,42 @@ describe("get_context discovery tiers", () => {
       expect(sites[0].name).toBe("site");
       expect(sites[0].description).toBe("Campus site the building sits on.");
       expect(sites[0].aliases).toEqual(["SITE"]);
+   });
+
+   it("keeps two spellings apart when each carries its own doc", async () => {
+      // The judgment call this heuristic turns on. `net_sales` and `netSales`
+      // humanize the same, so a name-only rule folds them - but they are a
+      // raw amount and a filtered measure, and the doc is exactly what a
+      // caller would read to choose. A dropped entity leaves the index
+      // entirely, so folding here would destroy that doc, and `aliases`
+      // carries only a name. Differing docs are the one signal available
+      // that these are two concepts.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockDistinctSpellingPackage }) as never,
+      });
+      // Listed via the drill-down, which enumerates every entity the source
+      // still offers, so this asserts on what survived the collapse rather
+      // than on what one query's tokens happened to match.
+      const results = rankedEntities(
+         parse(
+            await handler({
+               environmentName: "e",
+               packageName: "p",
+               sourceName: "orders",
+            }),
+         ),
+      );
+      expect(results.map((r) => r.name).sort()).toEqual([
+         "netSales",
+         "net_sales",
+      ]);
+      expect(results.every((r) => r.aliases === undefined)).toBe(true);
+      // Each keeps the doc that distinguishes it.
+      expect(results.map((r) => r.description).sort()).toEqual([
+         "Completed orders only, excludes trials.",
+         "Gross sales less returns, all orders.",
+      ]);
    });
 
    it("leaves genuinely distinct fields in a source alone", async () => {
