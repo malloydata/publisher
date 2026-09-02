@@ -51,9 +51,11 @@ Since one rollup covers every subset of its grain, `grain="category, customer_id
 
 ### Which rollup answers a query
 
-Where more than one rollup covers a query, the one used is the first that covers it in the composite's member order — and that order is by generated name, which has nothing to do with size. So do not declare a grain expecting it to win a query another declared grain also covers: with `grain="b"` and `grain="a, b"`, a query grouping by `b` alone reads the `a, b` table, because `a_b` sorts first.
+Where more than one rollup covers a query, the **coarsest** one is used: rollups are offered fewest-grain-dimensions first, and the first that covers answers. With `grain="b"` and `grain="a, b"`, a query grouping by `b` alone reads the `b` table.
 
-Declare grains that cover **different** queries, which is what they are for, and treat overlapping grains as one grain's worth of acceleration rather than a choice Publisher will make well.
+Grain dimensions are counted, not measured, so this is a proxy for table size rather than a reading of it: three small dimensions can product out smaller than one large one, and where two grains have the same number of dimensions the order between them is arbitrary. Declare grains that cover **different** queries, which is what they are for, rather than several overlapping grains in the expectation that Publisher will pick the cheapest.
+
+A rollup is offered whether or not its table has been built yet, so adding a coarse grain to a package that already has a built finer rollup costs acceleration until the new rollup builds: queries the coarse grain covers are answered from the base rather than from the finer table. Answers are unaffected — an unbuilt rollup recomputes from the base, which is what the query would have done anyway — and it lasts one build.
 
 Rollups are grouped by grain rather than by measure, so ten measures sharing a grain are one table and one `GROUP BY`:
 
@@ -198,9 +200,8 @@ name="analytics.orders_tbl"`, its rollups are created in `analytics` without bei
 the only option when the base is not persisted at all, which is common: the annotation
 goes on a measure, and the source it belongs to need not be materialized.
 
-A base that also carries `storage=` lends nothing. Its name belongs to the storage
-destination's catalog, while a rollup is written to the source warehouse, so "beside it"
-has no shared meaning — name the namespace explicitly there.
+A base that carries `storage=` lends its **destination** instead, and no namespace — see
+[Rollups in the managed store](#rollups-in-the-managed-store) below.
 
 **Changing it does not move a table that already exists.** A namespace is not part of
 what identifies a rollup's contents, so a package whose rollups have already built keeps
@@ -220,6 +221,59 @@ underscore, dollar or hyphen — dot-separated where the warehouse needs more th
 part (`analytics`, `my-project.analytics` on BigQuery). A value needing quotes is
 refused rather than mangled, because the generated table name is appended to it and the
 two halves would then be quoted inconsistently.
+
+## Rollups in the managed store
+
+By default a rollup is built into the same warehouse its base reads from. `storage=` puts
+it in a [storage destination](connections.md#storage-destinations) instead — built there,
+served from there — the same placement choice `#@ persist storage=` makes for an authored
+source.
+
+```malloy
+source: orders is orders_pg.table('public.orders') extend {
+  measure:
+    #@ preaggregate grain="category" storage=credible
+    total is amount.sum()
+}
+```
+
+Nothing about the query changes. It still names `orders` and still knows no rollup
+exists; only where the answer is read from moves.
+
+**A rollup follows its base.** If the base carries `#@ persist storage=<name>`, its
+rollups are built into that destination without being told — a rollup of X belongs where
+X's rows live, and one left behind in the warehouse would be built by reading across the
+boundary the tier exists to avoid crossing. Writing `storage=` on the `#@ preaggregate`
+line overrides that, and is the only route when the base is not persisted at all — which
+is the common case, since a rollup's base is usually a table extended with measures, and
+Malloy admits only query-shaped sources as build roots.
+
+**It belongs to the grain, like `namespace=`.** Two grains are two tables and can be
+placed differently — one in the store, one alongside the base. Measures sharing a grain
+share its one table, so two of them naming different destinations is refused at publish.
+
+**`namespace=` and `storage=` cannot be combined.** Placement inside a destination is
+derived, not authored: a freshly provisioned catalog has no schema to create the table
+in. Declaring both is refused, and so is a `namespace=` on a grain whose destination was
+inherited from the base's `#@ persist storage=` — the refusal names which of the two you
+wrote, since only one of them need be yours.
+
+**Two grains on one base must agree on the destination.** Unlike `namespace=`, which may
+legitimately send two grains to two schemas, two grains bound to two different
+destinations cannot both be served: the rollups are offered to a query through one
+composite, and every member of a composite must live on a single connection. Such a base
+serves from its rollups not at all, and its queries are answered from the base.
+
+**The tier's switch applies.** With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is
+not built — and not built anywhere else either. Falling back to a build alongside the
+base would put a table in your warehouse under a generated name you never wrote, so
+nothing is built, queries are answered from the base, and the package reports the
+degraded state as a warning. Under `write-only` the rollup builds but does not serve.
+
+**An uncovered query is answered from the base.** Rollups in the store are offered
+through a composite of themselves alone, with no base member — the base lives on the
+source warehouse, and a composite cannot span connections. So a query no rollup covers
+does not resolve against them and is answered live, with the answer it always had.
 
 ## Build and refresh
 

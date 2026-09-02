@@ -41,6 +41,7 @@ import {
    type AnnotatableMeasure,
 } from "./preaggregation_annotation";
 import { classifyMeasureAdditivity } from "./preaggregation_classifier";
+import { basePersistPlacement } from "./preaggregation_synthesis";
 
 /**
  * Why a declaration is refused. Stable identifiers so callers can count and
@@ -56,7 +57,10 @@ export type PreaggregateViolationCode =
    | "missing_grain"
    | "empty_grain"
    | "invalid_namespace"
+   | "empty_storage"
    | "conflicting_namespace"
+   | "conflicting_storage"
+   | "namespace_with_storage"
    | "non_additive_measure"
    // The grain does not resolve against the base source.
    | "unknown_grain_dimension"
@@ -271,7 +275,16 @@ export function validateSourcePreaggregation(
    // named it. Joined on the same NUL separator `planSourcePreaggregation` keys
    // `byGrain` with, so "one grain" cannot mean two things across the two modules.
    const namespacesByGrain = new Map<string, Map<string, string>>();
+   // The same, for `storage=`. A grain is one table, so it can be built in one
+   // store; two measures at one grain naming different destinations is
+   // unsatisfiable in exactly the way two namespaces are.
+   const storagesByGrain = new Map<string, Map<string, string>>();
    const grainTextByKey = new Map<string, string>();
+   // What the source's own `#@ persist` places rollups into, when the preagg line
+   // does not say. Read once: a namespace declared on a grain conflicts with an
+   // INHERITED destination just as much as with one written beside it, and the
+   // author needs to be told which of the two they actually wrote.
+   const inherited = basePersistPlacement(source);
    for (const field of fields) {
       const name = fieldName(field);
       const declaration = readPreaggregateAnnotation(
@@ -359,6 +372,13 @@ export function validateSourcePreaggregation(
             namespacesByGrain.set(key, named);
             grainTextByKey.set(key, grain.text);
          }
+         if (grain.storage !== undefined && additivity.additive) {
+            const key = grain.dimensions.join("\u0000");
+            const placed = storagesByGrain.get(key) ?? new Map();
+            if (!placed.has(grain.storage)) placed.set(grain.storage, name);
+            storagesByGrain.set(key, placed);
+            grainTextByKey.set(key, grain.text);
+         }
       }
    }
 
@@ -376,6 +396,59 @@ export function validateSourcePreaggregation(
          sourceName,
          message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grainTextByKey.get(key)}\` with different namespaces: ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`namespace=\`, or move one to a different grain.`,
       });
+   }
+
+   // One grain is one table, so it can be built in exactly one store. Same shape
+   // and same reasoning as `conflicting_namespace` above: unsatisfiable, so it is
+   // refused rather than resolved by field order.
+   for (const [key, placed] of storagesByGrain) {
+      if (placed.size < 2) continue;
+      const choices = [...placed.entries()]
+         .map(([dest, measure]) => `\`${dest}\` (on \`${measure}\`)`)
+         .join(", ");
+      violations.push({
+         code: "conflicting_storage",
+         sourceName,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grainTextByKey.get(key)}\` with different storage destinations: ${choices}. One grain is one rollup table, so it can only be built into one of them. Give every measure at this grain the same \`storage=\`, or move one to a different grain.`,
+      });
+   }
+
+   // `namespace=` and `storage=` together, which is refused rather than ranked.
+   //
+   // Placement inside a storage destination is DERIVED, not authored: the
+   // destination resolver refuses a dotted `name=` outright, because a
+   // freshly-provisioned catalog has no schema and the build emits a bare
+   // `CREATE OR REPLACE TABLE` with no `CREATE SCHEMA`. Honouring the namespace
+   // would aim the CREATE at a schema that need not exist; ignoring it would place
+   // the rollup somewhere the author did not choose and say nothing. Neither is
+   // acceptable, so the combination is refused while it means nothing — which
+   // keeps the option of giving it a meaning later without a data migration.
+   //
+   // The two keys can arrive from different places, which is why the message says
+   // where each came from rather than asserting the author wrote both: a
+   // `storage=` may be inherited from the source's own `#@ persist` while only the
+   // `namespace=` was written on the preagg line.
+   for (const [key, named] of namespacesByGrain) {
+      const ownStorage = storagesByGrain.get(key);
+      const [namespace, namespaceMeasure] = [...named.entries()][0];
+      const grainText = grainTextByKey.get(key);
+      if (ownStorage && ownStorage.size > 0) {
+         const [destination, storageMeasure] = [...ownStorage.entries()][0];
+         violations.push({
+            code: "namespace_with_storage",
+            sourceName,
+            message: `The grain \`${grainText}\` on \`${sourceName}\` declares both \`namespace="${namespace}"\` (on \`${namespaceMeasure}\`) and \`storage=${destination}\` (on \`${storageMeasure}\`). A rollup built into a storage destination is placed by the destination, not by a namespace, so the two cannot both apply. Remove the \`namespace=\`, or remove the \`storage=\` to build this rollup alongside its base.`,
+         });
+         continue;
+      }
+      if (inherited.storage !== undefined) {
+         violations.push({
+            code: "namespace_with_storage",
+            sourceName,
+            fieldName: namespaceMeasure,
+            message: `Measure \`${namespaceMeasure}\` declares \`#@ preaggregate namespace="${namespace}"\` at the grain \`${grainText}\`, but \`${sourceName}\` carries \`#@ persist storage=${inherited.storage}\`, so its rollups are built into that destination. A rollup there is placed by the destination, not by a namespace. Remove the \`namespace=\`, or drop \`storage=\` from the source's \`#@ persist\` to build its rollups alongside it.`,
+         });
+      }
    }
 
    // A v1 scope restriction rather than a mistake, so it is reported once for the

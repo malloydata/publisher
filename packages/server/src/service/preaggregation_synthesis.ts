@@ -98,6 +98,19 @@ export interface RollupPlan {
     * name is not a cosmetic difference there.
     */
    namespace?: string;
+   /**
+    * The storage destination this rollup is built into and served from: this
+    * grain's own `#@ preaggregate storage=`, else the base's sibling
+    * `#@ persist storage=`, else undefined for a colocated rollup built into the
+    * base's own warehouse.
+    *
+    * Mutually exclusive with {@link namespace} in practice: placement inside a
+    * destination is derived rather than authored, so the combination is refused
+    * at publish (`namespace_with_storage`). {@link emitRollup} enforces the same
+    * precedence anyway, so a plan that somehow carried both cannot emit a
+    * destination-qualified name the destination has no schema for.
+    */
+   storage?: string;
    /** The one grain, canonically sorted. */
    grainDimensions: string[];
    /** The measures served here, sorted by name. */
@@ -202,6 +215,43 @@ export function persistNamespace(
 }
 
 /**
+ * Order two rollups on one base so the COARSER is offered first.
+ *
+ * The composite resolver takes the first member that covers a query, so member
+ * order decides which of several covering rollups answers it. Ordering by
+ * generated name — which is what this did — resolved that by a grain digest,
+ * which is to say arbitrarily: with `grain="b"` and `grain="a, b"`, a query
+ * grouping by `b` alone read the `a, b` table because `a_b` sorts first, even
+ * though the `b` table is the smaller read and covers it exactly.
+ *
+ * Fewer grain dimensions therefore win, and that single rule is enough. It might
+ * look as though a strict-subset test is also needed — a subset is provably
+ * coarser, where a dimension count is only a proxy for one — but subset is
+ * SUBSUMED by it: a strict subset always has fewer elements than its superset,
+ * so the two rules can never disagree, and the count also orders grains that are
+ * not comparable at all (`{a}` before `{b, c}`), which subset alone leaves
+ * undecided. The weaker rule would be dead weight beside the stronger one.
+ *
+ * A dimension count is still only a proxy for cardinality — three tiny
+ * dimensions can product out smaller than one large one. Ordering on the
+ * manifest's `rowCount` would be the accurate version and is deliberately NOT
+ * used: member order would then depend on the bound manifest, so the build leg
+ * and the serve leg would synthesize different text and it would change on every
+ * refresh. Both legs producing byte-identical text is the property the whole
+ * mechanism rests on (see this module's header), and it is not worth narrowing
+ * for a sharper proxy.
+ *
+ * The generated name remains the final tie-break, so the order stays total and
+ * deterministic for grains of equal breadth.
+ */
+export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
+   return (
+      a.grainDimensions.length - b.grainDimensions.length ||
+      a.rollupSourceName.localeCompare(b.rollupSourceName)
+   );
+}
+
+/**
  * Group one source's `#@ preaggregate` declarations into rollups — one per
  * distinct grain, because ten measures at one grain should be one table and one
  * `GROUP BY`, not ten.
@@ -220,31 +270,45 @@ export function persistNamespace(
  * {@link readPreaggregateAnnotation} does — a malformed line must not take the
  * package down.
  *
- * **A `storage=` base lends nothing.** Its `name=` is a name in the DESTINATION's
- * catalog, while a rollup is always colocated — synthesis emits a bare
- * `#@ persist`, and rollups following a base into a storage destination is
- * separate work. Inheriting across that boundary would aim `CREATE TABLE` at a
- * schema of the destination's that need not exist in the source warehouse, so
- * adding `storage=` to a working base would break its rollup. "A rollup of X
- * belongs beside X" is exactly the inference that stops holding once X moved
- * engines; such an author names the namespace explicitly.
+ * **A `storage=` base lends its DESTINATION, and no namespace.** A rollup of X
+ * follows X to the store: the base's rows live there, so the rollup of them
+ * belongs there too, and a rollup left behind in the warehouse would be built by
+ * reading across the boundary the tier exists to avoid crossing.
+ *
+ * The namespace is dropped rather than carried because the base's `name=` is a
+ * name in the DESTINATION's catalog and placement inside a destination is
+ * derived, not authored: a freshly provisioned catalog has no schema, and the
+ * build emits a bare `CREATE OR REPLACE TABLE` with no `CREATE SCHEMA`. Carrying
+ * it would aim the CREATE at a schema that need not exist. Declaring both is
+ * refused outright at publish (`namespace_with_storage`); this is the inherited
+ * case of the same rule, where there is nothing to refuse because the author
+ * wrote only one of them.
  */
-function basePersistNamespace(source: ValidatableSource): string | undefined {
-   if (!source.annotations) return undefined;
+export function basePersistPlacement(source: ValidatableSource): {
+   namespace?: string;
+   storage?: string;
+} {
+   if (!source.annotations) return {};
    try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const tag = new Annotations(source.annotations as any).parseAsTag(
          "@",
       ).tag;
-      if (!tag.has("persist")) return undefined;
+      if (!tag.has("persist")) return {};
       // `#@ persist name="x"` parses as two SIBLING keys, not a nested one — the
       // same shape `readPreaggregateAnnotation` handles for `grain`. Nested form
       // first so a future nested spelling wins, sibling as the documented fallback.
       const storage = tag.text("persist", "storage") ?? tag.text("storage");
-      if (storage !== undefined && storage.trim() !== "") return undefined;
-      return persistNamespace(tag.text("persist", "name") ?? tag.text("name"));
+      if (storage !== undefined && storage.trim() !== "") {
+         return { storage: storage.trim() };
+      }
+      return {
+         namespace: persistNamespace(
+            tag.text("persist", "name") ?? tag.text("name"),
+         ),
+      };
    } catch {
-      return undefined;
+      return {};
    }
 }
 
@@ -252,7 +316,8 @@ export function planSourcePreaggregation(
    baseSourceName: string,
    source: ValidatableSource,
 ): RollupPlan[] {
-   const inheritedNamespace = basePersistNamespace(source);
+   const { namespace: inheritedNamespace, storage: inheritedStorage } =
+      basePersistPlacement(source);
    // Canonical grain -> the measures declared at it. Keyed on the sorted grain so
    // two authors writing the same dimensions in either order land in one entry.
    const byGrain = new Map<
@@ -261,6 +326,7 @@ export function planSourcePreaggregation(
          grainDimensions: string[];
          measures: RollupMeasure[];
          namespace?: string;
+         storage?: string;
       }
    >();
 
@@ -295,22 +361,30 @@ export function planSourcePreaggregation(
          // a single table, so it cannot honour both. Across grains there is no
          // conflict to resolve — each entry carries its own.
          entry.namespace ??= grain.namespace;
+         // Same rule and the same justification as `namespace` above: two
+         // measures at ONE grain naming different destinations is refused at
+         // publish (`conflicting_storage`), because the grain is a single table
+         // and cannot be built in two stores.
+         entry.storage ??= grain.storage;
          byGrain.set(key, entry);
       }
    }
 
    return [...byGrain.values()]
-      .map(({ grainDimensions, measures, namespace }) => ({
+      .map(({ grainDimensions, measures, namespace, storage }) => ({
          baseSourceName,
          rollupSourceName: rollupSourceName(baseSourceName, grainDimensions),
          // Author's choice first, the base's namespace as the fallback: a rollup of
          // X belongs where X lives unless its author said otherwise.
          namespace: namespace ?? inheritedNamespace,
+         // Same precedence, same reason: a rollup of X follows X into the store
+         // unless its author placed this grain somewhere else.
+         storage: storage ?? inheritedStorage,
          grainDimensions,
          // Sorted so the emitted text does not depend on field order in the IR.
          measures: [...measures].sort((a, b) => a.name.localeCompare(b.name)),
       }))
-      .sort((a, b) => a.rollupSourceName.localeCompare(b.rollupSourceName));
+      .sort(compareRollupBreadth);
 }
 
 /**
@@ -341,12 +415,26 @@ function emitRollup(plan: RollupPlan): string {
    const merged = plan.measures
       .map((m) => `    ${m.name} is ${m.partialName}.${m.reaggregate}()`)
       .join("\n");
-   // Named only when the base named a namespace. Without one the build self-assigns
-   // from the source name, which is what every dialect but BigQuery accepts — and
-   // there is nothing to inherit, so inventing a namespace here would be a guess.
-   const persist = plan.namespace
-      ? `#@ persist name="${plan.namespace}.${plan.rollupSourceName}"`
-      : "#@ persist";
+   // A destination wins, and takes NO `name=`. Placement inside a destination is
+   // derived rather than authored: the resolver refuses a dotted `name=` outright
+   // because a freshly provisioned catalog has no schema and the build emits a
+   // bare `CREATE OR REPLACE TABLE`. Emitting one here would produce a refusal
+   // naming a generated source and a `name=` the author never wrote.
+   //
+   // Bare is safe: the build self-assigns the physical name from the source name
+   // (`selfAssignTableName`), identically for both tiers, and a rollup's source
+   // name carries the grain digest — so it is unique per grain without a `name=`
+   // to make it so.
+   //
+   // Otherwise the colocated rule, unchanged: named only when a namespace was
+   // named or inherited, since the build self-assigns from the source name, which
+   // is what every dialect but BigQuery accepts, and inventing one would be a
+   // guess.
+   const persist = plan.storage
+      ? `#@ persist storage=${plan.storage}`
+      : plan.namespace
+        ? `#@ persist name="${plan.namespace}.${plan.rollupSourceName}"`
+        : "#@ persist";
    return `${persist}
 source: ${plan.rollupSourceName} is ${alias} -> {
   group_by:

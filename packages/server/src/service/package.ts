@@ -1573,14 +1573,32 @@ export class Package {
       for (const source of Object.values(this.buildPlan.sources)) {
          const storage = source.annotationFields?.storage?.trim();
          if (!storage) continue;
-         const message =
-            mode === "off"
-               ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
-                 `the annotation is ignored and the source is served live from ` +
-                 `its own warehouse.`
-               : `is materialized into storage "${storage}" but ` +
-                 `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
-                 `routed to the materialized table (served live).`;
+         // A rollup needs its own wording, and not for tidiness. The authored
+         // message says the source "is served live from its own warehouse", which
+         // for a rollup is doubly wrong: a rollup is not a source anyone queries
+         // by name, and there is no live reading of it to fall back to — the
+         // acceleration simply does not happen and every query is answered from
+         // the base, correctly. Reusing the authored text would also imply the
+         // annotation is merely inert, when the thing an operator needs to know is
+         // that nothing was built at all.
+         const isRollup = source.origin === "preaggregate";
+         const message = isRollup
+            ? mode === "off"
+               ? `is a pre-aggregation rollup declared into storage "${storage}", ` +
+                 `but PERSIST_STORAGE_MODE is off, so it is not built. Queries ` +
+                 `that would have used it are answered from the base source ` +
+                 `instead — correct, but unaccelerated.`
+               : `is a pre-aggregation rollup materialized into storage ` +
+                 `"${storage}", but PERSIST_STORAGE_MODE is write-only, so the ` +
+                 `serve path does not route to it. Queries are answered from the ` +
+                 `base source — correct, but unaccelerated.`
+            : mode === "off"
+              ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
+                `the annotation is ignored and the source is served live from ` +
+                `its own warehouse.`
+              : `is materialized into storage "${storage}" but ` +
+                `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
+                `routed to the materialized table (served live).`;
          warnings.push({
             model: source.modelPath ?? "",
             subject: source.name,
