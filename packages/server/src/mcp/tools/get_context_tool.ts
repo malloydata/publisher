@@ -487,7 +487,7 @@ const getContextShape = {
       .string()
       .optional()
       .describe(
-         "Optional. Narrow results to entities within this source (the drill-down phase).",
+         "Optional. Narrow results to one source. Not a required second step: a query already returns each matching source with its fields nested.",
       ),
    limit: z
       .number()
@@ -927,7 +927,7 @@ const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes an
 
 ## Contract rules
 - Use the names it returns verbatim; never invent one that is not in the results.
-- Start broad: environments, then packages, then sources, then a query.
+- A query returns whole source cards with fields nested: one call, no drill-down.
 - Read warnings and any error/stale field before trusting a number: data may be missing, stale, or cut short.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline rather than probe for one.
 - Read a source's doc before querying it: it carries grain and population rules its fields do not.
@@ -937,7 +937,7 @@ const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes an
 All optional; supply what you know. None lists environments and their packages; environmentName lists its packages; + packageName lists its sources with their joins; + query ranks its entities. sourceName alone returns one source's full card, so [] means no such source; with a query it ranks inside it. limit caps entities (max 50; retrieval defaults to 10).
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (trailing … = truncated), one_line_summary, complete joins, givens, authorize (gates, report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship, aliases (same field, other spellings), also_in (equal-scoring sources; pick by docs), relevance, entity_id. Pass a source as sourceName, a view or query as queryName; traverse a join as joinName.fieldName.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (gates, report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship, aliases (same field, other spellings), also_in (equal-scoring sources; pick by docs), relevance, entity_id. Pass a source as sourceName, a view or query as queryName; traverse a join as joinName.fieldName.
 ranking (relevance|prominence), returned of total_available sources, warnings[] for what was cut or stale.
 Semantic ranking fills relevance: no sources means nothing cleared the floor; below_cutoff_count of total_entities were rejected. A "lexical" retrieval adds retrieval_reason; only "indexing" is worth a retry.
 

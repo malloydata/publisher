@@ -116,5 +116,5 @@ Answering questions is the start, not the whole surface. When the user asks what
 ## Contract
 
 - Ground every query in `malloy_getContext` results. If a name is not in the results, do not use it.
-- Start broad and narrow down: environments, then packages, then sources, then query.
+- With an environment and package in hand, ask the question in one call: a query returns each matching source with its fields nested. The environment, package and source listings are for finding a name you are missing, not steps to walk first.
 - Confirm the environment and package before running a query.

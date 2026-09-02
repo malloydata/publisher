@@ -21,7 +21,7 @@ The server listens at `http://localhost:4040/mcp` (set the port with `--mcp_port
 
 ### Discovery and grounding
 
-- `malloy_getContext`: the entry point when you do not yet know the environment, package, or model names. It is progressive: call it with no arguments to list the environments (each with its package names), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to return the sources, views, named queries, declared joins, and dimension and measure fields most relevant to it. All of this lets an agent discover what a deployment exposes and ground a query in names the model actually defines before writing it.
+- `malloy_getContext`: the entry point when you do not yet know the environment, package, or model names. Every parameter is optional, so supply what you know: a package plus a plain-English question returns, in ONE call, the sources, views, named queries, declared joins, and dimension and measure fields most relevant to it, each source card carrying its own matched fields. The listing tiers exist for when you are missing a name, not as steps to walk through first: no arguments lists the environments (each with its package names), an environment lists its packages, and a package lists its sources. All of this lets an agent discover what a deployment exposes and ground a query in names the model actually defines before writing it.
 
 A retrieval response is a `sources` array, best source first. Each entry nests the entities that matched inside it, under a `source_info` describing the source itself.
 
@@ -37,7 +37,7 @@ Read `authorize` as "this source is gated, and these are the givens to supply". 
 
 Each entity carries a `data_type` where it has one, so you know whether a field can be filtered as a string or summed. `aliases` names other spellings of that same field inside its own source, collapsed into one row.
 
-The package listing (`packageName` with no query) is the same shape, carrying the same `joins`, with `ranking: "prominence"` and no entities under each source. A drill-down (`sourceName` with no query) returns that one source's card with every entity nested in it, so `limit` there buys fields rather than being spent on a source row you already had.
+The package listing (`packageName` with no query) is the same shape, carrying the same `joins`, with `ranking: "prominence"` and no entities under each source. Adding `sourceName` with no query returns that one source's card with every entity nested in it, so `limit` there buys fields rather than being spent on a source row you already had. That is for enumerating a source you have already chosen; it is not a second step a question needs, because a query call already returns each matching source with its fields nested.
 
 A source that matched on its own terms carries a `relevance` and no entity row. A source present only as the parent of a matched field takes its `relevance` from that best entity, so a matched source is never reported at null.
 

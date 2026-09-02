@@ -138,12 +138,13 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
 
 ## 4. A first run, end to end
 
-Ask "what can I explore here?" A good sequence is:
+Ask "what can I explore here?" From a cold start, knowing no names at all:
 
-1. `malloy_getContext` with no arguments, then pick an environment (the bundled one is `examples`).
-2. `malloy_getContext` with that environment, then pick a package (the bundled packages are `storefront`, `governed-analytics`, and `html-data-app`).
-3. `malloy_getContext` with the package and your question, to get the source, view, and field names.
-4. `malloy_executeQuery` with those names, to get the answer. Charts and dashboards defined in the model render in the UI at http://localhost:4000.
+1. `malloy_getContext` with no arguments, then pick an environment (the bundled one is `examples`) and a package from the names it lists (the bundled packages are `storefront`, `governed-analytics`, and `html-data-app`).
+2. `malloy_getContext` with that environment and package plus your question, to get the source, view, and field names. This one call returns each matching source with its own matched fields nested in it, so there is no follow-up call to drill into a source.
+3. `malloy_executeQuery` with those names, to get the answer. Charts and dashboards defined in the model render in the UI at http://localhost:4000.
+
+Step 1 is only for a cold start. Once you know the environment and package, whether from your system prompt, a previous call, or the user, go straight to step 2.
 
 ## 5. Skills
 
