@@ -914,25 +914,25 @@ async function getPackageIndex(
  * first and the reference material last, and the reference stays terse to buy
  * room for it. Full prose belongs in docs/ai-agents.md, not here.
  */
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the entities most relevant to a plain-English question, so you ground a query in names the model defines.
+const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the entities most relevant to a plain-English question, so you ground queries in names the model defines.
 
 ## Contract rules
-- Use the names it returns verbatim; never invent an environment, package, or entity that is not in the results.
-- Start broad and narrow down: environments, then packages, then sources, then a query.
-- Read warnings, and any error or stale field, before trusting a number: data may be missing, stale, or cut short.
-- A source's joins list is complete: empty means it declares none, so write that relationship inline rather than probing for one.
+- Use the names it returns verbatim; never invent one that is not in the results.
+- Start broad: environments, then packages, then sources, then a query.
+- Read warnings and any error/stale field before trusting a number: data may be missing, stale, or cut short.
+- A source's joins list is complete: empty means it declares none, so write that relationship inline rather than probe for one.
 - Read a source's doc before querying it: it carries grain and population rules its fields do not.
-- A source with authorize is gated: supply the givens it names, or the query is denied.
+- A source with authorize is gated: supply the givens it names or the query is denied.
 
 ## Parameters
-All optional; supply what you know. No arguments lists the environments and their packages; environmentName lists that environment's packages; + packageName lists its sources with their joins; + query ranks its entities. sourceName alone returns one source's full card, so [] means no such source; with a query it ranks inside that source. limit caps entities (max 50; retrieval defaults to 10).
+All optional; supply what you know. None lists environments and their packages; environmentName lists its packages; + packageName lists its sources with their joins; + query ranks its entities. sourceName alone returns one source's full card, so [] means no such source; with a query it ranks inside it. limit caps entities (max 50; retrieval defaults to 10).
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source), docs, one_line_summary, complete joins, givens, authorize (gates, report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relevance, entity_id. Pass a source as sourceName, a view or query as queryName; traverse a join as joinName.fieldName. also_in names equal-scoring sources; choose by their docs.
-ranking: relevance (search) or prominence (listing); returned of total_available sources; warnings[] says what was cut or stale.
-Semantic ranking fills relevance: no sources means nothing cleared the floor, and below_cutoff_count of total_entities were rejected. A "lexical" retrieval adds retrieval_reason; only "indexing" is worth a retry.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (trailing … = truncated), one_line_summary, complete joins, givens, authorize (gates, report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship, aliases (same field, other spellings), also_in (equal-scoring sources; pick by docs), relevance, entity_id. Pass a source as sourceName, a view or query as queryName; traverse a join as joinName.fieldName.
+ranking (relevance|prominence), returned of total_available sources, warnings[] for what was cut or stale.
+Semantic ranking fills relevance: no sources means nothing cleared the floor; below_cutoff_count of total_entities were rejected. A "lexical" retrieval adds retrieval_reason; only "indexing" is worth a retry.
 
-## Worked example
+## Example
 {"environmentName":"examples","packageName":"storefront","query":"revenue by category"}`;
 
 /**

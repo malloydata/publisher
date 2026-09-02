@@ -91,9 +91,9 @@ Use the names it returns exactly. Do not invent environments, packages, sources,
 
 ## 2. Run the query
 
-Call `malloy_executeQuery` with the `environmentName`, `packageName`, and `modelPath` from the context results, plus either:
+A retrieval response is a `sources` array. Each entry's `source_info.resource_id` carries `environment`, `package`, and `model_path`; pass them to `malloy_executeQuery` as `environmentName`, `packageName`, and `modelPath`, plus either:
 
-- a named view or query: pass its `name` as `queryName` (with `sourceName` for a view), or
+- a named view or query: pass its `name` as `queryName` (with the card's `resource_id.source` as `sourceName` for a view), or
 - an ad-hoc query: pass Malloy code as `query`.
 
 The result is JSON. Charts and dashboards defined in the model render in the Publisher UI at http://localhost:4000.

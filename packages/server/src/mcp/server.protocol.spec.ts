@@ -134,7 +134,13 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          "joins",
          "sourceName",
          "relationship",
+         "aliases",
          "also_in",
+         // The hand-off. The response renames these into resource_id, so
+         // without the mapping an agent holding a card cannot reach
+         // executeQuery; the sentence that said so was once dropped while
+         // the fields were being renamed, and nothing caught it.
+         "malloy_executeQuery",
          "ranking",
          "total_available",
          "below_cutoff_count",
