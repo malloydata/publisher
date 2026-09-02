@@ -56,6 +56,8 @@ import {
    PayloadTooLargeError,
 } from "../errors";
 import { getPersistStorageMode } from "../config";
+import type { RollupPlan } from "./preaggregation_synthesis";
+import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
 import {
@@ -65,6 +67,7 @@ import {
    extractRefinements,
    extractViews,
    narrowSchemaToPublic,
+   type RollupShapeGroup,
    sliceSourceRange,
    type ServeBinding,
    type SourceLocation,
@@ -369,6 +372,17 @@ export class Model {
     * compiled model serve every query.
     */
    private preaggregateServeMaterializer?: ModelMaterializer;
+   /**
+    * The rollups this model's `#@ preaggregate` declarations describe.
+    *
+    * Held separately from {@link preaggregateServeMaterializer} because the two
+    * fail independently: the companion is a compile that can fail, while these
+    * are a pure function of the compiled contents. A rollup served from the
+    * storage tier needs only the plans — they carry the merged measures its
+    * virtual source declares — so a companion that will not compile must not also
+    * disable lake serving.
+    */
+   private preaggregateRollupPlans: RollupPlan[] = [];
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -3626,7 +3640,23 @@ export class Model {
       buildManifest?: BuildManifest["entries"],
    ): Promise<void> {
       this.preaggregateServeMaterializer = undefined;
+      this.preaggregateRollupPlans = [];
+      // The storage serve shape embeds these plans (a rollup member's measures
+      // come from them), and the shape cache is keyed on the BINDING set, which a
+      // model edit need not change. So the plans changing has to drop the shape
+      // explicitly, or an edited grain would keep serving through the shape
+      // compiled for the previous one.
+      this.serveShapeCache = undefined;
       if (!this.modelDef || this.modelType !== "model") return;
+      // Planned directly rather than taken from the compile below, so a companion
+      // that fails to compile still leaves the storage tier able to serve these
+      // rollups: planning is pure, the compile is not.
+      const { planModelPreaggregation } = await import(
+         "./preaggregation_synthesis"
+      );
+      this.preaggregateRollupPlans = planModelPreaggregation(
+         this.modelDef.contents as Record<string, unknown>,
+      );
       // Dynamic import to break a module cycle: the helper compiles through
       // Model.getModelRuntime, so importing it at the top of this file would make
       // the two modules import each other.
@@ -3956,6 +3986,16 @@ export class Model {
        * rather than the package-wide field.
        */
       bindings: ServeBinding[];
+      /**
+       * Whether a pre-aggregation rollup actually ANSWERED this query, rather than
+       * merely being available to. Read from the probe SQL: a rollup's physical
+       * table appears in it only if the composite resolver chose that member.
+       *
+       * Guessing from "the shape contains rollup groups" would over-report every
+       * query that touched an ordinary stored source in the same package, which
+       * would defeat the reason the distinction is recorded at all.
+       */
+      origin: "persist" | "preaggregate";
    }> {
       // Gate by freshness first: only bindings that should serve their table now
       // enter the shape. Keying the cache on the FRESH subset means it recompiles
@@ -3971,15 +4011,47 @@ export class Model {
          .map((b) => `${b.sourceName}@${b.destinationName}/${b.virtualHandle}`)
          .sort()
          .join("|");
+      // Split by origin. A rollup CANNOT go through serveBindingsWithRefinements:
+      // its source name names nothing in the author's model, so the refinement
+      // lift finds no fields and the schema narrowing intersects to nothing — see
+      // preaggregation_serve_bindings.ts for what each half does to a rollup, and
+      // why getting it wrong costs the whole package's storage serving rather than
+      // the rollup's.
+      const ordinary = freshBindings.filter((b) => b.origin !== "preaggregate");
+      const { groups, conflicts } = rollupServeBindings(
+         freshBindings,
+         this.preaggregateRollupPlans,
+      );
+      for (const conflict of conflicts) {
+         // info, matching the storage tier's own fallback line: a dropped group is
+         // silent by design — the query succeeds, the rows are correct, only the
+         // acceleration is lost — so at debug an operator has no way to tell a
+         // package whose rollups never serve from one that has none.
+         logger.info(
+            "Not serving a source's rollups from storage; queries are answered from the base",
+            {
+               modelPath: this.modelPath,
+               source: conflict.baseSourceName,
+               reason: conflict.reason,
+            },
+         );
+      }
       if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
          this.serveShapeCache = {
             key,
             materializer: await this.compileServeShape(
-               this.serveBindingsWithRefinements(freshBindings),
+               this.serveBindingsWithRefinements(ordinary),
+               groups,
             ),
          };
       }
-      const virtualMap = buildVirtualMap(freshBindings);
+      // Rollup members are not in `ordinary`, so their handles have to be mapped
+      // explicitly or the composite resolves to nothing at run time.
+      const virtualMap = buildVirtualMap([
+         ...ordinary,
+         ...groups.flatMap((g) => g.members),
+      ]);
+
       const runnable =
          this.serveShapeCache.materializer.loadRestrictedQuery(queryString);
       // Compile eagerly so ineligibility (a refinement the serve shape lacks, an
@@ -3987,8 +4059,17 @@ export class Model {
       // so without this the error would escape at prepare/run instead of at the
       // caller's try, defeating the safe fallback. Cheap relative to the run. The
       // serve shape is pure virtual sources, so no buildManifest is needed.
-      await runnable.getSQL({ virtualMap });
-      return { runnable, virtualMap, bindings: freshBindings };
+      const probeSQL = await runnable.getSQL({ virtualMap });
+      // The rollup members' physical paths, quoted exactly as the virtualMap
+      // substitutes them, so this compares like with like rather than re-deriving
+      // the quoting and drifting from it.
+      const rollupPaths = [
+         ...buildVirtualMap(groups.flatMap((g) => g.members)),
+      ].flatMap(([, byHandle]) => [...byHandle.values()]);
+      const origin = rollupPaths.some((path) => probeSQL.includes(path))
+         ? ("preaggregate" as const)
+         : ("persist" as const);
+      return { runnable, virtualMap, bindings: freshBindings, origin };
    }
 
    /**
@@ -4007,6 +4088,15 @@ export class Model {
     */
    private async compileServeShape(
       enriched: ServeBinding[],
+      /**
+       * Pre-aggregation groups, passed through every escalation tier UNCHANGED.
+       * The escalation exists to salvage a shape when an author's refinement
+       * cannot be reproduced; a rollup's measures are generated from its own plan
+       * and are the only reason its member exists, so dropping them would not
+       * rescue anything — it would leave a member that compiles and answers
+       * nothing.
+       */
+      rollupGroups: RollupShapeGroup[] = [],
    ): Promise<ModelMaterializer> {
       // Richest first; each predicate keeps fewer refinement kinds than the last.
       const keepKinds: Array<ReadonlySet<string>> = [
@@ -4035,7 +4125,10 @@ export class Model {
                          }
                        : b,
                  );
-         const materializer = this.buildServeShapeMaterializer(shaped);
+         const materializer = this.buildServeShapeMaterializer(
+            shaped,
+            rollupGroups,
+         );
          // Base-only (last tier) always compiles; trust it without a probe. And
          // when there are no refinements at all, tier 0 IS the base — skip too.
          if (tier === lastTier || (tier === 0 && !hasRefinements)) {
@@ -4059,25 +4152,40 @@ export class Model {
       // Unreachable: the last tier returns above. Satisfy the type checker.
       return this.buildServeShapeMaterializer(
          enriched.map((b) => ({ ...b, refinements: [] })),
+         rollupGroups,
       );
    }
 
    /** Build the transient serve-shape materializer for a set of bindings. */
    private buildServeShapeMaterializer(
       bindings: ServeBinding[],
+      rollupGroups: RollupShapeGroup[] = [],
    ): ModelMaterializer {
-      const { modelText } = buildServeShapeModelForBindings(bindings);
+      const { modelText } = buildServeShapeModelForBindings(
+         bindings,
+         rollupGroups,
+      );
       const root = "file:///storage-serve-shape/";
       const url = `${root}shape.malloy`;
       const runtime = new Runtime({
          urlReader: new InMemoryURLReader(new Map([[url, modelText]])),
-         // Narrowed to the destinations THESE bindings name. The shape's
-         // generated text references nothing else, so anything else resolving
-         // would only ever be a way to reach a warehouse this query has no
-         // business reaching.
+         // Narrowed to the destinations THIS shape names. The generated text
+         // references nothing else, so anything else resolving would only ever be
+         // a way to reach a warehouse this query has no business reaching.
+         //
+         // Rollup members count. They are not in `bindings` — a rollup reaches the
+         // shape through its group, under a name nothing queries — so narrowing on
+         // `bindings` alone leaves their destination out and the composite fails to
+         // compile with "Cannot determine dialect for connection", which reads as
+         // an ineligible query and falls back to live.
          config: restrictMalloyConfigToConnections(
             this.serveDestinationConfig!(),
-            new Set(bindings.map((binding) => binding.destinationName)),
+            new Set([
+               ...bindings.map((binding) => binding.destinationName),
+               ...rollupGroups.flatMap((group) =>
+                  group.members.map((member) => member.destinationName),
+               ),
+            ]),
          ),
       });
       return runtime.loadModel(new URL(url), {
@@ -4579,9 +4687,15 @@ export class Model {
                serveVirtualMap = shaped.virtualMap;
                serveShapeBindings = shaped.bindings;
                servedFrom = "storage";
-               recordStorageServeRouting("storage");
+               // `servedFrom` stays "storage" for a rollup: the field names the
+               // TIER an answer came from, and a lake-served rollup is the storage
+               // tier. The origin rides the metric instead, where an added
+               // attribute breaks no consumer — unlike a new enum value, which is
+               // mirrored into clients generated strictly from it.
+               recordStorageServeRouting("storage", shaped.origin);
                logger.info("Serving query from storage tier (virtual-source)", {
                   modelPath: this.modelPath,
+                  origin: shaped.origin,
                   // The sources in the SHAPE, not the package's whole binding set:
                   // a stale binding is dropped before the shape is built.
                   storageSources: shaped.bindings.map((b) => b.sourceName),
@@ -4663,10 +4777,30 @@ export class Model {
          // `effectiveBuildManifest` hands the rollup manifest to the runnable
          // regardless. Blocking the tier for a row-level-gated entry point makes
          // the invariant local to this decision.
+         // Also skipped when every rollup this model declares is bound for a
+         // storage destination, because for those the colocated companion is a
+         // PESSIMIZATION rather than a second chance.
+         //
+         // A storage rollup's table is in the store, so the colocated manifest has
+         // no entry for it. The companion's composite still offers the rollup
+         // member and still picks it for a covered query — membership does not
+         // depend on the table existing — and with no entry to substitute, the
+         // member compiles as its own definition: a GROUP BY of the base, then the
+         // merge on top. Two stages where serving live is one, for a query that
+         // reached here only because the storage rung could not serve it.
+         //
+         // Scoped to "every rollup is storage-bound" rather than "any": a model
+         // mixing colocated and storage rollups still has colocated tables the
+         // companion can legitimately hit, and giving those up would trade a real
+         // acceleration for avoiding a slower path on the others.
+         const everyRollupIsStorageBound =
+            this.preaggregateRollupPlans.length > 0 &&
+            this.preaggregateRollupPlans.every((plan) => !!plan.storage);
          if (
             preaggServeMaterializer &&
             !routingBlockedByRowLevelGate &&
-            !serveVirtualMap
+            !serveVirtualMap &&
+            !everyRollupIsStorageBound
          ) {
             try {
                const candidate =

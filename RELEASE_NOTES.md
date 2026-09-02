@@ -126,7 +126,7 @@ exists.
 ```malloy
 source: orders is orders_pg.table('public.orders') extend {
   measure:
-    #@ preaggregate grain="category" storage=credible
+    #@ preaggregate grain="category" storage=lake
     total is amount.sum()
 }
 ```

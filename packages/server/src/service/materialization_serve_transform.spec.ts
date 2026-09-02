@@ -395,11 +395,17 @@ describe("deriveServeBindings", () => {
       expect(bindings).toEqual([
          {
             sourceName: "mz",
+            // An entry with no `origin` describes an authored `#@ persist`
+            // source, which is what the wire default means and what every entry
+            // written before the field existed can only have been.
+            origin: "persist",
             destinationName: "lake",
             virtualHandle: "se_storage",
             tablePath: "lake.mz_g003",
             schema: [{ name: "amount", type: "BIGINT" }],
             freshAsOf: "2026-07-20T00:00:00Z",
+            freshnessWindowSeconds: undefined,
+            freshnessFallback: undefined,
          },
       ]);
       // The table path is qualified with the destination catalog (attach alias)

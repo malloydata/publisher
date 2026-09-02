@@ -111,7 +111,7 @@ export interface PreaggregateGrain {
    /**
     * The storage destination this rollup's table is built into and served from,
     * when the author named one — `#@ preaggregate grain="category"
-    * storage=credible`. Undefined means the rollup is colocated: built into the
+    * storage=lake`. Undefined means the rollup is colocated: built into the
     * base's own warehouse, which is the default and the only option before this.
     *
     * Per grain for the same reason {@link PreaggregateGrain.namespace} is: a

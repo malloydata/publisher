@@ -555,13 +555,13 @@ describe("placing a rollup in a storage destination", () => {
       // `#@ persist`. Telling them they wrote both would send them looking for a
       // line that does not exist.
       const violations = await validateAnnotated(
-         "#@ persist storage=credible",
+         "#@ persist storage=lake",
          `  #@ preaggregate grain="category" namespace="ns_a"
   measure: revenue is amount.sum()`,
       );
       expect(violations.map((v) => v.code)).toEqual(["namespace_with_storage"]);
       expect(violations[0].message).toContain('namespace="ns_a"');
-      expect(violations[0].message).toContain("#@ persist storage=credible");
+      expect(violations[0].message).toContain("#@ persist storage=lake");
       expect(violations[0].fieldName).toBe("revenue");
    });
 
@@ -577,7 +577,7 @@ describe("placing a rollup in a storage destination", () => {
       expect(
          (
             await validateAnnotated(
-               "#@ persist storage=credible",
+               "#@ persist storage=lake",
                `  #@ preaggregate grain="category"
   measure: revenue is amount.sum()`,
             )

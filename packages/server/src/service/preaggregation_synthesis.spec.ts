@@ -99,10 +99,10 @@ describe("a rollup follows its base into a storage destination", () => {
       // across the very boundary the tier exists to avoid crossing.
       const plans = planSourcePreaggregation(
          "orders",
-         await compileAnnotatedOrders("#@ persist storage=credible", GRAIN),
+         await compileAnnotatedOrders("#@ persist storage=lake", GRAIN),
       );
       expect(plans).toHaveLength(1);
-      expect(plans[0].storage).toBe("credible");
+      expect(plans[0].storage).toBe("lake");
    });
 
    it("emits `storage=` with NO name=, so the destination assigns the table", async () => {
@@ -113,11 +113,11 @@ describe("a rollup follows its base into a storage destination", () => {
       // self-assigns from the source name, which carries the grain digest.
       const plans = planSourcePreaggregation(
          "orders",
-         await compileAnnotatedOrders("#@ persist storage=credible", GRAIN),
+         await compileAnnotatedOrders("#@ persist storage=lake", GRAIN),
       );
       const emitted =
          synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
-      expect(emitted).toContain("#@ persist storage=credible");
+      expect(emitted).toContain("#@ persist storage=lake");
       expect(emitted).not.toContain("name=");
    });
 
@@ -129,11 +129,11 @@ describe("a rollup follows its base into a storage destination", () => {
       const plans = planSourcePreaggregation(
          "orders",
          await compileAnnotatedOrders(
-            '#@ persist storage=credible name="analytics.orders_tbl"',
+            '#@ persist storage=lake name="analytics.orders_tbl"',
             GRAIN,
          ),
       );
-      expect(plans[0].storage).toBe("credible");
+      expect(plans[0].storage).toBe("lake");
       expect(plans[0].namespace).toBeUndefined();
    });
 
@@ -168,13 +168,13 @@ describe("a rollup follows its base into a storage destination", () => {
       const plans = planSourcePreaggregation(
          "orders",
          await compileOrders(
-            `  measure:\n    #@ preaggregate grain="category" storage=credible\n    #@ preaggregate grain="order_date"\n    total is sum(amount)`,
+            `  measure:\n    #@ preaggregate grain="category" storage=lake\n    #@ preaggregate grain="order_date"\n    total is sum(amount)`,
          ),
       );
       const byGrain = Object.fromEntries(
          plans.map((p) => [p.grainDimensions.join(","), p.storage]),
       );
-      expect(byGrain).toEqual({ category: "credible", order_date: undefined });
+      expect(byGrain).toEqual({ category: "lake", order_date: undefined });
    });
 });
 
