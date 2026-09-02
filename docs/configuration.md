@@ -125,6 +125,37 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `malloy_searchDatabaseSchema` to send a connection's schema name, table names, column names and column types, plus the agent's search text, to the embedding endpoint for semantic ranking. Never row values. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. It is read when the tool is called, not at startup, so an unrecognised value does not stop the server: the tool logs a warning and ranks lexically for that call. See "Semantic ranking for malloy_searchDatabaseSchema" below. |
 | — | `--help`, `-h` | — | Print the full flag list. |
 
+### Where to put these
+
+Publisher reads them from its environment, and Bun loads a `.env` file from the directory you
+start the server in, so a local setup is one file and no flags:
+
+```
+# .env
+EMBEDDING_API_KEY=sk-...
+EMBEDDING_DIMENSIONS=768
+```
+
+`.env` is gitignored. [`.env.example`](../.env.example) at the repo root lists the semantic-retrieval
+variables with their defaults; copy it to `.env` and fill in the key.
+
+A string anywhere in `publisher.config.json` may also reference an environment variable as
+`${VARNAME}`, which is how a warehouse password or an SSH private key stays out of a file that
+is usually committed:
+
+```json
+"postgresConnection": { "password": "${PGPASSWORD}" }
+```
+
+Two things to know before relying on it. The substitution happens when the config file is
+*read*, which is the first boot on a fresh server root or any boot with `--init` — a normal
+boot loads the persisted copy and never sees the file. And a variable that is not set makes
+the whole config unreadable, which Publisher currently reports only as a log line before
+falling back to an empty manifest: the server starts, `operationalState` is `serving`, and
+`loadErrors` is empty, but no environment or package is served. If a boot comes up with
+nothing after a config edit, check the log for `Error reading publisher.config.json` before
+looking anywhere else.
+
 `PUBLISHER_MAX_RESPONSE_BYTES` measures the shape the caller asked for, not one fixed shape.
 On the model-query endpoint that means two requests differing only in `compactJson` reach the
 cap at different result sizes. Over MCP it measures the compact rows the tool's envelope is
