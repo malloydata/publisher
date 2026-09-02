@@ -101,9 +101,10 @@ The skill list above is abridged; the real file names every directory under `ski
   an SDK `Skill` tool cannot invoke from one at all, so Publisher ships one flat set.
 - `trigger_hint` (optional): text the host uses to generate rule files for IDEs that drive
   skill loading from rules; falls back to `description` if omitted.
-- `groups` (optional): named subsets a consumer may exclude, so someone who wants fewer skills
-  gets a filter rather than a second directory. Every member must also appear in
-  `auto_discovered` or `supporting`.
+- `groups` (optional): named subsets, so someone who wants fewer skills gets a filter rather
+  than a second directory. A group is either something to leave out (`html-apps`) or a role
+  to take alone (`analysis`, `modeling` — what an answering agent and a modeling agent each
+  load). Every member must also appear in `auto_discovered` or `supporting`.
 
 **Every channel resolves the manifest; none globs `skills/`.** The npm pack, the MCP prompt
 bundle, the `.claude/skills` symlinks, and the scaffolder all read the same list, and

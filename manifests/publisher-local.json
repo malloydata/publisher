@@ -47,6 +47,46 @@
     "materialization": [
       "malloy-materialization",
       "malloy-materialization-tuning"
+    ],
+    "analysis": [
+      "malloy-getting-started",
+      "malloy-analysis",
+      "malloy-notebook-chat",
+      "malloy-phrase-detection",
+      "malloy-analysis-pitfalls",
+      "malloy-queries",
+      "malloy-charts",
+      "malloy-analysis-report",
+      "malloy-patterns",
+      "malloy-gotchas-queries",
+      "malloy-notebooks"
+    ],
+    "modeling": [
+      "malloy-modeling",
+      "malloy",
+      "malloy-model",
+      "malloy-model-as-you-go",
+      "malloy-materialization",
+      "malloy-define",
+      "malloy-scope",
+      "malloy-discover",
+      "malloy-patterns",
+      "malloy-charts",
+      "malloy-debug",
+      "malloy-analyze",
+      "malloy-notebooks",
+      "malloy-lookml-review",
+      "malloy-gotchas-modeling",
+      "malloy-gotchas-queries",
+      "malloy-gotchas-rendering",
+      "malloy-publish",
+      "malloy-document",
+      "malloy-review",
+      "malloy-analysis-pitfalls",
+      "malloy-analysis-report",
+      "malloy-analysis",
+      "malloy-queries",
+      "malloy-phrase-detection"
     ]
   }
 }

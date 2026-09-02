@@ -15,7 +15,7 @@ Task-specific guides for working with Malloy through this Publisher deployment. 
 
 That matters because the four channels used to take "everything under `skills/` minus `credible-*`" independently, so a skill added here shipped everywhere by default and there was nowhere to say otherwise. Registering a skill is now one line in the manifest, and forgetting to is a red build rather than a silent non-ship.
 
-`groups` names optional subsets (`html-apps`, `lookml`, `materialization`) so a consumer that wants fewer skills gets a filter rather than a second directory. `supporting` stays empty on purpose: agents discover a second skills directory poorly, and an SDK `Skill` tool cannot invoke from one at all.
+`groups` names optional subsets so a consumer that wants fewer skills gets a filter rather than a second directory. Three are things to leave out (`html-apps`, `lookml`, `materialization`); two are things to take alone: `analysis` is what an agent answering questions over a published model loads, `modeling` what an agent building or editing a model loads. An eval that measures one of those agents installs the matching group, not the whole set — an answerer holding modeling skills is a different system from the one a customer's analysis agent is. `supporting` stays empty on purpose: agents discover a second skills directory poorly, and an SDK `Skill` tool cannot invoke from one at all.
 
 ## Where these come from
 
