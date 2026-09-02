@@ -26,8 +26,8 @@ manifests/
 
 `skills/` is a flat collection of self-contained skills. A skill has no knowledge of which use
 case it belongs to. `manifests/` defines skill compositions for each use case and tells the
-host how to deploy them. This repository ships one manifest today; a deployment that wanted a
-narrower set (analysis only, say) would add a second rather than filter at the consumer.
+host how to deploy them. This repository ships one manifest today, and a deployment that wants a
+narrower set names a `groups` entry in it rather than adding a second file.
 
 ## A skill
 
@@ -105,10 +105,21 @@ The skill list above is abridged; the real file names every directory under `ski
   than a second directory. A group is either something to leave out (`html-apps`) or a role
   to take alone (`analysis`, `modeling` — what an answering agent and a modeling agent each
   load). Every member must also appear in `auto_discovered` or `supporting`.
+- A group is a **seed, not a closed set.** Its members carry `skill:` references that point
+  outside it, so a consumer installs the group and then follows those references one hop
+  (`resolve_closure` in `skills/eval-loop/scripts/agent_harness.py` is the worked example, and
+  it treats a reference it cannot resolve as fatal). Every reference lands inside the shipped
+  set — `manifest.spec.ts` § "are closed over the manifest" is what guarantees a consumer can
+  always resolve one — so the seed is safe to install without the whole manifest, but it is
+  not self-sufficient. Installing a group's directories and nothing else leaves the references
+  dangling.
 
 **Every channel resolves the manifest; none globs `skills/`.** The npm pack, the MCP prompt
-bundle, the `.claude/skills` symlinks, and the scaffolder all read the same list, and
-`packages/skills/src/manifest.spec.ts` asserts they agree with it. A manifest is only worth
+bundle, the `.claude/skills` symlinks, and the scaffolder all read the same list. The pack and
+the bundle agree with it by construction, because filtering on it is how they choose what to
+copy, and the scaffolder inherits that through the packed directory;
+`packages/skills/src/manifest.spec.ts` asserts the two that could still drift -- the manifest
+against `skills/`, and against the `.claude/skills` symlinks. A manifest is only worth
 having if it is the single answer to "what ships"; before it existed each channel answered that
 question independently, and a skill added to the tree shipped everywhere by default.
 

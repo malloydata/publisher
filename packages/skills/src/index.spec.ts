@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isCredible, isExcluded } from "../scripts/exclusions";
+import { manifestSkillNames } from "../scripts/manifest";
 import { listSkills, skillsDir } from "./index";
 
 /** The repo's top-level skills/, which copy-skills.ts copies into this package. */
@@ -21,11 +22,12 @@ function skillNamesIn(dir: string): string[] {
 }
 
 describe("@malloy-publisher/skills", () => {
-   it("ships every publishable skill in the repo's skills/ directory", () => {
-      const publishable = skillNamesIn(sourceDir).filter(
-         (name) => !isExcluded(name),
-      );
-      expect(skillNamesIn(skillsDir)).toEqual(publishable);
+   it("ships exactly the skills the manifest names", () => {
+      // The manifest, not a glob of skills/: what the copy filters on is the
+      // only honest expectation here, or the first skill the manifest holds
+      // back fails this test while pointing at the copy. That the manifest in
+      // turn covers the whole tree is manifest.spec.ts's job.
+      expect(skillNamesIn(skillsDir)).toEqual(manifestSkillNames());
    });
 
    /**
@@ -74,8 +76,9 @@ describe("@malloy-publisher/skills", () => {
    // The reason this package exists: reference/ files reach no npm consumer
    // today, so the pointers to them in the MCP prompt bodies dangle.
    it("brings each skill's reference/ files along", () => {
+      const shipping = new Set(manifestSkillNames());
       const withReference = skillNamesIn(sourceDir)
-         .filter((name) => !isExcluded(name))
+         .filter((name) => shipping.has(name))
          .filter((name) =>
             fs.existsSync(path.join(sourceDir, name, "reference")),
          );

@@ -13,6 +13,7 @@
  * and not the other is how the corpora drift apart in the first place.
  */
 import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isCredible } from "../scripts/exclusions";
@@ -203,11 +204,30 @@ describe("the .claude/skills symlinks", () => {
    it("match the manifest", () => {
       // This is how contributors get the skills in their own agent, and it
       // drifted by hand before the manifest existed.
-      const dir = path.join(repoRoot, ".claude", "skills");
-      const linked = fs
-         .readdirSync(dir, { withFileTypes: true })
-         .filter((entry) => entry.isSymbolicLink())
-         .map((entry) => entry.name)
+      //
+      // Asks git rather than the filesystem, for the same reason index.spec.ts
+      // does. `cross-platform-tests.yml` runs this suite on windows-latest,
+      // where Git materializes a mode-120000 entry as a plain text file
+      // holding the target path unless `core.symlinks` is on; `isSymbolicLink`
+      // on the worktree is `false` for all 32 in that state, and so is "has a
+      // SKILL.md". The index records the mode either way, so this reads the
+      // same on every platform. It also ignores a contributor's untracked
+      // local additions under `.claude/skills`, which are a supported state.
+      //
+      // Mode 120000 is load-bearing, not incidental: `publisher-release` is a
+      // real committed directory here rather than a link into `skills/`, being
+      // a repo-operations skill that ships through no channel, so filtering on
+      // the mode is what keeps it out of the comparison.
+      const linked = execFileSync(
+         "git",
+         ["ls-files", "-s", "--", ".claude/skills"],
+         { cwd: repoRoot, encoding: "utf8" },
+      )
+         .split("\n")
+         .filter(Boolean)
+         .map((line) => line.split(/\s+/))
+         .filter(([mode]) => mode === "120000")
+         .map((fields) => path.basename(fields[fields.length - 1] as string))
          .sort();
       expect(linked).toEqual(shipped);
    });

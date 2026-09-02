@@ -8,8 +8,11 @@
  * the npm pack, the MCP prompt bundle, the `.claude/skills` symlinks, and the
  * scaffolder each took "everything under skills/ minus credible-*", so adding a
  * skill silently shipped it everywhere and there was nowhere to say otherwise.
- * A manifest is only worth having if it is the single answer to "what ships",
- * which is why `manifest.spec.ts` asserts each channel agrees with it.
+ * A manifest is only worth having if it is the single answer to "what ships".
+ * The pack and the bundle agree with it by construction, filtering on it to
+ * choose what to copy; `manifest.spec.ts` asserts the two that could still
+ * drift -- the manifest against `skills/`, and against the `.claude/skills`
+ * symlinks.
  *
  * Build-time only, which is why this lives in scripts/ rather than src/. The
  * packed npm module cannot read the repo root, and does not need to: the pack

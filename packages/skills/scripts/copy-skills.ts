@@ -20,9 +20,14 @@ const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = path.join(packageDir, "..", "..", "skills");
 const destination = path.join(packageDir, "skills");
 
-// What ships is the manifest, not whatever happens to be in skills/. A skill
-// added to the tree but not the manifest is a deliberate non-ship (work in
-// progress, or a host-specific skill), and used to be published anyway.
+// What ships is the manifest, not whatever happens to be in skills/.
+//
+// The manifest is exhaustive by construction, not a way to hold a skill back:
+// manifest.spec.ts fails on any skill in the tree the manifest omits, and
+// check-pack.ts fails the publish on the same state. So this filter never
+// subtracts today. It earns its keep by making the set stated rather than
+// incidental -- registering a skill is one line, forgetting is a red build --
+// and by giving `groups` something to name.
 const shipping = new Set(manifestSkillNames());
 const missing = [...shipping].filter(
    (name) => !fs.existsSync(path.join(source, name, "SKILL.md")),
