@@ -276,13 +276,26 @@ export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
  *
  * Not lending the DESTINATION is a deliberate limit rather than an oversight. A
  * rollup of X does belong where X's rows live, so inheriting it reads as obviously
- * right, and it is not: a base can only carry `#@ persist storage=` if it is
- * query-shaped, such a base builds a stored table of its own, and the serve shape
- * rebinds by author NAME — so the base's own binding claims the name its rollups
- * need and they are dropped from the shape. Every inherited rollup would be built,
- * refreshed, and unreadable. The destination is therefore written on the
- * `#@ preaggregate` line, where the base is typically an unpersisted table source
- * and nothing claims the name.
+ * right, and it is not. Two cases, and they are exhaustive because inheritance
+ * requires `#@ persist` on the base:
+ *
+ *  - **The base is query-shaped**, so it builds a stored table of its own. The
+ *    serve shape rebinds by author NAME, so that table's binding claims the name
+ *    its rollups need and they are dropped from the shape. The rollups are built,
+ *    refreshed, and unreadable.
+ *  - **The base is not query-shaped** — a table extended with measures, the usual
+ *    case. The annotation PARSES here, so nothing in this function stops it; what
+ *    stops it is the build, which refuses the whole run when a `#@ persist` source
+ *    was dropped from the plan (`materialization_service.ts`, the
+ *    `relevantDropped` backstop). Nothing is built at all, rollups included.
+ *
+ * Stating the second case by its real mechanism on purpose. "A base can only carry
+ * `#@ persist storage=` if it is query-shaped" is true in outcome and wrong about
+ * why: an author can write it anywhere, and a reader checking that claim against
+ * the parser would find it parses fine and conclude the limit is unfounded.
+ *
+ * The destination is therefore written on the `#@ preaggregate` line, where the
+ * base is typically an unpersisted table source and nothing claims the name.
  *
  * (The colocated tier has no such problem, and the difference is not about
  * inheritance: its companion composes members synthesis itself names, with the
@@ -313,11 +326,27 @@ function basePersistNamespace(source: ValidatableSource): string | undefined {
    }
 }
 
+/**
+ * A field the source does not publicly expose.
+ *
+ * Mirrors `isAccessRestricted` in materialization_serve_transform.ts and the
+ * predicate of the same name in preaggregation_validation.ts, and fails CLOSED in
+ * the same way: anything that is not exactly `public` is hidden, so a modifier
+ * kind added later is refused rather than admitted by default. `undefined` is a
+ * field with no modifier at all, which is public.
+ */
+function isHidden(field: { accessModifier?: unknown } | undefined): boolean {
+   return field?.accessModifier != null && field.accessModifier !== "public";
+}
+
 export function planSourcePreaggregation(
    baseSourceName: string,
    source: ValidatableSource,
 ): RollupPlan[] {
    const inheritedNamespace = basePersistNamespace(source);
+   /** Resolve a grain dimension back to the field it names, if it names one. */
+   const fieldNamed = (name: string) =>
+      (source.fields ?? []).find((f) => (f.as ?? f.name) === name);
    // Canonical grain -> the measures declared at it. Keyed on the sorted grain so
    // two authors writing the same dimensions in either order land in one entry.
    const byGrain = new Map<
@@ -336,17 +365,13 @@ export function planSourcePreaggregation(
       );
       if (!declaration.declared || declaration.errors.length > 0) continue;
 
-      // Hidden measures never reach a rollup. Refused at publish
-      // (`non_public_measure`), and skipped here for the same reason every other
-      // refusal is: the planner and the validator must not disagree about what is
-      // buildable. This one is also the last line of defence — a rollup's stored
-      // table is served without the source's field visibility applying to it.
-      if (
-         (field as { accessModifier?: unknown }).accessModifier != null &&
-         (field as { accessModifier?: unknown }).accessModifier !== "public"
-      ) {
-         continue;
-      }
+      // Hidden measures never reach a rollup, and neither do hidden grain
+      // dimensions (below). Refused at publish too, but the skip here is not
+      // merely keeping the planner and the validator in agreement — it IS the
+      // access control. The publish refusal is a message; this is what guarantees
+      // no plan exists, and therefore that no table is built and nothing is
+      // served, however the refusal is surfaced.
+      if (isHidden(field)) continue;
 
       const additivity = classifyMeasureAdditivity(field as never);
       if (!additivity.additive) continue;
@@ -358,6 +383,17 @@ export function planSourcePreaggregation(
       for (const grain of declaration.grains) {
          const grainDimensions = grain.dimensions;
          if (grainDimensions.length === 0) continue;
+         // A grain is STORED, so a hidden dimension in it would be written into
+         // the rollup's table and re-declared on the serve shape — reachable
+         // through the source that hides it. Checked per grain rather than per
+         // measure: a measure may be declared at several grains and only one of
+         // them may name a hidden field.
+         //
+         // A dimension that resolves to no field is left alone, which keeps the
+         // planner's existing posture for a grain the validator refuses as
+         // unknown: absence is not the same as hidden, and inventing a skip here
+         // would silently change what an unknown grain does.
+         if (grainDimensions.some((d) => isHidden(fieldNamed(d)))) continue;
 
          const key = grainDimensions.join("\u0000");
          const entry = byGrain.get(key) ?? { grainDimensions, measures: [] };

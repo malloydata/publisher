@@ -4022,21 +4022,26 @@ export class Model {
          freshBindings,
          this.preaggregateRollupPlans,
       );
-      for (const conflict of conflicts) {
-         // info, matching the storage tier's own fallback line: a dropped group is
-         // silent by design — the query succeeds, the rows are correct, only the
-         // acceleration is lost — so at debug an operator has no way to tell a
-         // package whose rollups never serve from one that has none.
-         logger.info(
-            "Not serving a source's rollups from storage; queries are answered from the base",
-            {
-               modelPath: this.modelPath,
-               source: conflict.baseSourceName,
-               reason: conflict.reason,
-            },
-         );
-      }
       if (!this.serveShapeCache || this.serveShapeCache.key !== key) {
+         for (const conflict of conflicts) {
+            // info, matching the storage tier's own fallback line: a dropped group
+            // is silent by design — the query succeeds, the rows are correct, only
+            // the acceleration is lost — so at debug an operator has no way to tell
+            // a package whose rollups never serve from one that has none.
+            //
+            // Inside the cache-miss branch, not beside it. A conflict is a property
+            // of the binding set rather than of a query, so logging it per query
+            // would repeat one unchanging line for every request against the
+            // package — noise that buries the fallback lines that ARE per query.
+            logger.info(
+               "Not serving a source's rollups from storage; queries are answered from the base",
+               {
+                  modelPath: this.modelPath,
+                  source: conflict.baseSourceName,
+                  reason: conflict.reason,
+               },
+            );
+         }
          this.serveShapeCache = {
             key,
             materializer: await this.compileServeShape(
@@ -5081,6 +5086,9 @@ export class Model {
          //    them because the shape is built from given-free sources; the live
          //    source may filter on them, and running it without them would serve
          //    unfiltered rows.
+         const authoredShapeBindings = serveShapeBindings.filter(
+            (b) => b.origin !== "preaggregate",
+         );
          const canDegradeToLive =
             !!serveVirtualMap &&
             !!liveRunnable &&
@@ -5088,8 +5096,16 @@ export class Model {
             !String((error as { code?: string })?.code ?? "").startsWith(
                "runtime-given-",
             ) &&
-            serveShapeBindings.length > 0 &&
-            serveShapeBindings.every((b) => b.freshnessFallback === "live");
+            // The quorum is over the bindings for AUTHORED sources only. A rollup
+            // is not a source anyone queries, and its declared fallback says
+            // nothing about whether this query may be re-served live — the live
+            // path recomputes from the base either way. Counting rollups would let
+            // one, which typically declares no fallback at all, veto degradation
+            // for every ordinary source beside it, so adding rollups to the serve
+            // shape would have quietly turned graceful degradation into an error
+            // for packages that had it.
+            authoredShapeBindings.length > 0 &&
+            authoredShapeBindings.every((b) => b.freshnessFallback === "live");
          // Both the original failure and a failure OF THE RETRY end here: record
          // the error metric, then map the error. A broad outage takes the source
          // warehouse down alongside the store, so the retry failing is ordinary —
