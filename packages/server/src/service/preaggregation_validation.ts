@@ -486,22 +486,11 @@ export function validateSourcePreaggregation(
          });
          continue;
       }
-      // The INHERITED case is deliberately NOT refused, and the asymmetry is about
-      // upgrades rather than about placement.
-      //
-      // Publisher 0.2.x documented exactly this shape: of a `storage=` base, "a
-      // base that also carries `storage=` lends nothing … name the namespace
-      // explicitly there". A package written to that instruction carries
-      // `#@ persist storage=` on the source and `namespace=` on the preagg line —
-      // and now that the destination IS inherited, refusing the pair would turn
-      // that package into a load failure on upgrade, since a pre-aggregation
-      // violation fails the package load outright.
-      //
-      // Refusing a NEWLY WRITTEN pair is defensible; breaking a package that
-      // followed the shipped docs is not. The namespace is harmless when ignored
-      // — placement inside a destination is derived either way — so the inherited
-      // case keeps loading and the `namespace=` has no effect. The docs say so,
-      // and the release note carries the migration line.
+      // Only a pair written on ONE `#@ preaggregate` line is refused, and there is
+      // no other pair to consider: a destination is never inherited from the
+      // base's `#@ persist storage=`, so a `namespace=` beside such a base is the
+      // configuration the shipped docs already describe and still means what it
+      // always did.
    }
 
    // A v1 scope restriction rather than a mistake, so it is reported once for the
