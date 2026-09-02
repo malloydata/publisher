@@ -66,8 +66,8 @@ Point it at the directory the model's table paths are written relative to - the 
 Leave the model's own paths relative so Publisher still serves it; only the config carries the
 absolute path. When this is wrong the editor reports `IO Error: No files found that match the
 pattern "data/x.csv"` on the `source:` line, followed by a "not defined" error for every field of
-that source; those are cascade, not real. `skill:malloy-gotchas-modeling` § Relative Data-File Paths
-has the mechanism.
+that source; those are cascade, not real. The `malloy-gotchas-modeling` skill covers the mechanism
+under § Relative Data-File Paths.
 
 **Remote Credible connections are a different case.** With the Credible extension running and signed
 in, the data is reached through a `publisher` proxy connection - the connection type that forwards
