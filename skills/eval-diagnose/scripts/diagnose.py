@@ -337,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         case = cases.get(e["qid"])
         if case is None or case.get("split") == "holdout":
             continue
-        if e.get("contaminated") == "true":
+        if ledger.is_contaminated(e):
             continue
         failed.append(e["qid"])
     failed = list(dict.fromkeys(failed))

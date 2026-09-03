@@ -39,6 +39,25 @@ from typing import Any, Callable, Iterable
 
 _CASE = {"qid", "sample", "phase"}
 
+
+def is_contaminated(event: dict) -> bool:
+    """Whether an `attempt` or `score` event is contaminated.
+
+    The contract is `bool or "unknown"`, but runs written before 2026-09-03
+    carry the STRINGS "true"/"false". Both are read here so one definition
+    serves every consumer, because the naive read of a bool field is its
+    truthiness and `bool("false")` is True -- which reports every clean attempt
+    as contaminated, and since contamination nulls the verdict, voids the run.
+
+    "unknown" (no host log, so contamination could not be determined) is not
+    clean: it is treated as contaminated, the same as a positive.
+    """
+    v = event.get("contaminated")
+    if isinstance(v, str):
+        return v != "false"
+    return bool(v)
+
+
 EVENTS: dict[str, dict[str, set[str]]] = {
     "attempt": {
         "required": _CASE | {"submitted", "final_query", "answer_text",
@@ -178,6 +197,19 @@ def _check(kind: str, fields: dict[str, Any]) -> list[str]:
         problems.append(f"issue_status: bad status {fields.get('status')!r}")
     if kind == "score" and fields.get("verdict") not in VERDICTS:
         problems.append(f"score: bad verdict {fields.get('verdict')!r}")
+    # `contaminated` is `bool or "unknown"`. run_baseline wrote the STRINGS
+    # "true"/"false" until 2026-09-03, and only diagnose.py's `== "true"`
+    # happened to compensate. Any consumer reading the documented type the
+    # obvious way gets `bool("false") is True`, marks every clean attempt
+    # contaminated, and since contamination nulls the verdict, voids the run.
+    # Rejected on write, where the drift starts; grandfathered to a warning on
+    # read, because the ledger is append-only (see validate_run).
+    if "contaminated" in fields:
+        v = fields["contaminated"]
+        if not isinstance(v, bool) and v != "unknown":
+            legacy = "legacy shape, " if isinstance(v, str) else ""
+            problems.append(f'{kind}: {legacy}contaminated={v!r}; '
+                            f'expected bool or "unknown"')
     return problems
 
 
@@ -315,10 +347,12 @@ def validate_run(run_dir: pathlib.Path) -> tuple[list[str], list[str]]:
             continue
         kind = e.get("kind")
         for p in _check(kind, {k: v for k, v in e.items() if k != "kind"}):
-            # Unknown fields on EXISTING files are warnings: old runs carry
-            # fields that predate the spec, and grandfathering them beats
-            # rewriting an append-only ledger. Missing required stays an error.
-            (warnings if "unknown field" in p else errors).append(
+            # Unknown fields and legacy shapes on EXISTING files are warnings:
+            # old runs carry fields that predate the spec, and grandfathering
+            # them beats rewriting an append-only ledger. Missing required
+            # stays an error.
+            (warnings if ("unknown field" in p or "legacy shape" in p)
+             else errors).append(
                 f"events.jsonl:{n}: {p}")
         if kind == "score":
             key = (e.get("qid"), e.get("sample"), e.get("phase"))

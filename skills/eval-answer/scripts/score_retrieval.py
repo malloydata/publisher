@@ -339,11 +339,17 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f"attempts {s['attempts']}, failures {s['failures']}, "
           f"retrieval scored {s['retrieval_scored']}")
+    # Each mean is guarded on its own. `mean_precision` is None whenever every
+    # scored attempt returned zero entities (score_case leaves precision None
+    # for an empty `got_set`), which is total retrieval failure -- the run whose
+    # report matters most. Testing only `mean_recall`, which is a float whenever
+    # anything scored at all, let that run reach `100 * None`.
+    meanpct = lambda x: "n/a" if x is None else f"{100 * x:.1f}%"
     if s["mean_recall"] is not None:
         print(f"complete retrieval {s['complete_retrievals']} of "
               f"{s['retrieval_scored']} (every required entity returned); "
-              f"mean recall {100 * s['mean_recall']:.1f}%, "
-              f"mean precision {100 * s['mean_precision']:.1f}%")
+              f"mean recall {meanpct(s['mean_recall'])}, "
+              f"mean precision {meanpct(s['mean_precision'])}")
     if s["failures_by_where_to_fix"]:
         print("where to fix: " + ", ".join(
             f"{k} {v}" for k, v in sorted(s["failures_by_where_to_fix"].items())))

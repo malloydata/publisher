@@ -101,8 +101,9 @@ jobs:
           set -euo pipefail
           bun run test:scripts
           node scripts/release-notes.mjs extract >/dev/null
-      # The skills ship Python that no other suite touches: the ledger contract,
-      # the retrieval scorer, the contamination check, the REST parse. It is
+      # The skills ship Python that no other suite touches: the ledger contract
+      # (event types and the grandfathering of legacy shapes), the retrieval
+      # scorer, the contamination check, the REST parse. It is
       # stdlib-only and sub-second, so it rides here rather than earning a job.
       # The runner's own python3 is enough; there is nothing to install.
       # The same command runs locally (`bun run test:skills-python`), and it

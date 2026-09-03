@@ -159,7 +159,7 @@ exist in the flat shape, so the flat shape is the contract.) `kind` is one of:
 | `n_get_context` / `n_execute` / `n_execute_errors` | int | |
 | `host_tool_uses` | int | Host-side count, including Read and Shell. |
 | `reported_calls` | int | MCP calls the answerer claimed. |
-| `contaminated` | bool or `"unknown"` | `"unknown"` when no host log exists. |
+| `contaminated` | bool or `"unknown"` | `"unknown"` when no host log exists. Read it with `ledger.is_contaminated`, never for truthiness: runs written before 2026-09-03 carry the strings `"true"`/`"false"`, and `bool("false")` is True. `ledger.event` now rejects those strings on write; `validate_run` grandfathers them on read as a warning. |
 | `contamination_reasons` | list | Empty when clean. |
 | `input_tokens` / `output_tokens` / `cache_read_tokens` | int or null | Answerer token usage. Null when the host does not report it. |
 | `cost_usd` | float or null | Answerer cost for this attempt. |

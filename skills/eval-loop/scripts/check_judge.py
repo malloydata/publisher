@@ -87,7 +87,13 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = json.loads((a.set_dir / "set.json").read_text())
     a.package = a.package or cfg.get("package") or "ecommerce"
-    a.model_path = a.model_path or cfg.get("modelPath") or f"{a.package}.malloy"
+    # `targetModelPath` is the set.json key (ledger-schema.md:67) and what
+    # run_baseline.py reads. `modelPath` is a real key ELSEWHERE -- on a case,
+    # and on a run event -- so the wrong name here read as correct while always
+    # missing, silently checking the judge against a different model than the
+    # set configures. Default matches run_baseline's for the same reason.
+    a.model_path = (a.model_path or cfg.get("targetModelPath")
+                    or "model.malloy")
     # run_judge reads these off the namespace; a fixture check never rebuilds
     # from a cache and always re-judges, which is the entire point of it.
     a.rebuild, a.rejudge = False, True

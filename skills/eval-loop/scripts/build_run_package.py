@@ -295,9 +295,25 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             if e.get("kind") == "tool_call":
                 tool_calls.setdefault(key(e), []).append(e)
 
+        # issues.csv is keyed by `qid` and carries a `status`, but the issue
+        # event has neither: the schema gives it `qids` (a LIST of affected
+        # cases, ledger-schema.md:260) and keeps status in separate
+        # `issue_status` events whose latest wins for an issue_id (:272).
+        # Copying the raw event left both columns blank, i.e. the backlog with
+        # no case linkage and no open/closed state.
+        latest_status: dict[str, str] = {}
         for e in events:
-            if e.get("kind") == "issue":
-                issues.append({"run_id": run_id, **e})
+            if e.get("kind") == "issue_status" and e.get("issue_id"):
+                latest_status[e["issue_id"]] = e.get("status")
+        for e in events:
+            if e.get("kind") != "issue":
+                continue
+            row = {"run_id": run_id, **e,
+                   "status": latest_status.get(e.get("issue_id"))}
+            # One row per affected case, so the CSV joins to the case tables.
+            # An issue with no qids still gets a row, or it vanishes entirely.
+            for qid in (e.get("qids") or [None]):
+                issues.append({**row, "qid": qid})
 
         for e in events:
             if e.get("kind") != "attempt":
@@ -379,7 +395,14 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             roles += [(eid, "required") for eid in sorted(required)]
             roles += [(eid, "returned") for eid in sorted(got)]
             if r["recall"] is not None:
-                roles += [(eid, "missing") for eid in sorted(required - got.keys())]
+                # Same definition of "missing" as the `status` column six lines
+                # above. Raw `required - got.keys()` knows only exact matches, so
+                # an entity delivered under an alias (or found in the docs) came
+                # out `status: alias` in required.csv and `role: missing` here,
+                # in the same export -- inflating the missing counts and the
+                # backlog built from them.
+                roles += [(eid, "missing") for eid in sorted(required)
+                          if delivery(eid, set(got), tokens) == "missing"]
                 roles += [(eid, "noise") for eid in sorted(got.keys() - acceptable)]
             for eid, role in roles:
                 kind, src, name = split_entity(eid)

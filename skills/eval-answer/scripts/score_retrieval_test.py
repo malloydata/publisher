@@ -248,6 +248,48 @@ class Summary(unittest.TestCase):
             "model coverage": 1, "refusal behaviour": 1})
 
 
+class TotalRetrievalFailure(unittest.TestCase):
+    """Every scored attempt returned zero entities.
+
+    `score_case` leaves `precision` None for an empty `got_set`, so the mean of
+    an all-None column is None -- while `mean_recall` is still a float, because
+    it is taken over every scored row. Guarding only recall let this run reach
+    `100 * None`, and it is the run whose report matters most.
+    """
+
+    def test_summarise_gives_a_recall_but_no_precision(self):
+        rows = [score_case(case(qid="a"), calls(qid="a"), ("a", None, "baseline"),
+                           "no_match")]
+        s = summarise(rows)
+        self.assertEqual(s["retrieval_scored"], 1)
+        self.assertIsNotNone(s["mean_recall"])
+        self.assertIsNone(s["mean_precision"])
+
+    def test_the_cli_reports_rather_than_crashing(self):
+        events = [
+            {"kind": "attempt", "qid": "a", "sample": None, "phase": "baseline"},
+            {"kind": "tool_call", "tool": "get_context", "qid": "a",
+             "sample": None, "phase": "baseline",
+             "rankedSummary": {"entityIds": []}},
+            {"kind": "score", "qid": "a", "sample": None, "phase": "baseline",
+             "verdict": "no_match"},
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            ep, cp = os.path.join(d, "e.jsonl"), os.path.join(d, "c.jsonl")
+            for path, rows in ((ep, events), (cp, [case(qid="a")])):
+                with open(path, "w") as fh:
+                    for r in rows:
+                        fh.write(json.dumps(r) + "\n")
+            p = subprocess.run(
+                [sys.executable, os.path.join(os.path.dirname(__file__),
+                                              "score_retrieval.py"),
+                 "--events", ep, "--cases", cp],
+                capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotIn("TypeError", p.stderr)
+        self.assertIn("mean precision n/a", p.stdout)
+
+
 class EndToEnd(unittest.TestCase):
     def test_the_cli_reads_a_ledger_and_attributes_each_attempt(self):
         events = [

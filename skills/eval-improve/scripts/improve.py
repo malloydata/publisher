@@ -128,10 +128,20 @@ acceptance check has nothing to weigh.
 
 def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
                    diff: str) -> dict[str, Any]:
-    """Run the set's golden verification against the edited model, if it has one."""
+    """Run golden verification against the edited model."""
+    # The verifier is the SHARED one in eval-answer/scripts, not a per-set copy.
+    # Probing `set_dir` meant no set ever had one, so this returned
+    # `{"ran": False}` on every call -- an acceptance check reporting "not
+    # applicable" rather than failing, which is indistinguishable from a
+    # legitimate skip. The improve loop then proceeded believing the goldens had
+    # survived the edit when nothing had looked. A set may still override with
+    # its own copy; that takes precedence.
     script = a.set_dir / "verify_goldens.py"
     if not script.exists():
-        return {"ran": False, "why": "set has no verify_goldens.py"}
+        script = (pathlib.Path(__file__).resolve().parent.parent.parent
+                  / "eval-answer" / "scripts" / "verify_goldens.py")
+    if not script.exists():
+        return {"ran": False, "why": f"no verify_goldens.py at {script}"}
     if not diff.strip():
         return {"ran": False, "why": "no edit to invalidate anything"}
 

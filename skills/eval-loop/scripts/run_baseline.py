@@ -515,6 +515,22 @@ def hosted_tools_reachable(a: argparse.Namespace) -> tuple[bool, str]:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def named_query(inp: dict[str, Any]) -> str | None:
+    """`queryName` (+ optional `sourceName`) as the Malloy it stands for.
+
+    execute_query accepts a named view or query as an alternative to ad-hoc
+    Malloy. This harness stores query TEXT, so the named form is rendered rather
+    than kept structurally: `run: source -> view` for a view on a source, and
+    `run: name` for a model-level named query. That keeps `final_query`
+    re-executable and gives the judge something to read.
+    """
+    name = inp.get("queryName") or inp.get("query_name")
+    if not name:
+        return None
+    source = inp.get("sourceName") or inp.get("source_name")
+    return f"run: {source} -> {name}" if source else f"run: {name}"
+
+
 def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                  art: pathlib.Path) -> dict[str, Any]:
     qid = case["qid"]
@@ -596,7 +612,17 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     elif (name.endswith("malloy_executeQuery")
                             or name.endswith("__execute_query")):
                         n_exec += 1
-                        q = c["input"].get("query")
+                        # execute_query takes EITHER ad-hoc Malloy in `query` OR
+                        # a named view/query via `queryName` (+ `sourceName`),
+                        # and its own tool description steers the answerer to the
+                        # named form. Capturing only `query` recorded an attempt
+                        # that did query as `submitted: false` with a null
+                        # `final_query`, and handed the judge "(none)" to verify
+                        # the answer against -- so a run answered through named
+                        # views scored as if the agent never queried, biasing
+                        # retrieval DOWNWARD. Render the named form as the Malloy
+                        # it stands for, so every consumer sees one shape.
+                        q = c["input"].get("query") or named_query(c["input"])
                         if q:
                             queries.append(q)
                             # A package can hold many model files, and a source
@@ -1351,7 +1377,7 @@ def main(argv: list[str] | None = None) -> int:
                       n_execute_errors=att["n_execute_errors"],
                       host_tool_uses=att["host_tool_uses"],
                       reported_calls=att["n_get_context"] + att["n_execute"],
-                      contaminated=("true" if att.get("breaches") else "false"),
+                      contaminated=bool(att.get("breaches")),
                       contamination_reasons=att.get("breaches") or [],
                       input_tokens=att.get("input_tokens"),
                       output_tokens=att.get("output_tokens"),
@@ -1382,7 +1408,7 @@ def main(argv: list[str] | None = None) -> int:
                           judge_version=JUDGE_VERSION,
                           rubric_sha=RUBRIC_SHA,
                           golden_revision=c.get("goldenRevision"),
-                          contaminated="true" if tainted else "false",
+                          contaminated=bool(tainted),
                           artifactPath=f"artifacts/{qid}/judge.md"))
 
     ledger.write_events(a.out / "events.jsonl", events)
