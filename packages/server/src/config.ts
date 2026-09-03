@@ -189,25 +189,26 @@ function parseIntEnv(name: string): number | undefined {
    return value;
 }
 
-function parseFloatEnv(name: string): number | undefined {
+function parseFloatEnv(name: string, example: string): number | undefined {
    const raw = process.env[name];
    if (raw === undefined || raw.trim() === "") return undefined;
    const trimmed = raw.trim();
    // Number.parseFloat stops at the first character it cannot read, so
-   // "0.5abc" returned 0.5 and drove behaviour as though the operator had
-   // written a valid setting. Match the whole string first. A round-trip
+   // "0.5abc" parses as 0.5 and would drive behaviour as though the operator
+   // had written a valid setting. Match the whole string first. A round-trip
    // check like parseIntEnv's cannot serve here: it would reject "0.50",
    // ".5" and "1e-3", all of which are meant.
-   if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
-      throw new Error(
-         `Invalid value for ${name}: expected a finite number, got "${raw}"`,
+   const invalid = () =>
+      new Error(
+         `Invalid value for ${name}: expected a finite number, got "${raw}". ` +
+            `Fix: ${name}=${example}`,
       );
+   if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
+      throw invalid();
    }
    const value = Number.parseFloat(trimmed);
    if (!Number.isFinite(value)) {
-      throw new Error(
-         `Invalid value for ${name}: expected a finite number, got "${raw}"`,
-      );
+      throw invalid();
    }
    return value;
 }
@@ -244,10 +245,10 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
    }
 
    const highWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION") ??
+      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION", "0.8") ??
       DEFAULT_HIGH_WATER_FRACTION;
    const lowWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION") ??
+      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION", "0.7") ??
       DEFAULT_LOW_WATER_FRACTION;
    const checkIntervalMs =
       parseIntEnv("PUBLISHER_MEMORY_CHECK_INTERVAL_MS") ??
@@ -477,7 +478,7 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
    }
 
    const minSimilarity =
-      parseFloatEnv("EMBEDDING_MIN_SIMILARITY") ??
+      parseFloatEnv("EMBEDDING_MIN_SIMILARITY", "0.35") ??
       DEFAULT_EMBEDDING_MIN_SIMILARITY;
    // Rejected rather than clamped: a floor of 1 returns nothing and a
    // negative one returns everything, and both look like a broken index
