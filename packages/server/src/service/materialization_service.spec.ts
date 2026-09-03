@@ -2664,6 +2664,192 @@ describe("executeInstructedBuild", () => {
       expect(rootIdx).toBeGreaterThan(midIdx);
    });
 
+   it("builds a source shared by two graphs exactly once", async () => {
+      // compilePackageBuildPlan pushes every model's graphs into one allGraphs
+      // list, so a persist source declared in one model and imported by another
+      // appears in BOTH models' graphs. iterGraphSources dedups per graph, so a
+      // shared source is yielded once per graph and built once per graph -- each
+      // a full reseed CTAS.
+      const runSQL = sinon.stub().resolves();
+      const connection = { runSQL } as unknown as MalloyConnection;
+      const shared = fakeSource({
+         name: "shared",
+         sourceEntityId: "bsharedaaaaaaaaa",
+      });
+      const consumer = fakeSource({
+         name: "consumer",
+         sourceEntityId: "bconsumerbbbbbbb",
+      });
+      const compiled = {
+         graphs: [
+            {
+               connectionName: "duckdb",
+               nodes: [[{ sourceID: "shared", dependsOn: [] }]],
+            },
+            {
+               connectionName: "duckdb",
+               nodes: [
+                  [
+                     {
+                        sourceID: "consumer",
+                        dependsOn: [{ sourceID: "shared", dependsOn: [] }],
+                     },
+                  ],
+               ],
+            },
+         ],
+         sources: { shared, consumer },
+         connectionDigests: { duckdb: "dig" },
+         connections: new Map([["duckdb", connection]]),
+      };
+
+      const { entries } = await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bsharedaaaaaaaaa",
+               materializedTableId: "mt-s",
+               physicalTableName: "shared_v1",
+               realization: "COPY",
+            },
+            {
+               sourceEntityId: "bconsumerbbbbbbb",
+               materializedTableId: "mt-c",
+               physicalTableName: "consumer_v1",
+               realization: "COPY",
+            },
+         ],
+         {},
+      );
+
+      const creates = runSQL
+         .getCalls()
+         .map((c) => c.args[0] as string)
+         .filter((s) => s.startsWith("CREATE TABLE"));
+      // The shared source builds ONCE, not once per graph that reaches it.
+      expect(creates.filter((s) => s.includes("shared_v1")).length).toBe(1);
+      // And the dedup does not swallow the second graph's own work: the
+      // consumer still builds, and still after the upstream it reads.
+      expect(creates.filter((s) => s.includes("consumer_v1")).length).toBe(1);
+      expect(
+         creates.findIndex((s) => s.includes("consumer_v1")),
+      ).toBeGreaterThan(creates.findIndex((s) => s.includes("shared_v1")));
+      // Both are reported built, so an orchestrated caller settles neither as
+      // missing.
+      expect(Object.keys(entries).sort()).toEqual([
+         "bconsumerbbbbbbb",
+         "bsharedaaaaaaaaa",
+      ]);
+   });
+
+   it("builds two sources that share one content address, not just the first", async () => {
+      // Why the guard keys on sourceID and not sourceEntityId. Two DISTINCT sources can
+      // canonicalize to the same content address (identical SQL on one connection) while
+      // holding separate instructions that name separate physical tables. Keying on the
+      // address would build one and leave the other instructed table unbuilt — reported
+      // neither in entries nor in failures, which an orchestrated caller cannot settle.
+      const runSQL = sinon.stub().resolves();
+      const connection = { runSQL } as unknown as MalloyConnection;
+      const twinA = fakeSource({
+         name: "twin_a",
+         sourceEntityId: "btwinaaaaaaaaaaa",
+      });
+      const twinB = fakeSource({
+         name: "twin_b",
+         sourceEntityId: "btwinaaaaaaaaaaa",
+      });
+      const compiled = compiledWith(
+         { twin_a: twinA, twin_b: twinB },
+         [["twin_a"], ["twin_b"]],
+         new Map([["duckdb", connection]]),
+      );
+
+      const { entries } = await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "btwinaaaaaaaaaaa",
+               materializedTableId: "mt-a",
+               physicalTableName: "twin_a_v1",
+               realization: "COPY",
+               sourceID: "twin_a",
+            },
+            {
+               sourceEntityId: "btwinaaaaaaaaaaa",
+               materializedTableId: "mt-b",
+               physicalTableName: "twin_b_v1",
+               realization: "COPY",
+               sourceID: "twin_b",
+            },
+         ],
+         {},
+      );
+
+      const creates = runSQL
+         .getCalls()
+         .map((c) => c.args[0] as string)
+         .filter((s) => s.startsWith("CREATE TABLE"));
+      expect(creates.filter((s) => s.includes("twin_a_v1")).length).toBe(1);
+      expect(creates.filter((s) => s.includes("twin_b_v1")).length).toBe(1);
+      // Both were instructed, so both must be accounted for. They collide on one manifest
+      // key by construction — that collision is pre-existing and separately detected; what
+      // this pins is that the dedup did not swallow one of the BUILDS.
+      expect(Object.keys(entries)).toContain("btwinaaaaaaaaaaa");
+   });
+
+   it("does not collapse a source across two connections", async () => {
+      // buildOneSource executes on the connection resolved from graph.connectionName, and
+      // Malloy groups only ROOT nodes by connection — so the same declaration reached under
+      // two roots of different connections is two different builds today. The guard keys on
+      // the pair so it cannot silently decide otherwise; whether such a chain is reachable,
+      // and which connection is the right one, are pre-existing questions it leaves alone.
+      const runDuck = sinon.stub().resolves();
+      const runPg = sinon.stub().resolves();
+      const shared = fakeSource({
+         name: "shared",
+         sourceEntityId: "bsharedaaaaaaaaa",
+      });
+      const compiled = {
+         graphs: [
+            {
+               connectionName: "duckdb",
+               nodes: [[{ sourceID: "shared", dependsOn: [] }]],
+            },
+            {
+               connectionName: "postgres",
+               nodes: [[{ sourceID: "shared", dependsOn: [] }]],
+            },
+         ],
+         sources: { shared },
+         connectionDigests: { duckdb: "dig", postgres: "dig2" },
+         connections: new Map([
+            ["duckdb", { runSQL: runDuck } as unknown as MalloyConnection],
+            ["postgres", { runSQL: runPg } as unknown as MalloyConnection],
+         ]),
+      };
+
+      await callExecute(
+         compiled,
+         [
+            {
+               sourceEntityId: "bsharedaaaaaaaaa",
+               materializedTableId: "mt-s",
+               physicalTableName: "shared_v1",
+               realization: "COPY",
+            },
+         ],
+         {},
+      );
+
+      const creates = (stub: sinon.SinonStub) =>
+         stub
+            .getCalls()
+            .map((c) => c.args[0] as string)
+            .filter((s) => s.startsWith("CREATE TABLE")).length;
+      expect(creates(runDuck)).toBe(1);
+      expect(creates(runPg)).toBe(1);
+   });
+
    it("seeds a downstream build with the QUOTED upstream reference (case-folding dialect)", async () => {
       // A carried/seeded upstream (built in a prior run or unit, e.g. via
       // referenceManifest) must reach the downstream's SQL generation as the
