@@ -19,7 +19,7 @@ That matters because the four channels used to take "everything under `skills/` 
 
 **A group is installable on its own**, which is a property `manifest.spec.ts` holds it to: a member never `skill:`-references a skill outside its group, so nothing tells the agent to read what it does not have. That is why `malloy-getting-started` and `malloy-analysis-report` name `malloy-gotchas-modeling` and `malloy-model` in prose rather than as `skill:` references. Both are modeling doctrine, and an answerer that followed the reference would hold exactly what the `analysis` group exists to withhold.
 
-`malloy` is the one exception. It is the index of every Malloy skill, so its table has a row per skill by definition, and 10+ skills reference it in turn, so it cannot be dropped from a group either. A catalogue row is not an instruction to go read something.
+The `malloy` index is the case that forces the distinction, and it follows the same rule. It is the catalogue of every Malloy skill, so its table has a row per skill by definition and necessarily names skills outside the group it ships in. Those rows are plain names rather than `skill:` references. A catalogue row is not an instruction to go read something, and stating it as a bare name is how the file says so, which is why the index needs no exemption from the closure test.
 
 `supporting` stays empty on purpose: agents discover a second skills directory poorly, and an SDK `Skill` tool cannot invoke from one at all.
 
@@ -36,6 +36,21 @@ Two rules make it work:
 
 - **Shared engine skills** (identical to upstream): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analyze`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-debug`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-scope`, `malloy-gotchas-*`, `malloy-notebook-chat`, `malloy-phrase-detection`, `malloy-analysis-pitfalls`, `malloy-analysis-report`, `malloy-html-data-app*`, `malloy-lookml-review`, `malloy-patterns`.
 - **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and the root `malloy` index (Publisher's own host/router entry points), plus `malloy-materialization-tuning` (a tuning skill built on the `malloy-pub` CLI) and `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly and are never synced upstream to `ms2data/agent-skills`.
+
+## Evaluation skills
+
+`eval-loop`, `eval-answer`, `eval-diagnose` and `eval-improve` are the model-evaluation loop: a set
+of questions with goldens computed from raw tables, a blind answerer over the model, a judge, a
+diagnosis of each failure, and one smallest model edit gated by a re-run. They are shared skills
+(upstream: `ms2data/agent-skills`) and ship in the `eval` group. Their Python scripts import each
+other by path from `skills/eval-answer/scripts`, so they run in place from a checkout, not from the
+pack. `manifests/publisher-local.json`'s groups are what the loop installs for the
+agents it spawns: the blind answerer, the agent under measurement, loads `analysis`, and the
+improver loads `eval-improve` plus `modeling`. Neither loads the `eval` group, which is what keeps
+the judge's rubric and the acceptance check away from the agents they score. The engine-side evaluation of `get_context` itself (fixed-term replay,
+contract probes) is deliberately **not** here: it is Credible's question about its hosted engine and
+lives in an unlisted skill upstream. `credibledata/malloy-samples#23` is a set anyone can run the
+loop on.
 
 ## Tool names in shared skills
 
