@@ -50,7 +50,7 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 | `search_malloy_docs` | `search_malloy_docs` |
 | `search_database_schema` | `search_database_schema` |
 
-`list_environments` supplies the environment and package names `get_context`'s `scopes` requires, and `compile_model` / `reload_package` / `get_status` are Publisher-only and appear only in the host/router skills. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
+`list_packages` supplies the environment and package names `get_context`'s `scopes` requires, and `compile_model` / `reload_package` / `get_status` are Publisher-only and appear only in the host/router skills. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
 
 ## Adding or updating a skill
 

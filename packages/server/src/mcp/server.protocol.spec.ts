@@ -70,7 +70,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(names.has("get_status")).toBe(true);
       // The retrieval tool and the catalog that supplies its scopes.
       expect(names.has("get_context")).toBe(true);
-      expect(names.has("list_environments")).toBe(true);
+      expect(names.has("list_packages")).toBe(true);
    });
 
    /**

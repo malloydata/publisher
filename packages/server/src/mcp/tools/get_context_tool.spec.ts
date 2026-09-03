@@ -19,7 +19,7 @@ import {
    entityId,
    sanitize,
    registerGetContextTool,
-   registerListEnvironmentsTool,
+   registerListPackagesTool,
 } from "./get_context_tool";
 import { embeddingText } from "./embedding_index";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
@@ -2843,7 +2843,7 @@ describe("get_context catalog browse", () => {
    });
 });
 
-describe("list_environments", () => {
+describe("list_packages", () => {
    function listHandler(store: Partial<EnvironmentStore>): Handler {
       const handlers = new Map<string, Handler>();
       const fakeServer = {
@@ -2851,11 +2851,8 @@ describe("list_environments", () => {
             handlers.set(name, h);
          },
       };
-      registerListEnvironmentsTool(
-         fakeServer as never,
-         store as EnvironmentStore,
-      );
-      const handler = handlers.get("list_environments");
+      registerListPackagesTool(fakeServer as never, store as EnvironmentStore);
+      const handler = handlers.get("list_packages");
       if (!handler) throw new Error("not registered");
       return handler;
    }

@@ -23,7 +23,7 @@ async def test_client_can_prepare_async_call():
 
     # Example: Get the first API operation group (e.g., environments)
     # and its first async method. This is highly dependent on generated client structure.
-    # We are looking for a method like `client.environments.list_environments.async_()`
+    # We are looking for a method like `client.environments.list_packages.async_()`
     # For now, let's just assert the async httpx client can be retrieved.
     async_httpx_client = client.get_async_httpx_client()
     assert async_httpx_client is not None
@@ -35,12 +35,12 @@ async def test_client_can_prepare_async_call():
     assert str(async_httpx_client.base_url) == expected_base_url
 
     # A more robust test would mock an actual async API call if the structure is known
-    # e.g. if there's a top-level `list_environments_async` or similar.
-    # from malloy_publisher_sdk.api.environments import list_environments
+    # e.g. if there's a top-level `list_packages_async` or similar.
+    # from malloy_publisher_sdk.api.environments import list_packages
     # try:
     #     # This part would require mocking with respx if we want to unit test it
     #     # without hitting a live server.
     #     # For now, we are just checking if the client can be set up.
-    #     pass # await list_environments.async_(client=client)
+    #     pass # await list_packages.async_(client=client)
     # except Exception as e:
     #     pytest.fail(f"Failed to prepare async call: {e}")

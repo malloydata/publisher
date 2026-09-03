@@ -6,13 +6,13 @@ import httpx
 import pytest
 
 from malloy_publisher_sdk import Client
-from malloy_publisher_sdk.api.environments import list_environments
+from malloy_publisher_sdk.api.environments import list_packages
 from malloy_publisher_sdk.models import Environment
 
 
 @pytest.mark.asyncio
-async def test_list_environments_sync_and_async():
-    """Test list_environments sync and async helpers using a mocked backend."""
+async def test_list_packages_sync_and_async():
+    """Test list_packages sync and async helpers using a mocked backend."""
     base_url = "http://test.local/api/v0"
     client = Client(base_url=base_url)
 
@@ -37,13 +37,13 @@ async def test_list_environments_sync_and_async():
         )
 
         # ---- sync variant ----
-        environments_sync = list_environments.sync(client=client)
+        environments_sync = list_packages.sync(client=client)
         assert isinstance(environments_sync, list)
         assert len(environments_sync) == 2
         assert all(isinstance(e, Environment) for e in environments_sync)
         assert environments_sync[0].name == "demo"
 
         # ---- async variant ----
-        environments_async = await list_environments.asyncio(client=client)
+        environments_async = await list_packages.asyncio(client=client)
         assert isinstance(environments_async, list)
         assert environments_async[1].name == "another"

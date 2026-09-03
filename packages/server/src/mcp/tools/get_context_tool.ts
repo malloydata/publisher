@@ -658,7 +658,7 @@ const convergedContextShape = {
       )
       .length(1)
       .describe(
-         "Required, exactly one: the environment and package to search, optionally narrowed to a model, source, or entity. Call list_environments for the names.",
+         "Required, exactly one: the environment and package to search, optionally narrowed to a model, source, or entity. Call list_packages for the names.",
       ),
    filter_params: z
       .record(z.union([z.string(), z.array(z.string())]))
@@ -1348,7 +1348,7 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 ## Contract rules
 - Use the names it returns verbatim; never invent one that is not in the results.
 - One call answers: describe the fields you need as search_targets; each matching source returns with those fields nested. No drill-down call.
-- scopes is REQUIRED: exactly one, naming an environment and package. list_environments lists them.
+- scopes is REQUIRED: exactly one, naming an environment and package. list_packages lists them.
 - Read warnings and any error/stale field before trusting a number.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
@@ -2019,12 +2019,12 @@ Takes no arguments.`;
  * exist" rather than "is broken". Reporting it with its error is the only place
  * that distinction is visible outside get_status.
  */
-export function registerListEnvironmentsTool(
+export function registerListPackagesTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
    mcpServer.tool(
-      "list_environments",
+      "list_packages",
       LIST_ENVIRONMENTS_DESCRIPTION,
       {},
       async () => {

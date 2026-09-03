@@ -10,7 +10,7 @@ import { registerDocsSearchTool } from "./tools/docs_search_tool";
 import { registerExecuteQueryTool } from "./tools/execute_query_tool";
 import {
    registerGetContextTool,
-   registerListEnvironmentsTool,
+   registerListPackagesTool,
 } from "./tools/get_context_tool";
 import {
    registerReloadPackageTool,
@@ -68,7 +68,7 @@ export function initializeMcpServer(
 
    registerExecuteQueryTool(mcpServer, environmentStore);
    registerGetContextTool(mcpServer, environmentStore);
-   registerListEnvironmentsTool(mcpServer, environmentStore);
+   registerListPackagesTool(mcpServer, environmentStore);
    registerDocsSearchTool(mcpServer, environmentStore);
    registerCompileTool(mcpServer, environmentStore);
    registerReloadPackageTool(mcpServer, environmentStore);
