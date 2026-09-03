@@ -74,7 +74,7 @@ component](#the-dashboard-component-tag-only-path)).
 **Non-goals (for this design):**
 
 - No MCP surface for dashboards. They are a human/UI artifact; agents keep using
-  `malloy_getContext` / `malloy_executeQuery` against the underlying models.
+  `get_context` / `execute_query` against the underlying models.
 - No query log / share links. Worth having, but a server-wide concern rather than a dashboards
   one, so it is tracked separately.
 - No converter to `.malloynb` — dashboards render natively, they are not translated.
@@ -753,5 +753,5 @@ as a full snapshot rather than a patch, because the sandbox does not compile wit
   - **Sequencing and the acceptance test.** This is package-loader work, independent of the
     dashboard UI phases, so once aligned it can run in parallel with phases 1–2 rather than
     behind them. Done means: clone a real Malloyyo example repo, `POST` it as a package
-    unmodified, and get the curated sources over `malloy_getContext`, working connections, and
+    unmodified, and get the curated sources over `get_context`, working connections, and
     (with phase 2) its dashboards rendering.

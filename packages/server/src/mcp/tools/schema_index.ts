@@ -14,7 +14,7 @@ import {
 import { humanizeName } from "./embedding_index";
 
 /**
- * Ranking layer for `malloy_searchDatabaseSchema`.
+ * Ranking layer for `search_database_schema`.
  *
  * Publisher already introspects ten dialects (db_utils.getSchemasForConnection /
  * listTablesForSchema) and already serves that over REST. What was missing is the
@@ -169,7 +169,7 @@ export function schemaFingerprint(tables: SchemaTableEntity[]): string {
 /**
  * lunr treats several characters as query operators; strip them so a
  * plain-English query never throws and is matched as an OR of its terms.
- * Same treatment malloy_searchDocs applies for the same reason.
+ * Same treatment search_malloy_docs applies for the same reason.
  */
 export function sanitizeQuery(query: string): string {
    return query.replace(/[~^:*+\-"]/g, " ").trim();

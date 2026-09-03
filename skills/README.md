@@ -30,7 +30,7 @@ Most of these skills are **shared, open-source Malloy skills**, and **this repos
 Two rules make it work:
 
 - **`credible-*` skills never land here.** Anything named `credible-*` in the upstream repo is Credible-platform-specific and is never copied into this open-source repo. The copy keys off the `credible-` prefix. If you ever see a `credible-*` file under this tree, it is a stray: it should be git-ignored, not committed (`git ls-files | grep credible-` must stay empty).
-- **Shared skills carry no Credible-platform-specific answers.** They describe generic Malloy and the open-source Publisher only, with no hosted draft/publish flow, retrieval-engine annotations (`#(index)`/`#(agent-hidden)`), or platform tools like `execute_query_draft`. Open-source Publisher features (`publisher.json` `explores`/`queryableSources`, `export {}`) are fair game. The Publisher-only authoring tools `malloy_compile` / `malloy_reloadPackage` stay in the host/router skills, not the shared set (see the tool-names section below).
+- **Shared skills carry no Credible-platform-specific answers.** They describe generic Malloy and the open-source Publisher only, with no hosted draft/publish flow, retrieval-engine annotations (`#(index)`/`#(agent-hidden)`), or platform tools like `execute_query_draft`. Open-source Publisher features (`publisher.json` `explores`/`queryableSources`, `export {}`) are fair game. The Publisher-only authoring tools `compile_model` / `reload_package` stay in the host/router skills, not the shared set (see the tool-names section below).
 
 ## Shared vs Publisher-specific
 
@@ -46,11 +46,11 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 | Shared skills say | This server exposes |
 | --- | --- |
 | `get_context` | `get_context` |
-| `execute_query` | `malloy_executeQuery` |
-| `search_malloy_docs` | `malloy_searchDocs` |
-| `search_database_schema` | `malloy_searchDatabaseSchema` |
+| `execute_query` | `execute_query` |
+| `search_malloy_docs` | `search_malloy_docs` |
+| `search_database_schema` | `search_database_schema` |
 
-`malloy_getContext` is the flat request `get_context` replaces. It is still registered and still works, deprecated in its own description, so anything written against it keeps running; new work should not use it. `malloy_listEnvironments` supplies the environment and package names `get_context`'s `scopes` requires, and `malloy_compile` / `malloy_reloadPackage` / `malloy_getStatus` are Publisher-only and appear only in the host/router skills. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
+`list_environments` supplies the environment and package names `get_context`'s `scopes` requires, and `compile_model` / `reload_package` / `get_status` are Publisher-only and appear only in the host/router skills. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
 
 ## Adding or updating a skill
 

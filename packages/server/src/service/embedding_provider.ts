@@ -8,7 +8,7 @@ export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
 /**
  * Timeout for the single per-request query embedding. Much shorter than
  * the bulk timeout: this call sits on the latency path of every semantic
- * `malloy_getContext` call, and a slow endpoint must degrade to lexical
+ * `get_context` call, and a slow endpoint must degrade to lexical
  * quickly rather than stall the tool.
  */
 export const EMBEDDING_QUERY_TIMEOUT_MS = 5_000;

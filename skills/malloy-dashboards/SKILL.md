@@ -27,7 +27,7 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 ## Build sequence
 
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package:
-   `malloy_getContext` if you have it, otherwise the REST model endpoint or the `.malloy` files.
+   `get_context` if you have it, otherwise the REST model endpoint or the `.malloy` files.
    Never guess a name. A guessed field in a query fails the whole package load, not just that one
    dashboard; a guessed tile or suggest source is quieter, and only shows up in the package warnings.
 2. **PICK THE VIEWS TO SHOW.** A dashboard is `## artifact { tiles=[…] }` naming existing views, so
@@ -45,7 +45,7 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    name, so the file compiles and the package loads, but running the picker fails with
    `Undefined source '<name>'`. The package warnings name this one too, saying which source to
    import. Import the source that suggest query reads, not just the query.
-5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`), against the source text,
+5. **COMPILE IT** with `compile_model` (or `POST …/models/<path>/compile`), against the source text,
    before you save, at the path the file will have. **Editing one that already exists needs
    `"scope": "file"`**, which compiles your source AS that file; the default appends it instead, so
    every imported name and the query name collide with the saved copy and you get a wall of
@@ -55,7 +55,7 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    dashboard that imports it. A clean compile is not a working dashboard: some tag mistakes surface
    at step 6, and some only when you look at the page in step 7. (The third scope, `append`, is the
    default and is what a not-yet-saved file gets.)
-6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** `malloy_reloadPackage`, or
+6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** `reload_package`, or
    `GET …/packages/<pkg>?reload=true`. Check the status the reload returns as well as the warnings:
    a 424 means the package did not load and your edit is not live. **The `warnings` key is absent
    when there are none**, so an empty response is the pass, not a sign you are reading the wrong

@@ -47,7 +47,7 @@ interface SourceCard {
    entities?: Entity[];
 }
 
-describe.serial("malloy_getContext drill-down (E2E, real model)", () => {
+describe.serial("get_context drill-down (E2E, real model)", () => {
    let env: McpE2ETestEnvironment | null = null;
    let mcpClient: Client<Request, Notification, Result>;
 
@@ -65,11 +65,11 @@ describe.serial("malloy_getContext drill-down (E2E, real model)", () => {
       args: Record<string, unknown>,
    ): Promise<{ sources: SourceCard[]; total_available?: number }> => {
       const result = (await mcpClient.callTool({
-         name: "malloy_getContext",
+         name: "get_context",
          arguments: { environmentName: ENVIRONMENT_NAME, ...args },
       })) as { content: Array<{ resource?: { text?: string } }> };
       const text = result.content?.[0]?.resource?.text;
-      if (!text) throw new Error("malloy_getContext returned no resource text");
+      if (!text) throw new Error("get_context returned no resource text");
       return JSON.parse(text) as {
          sources: SourceCard[];
          total_available?: number;

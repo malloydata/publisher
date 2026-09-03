@@ -60,7 +60,7 @@ const args = {
    source: "run: order_items -> { aggregate: c is count() }",
 };
 
-describe("malloy_compile tool", () => {
+describe("compile_model tool", () => {
    it("returns status success and empty diagnostics for a clean compile", async () => {
       const handler = captureHandler(storeReturning([]));
       const result = await handler(args);

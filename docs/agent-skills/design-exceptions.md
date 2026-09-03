@@ -27,8 +27,8 @@ emission order.
 Why: some MCP clients truncate a tool description, and a tail cut removes whatever was placed last.
 Under the literal numbering that is Contract rules and Worked examples, which is the worst possible
 outcome: an agent that loses the worked example still calls the tool correctly, while one that loses
-the invariants cannot, and nothing signals that anything was dropped. `malloy_getContext` was
-observed arriving cut off mid-sentence at 2271 characters, with `malloy_searchDocs` carrying the same
+the invariants cannot, and nothing signals that anything was dropped. `get_context` was
+observed arriving cut off mid-sentence at 2271 characters, with `search_malloy_docs` carrying the same
 inverted ordering. This applies to every tool, so it is a standing rule rather than a per-tool
 divergence, and `server.protocol.spec.ts` enforces it over the real protocol.
 
@@ -63,7 +63,7 @@ skills.
 
 Decision (when a retrieval tool ships): the description states what each parameter does and what
 the response groups by, with a request example per shape. It does NOT prescribe a call sequence.
-For `malloy_getContext` that means saying a query returns whole source cards with their matched
+For `get_context` that means saying a query returns whole source cards with their matched
 fields nested, so one call answers, and that the listing tiers exist for finding an environment
 or package name rather than as steps to walk. Refinement, retry, and gap-handling workflow stays
 in the analysis skill; `search_text` phrasing stays in `malloy-phrase-detection`.
@@ -95,7 +95,7 @@ report templates, not a chart-type catalog.
 Tension: Principle 1's under-20% rule for reference content suggests docs lookups should be
 on-demand via a tool, not pre-loaded as a skill.
 
-Resolution: now that the docs-search tool has shipped (`malloy_searchDocs`), a single small
+Resolution: now that the docs-search tool has shipped (`search_malloy_docs`), a single small
 topic-index skill, `malloy-patterns`, holds the table of valid topic strings. It loads only when
 the agent already knows it needs to search docs, giving it a vocabulary of topics so it does not
 waste calls on poorly phrased queries; it carries no doc content itself. The earlier

@@ -350,7 +350,7 @@ There is one documented exception, [the authorize bypass](#authorize-bypass-for-
 | `POST /…/projects/…/query` (legacy alias) | Gate as above. Accepts no bypass — it exists for pre-rename SDK compatibility and passes no `givens` either, so a gated source is denied there regardless. Use the `/environments/…` route. |
 | Notebook cell `GET` | Gate each cell that runs a query. Accepts no bypass. |
 | `POST /…/compile` | Gate the named source the submitted text targets (early, before compiling, plus a compiled-source backstop). `/compile` never runs the query, so the backstop cannot attach a filter; it admits a gate it can decide without running it and denies anything else. **"Decidable" is presence, not truth:** a gate referencing NO given is admitted whichever way it resolves — a constant `false` included — as is one whose every given the caller supplied, right or wrong. Only a gate with an unsupplied given denies. Note that `includeSql` then returns the **ungrafted** SQL, without the gate's `where:`. Accepts no bypass. |
-| MCP `malloy_executeQuery` | Routes through the query path; a denial surfaces as `isError: true` naming the source. Sends no bypass. |
+| MCP `execute_query` | Routes through the query path; a denial surfaces as `isError: true` naming the source. Sends no bypass. |
 
 **Fail-closed.** Anything that stops the graft landing denies rather than admits. Where two *sources* gate one entry point — its own gate plus one carried from the source it derives from — each is grafted separately, which AND-s them.
 

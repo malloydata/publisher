@@ -47,7 +47,7 @@ put the server behind your own gateway before exposing it beyond localhost.
 | --- | --- |
 | `GET /api/v0/status` | Server lifecycle (`operationalState`), plus `loadErrors` for anything configured that did not load, or that is still serving an older model because its most recent reload failed to compile (`stale: true`). |
 | `GET /api/v0/environments` | List environments, each with its packages. |
-| `GET /api/v0/environments/{env}/packages/{pkg}` | Package metadata (models, `explores`, `buildPlan`, …). Add `?reload=true` to recompile the package from disk first, the REST form of `malloy_reloadPackage`. |
+| `GET /api/v0/environments/{env}/packages/{pkg}` | Package metadata (models, `explores`, `buildPlan`, …). Add `?reload=true` to recompile the package from disk first, the REST form of `reload_package`. |
 | `POST /api/v0/environments/{env}/packages` | Register a package at runtime; body `{ "name": "…", "location": "…" }` ([packages.md](packages.md)). |
 | `GET  …/packages/{pkg}/models/{path}` | A model's compiled metadata (sources, views, givens), plus `sourceText`, the file's Malloy verbatim. |
 | `POST …/packages/{pkg}/models/{path}/query` | Run a Malloy query; see [request shapes](#query-request-shapes) below. |

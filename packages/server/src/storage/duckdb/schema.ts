@@ -721,7 +721,7 @@ async function dropPreFacetEntityEmbeddings(
 }
 
 /**
- * Vector cache for semantic `malloy_getContext` retrieval (see
+ * Vector cache for semantic `get_context` retrieval (see
  * mcp/tools/embedding_index.ts). One row per (entity, facet): an entity's
  * name is embedded separately from its documentation, and long docs are
  * split across `doc:N` facets, so a hit is scored on its best-matching

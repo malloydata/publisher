@@ -69,7 +69,7 @@ every source queryable by name; switch to `"declared"` when ready to enforce the
 > boundary curation.
 >
 > The `queryableSources` boundary applies to the *query* surface (`getQueryResults` and the MCP query
-> tool). It does **not** gate `/compile` (or `malloy_compile`): compile is the authoring loop, so a
+> tool). It does **not** gate `/compile` (or `compile_model`): compile is the authoring loop, so a
 > curated package stays authorable, and the boundary is discovery curation rather than access
 > control. The consequence is that `/compile` can reveal a hidden source's schema, and with
 > `includeSql` its SQL. It does **not** cover raw retrieval by exact path either — a hidden model's

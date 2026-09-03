@@ -47,8 +47,8 @@ should appear in. Some MCP clients truncate a tool description, and a tail cut r
 description put last. Numbered as written, that is Contract rules and Worked examples: exactly the
 invariants an agent cannot self-correct without, and no signal that anything was dropped.
 
-`malloy_getContext` was observed arriving cut off mid-sentence at 2271 characters, and the same
-inverted ordering was present in `malloy_searchDocs`. So:
+`get_context` was observed arriving cut off mid-sentence at 2271 characters, and the same
+inverted ordering was present in `search_malloy_docs`. So:
 
 - **Put Contract rules immediately after the opening paragraph**, ahead of Parameters, Response, and
   Worked examples. Losing the worked example still leaves a callable tool; losing the invariants does
@@ -57,7 +57,7 @@ inverted ordering was present in `malloy_searchDocs`. So:
   (the cap belongs to the client and is not published), so `server.protocol.spec.ts` enforces a
   budget as a regrowth guard, not as a guarantee. When a description approaches it, move the
   long-form narrative into a skill, which no cap applies to.
-- Prefer merging over adding. `malloy_getContext` carried a "Progressive discovery" section and a
+- Prefer merging over adding. `get_context` carried a "Progressive discovery" section and a
   "Parameters" section that stated the same call levels twice; merging them cut 16% with no loss.
 
 `server.protocol.spec.ts` pins both rules over the real protocol, so a description that regrows or

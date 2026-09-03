@@ -83,7 +83,7 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST + static-app HTTP port. |
 | `PUBLISHER_HOST` | `--host <addr>` | `0.0.0.0` | Host binding for both the REST and MCP servers. Set `127.0.0.1` to keep them loopback-only. |
 | `PUBLISHER_RATE_LIMIT` | _none_ | _unset_ | Maximum requests per minute one client may make to the REST server; over it, requests get `429` with `RateLimit-*` headers until the minute rolls over. Unset or `0` means no limit; any other value must be a non-negative integer or startup fails. `/health*` and `/metrics` are never limited. Clients are told apart by the connection's peer address, so behind a reverse proxy every client shares one bucket: rate-limit at the proxy there, or leave this unset. The MCP port is not covered. |
-| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the six MCP tools (`malloy_getContext`, `malloy_executeQuery`, `malloy_compile`, `malloy_reloadPackage`, `malloy_searchDocs`, `malloy_searchDatabaseSchema`) and the agent skills as MCP prompts. |
+| `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP HTTP port. Serves the six MCP tools (`get_context`, `execute_query`, `compile_model`, `reload_package`, `search_malloy_docs`, `search_database_schema`) and the agent skills as MCP prompts. |
 | `SERVER_ROOT` | `--server_root <dir>` | `.` (cwd) | Where Publisher keeps its own storage (`publisher_data/`, `publisher.db`), and where it looks for `publisher.config.json` when `--config` is not passed. |
 | `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | _unset_ | Stops the server writing a `.mcp.json` into its working directory on startup. Accepts `1`/`true`/`yes`/`on` to disable and `0`/`false`/`no`/`off`/empty to leave on; anything else, including a value an env file left quotes around, is a startup error rather than a disable. See [The `.mcp.json` the server writes](#the-mcpjson-the-server-writes). |
 | `PUBLISHER_USE_BUNDLED_DEFAULT` | — | _unset_ | Set to `true` to fall back to the sample config bundled inside the installed package when neither `--config` is passed nor a `publisher.config.json` exists at the server root. The server sets this itself on a zero-flag start (so a bare `npx @malloy-publisher/server` boots the samples); passing `--config` or `--server_root` leaves it unset. Because the bundled config lives inside the install, relative package locations resolve against the server root in this mode rather than the config's directory. |
@@ -117,12 +117,12 @@ connection reference (BigQuery, Snowflake, Postgres, DuckDB, and more), see
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_INTERVAL_MS` | — | `60000` (1 min) | How often the scheduler sweeps for due schedules, in ms. Minimum `1000`. Only read when the scheduler is enabled. |
 | `PUBLISHER_MATERIALIZATION_SCHEDULER_MAX_FIRES_PER_TICK` | — | `10` | Stampede guard: max packages fired per sweep. A capped package fires on a later tick. Must be a positive integer. |
 | `PERSIST_STORAGE_MODE` | — | `off` | Controls the `#@ persist storage=<name>` materialization tier (materialize a source into a registered [storage destination](connections.md#storage-destinations) and serve it from there — a destination is declared alongside `connections`, not in it, and is not nameable from a model). `off`: the `storage=` annotation is inert — sources build and serve from their own warehouse exactly as without it. `write-only`: materialize into the storage destination but still serve live (the measurement rung). `on`: build **and** serve from the storage table via the virtual-source transform. Read at startup. A kill switch: moving it **down** never fails a loaded package — a `storage=` source just reverts to serving live and surfaces as a package warning. See [persist-storage-tutorial.md](persist-storage-tutorial.md). |
-| `EMBEDDING_API_KEY` | — | _unset_ | Enables semantic (embedding-based) ranking for `malloy_getContext` question retrieval. Sent as a bearer token to the embedding endpoint. Unset: retrieval stays lexical (lunr/BM25), unchanged. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "Semantic retrieval for malloy_getContext" below. |
+| `EMBEDDING_API_KEY` | — | _unset_ | Enables semantic (embedding-based) ranking for `get_context` question retrieval. Sent as a bearer token to the embedding endpoint. Unset: retrieval stays lexical (lunr/BM25), unchanged. Must be set explicitly; an ambient `OPENAI_API_KEY` is deliberately not read. See "Semantic retrieval for get_context" below. |
 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name sent to the endpoint. |
 | `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API (`POST <base>/embeddings`). Point at any compatible endpoint (e.g. a local Ollama or vLLM server). |
 | `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter (e.g. `512` to shrink `text-embedding-3-small` vectors). When unset the parameter is omitted, which suits providers that do not support it. |
-| `EMBEDDING_MIN_SIMILARITY` | — | `0.2` | Cosine-similarity floor a match must clear to be returned at all, for both `malloy_getContext` and `malloy_searchDatabaseSchema`. Below it an entity is dropped rather than returned as a weak hit, which is what makes an empty result mean "not modelled here". Tunable because cosine similarity is not calibrated across embedding models, so the right floor belongs to the endpoint you point at, not to Publisher. Must be in `[0, 1)`; `0` disables the floor, and an out-of-range or non-numeric value is a startup error rather than a silent clamp. See "Tuning the floor" below. |
-| `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `malloy_searchDatabaseSchema` to send a connection's schema name, table names, column names and column types, plus the agent's search text, to the embedding endpoint for semantic ranking. Never row values. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. It is read when the tool is called, not at startup, so an unrecognised value does not stop the server: the tool logs a warning and ranks lexically for that call. See "Semantic ranking for malloy_searchDatabaseSchema" below. |
+| `EMBEDDING_MIN_SIMILARITY` | — | `0.2` | Cosine-similarity floor a match must clear to be returned at all, for both `get_context` and `search_database_schema`. Below it an entity is dropped rather than returned as a weak hit, which is what makes an empty result mean "not modelled here". Tunable because cosine similarity is not calibrated across embedding models, so the right floor belongs to the endpoint you point at, not to Publisher. Must be in `[0, 1)`; `0` disables the floor, and an out-of-range or non-numeric value is a startup error rather than a silent clamp. See "Tuning the floor" below. |
+| `EMBEDDING_INDEX_CONNECTION_SCHEMA` | — | `false` | Allows `search_database_schema` to send a connection's schema name, table names, column names and column types, plus the agent's search text, to the embedding endpoint for semantic ranking. Never row values. A second switch on top of `EMBEDDING_API_KEY`, which alone covers only your own model text; unset, schema search still works and ranks lexically. Accepts `1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`. It is read when the tool is called, not at startup, so an unrecognised value does not stop the server: the tool logs a warning and ranks lexically for that call. See "Semantic ranking for search_database_schema" below. |
 | — | `--help`, `-h` | — | Print the full flag list. |
 
 ### Where to put these
@@ -206,16 +206,16 @@ not isolation: any process running as you can bind the same port.
 
 **The file outlives the server and is never corrected.** A stale one does not simply fail. If something
 else holds that port later, perhaps a second Publisher serving different data, an agent started there
-connects to it and answers from the wrong model. `malloy_getContext` names the environment and packages
+connects to it and answers from the wrong model. `get_context` names the environment and packages
 an agent is actually talking to, which is the way to settle it. That detects the accident, which is the
 realistic case; it is not proof against a process deliberately holding the port, since that process can
 answer too.
 
 The Docker image sets `PUBLISHER_NO_MCP_CONFIG=1`, since no agent session starts inside a container.
 
-## Semantic retrieval for malloy_getContext
+## Semantic retrieval for get_context
 
-By default, `malloy_getContext`'s question retrieval is lexical (lunr/BM25) over the model's own
+By default, `get_context`'s question retrieval is lexical (lunr/BM25) over the model's own
 text, so a query only matches entities that share tokens with it (`departure delay` never finds a
 field named `dep_delay`). Setting `EMBEDDING_API_KEY` switches ranking to embedding similarity:
 each package's entities (source, view, named query, join, dimension, and measure names plus their
@@ -233,7 +233,7 @@ What to know before turning it on:
 
 - What leaves the machine: entity names, their annotation text (the `#(doc)` docs, or an entity's
   other `#` annotation lines when it has no `#(doc)`), and the query strings agents pass to
-  `malloy_getContext`. Model source code, data, and query results are never sent. Point
+  `get_context`. Model source code, data, and query results are never sent. Point
   `EMBEDDING_API_BASE` at a local OpenAI-compatible server (Ollama, vLLM) to keep everything
   on-machine; with a local server, also set `EMBEDDING_MODEL` to a model that server actually
   serves, since the default names an OpenAI model.
@@ -256,7 +256,7 @@ What to know before turning it on:
   so you are not measuring a half-built index. `ready` means every entity the package exposes has a
   vector under the model you have configured now, so a server pointed at a new `EMBEDDING_MODEL`
   reports `indexing` until it has re-embedded rather than reporting rows retrieval would reject.
-  Two things worth knowing: the sync runs on a `malloy_getContext` question, so a package nothing
+  Two things worth knowing: the sync runs on a `get_context` question, so a package nothing
   has queried stays at `indexing` rather than warming on its own; and the first read after a
   package loads or reloads builds that package's entity index, which is work a plain metadata read
   would not otherwise do. It is absent when no provider is configured, and reading it takes no
@@ -281,16 +281,16 @@ What to know before turning it on:
 - To measure the difference on your own models, see the eval script header in
   `packages/server/src/mcp/tools/get_context_eval.ts`.
 
-## Semantic ranking for `malloy_searchDatabaseSchema`
+## Semantic ranking for `search_database_schema`
 
-`malloy_searchDatabaseSchema` searches a configured connection's schema, so an agent can find the
+`search_database_schema` searches a configured connection's schema, so an agent can find the
 right tables in a database it has never seen and start a model from them. Its ranking is lexical by
 default and needs no configuration, no API key, and no network.
 
 Semantic ranking is opt-in and needs **two** variables set, not one: `EMBEDDING_API_KEY` **and**
 `EMBEDDING_INDEX_CONNECTION_SCHEMA=true`. That is deliberate. The API key on its own authorises
 embedding your own model text, which is already on your disk. A database's table and column names are
-your customer's, and turning on semantic `malloy_getContext` should not quietly start sending them to
+your customer's, and turning on semantic `get_context` should not quietly start sending them to
 a third party. Setting the second variable is how you say you meant to.
 
 What to know before turning it on:

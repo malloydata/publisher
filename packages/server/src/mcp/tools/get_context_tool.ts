@@ -182,7 +182,7 @@ interface SourceContextEntry {
    oneLineSummary?: string;
    /**
     * Model-level `given:` parameters in scope for this source. An agent spends
-    * them on malloy_executeQuery, so knowing they exist is what stops it
+    * them on execute_query, so knowing they exist is what stops it
     * guessing at a value the model already defaults.
     */
    givens?: SourceContextGiven[];
@@ -434,15 +434,6 @@ function toSourceResults(
    packageName: string,
    /** Search texts by target index, for matched_targets. Empty on a listing. */
    searchTexts: Map<number, string> = new Map(),
-   /**
-    * Withhold each source's full `docs`, keeping `one_line_summary`. A catalog
-    * browse is a list to choose FROM: at 150 cards, a paragraph each is most
-    * of the response and none of the decision. Everything that fires on THIS
-    * response is kept -- `givens`, `authorize`, `filter_params`, and the
-    * complete `joins` list, whose "empty means none declared" contract would
-    * otherwise become a lie on a browse.
-    */
-   thinCards = false,
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -465,7 +456,7 @@ function toSourceResults(
                ...(ctx?.oneLineSummary
                   ? { one_line_summary: ctx.oneLineSummary }
                   : {}),
-               ...(ctx?.doc && !thinCards ? { docs: ctx.doc } : {}),
+               ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
                ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
                ...(ctx?.filters ? { filter_params: ctx.filters } : {}),
@@ -493,7 +484,7 @@ function toSourceResults(
          // The source itself matched: its score belongs on the container, and
          // its full (untruncated) doc supersedes the truncated context copy.
          if (r.score !== undefined) entry.relevance = r.score;
-         if (r.doc && !thinCards) entry.source_info.docs = r.doc;
+         if (r.doc) entry.source_info.docs = r.doc;
          continue;
       }
       const entity: SourceCardEntity = {
@@ -667,7 +658,7 @@ const convergedContextShape = {
       )
       .length(1)
       .describe(
-         "Required, exactly one: the environment and package to search, optionally narrowed to a model, source, or entity. Call malloy_listEnvironments for the names.",
+         "Required, exactly one: the environment and package to search, optionally narrowed to a model, source, or entity. Call list_environments for the names.",
       ),
    filter_params: z
       .record(z.union([z.string(), z.array(z.string())]))
@@ -700,41 +691,6 @@ const convergedContextShape = {
       ),
 };
 
-const getContextShape = {
-   environmentName: z
-      .string()
-      .optional()
-      .describe("Environment name. Omit to list the available environments."),
-   packageName: z
-      .string()
-      .optional()
-      .describe(
-         "Package name. Omit, with environmentName set, to list the packages in that environment.",
-      ),
-   query: z
-      .string()
-      .max(500)
-      .optional()
-      .describe(
-         'Plain-English description of what you need, e.g. "revenue by product category". Omit, with environmentName and packageName set, to list the package\'s sources.',
-      ),
-   sourceName: z
-      .string()
-      .optional()
-      .describe(
-         "Optional. Narrow results to one source. Not a required second step: a query already returns each matching source with its fields nested.",
-      ),
-   limit: z
-      .number()
-      .int()
-      .positive()
-      .max(MAX_LIMIT)
-      .optional()
-      .describe(
-         "Maximum results to return (max 50). Ranked retrieval defaults to 10; the listing tiers return everything unless you set this.",
-      ),
-};
-type LegacyContextParams = z.infer<z.ZodObject<typeof getContextShape>>;
 type GetContextParams = z.infer<z.ZodObject<typeof convergedContextShape>>;
 
 /** One search target that carries text, kept with the index it came in at. */
@@ -820,60 +776,6 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       unsupported,
       limit: params.limit ?? (listingOnly ? MAX_LIMIT : DEFAULT_RANKED_LIMIT),
       offset: params.offset ?? 0,
-   };
-}
-
-/** Every kind the indexer emits. The flat request ranked across all of them. */
-const ALL_INDEXED_KINDS = [
-   "source",
-   "view",
-   "query",
-   "dimension",
-   "measure",
-   "join",
-] as const;
-
-/**
- * The shipped flat request expressed as a ResolvedRequest, so it runs the same
- * core. Its DEFAULTS are preserved deliberately and differ from the converged
- * ones: ranked retrieval returns 10 rather than 20, and a listing returns
- * everything rather than a page of 150. Those are observable, and a caller
- * written against this tool did not ask for the new numbers.
- */
-function resolveLegacyRequest(params: LegacyContextParams): ResolvedRequest {
-   const text = params.query?.trim();
-   // The shipped listing returns SOURCES for a package and everything for a
-   // drill-down; ranked retrieval always ranged over every kind. Reproduced
-   // here rather than approximated, because both are observable.
-   const kinds =
-      !text && !params.sourceName
-         ? new Set<string>(["source"])
-         : new Set<string>(ALL_INDEXED_KINDS);
-   return {
-      // Only reached once both are known: the wrapper answers the environment
-      // and package listings before calling this.
-      environmentName: params.environmentName as string,
-      packageName: params.packageName as string,
-      ...(params.sourceName ? { sourceName: params.sourceName } : {}),
-      kinds,
-      // One untyped search over every kind, which is what `query` always was.
-      searches: text
-         ? [
-              {
-                 targetIndex: 0,
-                 targetType: "source" as const,
-                 text,
-                 kinds: [...kinds],
-              },
-           ]
-         : [],
-      listingOnly: !text,
-      // The flat tool has no offset and never went thin, so its package
-      // listing stays exactly as it shipped.
-      pureSourceListing: false,
-      unsupported: [],
-      limit: params.limit ?? (text ? 10 : Number.POSITIVE_INFINITY),
-      offset: 0,
    };
 }
 
@@ -1446,52 +1348,22 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 ## Contract rules
 - Use the names it returns verbatim; never invent one that is not in the results.
 - One call answers: describe the fields you need as search_targets; each matching source returns with those fields nested. No drill-down call.
-- scopes is REQUIRED: exactly one, naming an environment and package. malloy_listEnvironments lists them.
+- scopes is REQUIRED: exactly one, naming an environment and package. list_environments lists them.
 - Read warnings and any error/stale field before trusting a number.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
 - authorize means gated: supply the givens it names or the query is denied.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, and omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150; ranked 20, listing 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question, for observability.
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150; ranked 20, listing 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question, for observability.
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in, matched_targets, relevance, entity_id. A joined field's name IS its dotted path: use it verbatim.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in, matched_targets, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
 ranking, returned of total_available sources, next_offset on a listing, warnings[].
 Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
 
 ## Example
 {"search_targets":[{"target_type":"measure","search_text":"total revenue"}],"scopes":[{"environment":"examples","package":"storefront"}]}`;
-
-/**
- * Kept under the truncation budget pinned by server.protocol.spec.ts: a client
- * was observed cutting this description off mid-sentence, and a tail cut takes
- * whatever is last. So the contract rules an agent cannot self-correct come
- * first and the reference material last, and the reference stays terse to buy
- * room for it. Full prose belongs in docs/ai-agents.md, not here.
- */
-const LEGACY_GET_CONTEXT_DESCRIPTION = `DEPRECATED: use get_context (typed search_targets + scopes, same response).
-
-Discover what a Publisher deployment exposes and retrieve the entities most relevant to a plain-English question, so you ground queries in names the model defines.
-
-## Contract rules
-- Use the names it returns verbatim; never invent one that is not in the results.
-- A query returns whole source cards with fields nested: one call, no drill-down.
-- Read warnings and any error/stale field before trusting a number.
-- A source's joins list is complete: empty means it declares none, so write that relationship inline.
-- Read a source's doc before querying: it carries grain and population rules its fields do not.
-- authorize means gated: supply the givens it names or the query is denied.
-
-## Parameters
-All optional; supply what you know. None lists environments and their packages; environmentName lists its packages; + packageName lists its sources with their joins; + query ranks its entities. sourceName alone returns one source's full card ([] = no such source); with a query it ranks inside it. limit caps entities (max 50; retrieval 10).
-
-## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in (equal-scoring peers), relevance, entity_id. A joined field's name IS its full dotted path: use it verbatim. Pass a source as sourceName, a view or query as queryName.
-ranking, returned of total_available sources, warnings[] for what was cut or stale.
-Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
-
-## Example
-{"environmentName":"examples","packageName":"storefront","query":"revenue by category"}`;
 
 /**
  * An error keeps the empty collection its tier would have answered with, so a
@@ -1522,7 +1394,7 @@ function contextError(uri: string, identifier: string, error: unknown) {
 }
 
 /**
- * Registers the malloy_getContext MCP tool. It is a progressive-discovery tool:
+ * Registers the get_context MCP tool. It is a progressive-discovery tool:
  * with no environment it lists environments, with an environment but no package
  * it lists packages, with a package but no query it lists the package's sources,
  * and with a query it runs lexical (lunr/BM25) retrieval over the package's model
@@ -1533,7 +1405,7 @@ function contextError(uri: string, identifier: string, error: unknown) {
 /**
  * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by a resolved
  * request. Shared by both registered tools: the converged `get_context` and
- * the flat `malloy_getContext` it replaces, so the two can never drift on what
+ * the flat `get_context` it replaces, so the two can never drift on what
  * a listing returns, how the floor is applied, or what a card carries. Only
  * the request parsing differs between them, and that happens before this.
  */
@@ -1595,7 +1467,7 @@ async function runContextQuery(
    // the index is the last model that compiled, so the names are real and
    // the queries succeed, and the numbers are from before the last save.
    // Nothing else in this payload can say so, and telling the agent to go
-   // call malloy_getStatus is weaker than saying it here, where it is
+   // call get_status is weaker than saying it here, where it is
    // already looking. Attached to tiers 3 and 4 alike, because tier 4 is
    // the path that goes straight from a question to field names to a
    // query.
@@ -1610,7 +1482,7 @@ async function runContextQuery(
       );
       const stale = environment.getStaleCompileErrors().get(packageName);
       if (stale) {
-         staleNote = `This package is STALE: its most recent reload failed to compile at ${stale.failedAt}, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call malloy_reloadPackage; malloy_getStatus has the compile error.`;
+         staleNote = `This package is STALE: its most recent reload failed to compile at ${stale.failedAt}, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call reload_package; get_status has the compile error.`;
       }
    } catch (error) {
       logger.debug("[MCP Tool getContext] staleness lookup failed", {
@@ -1725,10 +1597,6 @@ async function runContextQuery(
          sourceContext,
          environmentName,
          packageName,
-         new Map(),
-         // A browse goes thin; a drill-down into one source does not, because
-         // that IS the follow-up a browse tells the caller to make.
-         request.pureSourceListing && !sourceName,
       );
       // A listing is deterministic catalog order, not a ranking, and
       // Publisher has no query-usage signal to fill the hosted API's
@@ -1761,7 +1629,7 @@ async function runContextQuery(
             sources,
             ...listingEnvelope,
             ...warningsFor(
-               "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call malloy_getStatus for load errors and stale packages.",
+               "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call get_status for load errors and stale packages.",
             ),
          });
       }
@@ -2125,7 +1993,7 @@ function unsupportedTargetWarnings(request: ResolvedRequest): string[] {
    if (request.unsupported.length === 0) return [];
    const named = [...new Set(request.unsupported)].join(", ");
    return [
-      `No index for target_type ${named}: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with malloy_executeQuery (e.g. run: source -> { group_by: the_dimension }).`,
+      `No index for target_type ${named}: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with execute_query (e.g. run: source -> { group_by: the_dimension }).`,
    ];
 }
 
@@ -2135,7 +2003,7 @@ Call this when you do not already know an environment and package name. get_cont
 
 Each package reports \`name\`, its \`description\` where it has one, and two health facts that are otherwise invisible:
 - \`error\` with no \`stale\`: the package FAILED to load. It is not queryable, and it would otherwise simply be missing, which reads as "does not exist".
-- \`error\` with \`stale: true\`: the package IS serving and answering, but its most recent reload failed to compile, so its names and any numbers you get from it come from the model compiled BEFORE that save. Fix the model and call malloy_reloadPackage.
+- \`error\` with \`stale: true\`: the package IS serving and answering, but its most recent reload failed to compile, so its names and any numbers you get from it come from the model compiled BEFORE that save. Fix the model and call reload_package.
 
 Takes no arguments.`;
 
@@ -2149,14 +2017,14 @@ Takes no arguments.`;
  * This also inherits the job the flat tool's environment listing did: a package
  * that failed to load is ABSENT from a plain listing, which reads as "does not
  * exist" rather than "is broken". Reporting it with its error is the only place
- * that distinction is visible outside malloy_getStatus.
+ * that distinction is visible outside get_status.
  */
 export function registerListEnvironmentsTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
    mcpServer.tool(
-      "malloy_listEnvironments",
+      "list_environments",
       LIST_ENVIRONMENTS_DESCRIPTION,
       {},
       async () => {
@@ -2255,134 +2123,6 @@ export function registerGetContextTool(
             environmentStore,
             unsupportedTargetWarnings(request),
          );
-      },
-   );
-
-   // The flat request this replaces, still registered and still behaving
-   // exactly as it shipped. It is a released public contract, so it gets a
-   // deprecation window rather than being changed underneath its callers;
-   // both tools run the same core, so they cannot drift while it lasts.
-   mcpServer.tool(
-      "malloy_getContext",
-      LEGACY_GET_CONTEXT_DESCRIPTION,
-      getContextShape,
-      async (params: LegacyContextParams) => {
-         const { environmentName, packageName, query, sourceName, limit } =
-            params;
-         logger.info("[MCP Tool getContext] Retrieving context", {
-            environmentName,
-            packageName,
-            query,
-            sourceName,
-            limit,
-         });
-
-         // Tier 1: no environment -> enumerate the available environments, each
-         // with its package names, so an agent with no prior knowledge can start.
-         if (!environmentName) {
-            try {
-               const environments = await environmentStore.listEnvironments();
-               const results = environments.map((env) => ({
-                  kind: "environment" as const,
-                  name: env.name,
-                  packages: (env.packages ?? [])
-                     .map((p) => p.name)
-                     .filter((n): n is string => Boolean(n)),
-               }));
-               return jsonResource(buildMalloyUri({}, "get-context"), {
-                  results,
-               });
-            } catch (error) {
-               logger.warn(
-                  "[MCP Tool getContext] listing environments failed",
-                  {
-                     error:
-                        error instanceof Error ? error.message : String(error),
-                  },
-               );
-               return contextError(
-                  buildMalloyUri({}, "get-context"),
-                  "environments",
-                  error,
-               );
-            }
-         }
-
-         // Tier 2: environment but no package -> enumerate its packages.
-         if (!packageName) {
-            try {
-               const environment = await environmentStore.getEnvironment(
-                  environmentName,
-                  false,
-               );
-               const packages = await environment.listPackages();
-               // A stale package is SERVING, so it is in the listing above and
-               // looks healthy there. Marking it here is the point: an agent
-               // that reads a normal-looking listing and queries it gets
-               // confident numbers from the model compiled BEFORE the last
-               // save. `error` carries why the reload failed, the same field
-               // the failed-load entries below use, and `stale: true` is what
-               // separates "still answering, from an older model" from "not
-               // there at all".
-               const staleErrors = environment.getStaleCompileErrors();
-               const results: Array<{
-                  kind: "package";
-                  name: string | undefined;
-                  description?: string;
-                  environmentName: string;
-                  error?: string;
-                  stale?: boolean;
-               }> = packages.map((pkg) => {
-                  const stale = pkg.name
-                     ? staleErrors.get(pkg.name)
-                     : undefined;
-                  return {
-                     kind: "package" as const,
-                     name: pkg.name,
-                     description: pkg.description,
-                     environmentName,
-                     // Spread so a current package's entry stays byte-identical
-                     // to what it was before staleness was reported at all.
-                     ...(stale && { error: stale.message, stale: true }),
-                  };
-               });
-               // listPackages() omits packages that failed to load, which
-               // reads as "does not exist" to an agent. List them with their
-               // load error instead, so a broken package is distinguishable
-               // from an absent one. (Messages are already secret-redacted
-               // where they are recorded.)
-               for (const [name, message] of environment.getFailedPackages()) {
-                  results.push({
-                     kind: "package" as const,
-                     name,
-                     environmentName,
-                     error: message,
-                  });
-               }
-               return jsonResource(
-                  buildMalloyUri(
-                     { environment: environmentName },
-                     "get-context",
-                  ),
-                  { results },
-               );
-            } catch (error) {
-               logger.warn("[MCP Tool getContext] listing packages failed", {
-                  environmentName,
-                  error: error instanceof Error ? error.message : String(error),
-               });
-               return contextError(
-                  buildMalloyUri(
-                     { environment: environmentName },
-                     "get-context",
-                  ),
-                  environmentName,
-                  error,
-               );
-            }
-         }
-
-         return runContextQuery(resolveLegacyRequest(params), environmentStore);
       },
    );
 }

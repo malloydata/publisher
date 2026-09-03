@@ -13,7 +13,7 @@ Goal: go from "connected" to a correct, grounded answer without guessing any nam
 
 ## 0. Confirm the tools are reachable
 
-At minimum you need `get_context`, `malloy_listEnvironments`, `malloy_executeQuery`, and `malloy_searchDocs`. Authoring a model also needs `malloy_compile` and `malloy_reloadPackage` (see section 4); an older Publisher may not serve those two.
+At minimum you need `get_context`, `list_environments`, `execute_query`, and `search_malloy_docs`. Authoring a model also needs `compile_model` and `reload_package` (see section 4); an older Publisher may not serve those two.
 
 If none of the tools are there, either the server is not running or your client connected before it was. Start the server (`npx @malloy-publisher/server --port 4000`, or `bun run build && bun run start` from a clone) and wait until `curl -s http://localhost:4000/api/v0/status` reports `operationalState: serving`. If the point is to author models against a local package, add `--watch-env <env>`: without it Publisher copies local packages at boot and serves the copies, so saved edits are never read.
 
@@ -24,9 +24,9 @@ If you started the server yourself in this session, the tools still will not app
 Two escape hatches worth knowing:
 
 - **When the session cannot be relaunched from the workspace directory** (a project `.mcp.json` is only discovered by sessions that *start* in its directory), register the server at user scope so the directory stops mattering: `claude mcp add --transport http malloy http://localhost:4040/mcp -s user` (use the MCP port the server actually bound; its startup log prints it). Caveat: for sessions that do start in the workspace, the project `.mcp.json` shadows the user-scoped entry, so prefer the project file when it is discoverable.
-- **Do not trust an existing `.mcp.json`'s URL blindly.** The file outlives the server that wrote it, and a boot that failed partway (for example, the REST port was taken) can leave it pointing at a dead port while a live server sits on another. If connecting fails or answers look wrong, confirm identity with `malloy_listEnvironments`, which names the environment and packages you are really talking to; that check works on every platform, which the port check does not (`lsof -iTCP:4040 -sTCP:LISTEN` on macOS and Linux, `netstat -ano | findstr :4040` on Windows).
+- **Do not trust an existing `.mcp.json`'s URL blindly.** The file outlives the server that wrote it, and a boot that failed partway (for example, the REST port was taken) can leave it pointing at a dead port while a live server sits on another. If connecting fails or answers look wrong, confirm identity with `list_environments`, which names the environment and packages you are really talking to; that check works on every platform, which the port check does not (`lsof -iTCP:4040 -sTCP:LISTEN` on macOS and Linux, `netstat -ano | findstr :4040` on Windows).
 
-When a user is present, do not route around it by calling the REST API with curl. It appears to work, so the user never learns their session is missing the tools, and you lose what they are for: grounded discovery instead of guessed names, `malloy_compile` instead of throwaway queries, and `malloy_reloadPackage` instead of a restart. Say the tools are missing and let the user fix it in five seconds. Running unattended, with nobody who can reconnect you, is different: there the REST API is the supported interface, not a workaround. Discovery, query, compile, and reload all have REST equivalents (`malloy_searchDocs` and `get_context`'s plain-English ranking do not; read the bundled skills for syntax and ground from model metadata instead); the running server serves the full spec at `http://localhost:4000/api-doc.yaml`, and AGENTS.md carries the endpoint map.
+When a user is present, do not route around it by calling the REST API with curl. It appears to work, so the user never learns their session is missing the tools, and you lose what they are for: grounded discovery instead of guessed names, `compile_model` instead of throwaway queries, and `reload_package` instead of a restart. Say the tools are missing and let the user fix it in five seconds. Running unattended, with nobody who can reconnect you, is different: there the REST API is the supported interface, not a workaround. Discovery, query, compile, and reload all have REST equivalents (`search_malloy_docs` and `get_context`'s plain-English ranking do not; read the bundled skills for syntax and ground from model metadata instead); the running server serves the full spec at `http://localhost:4000/api-doc.yaml`, and AGENTS.md carries the endpoint map.
 
 ## 0.5 Ask whether they also use the CLI or the VS Code extension
 
@@ -82,7 +82,7 @@ that start failing auth after a long session mean the token expired, not that th
 
 Two tools, in this order.
 
-`malloy_listEnvironments` takes no arguments and returns every environment with its packages. That is where the environment and package names come from. It is also the only place a package that failed to load shows up, with the reason; a package missing from a plain listing looks like one that does not exist.
+`list_environments` takes no arguments and returns every environment with its packages. That is where the environment and package names come from. It is also the only place a package that failed to load shows up, with the reason; a package missing from a plain listing looks like one that does not exist.
 
 `get_context` retrieves against one package. Give it a `search_targets` entry per concept the question needs, and a `scopes` entry naming the environment and package:
 
@@ -107,7 +107,7 @@ Use the names it returns exactly. Do not invent environments, packages, sources,
 
 ## 2. Run the query
 
-A retrieval response is a `sources` array. Each entry's `source_info.resource_id` carries `environment`, `package`, and `model_path`; pass them to `malloy_executeQuery` as `environmentName`, `packageName`, and `modelPath`, plus either:
+A retrieval response is a `sources` array. Each entry's `source_info.resource_id` carries `environment`, `package`, and `model_path`; pass them to `execute_query` as `environmentName`, `packageName`, and `modelPath`, plus either:
 
 - a named view or query: pass its `name` as `queryName` (with the card's `resource_id.source` as `sourceName` for a view), or
 - an ad-hoc query: pass Malloy code as `query`.
@@ -116,15 +116,15 @@ The result is JSON. Charts and dashboards defined in the model render in the Pub
 
 ## 3. When you need Malloy syntax
 
-Use `malloy_searchDocs` for language questions (filters, aggregates, joins, nesting, renderers).
+Use `search_malloy_docs` for language questions (filters, aggregates, joins, nesting, renderers).
 
-If the data you want is in a connected database but not yet in any package, use `malloy_searchDatabaseSchema` instead of `get_context`: it walks a connection's schemas and tables and ranks them against a plain-English description, and hands back the `source:` line to start a model from. It returns names and types only, so to see what a column actually contains run `malloy_executeQuery` against a model in a package that uses the same connection, with an ad-hoc query like `run: my_conn.table('sales.orders') -> { group_by: order_status }`. That tool needs an existing model to run against, so a table you have not modelled yet has none of its own.
+If the data you want is in a connected database but not yet in any package, use `search_database_schema` instead of `get_context`: it walks a connection's schemas and tables and ranks them against a plain-English description, and hands back the `source:` line to start a model from. It returns names and types only, so to see what a column actually contains run `execute_query` against a model in a package that uses the same connection, with an ad-hoc query like `run: my_conn.table('sales.orders') -> { group_by: order_status }`. That tool needs an existing model to run against, so a table you have not modelled yet has none of its own.
 
 ## 4. What else you can do here
 
 Answering questions is the start, not the whole surface. When the user asks what is possible, say so rather than offering queries alone. Switch skills for the deeper work:
 
-- `malloy-modeling`: build or change a model. Validate the edit with `malloy_compile`, save it, then `malloy_reloadPackage` so the new sources and views run by name without restarting the server.
+- `malloy-modeling`: build or change a model. Validate the edit with `compile_model`, save it, then `reload_package` so the new sources and views run by name without restarting the server.
 - `malloy-analysis`: explore a package and answer data questions.
 - `malloy-html-data-apps`: build a data app, a hand-authored HTML page in the package's `public/` directory that Publisher serves, backed by the package's models and needing no build step.
 - `malloy-review`: check Malloy for correctness.
@@ -132,5 +132,5 @@ Answering questions is the start, not the whole surface. When the user asks what
 ## Contract
 
 - Ground every query in `get_context` results. If a name is not in the results, do not use it.
-- With an environment and package in hand, ask the question in one call: the matching sources come back with their fields nested. `malloy_listEnvironments` and the catalog browse are for finding a name you are missing, not steps to walk first.
+- With an environment and package in hand, ask the question in one call: the matching sources come back with their fields nested. `list_environments` and the catalog browse are for finding a name you are missing, not steps to walk first.
 - Confirm the environment and package before running a query.

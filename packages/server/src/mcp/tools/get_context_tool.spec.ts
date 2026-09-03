@@ -19,6 +19,7 @@ import {
    entityId,
    sanitize,
    registerGetContextTool,
+   registerListEnvironmentsTool,
 } from "./get_context_tool";
 import { embeddingText } from "./embedding_index";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
@@ -171,12 +172,25 @@ function captureNamed(
 }
 
 function captureHandler(store: Partial<EnvironmentStore>): Handler {
-   return captureNamed(store, "malloy_getContext");
-}
-
-function captureConverged(store: Partial<EnvironmentStore>): Handler {
    return captureNamed(store, "get_context");
 }
+
+const captureConverged = captureHandler;
+
+const EVERY_KIND = ["source", "dimension", "measure", "view", "join"] as const;
+
+/**
+ * One phrase against every kind. The flat request this tool replaced took a
+ * single untyped `query` that ranged over all of them, so this is what those
+ * cases mean once targets are typed. Ranking is unchanged: identical text
+ * scores identically whichever target carries it, and each entity is claimed
+ * by the one target whose kind it matches.
+ */
+const anyKind = (text: string) =>
+   EVERY_KIND.map((target_type) => ({ target_type, search_text: text }));
+
+/** Enumerate every kind, which is what a source-scoped listing returns. */
+const everyKind = () => EVERY_KIND.map((target_type) => ({ target_type }));
 
 function parse(result: { content: Content }) {
    return JSON.parse(result.content[0].resource!.text);
@@ -460,143 +474,6 @@ const mockTwoSourcePackage = {
 };
 
 describe("get_context discovery tiers", () => {
-   it("tier 1: no environment lists environments with their package names", async () => {
-      const handler = captureHandler({
-         listEnvironments: async () =>
-            [
-               {
-                  name: "malloy-samples",
-                  packages: [{ name: "ecommerce" }, { name: "imdb" }],
-               },
-            ] as never,
-      });
-      const { results } = parse(await handler({}));
-      expect(results).toEqual([
-         {
-            kind: "environment",
-            name: "malloy-samples",
-            packages: ["ecommerce", "imdb"],
-         },
-      ]);
-   });
-
-   it("tier 2: environment without a package lists the packages", async () => {
-      const handler = captureHandler({
-         getEnvironment: async () =>
-            ({
-               listPackages: async () => [
-                  { name: "ecommerce", description: "Ecommerce demo" },
-               ],
-               getFailedPackages: () => new Map(),
-               getStaleCompileErrors: () => new Map(),
-            }) as never,
-      });
-      const { results } = parse(
-         await handler({ environmentName: "malloy-samples" }),
-      );
-      // No health markers on a healthy package: the entry is byte-identical
-      // to what it was before staleness was reported at all.
-      expect(results).toEqual([
-         {
-            kind: "package",
-            name: "ecommerce",
-            description: "Ecommerce demo",
-            environmentName: "malloy-samples",
-         },
-      ]);
-   });
-
-   it("tier 2: lists a failed package with its load error instead of omitting it", async () => {
-      // listPackages() drops packages that failed to load, which reads as
-      // "does not exist" to an agent. The listing must carry them with an
-      // error marker so a broken package is distinguishable from an absent one.
-      const handler = captureHandler({
-         getEnvironment: async () =>
-            ({
-               listPackages: async () => [{ name: "good" }],
-               getFailedPackages: () =>
-                  new Map([["broken", "Compile failed: unexpected token"]]),
-               getStaleCompileErrors: () => new Map(),
-            }) as never,
-      });
-      const { results } = parse(
-         await handler({ environmentName: "malloy-samples" }),
-      );
-      expect(results).toHaveLength(2);
-      expect(results[0]).toMatchObject({ kind: "package", name: "good" });
-      expect(results[1]).toEqual({
-         kind: "package",
-         name: "broken",
-         environmentName: "malloy-samples",
-         error: "Compile failed: unexpected token",
-      });
-      // No stale marker: this package is not serving anything at all, which is
-      // the distinction the marker exists to draw.
-      expect("stale" in results[1]).toBe(false);
-   });
-
-   it("tier 2: marks a stale package, which listPackages reports as healthy", async () => {
-      // A failed reload keeps the package SERVING, so it comes back from
-      // listPackages looking exactly like a current one. Unmarked, an agent
-      // queries it and gets numbers from the model compiled before the last
-      // save, with nothing in the payload to say so.
-      const handler = captureHandler({
-         getEnvironment: async () =>
-            ({
-               listPackages: async () => [
-                  { name: "current" },
-                  { name: "stale-pkg" },
-               ],
-               getFailedPackages: () => new Map(),
-               getStaleCompileErrors: () =>
-                  new Map([
-                     [
-                        "stale-pkg",
-                        {
-                           message: "line 3: missing ')'",
-                           failedAt: "2026-08-13T00:00:00.000Z",
-                        },
-                     ],
-                  ]),
-            }) as never,
-      });
-      const { results } = parse(
-         await handler({ environmentName: "malloy-samples" }),
-      );
-      expect(results).toEqual([
-         {
-            kind: "package",
-            name: "current",
-            environmentName: "malloy-samples",
-         },
-         {
-            kind: "package",
-            name: "stale-pkg",
-            environmentName: "malloy-samples",
-            error: "line 3: missing ')'",
-            stale: true,
-         },
-      ]);
-   });
-
-   it("tier 2: surfaces an unresolved environment as a tool error", async () => {
-      const handler = captureHandler({
-         getEnvironment: async () => {
-            throw new Error("Environment 'nope' could not be resolved");
-         },
-      });
-      const result = await handler({ environmentName: "nope" });
-      expect(result.isError).toBe(true);
-      const parsed = parse(result);
-      expect(parsed.results).toEqual([]);
-      expect(parsed.error).toContain("could not be resolved");
-      // Suggestions and a text block, same as this tool's three siblings. Both
-      // were absent before: the payload carried a bare message, and a
-      // text-only client saw nothing at all.
-      expect(parsed.suggestions.length).toBeGreaterThan(0);
-      expect(textBlock(result)).toContain("could not be resolved");
-   });
-
    it("reports an unknown package as not-found, not as an internal fault", async () => {
       // Pins the classification, not just that an error came back. Before this
       // routed through classifyToolError every failure arrived as the raw
@@ -611,9 +488,8 @@ describe("get_context discovery tiers", () => {
             }) as never,
       });
       const result = await handler({
-         environmentName: "malloy-samples",
-         packageName: "nope",
-         query: "state",
+         search_targets: anyKind("state"),
+         scopes: [{ environment: "malloy-samples", package: "nope" }],
       });
       expect(result.isError).toBe(true);
       const parsed = parse(result);
@@ -623,30 +499,14 @@ describe("get_context discovery tiers", () => {
       expect(textBlock(result)).toContain("Resource not found");
    });
 
-   it("reports a non-Error throwable without inventing 'Unknown error'", async () => {
-      // The old per-site `error instanceof Error ? error.message : "Unknown
-      // error"` turned a thrown string into exactly the unhelpful text this
-      // tool's callers reported. classifyToolError stringifies it instead.
-      const handler = captureHandler({
-         listEnvironments: async () => {
-            throw "the store exploded";
-         },
-      });
-      const result = await handler({});
-      const parsed = parse(result);
-      expect(parsed.error).toContain("the store exploded");
-      expect(parsed.error).not.toContain("Unknown error");
-      expect(textBlock(result)).toContain("the store exploded");
-   });
-
    it("tier 3: package without a query lists only its sources", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       // The whole listing payload, pinned: this is the response contract, in
@@ -688,8 +548,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect("warnings" in payload).toBe(false);
@@ -716,14 +576,14 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect(payload.sources).toHaveLength(1);
       expect(payload.warnings.join(" ")).toContain("STALE");
       expect(payload.warnings.join(" ")).toContain("2026-08-13T00:00:00.000Z");
-      expect(payload.warnings.join(" ")).toContain("malloy_reloadPackage");
+      expect(payload.warnings.join(" ")).toContain("reload_package");
    });
 
    it("tier 4: retrieval against a stale package carries the note too", async () => {
@@ -746,9 +606,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "order items",
+            search_targets: anyKind("order items"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect(payload.warnings.join(" ")).toContain("STALE");
@@ -767,13 +626,15 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "curated-empty",
+            search_targets: [{ target_type: "source" }],
+            scopes: [
+               { environment: "malloy-samples", package: "curated-empty" },
+            ],
          }),
       );
       expect(payload.sources).toEqual([]);
       expect(payload.warnings.join(" ")).toContain("curation gap");
-      expect(payload.warnings.join(" ")).toContain("malloy_getStatus");
+      expect(payload.warnings.join(" ")).toContain("get_status");
    });
 
    it("tier 4: a query retrieves the matching entity", async () => {
@@ -783,9 +644,10 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               environmentName: "malloy-samples",
-               packageName: "ecommerce",
-               query: "state",
+               search_targets: anyKind("state"),
+               scopes: [
+                  { environment: "malloy-samples", package: "ecommerce" },
+               ],
             }),
          ),
       );
@@ -806,9 +668,10 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               environmentName: "malloy-samples",
-               packageName: "ecommerce",
-               query: "building",
+               search_targets: anyKind("building"),
+               scopes: [
+                  { environment: "malloy-samples", package: "ecommerce" },
+               ],
             }),
          ),
       );
@@ -837,8 +700,8 @@ describe("get_context discovery tiers", () => {
       });
       const listed = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       // A source's identity is its resource_id, which is how the shape
@@ -853,9 +716,10 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               environmentName: "malloy-samples",
-               packageName: "ecommerce",
-               query: "state",
+               search_targets: anyKind("state"),
+               scopes: [
+                  { environment: "malloy-samples", package: "ecommerce" },
+               ],
             }),
          ),
       );
@@ -917,9 +781,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "Zzyzx",
+            search_targets: anyKind("Zzyzx"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       const hit = rankedEntities(payload).find((r) =>
@@ -948,8 +811,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       // A listing is sources and nothing else: no entity rows at all, so a
@@ -968,9 +831,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "state",
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       // The hit itself is a field carrying only its own (empty) doc...
@@ -1005,10 +867,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            // Matches the source, the join, and (via the source doc) more.
-            query: "order building state",
+            search_targets: anyKind("order building state"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect(rankedEntities(payload).length).toBeGreaterThan(1);
@@ -1023,9 +883,8 @@ describe("get_context discovery tiers", () => {
       });
       const matched = parse(
          await handler({
-            environmentName: "e",
-            packageName: "p",
-            query: "rooms",
+            search_targets: anyKind("rooms"),
+            scopes: [{ environment: "e", package: "p" }],
          }),
       );
       // The source itself ranked, so its docs come back whole.
@@ -1036,9 +895,8 @@ describe("get_context discovery tiers", () => {
       // truncated context copy: enough to deliver the caveat, not the file.
       const viaField = parse(
          await handler({
-            environmentName: "e",
-            packageName: "p",
-            query: "occupancy_pct",
+            search_targets: anyKind("occupancy_pct"),
+            scopes: [{ environment: "e", package: "p" }],
          }),
       );
       const docs = viaField.sources[0].source_info.docs;
@@ -1055,7 +913,10 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () => envWith(async () => mockLongDocPackage),
       });
       const payload = parse(
-         await handler({ environmentName: "e", packageName: "p" }),
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "e", package: "p" }],
+         }),
       );
       expect(payload.sources[0].source_info.joins).toEqual([]);
    });
@@ -1066,12 +927,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            // A token that appears in no name and no doc anywhere in the
-            // fixture, INCLUDING inside a join's inlined schema -- those are
-            // indexed now, so "Zzyzx" is a hit rather than a true negative.
-            query: "Qwghlm",
+            search_targets: anyKind("Qwghlm"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       // `sources` is the result set now, not a context block beside one, so
@@ -1095,9 +952,8 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               environmentName: "e",
-               packageName: "p",
-               query: "site",
+               search_targets: anyKind("site"),
+               scopes: [{ environment: "e", package: "p" }],
             }),
          ),
       );
@@ -1126,9 +982,8 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               environmentName: "e",
-               packageName: "p",
-               sourceName: "orders",
+               search_targets: everyKind(),
+               scopes: [{ environment: "e", package: "p", source: "orders" }],
             }),
          ),
       );
@@ -1152,9 +1007,8 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               environmentName: "e",
-               packageName: "p",
-               query: "height",
+               search_targets: anyKind("height"),
+               scopes: [{ environment: "e", package: "p" }],
             }),
          ),
       );
@@ -1199,9 +1053,8 @@ describe("get_context discovery tiers", () => {
       const results = rankedEntities(
          parse(
             await handler({
-               environmentName: "e",
-               packageName: "p",
-               query: "site",
+               search_targets: anyKind("site"),
+               scopes: [{ environment: "e", package: "p" }],
             }),
          ),
       );
@@ -1209,27 +1062,15 @@ describe("get_context discovery tiers", () => {
       expect(results[0].aliases).toBeUndefined();
    });
 
-   it("tier 1: surfaces a listEnvironments failure as a tool error", async () => {
-      const handler = captureHandler({
-         listEnvironments: async () => {
-            throw new Error("environment store not initialized");
-         },
-      });
-      const result = await handler({});
-      expect(result.isError).toBe(true);
-      const parsed = parse(result);
-      expect(parsed.results).toEqual([]);
-      expect(parsed.error).toContain("not initialized");
-      expect(parsed.suggestions.length).toBeGreaterThan(0);
-      expect(textBlock(result)).toContain("not initialized");
-   });
-
    it("tier 3: lists every source, not just the first 10", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockManySourcePackage),
       });
       const payload = parse(
-         await handler({ environmentName: "e", packageName: "p" }),
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "e", package: "p" }],
+         }),
       );
       expect(payload.sources).toHaveLength(12);
       expect(payload.total_available).toBe(12);
@@ -1240,7 +1081,11 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () => envWith(async () => mockManySourcePackage),
       });
       const payload = parse(
-         await handler({ environmentName: "e", packageName: "p", limit: 5 }),
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "e", package: "p" }],
+            limit: 5,
+         }),
       );
       expect(payload.sources).toHaveLength(5);
       // returned against total_available is how a caller sees it was capped.
@@ -1254,9 +1099,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "state",
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect(payload.retrieval).toBeUndefined();
@@ -1285,9 +1129,14 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
-            sourceName: "orders",
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "sales",
+                  source: "orders",
+               },
+            ],
          }),
       );
       // One card: the source is the container, its fields nest inside it.
@@ -1322,9 +1171,14 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
-            sourceName: "customers",
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "sales",
+                  source: "customers",
+               },
+            ],
          }),
       );
       expect(payload.sources).toHaveLength(1);
@@ -1351,8 +1205,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "sales" }],
          }),
       );
       expect(
@@ -1376,9 +1230,14 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
-            sourceName: "nope",
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "sales",
+                  source: "nope",
+               },
+            ],
          }),
       );
       expect(payload.sources).toEqual([]);
@@ -1392,9 +1251,14 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
-            sourceName: "orders",
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "sales",
+                  source: "orders",
+               },
+            ],
             limit: 2,
          }),
       );
@@ -1422,9 +1286,8 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "state",
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect("retrieval" in payload).toBe(false);
@@ -1646,9 +1509,8 @@ describe("get_context semantic retrieval", () => {
       // them is the doc that says the numbers are gated.
       _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
       const payload = await callUntilSemantic(siblingHandler(GATED_DOC), {
-         environmentName: "specs",
-         packageName: "sib-semantic-differing",
-         query: "total order amount",
+         search_targets: anyKind("total order amount"),
+         scopes: [{ environment: "specs", package: "sib-semantic-differing" }],
       });
       const rows = rankedEntities(payload).filter(
          (e) => e.name === "total_amount",
@@ -1668,9 +1530,8 @@ describe("get_context semantic retrieval", () => {
       // the folded row was the only thing that would have emitted it.
       _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
       const payload = await callUntilSemantic(siblingHandler(OPEN_DOC), {
-         environmentName: "specs",
-         packageName: "sib-semantic-identical",
-         query: "total order amount",
+         search_targets: anyKind("total order amount"),
+         scopes: [{ environment: "specs", package: "sib-semantic-identical" }],
       });
       const rows = rankedEntities(payload).filter(
          (e) => e.name === "total_amount",
@@ -1705,9 +1566,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
-         environmentName: "specs",
-         packageName: "semantic-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "semantic-pkg" }],
       };
 
       // Cold start: the sync kicks off in the background and this call
@@ -1729,9 +1589,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const payload = await callUntilSemantic(handler, {
-         environmentName: "specs",
-         packageName: "join-pkg",
-         query: "what building is this in",
+         search_targets: anyKind("what building is this in"),
+         scopes: [{ environment: "specs", package: "join-pkg" }],
       });
       const join = rankedEntities(payload).find(
          (r) => r.name === "current_building",
@@ -1763,9 +1622,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const payload = await callUntilSemantic(handler, {
-         environmentName: "specs",
-         packageName: "context-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "context-pkg" }],
       });
       // The source itself never cleared the floor, so it is in the response
       // only as the parent of a field that did. Its relevance is therefore
@@ -1814,9 +1672,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
-         environmentName: "specs",
-         packageName: "reason-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "reason-pkg" }],
       };
       const first = parse(await handler(params));
       expect(first.retrieval).toBe("lexical");
@@ -1833,9 +1690,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
-         environmentName: "specs",
-         packageName: "dead-provider-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "dead-provider-pkg" }],
       };
       await callUntilSemantic(handler, params);
 
@@ -1886,9 +1742,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
       const handler = captureHandler(truncStore());
       const payload = await callUntilSemantic(handler, {
-         environmentName: "specs",
-         packageName: "avail-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "avail-pkg" }],
          limit: 10,
       });
       expect(payload.total_available).toBe(1);
@@ -1899,9 +1754,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
       const handler = captureHandler(truncStore());
       const payload = await callUntilSemantic(handler, {
-         environmentName: "specs",
-         packageName: "trunc-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "trunc-pkg" }],
          limit: 10,
       });
 
@@ -1917,9 +1771,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
       const handler = captureHandler(truncStore());
       const payload = await callUntilSemantic(handler, {
-         environmentName: "specs",
-         packageName: "trunc-cut-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "trunc-cut-pkg" }],
          limit: 1,
       });
 
@@ -1931,9 +1784,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
-         environmentName: "specs",
-         packageName: "cutoff-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "cutoff-pkg" }],
       };
 
       // Cold start answers lexically: there is no floor on that path, so
@@ -1968,9 +1820,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
-         environmentName: "specs",
-         packageName: "cutoff-pkg",
-         query: "seismic retrofit of bridge pilings",
+         search_targets: anyKind("seismic retrofit of bridge pilings"),
+         scopes: [{ environment: "specs", package: "cutoff-pkg" }],
       };
 
       const payload = await callUntilSemantic(handler, params);
@@ -1998,9 +1849,8 @@ describe("get_context semantic retrieval", () => {
       );
       const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
       const payload = await callUntilSemantic(handler, {
-         environmentName: "specs",
-         packageName: "sibling-pkg",
-         query: "site of the building",
+         search_targets: anyKind("site of the building"),
+         scopes: [{ environment: "specs", package: "sibling-pkg" }],
       });
       const sites = rankedEntities(payload).filter((r) => r.name === "site");
       expect(sites).toHaveLength(1);
@@ -2022,10 +1872,14 @@ describe("get_context semantic retrieval", () => {
       );
       const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
       const payload = await callUntilSemantic(handler, {
-         environmentName: "specs",
-         packageName: "sibling-scoped-pkg",
-         query: "site of the building",
-         sourceName: "fclt_building",
+         search_targets: anyKind("site of the building"),
+         scopes: [
+            {
+               environment: "specs",
+               package: "sibling-scoped-pkg",
+               source: "fclt_building",
+            },
+         ],
       });
       const drilled = rankedEntities(payload);
       expect(drilled).toHaveLength(1);
@@ -2039,9 +1893,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
-         environmentName: "specs",
-         packageName: "failing-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "failing-pkg" }],
       };
       await callUntilSemantic(handler, params);
 
@@ -2049,7 +1902,9 @@ describe("get_context semantic retrieval", () => {
       // per-call query embed fails and the call degrades to marked
       // lexical with no scores.
       _setEmbeddingProviderForTests(stubProvider({ fail: true }));
-      const payload = parse(await handler({ ...params, query: "state" }));
+      const payload = parse(
+         await handler({ ...params, search_targets: anyKind("state") }),
+      );
       expect(payload.retrieval).toBe("lexical");
       expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
          true,
@@ -2066,9 +1921,8 @@ describe("get_context semantic retrieval", () => {
       const handler = captureHandler(store);
       const payload = parse(
          await handler({
-            environmentName: "specs",
-            packageName: "no-storage-pkg",
-            query: "state",
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "specs", package: "no-storage-pkg" }],
          }),
       );
       expect(payload.retrieval).toBe("lexical");
@@ -2093,9 +1947,8 @@ describe("get_context semantic retrieval", () => {
          const handler = captureHandler(semanticStore());
          const payload = parse(
             await handler({
-               environmentName: "specs",
-               packageName: "malformed-cfg-pkg",
-               query: "state",
+               search_targets: anyKind("state"),
+               scopes: [{ environment: "specs", package: "malformed-cfg-pkg" }],
             }),
          );
          expect(payload.retrieval).toBe("lexical");
@@ -2170,8 +2023,8 @@ describe("get_context source governance and field types", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "specs",
-            packageName: "governed",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "governed" }],
          }),
       );
       const gated = payload.sources.find(
@@ -2197,7 +2050,10 @@ describe("get_context source governance and field types", () => {
          getEnvironment: async () => envWith(async () => gatedPackage),
       });
       const payload = parse(
-         await handler({ environmentName: "specs", packageName: "governed" }),
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "governed" }],
+         }),
       );
       const open = payload.sources.find(
          (c: SourceCardShape) => c.source_info.resource_id.source === "sales",
@@ -2216,8 +2072,8 @@ describe("get_context source governance and field types", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect("givens" in payload.sources[0].source_info).toBe(false);
@@ -2260,9 +2116,10 @@ describe("get_context source governance and field types", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "specs",
-            packageName: "typed",
-            sourceName: "orders",
+            search_targets: everyKind(),
+            scopes: [
+               { environment: "specs", package: "typed", source: "orders" },
+            ],
          }),
       );
       const byName = new Map(
@@ -2296,7 +2153,10 @@ describe("get_context source governance and field types", () => {
             })),
       });
       const payload = parse(
-         await handler({ environmentName: "specs", packageName: "wordy" }),
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "wordy" }],
+         }),
       );
       const info = payload.sources[0].source_info;
       expect(info.one_line_summary).toBe("One row per order.");
@@ -2310,7 +2170,10 @@ describe("get_context source governance and field types", () => {
          getEnvironment: async () => envWith(async () => mockTwoSourcePackage),
       });
       const payload = parse(
-         await handler({ environmentName: "specs", packageName: "sales" }),
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "sales" }],
+         }),
       );
       const customers = payload.sources.find(
          (c: SourceCardShape) =>
@@ -2360,9 +2223,10 @@ describe("get_context truncation reporting", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "specs",
-            packageName: "wide",
-            sourceName: "orders",
+            search_targets: everyKind(),
+            scopes: [
+               { environment: "specs", package: "wide", source: "orders" },
+            ],
             limit: 4,
          }),
       );
@@ -2377,9 +2241,8 @@ describe("get_context truncation reporting", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "specs",
-            packageName: "wide",
-            query: "revenue",
+            search_targets: anyKind("revenue"),
+            scopes: [{ environment: "specs", package: "wide" }],
             limit: 3,
          }),
       );
@@ -2393,9 +2256,10 @@ describe("get_context truncation reporting", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "specs",
-            packageName: "wide",
-            sourceName: "orders",
+            search_targets: everyKind(),
+            scopes: [
+               { environment: "specs", package: "wide", source: "orders" },
+            ],
             limit: 50,
          }),
       );
@@ -2434,7 +2298,10 @@ describe("get_context duplicate and visibility handling", () => {
                })),
          });
          const payload = parse(
-            await handler({ environmentName: "specs", packageName: "dup" }),
+            await handler({
+               search_targets: [{ target_type: "source" }],
+               scopes: [{ environment: "specs", package: "dup" }],
+            }),
          );
          expect(payload.sources).toHaveLength(1);
          return payload.sources[0].source_info.resource_id.model_path;
@@ -2486,9 +2353,14 @@ describe("get_context duplicate and visibility handling", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "specs",
-            packageName: "nested",
-            sourceName: "order_items",
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "specs",
+                  package: "nested",
+                  source: "order_items",
+               },
+            ],
          }),
       );
       const names = payload.sources[0].entities.map(
@@ -2532,9 +2404,8 @@ describe("get_context duplicate and visibility handling", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "specs",
-            packageName: "u",
-            sourceName: "orders",
+            search_targets: everyKind(),
+            scopes: [{ environment: "specs", package: "u", source: "orders" }],
          }),
       );
       expect(
@@ -2547,9 +2418,8 @@ describe("get_context duplicate and visibility handling", () => {
          getEnvironment: async () => envWith(async () => mockPackage),
       });
       const result = await handler({
-         environmentName: "malloy-samples",
-         packageName: "ecommerce",
-         query: "order state",
+         search_targets: anyKind("order state"),
+         scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
       });
       const text = JSON.stringify(parse(result).sources);
       const doc = "One row per product sold on an order.";
@@ -2603,9 +2473,8 @@ describe("get_context lexical sibling collapse", () => {
       const doc = "Total order amount.";
       const payload = parse(
          await handlerFor(siblingModel(doc, doc))({
-            environmentName: "specs",
-            packageName: "sib",
-            query: "total order amount",
+            search_targets: anyKind("total order amount"),
+            scopes: [{ environment: "specs", package: "sib" }],
          }),
       );
       const rows = rankedEntities(payload).filter(
@@ -2626,9 +2495,8 @@ describe("get_context lexical sibling collapse", () => {
                "Total order amount visible to this caller, after the access gate.",
             ),
          )({
-            environmentName: "specs",
-            packageName: "sib",
-            query: "total order amount",
+            search_targets: anyKind("total order amount"),
+            scopes: [{ environment: "specs", package: "sib" }],
          }),
       );
       const rows = rankedEntities(payload).filter(
@@ -2642,10 +2510,8 @@ describe("get_context lexical sibling collapse", () => {
       const doc = "Total order amount.";
       const payload = parse(
          await handlerFor(siblingModel(doc, doc))({
-            environmentName: "specs",
-            packageName: "sib",
-            query: "total order amount",
-            sourceName: "sales",
+            search_targets: anyKind("total order amount"),
+            scopes: [{ environment: "specs", package: "sib", source: "sales" }],
          }),
       );
       expect(sourceNames(payload)).toEqual(["sales"]);
@@ -2808,7 +2674,7 @@ describe("get_context converged request shape", () => {
       // as "no such value"; this says which it is and what to do instead.
       const warning = (payload.warnings as string[]).join(" ");
       expect(warning).toContain("dimensional_value");
-      expect(warning).toContain("malloy_executeQuery");
+      expect(warning).toContain("execute_query");
    });
 });
 
@@ -2882,7 +2748,7 @@ describe("get_context filter_params", () => {
    });
 });
 
-describe("get_context catalog browse: paging and thin cards", () => {
+describe("get_context catalog browse", () => {
    const documented = (n: number) => ({
       name: `src_${n}`,
       annotations: [
@@ -2912,15 +2778,19 @@ describe("get_context catalog browse: paging and thin cards", () => {
       sources: Array<{ source_info: { resource_id: { source: string } } }>;
    }) => payload.sources.map((c) => c.source_info.resource_id.source);
 
-   it("withholds the full doc but keeps the one-line summary", async () => {
+   it("keeps each source's full doc on a browse", async () => {
+      // A deliberate divergence from the hosted thin catalog card, which drops
+      // `docs` because its browse spans a whole workspace and can run to 150
+      // sources. This one cannot: `scopes` requires a package, so a browse is
+      // one package's sources -- a handful, whose docs carry the grain and
+      // population rules an agent needs to pick between them. Withholding
+      // there would cost the caveat and save almost nothing.
       const payload = parse(await handler()(browse()));
       const card = payload.sources[0].source_info;
-      expect(card).not.toHaveProperty("docs");
-      // The summary is derived FROM the doc, so a browse still says what each
-      // source is; the paragraph is what the follow-up is for.
+      expect(card.docs).toContain("grain and population rules");
       expect(card.one_line_summary).toContain("Source number 1");
-      // The joins list is kept even here: "empty means none declared" would
-      // otherwise become false on exactly the response a caller browses with.
+      // The joins list stays complete, so "empty means none declared" holds
+      // on a browse as it does everywhere else.
       expect(card.joins).toEqual([]);
    });
 
@@ -2944,8 +2814,6 @@ describe("get_context catalog browse: paging and thin cards", () => {
    });
 
    it("keeps the full doc when the caller scopes to one source", async () => {
-      // That scoped call IS the follow-up the browse points at, so withholding
-      // there would leave the doc unreachable.
       const payload = parse(
          await handler()({
             search_targets: [{ target_type: "source" }],
@@ -2972,5 +2840,145 @@ describe("get_context catalog browse: paging and thin cards", () => {
       // Silently dropping it would hand back page 1 to a caller who believed
       // they were reading page 2.
       expect(JSON.stringify(payload)).toContain("Invalid offset");
+   });
+});
+
+describe("list_environments", () => {
+   function listHandler(store: Partial<EnvironmentStore>): Handler {
+      const handlers = new Map<string, Handler>();
+      const fakeServer = {
+         tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+            handlers.set(name, h);
+         },
+      };
+      registerListEnvironmentsTool(
+         fakeServer as never,
+         store as EnvironmentStore,
+      );
+      const handler = handlers.get("list_environments");
+      if (!handler) throw new Error("not registered");
+      return handler;
+   }
+   const storeWith = (env: unknown): Partial<EnvironmentStore> => ({
+      listEnvironments: async () => [{ name: "specs" }] as never,
+      getEnvironment: async () => env as never,
+   });
+
+   it("lists each environment with its packages", async () => {
+      const handler = listHandler(
+         storeWith({
+            listPackages: async () => [
+               { name: "ecommerce", description: "Ecommerce demo" },
+            ],
+            getFailedPackages: () => new Map(),
+            getStaleCompileErrors: () => new Map(),
+         }),
+      );
+      const { environments } = parse(await handler({}));
+      expect(environments).toEqual([
+         {
+            name: "specs",
+            packages: [{ name: "ecommerce", description: "Ecommerce demo" }],
+         },
+      ]);
+   });
+
+   it("lists a failed package with its load error instead of omitting it", async () => {
+      // listPackages() drops packages that failed to load, which reads as
+      // "does not exist" to an agent. This is the only surface that draws the
+      // distinction, so a broken package must arrive with its reason.
+      const handler = listHandler(
+         storeWith({
+            listPackages: async () => [{ name: "good" }],
+            getFailedPackages: () =>
+               new Map([["broken", "Compile failed: unexpected token"]]),
+            getStaleCompileErrors: () => new Map(),
+         }),
+      );
+      const { environments } = parse(await handler({}));
+      const packages = environments[0].packages;
+      expect(packages).toHaveLength(2);
+      expect(packages[0]).toMatchObject({ name: "good" });
+      expect(packages[1]).toEqual({
+         name: "broken",
+         error: "Compile failed: unexpected token",
+      });
+      // No stale marker: this package is not serving anything at all, which is
+      // the distinction the marker exists to draw.
+      expect("stale" in packages[1]).toBe(false);
+   });
+
+   it("marks a stale package, which listPackages reports as healthy", async () => {
+      // A failed reload keeps the package SERVING, so it comes back from
+      // listPackages looking exactly like a current one. Unmarked, an agent
+      // queries it and gets numbers from the model compiled before the last
+      // save, with nothing to say so.
+      const handler = listHandler(
+         storeWith({
+            listPackages: async () => [
+               { name: "current" },
+               { name: "stale-pkg" },
+            ],
+            getFailedPackages: () => new Map(),
+            getStaleCompileErrors: () =>
+               new Map([
+                  [
+                     "stale-pkg",
+                     {
+                        message: "line 3: missing ')'",
+                        failedAt: "2026-08-13T00:00:00.000Z",
+                     },
+                  ],
+               ]),
+         }),
+      );
+      const { environments } = parse(await handler({}));
+      expect(environments[0].packages).toEqual([
+         { name: "current" },
+         { name: "stale-pkg", error: "line 3: missing ')'", stale: true },
+      ]);
+   });
+
+   it("keeps listing when one environment cannot be read", async () => {
+      // The point of this tool is to say what IS there, so one unreachable
+      // environment must not take the catalog down with it.
+      const handler = listHandler({
+         listEnvironments: async () => [{ name: "broken" }] as never,
+         getEnvironment: async () => {
+            throw new Error("Environment 'broken' could not be resolved");
+         },
+      });
+      const { environments } = parse(await handler({}));
+      expect(environments).toEqual([{ name: "broken", packages: [] }]);
+   });
+
+   it("reports a non-Error throwable without inventing 'Unknown error'", async () => {
+      // The old per-site `error instanceof Error ? error.message : "Unknown
+      // error"` turned a thrown string into exactly the unhelpful text this
+      // tool's callers reported. classifyToolError stringifies it instead.
+      const handler = listHandler({
+         listEnvironments: async () => {
+            throw "the store exploded";
+         },
+      });
+      const result = await handler({});
+      const parsed = parse(result);
+      expect(parsed.error).toContain("the store exploded");
+      expect(parsed.error).not.toContain("Unknown error");
+      expect(textBlock(result)).toContain("the store exploded");
+   });
+
+   it("surfaces a total failure as a tool error, with suggestions", async () => {
+      const handler = listHandler({
+         listEnvironments: async () => {
+            throw new Error("storage is unavailable");
+         },
+      });
+      const result = await handler({});
+      expect(result.isError).toBe(true);
+      const parsed = parse(result);
+      expect(parsed.error).toContain("storage is unavailable");
+      expect(parsed.suggestions.length).toBeGreaterThan(0);
+      expect(textBlock(result)).toContain("storage is unavailable");
    });
 });

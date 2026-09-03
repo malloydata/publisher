@@ -19,7 +19,7 @@ Assumes the `malloy-pub` CLI is on PATH and points at the server (`--url` or `MA
 
 Establish what the package persists today and how it is governed.
 
-- **Persist sources:** the sources annotated `#@ persist name="…"` in the package's `.malloy` files. Read the models (or `malloy_getContext` the package) to list them.
+- **Persist sources:** the sources annotated `#@ persist name="…"` in the package's `.malloy` files. Read the models (or `get_context` the package) to list them.
 - **Schedule + scope:**
 
   ```bash

@@ -7,8 +7,8 @@
 // no credentials and no build step. DuckDB auto-detects the header row and column
 // types. Edit this file and the dev server recompiles it, because it boots in
 // watch mode; AGENTS.md carries the command that starts it for this workspace.
-// An agent can validate a change with malloy_compile and run new views by name
-// with malloy_reloadPackage.
+// An agent can validate a change with compile_model and run new views by name
+// with reload_package.
 
 source: {{sourceName}} is duckdb.table('data/sales.csv') extend {
   primary_key: id

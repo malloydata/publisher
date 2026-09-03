@@ -46,8 +46,8 @@ returning the old model's rows; it may instead make the source vanish, so every 
 fails with `Reference to undefined object '<source>'`. Either way the failure goes only
 to the server's stdout, which you are not reading if you started it in the background.
 So a query that succeeds after an edit is not proof the edit compiled, and the rows you
-get back may be the old model's. Compile-check the edit with `malloy_compile`, or reload with
-`malloy_reloadPackage` afterwards (both described below, and reload has a REST form for a
+get back may be the old model's. Compile-check the edit with `compile_model`, or reload with
+`reload_package` afterwards (both described below, and reload has a REST form for a
 script or an unattended run); either one reports the failure that watch mode swallowed.
 
 Poll until it reports serving rather than assuming a fixed wait; the first run
@@ -141,14 +141,14 @@ from the database it replaces.
 
 Two interfaces reach the same models with the same governance.
 
-MCP, for an interactive agent: the tools are `malloy_getContext` (discover
-environments, packages, sources, and fields), `malloy_executeQuery` (run a view or
-ad-hoc Malloy and get JSON back), `malloy_compile` (compile-check a snippet of Malloy
+MCP, for an interactive agent: the tools are `get_context` (discover
+environments, packages, sources, and fields), `execute_query` (run a view or
+ad-hoc Malloy and get JSON back), `compile_model` (compile-check a snippet of Malloy
 against the model, so it takes the snippet as a required `source` argument; it reports
 the model file's own errors too),
-`malloy_reloadPackage` (pick up on-disk model edits with no restart, and surface a
+`reload_package` (pick up on-disk model edits with no restart, and surface a
 watch-mode recompile that failed), and
-`malloy_searchDocs`, and `malloy_searchDatabaseSchema` (find the tables in a database
+`search_malloy_docs`, and `search_database_schema` (find the tables in a database
 connection by plain-English description, for modelling data that is not in this package
 yet; it returns each table's columns and the `source:` line to start from). {{mcpNote}}
 
@@ -167,7 +167,7 @@ curl -s http://localhost:{{port}}/api/v0/environments/{{envName}}/packages
 That list is what this workspace serves. This file is not: it describes at most one
 package, the one the scaffolder created on the run that wrote this file. A workspace
 scaffolded more than once serves more than that, so take the packages, sources and
-views you do not see here from the list above and from `malloy_getContext`, never
+views you do not see here from the list above and from `get_context`, never
 from their absence here.
 {{trustNote}}
 If you started this server yourself in this session, your `malloy_*` tools will not

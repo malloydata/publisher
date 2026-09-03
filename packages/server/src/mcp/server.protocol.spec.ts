@@ -22,7 +22,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // searchDocs does not touch the store, and the tools' error paths only
       // need getEnvironment to reject. The one exception is `compiles-badly`,
       // which resolves to a compileSource returning an error diagnostic: that
-      // is malloy_compile's own isError path (a bad Malloy snippet rather than
+      // is compile_model's own isError path (a bad Malloy snippet rather than
       // a thrown error), and it is only reachable with an environment that
       // exists.
       const stubStore = {
@@ -61,20 +61,20 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
    it("exposes the agent retrieval tools alongside the core tools", async () => {
       const { tools } = await client.listTools();
       const names = new Set(tools.map((t) => t.name));
-      expect(names.has("malloy_getContext")).toBe(true);
-      expect(names.has("malloy_searchDocs")).toBe(true);
-      expect(names.has("malloy_executeQuery")).toBe(true);
-      expect(names.has("malloy_compile")).toBe(true);
-      expect(names.has("malloy_reloadPackage")).toBe(true);
-      expect(names.has("malloy_searchDatabaseSchema")).toBe(true);
-      expect(names.has("malloy_getStatus")).toBe(true);
-      // The converged retrieval tool and the catalog that supplies its scopes.
       expect(names.has("get_context")).toBe(true);
-      expect(names.has("malloy_listEnvironments")).toBe(true);
+      expect(names.has("search_malloy_docs")).toBe(true);
+      expect(names.has("execute_query")).toBe(true);
+      expect(names.has("compile_model")).toBe(true);
+      expect(names.has("reload_package")).toBe(true);
+      expect(names.has("search_database_schema")).toBe(true);
+      expect(names.has("get_status")).toBe(true);
+      // The retrieval tool and the catalog that supplies its scopes.
+      expect(names.has("get_context")).toBe(true);
+      expect(names.has("list_environments")).toBe(true);
    });
 
    /**
-    * Tool descriptions are truncated by some clients. `malloy_getContext`'s was
+    * Tool descriptions are truncated by some clients. `get_context`'s was
     * observed arriving cut off mid-sentence at 2271 characters, and what a tail
     * cut removes is whatever the description put last.
     *
@@ -86,7 +86,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
     * cannot self-correct without. See docs/agent-skills/tool-description-template.md.
     */
    it("keeps every tool description under the truncation budget", async () => {
-      // Raised from 2000 once malloy_getContext's contract outgrew it, after
+      // Raised from 2000 once get_context's contract outgrew it, after
       // restructuring rather than extending the description. 2150 still sits
       // ~120 chars below 2271, the only length ever observed truncating, so
       // the margin is smaller but not gone. Raise it again only after the
@@ -123,12 +123,8 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // `joins` list it was never told about. Pin the contract terms to the
       // description so a new response field cannot land silently.
       const { tools } = await client.listTools();
-      // Both tools answer in the same shape, so both must describe it. The
-      // converged one is where callers are going; the flat one is still
-      // shipped. A term dropped from either is a field shipping unexplained.
-      const description = ["get_context", "malloy_getContext"]
-         .map((name) => tools.find((t) => t.name === name)?.description ?? "")
-         .join("\n");
+      const description =
+         tools.find((t) => t.name === "get_context")?.description ?? "";
       // snake_case throughout since the response converged on the hosted
       // retrieval API's shape: one shape, one parser, one mental model across
       // a local server and a hosted one.
@@ -151,7 +147,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          // without the mapping an agent holding a card cannot reach
          // executeQuery; the sentence that said so was once dropped while
          // the fields were being renamed, and nothing caught it.
-         "malloy_executeQuery",
+         "execute_query",
          "ranking",
          "total_available",
          "below_cutoff_count",
@@ -187,7 +183,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
    it("delivers orientation instructions to the connecting client", () => {
       const instructions = client.getInstructions();
       expect(instructions).toBeDefined();
-      expect(instructions).toContain("malloy_getContext");
+      expect(instructions).toContain("get_context");
       // Pin the shared fragment, not just that instructions exist. The whole
       // point of exporting it is that this surface and the tool description
       // cannot drift, and they have drifted twice. Without this, deleting the
@@ -197,14 +193,14 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // silently empty model (see F1/F7 in the QA field notes): reload after
       // every edit, and never read an empty getContext as an empty package.
       expect(instructions).toContain(
-         "After every model edit, call malloy_reloadPackage before querying",
+         "After every model edit, call reload_package before querying",
       );
-      expect(instructions).toContain("malloy_getStatus");
+      expect(instructions).toContain("get_status");
    });
 
-   it("malloy_searchDocs returns relevant docs over the protocol", async () => {
+   it("search_malloy_docs returns relevant docs over the protocol", async () => {
       const res = await client.callTool({
-         name: "malloy_searchDocs",
+         name: "search_malloy_docs",
          arguments: { query: "window functions" },
       });
       const content = res.content as Array<{ resource?: { text?: string } }>;
@@ -253,28 +249,27 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       return payload;
    }
 
-   it("malloy_getContext returns its own error payload over the protocol", async () => {
+   it("get_context returns its own error payload over the protocol", async () => {
       const res = await client.callTool({
-         name: "malloy_getContext",
+         name: "get_context",
          arguments: {
-            environmentName: "nope",
-            packageName: "nope",
-            query: "x",
+            search_targets: [{ target_type: "measure", search_text: "x" }],
+            scopes: [{ environment: "nope", package: "nope" }],
          },
       });
       expect(expectToolErrorPayload(res).error).toContain("nope");
-      // getContext answers with `results` at every tier, so an error keeps the
-      // key rather than making callers branch on success first.
+      // get_context answers with `sources`, so an error keeps that key rather
+      // than making callers branch on success before they can read it.
       const payload = JSON.parse(
          (res.content as Array<{ resource?: { text?: string } }>)[0]?.resource
             ?.text ?? "{}",
       );
-      expect(payload.results).toEqual([]);
+      expect(payload.sources).toEqual([]);
    });
 
-   it("malloy_compile returns its own error payload over the protocol", async () => {
+   it("compile_model returns its own error payload over the protocol", async () => {
       const res = await client.callTool({
-         name: "malloy_compile",
+         name: "compile_model",
          arguments: {
             environmentName: "nope",
             packageName: "nope",
@@ -285,7 +280,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(expectToolErrorPayload(res).error).toContain("nope");
    });
 
-   it("malloy_compile states a compile diagnostic in text over the protocol", async () => {
+   it("compile_model states a compile diagnostic in text over the protocol", async () => {
       // The diagnostics path keeps its {status, diagnostics} payload rather
       // than the {error, suggestions} of the thrown-error path, so it cannot go
       // through expectToolErrorPayload. What it shares is the invariant that
@@ -293,7 +288,7 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // real transport because a client that renders only text is exactly the
       // one this was invisible to.
       const res = await client.callTool({
-         name: "malloy_compile",
+         name: "compile_model",
          arguments: {
             environmentName: "compiles-badly",
             packageName: "p",
@@ -317,9 +312,9 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(textBlock?.text).toContain("field-not-found");
    });
 
-   it("malloy_reloadPackage returns its own error payload over the protocol", async () => {
+   it("reload_package returns its own error payload over the protocol", async () => {
       const res = await client.callTool({
-         name: "malloy_reloadPackage",
+         name: "reload_package",
          arguments: { environmentName: "nope", packageName: "nope" },
       });
       expect(expectToolErrorPayload(res).error).toContain("nope");

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Retrieval eval for malloy_getContext: lexical baseline vs the optional
+ * Retrieval eval for get_context: lexical baseline vs the optional
  * embedding-backed semantic mode.
  *
  * Runs a labeled set of plain-English queries against the live MCP endpoint
@@ -201,7 +201,7 @@ async function callGetContext(
          jsonrpc: "2.0",
          id: 1,
          method: "tools/call",
-         params: { name: "malloy_getContext", arguments: args },
+         params: { name: "get_context", arguments: args },
       }),
    });
    const text = await res.text();

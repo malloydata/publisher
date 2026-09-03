@@ -48,7 +48,7 @@ export function getInternalError(
 /**
  * Every construct restricted mode refuses in ad-hoc query text, in one place
  * because two surfaces state it: the suggestion below, which a caller reads
- * only after tripping the rule, and `malloy_executeQuery`'s `query` param doc,
+ * only after tripping the rule, and `execute_query`'s `query` param doc,
  * which it reads before. Two hand-maintained copies drift, and a rule that is
  * missing from the list an agent is handed reads as permission.
  *
@@ -121,7 +121,7 @@ export function getMalloyErrorDetails(
          return {
             message: `Error during ${operation} for resource '${modelIdentifier}': ${causes}`,
             suggestions: [
-               `Suggestion: This query ran in restricted mode: ad-hoc query text may not use ${RESTRICTED_CONSTRUCTS}. These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with malloy_compile, save, call malloy_reloadPackage, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems.`,
+               `Suggestion: This query ran in restricted mode: ad-hoc query text may not use ${RESTRICTED_CONSTRUCTS}. These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with compile_model, save, call reload_package, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems.`,
             ],
          };
       }
@@ -174,21 +174,21 @@ export function getMalloyErrorDetails(
          refined = true;
          const [, viewName, sourceName] = viewNotFoundMatch;
          suggestions.unshift(
-            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling or call malloy_getContext with sourceName '${sourceName}' to see the list of available views. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
+            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling or call get_context with sourceName '${sourceName}' to see the list of available views. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
          );
       } else if (sourceNotFoundMatch) {
          refined = true;
          const [, sourceName] = sourceNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Source '${sourceName}' was not found or could not be accessed. Verify its definition (e.g., \`source: ${sourceName} is table('...')\` or \`duckdb.sql("...")\`) and ensure any associated connections are valid.`,
-            `Suggestion: Check the spelling of '${sourceName}'. You can list the sources in the package using malloy_getContext.`,
+            `Suggestion: Check the spelling of '${sourceName}'. You can list the sources in the package using get_context.`,
          );
       } else if (queryNotFoundMatch) {
          refined = true;
          const [, queryName] = queryNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Named query '${queryName}' was not found. Verify its definition (e.g., \`query: ${queryName} is source_name -> { ... }\`) within the model '${modelIdentifier}'.`,
-            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. You can list named queries using malloy_getContext.`,
+            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. You can list named queries using get_context.`,
          );
       } else if (fieldNotFoundMatch) {
          refined = true;
@@ -196,7 +196,7 @@ export function getMalloyErrorDetails(
             fieldNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Field '${fieldName}' was not found in ${fieldContextType} '${fieldContextName}'. Check the spelling of the field name within the definition of '${fieldContextName}'.`,
-            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. You can inspect the ${fieldContextType}'s fields using malloy_getContext.`,
+            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. You can inspect the ${fieldContextType}'s fields using get_context.`,
          );
       } else if (referenceErrorMatch) {
          refined = true;

@@ -797,7 +797,7 @@ async function syncPackageEmbeddings(
 }
 
 /**
- * Semantic retrieval for tier 4 of malloy_getContext. Returns ranked
+ * Semantic retrieval for tier 4 of get_context. Returns ranked
  * hits, or a reason the semantic path is unavailable so the caller can
  * fall back to lexical. Never throws.
  *

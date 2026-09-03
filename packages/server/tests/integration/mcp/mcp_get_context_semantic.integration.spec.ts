@@ -24,7 +24,7 @@ import {
 } from "../../harness/mcp_test_setup";
 
 /**
- * End-to-end coverage of semantic malloy_getContext retrieval: the real
+ * End-to-end coverage of semantic get_context retrieval: the real
  * server, the real DuckDB vector cache, and a deterministic in-test
  * embedding endpoint (letter-bigram bag-of-words vectors, so related
  * phrases genuinely land near each other, no network, no key).
@@ -87,13 +87,13 @@ async function callGetContext(
    args: Record<string, unknown>,
 ): Promise<GetContextPayload> {
    const result = (await mcpClient.callTool({
-      name: "malloy_getContext",
+      name: "get_context",
       arguments: args,
    })) as {
       content: Array<{ type: string; resource?: { text?: string } }>;
    };
    const text = result.content?.[0]?.resource?.text;
-   if (!text) throw new Error("malloy_getContext returned no resource text");
+   if (!text) throw new Error("get_context returned no resource text");
    return JSON.parse(text) as GetContextPayload;
 }
 

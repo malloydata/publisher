@@ -166,7 +166,7 @@ data, an agent started there connects to it and answers confidently from the wro
 the file as the server's, so do not go hunting for ones to delete: a `.mcp.json` may be your own, and it
 may hold other servers and their credentials. If you made a scratch directory for this, deleting the
 directory is enough. If you are ever unsure what an agent is connected to, ask it to run
-`malloy_getContext`, which names the environment and packages it is actually talking to.
+`get_context`, which names the environment and packages it is actually talking to.
 
 **When the server does not write one.** It skips a directory that already has a `.mcp.json`, anything
 inside a git working tree (so, usually, your own project), your home directory, and a few other cases.
@@ -193,8 +193,8 @@ Then just ask, in plain English:
 
 > _"Use Malloy to explore the storefront sales data and chart revenue by category."_
 
-The agent discovers what data exists (`malloy_getContext`), grounds itself in the real source, view,
-and field names, runs the query (`malloy_executeQuery`), and returns an answer backed by your
+The agent discovers what data exists (`get_context`), grounds itself in the real source, view,
+and field names, runs the query (`execute_query`), and returns an answer backed by your
 semantic model. No schema spelunking, no hallucinated column names.
 
 - **Trust the directory first.** This is a second gate, separate from connecting the server: in a
@@ -203,11 +203,11 @@ semantic model. No schema spelunking, no hallucinated column names.
   interactively there once and answer the trust prompt, asked once per directory. A headless run is
   never asked, so it cannot clear the gate either. You will know it cleared when a query returns data.
 - **Starting from a database instead of a model.** If you have a warehouse but no Malloy model yet,
-  ask the agent what is in it. `malloy_searchDatabaseSchema` walks a configured connection's schemas
+  ask the agent what is in it. `search_database_schema` walks a configured connection's schemas
   and tables and ranks them against a plain-English description, then hands back the `source:` line
   for each table it found. Ranking works out of the box with no API key; the optional
   embedding-backed mode, and exactly what it sends where, are covered in
-  [docs/configuration.md](docs/configuration.md#semantic-ranking-for-malloy_searchdatabaseschema).
+  [docs/configuration.md](docs/configuration.md#semantic-ranking-for-search_database_schema).
   To point Publisher at your warehouse in the first place, add a connection: see
   [docs/connections.md](docs/connections.md).
 - **Agents:** this repo ships an [AGENTS.md](AGENTS.md) and a bundled skill library
@@ -244,8 +244,8 @@ covers agents in both modes, MCP and REST.
   [Publisher Console](docs/console.md), or ship a no-build
   [HTML data app](docs/html-data-apps.md) that Publisher hosts inside a package.
 - **Build & validate models.** Author Malloy models guided by the bundled [skills](skills/), then
-  publish them for serving. Agents get the same loop over MCP: `malloy_compile` checks an edit and
-  returns diagnostics without running it, and `malloy_reloadPackage` recompiles a package from disk
+  publish them for serving. Agents get the same loop over MCP: `compile_model` checks an edit and
+  returns diagnostics without running it, and `reload_package` recompiles a package from disk
   so a new source or view is queryable by name, no restart.
 - **Govern access.** [Givens](docs/givens.md) are one runtime-parameter mechanism that powers filter
   widgets, [row-level access](docs/row-level-access.md) (which rows a caller sees), and

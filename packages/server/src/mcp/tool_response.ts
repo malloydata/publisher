@@ -120,7 +120,7 @@ export function jsonResource(
  * Builds the standard error result: the {error, suggestions} JSON a parsing
  * client wants, plus the same information as text so every client can read it.
  *
- * @param extraPayload Merged into the JSON payload. malloy_getContext uses it
+ * @param extraPayload Merged into the JSON payload. get_context uses it
  *   to keep its `results: []` contract on the error path, which its callers
  *   (and specs) rely on to treat every tier's response shape uniformly.
  */

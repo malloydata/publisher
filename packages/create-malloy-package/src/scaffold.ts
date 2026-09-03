@@ -2068,7 +2068,7 @@ function otherPackagesParagraph(
       : `\`${restBase("<package>")}\``;
    return (
       `${opening}${named}. Nothing here has read those models, so use ` +
-      `\`malloy_getContext\`, or read the \`.malloy\` file in each package's ` +
+      `\`get_context\`, or read the \`.malloy\` file in each package's ` +
       `own directory, for its source, field, and view names. Their REST bases ` +
       `are ${shape}. The packages endpoint further down lists what the running ` +
       `server actually mounted, which is the only answer that counts.`

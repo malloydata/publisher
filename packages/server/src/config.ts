@@ -396,7 +396,7 @@ export function assertDuckDBResourceConfig(): void {
 
 /**
  * Settings for the optional embedding provider behind semantic
- * `malloy_getContext` retrieval. See {@link getEmbeddingConfig}.
+ * `get_context` retrieval. See {@link getEmbeddingConfig}.
  */
 export interface EmbeddingConfig {
    /** Bearer token sent to the embedding endpoint. */
@@ -434,7 +434,7 @@ const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
 export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
 
 /**
- * Embedding-provider settings for semantic `malloy_getContext` retrieval,
+ * Embedding-provider settings for semantic `get_context` retrieval,
  * or `null` when the feature is disabled. The feature is enabled iff
  * `EMBEDDING_API_KEY` is set and non-empty; without it the tool keeps its
  * lexical (lunr) ranking unchanged.
@@ -494,7 +494,7 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
 };
 
 /**
- * Whether `malloy_searchDatabaseSchema` may send a connection's table and
+ * Whether `search_database_schema` may send a connection's table and
  * column names to the configured embedding provider. Off unless set.
  *
  * Deliberately a SECOND switch on top of `EMBEDDING_API_KEY` rather than
@@ -502,7 +502,7 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
  * `OPENAI_API_KEY`: the two authorise different disclosures. `EMBEDDING_API_KEY`
  * covers the operator's own model text (entity names and `#(doc)`), which is
  * already on their disk; a warehouse's table and column names are the
- * customer's, and turning on semantic `malloy_getContext` must not silently
+ * customer's, and turning on semantic `get_context` must not silently
  * start shipping them to a third party.
  *
  * With this off (the default) schema search still works: it ranks lexically,

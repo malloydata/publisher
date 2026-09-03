@@ -335,13 +335,13 @@ describe("generated project serves against a real server", () => {
       const { tools } = await client.listTools();
       await client.close();
       expect(tools.map((t) => t.name).sort()).toEqual([
-         "malloy_compile",
-         "malloy_executeQuery",
-         "malloy_getContext",
-         "malloy_getStatus",
-         "malloy_reloadPackage",
-         "malloy_searchDatabaseSchema",
-         "malloy_searchDocs",
+         "compile_model",
+         "execute_query",
+         "get_context",
+         "get_status",
+         "reload_package",
+         "search_database_schema",
+         "search_malloy_docs",
       ]);
    });
 });
