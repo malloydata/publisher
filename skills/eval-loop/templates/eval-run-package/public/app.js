@@ -334,8 +334,15 @@ function renderArms(summary, effort, retrieval) {
         ${e.contaminated_count ? `<span class="chip fail">${e.contaminated_count} contaminated</span>` : ''}
         ${e.execute_errors ? `<span class="chip">${e.execute_errors} query errors</span>` : ''}
       </div>
-      <div class="effort mono">${num(e.avg_turns, 1)} turns · ${num(e.avg_get_context_per_attempt, 1)} get_context · ${
-        num(e.avg_execute_per_attempt, 1)} execute_query · ${num(e.avg_wall_seconds)} s · $${num(e.avg_cost_usd, 2)} per question · $${num(e.total_cost_usd, 2)} total</div>
+      <!-- Every figure but the last is a MEAN PER QUESTION. The qualifier used
+           to sit after the fifth value, so the line read as five totals
+           followed by a per-question cost, and a card with no case selected
+           looked like it was describing one attempt. It leads now. -->
+      <div class="effort mono" title="Mean per question across this arm's attempts, except the final figure, which is the arm's total spend.">
+        <span class="qual">mean per question:</span> ${num(e.avg_turns, 1)} turns · ${
+        num(e.avg_get_context_per_attempt, 1)} get_context · ${
+        num(e.avg_execute_per_attempt, 1)} execute_query · ${num(e.avg_wall_seconds)} s · $${
+        num(e.avg_cost_usd, 2)} &nbsp;·&nbsp; $${num(e.total_cost_usd, 2)} total for the arm</div>
     </div>`;
   }).join('');
 }
