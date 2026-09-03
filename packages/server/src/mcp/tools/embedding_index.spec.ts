@@ -305,7 +305,7 @@ describe("trySemanticSearch", () => {
             entity("beta", "src"),
             entity("gamma", "src"),
          ],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
 
@@ -334,7 +334,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities,
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
 
@@ -360,7 +360,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
 
@@ -419,7 +419,7 @@ describe("trySemanticSearch", () => {
          pkg: {} as unknown as Package,
          environmentName: "env",
          packageName: "status",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
          entities,
       };
@@ -470,7 +470,7 @@ describe("trySemanticSearch", () => {
          pkg: {} as unknown as Package,
          environmentName: "env",
          packageName: "model-switch",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
          entities,
       });
@@ -518,7 +518,7 @@ describe("trySemanticSearch", () => {
          pkg: {} as unknown as Package,
          environmentName: "env",
          packageName: "swapped",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
          entities: before,
       });
@@ -568,7 +568,7 @@ describe("trySemanticSearch", () => {
          pkg: {} as unknown as Package,
          environmentName: "env",
          packageName: "cutoff",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
          entities: [
             entity("alpha", "src"),
@@ -595,7 +595,7 @@ describe("trySemanticSearch", () => {
          pkg: {} as unknown as Package,
          environmentName: "env",
          packageName: "true-negative",
-         query: "find something absent",
+         queries: [{ targetIndex: 0, text: "find something absent" }],
          limit: 10,
          entities: [entity("alpha", "src")],
       });
@@ -613,7 +613,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "scoped-cutoff",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
          entities: [
             entity("alpha", "a"),
@@ -669,7 +669,9 @@ describe("trySemanticSearch", () => {
          pkg: {} as unknown as Package,
          environmentName: "env",
          packageName: "symptom-b",
-         query: "which buildings does facilities hold",
+         queries: [
+            { targetIndex: 0, text: "which buildings does facilities hold" },
+         ],
          limit: 10,
          entities: [entity("fclt_building_hist", "src", doc)],
       });
@@ -694,7 +696,7 @@ describe("trySemanticSearch", () => {
          pkg: {} as unknown as Package,
          environmentName: "env",
          packageName: "dilution",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
          entities: [
             entity("alpha", "src", "a long aside about unrelated matters"),
@@ -717,7 +719,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "undoc",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       // A fresh Package per call: the sync memo is per instance, exactly as
@@ -747,7 +749,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src"), entity("beta", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       await searchReady({
@@ -788,7 +790,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       await searchReady({ ...base, provider: first.provider });
@@ -811,7 +813,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       await searchReady({
@@ -839,7 +841,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "orders"), entity("beta", "customers")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
          sourceName: "customers",
       };
@@ -854,7 +856,7 @@ describe("trySemanticSearch", () => {
          db,
          provider,
          environmentName: "env",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       await searchReady({
@@ -881,7 +883,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       await searchReady({
@@ -922,7 +924,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -978,7 +980,7 @@ describe("trySemanticSearch", () => {
          db,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       await searchReady({
@@ -1027,7 +1029,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -1070,7 +1072,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -1128,7 +1130,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -1226,7 +1228,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -1268,7 +1270,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       // Sync 1 (holds the mutex at its embed once it starts).
@@ -1315,7 +1317,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -1417,7 +1419,12 @@ describe("trySemanticSearch", () => {
 
    it("deletion helpers drop a package's and an environment's rows", async () => {
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
-      const base = { db, provider, query: "find alpha", limit: 10 };
+      const base = {
+         db,
+         provider,
+         queries: [{ targetIndex: 0, text: "find alpha" }],
+         limit: 10,
+      };
       await searchReady({
          ...base,
          environmentName: "env",
@@ -1459,7 +1466,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       await searchReady({
@@ -1523,7 +1530,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       // Sync at 3 dims, then flip to 4: one purge + resync leaves 4-dim rows.
@@ -1590,7 +1597,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
@@ -1644,7 +1651,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg-a",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
       let a = await trySemanticSearch(argsA);
@@ -1666,7 +1673,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg-b",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       });
       expect("hits" in b).toBe(true);
@@ -1685,7 +1692,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       };
 
@@ -1719,7 +1726,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "huge",
          entities,
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha" }],
          limit: 10,
       });
       expect(result).toEqual({ unavailable: "too-many-entities" });

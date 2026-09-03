@@ -81,7 +81,14 @@ export interface SemanticHit {
    kind: string;
    name: string;
    source: string | undefined;
+   /** Best score across every target, which is what the hit is ranked on. */
    score: number;
+   /**
+    * Score per caller target index. One scan scores every target, so this
+    * costs nothing to carry and is what fills the response's matched_targets:
+    * without it a caller cannot tell WHICH of its targets found the entity.
+    */
+   targetScores: Map<number, number>;
 }
 
 export type SemanticUnavailableReason =
@@ -806,7 +813,12 @@ export async function trySemanticSearch(args: {
    environmentName: string;
    packageName: string;
    entities: EmbeddableEntity[];
-   query: string;
+   /**
+    * One entry per search target that carries text, in the caller's order.
+    * All of them are embedded in ONE provider request and scored in ONE pass
+    * over the vector cache; see the scan below.
+    */
+   queries: Array<{ targetIndex: number; text: string }>;
    limit: number;
    sourceName?: string;
 }): Promise<SemanticSearchResult> {
@@ -817,7 +829,7 @@ export async function trySemanticSearch(args: {
       environmentName,
       packageName,
       entities,
-      query,
+      queries,
       limit,
       sourceName,
    } = args;
@@ -904,10 +916,13 @@ export async function trySemanticSearch(args: {
       return { unavailable: "indexing" };
    }
 
-   let queryVector: number[];
+   let queryVectors: number[][];
    try {
-      [queryVector] = await provider.embedBatch(
-         [query],
+      // ONE request for every target. embedBatch already batches to 512, so N
+      // targets cost one round trip rather than N -- and the round trip is
+      // what sits on the latency path of every semantic call.
+      queryVectors = await provider.embedBatch(
+         queries.map((q) => q.text),
          EMBEDDING_QUERY_TIMEOUT_MS,
       );
    } catch (error) {
@@ -941,45 +956,88 @@ export async function trySemanticSearch(args: {
       // row above the floor, one row still comes back carrying the counts and
       // null hit columns, where an inner join would have dropped exactly the
       // true negative these counts exist to explain.
+      // One statement, one pass over the vectors, however many targets the
+      // caller sent. The hits and the two cutoff counts all derive from the
+      // same scored set, so they cannot disagree, and the cosine work is done
+      // once rather than once per target: at the cap that is 5,000 entities
+      // and up to nine facets each, per target.
+      //
+      // An entity scores as its BEST-matching facet, not as an average over
+      // them. A weighted name/doc blend would need a doc vector for every
+      // entity, and roughly half of a real model's entities have no doc at
+      // all, so any blend either penalises them or invents a neutral fill;
+      // MAX is also the only composition that stays well-defined as a doc
+      // splits into a variable number of chunks. The floor applies to that
+      // max, so it keeps meaning "nothing here is even weakly related", and
+      // can only ever be cleared by more facets, never blocked by them.
+      //
+      // Across TARGETS the composition is MAX as well, and that is sound for
+      // the same reason it is not sound on the lexical path: cosine is an
+      // absolute scale, so 0.7 from one target means what 0.7 from another
+      // does. An entity clears the floor if ANY target clears it.
+      //
+      // MATERIALIZED pins the single evaluation rather than leaving it to the
+      // optimiser to inline `scored` into three branches. The LEFT JOIN ON
+      // TRUE is what keeps the counts in the case that matters most: with no
+      // row above the floor, one row still comes back carrying the counts and
+      // null hit columns, where an inner join would have dropped exactly the
+      // true negative these counts exist to explain.
+      const vectorValues = queryVectors
+         .map((_, k) => `(${k}, CAST(? AS FLOAT[]))`)
+         .join(", ");
       const scan = await db.all<{
          total: number;
          below: number;
          entity_kind: string | null;
          entity_source: string | null;
          entity_name: string | null;
+         best: number | null;
+         target_idx: number | null;
          score: number | null;
       }>(
-         `WITH scored AS MATERIALIZED (
-            SELECT entity_kind, entity_source, entity_name,
-                   MAX(list_cosine_similarity(embedding, CAST(? AS FLOAT[]))) AS score
-            FROM entity_embeddings
+         `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
+         scored AS MATERIALIZED (
+            SELECT entity_kind, entity_source, entity_name, q.target_idx,
+                   MAX(list_cosine_similarity(embedding, q.vec)) AS score
+            FROM entity_embeddings, q
             WHERE environment_name = ? AND package_name = ?
               AND embedding_model = ? AND dims = ?
               ${sourceName !== undefined ? "AND entity_source = ?" : ""}
+            GROUP BY entity_kind, entity_source, entity_name, q.target_idx
+         ),
+         per_entity AS (
+            SELECT entity_kind, entity_source, entity_name, MAX(score) AS best
+            FROM scored
             GROUP BY entity_kind, entity_source, entity_name
          ),
          agg AS (
             SELECT CAST(COUNT(*) AS INTEGER) AS total,
-                   CAST(COUNT(*) FILTER (WHERE score < ?) AS INTEGER) AS below
-            FROM scored
+                   CAST(COUNT(*) FILTER (WHERE best < ?) AS INTEGER) AS below
+            FROM per_entity
          ),
          hits AS (
-            SELECT entity_kind, entity_source, entity_name, score
-            FROM scored
-            WHERE score >= ?
-            ORDER BY score DESC, entity_name
+            SELECT entity_kind, entity_source, entity_name, best
+            FROM per_entity
+            WHERE best >= ?
+            ORDER BY best DESC, entity_name
             LIMIT ?
          )
          SELECT agg.total, agg.below,
-                hits.entity_kind, hits.entity_source, hits.entity_name, hits.score
-         FROM agg LEFT JOIN hits ON TRUE
-         ORDER BY hits.score DESC, hits.entity_name`,
+                h.entity_kind, h.entity_source, h.entity_name, h.best,
+                s.target_idx, s.score
+         FROM agg
+         LEFT JOIN hits h ON TRUE
+         LEFT JOIN scored s
+           ON s.entity_kind = h.entity_kind
+          AND s.entity_source = h.entity_source
+          AND s.entity_name = h.entity_name
+         ORDER BY h.best DESC, h.entity_name, s.target_idx`,
          [
-            JSON.stringify(queryVector),
+            ...queryVectors.map((v) => JSON.stringify(v)),
             environmentName,
             packageName,
             provider.model,
-            queryVector.length,
+            queryVectors[0].length,
             ...(sourceName !== undefined ? [sourceName] : []),
             provider.minSimilarity,
             provider.minSimilarity,
@@ -987,14 +1045,46 @@ export async function trySemanticSearch(args: {
          ],
       );
 
-      const rows = scan
-         .filter((r) => r.entity_name !== null)
-         .map((r) => ({
-            entity_kind: r.entity_kind as string,
-            entity_source: r.entity_source as string,
-            entity_name: r.entity_name as string,
-            score: r.score as number,
-         }));
+      // The scan returns one row per (hit entity, target), so fold them back
+      // into one hit carrying its per-target scores. Order is preserved from
+      // the SQL, which already sorted by best score then name.
+      const byEntity = new Map<
+         string,
+         {
+            entity_kind: string;
+            entity_source: string;
+            entity_name: string;
+            score: number;
+            targetScores: Map<number, number>;
+         }
+      >();
+      for (const r of scan) {
+         if (r.entity_name === null) continue;
+         const key = `${r.entity_kind}\x00${r.entity_source}\x00${r.entity_name}`;
+         let hit = byEntity.get(key);
+         if (!hit) {
+            hit = {
+               entity_kind: r.entity_kind as string,
+               entity_source: r.entity_source as string,
+               entity_name: r.entity_name as string,
+               score: r.best as number,
+               targetScores: new Map<number, number>(),
+            };
+            byEntity.set(key, hit);
+         }
+         if (r.target_idx !== null && r.score !== null) {
+            // Back to the caller's own target index: the SQL numbered them by
+            // position in `queries`, which is not the caller's numbering.
+            const targetIndex = queries[r.target_idx]?.targetIndex;
+            if (targetIndex !== undefined) {
+               hit.targetScores.set(
+                  targetIndex,
+                  Math.max(hit.targetScores.get(targetIndex) ?? 0, r.score),
+               );
+            }
+         }
+      }
+      const rows = [...byEntity.values()];
       // How many entities were weighed, and how many fell below the floor.
       // Without them an empty result is indistinguishable from "this package
       // models nothing like that", and we watched analysts conclude the
@@ -1033,7 +1123,7 @@ export async function trySemanticSearch(args: {
          `SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings
           WHERE environment_name = ? AND package_name = ?
             AND NOT (embedding_model = ? AND dims = ?)`,
-         [environmentName, packageName, provider.model, queryVector.length],
+         [environmentName, packageName, provider.model, queryVectors[0].length],
       );
       if ((staleRows?.n ?? 0) > 0) {
          // The check-and-purge runs under the package-name mutex so it
@@ -1061,7 +1151,7 @@ export async function trySemanticSearch(args: {
                      environmentName,
                      packageName,
                      provider.model,
-                     queryVector.length,
+                     queryVectors[0].length,
                   ],
                );
                if ((again?.n ?? 0) === 0) return "none";
@@ -1085,7 +1175,7 @@ export async function trySemanticSearch(args: {
                         environmentName,
                         packageName,
                         model: provider.model,
-                        queryDims: queryVector.length,
+                        queryDims: queryVectors[0].length,
                      },
                   );
                   return "backoff";
@@ -1096,7 +1186,7 @@ export async function trySemanticSearch(args: {
                      environmentName,
                      packageName,
                      model: provider.model,
-                     queryDims: queryVector.length,
+                     queryDims: queryVectors[0].length,
                      staleRows: again?.n,
                   },
                );
@@ -1110,7 +1200,7 @@ export async function trySemanticSearch(args: {
                      environmentName,
                      packageName,
                      provider.model,
-                     queryVector.length,
+                     queryVectors[0].length,
                   ],
                );
                meta.lastPurgeAtMs = now;
@@ -1147,6 +1237,7 @@ export async function trySemanticSearch(args: {
             source: row.entity_source === "" ? undefined : row.entity_source,
             name: row.entity_name,
             score: row.score,
+            targetScores: row.targetScores,
          })),
          belowCutoffCount: cutoffCounts?.below ?? 0,
          totalEntities: cutoffCounts?.total ?? 0,

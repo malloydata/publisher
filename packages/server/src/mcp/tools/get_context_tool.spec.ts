@@ -1484,7 +1484,7 @@ describe("get_context semantic retrieval", () => {
    /** so the map pins exactly which facets get embedded. */
    function stubProviderFor(
       vectors: Record<string, number[]>,
-      options: { fail?: boolean } = {},
+      options: { fail?: boolean; onRequest?: (inputs: string[]) => void } = {},
    ): EmbeddingProvider {
       const fetchStub = (async (
          _url: RequestInfo | URL,
@@ -1492,6 +1492,7 @@ describe("get_context semantic retrieval", () => {
       ) => {
          if (options.fail) return new Response("down", { status: 500 });
          const body = JSON.parse(String(init?.body)) as { input: string[] };
+         options.onRequest?.(body.input);
          const data = body.input.map((text, index) => {
             const embedding = vectors[text];
             if (!embedding) throw new Error(`no stub vector for "${text}"`);
@@ -1588,6 +1589,55 @@ describe("get_context semantic retrieval", () => {
             getModel: () => siblingSourcesModel(securedMeasureDoc),
          }),
       );
+
+   it("embeds every target in ONE provider request and scans once", async () => {
+      // The claim the multi-target design rests on: N targets cost one round
+      // trip, not N. embedBatch already batches and the scan cross-joins the
+      // vectors, so this is observable as the number of requests a WARM index
+      // makes for a three-target question.
+      const requests: string[][] = [];
+      const provider = stubProviderFor(
+         {
+            ...SIBLING_VECTORS,
+            "orders this caller may see": [0, 1],
+            "amount of the order": [1, 0],
+         },
+         { onRequest: (inputs) => requests.push(inputs) },
+      );
+      _setEmbeddingProviderForTests(provider);
+
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => siblingSourcesModel(GATED_DOC),
+         }),
+      );
+      const params = {
+         search_targets: [
+            { target_type: "measure", search_text: "total order amount" },
+            {
+               target_type: "dimension",
+               search_text: "orders this caller may see",
+            },
+            { target_type: "view", search_text: "amount of the order" },
+         ],
+         scopes: [{ environment: "specs", package: "sib-batch" }],
+      };
+      // Warm the index first: the cold call triggers the bulk sync, and that
+      // sync's own requests are not what this measures.
+      await callUntilSemantic(handler, params);
+
+      requests.length = 0;
+      const payload = parse(await handler(params));
+      expect(payload.retrieval).toBe("semantic");
+      expect(requests).toHaveLength(1);
+      // And that one request carried all three texts, in the caller's order.
+      expect(requests[0]).toEqual([
+         "total order amount",
+         "orders this caller may see",
+         "amount of the order",
+      ]);
+   });
 
    it("keeps siblings apart on differing docs even at IDENTICAL scores", async () => {
       // The epsilon gate cannot catch this and never could. Both rows score

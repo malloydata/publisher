@@ -1492,6 +1492,9 @@ async function runContextQuery(
    const searchTextsByIndex = new Map(
       request.searches.map((search) => [search.targetIndex, search.text]),
    );
+   const byTargetIndex = new Map(
+      request.searches.map((search) => [search.targetIndex, search]),
+   );
    logger.info("[MCP Tool getContext] Retrieving context", {
       environmentName,
       packageName,
@@ -1752,9 +1755,12 @@ async function runContextQuery(
             const matchedTargets = new Map<string, Map<number, number>>();
             let searchFailure: RetrievalReason | undefined;
             let unionTotalEntities: number | undefined;
-            for (const search of request.searches) {
-               // The raw query embeds better than the lunr-sanitized
-               // one; sanitize() only exists to strip lunr operators.
+            {
+               // ONE call for every target: it batches the embeddings into a
+               // single provider request and scores them in a single pass
+               // over the vector cache, returning each hit's per-target
+               // scores. The raw text embeds better than the lunr-sanitized
+               // form; sanitize() only exists to strip lunr operators.
                const semantic = await trySemanticSearch({
                   db: environmentStore.storageManager.getDuckDbConnection(),
                   provider,
@@ -1762,7 +1768,10 @@ async function runContextQuery(
                   environmentName,
                   packageName,
                   entities: Array.from(byId.values()),
-                  query: search.text,
+                  queries: request.searches.map((search) => ({
+                     targetIndex: search.targetIndex,
+                     text: search.text,
+                  })),
                   // Over-fetch so sibling collapsing can refill the
                   // window with genuinely different concepts instead of
                   // returning fewer results than asked for. A drill-down
@@ -1804,37 +1813,40 @@ async function runContextQuery(
                            ...(e.joinPath ? { joinPath: e.joinPath } : {}),
                            ...(e.dataType ? { dataType: e.dataType } : {}),
                            score: Math.round(hit.score * 10_000) / 10_000,
+                           targetScores: hit.targetScores,
                         },
                      ];
                   });
                   for (const row of ranked) {
-                     // A target only claims the kinds it selects.
-                     if (!search.kinds.includes(row.kind)) continue;
+                     // A target only claims the kinds it selects, so drop the
+                     // targets that cannot own this row and, with them, any
+                     // row no surviving target claims. That is what stops a
+                     // `measure` target surfacing a dimension which happened
+                     // to embed near its text.
+                     const claimed = new Map<number, number>();
+                     for (const [targetIndex, score] of row.targetScores ??
+                        []) {
+                        const search = byTargetIndex.get(targetIndex);
+                        if (search && search.kinds.includes(row.kind)) {
+                           claimed.set(targetIndex, score);
+                        }
+                     }
+                     if (claimed.size === 0) continue;
                      const key = entityRowKey(
                         row.kind,
                         row.source ?? "",
                         row.name,
                      );
-                     const previous = merged.get(key);
-                     if (
-                        !previous ||
-                        (row.score ?? 0) > (previous.score ?? 0)
-                     ) {
-                        merged.set(key, row);
-                     }
-                     const scores =
-                        matchedTargets.get(key) ?? new Map<number, number>();
-                     scores.set(
-                        search.targetIndex,
-                        Math.max(
-                           scores.get(search.targetIndex) ?? 0,
-                           row.score ?? 0,
-                        ),
-                     );
-                     matchedTargets.set(key, scores);
+                     // Rank on the best target that may actually claim it,
+                     // not on the scan's max across every target.
+                     merged.set(key, {
+                        ...row,
+                        score: Math.max(...claimed.values()),
+                     });
+                     matchedTargets.set(key, claimed);
                   }
-                  // Same denominator whichever target asked: it counts the
-                  // package's entities, not the query's hits.
+                  // The denominator counts the package's entities, not the
+                  // query's hits, so it is the same whichever target asked.
                   unionTotalEntities = semantic.totalEntities;
                } else {
                   searchFailure = REASON_BY_UNAVAILABLE[semantic.unavailable];
