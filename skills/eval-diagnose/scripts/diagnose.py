@@ -168,23 +168,10 @@ EVIDENCE FROM THE RUN
 In `getContextCalls`, `targets` is what the agent searched for and
 `returnedInRankOrder` is what came back, in rank order.
 
-Output ONLY a JSON object as the last thing in your reply:
-
-{{"probes": [{{"why": "the claim this checks", "query": "query or search text",
-             "result": "what came back, briefly"}}],
-  "reasoning": "how the ladder resolved: what you ruled out, and why",
-  "component": "one of the six",
-  "primary_code": "one code, verbatim from the skill",
-  "contributing_codes": ["zero or more, verbatim"],
-  "owner": "model | retrieval | agent-skill | dataset",
-  "sufficiency": "sufficient | insufficient | unknown",
-  "severity": "high | medium | low",
-  "confidence": "high | medium | low",
-  "diagnosis": "the suspected entity, file, or root cause, in one or two sentences",
-  "sharedWith": "a short phrase naming what other cases would share this cause"}}
-
-`probes` must be non-empty: it is the record that you checked rather than
-assumed. `reasoning` precedes the codes because the codes must follow from it."""
+Emit the object defined in `references/output-contract.md` of the
+eval-diagnose skill as the LAST thing in your reply. Read that file; it
+is the contract a script parses, and a shape invented here is dropped.
+"""
 
 
 def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
@@ -254,23 +241,10 @@ These are the per-case diagnoses from one run. Cluster them.
 DIAGNOSED ISSUES
 {issues}
 
-Output ONLY a JSON object as the last thing in your reply:
-
-{{"clusters": [
-  {{"cluster_id": "short-kebab-slug",
-    "qids": ["every case in this cluster"],
-    "owner": "model | retrieval | agent-skill | dataset",
-    "component": "the shared component",
-    "codes": ["the primary codes present"],
-    "rootCause": "one or two sentences: the ONE thing explaining all of them",
-    "evidence": "why these belong together, and what would prove it wrong",
-    "confidence": "high | medium | low"}}
- ],
- "reasoning": "what you considered merging and chose not to, and why"}}
-
-Order clusters by the number of qids, descending. Every diagnosed case must
-appear in exactly one cluster; a case that shares a cause with nothing else is
-a cluster of one."""
+Emit the object defined in `references/output-contract.md` of the
+eval-diagnose skill as the LAST thing in your reply. Read that file; it
+is the contract a script parses, and a shape invented here is dropped.
+"""
 
 
 def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,

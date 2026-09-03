@@ -31,6 +31,25 @@ The judge is not blind. It sees the golden. It must never be the same
 subagent that answered, and it never edits anything: it returns a verdict
 object and stops.
 
+## Read one of these before you decide
+
+This file is the decision procedure. Four situations have their own rules, and
+each is a file beside this one. Read the file BEFORE emitting a verdict, not
+after -- these are the cases where judging from the general rubric alone gets it
+wrong, which is why they are called out rather than summarised.
+
+| If | Read |
+|---|---|
+| the answer declines, or gives no value at all | `references/refusal.md` |
+| the golden itself looks wrong to you | `references/suspect-goldens.md` |
+| you are judging retrieval, not an answer | `references/retrieval-judge.md` |
+| you are AUTHORING a case rather than judging one | `references/writing-rubrics.md` |
+
+The first row is the one that catches people. A refusal is only exempt from
+containment when `golden.kind` is `unanswerable`; against a golden that holds a
+value, an answer containing none of it is `no_match` however well it reasons.
+`references/refusal.md` is the whole rule.
+
 ## Answer judge
 
 Input, all of it (a judge with only two row sets grades formatting, not
@@ -123,98 +142,6 @@ Output, exactly this shape:
    total; the question had never asked for one. A rubric that means "campaign
    total only" must say so as `REQUIRED`, and the question should say so too.
 
-### When the answer key looks wrong
-
-Score against the golden as written. Then say, separately, whether you believe
-it. Those are two different jobs and `gold_status` is the second one.
-
-**The verdict never bends.** If the prediction does not contain the golden, that
-is `no_match`, whatever you think of the golden. An answer does not pass because
-you suspect the key. Doubt goes in `gold_status`, and something downstream
-adjudicates it; a judge that quietly graded against its own better answer would
-be the only record of having done so.
-
-| Value | Meaning |
-|---|---|
-| `verified` | No reason to doubt it. The default, and the honest answer nearly always. |
-| `verified_benign` | Reachable defect that cannot change this verdict -- e.g. join fanout under an `AVG`, `MIN`, `MAX` or `STDDEV`, which uniform duplication does not move. |
-| `suspect` | Something does not add up and you cannot settle it from what you were given. |
-| `verified_wrong` | You can demonstrate the key is wrong, and say how. Excludes the case from run aggregates, so the bar is demonstration, not suspicion. |
-
-What earns more than `verified`:
-
-- **The rubric contradicts the model.** You have the model source. A rubric
-  saying "`lifetime_orders` counts line items despite its name" against a model
-  reading `lifetime_orders is count(order_id)` is a rubric written before a fix
-  and never revisited. That is `suspect` at least, and the judge is the only
-  station positioned to notice -- this exact case failed two correct answers for
-  a full run.
-- **The golden and its own `canonicalQuery` disagree**, where you can see both.
-- **The golden is impossible against the re-executed rows** -- a total below one
-  of its own parts, a rate outside 0 to 1, a count above the population.
-- **Fanout you can identify**, benign or otherwise, per the classification above.
-
-What does not: the answer being more useful, better presented, or more recent
-than the key. Disagreeing with the question's premise is not a defect in the
-answer to it.
-
-`gold_note` says what you saw, concretely enough to check -- the two values, or
-the model line against the rubric sentence. "Golden looks off" routes nothing.
-
-### Writing a rubric the judge can execute
-
-A case rubric is not prose for a human to weigh. It is the part of the judge's
-instructions that changes per case, so every clause in it must resolve to a
-verdict. Where one does not, the judge supplies the missing rule itself, and
-supplies a different one next time -- which reads as model noise and is not.
-
-Two clause types cause almost all of it. Both must carry their consequence.
-
-**An alternate reading** -- a second defensible answer to the same question.
-Mark each one, and never leave the set open:
-
-| Marker | Verdict | Use when |
-|---|---|---|
-| `PREFERRED` | `match` | The reading the golden encodes. Exactly one. |
-| `ACCEPT` | `match` | Equally right. A different but faithful route to the same claim. |
-| `DIVERGENT` | `near_match` | Defensible, and not what was asked for. Usually a population or grain the model does not distinguish. |
-| `WRONG` | `no_match` | Plausible and incorrect. Name the trap value so the judge can recognise it. |
-
-**A disclosure** -- something the answer must SAY, beyond the number. Say what
-silence costs:
-
-| Marker | Verdict when omitted | Use when |
-|---|---|---|
-| `REQUIRED` | `no_match` | Without it the answer misleads. A year-over-year figure over a truncated year is the case: the number is right and the reader draws a false conclusion from it. |
-| `CREDITED` | `match`, no deduction | It adds context a good analyst would give. Its absence leaves the reader correct but less informed. |
-
-Rules that follow from this:
-
-- **Write the question so its answer is data.** A question is a request for a
-  figure, a series, or a set of rows -- things a truth query can produce and a
-  judge can compare. "How did reach build week by week" is a question; "and
-  when did it flatten out" is a request for an opinion about the answer, and
-  no golden can hold one. Put interpretation in a `CREDITED` clause if it is
-  worth noting, never in the question and never as a scored window.
-- **Fix the grain in the question, or accept every grain in the rubric.** If the
-  golden is a campaign total and a by-medium answer would be wrong, the question
-  must say "for the campaign as a whole". If it does not, the rubric must accept
-  a correct figure at any stated grain (judge rule 10). A rubric that quietly
-  assumes the golden's grain fails correct answers.
-- **A right value plus a missing `CREDITED` disclosure is a `match`.** Not a
-  near match. Do not deduct for it.
-- **`DIVERGENT` is about definitions, not arithmetic.** A clause permitting a
-  different population, grain or convention never excuses a computational
-  error. If a rubric tolerates a shift in the third decimal and the answer is
-  out by a whole unit, that is `no_match` however well the narrative reads.
-- **An unmarked clause is `CREDITED`.** The judge must not invent a
-  requirement. A rubric that meant to require something and did not say so is
-  the rubric's bug, and the fix belongs in the case.
-- **Stable `near_match` is a finding, not an outcome.** A case that lands there
-  in run after run is telling you the model cannot distinguish two readings that
-  the question does. That is a coverage gap for `eval-diagnose`, and repairing
-  the rubric will not close it.
-
 ### Anchors
 
 - **match**: question "total sales by category"; golden 8 rows
@@ -234,106 +161,6 @@ Rules that follow from this:
 Keep the anchor set balanced. A judge shown only matches learns a base rate,
 not a rubric.
 
-### Refusal
-
-**STOP. Check `golden.kind` before reading further.** This section applies ONLY
-when it is `unanswerable`. If the golden carries a value or rows, close this
-section and score by containment like any other answer: an answer that declines,
-however well it reasons, contains none of the golden's numbers and is
-`no_match`.
-
-That the model genuinely lacks the field is NOT a reason to pass a refusal.
-Whether the model should be able to answer is what `coverage` records and what
-`eval-diagnose` decides. Settling it here converts a model gap into a passing
-case, and the gap then never reaches the backlog.
-
-This rule is here because refusals against a valued golden are where the judge
-is least stable, and the instability has been localised rather than guessed at.
-Holding the answer, the rubric and the golden fixed and varying ONLY the model
-source shown to the judge, over samples of three to four:
-
-| model source shown | verdicts |
-|---|---|
-| lacks the concept entirely | `match` / `no_match` / `match` / `match` -- unstable |
-| defines something adjacent | `no_match` x3 -- stable |
-| withheld | `no_match` x3 -- stable |
-
-So a model with no trace of the concept is what destabilises the verdict: the
-judge starts weighing whether the answerer *could* have complied instead of
-whether it did. Four prompt edits were tried against it -- this rule, deleting
-the Refusal section, deleting the model-beats-rubric bullet, and splitting that
-bullet into "the model CONTRADICTS the rubric" versus "the model LACKS what the
-rubric names" -- and none of them stabilised it.
-
-Treat a refusal on a coverage case as unstable until that changes: score it with
-`check_judge.py --repeat`, not from one verdict. The rule below is still the
-rule; it is just not yet enforceable by prompt alone.
-
-Applies when the case's `golden.kind` is `unanswerable`. Every rule above assumes
-a gold result to contain and columns to pair, and here there is neither: no
-value, no canonical query, no rows. Do not attempt containment. Your input is the
-question, the case rubric -- which names the missing data and the proxy an agent
-is expected to reach for -- and the answer text.
-
-A refusal is not scored on tone or on hedging. It is scored on whether the reader
-is left correctly informed that the metric is unavailable, and why.
-
-Rule 7 applies here too: the `near_match` below is not a pass. A refusal that is
-right but useless does not count towards the pass rate, and it does not count
-against it either.
-
-- **match** -- declines, and names the specific missing data rather than declining
-  generically. Offering the proxy *with an unmissable label* is also a match:
-  reporting revenue by channel while stating plainly that it is not ROAS because
-  no cost exists is the most useful possible answer and must not be penalised.
-- **near_match** -- declines correctly but generically. "I don't have enough
-  information" is the right call delivered uselessly; the reader cannot tell
-  whether the data is missing, the question is ambiguous, or the agent gave up.
-  Also `near_match` when a proxy is offered but its caveat is buried or hedged.
-- **no_match** -- produces a number for the metric as asked, whether invented or
-  computed from a proxy presented as the answer. Severity does not fall as the
-  proxy gets closer: a confident 3.51% cart-abandonment rate derived from
-  cancellations is a wrong answer to a question the data cannot answer, and being
-  plausible makes it worse rather than better.
-
-Two rules override the generosity built into the main rubric.
-
-9. **Absence of a number is not evidence of a refusal.** An answer that fails,
-   errors, or wanders off without addressing availability is not a pass. The
-   refusal has to be a stated conclusion. This is distinct from `submitted:
-   false`, which the conductor already records as not scorable.
-10. **When the case is tagged `answerable-sounds-unanswerable`, a refusal is
-   `no_match`.** Score it against the golden normally. Rule 2's "benign extra
-   context never makes a containing answer `no_match`" does not apply to an
-   answer that contains nothing. A caveat attached to a *correct* answer is
-   welcome and does not reduce the verdict.
-
-Both directions are scored on purpose. Measuring only whether an agent declines
-when data is absent rewards one that declines everything, and such an agent is
-worthless. A set carrying this section should pair the two: in the ecommerce set
-`ecom_stockout_revenue_loss` (refuse) and `ecom_unsold_stock_value` (answer)
-resolve to the same figure, one as an inadmissible proxy for revenue lost to
-demand that never existed and the other as the honest cost of stock on hand. Only
-the question distinguishes them, so no policy passes both -- the agent has to read
-the question.
-
-#### Anchors
-
-- **match**: "What is our ROAS?" -- the answer says there is no ad-spend data
-  anywhere in the model, notes that `traffic_source` is the account's acquisition
-  channel rather than a cost, and offers revenue by channel explicitly labelled as
-  not being ROAS. Confidence 9.
-- **near_match**: same question; the answer says "I can't calculate that with the
-  available data" and stops. Correct, and the reader learns nothing about what is
-  missing or whether another source would fix it. Confidence 7.
-- **no_match**: same question; the answer divides revenue by traffic source and
-  reports a ROAS per channel. Every figure is arithmetically right and the label
-  is false. Confidence 9.
-- **no_match**: "How much are we sitting on in unsold inventory?", tagged
-  `answerable-sounds-unanswerable`; the answer declines for want of an inventory
-  snapshot. The data answers it, and "ever unsold" needs no snapshot -- only
-  "unsold as of a date" would. Confidence 9.
-
 ### Coverage
 
 A case may be labelled `coverage: derivable`: the model has no entity for the
@@ -343,46 +170,6 @@ result exactly as the rubric says -- a derived answer that matches the golden is
 answer states what it built, say so in the why. That sentence is what tells
 diagnosis the gap is real and lets `coverage_note` become a model edit rather
 than a guess.
-
-## Retrieval judge
-
-Input:
-
-- the intent row: `term`, `entityType`, `description` (the rich intent, the
-  thing you actually judge against)
-- the ranked entities a `get_context` call returned for that term, each with
-  its within-target rank and doc
-
-Two judgments:
-
-1. **In scope?** Does THIS model version contain an entity representing the
-   described concept at all, anywhere, regardless of whether it was returned?
-   `in_scope: false` is a coverage gap, charged to the model's coverage, not
-   to retrieval.
-2. **Per returned entity**: `match` (represents the described intent),
-   `near_match` (the concept overlaps but the intent might want something
-   broader or narrower; retrieving `net_revenue` for the term "revenue" is a
-   near match), or `no_match`. Confidence 1 to 10 and a one-line why, each.
-
-Rule 7 does **not** apply to retrieval. Here `near_match` counts towards recall
-and precision, and should: handing back an overlapping entity is a real
-retrieval success, since the agent can read the doc and decide. The answer judge
-excludes it because there the same word means "the answer might be wrong".
-
-Output:
-
-```json
-{
-  "in_scope": true,
-  "judgments": [
-    { "entityId": "measure:orders:total_sales", "rank": 1,
-      "level": "match", "confidence": 9, "why": "..." }
-  ]
-}
-```
-
-The conductor computes coverage, recall, and precision by counting these
-(`reference/ledger-schema.md`). The judge only judges.
 
 ## Versioning and regressions
 
