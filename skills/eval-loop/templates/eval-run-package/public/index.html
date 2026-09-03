@@ -76,11 +76,19 @@
   .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12.5px; color:var(--mute);
             margin:0 0 8px; align-items:center; }
   .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .cap { color:var(--mute); font-size:12px; margin:2px 0 8px; max-width:70ch; }
   .cases { border-top:1px solid var(--rule); }
   details.case { border-bottom:1px solid var(--rule); }
+  /* The native marker is replaced, not removed: without a caret there was no
+     sign a row could be closed again, and reviewers opened one and looked for
+     a close button that did not exist. */
   details.case summary { list-style:none; cursor:pointer; display:grid;
-    grid-template-columns:1fr 70px var(--armcols); gap:14px; align-items:center; padding:12px 6px; }
+    grid-template-columns:14px 1fr 70px var(--armcols); gap:14px; align-items:center; padding:12px 6px; }
   details.case summary::-webkit-details-marker { display:none; }
+  .caret { color:var(--mute); font-size:11px; line-height:1; transition:transform .15s ease;
+    justify-self:center; }
+  details.case[open] .caret { transform:rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .caret { transition:none; } }
   details.case summary:hover { background:var(--surface); }
   .q { font-size:14.5px; line-height:1.4; }
   .qid { color:var(--mute); font-size:11.5px; margin-top:2px; font-family:"IBM Plex Mono",monospace; }
@@ -177,7 +185,7 @@
   <div class="controls">
     <div class="modes" id="modes"></div>
     <input type="search" id="q" placeholder="Search question, qid or tag…">
-    <select id="wtf"><option value="">Any where-to-fix</option></select>
+    <select id="wtf"><option value="">Where to fix: any</option></select>
     <span class="count" id="count"></span>
   </div>
   <div class="legend">
@@ -186,6 +194,16 @@
     <span><i class="dot alias"></i> returned under a sibling source</span>
     <span><i class="dot in_docs"></i> in a returned source's docs</span>
     <span><i class="dot missing"></i> not returned</span>
+  </div>
+  <!-- Every case row carries two words from the SET, describing the question
+       rather than how it went. Both were read as verdicts until they were
+       spelled out here: a hover tooltip is not an explanation anyone finds. -->
+  <div class="legend">
+    <span>Under each question &mdash;</span>
+    <span><b>covered</b> / <b>derivable</b> / <b>absent</b>: how far the model can
+      answer it (absent means declining IS the correct answer)</span>
+    <span><b>dev</b> / <b>holdout</b>: holdout is kept back from diagnose and
+      improve, so a gain there is evidence rather than memorisation</span>
   </div>
   <div id="cases" class="cases"></div>
 </div>

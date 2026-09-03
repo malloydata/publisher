@@ -24,7 +24,10 @@ const MODEL = 'eval_run.malloy';
 const MODES = [
   ['all',       'All',           () => true],
   ['failures',  'Failures',      r => r.arms.some(a => a.outcome === 'fail')],
-  ['undecided', 'Partly / human',r => r.arms.some(a => a.outcome === 'neither')],
+  // "Undecided" is the honest name: near_match means the judge found the
+  // answer defensibly different, needs_human means it would not commit. Neither
+  // is a pass or a fail, and neither moves a gate.
+  ['undecided', 'Undecided',     r => r.arms.some(a => a.outcome === 'neither')],
   ['different', 'Disagreements', r => r.arms.length > 1 &&
       new Set(r.arms.filter(a => a.outcome !== 'neither')
                     .map(a => a.outcome === 'pass')).size > 1],
@@ -47,6 +50,17 @@ const num = (x, d = 0) => x == null ? '—' : Number(x).toLocaleString(undefined
   { maximumFractionDigits: d });
 const verdictLabel = { match: 'correct', near_match: 'partly', no_match: 'wrong',
                        needs_human: 'needs human' };
+/* Two per-case labels nothing on screen explained. Both come from the SET, not
+   from the run: they describe the question, not how it went. */
+const COVERAGE_HELP = {
+  covered: 'covered: the model can answer this directly.',
+  derivable: 'derivable: no single field answers it, but the model has the parts.',
+  absent: 'absent: the model cannot answer this. Declining IS the correct answer.',
+};
+const SPLIT_HELP = {
+  dev: 'dev: diagnose and improve may look at this case.',
+  holdout: 'holdout: kept back from diagnose and improve, so a gain measured here is evidence rather than memorisation.',
+};
 
 /* Publisher.query(modelPath, malloy) takes POSITIONAL arguments and returns
  * plain row objects, nesting included. */
@@ -216,9 +230,11 @@ function renderList() {
       return `<span class="armcell" title="${esc(arm)}">${dots(a.required)}${pill(a.verdict)}</span>`;
     }).join('');
     return `<details class="case" data-case="${esc(r.qid)}"${state.open === r.qid ? ' open' : ''}>
-      <summary>
+      <summary title="Click to open or close this case">
+        <span class="caret">&#9654;</span>
         <span><div class="q">${esc(r.question)}</div>
-          <div class="qid">${esc(r.qid)} · ${esc(r.coverage)}${r.split ? ' · ' + esc(r.split) : ''}${
+          <div class="qid">${esc(r.qid)} · <span title="${esc(COVERAGE_HELP[r.coverage] || 'How far the model can answer this question.')}">${esc(r.coverage)}</span>${
+            r.split ? ' · <span title="' + esc(SPLIT_HELP[r.split] || '') + '">' + esc(r.split) + '</span>' : ''}${
             r.tags ? ' · ' + esc(r.tags) : ''}</div></span>
         <span class="kind">${esc(r.golden_kind || '')}</span>
         ${cells}
@@ -269,7 +285,7 @@ async function loadCase(qid) {
         ${d.gold_status && d.gold_status !== 'verified' ? `<span class="chip warn">golden ${esc(d.gold_status)}</span>` : ''}
         ${d.contaminated === 'true' ? '<span class="chip fail">contaminated</span>' : ''}
         ${dots(req)}</div>
-      <div class="meta">
+      <div class="meta" title="Totals for this one attempt, not averages across the run. Per-arm averages are in the notebook's effort table.">
         <span><b>${num(d.num_turns)}</b> turns</span>
         <span><b>${num(d.n_get_context)}</b> get_context</span>
         <span><b>${num(d.n_execute)}</b> execute_query${d.n_execute_errors ? ` <span style="color:var(--fail)">(${d.n_execute_errors} errored)</span>` : ''}</span>
@@ -278,7 +294,12 @@ async function loadCase(qid) {
       </div>
       <div class="judge"><b>Judge.</b> ${esc(d.judge_reasoning)}${
         d.where_to_fix ? ` <span class="mute">· where to fix: ${esc(d.where_to_fix)}</span>` : ''}</div>
-      ${d.prediction ? `<h3>Re-executed rows</h3>${predictionBlock(d.prediction)}` : ''}
+      ${d.prediction ? `<h3>Re-executed rows</h3><p class="cap">The harness ran the
+        answerer's final query itself and showed the judge these rows beside the
+        reference answer, so a verdict rests on what the query returns rather
+        than on what the answer claims.</p>${predictionBlock(d.prediction)}`
+        : `<h3>Re-executed rows</h3><p class="cap">None. The judge scored this
+        attempt from its answer text and the reference answer alone.</p>`}
       <h3>The attempt, step by step</h3>
       <div class="timeline">${mine.length ? mine.map(stepHtml).join('')
         : `<div class="step text"><div class="prose">${md(d.answer)}</div></div>${
@@ -354,7 +375,12 @@ async function main() {
     '  ·  <a href="../eval_run.malloynb">analytical tables →</a>';
 
   const fixes = [...new Set(state.rows.flatMap(r => r.arms.map(a => a.where_to_fix).filter(Boolean)))].sort();
-  document.getElementById('wtf').innerHTML = '<option value="">Any where-to-fix</option>' +
+  document.getElementById('wtf').title =
+    'Where a failure would have to be fixed: query construction (the agent had '
+    + 'what it needed and built the query wrong), retrieval ranking (the entity '
+    + 'existed but was not returned), model coverage (nothing in the model '
+    + 'answers this), or refusal behaviour.';
+  document.getElementById('wtf').innerHTML = '<option value="">Where to fix: any</option>' +
     fixes.map(f => `<option${f === state.wtf ? ' selected' : ''}>${esc(f)}</option>`).join('');
 
   renderArms(summary, effort, retrieval);
