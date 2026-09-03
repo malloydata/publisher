@@ -1526,6 +1526,113 @@ describe("get_context semantic retrieval", () => {
       throw new Error("retrieval never became semantic");
    }
 
+   // Two sources declaring the same field name, which is the shape an
+   // `extend` sibling produces. humanizeName(name) carries no source, so both
+   // name facets embed from ONE map entry here -- reproducing the identical
+   // embedding rather than asserting it.
+   const siblingMeasure = (doc: string) => ({
+      kind: "measure",
+      name: "total_amount",
+      annotations: [`#(doc) ${doc}`],
+   });
+   const OPEN_DOC = "Total order amount.";
+   const GATED_DOC = "Total order amount, after the access gate.";
+   const siblingSourcesModel = (securedMeasureDoc: string) => ({
+      getSourceInfos: () => [
+         {
+            name: "sales",
+            annotations: ["#(doc) Every order."],
+            schema: { fields: [siblingMeasure(OPEN_DOC)] },
+         },
+         {
+            name: "sales_secured",
+            annotations: ["#(doc) Only orders this caller may see."],
+            schema: { fields: [siblingMeasure(securedMeasureDoc)] },
+         },
+      ],
+      getQueries: () => [],
+   });
+   const SIBLING_VECTORS: Record<string, number[]> = {
+      sales: [0, 1],
+      "sales: Every order.": [0, 1],
+      "sales secured": [0, 1],
+      "sales secured: Only orders this caller may see.": [0, 1],
+      // ONE entry, read by both sources' name facet.
+      "total amount": [1, 0],
+      [`total amount: ${OPEN_DOC}`]: [0, 1],
+      [`total amount: ${GATED_DOC}`]: [0, 1],
+      "total order amount": [1, 0],
+   };
+   const siblingHandler = (securedMeasureDoc: string) =>
+      captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => siblingSourcesModel(securedMeasureDoc),
+         }),
+      );
+
+   it("keeps siblings apart on differing docs even at IDENTICAL scores", async () => {
+      // The epsilon gate cannot catch this and never could. Both rows score
+      // 1.0 on a name facet embedded from the same text, so their difference
+      // is 0 -- inside any epsilon. Only the docs separate them, and one of
+      // them is the doc that says the numbers are gated.
+      _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
+      const payload = await callUntilSemantic(siblingHandler(GATED_DOC), {
+         environmentName: "specs",
+         packageName: "sib-semantic-differing",
+         query: "total order amount",
+      });
+      const rows = rankedEntities(payload).filter(
+         (e) => e.name === "total_amount",
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows[0].relevance).toBe(rows[1].relevance);
+      expect(rows.map((r) => r.description).sort()).toEqual(
+         [OPEN_DOC, GATED_DOC].sort(),
+      );
+      expect(rows.every((r) => r.also_in === undefined)).toBe(true);
+   });
+
+   it("gives a folded sibling's source a card, so its own doc still arrives", async () => {
+      // Identical docs DO fold: nothing is lost but a name, and alsoIn keeps
+      // that. What must not be lost is the sibling SOURCE -- its card is
+      // where "only orders this caller may see" is written, and before this
+      // the folded row was the only thing that would have emitted it.
+      _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
+      const payload = await callUntilSemantic(siblingHandler(OPEN_DOC), {
+         environmentName: "specs",
+         packageName: "sib-semantic-identical",
+         query: "total order amount",
+      });
+      const rows = rankedEntities(payload).filter(
+         (e) => e.name === "total_amount",
+      );
+      expect(rows).toHaveLength(1);
+      // Which of the two is kept is a tie-break, so assert the pair, not the
+      // winner.
+      expect([rows[0].source, ...(rows[0].also_in ?? [])].sort()).toEqual([
+         "sales",
+         "sales_secured",
+      ]);
+
+      const cards = payload.sources as Array<{
+         source_info: { resource_id: { source: string }; docs?: string };
+         entities?: unknown[];
+      }>;
+      expect(cards.map((c) => c.source_info.resource_id.source).sort()).toEqual(
+         ["sales", "sales_secured"],
+      );
+      // Whichever was folded, BOTH sources arrive carrying their own doc --
+      // that is the whole contract, and it does not depend on the tie-break.
+      const docFor = (name: string) =>
+         cards.find((c) => c.source_info.resource_id.source === name)
+            ?.source_info.docs;
+      expect(docFor("sales")).toContain("Every order");
+      expect(docFor("sales_secured")).toContain("this caller may see");
+      // total_available counts sources, and the folded one is a source.
+      expect(payload.total_available).toBe(2);
+   });
+
    it("ranks semantically once the index syncs, with scores and a marker", async () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());

@@ -280,7 +280,10 @@ function groupSiblings(results: ResultEntity[], limit: number): ResultEntity[] {
    const keptByConcept = new Map<string, ResultEntity>();
    const kept: ResultEntity[] = [];
    for (const r of results) {
-      const key = `${r.kind}|${humanizeName(r.name)}`;
+      // joinPath is in the key for the reason collapseAliases carries it:
+      // humanizeName maps "." and "_" alike to a space, so a joined
+      // `orders.amount` and a local `orders_amount` key identically.
+      const key = `${r.kind}\x00${r.joinPath ?? ""}\x00${humanizeName(r.name)}`;
       const peer = keptByConcept.get(key);
       const peerScore = rankScore(peer ?? r);
       const rowScore = rankScore(r);
@@ -293,7 +296,18 @@ function groupSiblings(results: ResultEntity[], limit: number): ResultEntity[] {
          // hide a genuinely better match behind a worse one.
          peerScore !== undefined &&
          rowScore !== undefined &&
-         Math.abs(peerScore - rowScore) <= SIBLING_SCORE_EPSILON
+         Math.abs(peerScore - rowScore) <= SIBLING_SCORE_EPSILON &&
+         // A sibling carrying its OWN, different doc is kept as its own row.
+         // The score gate cannot stand in for this: entityFacets embeds a
+         // name facet of humanizeName(name) with no source in it, so two
+         // same-named fields in different sources embed byte-identical text
+         // and score IDENTICALLY whenever the name facet wins -- however far
+         // apart their docs are. Folding there destroys the one thing that
+         // tells the caller which source to trust, and a folded row leaves
+         // the result entirely: its doc, data_type and entity_id are
+         // unrecoverable, and alsoIn carries only a source name. Same rule,
+         // and the same reasoning, as collapseAliases after 3e8cb76b.
+         (!r.doc || r.doc === peer.doc)
       ) {
          peer.alsoIn = [...(peer.alsoIn ?? []), r.source];
          continue;
@@ -392,8 +406,10 @@ function toSourceResults(
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
-   const containerFor = (r: ResultEntity): SourceCard | undefined => {
-      const name = r.source;
+   const cardFor = (
+      name: string | undefined,
+      modelPathFallback: string,
+   ): SourceCard | undefined => {
       if (!name) return undefined;
       let entry = bySource.get(name);
       if (!entry) {
@@ -403,7 +419,7 @@ function toSourceResults(
                resource_id: {
                   environment: environmentName,
                   package: packageName,
-                  model_path: ctx?.modelPath ?? r.modelPath,
+                  model_path: ctx?.modelPath ?? modelPathFallback,
                   source: name,
                },
                ...(ctx?.oneLineSummary
@@ -421,8 +437,17 @@ function toSourceResults(
    };
 
    for (const r of results) {
-      const entry = containerFor(r);
+      const entry = cardFor(r.source, r.modelPath);
       if (!entry) continue;
+      // A folded sibling left the result set, so nothing else would emit its
+      // source. Its card is exactly where the grain rule or the `where:` that
+      // makes it a DIFFERENT number from the row we kept would be written, so
+      // materialise it here, entity-less, adjacent to the peer that names it.
+      // Without this, collapsing does not merely cost a row -- it removes the
+      // only evidence that a second reading of the concept exists.
+      for (const sibling of r.alsoIn ?? []) {
+         cardFor(sibling, r.modelPath);
+      }
       if (r.kind === "source") {
          // The source itself matched: its score belongs on the container, and
          // its full (untruncated) doc supersedes the truncated context copy.
@@ -463,7 +488,14 @@ function toSourceResults(
  * cap had cut, and a caller reading them saw nothing was left behind.
  */
 function distinctSourceCount(rows: ResultEntity[]): number {
-   return new Set(rows.map((r) => r.source).filter(Boolean)).size;
+   const sources = new Set<string>();
+   for (const r of rows) {
+      if (r.source) sources.add(r.source);
+      // A folded sibling has no row of its own but does get a card, so it is
+      // one of the sources this count is about.
+      for (const sibling of r.alsoIn ?? []) sources.add(sibling);
+   }
+   return sources.size;
 }
 
 /** Cut over-long context text on a word boundary, marking that it was cut. */
