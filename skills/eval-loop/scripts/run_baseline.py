@@ -210,15 +210,20 @@ def next_run_label(out: pathlib.Path, set_name: str, phase: str) -> str:
     return f"{stem}-{n:02d}"
 
 
-# Tools only the open-source Publisher exposes. A shared skill refers to an MCP
-# tool by its BARE name (`get_context`, `execute_query`) precisely so it reads
-# correctly on any host; a skill naming these is a host/router skill written for
-# Publisher, and on a hosted target it teaches the answerer tools it does not
-# have. That does not error -- the answerer simply reads instructions for a
-# different surface -- so it has to be said out loud or the run quietly measures
-# a different system than the one it names.
-PUBLISHER_ONLY_TOOLS = ("malloy_getContext", "malloy_executeQuery",
-                        "malloy_compile", "malloy_reloadPackage")
+# Tools only the open-source Publisher exposes. A skill naming these is a
+# host/router skill written for Publisher, and on a hosted target it teaches the
+# answerer tools it does not have. That does not error -- the answerer simply
+# reads instructions for a different surface -- so it has to be said out loud or
+# the run quietly measures a different system than the one it names.
+#
+# Keyed on tools Publisher HAS and a hosted target does not. It used to be keyed
+# on the `malloy_` prefix, on the reasoning that a bare name was the portable
+# spelling and a prefixed one meant Publisher. That distinction is gone:
+# Publisher's tools are bare names now, so `get_context` and `execute_query` are
+# what BOTH surfaces call them and neither can mark a skill as Publisher-only.
+# Authoring, catalog and health have no hosted counterpart, so they still can.
+PUBLISHER_ONLY_TOOLS = ("compile_model", "reload_package",
+                        "list_packages", "get_status")
 
 
 def publisher_only_skills(names: list[str],
