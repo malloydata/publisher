@@ -3039,6 +3039,110 @@ describe("get_context same-named fields in sibling sources", () => {
    });
 });
 
+describe("get_context source documentation", () => {
+   // `narrowed` is `base extend { where: ... }` -- a filtered source, so it is
+   // a different population and the parent's description does not describe
+   // it. Malloy's stable SourceInfo flattens the two into one array with the
+   // INHERITED note first, which is the shape reproduced here.
+   const OWN = "#(doc) Only completed lines.";
+   const PARENT = "#(doc) Every order line.";
+   const model = {
+      getSourceInfos: () => [
+         {
+            name: "base",
+            annotations: [PARENT],
+            schema: {
+               fields: [{ kind: "measure", name: "total", annotations: [] }],
+            },
+         },
+         {
+            // Flattened: parent first, then its own.
+            name: "narrowed",
+            annotations: [PARENT, OWN],
+            schema: {
+               fields: [{ kind: "measure", name: "total", annotations: [] }],
+            },
+         },
+      ],
+      getQueries: () => [],
+      getModelDef: () => ({
+         contents: {
+            base: {
+               name: "base",
+               annotations: { blockNotes: [{ text: PARENT }] },
+               fields: [{ name: "total" }],
+            },
+            narrowed: {
+               name: "narrowed",
+               annotations: {
+                  blockNotes: [{ text: OWN }],
+                  inherits: { blockNotes: [{ text: PARENT }] },
+               },
+               fields: [{ name: "total" }],
+            },
+         },
+      }),
+   };
+   const handlerFor = (m: unknown) =>
+      captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "m.malloy" }],
+               getModel: () => m,
+            })),
+      });
+   const cardsOf = (payload: {
+      sources: Array<{
+         source_info: {
+            resource_id: { source: string };
+            docs?: string;
+            one_line_summary?: string;
+         };
+      }>;
+   }) =>
+      new Map(
+         payload.sources.map((c) => [c.source_info.resource_id.source, c]),
+      );
+
+   it("reports an extended source's OWN doc, not the one it inherited", async () => {
+      const cards = cardsOf(
+         parse(
+            await handlerFor(model)({
+               search_targets: [{ target_type: "source" }],
+               scopes: [{ environment: "e", package: "p" }],
+            }),
+         ),
+      );
+      expect(cards.get("base")?.source_info.docs).toBe("Every order line.");
+      // The whole point: a filtered source does not borrow its parent's
+      // description, and its summary is its own rather than a copy.
+      expect(cards.get("narrowed")?.source_info.docs).toBe(
+         "Only completed lines.",
+      );
+      expect(cards.get("narrowed")?.source_info.one_line_summary).not.toBe(
+         cards.get("base")?.source_info.one_line_summary,
+      );
+   });
+
+   it("falls back to the flattened annotations with no compiled model", async () => {
+      // A spec stand-in or a model that failed to compile has no IR to read.
+      // That must keep the previous behaviour rather than silently drop the
+      // doc entirely.
+      const { getModelDef: _omitted, ...withoutIr } = model;
+      const cards = cardsOf(
+         parse(
+            await handlerFor(withoutIr)({
+               search_targets: [{ target_type: "source" }],
+               scopes: [{ environment: "e", package: "p" }],
+            }),
+         ),
+      );
+      expect(cards.get("narrowed")?.source_info.docs).toContain(
+         "Only completed lines.",
+      );
+   });
+});
+
 describe("get_context include_code", () => {
    // A measure with an expression and a raw column without one, so the flag's
    // two outcomes are both observable: code present, and code meaningfully

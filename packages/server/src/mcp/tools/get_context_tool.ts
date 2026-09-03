@@ -961,23 +961,73 @@ interface FieldProvenance {
  * error this guard exists to prevent. Only a single-segment path names a
  * sibling field of the same source.
  */
+/**
+ * The ACTIVE name of a compiled entry: `as` when a rename set one, else
+ * `name`. This is what `to_stable` puts in SourceInfo, so it is what a caller
+ * joining IR onto SourceInfo has to match on. Keying the raw `name` gave every
+ * renamed field no provenance at all -- `include { rename: b is a }` compiles
+ * to `{name: "a", as: "b"}`, so the map said "a" while the lookup asked "b".
+ */
+function activeName(v: { name?: string; as?: string }): string | undefined {
+   return v.as ?? v.name;
+}
+
+/** One source's compiled definition, found by the name SourceInfo reports. */
+function findSourceDef(
+   modelDef: ModelDef | undefined,
+   sourceName: string,
+): { fields?: unknown[]; annotations?: unknown } | undefined {
+   const contents = modelDef?.contents;
+   if (!contents) return undefined;
+   return Object.values(contents).find(
+      (candidate) =>
+         activeName(candidate as { name?: string; as?: string }) === sourceName,
+   ) as { fields?: unknown[]; annotations?: unknown } | undefined;
+}
+
+/**
+ * A source's OWN documentation, excluding anything it inherited by extending
+ * another source. Undefined when the compiled model is unavailable, so the
+ * caller can fall back rather than silently reporting no doc.
+ *
+ * `extend` exists to CHANGE a source -- a filter, a join, a narrowed grain --
+ * so the parent's description is not a description of the child. Malloy keeps
+ * the two apart in the IR:
+ *
+ *   annotations: {
+ *     blockNotes: [ ...the source's own #(doc) lines ],
+ *     inherits: { blockNotes: [ ...the parent's ] },
+ *   }
+ *
+ * `to_stable` flattens that to one array with the INHERITED notes first, and
+ * reading the flattened form is what made `scoped_orders` -- an `order_items
+ * extend { where: ... }` -- report order_items' description, and made its
+ * one_line_summary (a first sentence) identical to its parent's. A source that
+ * extends without documenting itself now reports no doc, which is true and
+ * fixable, rather than a confident description of a different source.
+ *
+ * Field-level docs are deliberately untouched: an inherited dimension or
+ * measure IS the parent's field, so the doc it carries is its own and correct.
+ */
+function readSourceOwnDoc(
+   modelDef: ModelDef | undefined,
+   sourceName: string,
+): string[] | undefined {
+   const annotations = findSourceDef(modelDef, sourceName)?.annotations as
+      | { blockNotes?: Array<{ text?: string }> }
+      | undefined;
+   if (!annotations) return undefined;
+   return (annotations.blockNotes ?? [])
+      .map((note) => note.text ?? "")
+      .filter(Boolean);
+}
+
 function readFieldProvenance(
    modelDef: ModelDef | undefined,
    sourceName: string,
 ): Map<string, FieldProvenance> {
    const provenance = new Map<string, FieldProvenance>();
-   const contents = modelDef?.contents;
-   if (!contents) return provenance;
-   // Match on the ACTIVE name -- `as` when a rename set one, else `name`.
-   // That is what `to_stable` puts in SourceInfo, and it is what the caller
-   // joins on. Keying the raw `name` here silently gave every renamed field
-   // no provenance at all: `include { rename: b is a }` compiles to
-   // `{name: "a", as: "b"}`, so the map said "a" while the lookup asked "b".
-   const active = (v: { name?: string; as?: string }) => v.as ?? v.name;
-   const entry = Object.values(contents).find(
-      (candidate) =>
-         active(candidate as { name?: string; as?: string }) === sourceName,
-   ) as { fields?: unknown[] } | undefined;
+   const entry = findSourceDef(modelDef, sourceName);
    if (!entry?.fields) return provenance;
    for (const raw of entry.fields) {
       const field = raw as {
@@ -986,7 +1036,7 @@ function readFieldProvenance(
          code?: string;
          e?: { node?: string; path?: string[] };
       };
-      const fieldName = active(field);
+      const fieldName = activeName(field);
       if (!fieldName) continue;
       const referent =
          field.e?.node === "field" && field.e.path?.length === 1
@@ -1172,14 +1222,21 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                });
             }
          }
+         // A source's own doc, never the one it inherited by extending
+         // another source (see readSourceOwnDoc). Falls back to the flattened
+         // SourceInfo annotations when there is no compiled model to read --
+         // a spec stand-in, or a model that failed to compile -- which is the
+         // pre-existing behaviour rather than a silent loss of the doc.
+         const ownDoc = readSourceOwnDoc(modelDef, sourceName);
+         const sourceAnnotations = ownDoc ?? sourceInfo.annotations;
          entities.push({
             id: String(n++),
             kind: "source",
             name: sourceName,
             source: sourceName,
             modelPath,
-            doc: docText(sourceInfo.annotations),
-            embedDoc: docOnlyText(sourceInfo.annotations),
+            doc: docText(sourceAnnotations),
+            embedDoc: docOnlyText(sourceAnnotations),
          });
          for (const field of sourceInfo.schema.fields ?? []) {
             // Joins are indexed as entities in their own right: an agent that
