@@ -3,7 +3,16 @@
 
 import { MalloyError } from "@malloydata/malloy";
 import { PUBLISHER_CONFIG_NAME } from "./constants";
+import { logger } from "./logger";
 import type { EligibilityRefusalReason } from "./materialization_metrics";
+
+// Client-facing body for an internal failure (500/502). The specific error
+// message can carry internal detail -- a filesystem path, an SQL fragment, an
+// upstream host -- so it is logged server-side (below) and NOT returned. Every
+// other status this mapper produces is a client error (4xx) whose message is
+// actionable to the caller and is returned as-is.
+const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
+const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
 
 export function internalErrorToHttpError(error: Error) {
    if (error instanceof BadRequestError) {
@@ -37,7 +46,11 @@ export function internalErrorToHttpError(error: Error) {
    } else if (error instanceof ModelCompilationError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
-      return httpError(502, error.message);
+      // 502: an upstream/connection failure. The driver message can name the
+      // internal host/port or leak a driver-error oracle, so log it and return a
+      // generic body.
+      logger.error("Upstream connection error", { error });
+      return httpError(502, GENERIC_UPSTREAM_MESSAGE);
    } else if (error instanceof MaterializationNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof MaterializationConflictError) {
@@ -57,7 +70,11 @@ export function internalErrorToHttpError(error: Error) {
       // routes all along.
       return httpError(501, error.message);
    } else {
-      return httpError(500, error.message);
+      // Unrecognized error: a genuine internal failure. Its message may carry a
+      // stack fragment, path, or SQL, so log it server-side and return a generic
+      // body to the client.
+      logger.error("Unhandled internal error", { error });
+      return httpError(500, GENERIC_INTERNAL_MESSAGE);
    }
 }
 

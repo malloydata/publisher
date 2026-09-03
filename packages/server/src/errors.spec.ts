@@ -67,18 +67,24 @@ describe("internalErrorToHttpError", () => {
       expect(json).toEqual({ code: 424, message: "compile failed" });
    });
 
-   it("maps ConnectionError to 502 (distinct from auth, still retryable)", () => {
+   it("maps ConnectionError to 502 (distinct from auth, still retryable) with a generic body", () => {
       const { status, json } = internalErrorToHttpError(
          new ConnectionError("upstream broken"),
       );
       expect(status).toBe(502);
-      expect(json).toEqual({ code: 502, message: "upstream broken" });
+      // The driver/connection detail is logged server-side, not echoed to the
+      // client (a 502 message can name the internal host or leak a driver oracle).
+      expect(json.code).toBe(502);
+      expect(json.message).not.toContain("upstream broken");
    });
 
-   it("falls through to 500 for unrecognized errors", () => {
+   it("falls through to 500 for unrecognized errors with a generic body", () => {
       const { status, json } = internalErrorToHttpError(new Error("boom"));
       expect(status).toBe(500);
-      expect(json.message).toBe("boom");
+      // An unrecognized internal error's message can carry a stack/path/SQL
+      // fragment, so it is logged server-side and the client gets a generic body.
+      expect(json.code).toBe(500);
+      expect(json.message).not.toContain("boom");
    });
 
    it("maps PayloadTooLargeError to 413", () => {
