@@ -198,6 +198,35 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(instructions).toContain("get_status");
    });
 
+   it("orients a client to the sequence the schemas actually accept", async () => {
+      // The tool DESCRIPTION is pinned against the response shape above; the
+      // orientation string had no equivalent, and that asymmetry is how it
+      // kept teaching the pre-converged flow (a no-argument get_context to
+      // list environments) after the schema had started rejecting it. An
+      // agent reads this string in the initialize response, before it can
+      // check anything against it, so a wrong flow here fails its first call.
+      const instructions = client.getInstructions() ?? "";
+      const { tools } = await client.listTools();
+      const required = (tools.find((t) => t.name === "get_context")?.inputSchema
+         ?.required ?? []) as string[];
+
+      // Read off the REGISTERED schema rather than restated here: a parameter
+      // that becomes required fails this test until the orientation names it,
+      // which is the drift the assertion exists to catch.
+      expect(required.length).toBeGreaterThan(0);
+      for (const parameter of required) {
+         expect(instructions).toContain(parameter);
+      }
+
+      // Those required scope names come from list_packages, so it has to be
+      // the FIRST step. Naming it somewhere is not enough -- the instruction
+      // being corrected named get_context first and list_packages not at all.
+      expect(instructions).toContain("list_packages");
+      expect(instructions.indexOf("list_packages")).toBeLessThan(
+         instructions.indexOf("get_context"),
+      );
+   });
+
    it("search_malloy_docs returns relevant docs over the protocol", async () => {
       const res = await client.callTool({
          name: "search_malloy_docs",
