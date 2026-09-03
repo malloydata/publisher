@@ -1,7 +1,8 @@
 /// <reference types="bun-types" />
 
 /**
- * The `sourceName`-without-`query` drill-down, against a real compiled model.
+ * The drill-down — a `scopes[].source` with no `search_text` — against a real
+ * compiled model.
  *
  * This is the tier the unit tests cover with a hand-written model stand-in, and
  * a stand-in is exactly what let the original bug ship: the filter returned
@@ -31,6 +32,16 @@ import {
 
 const ENVIRONMENT_NAME = "examples";
 const PACKAGE_NAME = "storefront";
+
+/**
+ * The field types a drill-down enumerates. A target carrying no `search_text`
+ * enumerates its type instead of ranking it, and the kinds in play come only
+ * from the targets the caller wrote — so listing a source's fields means
+ * naming the types wanted, with no implicit "everything".
+ */
+const FIELD_TARGETS = ["dimension", "measure", "view"].map((target_type) => ({
+   target_type,
+}));
 
 interface Entity {
    entity_type: string;
@@ -62,11 +73,21 @@ describe.serial("get_context drill-down (E2E, real model)", () => {
    });
 
    const getContext = async (
-      args: Record<string, unknown>,
+      searchTargets: Array<Record<string, unknown>>,
+      scope: Record<string, unknown> = {},
    ): Promise<{ sources: SourceCard[]; total_available?: number }> => {
       const result = (await mcpClient.callTool({
          name: "get_context",
-         arguments: { environmentName: ENVIRONMENT_NAME, ...args },
+         arguments: {
+            search_targets: searchTargets,
+            scopes: [
+               {
+                  environment: ENVIRONMENT_NAME,
+                  package: PACKAGE_NAME,
+                  ...scope,
+               },
+            ],
+         },
       })) as { content: Array<{ resource?: { text?: string } }> };
       const text = result.content?.[0]?.resource?.text;
       if (!text) throw new Error("get_context returned no resource text");
@@ -76,10 +97,9 @@ describe.serial("get_context drill-down (E2E, real model)", () => {
       };
    };
 
-   it("returns the named source's own entities, not just the source row", async () => {
-      const { sources } = await getContext({
-         packageName: PACKAGE_NAME,
-         sourceName: "products",
+   it("returns the scoped source's own entities, not just the source row", async () => {
+      const { sources } = await getContext(FIELD_TARGETS, {
+         source: "products",
       });
 
       // One card, for the source that was asked for.
@@ -103,9 +123,8 @@ describe.serial("get_context drill-down (E2E, real model)", () => {
    });
 
    it("surfaces a source's views", async () => {
-      const { sources } = await getContext({
-         packageName: PACKAGE_NAME,
-         sourceName: "order_items",
+      const { sources } = await getContext([{ target_type: "view" }], {
+         source: "order_items",
       });
       const views = (sources[0].entities ?? [])
          .filter((e) => e.entity_type === "view")
@@ -115,8 +134,8 @@ describe.serial("get_context drill-down (E2E, real model)", () => {
       expect(views).toContain("business_overview");
    });
 
-   it("without sourceName the same package still lists sources only", async () => {
-      const { sources } = await getContext({ packageName: PACKAGE_NAME });
+   it("without a source scope the same package still lists sources only", async () => {
+      const { sources } = await getContext([{ target_type: "source" }]);
       expect(sources.length).toBeGreaterThan(0);
       // An overview names sources; nothing nests under them.
       expect(sources.every((c) => c.entities === undefined)).toBe(true);
@@ -125,10 +144,9 @@ describe.serial("get_context drill-down (E2E, real model)", () => {
       );
    });
 
-   it("an unknown sourceName returns nothing rather than everything", async () => {
-      const { sources, total_available } = await getContext({
-         packageName: PACKAGE_NAME,
-         sourceName: "not_a_source",
+   it("an unknown source scope returns nothing rather than everything", async () => {
+      const { sources, total_available } = await getContext(FIELD_TARGETS, {
+         source: "not_a_source",
       });
       expect(sources).toEqual([]);
       expect(total_available).toBe(0);

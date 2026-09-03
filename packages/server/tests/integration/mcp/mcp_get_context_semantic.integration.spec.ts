@@ -83,12 +83,31 @@ function rankedEntities(payload: GetContextPayload) {
    );
 }
 
-async function callGetContext(
-   args: Record<string, unknown>,
-): Promise<GetContextPayload> {
+/**
+ * One ranked search target against the storefront package, optionally narrowed
+ * to a single source. The target type is not optional: the kinds in play come
+ * only from the targets a caller writes, so there is no "search everything"
+ * request to inherit and each case names the type its answer should be.
+ */
+async function callGetContext(target: {
+   targetType: string;
+   searchText: string;
+   source?: string;
+}): Promise<GetContextPayload> {
    const result = (await mcpClient.callTool({
       name: "get_context",
-      arguments: args,
+      arguments: {
+         search_targets: [
+            { target_type: target.targetType, search_text: target.searchText },
+         ],
+         scopes: [
+            {
+               environment: ENVIRONMENT_NAME,
+               package: PACKAGE_NAME,
+               ...(target.source ? { source: target.source } : {}),
+            },
+         ],
+      },
    })) as {
       content: Array<{ type: string; resource?: { text?: string } }>;
    };
@@ -171,9 +190,8 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
       "answers lexically while indexing, then flips to semantic with scores",
       async () => {
          const first = await callGetContext({
-            environmentName: ENVIRONMENT_NAME,
-            packageName: PACKAGE_NAME,
-            query: "total sales revenue",
+            targetType: "measure",
+            searchText: "total sales revenue",
          });
          // Configured server: the marker is always present on tier 4.
          expect(["lexical", "semantic"]).toContain(first.retrieval);
@@ -182,9 +200,8 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
          for (let i = 0; i < 60 && payload.retrieval !== "semantic"; i++) {
             await new Promise((resolve) => setTimeout(resolve, 500));
             payload = await callGetContext({
-               environmentName: ENVIRONMENT_NAME,
-               packageName: PACKAGE_NAME,
-               query: "total sales revenue",
+               targetType: "measure",
+               searchText: "total sales revenue",
             });
          }
          expect(payload.retrieval).toBe("semantic");
@@ -207,9 +224,8 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
       async () => {
          const before = stubRequests;
          const payload = await callGetContext({
-            environmentName: ENVIRONMENT_NAME,
-            packageName: PACKAGE_NAME,
-            query: "orders by month",
+            targetType: "view",
+            searchText: "orders by month",
          });
          expect(payload.retrieval).toBe("semantic");
          // Exactly one stub call: the query embedding. No bulk re-sync.
@@ -219,13 +235,12 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
    );
 
    it(
-      "narrows semantic retrieval with sourceName",
+      "narrows semantic retrieval with a source scope",
       async () => {
          const payload = await callGetContext({
-            environmentName: ENVIRONMENT_NAME,
-            packageName: PACKAGE_NAME,
-            query: "total sales revenue",
-            sourceName: "order_items",
+            targetType: "measure",
+            searchText: "total sales revenue",
+            source: "order_items",
          });
          expect(payload.retrieval).toBe("semantic");
          // One card, for the source the drill-down named.
@@ -251,9 +266,8 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
          stubFailing = true;
          try {
             const payload = await callGetContext({
-               environmentName: ENVIRONMENT_NAME,
-               packageName: PACKAGE_NAME,
-               query: "top selling products",
+               targetType: "view",
+               searchText: "top selling products",
             });
             expect(payload.retrieval).toBe("lexical");
             const entities = rankedEntities(payload);
