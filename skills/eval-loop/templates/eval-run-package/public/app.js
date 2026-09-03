@@ -36,6 +36,12 @@ const MODES = [
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+/* Escape a value for a single-quoted Malloy string literal. Backslashes FIRST,
+ * then quotes: the other order re-escapes the backslash the quote escape just
+ * introduced, so a qid ending in a backslash closes the literal early and the
+ * rest of it parses as Malloy. This is the form the malloy-html-data-app-runtime
+ * skill prescribes for in-package apps. */
+const lit = s => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 const pct = x => x == null ? '—' : (100 * x).toFixed(0) + '%';
 const num = (x, d = 0) => x == null ? '—' : Number(x).toLocaleString(undefined,
   { maximumFractionDigits: d });
@@ -234,12 +240,12 @@ async function loadCase(qid) {
   const body = document.querySelector(`[data-body="${CSS.escape(qid)}"]`);
   if (!body) return;
   if (caseCache[qid]) { body.innerHTML = caseCache[qid]; return; }
-  const lit = qid.replace(/'/g, "\\'");
+  const q = lit(qid);
   let detail, steps;
   try {
     [detail, steps] = await Promise.all([
-      query(`run: case_drawer + { where: qid = '${lit}' }`),
-      query(`run: case_steps + { where: qid = '${lit}' }`),
+      query(`run: case_drawer + { where: qid = '${q}' }`),
+      query(`run: case_steps + { where: qid = '${q}' }`),
     ]);
   } catch (e) {
     body.innerHTML = `<div class="err">${esc(e.message || e)}</div>`; return;
