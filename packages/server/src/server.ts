@@ -1378,6 +1378,9 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
+   // sqlSource runs a live DB introspection (a DESCRIBE against the connection),
+   // so it is admission-controlled like a query rather than left unbounded.
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -1398,6 +1401,7 @@ app.post(
 // Per-package versions
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -1948,6 +1952,10 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile`,
+   // Compile runs real Malloy compilation (and resolves source schemas against
+   // the connection), so it is admission-controlled like a query rather than
+   // left to pin the shared event loop unbounded.
+   queryConcurrency(),
    async (req, res) => {
       try {
          // Express stores wildcard matches in params['0'], so nested model
