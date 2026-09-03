@@ -1015,12 +1015,32 @@ export async function trySemanticSearch(args: {
                    CAST(COUNT(*) FILTER (WHERE best < ?) AS INTEGER) AS below
             FROM per_entity
          ),
+         -- The window is PER TARGET, not global. One shared LIMIT over the
+         -- union lets the highest-scoring target fill it and crowd the others
+         -- out entirely: measured against malloy-samples, a dimension target
+         -- at 0.63 took every slot while the measure target's own best hit at
+         -- 0.42 and the view target's at 0.53 vanished from the response --
+         -- absent, not merely ranked lower. That is the exact failure typed
+         -- targets exist to prevent, so each target gets its own share and the
+         -- caller gets an answer for every concept it described.
+         ranked_per_target AS (
+            SELECT entity_kind, entity_source, entity_name, target_idx, score,
+                   ROW_NUMBER() OVER (
+                      PARTITION BY target_idx
+                      ORDER BY score DESC, entity_name
+                   ) AS rn
+            FROM scored
+            WHERE score >= ?
+         ),
          hits AS (
-            SELECT entity_kind, entity_source, entity_name, best
-            FROM per_entity
-            WHERE best >= ?
-            ORDER BY best DESC, entity_name
-            LIMIT ?
+            SELECT DISTINCT h.entity_kind, h.entity_source, h.entity_name,
+                   p.best
+            FROM ranked_per_target h
+            JOIN per_entity p
+              ON p.entity_kind = h.entity_kind
+             AND p.entity_source = h.entity_source
+             AND p.entity_name = h.entity_name
+            WHERE h.rn <= ?
          )
          SELECT agg.total, agg.below,
                 h.entity_kind, h.entity_source, h.entity_name, h.best,

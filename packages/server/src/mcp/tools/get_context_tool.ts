@@ -540,6 +540,65 @@ function matchedTargetsFor(
 }
 
 /**
+ * Take `limit` rows, round-robin across the targets that matched them.
+ *
+ * A single global cut by score stops working once a call carries several
+ * targets: the strongest one fills the window and the others vanish ENTIRELY,
+ * not merely rank lower. Measured against malloy-samples, a dimension target
+ * scoring 0.63 took all four slots while the measure target's own best hit
+ * (0.42) and the view target's (0.53) were absent from the response -- for a
+ * caller that asked all three questions in one call, and whose reason for
+ * using typed targets was to get all three answered.
+ *
+ * Cosine being an absolute scale is what makes a global cut LOOK defensible;
+ * it is still wrong, because the scores answer different questions. A
+ * measure's best match and a dimension's best match are not competing for the
+ * same slot.
+ *
+ * Rows keep score order within each target, so what the cut costs a caller is
+ * always that target's weakest hit, never its best.
+ */
+function windowPerTarget(rows: ResultEntity[], limit: number): ResultEntity[] {
+   if (rows.length <= limit) return rows;
+   const queues = new Map<number, ResultEntity[]>();
+   const unclaimed: ResultEntity[] = [];
+   for (const r of rows) {
+      // A row waits in the queue of its BEST target, so it is offered once
+      // rather than once per target that matched it.
+      const best = [...(r.targetScores ?? [])].sort((a, b) => b[1] - a[1])[0];
+      if (!best) {
+         unclaimed.push(r);
+         continue;
+      }
+      const queue = queues.get(best[0]) ?? [];
+      queue.push(r);
+      queues.set(best[0], queue);
+   }
+   // Lowest target index first, so the rotation follows the caller's order.
+   const order = [...queues.keys()].sort((a, b) => a - b);
+   const taken: ResultEntity[] = [];
+   let progressed = true;
+   while (taken.length < limit && progressed) {
+      progressed = false;
+      for (const targetIndex of order) {
+         if (taken.length >= limit) break;
+         const next = queues.get(targetIndex)?.shift();
+         if (next) {
+            taken.push(next);
+            progressed = true;
+         }
+      }
+   }
+   // Rows no target claims (the lexical path carries no per-target scores)
+   // fill whatever is left, in score order.
+   for (const r of unclaimed) {
+      if (taken.length >= limit) break;
+      taken.push(r);
+   }
+   return taken;
+}
+
+/**
  * Distinct sources across a ranked list, which is what `total_available`
  * counts on a search tier. Taken over every matched row rather than over the
  * windowed ones, so it can exceed `returned`: setting both from the returned
@@ -1696,6 +1755,7 @@ async function runContextQuery(
             const matchedTargets = new Map<string, Map<number, number>>();
             let searchFailure: RetrievalReason | undefined;
             let unionTotalEntities: number | undefined;
+            let unionBelowCutoff: number | undefined;
             {
                // ONE call for every target: it batches the embeddings into a
                // single provider request and scores them in a single pass
@@ -1789,6 +1849,7 @@ async function runContextQuery(
                   // The denominator counts the package's entities, not the
                   // query's hits, so it is the same whichever target asked.
                   unionTotalEntities = semantic.totalEntities;
+                  unionBelowCutoff = semantic.belowCutoffCount;
                } else {
                   searchFailure = REASON_BY_UNAVAILABLE[semantic.unavailable];
                }
@@ -1813,16 +1874,18 @@ async function runContextQuery(
                   : groupSiblings(ranked, ranked.length);
                semanticMatchCount = grouped.length;
                semanticTotalSources = distinctSourceCount(grouped);
-               semanticResults = grouped.slice(0, max);
+               semanticResults = windowPerTarget(grouped, max);
                totalEntities = unionTotalEntities;
                // An entity that cleared NO target's floor is below the
                // cutoff. Derived from the union rather than taken from one
-               // pass, which would have counted the others' hits as
-               // rejections.
-               belowCutoffCount =
-                  unionTotalEntities === undefined
-                     ? 0
-                     : Math.max(0, unionTotalEntities - merged.size);
+
+               // Straight from the scan, which counts entities whose BEST
+               // score across every target fell under the floor. Deriving it
+               // from the returned rows would fold the page limit into it and
+               // report a crowded-out entity -- one that cleared the floor and
+               // simply did not fit -- as rejected, which is the opposite of
+               // what this number tells a caller.
+               belowCutoffCount = unionBelowCutoff ?? 0;
             } else {
                retrievalReason = searchFailure;
             }

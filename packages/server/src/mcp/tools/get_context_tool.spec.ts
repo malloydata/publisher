@@ -1512,6 +1512,64 @@ describe("get_context semantic retrieval", () => {
       }
    });
 
+   it("gives every target a share of the window, not just the strongest", async () => {
+      // Found against malloy-samples: three targets, limit 4, and the
+      // dimension target's hits at 0.63 took every slot -- the measure
+      // target's own best (0.42) and the view target's (0.53) were absent, not
+      // ranked lower. One call asking three questions answered one of them.
+      // Here the three dimensions all score 1.0 and would sweep a global cut.
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "s",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "dimension", name: "d1", annotations: [] },
+                     { kind: "dimension", name: "d2", annotations: [] },
+                     { kind: "dimension", name: "d3", annotations: [] },
+                     { kind: "measure", name: "m1", annotations: [] },
+                     { kind: "view", name: "v1", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+      };
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            s: [-1, -1],
+            d1: [1, 0],
+            d2: [1, 0],
+            d3: [1, 0],
+            m1: [0.5, 0.866],
+            v1: [0.7, 0.714],
+            dims: [1, 0],
+            meas: [0, 1],
+            vw: [0, 1],
+         }),
+      );
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => model,
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: [
+            { target_type: "dimension", search_text: "dims" },
+            { target_type: "measure", search_text: "meas" },
+            { target_type: "view", search_text: "vw" },
+         ],
+         scopes: [{ environment: "specs", package: "share" }],
+         limit: 3,
+      });
+      const kinds = rankedEntities(payload)
+         .map((e) => e.entity_type)
+         .sort();
+      expect(kinds).toEqual(["dimension", "measure", "view"]);
+   });
+
    it("keeps siblings apart on differing docs even at IDENTICAL scores", async () => {
       // The epsilon gate cannot catch this and never could. Both rows score
       // 1.0 on a name facet embedded from the same text, so their difference
