@@ -13,7 +13,8 @@ the gap. Every factual claim is backed by a query you ran.
 1. **No diagnosis evidence, no edit.** If the issue cannot name a concrete gap
    with a trace or probe, record that and stop. Edits from an empty diagnosis
    have been the inert and wrong ones.
-2. **This skill never accepts its own edit.** You propose and verify. The acceptance check
+2. **This skill never accepts its own edit.** You propose and verify. The
+   acceptance check
    in `skill:eval-loop` admits or reverts. An improver writing the query it
    already knows proves the fix is possible, not that the next blind agent
    will find it.
@@ -140,7 +141,8 @@ and the old and new values. **Do not repair them yourself.** Goldens are the
 side door in `skill:eval-loop`, and an improver that edits the answer key its own
 edit is scored against has removed the only independent check on the edit.
 
-A non-empty `golden_suspect` list blocks the acceptance check until the conductor settles
+A non-empty `golden_suspect` list blocks the acceptance check until the
+conductor settles
 each one, because a rerun against stale goldens measures nothing.
 
 ## Step 5: Verify, report, hand off
@@ -171,7 +173,8 @@ its instructions' mistakes. Report from the files on disk, not from memory.
 ## Related skills
 
 - `skill:eval-diagnose`: the issue this requires.
-- `skill:eval-loop`: the acceptance check that accepts or reverts, then checkpoints on accept. Golden hold/repair lives there, not here.
+- `skill:eval-loop`: the acceptance check that accepts or reverts, then
+  checkpoints on accept. Golden hold/repair lives there, not here.
 - `skill:eval-answer`: scoring after a blind re-answer.
 - The `malloy-gotchas-modeling` skill: mistakes an edit must not introduce.
   It arrives with the `modeling` manifest group, not the `eval` group.
