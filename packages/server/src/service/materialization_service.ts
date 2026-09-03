@@ -1914,10 +1914,10 @@ export class MaterializationService {
                bySourceID.get(persistSource.sourceID) ??
                bySourceEntityId.get(address);
             if (!instruction) continue;
-            const target = physicalTargetKey(
-               instruction,
-               persistSource.connectionName,
-            );
+            // Same key as the write guard below, and it has to be: a pre-pass that
+            // grouped by a different coordinate would report a collision the guard does
+            // not dedupe, or miss one it does.
+            const target = physicalTargetKey(instruction, graph.connectionName);
             const claim = claimedBy.get(target);
             if (!claim) {
                claimedBy.set(target, {
@@ -2104,15 +2104,15 @@ export class MaterializationService {
                // — and once per graph that reached it, since a source declared in one
                // model and consumed in another appears in both models' graphs.
                //
-                  // Only the same-content case is decided here. Two DIFFERENT
-                  // definitions on one table was already reported, and refused under
-                  // PERSIST_COLLISION_ENFORCE, by the pre-pass above — before anything
-                  // was written. Reaching it here means the deployment chose to warn
-                  // and carry on, so the write proceeds as it did before.
-                  const target = physicalTargetKey(
-                     instruction,
-                     graph.connectionName,
-                  );
+               // Only the same-content case is decided here. Two DIFFERENT
+               // definitions on one table was already reported, and refused under
+               // PERSIST_COLLISION_ENFORCE, by the pre-pass above — before anything
+               // was written. Reaching it here means the deployment chose to warn
+               // and carry on, so the write proceeds as it did before.
+               const target = physicalTargetKey(
+                  instruction,
+                  graph.connectionName,
+               );
                const written = writtenTargets.get(target);
                if (written && written.sourceEntityId === sourceEntityId) {
                   // The extra name is another route to one artifact. Its address
