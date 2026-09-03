@@ -13,6 +13,7 @@ import {
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
 import { referencedGivenNames } from "../../service/authorize";
+import { InvalidArgumentError } from "../../errors";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
@@ -1744,11 +1745,21 @@ async function runContextQuery(
          entityBudget -= 1;
          return true;
       });
-      // Counted in the same unit the cap spends, so the warning below is
-      // about the rows a caller actually lost.
-      const cappable = sourceName
-         ? inScope.filter((e) => e.kind !== "source").length
-         : inScope.length;
+      /**
+       * Rows the cap actually spends from, which is the unit both sides of the
+       * truncation warning have to be counted in.
+       *
+       * A scoped source's own row never spends a slot, so it is EXCLUDED from
+       * both counts rather than subtracted from one. Subtracting assumed the
+       * row was there: scope to a source that does not exist and `capped` is
+       * empty, so `capped.length - 1` was -1, and the warning fired claiming
+       * "Returned -1 of 0 matching entities" on a result that lost nothing.
+       */
+      const spendable = (rows: typeof inScope) =>
+         sourceName
+            ? rows.filter((e) => e.kind !== "source").length
+            : rows.length;
+      const cappable = spendable(inScope);
       // The overview is where an agent decides how to combine sources,
       // so each one states its relationships here rather than making
       // that a second call. toSourceResults carries the complete joins
@@ -1785,7 +1796,12 @@ async function runContextQuery(
       // empty result means its models expose no sources: a curation gap
       // (explores/export {}), not an empty database. Say so, only in the
       // empty case, so the populated payload stays byte-identical.
-      if (sources.length === 0 && !sourceName) {
+      // `kinds` is empty only when EVERY target named a type this server does
+      // not index, and unsupportedTargetWarnings has already said so exactly.
+      // Adding the curation line there contradicts it and misdiagnoses a
+      // healthy package: a `dimensional_value` search against storefront
+      // reported that its seven sources were a curation gap.
+      if (sources.length === 0 && !sourceName && request.kinds.size > 0) {
          return jsonResource(uri, {
             sources,
             ...listingEnvelope,
@@ -1802,10 +1818,7 @@ async function runContextQuery(
             // entities and says so.
             request.pureSourceListing
                ? listingPageWarning(sources.length, inScope.length)
-               : truncationWarning(
-                    capped.length - (sourceName ? 1 : 0),
-                    cappable,
-                 ),
+               : truncationWarning(spendable(capped), cappable),
          ),
       });
    }
@@ -2266,7 +2279,13 @@ export function registerGetContextTool(
                   "get-context",
                ),
                `${request.environmentName}/${request.packageName}`,
-               new Error(
+               // InvalidArgumentError, not a bare Error. This is a caller
+               // mistake with a stated fix, and an unclassified throw lands on
+               // classifyToolError's internal-fault branch -- so a deliberate
+               // refusal came back as "An unexpected internal error occurred
+               // during getContext.: Invalid offset: ...", which reads as a
+               // server bug to report and invites the retry that cannot work.
+               new InvalidArgumentError(
                   "Invalid offset: paging works only on a pure source listing (every search_target of type `source`, none with search_text), which is the one response with a resumable order. Fix: drop `offset`, and narrow with search_text or scopes instead.",
                ),
             );

@@ -637,6 +637,81 @@ describe("get_context discovery tiers", () => {
       expect(payload.warnings.join(" ")).toContain("get_status");
    });
 
+   it("a scope naming a source that does not exist warns about nothing", async () => {
+      // Found by hand-driving a live server. The truncation warning counted
+      // its two sides in different units: `capped.length - 1` assumed the
+      // scoped source's own row was present, so an unknown source produced
+      // "Returned -1 of 0 matching entities" -- a negative count, advising a
+      // remedy for a cut that never happened. A result that lost nothing must
+      // say nothing, the way a question the model does not cover already does.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "ecommerce",
+                  source: "not_a_source",
+               },
+            ],
+         }),
+      );
+      expect(payload.sources).toEqual([]);
+      expect(payload.total_available).toBe(0);
+      expect(payload.returned).toBe(0);
+      expect(payload.warnings).toBeUndefined();
+   });
+
+   it("an unsearchable target type is not reported as a curation gap", async () => {
+      // `dimensional_value` selects no kinds, so the listing is empty for a
+      // reason that has nothing to do with curation -- and the package here
+      // exposes a source. Blaming `explores` / `export {}` contradicted the
+      // unsupported-target warning printed beside it and sent an agent to
+      // audit a healthy package.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [
+               { target_type: "dimensional_value", search_text: "California" },
+            ],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      expect(payload.sources).toEqual([]);
+      const warnings = (payload.warnings ?? []).join(" ");
+      expect(warnings).toContain("No index for target_type dimensional_value");
+      expect(warnings).not.toContain("curation gap");
+   });
+
+   it("offset on a ranked request is a caller error, not a server fault", async () => {
+      // The refusal is deliberate and states its fix, but it threw a bare
+      // Error, which classifyToolError can only read as an internal fault --
+      // so it came back as "An unexpected internal error occurred during
+      // getContext.: Invalid offset: ...". That reads as a bug to report and
+      // invites the retry that cannot work.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+            ],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+            offset: 5,
+         }),
+      );
+      expect(payload.error).toContain("Invalid offset");
+      expect(payload.error).not.toContain("unexpected internal error");
+      expect(payload.suggestions.join(" ")).toContain("not transient");
+      expect(payload.sources).toEqual([]);
+   });
+
    it("tier 4: a query retrieves the matching entity", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),

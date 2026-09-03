@@ -75,7 +75,11 @@ describe.serial("get_context drill-down (E2E, real model)", () => {
    const getContext = async (
       searchTargets: Array<Record<string, unknown>>,
       scope: Record<string, unknown> = {},
-   ): Promise<{ sources: SourceCard[]; total_available?: number }> => {
+   ): Promise<{
+      sources: SourceCard[];
+      total_available?: number;
+      warnings?: string[];
+   }> => {
       const result = (await mcpClient.callTool({
          name: "get_context",
          arguments: {
@@ -94,6 +98,7 @@ describe.serial("get_context drill-down (E2E, real model)", () => {
       return JSON.parse(text) as {
          sources: SourceCard[];
          total_available?: number;
+         warnings?: string[];
       };
    };
 
@@ -145,10 +150,17 @@ describe.serial("get_context drill-down (E2E, real model)", () => {
    });
 
    it("an unknown source scope returns nothing rather than everything", async () => {
-      const { sources, total_available } = await getContext(FIELD_TARGETS, {
-         source: "not_a_source",
-      });
+      const { sources, total_available, warnings } = await getContext(
+         FIELD_TARGETS,
+         { source: "not_a_source" },
+      );
       expect(sources).toEqual([]);
       expect(total_available).toBe(0);
+      // The payload has to be silent too, not merely empty. This assertion
+      // is here because its absence is what let a real defect through: the
+      // response carried "Returned -1 of 0 matching entities", a negative
+      // count offering a remedy for a truncation that never happened, and
+      // the two assertions above passed over it without noticing.
+      expect(warnings).toBeUndefined();
    });
 });
