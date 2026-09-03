@@ -1512,6 +1512,101 @@ describe("get_context semantic retrieval", () => {
       }
    });
 
+   it("never loses a target's answer when other targets join the call", async () => {
+      // The invariant the source-bucketed window exists for. Adding targets to
+      // a call adds questions; it must not subtract answers from the ones
+      // already there. Under an entity-counted limit it did: asking for a
+      // measure alone returned 3 hits and asking for it beside a dimension and
+      // a view returned 2.
+      //
+      // The guarantee is a SUPERSET, not equality, and the difference is real
+      // rather than a hedge: `limit` counts sources, so other targets can pull
+      // further sources into the window, and those sources carry hits for this
+      // target too. Measured against malloy-samples, a measure target returned
+      // 3 hits alone and 4 in a set of three. More is fine; fewer is the bug.
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "s",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "measure", name: "m1", annotations: [] },
+                     { kind: "measure", name: "m2", annotations: [] },
+                     { kind: "measure", name: "m3", annotations: [] },
+                     { kind: "dimension", name: "d1", annotations: [] },
+                     { kind: "dimension", name: "d2", annotations: [] },
+                     { kind: "dimension", name: "d3", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+      };
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            s: [-1, -1],
+            // Dimensions all score 1.0, so under a shared budget they would
+            // take every slot and starve the measures.
+            d1: [1, 0],
+            d2: [1, 0],
+            d3: [1, 0],
+            m1: [0, 1],
+            m2: [0.3, 0.954],
+            m3: [0.5, 0.866],
+            meas: [0, 1],
+            dims: [1, 0],
+         }),
+      );
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => model,
+         }),
+      );
+      const scopes = [{ environment: "specs", package: "no-loss" }];
+      const measures = (payload: {
+         sources: Array<{
+            entities?: Array<{ name: string; entity_type: string }>;
+         }>;
+      }) =>
+         payload.sources
+            .flatMap((c) => c.entities ?? [])
+            .filter((e) => e.entity_type === "measure")
+            .map((e) => e.name);
+
+      const alone = await callUntilSemantic(handler, {
+         search_targets: [{ target_type: "measure", search_text: "meas" }],
+         scopes,
+         limit: 3,
+      });
+      const inASet = await callUntilSemantic(handler, {
+         search_targets: [
+            { target_type: "measure", search_text: "meas" },
+            { target_type: "dimension", search_text: "dims" },
+         ],
+         scopes,
+         limit: 3,
+      });
+
+      expect(measures(alone)).toEqual(["m1", "m2", "m3"]);
+      // Every answer the target had alone survives the company of others.
+      for (const name of measures(alone)) {
+         expect(measures(inASet)).toContain(name);
+      }
+      // And the added target is answered too, rather than trading places.
+      expect(
+         inASet.sources
+            .flatMap(
+               (c: { entities?: Array<{ entity_type: string }> }) =>
+                  c.entities ?? [],
+            )
+            .some(
+               (e: { entity_type: string }) => e.entity_type === "dimension",
+            ),
+      ).toBe(true);
+   });
+
    it("gives every target a share of the window, not just the strongest", async () => {
       // Found against malloy-samples: three targets, limit 4, and the
       // dimension target's hits at 0.63 took every slot -- the measure
@@ -1564,10 +1659,11 @@ describe("get_context semantic retrieval", () => {
          scopes: [{ environment: "specs", package: "share" }],
          limit: 3,
       });
-      const kinds = rankedEntities(payload)
-         .map((e) => e.entity_type)
-         .sort();
-      expect(kinds).toEqual(["dimension", "measure", "view"]);
+      // Every target answered. Bucketing by source is what guarantees it:
+      // targets no longer spend from one pool, so a broad target cannot
+      // starve a narrow one.
+      const kinds = new Set(rankedEntities(payload).map((e) => e.entity_type));
+      expect([...kinds].sort()).toEqual(["dimension", "measure", "view"]);
    });
 
    it("keeps siblings apart on differing docs even at IDENTICAL scores", async () => {
@@ -1844,7 +1940,9 @@ describe("get_context semantic retrieval", () => {
       expect("warnings" in payload).toBe(false);
    });
 
-   it("still reports a real cut on the semantic path", async () => {
+   it("stays silent when the limit cut no SOURCE", async () => {
+      // limit counts sources. This package has one, so limit 1 leaves nothing
+      // out however many entities nest in it, and a warning would be false.
       _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
       const handler = captureHandler(truncStore());
       const payload = await callUntilSemantic(handler, {
@@ -1852,9 +1950,8 @@ describe("get_context semantic retrieval", () => {
          scopes: [{ environment: "specs", package: "trunc-cut-pkg" }],
          limit: 1,
       });
-
-      expect(payload.warnings.join(" ")).toContain("Returned 1 of 3");
-      expect(payload.warnings.join(" ")).toContain("Raise limit");
+      expect(payload.sources).toHaveLength(1);
+      expect("warnings" in payload).toBe(false);
    });
 
    it("reports below_cutoff_count on semantic responses, never on lexical ones", async () => {
@@ -2312,7 +2409,11 @@ describe("get_context truncation reporting", () => {
       expect(payload.warnings.join(" ")).toContain("Raise limit");
    });
 
-   it("says how many entities a capped search left out", async () => {
+   it("says how many entities the per-source cap left out", async () => {
+      // The two cuts are reported in their own units and have different
+      // remedies. `limit` drops whole sources; this one drops entities inside
+      // a source it kept, so raising the limit would not recover them --
+      // scoping to the source is what does.
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => widePackage),
       });
@@ -2323,8 +2424,14 @@ describe("get_context truncation reporting", () => {
             limit: 3,
          }),
       );
-      expect(rankedEntities(payload)).toHaveLength(3);
-      expect(payload.warnings.join(" ")).toContain("Returned 3 of 12");
+      // 12 matched in one source; the cap keeps 10 of them.
+      expect(rankedEntities(payload)).toHaveLength(10);
+      const warning = payload.warnings.join(" ");
+      expect(warning).toContain("2 further entities");
+      expect(warning).toContain("per source per target");
+      expect(warning).toContain("Scope to one source");
+      // Not the source warning: no source was dropped.
+      expect(warning).not.toContain("matching sources");
    });
 
    it("stays silent when nothing was cut", async () => {

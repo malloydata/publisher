@@ -540,80 +540,93 @@ function matchedTargetsFor(
 }
 
 /**
- * Take `limit` rows, round-robin across the targets that matched them.
- *
- * A single global cut by score stops working once a call carries several
- * targets: the strongest one fills the window and the others vanish ENTIRELY,
- * not merely rank lower. Measured against malloy-samples, a dimension target
- * scoring 0.63 took all four slots while the measure target's own best hit
- * (0.42) and the view target's (0.53) were absent from the response -- for a
- * caller that asked all three questions in one call, and whose reason for
- * using typed targets was to get all three answered.
- *
- * Cosine being an absolute scale is what makes a global cut LOOK defensible;
- * it is still wrong, because the scores answer different questions. A
- * measure's best match and a dimension's best match are not competing for the
- * same slot.
- *
- * Rows keep score order within each target, so what the cut costs a caller is
- * always that target's weakest hit, never its best.
+ * The most entities one source card carries per search target. A card is a
+ * source to CHOOSE, not a schema dump: `flights` alone exposes 124 entities,
+ * and returning all of them says less than returning the ten that answer the
+ * question. Per TARGET rather than per card, so a broad target cannot fill a
+ * card and hide a narrow one inside it -- the same failure the source window
+ * below prevents between cards.
  */
-function windowPerTarget(rows: ResultEntity[], limit: number): ResultEntity[] {
-   if (rows.length <= limit) return rows;
-   const queues = new Map<number, ResultEntity[]>();
-   const unclaimed: ResultEntity[] = [];
-   for (const r of rows) {
-      // A row waits in the queue of its BEST target, so it is offered once
-      // rather than once per target that matched it.
-      const best = [...(r.targetScores ?? [])].sort((a, b) => b[1] - a[1])[0];
-      if (!best) {
-         unclaimed.push(r);
-         continue;
-      }
-      const queue = queues.get(best[0]) ?? [];
-      queue.push(r);
-      queues.set(best[0], queue);
-   }
-   // Lowest target index first, so the rotation follows the caller's order.
-   const order = [...queues.keys()].sort((a, b) => a - b);
-   const taken: ResultEntity[] = [];
-   let progressed = true;
-   while (taken.length < limit && progressed) {
-      progressed = false;
-      for (const targetIndex of order) {
-         if (taken.length >= limit) break;
-         const next = queues.get(targetIndex)?.shift();
-         if (next) {
-            taken.push(next);
-            progressed = true;
-         }
-      }
-   }
-   // Rows no target claims (the lexical path carries no per-target scores)
-   // fill whatever is left, in score order.
-   for (const r of unclaimed) {
-      if (taken.length >= limit) break;
-      taken.push(r);
-   }
-   return taken;
-}
+const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
 
 /**
- * Distinct sources across a ranked list, which is what `total_available`
- * counts on a search tier. Taken over every matched row rather than over the
- * windowed ones, so it can exceed `returned`: setting both from the returned
- * cards made the pair read "N of N" on every search, including one the entity
- * cap had cut, and a caller reading them saw nothing was left behind.
+ * Window a ranked list into `limit` SOURCE cards, capping the entities each
+ * one carries per target.
+ *
+ * `limit` counts sources because that is what the published contract says it
+ * counts, and because counting entities makes targets compete for one pool:
+ * with a shared budget of 4, asking for a measure alone returned 3 hits while
+ * asking for it alongside a dimension and a view returned 2. The caller had
+ * added questions, not removed any, so the answer to the first one should not
+ * have shrunk. Bucketing by source removes the competition rather than
+ * refereeing it -- targets no longer spend from the same pool, so a target's
+ * answer inside a set is the answer it gives alone.
+ *
+ * Source order is the order sources first appear in the ranked list, which is
+ * already best-first; re-sorting here could disagree with the ranking that
+ * produced it.
  */
-function distinctSourceCount(rows: ResultEntity[]): number {
-   const sources = new Set<string>();
+function windowBySource(
+   rows: ResultEntity[],
+   sourceLimit: number,
+): {
+   rows: ResultEntity[];
+   totalSources: number;
+   returnedSources: number;
+   entitiesDropped: number;
+} {
+   const order: string[] = [];
+   const bySource = new Map<string, ResultEntity[]>();
+   // A folded sibling has no row of its own but does get a card, so it is one
+   // of the sources this count is about -- the same reason the old
+   // distinctSourceCount walked alsoIn.
+   const alsoIn = new Set<string>();
    for (const r of rows) {
-      if (r.source) sources.add(r.source);
-      // A folded sibling has no row of its own but does get a card, so it is
-      // one of the sources this count is about.
-      for (const sibling of r.alsoIn ?? []) sources.add(sibling);
+      const key = r.source ?? "";
+      let bucket = bySource.get(key);
+      if (!bucket) {
+         bucket = [];
+         bySource.set(key, bucket);
+         order.push(key);
+      }
+      bucket.push(r);
+      for (const sibling of r.alsoIn ?? []) alsoIn.add(sibling);
    }
-   return sources.size;
+   for (const sibling of alsoIn) {
+      if (!bySource.has(sibling)) order.push(sibling);
+   }
+   const keptSources = order.slice(0, sourceLimit);
+   const kept: ResultEntity[] = [];
+   let entitiesDropped = 0;
+   for (const key of keptSources) {
+      const perTarget = new Map<number, number>();
+      for (const r of bySource.get(key) ?? []) {
+         // A source row becomes the card itself, so it never spends a slot.
+         if (r.kind === "source") {
+            kept.push(r);
+            continue;
+         }
+         const best = [...(r.targetScores ?? [])].sort(
+            (a, b) => b[1] - a[1],
+         )[0];
+         // -1 buckets the rows no target claims (the lexical path carries no
+         // per-target scores), so they share one cap rather than none.
+         const target = best ? best[0] : -1;
+         const taken = perTarget.get(target) ?? 0;
+         if (taken >= MAX_ENTITIES_PER_SOURCE_TARGET) {
+            entitiesDropped += 1;
+            continue;
+         }
+         perTarget.set(target, taken + 1);
+         kept.push(r);
+      }
+   }
+   return {
+      rows: kept,
+      totalSources: order.length,
+      returnedSources: keptSources.length,
+      entitiesDropped,
+   };
 }
 
 /** Cut over-long context text on a word boundary, marking that it was cut. */
@@ -1578,6 +1591,21 @@ async function runContextQuery(
          ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
          : undefined;
 
+   /**
+    * The two cuts a ranked response can make, each named in its own unit. They
+    * have different remedies -- one is the page size, the other is per source
+    * -- and the old single warning reported both as "entities" while the
+    * envelope beside it counted sources.
+    */
+   const sourceCutWarning = (returned: number, matched: number) =>
+      matched > returned
+         ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
+         : undefined;
+   const entityCutWarning = (dropped: number) =>
+      dropped > 0
+         ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${MAX_ENTITIES_PER_SOURCE_TARGET} per source per target. Scope to one source to list all of its fields.`
+         : undefined;
+
    // Tier 3: nothing to rank -> enumerate what the targets name.
    if (request.listingOnly) {
       // With sourceName set this is the drill-down, so it lists every
@@ -1725,7 +1753,8 @@ async function runContextQuery(
    let retrievalReason: RetrievalReason | undefined;
    // How many entities matched before the limit cut the list, so a
    // capped response can say what it left behind.
-   let semanticMatchCount: number | undefined;
+   let semanticReturnedSources: number | undefined;
+   let semanticEntitiesDropped = 0;
    // Distinct sources across everything that matched, so total_available
    // can exceed the returned card count when the entity cap cut rows.
    let semanticTotalSources: number | undefined;
@@ -1872,9 +1901,11 @@ async function runContextQuery(
                const grouped = scoped
                   ? ranked
                   : groupSiblings(ranked, ranked.length);
-               semanticMatchCount = grouped.length;
-               semanticTotalSources = distinctSourceCount(grouped);
-               semanticResults = windowPerTarget(grouped, max);
+               const windowed = windowBySource(grouped, max);
+               semanticResults = windowed.rows;
+               semanticTotalSources = windowed.totalSources;
+               semanticReturnedSources = windowed.returnedSources;
+               semanticEntitiesDropped = windowed.entitiesDropped;
                totalEntities = unionTotalEntities;
                // An entity that cleared NO target's floor is below the
                // cutoff. Derived from the union rather than taken from one
@@ -1928,17 +1959,14 @@ async function runContextQuery(
          ...(totalEntities !== undefined
             ? { total_entities: totalEntities }
             : {}),
-         // Both counts in ranked ROWS, the unit the cap spends and the
-         // unit the lexical path below already uses. entityCountIn
-         // counts nested entities, which excludes a source that matched
-         // on its own terms -- toSourceResults turns that into the card
-         // rather than a row under it -- so pairing it with a row count
-         // reported a cut that never happened whenever a source ranked.
+         // Each cut in its own unit: `limit` drops whole sources, the
+         // per-source cap drops entities inside the ones it kept.
          ...warningsFor(
-            truncationWarning(
-               semanticResults.length,
-               semanticMatchCount ?? semanticResults.length,
+            sourceCutWarning(
+               semanticReturnedSources ?? sources.length,
+               semanticTotalSources ?? sources.length,
             ),
+            entityCutWarning(semanticEntitiesDropped),
          ),
       });
    }
@@ -2021,7 +2049,11 @@ async function runContextQuery(
    // why calling it twice doubles every alsoIn. A drill-down is confined
    // to one source, so it has no siblings to collapse.
    const grouped = scoped ? scored : groupSiblings(scored, scored.length);
-   const results = grouped.slice(0, max);
+   // Same windowing as the semantic path: `limit` counts sources, and each
+   // card is capped per target. This path carries no per-target scores, so
+   // its rows share one cap per source rather than one each.
+   const lexicalWindow = windowBySource(grouped, max);
+   const results = lexicalWindow.rows;
 
    const sources = toSourceResults(
       results,
@@ -2033,11 +2065,15 @@ async function runContextQuery(
    const envelope = {
       sources,
       ranking: "relevance" as const,
-      total_available: distinctSourceCount(grouped),
+      total_available: lexicalWindow.totalSources,
       returned: sources.length,
    };
    const lexicalWarnings = warningsFor(
-      truncationWarning(results.length, grouped.length),
+      sourceCutWarning(
+         lexicalWindow.returnedSources,
+         lexicalWindow.totalSources,
+      ),
+      entityCutWarning(lexicalWindow.entitiesDropped),
    );
    return jsonResource(
       uri,
