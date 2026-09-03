@@ -1500,6 +1500,16 @@ describe("get_context semantic retrieval", () => {
          "orders this caller may see",
          "amount of the order",
       ]);
+
+      // Semantic IS where matched_targets belongs: cosine is an absolute
+      // scale, so the number means something on its own and across targets.
+      const hit = rankedEntities(payload).find((e) => e.matched_targets);
+      expect(hit).toBeDefined();
+      expect(hit!.relevance).toBeGreaterThan(0);
+      for (const m of hit!.matched_targets!) {
+         expect(requests[0]).toContain(m.search_text);
+         expect(m.relevance).toBeGreaterThan(0);
+      }
    });
 
    it("keeps siblings apart on differing docs even at IDENTICAL scores", async () => {
@@ -1659,6 +1669,15 @@ describe("get_context semantic retrieval", () => {
                   entity_type: "dimension",
                   entity_id: "dimension:order_items:state",
                   relevance: 1,
+                  // Which target found it, and how well. A strict toEqual is
+                  // deliberate here: it is the one assertion in this file that
+                  // fails when a field ships without anyone deciding to add it.
+                  matched_targets: [
+                     {
+                        search_text: "where do customers live",
+                        relevance: 1,
+                     },
+                  ],
                },
             ],
          },
@@ -2607,24 +2626,24 @@ describe("get_context converged request shape", () => {
       ).toBe(true);
    });
 
-   it("names the target that matched, with its own relevance", async () => {
+   it("withholds matched_targets on the lexical path", async () => {
+      // relevance is REQUIRED inside matched_targets, so emitting it here
+      // would publish a lunr score -- the exact number this path already
+      // withholds from the entity's own `relevance`, because it is relative
+      // to its own query and comparing two of them means nothing. Naming the
+      // matched target is not worth contradicting that.
       const payload = parse(
          await handler()({
             search_targets: [
                { target_type: "measure", search_text: "revenue" },
-               { target_type: "dimension", search_text: "category" },
             ],
             scopes: scope,
          }),
       );
       const revenue = rankedEntities(payload).find((e) => e.name === "revenue");
-      expect(revenue!.matched_targets).toBeDefined();
-      // The text the caller wrote, not an index: the caller should not have to
-      // map positions back to its own request to read the answer.
-      expect(revenue!.matched_targets!.map((m) => m.search_text)).toEqual([
-         "revenue",
-      ]);
-      expect(revenue!.matched_targets![0].relevance).toBeGreaterThan(0);
+      expect(revenue).toBeDefined();
+      expect(revenue!.relevance).toBeUndefined();
+      expect(revenue!.matched_targets).toBeUndefined();
    });
 
    it("enumerates instead of ranking when no target carries text", async () => {

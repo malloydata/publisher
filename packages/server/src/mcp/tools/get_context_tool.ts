@@ -1848,6 +1848,7 @@ async function runContextQuery(
          sourceContext,
          environmentName,
          packageName,
+         searchTextsByIndex,
       );
       return jsonResource(uri, {
          sources,
@@ -1932,7 +1933,7 @@ async function runContextQuery(
       })
       .sort((a, b) => b.score - a.score);
 
-   const scored: ResultEntity[] = ranking.map(({ e, score, targetScores }) => ({
+   const scored: ResultEntity[] = ranking.map(({ e, score }) => ({
       kind: e.kind,
       name: e.name,
       source: e.source,
@@ -1944,7 +1945,13 @@ async function runContextQuery(
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
       ...(e.dataType ? { dataType: e.dataType } : {}),
-      targetScores,
+      // targetScores is deliberately NOT carried on this path. It would reach
+      // the wire as matched_targets[].relevance, whose relevance is required
+      // and would therefore publish a lexical score -- the exact number this
+      // path withholds from the entity's own `relevance`, because a lunr score
+      // is relative to its own query and comparing two of them means nothing.
+      // Naming the matched target is not worth contradicting that; a semantic
+      // response answers both.
       lexicalScore: score,
    }));
    // Grouped once, unwindowed, then windowed: see the semantic path for
