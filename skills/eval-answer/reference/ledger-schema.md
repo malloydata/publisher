@@ -123,6 +123,7 @@ on that axis.
 | `answererCostUsd` / `judgeCostUsd` | What the arm cost, split by role. The judge's half was discarded until 2026-09-02, so every "cost per arm" quoted before then was the answerer alone. |
 | `goldenCheck` | What `verify_goldens.py` said before the run started: `N ok, M drifted, K other finding(s)`, or why it did not run (no truth server on a platform target; `--skip-golden-check`; rebuild). A run that started on a drifted set says so here rather than pretending its verdicts mean something. |
 | `status` | `complete`, or `aborted` when four consecutive attempts errored or found the server dead and the harness stopped rather than spend the rest of the budget on attempts nobody will trust. |
+| `doubtedGoldens` | The cases whose golden the judge did not believe: `qid`, `gold_status` (`suspect` or `verified_wrong`), `gold_note`. **Read this before diagnose.** These are dataset issues, not model failures, and they go through the golden side door in `skill:eval-loop`. Empty list when the judge believed every key. Written from the same scan that prints the end-of-run warning, because a warning that lives only in console text is one scrollback away from sending a modelling agent at a model that is already right. |
 | `mode` / `setName` / `targetVersion` / `serverVersion` / `traceMode` / `callBudget` / `status` | Defined and accepted, **not yet written by any harness** -- kept in the schema for the platform target and the conductor, which need them. |
 
 ## Events

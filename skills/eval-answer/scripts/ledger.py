@@ -122,7 +122,7 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
                 "skillsRoot", "harnessVersion",
                 "judgeSkills", "diagnoserManifest",
-                "improverManifest"} | RUN_RECOMMENDED
+                "improverManifest", "doubtedGoldens"} | RUN_RECOMMENDED
 
 
 def now() -> str:

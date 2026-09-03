@@ -9,8 +9,10 @@ You conduct this loop. There is no batch orchestrator to start, no eval API,
 and no eval MCP tools. The ledger is plain files in the model package's git
 repository (`reference/ledger-schema.md` in `skill:eval-answer` defines every
 file and event). Scoring is an LLM judge you spawn per case. There is no
-scripted scorer: the one script in the tree checks contamination, which is the
-one thing a judge cannot see.
+scripted scorer, and there will not be one: a script that can pass a wrong
+answer is worse than none. The scripts under `scripts/` run the loop -- they
+answer, re-execute, spawn the judge, compare runs, and write the ledger -- but
+none of them decides whether an answer was right.
 
 ```
 scrape/run  ->  eval  ->  diagnose  ->  improve  ->  checkpoint
@@ -212,7 +214,10 @@ python3 skills/eval-loop/scripts/run_baseline.py \
 # 3. compare two arms, or two runs of one arm
 python3 skills/eval-loop/scripts/flip_table.py --a results/<a> --b results/<b>
 
-# 4. diagnose what failed; the agent's clusters become clusters.jsonl
+# 4. FIRST: any golden the judge did not believe. `jq .doubtedGoldens
+#    results/<arm>/run.json` -- non-empty means settle those through the golden
+#    side door before diagnosing, or you send a modelling agent at a model that
+#    is already right.
 python3 skills/eval-diagnose/scripts/diagnose.py \
   --run results/<arm> --set <repo>/evals/ecommerce --model-dir <package>
 #    (cluster_failures.py gives a free mechanical first look, as
@@ -596,8 +601,9 @@ conductor. Do not:
 
 - publish the model to a hosted platform as a "true" checkpoint or learning
   curve
-- start a Python orchestrator (`loop.py`, `improve_batch.py`); the only
-  script in the tree is the contamination check
+- start a Python orchestrator (`loop.py`, `improve_batch.py`) that runs the
+  five steps end to end unattended. You conduct; the scripts are the steps,
+  not the sequencing
 - score by string-diffing rows instead of judging them, or reintroduce a
   scripted row oracle: one that can pass a wrong answer is worse than none
 - wait for a bigger gold set before the loop can run; dev/holdout on what

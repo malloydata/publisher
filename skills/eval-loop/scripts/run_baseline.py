@@ -1268,8 +1268,16 @@ def main(argv: list[str] | None = None) -> int:
         print("where to fix: " + ", ".join(
             f"{k} {v}" for k, v in sorted(rs["failures_by_where_to_fix"].items())))
     judge_cost = sum((v.get("judge_cost_usd") or 0) for v in verdicts.values())
+    # Recorded, not only printed. The next command is usually diagnose, and a
+    # doubted key sends a modelling agent to fix a model that is already right --
+    # the most expensive wrong turn this loop can take. A warning that exists
+    # only as console text is one scrollback away from being missed, so the run
+    # itself carries the list and the conductor can read it from run.json.
     ledger.update_run(a.out, answererCostUsd=round(cost, 4),
                       judgeCostUsd=round(judge_cost, 4),
+                      doubtedGoldens=[{"qid": q, "gold_status": st,
+                                       "gold_note": note}
+                                      for q, st, note in doubted],
                       status="aborted" if aborted else "complete")
     print(f"answerer cost ${cost:.2f}" + (f", judge ${judge_cost:.2f}" if judge_cost else ""))
     return 0
