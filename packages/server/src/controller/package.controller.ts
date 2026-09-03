@@ -81,17 +81,24 @@ export class PackageController {
       packageName: string,
       reload: boolean,
    ): Promise<ApiPackage> {
+      let metadata: ApiPackage;
       if (reload) {
-         return (await this.reloadPackage(environmentName, packageName))
+         metadata = (await this.reloadPackage(environmentName, packageName))
             .metadata;
+      } else {
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const _package = await environment.getPackage(packageName, false);
+         metadata = _package.getPackageMetadata();
       }
 
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      const _package = await environment.getPackage(packageName, false);
-      const metadata = _package.getPackageMetadata();
+      // Enriched on BOTH paths. This sat below a `reload` early return, so
+      // `?reload=true` answered without the field while a plain GET carried
+      // it: one resource in two shapes, decided by a query param. And it was
+      // absent from precisely the request that INVALIDATES the index, which
+      // is when a caller starts the `status` polling the field exists for.
       const embeddingIndex = await this.embeddingIndexStatus(
          environmentName,
          packageName,
