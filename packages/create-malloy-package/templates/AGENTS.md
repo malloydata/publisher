@@ -141,8 +141,10 @@ from the database it replaces.
 
 Two interfaces reach the same models with the same governance.
 
-MCP, for an interactive agent: the tools are `get_context` (discover
-environments, packages, sources, and fields), `execute_query` (run a view or
+MCP, for an interactive agent: the tools are `list_packages` (name the
+environments and the packages in each, which is where `get_context`'s required
+scope comes from), `get_context` (discover the sources, views, and fields inside
+one of those packages), `execute_query` (run a view or
 ad-hoc Malloy and get JSON back), `compile_model` (compile-check a snippet of Malloy
 against the model, so it takes the snippet as a required `source` argument; it reports
 the model file's own errors too),

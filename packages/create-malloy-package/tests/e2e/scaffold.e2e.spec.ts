@@ -339,6 +339,7 @@ describe("generated project serves against a real server", () => {
          "execute_query",
          "get_context",
          "get_status",
+         "list_packages",
          "reload_package",
          "search_database_schema",
          "search_malloy_docs",
