@@ -304,9 +304,19 @@ def build_workspace(skills: Iterable[str],
                     mcp_server: str = "publisher") -> pathlib.Path:
     """A scratch cwd holding `.claude/skills/` and an MCP config.
 
-    Symlinked rather than copied so an edit to a skill takes effect on the next
-    spawn, and so a long run cannot be reading a stale copy of the doctrine it
-    reports having applied.
+    COPIED, not symlinked. A symlink loads SKILL.md fine -- the skills mechanism
+    follows it -- but the agent cannot Read anything BESIDE it: the link
+    resolves outside the session's allowed directory and every read of
+    `references/*.md` comes back "permission not granted". A clustering agent
+    said so itself and refused to guess a shape it could not see, and the run
+    recorded zero clusters.
+
+    That kills progressive disclosure, which is the whole point of bundling
+    references with a skill, so the copy wins. It costs the property the
+    symlink bought -- an edit mid-run no longer takes effect on the next spawn
+    -- and for an eval that is the better default anyway: the doctrine a run
+    reports applying should be the doctrine it started with, and
+    `skillsVersion` already pins it.
     """
     work = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
     dest = work / ".claude" / "skills"
@@ -321,7 +331,7 @@ def build_workspace(skills: Iterable[str],
     roots = ([skills_root] if isinstance(skills_root, pathlib.Path)
              else list(skills_root))
     for name in present:
-        (dest / name).symlink_to(find_skill(name, roots))
+        shutil.copytree(find_skill(name, roots), dest / name, symlinks=False)
     if mcp_url:
         (work / "mcp.json").write_text(json.dumps(
             {"mcpServers": {mcp_server: {"type": "http", "url": mcp_url}}}))

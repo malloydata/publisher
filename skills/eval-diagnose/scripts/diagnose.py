@@ -256,7 +256,13 @@ def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
         CLUSTER_PROMPT.format(issues=json.dumps(compact, indent=2)),
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
         model=a.cluster_model,
-        mcp_url=None, blocked=NO_EDITS, turns=8, timeout=a.timeout,
+        # 14, not 8. The output contract moved into
+        # references/output-contract.md, and FETCHING it costs turns before the
+        # agent has written a word. At 8 the whole reply was "I'll read the
+        # output contract now." -- text, so no retry fired, and the run
+        # recorded zero clusters. A turn budget tuned for a pasted prompt is
+        # too tight the moment the prompt stops carrying everything.
+        mcp_url=None, blocked=NO_EDITS, turns=14, timeout=a.timeout,
         retries=a.retries, save_transcript=out / "clustering.jsonl")
     (out / "clustering.md").write_text(r.text)
     res = r.json or {"clusters": [], "reasoning": r.error or "unparseable"}
