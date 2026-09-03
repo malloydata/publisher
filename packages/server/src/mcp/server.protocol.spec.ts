@@ -165,6 +165,9 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          // never supplies silently takes the model's default.
          "givens",
          "authorize",
+         // A REQUIRED #(filter) the caller cannot see is a query that fails
+         // on use, so it is pinned for the same reason givens is.
+         "filter_params",
          // Not agent-actionable — an agent writes Malloy from name and
          // sourceName, never from a composite key — but pinned on the same
          // rule anyway, since a harness that cannot identify an entity

@@ -199,6 +199,8 @@ interface SourceContextEntry {
     * are the givens to supply". See docs/authorize.md.
     */
    authorize?: SourceContextAuthorize[];
+   /** Filters the source declares via `#(filter)`. */
+   filters?: SourceContextFilter[];
 }
 
 /** A `given:` a caller may supply, as the model declares it. */
@@ -207,6 +209,20 @@ interface SourceContextGiven {
    type?: string;
    annotations?: string[];
    default?: string;
+}
+
+/**
+ * A filter a source exposes via `#(filter)`, as the model declares it. A
+ * REQUIRED one is the reason this is on the card at all: a caller that cannot
+ * see it cannot supply it, and the query fails when they use the source. That
+ * is the same argument that keeps `givens` on a card, and it is why this is
+ * reported rather than left to a follow-up call the way a description is.
+ */
+interface SourceContextFilter {
+   name: string;
+   type: string;
+   dimension?: string;
+   required?: boolean;
 }
 
 /** One authorize gate, with the givens its expression reads. */
@@ -370,6 +386,7 @@ interface SourceCardInfo {
    docs?: string;
    givens?: SourceContextGiven[];
    authorize?: SourceContextAuthorize[];
+   filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
 }
@@ -442,6 +459,7 @@ function toSourceResults(
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
                ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
+               ...(ctx?.filters ? { filter_params: ctx.filters } : {}),
                joins: ctx?.joins ?? [],
             },
          };
@@ -1055,6 +1073,20 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                      expression,
                      given_names: referencedGivenNames(expression),
                   })),
+                  filters: (apiSource.filters ?? []).flatMap((filter) =>
+                     filter.name && filter.type
+                        ? [
+                             {
+                                name: filter.name,
+                                type: filter.type,
+                                ...(filter.dimension
+                                   ? { dimension: filter.dimension }
+                                   : {}),
+                                ...(filter.required ? { required: true } : {}),
+                             },
+                          ]
+                        : [],
+                  ),
                });
             }
          }
@@ -1156,6 +1188,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 /** What the compiled model says about querying a source, beyond its schema. */
 interface SourceGovernance {
    givens: SourceContextGiven[];
+   filters: SourceContextFilter[];
    authorize: SourceContextAuthorize[];
 }
 
@@ -1311,6 +1344,7 @@ function buildSourceContext(
          ...(summary ? { oneLineSummary: summary } : {}),
          ...(gates?.givens.length ? { givens: gates.givens } : {}),
          ...(gates?.authorize.length ? { authorize: gates.authorize } : {}),
+         ...(gates?.filters.length ? { filters: gates.filters } : {}),
       });
    }
    for (const e of entities) {
@@ -1392,14 +1426,14 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - scopes is REQUIRED: exactly one, naming an environment and package. malloy_listEnvironments lists them.
 - Read warnings and any error/stale field before trusting a number.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
-- Read a source's doc before querying it: it carries grain and population rules its fields do not.
-- A source with authorize is gated: supply the givens it names or the query is denied.
+- Read a source's doc before querying: it carries grain and population rules its fields do not.
+- authorize means gated: supply the givens it names or the query is denied.
 
 ## Parameters
 search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, and omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150; ranked 20, listing 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question, for observability.
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in, matched_targets, relevance, entity_id. A joined field's name IS its dotted path: use it verbatim.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in, matched_targets, relevance, entity_id. A joined field's name IS its dotted path: use it verbatim.
 ranking, returned of total_available sources, next_offset on a listing, warnings[].
 Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
 
@@ -1422,14 +1456,14 @@ Discover what a Publisher deployment exposes and retrieve the entities most rele
 - A query returns whole source cards with fields nested: one call, no drill-down.
 - Read warnings and any error/stale field before trusting a number.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
-- Read a source's doc before querying it: it carries grain and population rules its fields do not.
-- A source with authorize is gated: supply the givens it names or the query is denied.
+- Read a source's doc before querying: it carries grain and population rules its fields do not.
+- authorize means gated: supply the givens it names or the query is denied.
 
 ## Parameters
 All optional; supply what you know. None lists environments and their packages; environmentName lists its packages; + packageName lists its sources with their joins; + query ranks its entities. sourceName alone returns one source's full card ([] = no such source); with a query it ranks inside it. limit caps entities (max 50; retrieval 10).
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in (equal-scoring peers), relevance, entity_id. A joined field's name IS its full dotted path: use it verbatim. Pass a source as sourceName, a view or query as queryName.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in (equal-scoring peers), relevance, entity_id. A joined field's name IS its full dotted path: use it verbatim. Pass a source as sourceName, a view or query as queryName.
 ranking, returned of total_available sources, warnings[] for what was cut or stale.
 Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
 

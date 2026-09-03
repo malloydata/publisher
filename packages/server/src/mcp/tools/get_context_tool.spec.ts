@@ -2811,3 +2811,73 @@ describe("get_context converged request shape", () => {
       expect(warning).toContain("malloy_executeQuery");
    });
 });
+
+describe("get_context filter_params", () => {
+   it("reports a source's #(filter) declarations, required ones included", async () => {
+      // A required filter the caller cannot see is a query that fails the
+      // moment they use the source. Publisher enforces #(filter) server-side
+      // and exposes it over REST as filterParams; withholding it from the card
+      // made the card unusable without a second, undocumented lookup.
+      const model = {
+         getSourceInfos: () => [
+            { name: "sales", annotations: [], schema: { fields: [] } },
+         ],
+         getSources: () => [
+            {
+               name: "sales",
+               filters: [
+                  { name: "region", type: "in", dimension: "region_code" },
+                  { name: "amount", type: "greater_than", required: true },
+               ],
+            },
+         ],
+         getQueries: () => [],
+      };
+      const handler = captureConverged({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "shop" }],
+         }),
+      );
+      const card = payload.sources[0];
+      expect(card.source_info.filter_params).toEqual([
+         { name: "region", type: "in", dimension: "region_code" },
+         { name: "amount", type: "greater_than", required: true },
+      ]);
+   });
+
+   it("omits filter_params entirely when the source declares none", async () => {
+      // Absent, not empty: the published shape omits null fields, so a caller
+      // reads absence as "declares none" on both surfaces.
+      const model = {
+         getSourceInfos: () => [
+            { name: "plain", annotations: [], schema: { fields: [] } },
+         ],
+         getSources: () => [{ name: "plain" }],
+         getQueries: () => [],
+      };
+      const handler = captureConverged({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "shop" }],
+         }),
+      );
+      expect(payload.sources[0].source_info).not.toHaveProperty(
+         "filter_params",
+      );
+   });
+});
