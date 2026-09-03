@@ -147,3 +147,26 @@ def served_model_path(base: str, environment: str, package: str,
     except Exception:            # noqa: BLE001 - absence is reported, not fatal
         return None
     return None
+
+
+def package_identity(base: str, environment: str, package: str) -> dict[str, str]:
+    """What the server says it is serving: `sourceContentSha`, `servedRevision`.
+
+    Take these rather than computing your own. `sourceContentSha` is a content
+    hash over EVERY model path in the package, so it moves when an imported file
+    moves -- which a sha of the one `--model-path` does not. `servedRevision` is
+    minted per load, so it identifies a load rather than content: two loads of
+    identical bytes have different revisions, and it is a poor pin on its own.
+
+    Measured on a live server: bumping `version` in publisher.json does not move
+    `sourceContentSha`, and neither does adding a non-model file to the package
+    directory. So `publisher.json` version pins nothing (nothing reads it) and a
+    set of goldens living inside the package needs its own hash.
+    """
+    try:
+        d = get_json(base, f"api/v0/environments/{urllib.parse.quote(environment)}"
+                           f"/packages/{urllib.parse.quote(package)}")
+    except Exception:                                   # noqa: BLE001
+        return {}
+    return {k: d[k] for k in ("sourceContentSha", "servedRevision")
+            if isinstance(d.get(k), str)}

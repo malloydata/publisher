@@ -23,6 +23,7 @@ shape is the contract and the draft was the bug.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -122,7 +123,30 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "answererCostUsd", "judgeCostUsd", "goldenCheck",
                 "skillsRoot", "harnessVersion",
                 "judgeSkills", "diagnoserManifest",
-                "improverManifest", "doubtedGoldens"} | RUN_RECOMMENDED
+                "improverManifest", "doubtedGoldens",
+                "packageSha", "servedRevision", "datasetSha"} | RUN_RECOMMENDED
+
+
+def dataset_sha(set_dir: pathlib.Path) -> str | None:
+    """Content hash of the set: `cases.jsonl` plus `set.json`.
+
+    Separate from the model's sha ON PURPOSE. A golden repair is not a model
+    change, and one pin covering both would make every answer-key fix read as an
+    edit to the model -- which is exactly the distinction an A/B rests on.
+
+    Automatic, so nobody has to remember it. `datasetVersion` stays beside it as
+    the human-readable sequence, and `goldenRevision` stays per case, because a
+    score event has to be able to say WHICH key it compared against in a form a
+    person can talk about.
+    """
+    h = hashlib.sha256()
+    for name in ("set.json", "cases.jsonl"):
+        f = set_dir / name
+        h.update(name.encode())
+        h.update(b"\0")
+        h.update(f.read_bytes() if f.exists() else b"")
+        h.update(b"\0")
+    return h.hexdigest()
 
 
 def now() -> str:

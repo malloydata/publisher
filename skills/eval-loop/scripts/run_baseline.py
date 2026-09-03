@@ -124,7 +124,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import doc_tokens, entity_ids, search_terms  # noqa: E402
-from publisher_rest import served_model_path, try_query  # noqa: E402
+from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
 from score_retrieval import score_case, summarise  # noqa: E402
 from check_contamination import check as path_check  # noqa: E402
 import verify_goldens  # noqa: E402
@@ -1050,6 +1050,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  ! no truth server for a golden check on a platform target "
               "(--truth-publisher); goldens are taken as they stand")
 
+    served_identity = package_identity(a.publisher, a.environment, a.package)
     label = a.label or next_run_label(a.out, a.set_dir.name, a.phase)
     art = a.out / "artifacts"
     art.mkdir(parents=True, exist_ok=True)
@@ -1141,6 +1142,14 @@ def main(argv: list[str] | None = None) -> int:
         started=ledger.now(),
         judgeVersion=JUDGE_VERSION, rubricSha=RUBRIC_SHA,
         datasetVersion=set_meta.get("datasetVersion"),
+        # Content hash of the set, beside the human-readable version. A golden
+        # repair moves this without anyone remembering to bump anything.
+        datasetSha=ledger.dataset_sha(a.set_dir),
+        # What the SERVER says it served, taken rather than recomputed.
+        # packageSha covers every model path in the package, so an edit to an
+        # imported file moves it where a sha of the one --model-path does not.
+        packageSha=served_identity.get("sourceContentSha"),
+        servedRevision=served_identity.get("servedRevision"),
         environment=a.environment, package=a.package,
         modelPath=a.model_path, modelSha=pinned_sha,
         # Pinned to the served package's tree when there is one: the dirty
@@ -1229,7 +1238,11 @@ def main(argv: list[str] | None = None) -> int:
                       question_sha=c.get("questionSha"),
                       submitted=att["submitted"],
                       final_query=att["final_query"],
-                      servedRevision=None,
+                      # The revision that actually answered. Documented
+                      # as "package revision actually queried" and left
+                      # None until now, so nothing could tell an attempt
+                      # answered before a reload from one answered after.
+                      servedRevision=served_identity.get("servedRevision"),
                       n_get_context=att["n_get_context"],
                       n_execute=att["n_execute"],
                       n_execute_errors=att["n_execute_errors"],

@@ -147,9 +147,17 @@ a local one.
 ## Before you start
 
 1. The model package under evaluation must live in a git repository, with
-   `evals/<set>/` beside the model files (same repo, never inside the served
-   package tree). Git is the checkpoint mechanism; without it there is no
-   rollback and no run can include improve.
+   `evals/<set>/` in the package, beside the model files. Git is the checkpoint
+   mechanism; without it there is no rollback and no run can include improve.
+
+   Keeping the set IN the package is what stops a model edit and its answer key
+   drifting apart: they move in one commit, so fixing a measure and forgetting
+   the golden that depended on it stops being possible. It is safe -- measured
+   on a running server, a `cases.jsonl` inside a package appears in no model
+   listing, no notebook listing, no package resource, and 404s over HTTP, so an
+   MCP-only answerer has no route to it. What it does NOT get you is free
+   versioning: `sourceContentSha` hashes model paths only, so the set needs its
+   own `datasetSha`.
 
 2. The server must be up with retrieval tracing on, so a call's ranked results
    can be recovered afterwards (open-source Publisher: `PUBLISHER_MCP_TRACE=retrieval`).
