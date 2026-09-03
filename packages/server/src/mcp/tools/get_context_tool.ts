@@ -51,6 +51,10 @@ interface Entity {
    // Malloy type of a dimension or measure ("string", "number", "date", ...).
    // What an agent needs to know before it filters or aggregates the field.
    dataType?: string;
+   // For a field reached THROUGH a join, the traversal that reaches it
+   // ("orders", or "order_items.inventory_items"), which is also the dotted
+   // prefix of `name`. Absent on a source's own fields. See collectJoinedFields.
+   joinPath?: string;
 }
 
 /**
@@ -128,6 +132,8 @@ interface ResultEntity {
    lexicalScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
+   /** The join traversal reaching this field; absent on a source's own. */
+   joinPath?: string;
 }
 
 /**
@@ -354,6 +360,8 @@ interface SourceCardEntity {
    /** Publisher extension. Stable `kind:source:name`; see {@link entityId}. */
    entity_id: string;
    relationship?: Relationship;
+   /** The join traversal reaching this field, when it is not the source's own. */
+   join_path?: string;
    aliases?: string[];
    also_in?: string[];
 }
@@ -430,6 +438,7 @@ function toSourceResults(
          ...(r.doc ? { description: r.doc } : {}),
          ...(r.dataType ? { data_type: r.dataType } : {}),
          ...(r.relationship ? { relationship: r.relationship } : {}),
+         ...(r.joinPath ? { join_path: r.joinPath } : {}),
          ...(r.aliases ? { aliases: r.aliases } : {}),
          ...(r.alsoIn ? { also_in: r.alsoIn } : {}),
       };
@@ -545,6 +554,100 @@ export function sanitize(query: string): string {
 }
 
 /**
+ * How many joins deep a field path is indexed. Depth 1 reaches
+ * `orders.amount`; depth 2 reaches `order_items.inventory_items.cost`, the
+ * depth the published shape's own `join_path` example uses. Deeper paths
+ * exist and stay unindexed: each level multiplies the entity count by the
+ * joined source's field count, against a hard cap of MAX_EMBEDDED_ENTITIES.
+ */
+const MAX_JOIN_PATH_DEPTH = 2;
+
+/** The shape of a field inside a join's inlined schema. */
+interface JoinSchemaField {
+   kind?: string;
+   name: string;
+   annotations?: Array<string | { value: string }>;
+   relationship?: Relationship;
+   schema?: { fields?: JoinSchemaField[] };
+   type?: { kind?: string };
+}
+
+/**
+ * Index the fields reachable THROUGH a join, under their dotted Malloy path.
+ *
+ * A join used to be indexed as a single entity and its target's fields left
+ * out, on the reasoning that they were already indexed under the target
+ * source. That reasoning does not survive contact with the caller: the path
+ * is what a query needs, and the path cannot be derived from anything the
+ * response carries. The stable `JoinInfo` inlines the target's schema without
+ * naming the target source (#1100), so an agent holding a join entity knows a
+ * relationship exists and has no way to learn what it reaches. Meanwhile the
+ * tool description tells it to "traverse a join as joinName.fieldName" -- a
+ * path it was being asked to guess. The published shape indexes these as
+ * entities in their own right and reports the traversal as `join_path`.
+ *
+ * `fanout` is the widest relationship on the path, not the last one: a single
+ * `many` hop anywhere means aggregating through this field fans out, which is
+ * the fact that decides whether a measure reached this way can be trusted.
+ * Views are deliberately not collected: a joined view is not referenceable as
+ * `joinName.viewName` the way a dimension or measure is.
+ */
+function collectJoinedFields(args: {
+   fields: JoinSchemaField[];
+   sourceName: string;
+   modelPath: string;
+   joinPath: string;
+   fanout: Relationship;
+   depth: number;
+   nextId: () => string;
+   out: Entity[];
+}): void {
+   const {
+      fields,
+      sourceName,
+      modelPath,
+      joinPath,
+      fanout,
+      depth,
+      nextId,
+      out,
+   } = args;
+   for (const field of fields) {
+      if (field.kind === "join") {
+         if (depth >= MAX_JOIN_PATH_DEPTH) continue;
+         collectJoinedFields({
+            ...args,
+            fields: field.schema?.fields ?? [],
+            joinPath: `${joinPath}.${field.name}`,
+            fanout:
+               field.relationship === "one"
+                  ? fanout
+                  : (field.relationship ?? fanout),
+            depth: depth + 1,
+         });
+         continue;
+      }
+      if (field.kind !== "dimension" && field.kind !== "measure") continue;
+      out.push({
+         id: nextId(),
+         kind: field.kind,
+         name: `${joinPath}.${field.name}`,
+         // The source that DECLARES the traversal, so the field nests under
+         // the card a caller would actually query from.
+         source: sourceName,
+         modelPath,
+         doc: docText(field.annotations),
+         embedDoc: docOnlyText(field.annotations),
+         joinPath,
+         relationship: fanout,
+         ...(field.kind === "measure" || field.kind === "dimension"
+            ? { dataType: malloyType(field) }
+            : {}),
+      });
+   }
+}
+
+/**
  * Walk every model in the package and collect sources, their views,
  * dimension/measure fields and declared joins, and named queries. Returns the
  * full set; the optional source-level drill-down is applied by the caller
@@ -641,9 +744,19 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   embedDoc: docOnlyText(field.annotations),
                   relationship: field.relationship,
                });
-               // Deliberately NOT recursing into field.schema: those fields
-               // are the target source's own, already indexed under it.
-               // Recursing would duplicate every joined field once per join.
+               // The join's own entity above says a relationship exists; the
+               // fields below say what it reaches and under what path. Both
+               // are needed, and neither substitutes for the other.
+               collectJoinedFields({
+                  fields: (field.schema?.fields ?? []) as JoinSchemaField[],
+                  sourceName,
+                  modelPath,
+                  joinPath: field.name,
+                  fanout: field.relationship,
+                  depth: 1,
+                  nextId: () => String(n++),
+                  out: entities,
+               });
                continue;
             }
             if (
@@ -752,7 +865,12 @@ function collapseAliases(entities: Entity[]): Entity[] {
       // rather than a column; only fields within one source can be two
       // spellings of one thing.
       if (e.kind !== "dimension" && e.kind !== "measure") continue;
-      const key = `${e.kind}|${e.source ?? ""}|${humanizeName(e.name)}`;
+      // joinPath is part of the key because humanizeName maps "." and "_"
+      // alike to a space, so a joined `orders.amount` and a local
+      // `orders_amount` would otherwise key identically and collapse into
+      // one row -- two different columns, one of them reached through a join
+      // that may filter or fan out.
+      const key = `${e.kind}\x00${e.source ?? ""}\x00${e.joinPath ?? ""}\x00${humanizeName(e.name)}`;
       const group = groups.get(key);
       if (group) group.push(e);
       else groups.set(key, [e]);
@@ -934,12 +1052,12 @@ const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes an
 - A source with authorize is gated: supply the givens it names or the query is denied.
 
 ## Parameters
-All optional; supply what you know. None lists environments and their packages; environmentName lists its packages; + packageName lists its sources with their joins; + query ranks its entities. sourceName alone returns one source's full card, so [] means no such source; with a query it ranks inside it. limit caps entities (max 50; retrieval defaults to 10).
+All optional; supply what you know. None lists environments and their packages; environmentName lists its packages; + packageName lists its sources with their joins; + query ranks its entities. sourceName alone returns one source's full card ([] = no such source); with a query it ranks inside it. limit caps entities (max 50; retrieval 10).
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (gates, report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship, aliases (same field, other spellings), also_in (equal-scoring sources; pick by docs), relevance, entity_id. Pass a source as sourceName, a view or query as queryName; traverse a join as joinName.fieldName.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases (other spellings), also_in (equal-scoring peers; pick by docs), relevance, entity_id. A joined field's name IS its full dotted path: use it verbatim. Pass a source as sourceName, a view or query as queryName.
 ranking (relevance|prominence), returned of total_available sources, warnings[] for what was cut or stale.
-Semantic ranking fills relevance: no sources means nothing cleared the floor; below_cutoff_count of total_entities were rejected. A "lexical" retrieval adds retrieval_reason; only "indexing" is worth a retry.
+Semantic fills relevance: no sources means nothing cleared the floor; below_cutoff_count of total_entities were rejected. A "lexical" retrieval adds retrieval_reason; only "indexing" is worth a retry.
 
 ## Example
 {"environmentName":"examples","packageName":"storefront","query":"revenue by category"}`;
@@ -1256,6 +1374,7 @@ export function registerGetContextTool(
                   doc: e.doc,
                   ...(e.relationship ? { relationship: e.relationship } : {}),
                   ...(e.aliases ? { aliases: e.aliases } : {}),
+                  ...(e.joinPath ? { joinPath: e.joinPath } : {}),
                   ...(e.dataType ? { dataType: e.dataType } : {}),
                })),
                sourceContext,
@@ -1395,6 +1514,7 @@ export function registerGetContextTool(
                                  ? { relationship: e.relationship }
                                  : {}),
                               ...(e.aliases ? { aliases: e.aliases } : {}),
+                              ...(e.joinPath ? { joinPath: e.joinPath } : {}),
                               ...(e.dataType ? { dataType: e.dataType } : {}),
                               score: Math.round(hit.score * 10_000) / 10_000,
                            },
@@ -1513,6 +1633,7 @@ export function registerGetContextTool(
             doc: e.doc,
             ...(e.relationship ? { relationship: e.relationship } : {}),
             ...(e.aliases ? { aliases: e.aliases } : {}),
+            ...(e.joinPath ? { joinPath: e.joinPath } : {}),
             ...(e.dataType ? { dataType: e.dataType } : {}),
             ...(scoreByRef.get(e.id) !== undefined
                ? { lexicalScore: scoreByRef.get(e.id) }

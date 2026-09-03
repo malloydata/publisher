@@ -134,6 +134,10 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          "joins",
          "sourceName",
          "relationship",
+         // The dotted path is the only way to reach a joined field, and the
+         // response is the only place it exists -- JoinInfo does not name the
+         // source it reaches (#1100).
+         "join_path",
          "aliases",
          "also_in",
          // The hand-off. The response renames these into resource_id, so

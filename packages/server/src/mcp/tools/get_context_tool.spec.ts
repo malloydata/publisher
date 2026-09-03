@@ -213,6 +213,7 @@ interface RankedEntity {
    data_type?: string;
    relevance?: number;
    relationship?: string;
+   join_path?: string;
    aliases?: string[];
    also_in?: string[];
 }
@@ -230,7 +231,8 @@ function textBlock(result: { content: Content }) {
 
 // A model with one source (order_items) carrying one dimension (state) and one
 // declared join (current_building). The join's own schema carries a field with
-// a distinctive token so a no-recursion pin can assert it is never indexed.
+// a distinctive token, so a search for it pins that a joined field is indexed
+// under its dotted path rather than left unreachable.
 const mockModel = {
    getSourceInfos: () => [
       {
@@ -886,10 +888,12 @@ describe("get_context discovery tiers", () => {
       );
    });
 
-   it("tier 4: does not recurse into a join's own schema", async () => {
-      // The joined source's fields are already indexed under that source.
-      // Recursing would re-index every one of them once per join that
-      // reaches it, which is the redundancy this tool can least afford.
+   it("tier 4: indexes a joined field under its dotted path", async () => {
+      // The path is what a query needs and what nothing else in the response
+      // can supply: JoinInfo inlines the target's schema without naming the
+      // target source, so an agent holding only the join entity cannot derive
+      // `current_building.building_name` -- while the tool description tells
+      // it to traverse a join exactly that way.
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
@@ -900,7 +904,24 @@ describe("get_context discovery tiers", () => {
             query: "Zzyzx",
          }),
       );
-      expect(payload.sources).toEqual([]);
+      const hit = rankedEntities(payload).find((r) =>
+         r.name.includes("building_name"),
+      );
+      expect(hit).toBeDefined();
+      // The dotted Malloy path, verbatim, not the bare field name.
+      expect(hit!.name).toBe("current_building.building_name");
+      expect(hit!.join_path).toBe("current_building");
+      // The cardinality of the path that reaches it: `one` means aggregating
+      // through it does not fan out.
+      expect(hit!.relationship).toBe("one");
+      // It nests under the source that DECLARES the traversal, which is the
+      // card a caller would actually query from.
+      expect(
+         payload.sources.find(
+            (c: { source_info: { resource_id: { source: string } } }) =>
+               c.source_info.resource_id.source === "order_items",
+         ),
+      ).toBeDefined();
    });
 
    it("tier 3: a package listing still returns only sources, not joins", async () => {
@@ -1029,7 +1050,10 @@ describe("get_context discovery tiers", () => {
          await handler({
             environmentName: "malloy-samples",
             packageName: "ecommerce",
-            query: "Zzyzx",
+            // A token that appears in no name and no doc anywhere in the
+            // fixture, INCLUDING inside a join's inlined schema -- those are
+            // indexed now, so "Zzyzx" is a hit rather than a true negative.
+            query: "Qwghlm",
          }),
       );
       // `sources` is the result set now, not a context block beside one, so
@@ -1419,14 +1443,17 @@ describe("get_context semantic retrieval", () => {
    const VECTORS: Record<string, number[]> = {
       // An entity's name and its doc embed as separate facets, so both need
       // a stub vector. A missing entry throws, which is what makes this map
-      // double as a pin on exactly what gets embedded: the join's facets are
-      // here because it is indexed, and the field inside its schema is
-      // absent because it is not.
+      // double as a pin on exactly what gets embedded: the join's facets and
+      // those of the field reached THROUGH it are both here, because both are
+      // indexed. A joined field embeds under its dotted path, so its name
+      // facet is the humanized path, not the bare field name.
       "order items": [0, 1],
       "order items: One row per product sold on an order.": [0, 1],
       state: [1, 0],
       "current building": [0, 1],
       "current building: Building this asset sits in.": [0, 1],
+      "current building building name": [0, 1],
+      "current building building name: Zzyzx joined-source field.": [0, 1],
       "where do customers live": [1, 0],
       "what building is this in": [0, 1],
       // Points away from both entity axes, so it scores about -0.707 against
@@ -1740,15 +1767,16 @@ describe("get_context semantic retrieval", () => {
       expect(first.retrieval).toBe("lexical");
       expect(first).not.toHaveProperty("below_cutoff_count");
 
-      // order_items and its join are orthogonal to this query, so they are
-      // dropped by the floor and counted rather than silently missing.
+      // order_items, its join, and the field reached through that join are
+      // all orthogonal to this query, so they are dropped by the floor and
+      // counted rather than silently missing.
       const payload = await callUntilSemantic(handler, params);
       expect(rankedEntities(payload).map((r) => r.name)).toEqual(["state"]);
-      expect(payload.below_cutoff_count).toBe(2);
+      expect(payload.below_cutoff_count).toBe(3);
       // The denominator ships with it. Without it the count is a bare number
-      // an agent cannot scale: 2 rejected is a tight match out of 3 and a
+      // an agent cannot scale: 3 rejected is a tight match out of 4 and a
       // catastrophe out of 200, and nothing else in the response says which.
-      expect(payload.total_entities).toBe(3);
+      expect(payload.total_entities).toBe(4);
    });
 
    it("reports the true negative as below_cutoff_count === total_entities, not 0", async () => {
