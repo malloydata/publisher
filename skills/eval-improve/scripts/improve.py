@@ -115,10 +115,14 @@ One edit for the cluster's shared root cause, not one per case.
 
 WHEN YOU ARE DONE
 
-Read `reference/output-contract.md` in the eval-improve skill. It defines the
-report block and the JSON object a script parses out of your reply, and the
-golden re-derivation you must run BEFORE either -- Step 4 of the skill, which
-this file does not restate.
+Give the report block, then emit the JSON object as the LAST thing in your
+reply, with nothing after it. Both shapes, and the golden re-derivation you run
+BEFORE either, are defined in `reference/output-contract.md` of the eval-improve
+skill -- read that file; a shape invented here is dropped.
+
+A reply that ends in prose is a lost result. The edit still happened and the
+receipts -- probes, edit tier, golden-suspect list -- are gone, so the
+acceptance check has nothing to weigh.
 """
 
 
