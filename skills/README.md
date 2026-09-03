@@ -39,7 +39,18 @@ Two rules make it work:
 
 ## Tool names in shared skills
 
-Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query`, `search_malloy_docs`), plus a note that the exact prefixed name depends on the host. `search_database_schema` maps the same way if a shared skill starts using it. This Publisher server exposes them as **`malloy_getContext`**, **`malloy_executeQuery`**, **`malloy_searchDocs`**, and **`malloy_searchDatabaseSchema`** (and adds `malloy_compile` / `malloy_reloadPackage`, which are Publisher-only and appear only in the host/router skills). When a shared skill says `get_context`, use `malloy_getContext`; match each bare name to the tool you actually have. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
+Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query`, `search_malloy_docs`), plus a note that the exact prefixed name depends on the host. `search_database_schema` maps the same way if a shared skill starts using it.
+
+**`get_context` is now literally correct here.** This server exposes a tool by that exact name, taking the same typed `search_targets` and `scopes` the shared skills describe and answering in the same shape. Until it landed, this repo shipped skills describing a request its own server rejected, and this section existed to paper over that. What remains of the mapping is smaller:
+
+| Shared skills say | This server exposes |
+| --- | --- |
+| `get_context` | `get_context` |
+| `execute_query` | `malloy_executeQuery` |
+| `search_malloy_docs` | `malloy_searchDocs` |
+| `search_database_schema` | `malloy_searchDatabaseSchema` |
+
+`malloy_getContext` is the flat request `get_context` replaces. It is still registered and still works, deprecated in its own description, so anything written against it keeps running; new work should not use it. `malloy_listEnvironments` supplies the environment and package names `get_context`'s `scopes` requires, and `malloy_compile` / `malloy_reloadPackage` / `malloy_getStatus` are Publisher-only and appear only in the host/router skills. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
 
 ## Adding or updating a skill
 
