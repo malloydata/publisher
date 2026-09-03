@@ -67,6 +67,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default=None, help="comma-separated qids")
     ap.add_argument("--out", type=pathlib.Path, default=None)
     a = ap.parse_args(argv)
+    # run_baseline.run_judge reads two attributes off this namespace that the
+    # CLI never defined, so the checker died on its first fixture with an
+    # AttributeError -- which is how the only thing that checks the judge came
+    # to be unrunnable. `rebuild`/`rejudge` are set below; these are the rest.
+    # judge_skills is empty on purpose: the judge IS the pasted rubric, and a
+    # skill loaded here would be doctrine the real run does not have.
+    a.judge_skills = []
+    a.roots = rb.skills_roots(None)
 
     fx_path = a.fixtures or (a.set_dir / "judge-regressions.jsonl")
     if not fx_path.exists():
@@ -90,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
 
     judge_md = HERE.parent.parent / "eval-answer" / "reference" / "judge.md"
     jv, rsha = rb.judge_pins(judge_md)
+    JUDGE_MD = judge_md.read_text() if judge_md.exists() else ""
     served = rb.served_model_path(a.publisher, a.environment, a.package, a.model_path)
     model_src = served.read_text() if served else ""
     if not model_src:
@@ -119,8 +128,16 @@ def main(argv: list[str] | None = None) -> int:
             art = pathlib.Path(tempfile.mkdtemp(prefix="judgefix-"))
             (art / f["qid"]).mkdir(parents=True, exist_ok=True)
             try:
-                v = rb.run_judge(c, att, a, art, (c.get("golden") or {}).get("rubric") or "",
-                                 model_src, bool(model_src))
+                # judge.md in the {rubric} slot, exactly as a run does. This
+                # argument used to be the CASE rubric, which the prompt also
+                # supplies separately as `rubric_note` -- so the judge saw the
+                # case rubric twice and judge.md not at all. The checker then
+                # agreed with the human on fixtures the real run got wrong,
+                # which is the failure its own docstring warns about: a
+                # different prompt here can pass while the thing it stands for
+                # is broken.
+                v = rb.run_judge(c, att, a, art, JUDGE_MD, model_src,
+                                 bool(model_src))
                 got.append(v.get("verdict"))
             finally:
                 shutil.rmtree(art, ignore_errors=True)

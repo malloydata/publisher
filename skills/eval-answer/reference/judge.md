@@ -218,6 +218,26 @@ not a rubric.
 
 ### Refusal
 
+**STOP. Check `golden.kind` before reading further.** This section applies ONLY
+when it is `unanswerable`. If the golden carries a value or rows, close this
+section and score by containment like any other answer: an answer that declines,
+however well it reasons, contains none of the golden's numbers and is
+`no_match`.
+
+That the model genuinely lacks the field is NOT a reason to pass a refusal.
+Whether the model should be able to answer is what `coverage` records and what
+`eval-diagnose` decides. Settling it here converts a model gap into a passing
+case, and the gap then never reaches the backlog.
+
+Observed twice on one run, which is why this now leads the section: two answers
+that declined were scored `match` against goldens holding concrete values, on
+the reasoning that the model defined no such field. Both cases had been authored
+with their rubric at the case's top level instead of on the golden, so the judge
+was shown `CASE RUBRIC: none` and had nothing but the value and the answer to go
+on. That is the likelier cause than a judge ignoring a rule it was given -- but
+the rule belongs at the top of this section either way, because a judge reaching
+for its own reasonableness standard is exactly what an absent rubric invites.
+
 Applies when the case's `golden.kind` is `unanswerable`. Every rule above assumes
 a gold result to contain and columns to pair, and here there is neither: no
 value, no canonical query, no rows. Do not attempt containment. Your input is the
