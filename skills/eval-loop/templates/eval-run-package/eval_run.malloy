@@ -1,0 +1,757 @@
+##! experimental.access_modifiers
+
+// Semantic model over one or more eval runs.
+//
+// Held to the standard this repo asks of a customer model, because the same
+// agents read it: an explicit public surface, a #(doc) on every entity, rate
+// measures named for their denominator, and nothing called `count`.
+//
+// Grain: one row per attempt, an attempt being (run_id, qid, sample). Scores
+// and retrieval facts are one-to-one with that. `entities` is deliberately MANY
+// per attempt -- aggregate it, never sum a measure through it.
+
+#(doc) One evaluated run: a set, a target and an answerer, pinned together.
+#(doc) Two rows means an A/B, and the arms should differ in exactly one field.
+source: runs is duckdb.table('data/runs.csv')
+include {
+  #(doc) Stable run identifier.
+  public: run_id
+  #(doc) Human label for the arm, such as "sonnet-baseline". Prefer this on an axis over run_id.
+  public: label
+  #(doc) Where the answerer ran: local, local-proxied or platform.
+  public: target
+  #(doc) The answerer model under test. Usually the axis of an A/B.
+  public: model
+  #(doc) Reasoning effort the answerer ran at.
+  public: effort
+  #(doc) When the run started.
+  public: started
+  #(doc) Judge version. Comparing runs judged by different versions is invalid.
+  public: judge_version
+  #(doc) datasetVersion of the set at run time.
+  public: set_version
+}
+extend {
+  primary_key: run_id
+  measure:
+    #(doc) Number of runs. Mostly a guard that an A/B really has two arms.
+    run_count is count()
+}
+
+#(doc) The evaluation set as it stood when the run happened: one row per question.
+source: cases is duckdb.table('data/cases.csv')
+include {
+  #(doc) Case identifier, stable across runs.
+  public: qid
+  #(doc) The question text the answerer saw.
+  public: question
+  #(doc) dev or holdout. Report a gain on dev, defend it on holdout.
+  public: split
+  #(doc) Whether the model has an entity for the concept: covered, derivable or absent.
+  #(doc) Only `absent` makes refusal the correct answer.
+  public: coverage
+  #(doc) For a non-covered case, the entity that would close the gap. This column is the backlog.
+  public: coverage_note
+  #(doc) scalar, rows, or unanswerable. An unanswerable case is scored on the refusal.
+  public: golden_kind
+  #(doc) Verification level of the golden value.
+  public: golden_status
+  #(doc) Bumped whenever the golden value changes; pins what a verdict was judged against.
+  public: golden_revision
+  #(doc) The reference answer in one readable line. What to show beside an arm's answer.
+  public: golden_display
+  #(doc) The reference answer verbatim, as JSON.
+  public: golden_value
+  #(doc) What counts as right, close-but-wrong and wrong. The judge scored against this.
+  public: rubric
+  #(doc) Caveats an answer must carry to be fully correct, such as a truncated date window.
+  public: must_state
+  #(doc) How many entities the reference answer needs. Zero for an unanswerable case.
+  public: n_required
+  #(doc) The entities a correct answer needs, pipe-separated. Recall is measured over these.
+  public: required_entities
+  #(doc) Pipe-separated theme tags.
+  public: tags
+  #(doc) True when the case records a specific wrong number agents are known to reach for.
+  public: has_structural_alternate
+}
+extend {
+  primary_key: qid
+  measure:
+    #(doc) Number of cases.
+    case_count is count()
+}
+
+#(doc) One attempt at one case: what the answerer did, and how much work it took.
+source: attempts is duckdb.table('data/attempts.csv')
+include {
+  #(doc) run_id|qid|sample|phase. The grain of the package: attempts, scores and
+  #(doc) retrieval are exactly one row each per key. Join on this, never on the parts.
+  public: attempt_key
+  #(doc) Which run this attempt belongs to.
+  public: run_id
+  #(doc) Which case was attempted.
+  public: qid
+  #(doc) Repeat index. Null when the case was sampled once, which is the default.
+  public: sample
+  #(doc) baseline, loop, blind_gate, canary or final.
+  public: phase
+  #(doc) False when the answerer produced no final query. Not the same as a wrong answer.
+  public: submitted
+  #(doc) The Malloy the answerer finally ran. What makes a failure reproducible.
+  public: final_query
+  #(doc) The answer text the judge scored. Readable without opening the transcript.
+  public: answer_text
+  #(doc) Answerer input tokens.
+  public: input_tokens
+  #(doc) Answerer output tokens.
+  public: output_tokens
+  #(doc) Answerer cost in USD for this attempt.
+  public: cost_usd
+  #(doc) Assistant turns the attempt took.
+  public: num_turns
+  #(doc) Wall-clock seconds. Null on a rebuilt run, where nothing was re-run.
+  public: wall_seconds
+  #(doc) Non-empty when the harness itself failed, such as a timeout. Not a wrong answer.
+  public: run_error
+  #(doc) get_context calls this attempt made.
+  public: n_get_context
+  #(doc) execute_query calls this attempt made, including the ones that errored.
+  public: n_execute
+  #(doc) execute_query calls that errored. High values mean the agent is guessing at syntax.
+  public: n_execute_errors
+  #(doc) Host-side tool uses, including Read and Shell.
+  public: host_tool_uses
+  #(doc) Whether the attempt saw gold or eval paths. Anything but false voids the verdict.
+  public: contaminated
+  #(doc) Package revision actually queried.
+  public: servedRevision
+  #(doc) Path to the answerer's full transcript.
+  public: transcriptPath
+  #(doc) Steps in the transcript: every tool call and every block of prose, in order.
+  public: n_steps
+  #(doc) The re-executed rows behind the final query, as JSON or a text table; or a note
+  #(doc) saying why they were not re-executed. What the judge saw beside the golden.
+  public: prediction
+}
+extend {
+  primary_key: attempt_key
+  join_one: runs with run_id
+  join_one: cases with qid
+
+  measure:
+    #(doc) Number of attempts.
+    attempt_count is count()
+    #(doc) Attempts that produced a final query.
+    submitted_count is count() { where: submitted }
+    #(doc) Total get_context calls. The retrieval half of the effort cost.
+    get_context_calls is n_get_context.sum()
+    #(doc) Total execute_query calls.
+    execute_calls is n_execute.sum()
+    #(doc) execute_query calls that errored.
+    execute_errors is n_execute_errors.sum()
+    #(doc) Mean get_context calls per attempt. The turn-cost number the product claim rests on.
+    avg_get_context_per_attempt is n_get_context.avg()
+    #(doc) Mean execute_query calls per attempt.
+    avg_execute_per_attempt is n_execute.avg()
+    #(doc) Attempts flagged contaminated. Any value above zero voids the run.
+    contaminated_count is count() { where: contaminated = 'true' }
+    #(doc) What the arm cost to run. Half of the product claim; correctness is the other half.
+    total_cost_usd is cost_usd.sum()
+    #(doc) Mean cost per attempt. Compare across arms only at equal case counts.
+    avg_cost_usd is cost_usd.avg()
+    #(doc) Total tokens the answerer consumed.
+    total_tokens is input_tokens.sum() + output_tokens.sum()
+    #(doc) Mean turns per attempt. Rises when the agent is groping rather than reading.
+    avg_turns is num_turns.avg()
+    #(doc) Mean wall-clock seconds per attempt.
+    avg_wall_seconds is wall_seconds.avg()
+    #(doc) Attempts the harness failed to complete. Excluded from a pass rate, not counted as failures.
+    harness_errors is count() { where: run_error is not null }
+}
+
+#(doc) Per-attempt retrieval outcome and the stage that owns the failure.
+#(doc) Rows for `absent` cases carry null recall: retrieval cannot fail when there is nothing to find.
+source: retrieval is duckdb.table('data/retrieval.csv')
+include {
+  #(doc) run_id|qid|sample|phase. The grain of the package: attempts, scores and
+  #(doc) retrieval are exactly one row each per key. Join on this, never on the parts.
+  public: attempt_key
+  #(doc) Which run.
+  public: run_id
+  #(doc) Which case.
+  public: qid
+  #(doc) Repeat index.
+  public: sample
+  #(doc) Run phase.
+  public: phase
+  #(doc) Coverage of the case, copied for filtering without a join.
+  public: coverage
+  #(doc) Share of REQUIRED entities the agent received. Null when the case is not retrieval-scored.
+  public: recall
+  #(doc) Share of returned entities the case considers acceptable. Alternates are forgiven.
+  public: precision
+  #(doc) How many distinct entities get_context returned across the attempt.
+  public: n_returned
+  #(doc) construction, get_context/retrieval or get_context/model. Empty when the attempt passed.
+  public: component
+  #(doc) agent-skill, retrieval or model. Kept to match eval-diagnose's taxonomy; for reading, use where_to_fix.
+  public: owner
+  #(doc) Where to go and fix it: query construction, retrieval ranking, model coverage or refusal behaviour.
+  #(doc) Empty unless the attempt failed. Every failure has one, so this ties to the failure count.
+  public: where_to_fix
+  #(doc) One sentence on why it landed there.
+  public: why
+  #(doc) True only for a decided failure. near_match and needs_human are neither passed nor failed.
+  public: failed
+  #(doc) Required entities the agent never received, pipe-separated.
+  public: missing
+  #(doc) Returned entities no version of a right answer wanted.
+  public: noise
+  #(doc) How many entities the case requires.
+  public: n_required
+  #(doc) get_context calls the attempt made.
+  public: n_get_context
+}
+extend {
+  primary_key: attempt_key
+  join_one: runs with run_id
+  join_one: cases with qid
+
+  measure:
+    #(doc) Attempts where retrieval was scored at all.
+    scored_count is count() { where: recall is not null }
+    #(doc) Mean recall over required entities. Unscored rows are excluded, not counted as zero.
+    # percent
+    mean_recall is recall.avg()
+    #(doc) Mean precision, forgiving anything the case marks acceptable.
+    # percent
+    mean_precision is precision.avg()
+    #(doc) Attempts that received every entity they needed.
+    complete_retrievals is count() { where: recall >= 1.0 }
+    #(doc) Share of scored attempts that received everything. Retrieval's own headline.
+    # percent
+    complete_rate is complete_retrievals / scored_count
+    #(doc) Scored failures. Every one of these carries a where_to_fix.
+    failure_count is count() { where: failed }
+    #(doc) Failures where retrieval delivered everything, so the fix is skills, not search.
+    construction_failures is count() { where: where_to_fix = 'query construction' }
+    #(doc) Failures where the entity existed and search missed it.
+    retrieval_failures is count() { where: where_to_fix = 'retrieval ranking' }
+    #(doc) Failures where there was nothing to retrieve. Add the entity.
+    model_failures is count() { where: where_to_fix = 'model coverage' }
+    #(doc) Failures where the model cannot answer and the agent answered anyway.
+    refusal_failures is count() { where: where_to_fix = 'refusal behaviour' }
+}
+
+#(doc) The answer judge's verdict for one attempt. Exactly one per attempt in a scored run.
+source: scores is duckdb.table('data/scores.csv')
+include {
+  #(doc) run_id|qid|sample|phase. The grain of the package: attempts, scores and
+  #(doc) retrieval are exactly one row each per key. Join on this, never on the parts.
+  public: attempt_key
+  #(doc) Which run.
+  public: run_id
+  #(doc) Which case.
+  public: qid
+  #(doc) Repeat index.
+  public: sample
+  #(doc) Run phase.
+  public: phase
+  #(doc) match, near_match, no_match, needs_human, or empty when not scorable.
+  public: verdict
+  #(doc) pass, fail or neither: the verdict classified by the same function the acceptance check uses (flip_table.outcome). Read this, never re-derive it from verdict - a second definition is how this package and the flip table came to disagree about what a flip is.
+  public: outcome
+  #(doc) The judge's one-line why. Read this before re-running anything.
+  public: reason
+  #(doc) Judge confidence, 1 to 10. Five or below is forced to needs_human.
+  public: confidence
+  #(doc) Which judge produced the verdict.
+  public: judge_version
+  #(doc) Hash of the rubric text. A change here invalidates cross-run comparison.
+  public: rubric_sha
+  #(doc) Golden revision at score time.
+  public: golden_revision
+  #(doc) verified, verified_benign, suspect or verified_wrong. verified_wrong is excluded from aggregates.
+  public: gold_status
+  #(doc) Full judge output on disk.
+  public: artifactPath
+}
+extend {
+  primary_key: attempt_key
+  join_one: runs with run_id
+  join_one: cases with qid
+  // scores is the hub the queries start from, so it reaches the attempt's work
+  // and its retrieval outcome. All three are one row per attempt_key, so these
+  // joins cannot fan out.
+  join_one: attempts with attempt_key
+  join_one: retrieval with attempt_key
+
+  measure:
+    #(doc) Rows with a verdict, scorable or not.
+    scored_count is count()
+    #(doc) Verdicts the acceptance check counts: decided ones only. near_match and needs_human are excluded, both being the judge declining to decide.
+    confident_count is count() { where: outcome ? 'pass' | 'fail' }
+    #(doc) Attempts the judge accepted. A near_match is NOT a pass: it means defensibly different, and an arguable verdict must not move an acceptance check.
+    passed is count() { where: outcome = 'pass' }
+    #(doc) Attempts the judge rejected.
+    failed is count() { where: outcome = 'fail' }
+    #(doc) Defensibly different: neither a pass nor a fail. Watch this climb - it is the leading indicator of a rubric going vague.
+    near_matches is count() { where: verdict = 'near_match' }
+    #(doc) Verdicts referred to a human because the judge was not confident.
+    needs_human is count() { where: verdict = 'needs_human' }
+    #(doc) Passes over DECIDED verdicts. The headline number; excludes near_match and needs_human by design.
+    # percent
+    pass_rate is passed / confident_count
+}
+
+#(doc) One row per MCP call: what the answerer asked for and what came back.
+#(doc) MANY per attempt. This is the table that separates a bad search from bad ranking.
+source: calls is duckdb.table('data/calls.csv')
+include {
+  #(doc) run_id|qid|sample|phase. The grain of the package: attempts, scores and
+  #(doc) retrieval are exactly one row each per key. Join on this, never on the parts.
+  public: attempt_key
+  #(doc) Which run.
+  public: run_id
+  #(doc) Which case.
+  public: qid
+  #(doc) Repeat index.
+  public: sample
+  #(doc) Order within the attempt, from 1.
+  public: call_index
+  #(doc) get_context or execute_query.
+  public: tool
+  #(doc) The search terms the answerer sent. Null for execute_query.
+  #(doc) Without this, a low recall cannot be told from a bad search.
+  public: targets
+  #(doc) How many entities came back.
+  public: n_returned
+  #(doc) The entities returned, pipe-separated, best rank first.
+  public: entity_ids
+  #(doc) Non-null when the call failed.
+  public: error
+}
+extend {
+  join_one: runs with run_id
+  join_one: cases with qid
+  join_one: attempts with attempt_key
+  measure:
+    #(doc) Number of calls.
+    call_count is count()
+    #(doc) get_context calls that returned nothing at all.
+    empty_calls is count() { where: tool = 'get_context' and n_returned = 0 }
+}
+
+#(doc) Failures grouped by shared root cause, largest first. The unit of work.
+#(doc) One row is one edit worth making, not one thing that went wrong.
+source: clusters is duckdb.table('data/clusters.csv')
+include {
+  #(doc) Which run's diagnosis produced this cluster. An A/B has one set per arm.
+  public: run_id
+  #(doc) `diagnose` when an agent clustered the diagnoses (the clusters of record);
+  #(doc) `mechanical` when only cluster_failures.py's by-retrieval-outcome grouping exists.
+  #(doc) (Named cluster_source because `source` is a Malloy keyword.)
+  public: cluster_source
+  #(doc) Stable cluster key, prefixed with the run so two arms cannot collide.
+  public: cluster_id
+  #(doc) What the group has in common, in a phrase.
+  public: label
+  #(doc) query construction, retrieval ranking, model coverage or refusal behaviour.
+  public: where_to_fix
+  #(doc) eval-diagnose component.
+  public: component
+  #(doc) eval-diagnose owner.
+  public: owner
+  #(doc) Which artifact the edit lands in: skill, model, ranking or dataset.
+  public: lever
+  #(doc) How many cases this one edit would address. The ordering key.
+  #(doc) Cast: a run with no clusters writes a header-only CSV, DuckDB types the
+  #(doc) empty column VARCHAR, and sum() then fails to compile -- taking the whole
+  #(doc) package down exactly when the model scored clean.
+  public: n_cases
+  #(doc) The change proposed. EMPTY until eval-improve fills it: a cluster with no
+  #(doc) proposal is an open question, not a fix waiting to be applied.
+  public: proposed_edit
+  #(doc) Confidence in the proposal, once there is one.
+  public: confidence
+}
+extend {
+  primary_key: cluster_id
+  measure:
+    #(doc) Number of clusters.
+    cluster_count is count()
+    #(doc) Cases covered by these clusters. Should equal the run's failure count.
+    cases_covered is sum(n_cases::number)
+}
+
+#(doc) Which cases belong to which cluster. MANY per cluster.
+source: cluster_members is duckdb.table('data/cluster_members.csv')
+include {
+  #(doc) The cluster.
+  public: cluster_id
+  #(doc) The case.
+  public: qid
+}
+extend {
+  join_one: clusters with cluster_id
+  join_one: cases with qid
+  measure:
+    #(doc) Membership rows.
+    member_count is count()
+}
+
+#(doc) One row per attempt-entity, long. MANY rows per attempt: aggregate, never join and sum through it.
+source: entities is duckdb.table('data/entities.csv')
+include {
+  #(doc) Which run.
+  public: run_id
+  #(doc) Which case.
+  public: qid
+  #(doc) Repeat index.
+  public: sample
+  #(doc) Fully qualified kind:source:name.
+  public: entity_id
+  #(doc) measure, dimension, view, source or join.
+  public: entity_kind
+  #(doc) The source the entity belongs to.
+  public: entity_source
+  #(doc) Bare entity name.
+  public: entity_name
+  #(doc) required, returned, missing or noise. Filter on this or the counts mean nothing.
+  public: role
+}
+extend {
+  join_one: cases with qid
+
+  measure:
+    #(doc) Attempt-entity rows. Meaningless without a role filter.
+    row_count is count()
+    #(doc) Distinct cases touching this entity.
+    case_count is count(qid)
+    #(doc) Times this entity was needed and not returned. The retrieval backlog, ranked.
+    times_missed is count() { where: role = 'missing' }
+    #(doc) Times this entity was returned when no case wanted it.
+    times_noise is count() { where: role = 'noise' }
+}
+
+#(doc) What diagnosis recorded against this run.
+source: issues is duckdb.table('data/issues.csv')
+include {
+  #(doc) Which run.
+  public: run_id
+  #(doc) Which case.
+  public: qid
+  #(doc) Which part of the system, in eval-diagnose's taxonomy.
+  public: component
+  #(doc) Who fixes it: model, retrieval, agent-skill or dataset.
+  public: owner
+  #(doc) One-line statement of the problem.
+  public: summary
+  #(doc) What supports it.
+  public: evidence
+  #(doc) open, fixed or dismissed.
+  public: status
+  #(doc) Which artifact would be edited: skills, source_doc, field_doc, entities, views or data_manual.
+  public: lever
+  #(doc) How badly it bites.
+  public: severity
+}
+extend {
+  join_one: runs with run_id
+  join_one: cases with qid
+  measure:
+    #(doc) Number of issues.
+    issue_count is count()
+}
+
+#(doc) One step of one attempt: a tool call with its input and result, or a
+#(doc) block of the answerer's prose, in transcript order. The evidence for
+#(doc) "was the query wrong, or the reading of a right query" -- the ledger
+#(doc) keeps counts and the final query, the transcript keeps the sequence.
+source: steps is duckdb.table('data/steps.csv')
+include {
+  #(doc) The attempt this step belongs to.
+  public: attempt_key
+  #(doc) Which run.
+  public: run_id
+  #(doc) Which case.
+  public: qid
+  #(doc) 1-based position in the transcript.
+  public: step_index
+  #(doc) get_context, execute_query, skill, text, or a host tool name.
+  public: kind
+  #(doc) What was asked: search targets, the Malloy query, the skill, or the prose itself.
+  public: label
+  #(doc) What came back, briefly: first rows, the model path, or the error text.
+  public: detail
+  #(doc) Entities or rows returned. Null for prose and for errors.
+  public: n_results
+  #(doc) Whether the call errored.
+  public: is_error
+}
+extend {
+  join_one: attempts with attempt_key
+  measure:
+    #(doc) Number of steps.
+    step_count is count()
+    #(doc) Tool calls that errored.
+    error_count is count() { where: is_error = 'true' }
+}
+
+#(doc) Each entity a case's golden answer depends on, and how it reached the
+#(doc) answerer in one attempt: exact (a ranked entity under this id), alias
+#(doc) (same type and name under a sibling source), in_docs (named in a returned
+#(doc) source's documentation, which the answerer reads), or missing.
+source: required is duckdb.table('data/required.csv')
+include {
+  #(doc) The attempt.
+  public: attempt_key
+  #(doc) Which run.
+  public: run_id
+  #(doc) Which case.
+  public: qid
+  #(doc) kind:source:name, as the set names it.
+  public: entity_id
+  #(doc) exact, alias, in_docs or missing.
+  public: status
+}
+extend {
+  join_one: attempts with attempt_key
+  join_one: cases with qid
+  measure:
+    #(doc) Required entities.
+    required_count is count()
+    #(doc) Required entities that reached the answerer by any route.
+    delivered_count is count() { where: status != 'missing' }
+    #(doc) Share of required entities that reached the answerer. The per-question retrieval recall.
+    delivered_rate is delivered_count / required_count
+    #(doc) Required entities returned as ranked entities (exact or alias). The stricter count.
+    ranked_count is count() { where: status = 'exact' or status = 'alias' }
+}
+
+// ---------------------------------------------------------------- queries
+
+#(doc) Headline: pass rate per run. The first thing to look at.
+query: run_summary is scores -> {
+  group_by: arm is runs.label
+  aggregate: pass_rate, passed, failed, near_matches, needs_human, confident_count
+  order_by: pass_rate desc
+}
+
+#(doc) Effort and cost per arm: turns, calls, errors, seconds, dollars.
+query: run_effort is attempts -> {
+  group_by: arm is runs.label
+  aggregate: attempt_count, avg_turns, avg_get_context_per_attempt,
+             avg_execute_per_attempt, execute_errors, avg_wall_seconds,
+             total_cost_usd, avg_cost_usd, contaminated_count
+  order_by: arm
+}
+
+#(doc) Per-question retrieval recall per arm: of the entities the goldens need,
+#(doc) how many reached the answerer, and how many as ranked entities.
+query: run_retrieval is required -> {
+  group_by: arm is attempts.runs.label
+  aggregate: required_count, delivered_count, delivered_rate, ranked_count
+  order_by: arm
+}
+
+#(doc) Pass rate split by coverage. A model-shaped failure shows up as
+#(doc) derivable scoring far below covered.
+query: pass_by_coverage is scores -> {
+  group_by: arm is runs.label, coverage is cases.coverage
+  aggregate: pass_rate, passed, failed
+  order_by: arm, coverage
+}
+
+#(doc) Where the failures need fixing. The most actionable cut in the package.
+#(doc) These counts sum to the run's failure count: every failure is placed.
+query: failures_by_where_to_fix is retrieval -> {
+  where: failed
+  group_by: arm is runs.label, where_to_fix
+  aggregate: attempts is count()
+  order_by: attempts desc
+}
+
+#(doc) Per-question entity recall per run: how often the agent received everything
+#(doc) the case required, using the search terms the agent itself chose.
+#(doc) Read this WITHIN an arm, to attribute a failure. Do NOT compare it across
+#(doc) arms: the terms come from the answerer, so a stronger answerer raises this
+#(doc) number with retrieval untouched.
+query: retrieval_as_used is retrieval -> {
+  group_by: arm is runs.label
+  aggregate: complete_rate, mean_recall, mean_precision, scored_count
+}
+
+#(doc) What each arm cost. The other half of the claim: a good model should reach
+#(doc) the answer in fewer turns and tokens, not only reach it.
+query: cost is attempts -> {
+  group_by: arm is runs.label
+  aggregate: total_cost_usd, avg_cost_usd, avg_turns, total_tokens, attempt_count
+  order_by: avg_cost_usd desc
+}
+
+#(doc) Entities most often needed and not returned. The ranked retrieval backlog.
+query: most_missed_entities is entities -> {
+  where: role = 'missing'
+  top: 20
+  group_by: entity_id, entity_kind
+  aggregate: times_missed, case_count
+  order_by: times_missed desc
+}
+
+#(doc) Effort per attempt. The product claim is that a good model keeps this small.
+query: effort is attempts -> {
+  group_by: arm is runs.label
+  aggregate: avg_get_context_per_attempt, avg_execute_per_attempt,
+             execute_errors, attempt_count
+}
+
+#(doc) The backlog, as work rather than as symptoms: failures grouped by shared
+#(doc) root cause, ordered by how many cases one edit would clear.
+#(doc) Eight failures are rarely eight problems. A per-case list invites eight
+#(doc) small fixes; this asks which single change buys the most.
+#(doc) An empty proposed_edit means nobody has decided what to change yet.
+query: backlog is cluster_members -> {
+  group_by: cluster is clusters.label,
+            where_to_fix is clusters.where_to_fix,
+            lever is clusters.lever,
+            proposal is clusters.proposed_edit
+  aggregate: cases_fixed is count()
+  nest: cases is {
+    group_by: qid, question is cases.question, coverage is cases.coverage
+    order_by: qid
+  }
+  order_by: cases_fixed desc
+}
+
+#(doc) Coverage gaps straight from the set, independent of any run: every case the
+#(doc) model cannot answer outright, with the entity that would close it.
+#(doc) Distinct from `backlog`, which only knows about failures that actually happened.
+query: coverage_gaps is cases -> {
+  where: coverage != 'covered'
+  group_by: coverage, qid, question, coverage_note
+  order_by: coverage, qid
+}
+
+#(doc) The A/B acceptance check: cases that moved between PASS and FAIL across arms.
+#(doc) A difference in pass RATE is not evidence -- two arms can score alike while
+#(doc) disagreeing on half the set. Counting the cases that actually moved is what
+#(doc) separates a real gain from noise, so this is the table an A/B is read from.
+#(doc) Written so it holds for any number of arms rather than two named ones.
+#(doc) The denominator is DECIDED arms, not all arms. An arm where the judge said
+#(doc) near_match or needs_human has not disagreed with an arm that said match; it
+#(doc) has declined to say. Counting it as a non-pass manufactures a flip every
+#(doc) time the judge hedged once and not twice, which is noise wearing a
+#(doc) verdict's clothes, and it is what this query used to do.
+query: flips is scores -> {
+  group_by: qid, coverage is cases.coverage, split is cases.split,
+            question is cases.question
+  aggregate:
+    arms is count()
+    arms_decided is confident_count
+    arms_passed is passed
+  nest: by_arm is {
+    group_by: arm is runs.label, verdict, outcome
+  }
+  having: arms_passed > 0 and arms_passed < arms_decided
+  order_by: qid
+}
+
+#(doc) Cases every arm fails. Changing the answerer will not move these, so they
+#(doc) are where model and retrieval work pays off.
+query: failed_everywhere is scores -> {
+  group_by: qid, coverage is cases.coverage, question is cases.question,
+            gap is cases.coverage_note
+  aggregate: arms is count(), arms_decided is confident_count,
+             arms_passed is passed
+  having: arms_passed = 0 and arms_decided > 1
+  order_by: qid
+}
+
+#(doc) The matrix the app is built on: one row per case, one nested row per arm.
+#(doc) Everything needed to render and filter a case without opening it -- the
+#(doc) question, the reference answer, and each arm's verdict and where-to-fix.
+#(doc) A one-arm run renders a one-column matrix, which is the single-ended view.
+query: case_matrix is scores -> {
+  group_by: qid,
+            question is cases.question,
+            golden is cases.golden_display,
+            coverage is cases.coverage,
+            split is cases.split,
+            tags is cases.tags
+  aggregate:
+    arms is count()
+    arms_passed is passed
+  nest: by_arm is {
+    group_by: arm is runs.label, verdict, outcome, confidence,
+              where_to_fix is retrieval.where_to_fix,
+              recall is retrieval.recall
+    order_by: arm
+  }
+  order_by: arms_passed asc, qid
+}
+
+#(doc) Everything behind one cell, for the drawer: the reference answer and its
+#(doc) rubric, what the arm answered, the Malloy it ran, and the judge's reasoning.
+#(doc) Filter to one qid in the app; unfiltered it is the whole run, long.
+query: case_drawer is scores -> {
+  group_by: qid, arm is runs.label,
+            question is cases.question,
+            golden is cases.golden_display,
+            golden_value is cases.golden_value,
+            golden_kind is cases.golden_kind,
+            rubric is cases.rubric,
+            must_state is cases.must_state,
+            coverage is cases.coverage,
+            verdict, confidence, gold_status,
+            judge_reasoning is reason,
+            answer is attempts.answer_text,
+            final_query is attempts.final_query,
+            prediction is attempts.prediction,
+            num_turns is attempts.num_turns,
+            n_get_context is attempts.n_get_context,
+            n_execute is attempts.n_execute,
+            n_execute_errors is attempts.n_execute_errors,
+            wall_seconds is attempts.wall_seconds,
+            cost_usd is attempts.cost_usd,
+            contaminated is attempts.contaminated,
+            where_to_fix is retrieval.where_to_fix,
+            why is retrieval.why,
+            recall is retrieval.recall,
+            missing is retrieval.missing,
+            transcript is attempts.transcriptPath
+  order_by: qid, arm
+}
+
+#(doc) The transcript of one attempt as steps, for the drawer's timeline.
+query: case_steps is steps -> {
+  group_by: qid, arm is attempts.runs.label, step_index, kind, label, detail,
+            n_results, is_error
+  order_by: qid, arm, step_index
+}
+
+#(doc) How each required entity reached (or did not reach) the answerer, per arm.
+query: case_required is required -> {
+  group_by: qid, arm is attempts.runs.label, entity_id, status
+  order_by: qid, arm, entity_id
+}
+
+#(doc) The get_context calls behind one attempt: what was asked, what came back.
+#(doc) The drawer's second half, and the only place a bad search is distinguishable
+#(doc) from bad ranking.
+query: case_calls is calls -> {
+  group_by: qid, arm is runs.label, call_index, tool, targets,
+            n_returned, entity_ids
+  order_by: qid, arm, call_index
+}
+
+#(doc) Refusal behaviour in both directions. Absent cases should pass by declining;
+#(doc) cases that merely sound unanswerable should pass by answering.
+query: refusal_behaviour is scores -> {
+  where: cases.golden_kind = 'unanswerable'
+      or cases.tags ~ r'answerable-sounds-unanswerable'
+  group_by: arm is runs.label, qid, coverage is cases.coverage,
+            kind is cases.golden_kind, verdict
+  order_by: coverage, qid
+}

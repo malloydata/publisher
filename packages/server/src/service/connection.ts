@@ -36,6 +36,7 @@ import fs from "fs/promises";
 import { components } from "../api";
 import {
    getDuckDBMemoryLimit,
+   getDuckLakeRowGroupSizeBytes,
    getDuckDBTempDirectory,
    getExtensionFetchPolicy,
 } from "../config";
@@ -109,6 +110,46 @@ const extensionSessionPinned = new WeakSet<Connection>();
  * connection without re-issuing the SETs — while a caller that owns a directory
  * can still re-point one that was set from the global default.
  */
+
+/**
+ * Bound the Parquet row group DuckLake buffers before flushing, when configured.
+ *
+ * Applied after the ATTACH rather than as a session `SET`, because DuckLake carries
+ * these as CATALOG options: `set_option` writes them to `ducklake_metadata`, so the
+ * value outlives this connection and is seen by every writer of the lake. That is
+ * the only surface DuckLake offers -- there is no session-scoped equivalent -- and
+ * it is why this is skipped on a read-only attach, where the caller has asked not
+ * to write to the lake at all.
+ *
+ * Failures are swallowed. A catalog whose format predates the option, or one this
+ * deployment may read but not re-configure, must still attach and serve; the write
+ * is a memory optimisation, not a correctness requirement.
+ */
+export async function applyDuckLakeRowGroupBound(
+   connection: DuckDBConnection,
+   dbName: string,
+): Promise<void> {
+   const bytes = getDuckLakeRowGroupSizeBytes();
+   if (bytes === undefined) {
+      return;
+   }
+   try {
+      // ROW_GROUP_SIZE_BYTES is refused outright while insertion order is being
+      // preserved. Set on the session, not the catalog, so it binds this
+      // connection's writes and nothing else.
+      await connection.runSQL("SET preserve_insertion_order=false");
+      await connection.runSQL(
+         `CALL ${dbName}.set_option('parquet_row_group_size_bytes', '${escapeSQL(bytes)}')`,
+      );
+      logger.info(`DuckLake row group bound applied to ${dbName}: ${bytes}`);
+   } catch (error) {
+      logger.warn(
+         `Could not set the DuckLake row group bound on ${dbName}; the lake keeps ` +
+            `its existing value: ${error instanceof Error ? error.message : String(error)}`,
+      );
+   }
+}
+
 const sessionLimitsApplied = new WeakMap<
    DuckDBConnection,
    string | undefined
@@ -811,6 +852,9 @@ async function attachDuckLakeWithMode(
       logger.info(
          `Successfully attached DuckLake database in ${mode} mode: ${dbName}`,
       );
+      if (!options.readOnly) {
+         await applyDuckLakeRowGroupBound(connection, dbName);
+      }
    } catch (error) {
       // Handle case where DuckLake database is already attached
       if (
