@@ -93,7 +93,16 @@ test.describe("package-notebooks", () => {
       // row-height or font change, and over every table on the page rather
       // than the first, because the first one to settle is not deterministic.
       const tables = page.locator(".malloy-render > .malloy-table.root");
-      await expect(tables.first()).toBeVisible();
+      // Pin the count before measuring anything. Notebook cells render
+      // progressively, and the poll below succeeds the moment nothing it can
+      // see has dead space, so without this a run where only one table has
+      // painted is a pass - and that is the run least likely to reproduce the
+      // measurement race this test guards. Three is every untagged view in
+      // storefront.malloynb: top_products, top_customers, and the two-row
+      // top_products cell. Every other view carries a render tag, and the
+      // dashboard's nested tables match neither .root nor the direct-child
+      // step. Adding an untagged cell to that notebook means updating this.
+      await expect(tables).toHaveCount(3);
       await expect
          .poll(
             () =>
