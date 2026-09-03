@@ -1796,6 +1796,9 @@ export class MaterializationService {
       const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
       const builtSources: string[] = [];
+      // Builds already issued this run, keyed by the graph's connection and the source's
+      // `sourceID`, so a source shared by several graphs builds once. See the guard below.
+      const seenSources = new Set<string>();
       try {
          for (const graph of graphs) {
             const connection = connections.get(graph.connectionName);
@@ -1847,6 +1850,42 @@ export class MaterializationService {
                   }
                }
                if (!instruction) continue;
+
+               // One build per source per run, across every graph.
+               // `compilePackageBuildPlan` accumulates each model's graphs into a single
+               // list, and a source declared in one model appears again in the graph of
+               // every model that imports it -- so `graphs` legitimately holds several
+               // nodes for the same source. `iterGraphSources` dedups only WITHIN one
+               // graph, so without this the source is built once per importing model,
+               // each a full CTAS of identical content: a package whose persist source is
+               // imported by N models pays N times its build cost, and an orchestrated
+               // caller's run timeout is what surfaces it. `deriveSelfInstructions`
+               // applies the same guard across the same graph list; the auto-run path is
+               // why this never showed there.
+               //
+               // Placed before the eligibility asserts and the sourceEntityId hash on
+               // purpose: those are per-source and a repeat visit re-derives an answer the
+               // first visit already acted on, so skipping early is what makes a duplicate
+               // visit cost nothing rather than merely build nothing.
+               //
+               // Keyed on `sourceID` -- the declaring model plus source name -- and NOT on
+               // the content `sourceEntityId`: a revisit through another graph is always
+               // the same declaration, whereas two DISTINCT sources can share one content
+               // address (identical SQL on one connection) while holding separate
+               // instructions that name separate physical tables. Collapsing those would
+               // leave one instructed table unbuilt and reported neither built nor failed.
+               //
+               // The graph's connection is part of the key because it is part of what a
+               // build IS: `buildOneSource` below executes on the connection resolved from
+               // `graph.connectionName`, not from `persistSource.connectionName`. Malloy
+               // groups only ROOT nodes by connection, so a nested `dependsOn` source is
+               // yielded under a root of a different connection; whether such a chain is
+               // reachable, and whether the graph's connection is the right one to build
+               // it on, are pre-existing questions this guard deliberately does not
+               // answer. Keying on the pair keeps it from silently deciding them.
+               const buildKey = `${graph.connectionName}\u0000${persistSource.sourceID}`;
+               if (seenSources.has(buildKey)) continue;
+               seenSources.add(buildKey);
 
                // Enforce the eligibility gate for any storage-targeted build,
                // including orchestrated (host-supplied) instructions — the publisher
