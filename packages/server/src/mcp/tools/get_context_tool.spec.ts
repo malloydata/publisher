@@ -2881,3 +2881,96 @@ describe("get_context filter_params", () => {
       );
    });
 });
+
+describe("get_context catalog browse: paging and thin cards", () => {
+   const documented = (n: number) => ({
+      name: `src_${n}`,
+      annotations: [
+         `#(doc) Source number ${n}. A long paragraph of grain and population rules that a browse does not need in order to choose between cards.`,
+      ],
+      schema: { fields: [] },
+   });
+   const model = {
+      getSourceInfos: () => [1, 2, 3, 4, 5].map(documented),
+      getQueries: () => [],
+   };
+   const handler = () =>
+      captureConverged({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+   const scopes = [{ environment: "specs", package: "many" }];
+   const browse = (extra: Record<string, unknown> = {}) => ({
+      search_targets: [{ target_type: "source" }],
+      scopes,
+      ...extra,
+   });
+   const sourceNames = (payload: {
+      sources: Array<{ source_info: { resource_id: { source: string } } }>;
+   }) => payload.sources.map((c) => c.source_info.resource_id.source);
+
+   it("withholds the full doc but keeps the one-line summary", async () => {
+      const payload = parse(await handler()(browse()));
+      const card = payload.sources[0].source_info;
+      expect(card).not.toHaveProperty("docs");
+      // The summary is derived FROM the doc, so a browse still says what each
+      // source is; the paragraph is what the follow-up is for.
+      expect(card.one_line_summary).toContain("Source number 1");
+      // The joins list is kept even here: "empty means none declared" would
+      // otherwise become false on exactly the response a caller browses with.
+      expect(card.joins).toEqual([]);
+   });
+
+   it("pages with offset and says where the next page starts", async () => {
+      const first = parse(await handler()(browse({ limit: 2 })));
+      expect(sourceNames(first)).toEqual(["src_1", "src_2"]);
+      expect(first.next_offset).toBe(2);
+      expect(first.total_available).toBe(5);
+
+      const second = parse(
+         await handler()(browse({ limit: 2, offset: first.next_offset })),
+      );
+      expect(sourceNames(second)).toEqual(["src_3", "src_4"]);
+      expect(second.next_offset).toBe(4);
+
+      const last = parse(await handler()(browse({ limit: 2, offset: 4 })));
+      expect(sourceNames(last)).toEqual(["src_5"]);
+      // Absent on the final page: present would promise a page that is not
+      // there, and a caller walking next_offset would loop.
+      expect(last).not.toHaveProperty("next_offset");
+   });
+
+   it("keeps the full doc when the caller scopes to one source", async () => {
+      // That scoped call IS the follow-up the browse points at, so withholding
+      // there would leave the doc unreachable.
+      const payload = parse(
+         await handler()({
+            search_targets: [{ target_type: "source" }],
+            scopes: [
+               { environment: "specs", package: "many", source: "src_2" },
+            ],
+         }),
+      );
+      expect(payload.sources[0].source_info.docs).toContain(
+         "grain and population rules",
+      );
+   });
+
+   it("refuses an offset on a response with no resumable order", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+            ],
+            scopes,
+            offset: 10,
+         }),
+      );
+      // Silently dropping it would hand back page 1 to a caller who believed
+      // they were reading page 2.
+      expect(JSON.stringify(payload)).toContain("Invalid offset");
+   });
+});

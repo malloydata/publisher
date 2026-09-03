@@ -434,6 +434,15 @@ function toSourceResults(
    packageName: string,
    /** Search texts by target index, for matched_targets. Empty on a listing. */
    searchTexts: Map<number, string> = new Map(),
+   /**
+    * Withhold each source's full `docs`, keeping `one_line_summary`. A catalog
+    * browse is a list to choose FROM: at 150 cards, a paragraph each is most
+    * of the response and none of the decision. Everything that fires on THIS
+    * response is kept -- `givens`, `authorize`, `filter_params`, and the
+    * complete `joins` list, whose "empty means none declared" contract would
+    * otherwise become a lie on a browse.
+    */
+   thinCards = false,
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -456,7 +465,7 @@ function toSourceResults(
                ...(ctx?.oneLineSummary
                   ? { one_line_summary: ctx.oneLineSummary }
                   : {}),
-               ...(ctx?.doc ? { docs: ctx.doc } : {}),
+               ...(ctx?.doc && !thinCards ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
                ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
                ...(ctx?.filters ? { filter_params: ctx.filters } : {}),
@@ -484,7 +493,7 @@ function toSourceResults(
          // The source itself matched: its score belongs on the container, and
          // its full (untruncated) doc supersedes the truncated context copy.
          if (r.score !== undefined) entry.relevance = r.score;
-         if (r.doc) entry.source_info.docs = r.doc;
+         if (r.doc && !thinCards) entry.source_info.docs = r.doc;
          continue;
       }
       const entity: SourceCardEntity = {
@@ -745,6 +754,12 @@ interface ResolvedSearch {
  * caller asked for.
  */
 interface ResolvedRequest {
+   /**
+    * Only `source` targets, none with text: the catalog browse. It is the one
+    * request with a deterministic order that can be resumed, so it is the only
+    * one `offset` means anything on, and the one whose cards go thin.
+    */
+   pureSourceListing: boolean;
    environmentName: string;
    packageName: string;
    modelPath?: string;
@@ -788,7 +803,12 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
    });
 
    const listingOnly = searches.length === 0;
+   const pureSourceListing =
+      listingOnly &&
+      params.search_targets.length > 0 &&
+      params.search_targets.every((t) => t.target_type === "source");
    return {
+      pureSourceListing,
       environmentName: scope.environment,
       packageName: scope.package,
       ...(scope.model_path ? { modelPath: scope.model_path } : {}),
@@ -848,6 +868,9 @@ function resolveLegacyRequest(params: LegacyContextParams): ResolvedRequest {
            ]
          : [],
       listingOnly: !text,
+      // The flat tool has no offset and never went thin, so its package
+      // listing stays exactly as it shipped.
+      pureSourceListing: false,
       unsupported: [],
       limit: params.limit ?? (text ? 10 : Number.POSITIVE_INFINITY),
       offset: 0,
@@ -1663,8 +1686,14 @@ async function runContextQuery(
       // card rather than an entity, so it does not spend a slot; a
       // package listing has only source rows, so there the cap is on
       // cards, which is what the listing is made of.
+      // A browse is the one listing with a stable order, so it is the one
+      // that can be resumed. Skipping into any other shape would silently
+      // drop rows whose position is not reproducible between two calls.
+      const paged = request.pureSourceListing
+         ? inScope.slice(request.offset)
+         : inScope;
       let entityBudget = request.limit;
-      const capped = inScope.filter((e) => {
+      const capped = paged.filter((e) => {
          if (sourceName && e.kind === "source") return true;
          if (entityBudget <= 0) return false;
          entityBudget -= 1;
@@ -1696,6 +1725,10 @@ async function runContextQuery(
          sourceContext,
          environmentName,
          packageName,
+         new Map(),
+         // A browse goes thin; a drill-down into one source does not, because
+         // that IS the follow-up a browse tells the caller to make.
+         request.pureSourceListing && !sourceName,
       );
       // A listing is deterministic catalog order, not a ranking, and
       // Publisher has no query-usage signal to fill the hosted API's
@@ -1704,12 +1737,18 @@ async function runContextQuery(
       // Both counts are in SOURCES, the unit the payload is made of. A
       // drill-down is one source's card, so it is 1-of-1 however many
       // entities nest inside it; the entity cap is reported separately.
+      // next_offset is present only while sources remain past this page, and
+      // only on the browse, matching where `offset` is honoured.
+      const consumed = request.offset + sources.length;
       const listingEnvelope = {
          ranking: "prominence" as const,
          total_available: sourceName
             ? Math.min(inScope.length, 1)
             : inScope.length,
          returned: sources.length,
+         ...(request.pureSourceListing && consumed < inScope.length
+            ? { next_offset: consumed }
+            : {}),
       };
       // An empty enumeration is ambiguous to an agent: "no data here" and
       // "the package exposes nothing" look identical. The package DID
@@ -2191,6 +2230,26 @@ export function registerGetContextTool(
       convergedContextShape,
       async (params: GetContextParams) => {
          const request = resolveRequest(params);
+         if (request.offset > 0 && !request.pureSourceListing) {
+            // Refused rather than ignored. A ranked response has no
+            // reproducible order to resume from, so honouring the offset
+            // would drop rows the caller could never get back, and dropping
+            // the offset silently would hand them page 1 while they believed
+            // they were reading page 2.
+            return contextError(
+               buildMalloyUri(
+                  {
+                     environment: request.environmentName,
+                     package: request.packageName,
+                  },
+                  "get-context",
+               ),
+               `${request.environmentName}/${request.packageName}`,
+               new Error(
+                  "Invalid offset: paging works only on a pure source listing (every search_target of type `source`, none with search_text), which is the one response with a resumable order. Fix: drop `offset`, and narrow with search_text or scopes instead.",
+               ),
+            );
+         }
          return runContextQuery(
             request,
             environmentStore,
