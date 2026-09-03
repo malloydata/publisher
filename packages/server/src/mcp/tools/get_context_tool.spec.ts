@@ -1749,6 +1749,86 @@ describe("get_context semantic retrieval", () => {
       expect(results.some((r) => r.name === "order_items")).toBe(false);
    });
 
+   it("carries the same entity facts on the lexical and semantic paths", async () => {
+      // The two paths score differently and are MEANT to: only the semantic
+      // one publishes a relevance, and only it names matched_targets. What
+      // they must not differ on is what an entity IS -- its type, its Malloy
+      // data type, the join traversal reaching it, its doc, its identity.
+      //
+      // That drifted twice, because each path wrote the projection out by
+      // hand: sibling collapse shipped on the semantic path before the
+      // lexical one had it, and matched_targets never reached the semantic
+      // path at all. Neither showed up as a failing test, because a dropped
+      // field makes a response smaller, not wrong. projectEntity is now the
+      // single projection; this pins that the paths agree through it.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         // join-pkg, and this phrasing, on purpose: the shared entities have
+         // to CARRY the optional fields for comparing them to mean anything.
+         // A bare dimension has no relationship, join_path, doc or data_type,
+         // so the same assertion over semantic-pkg passes without testing
+         // anything. "current building" also matches lexically (it humanizes
+         // to the join's own name) and has a stub vector, so both paths
+         // return it.
+         search_targets: anyKind("current building"),
+         scopes: [{ environment: "specs", package: "join-pkg" }],
+      };
+
+      const lexical = parse(await handler(params));
+      expect(lexical.retrieval).toBe("lexical");
+      const semantic = await callUntilSemantic(handler, params);
+
+      type Ranked = ReturnType<typeof rankedEntities>[number];
+      const identityOf = (e: Ranked) => ({
+         name: e.name,
+         source: e.source,
+         entity_type: e.entity_type,
+         entity_id: e.entity_id,
+         description: e.description,
+         data_type: e.data_type,
+         join_path: e.join_path,
+         relationship: e.relationship,
+         aliases: e.aliases,
+      });
+      const byId = (rows: Ranked[]) =>
+         new Map(rows.map((e) => [e.entity_id as string, identityOf(e)]));
+
+      const lexicalById = byId(rankedEntities(lexical));
+      const semanticById = byId(rankedEntities(semantic));
+
+      // Guard the guard: if the two paths shared no entity the comparison
+      // below would pass by matching nothing.
+      const shared = [...semanticById.keys()].filter((id) =>
+         lexicalById.has(id),
+      );
+      expect(shared.length).toBeGreaterThan(0);
+      // Guard the guard, part two: comparing entities that carry none of the
+      // optional fields would agree trivially. At least one shared row must
+      // carry each field that has ever drifted between the paths.
+      //
+      // join_path and data_type are NOT covered, and not by choice: the
+      // lexical index feeds lunr the raw `e.name`, so a dotted joined field
+      // like `current_building.building_name` is one token and no plain-English
+      // phrasing reaches it. Only entities the lexical path can return by name
+      // can be compared, and none of those carry a join path. Widening this
+      // test needs that fixed first.
+      const sharedRows = shared.map((id) => semanticById.get(id)!);
+      expect(sharedRows.some((e) => e.description !== undefined)).toBe(true);
+      expect(sharedRows.some((e) => e.relationship !== undefined)).toBe(true);
+      for (const id of shared) {
+         expect(semanticById.get(id)).toEqual(lexicalById.get(id)!);
+      }
+
+      // And the fields that SHOULD differ still do, so the assertion above
+      // is not passing because both paths went quiet.
+      const semanticRows = rankedEntities(semantic);
+      expect(semanticRows.some((e) => e.relevance !== undefined)).toBe(true);
+      expect(
+         rankedEntities(lexical).every((e) => e.relevance === undefined),
+      ).toBe(true);
+   });
+
    it("ranks a join semantically and writes it to the embedding index", async () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());

@@ -630,6 +630,87 @@ function windowBySource(
 }
 
 /** Cut over-long context text on a word boundary, marking that it was cut. */
+/**
+ * The fields every retrieval path carries from an indexed entity onto a ranked
+ * one.
+ *
+ * Browse, semantic and lexical each wrote this projection out by hand, and a
+ * field added to one was simply absent from the others: `matched_targets` never
+ * reached the semantic path, and sibling collapse shipped on the semantic path
+ * before the lexical one had it. Neither was caught by a test, because a
+ * missing field is a smaller response, not a failing one. One projection means
+ * a new field arrives everywhere or nowhere.
+ *
+ * The ranking-specific fields stay at the call site on purpose: `score`,
+ * `lexicalScore` and `targetScores` are each honest on one path and not the
+ * others, and folding them in here would invite exactly the mistake of
+ * publishing a lexical score as a relevance.
+ */
+function projectEntity(
+   e: Entity,
+   environmentName: string,
+   packageName: string,
+): ResultEntity {
+   return {
+      kind: e.kind,
+      name: e.name,
+      source: e.source,
+      environmentName,
+      packageName,
+      modelPath: e.modelPath,
+      doc: e.doc,
+      ...(e.relationship ? { relationship: e.relationship } : {}),
+      ...(e.aliases ? { aliases: e.aliases } : {}),
+      ...(e.joinPath ? { joinPath: e.joinPath } : {}),
+      ...(e.dataType ? { dataType: e.dataType } : {}),
+   };
+}
+
+/**
+ * The tail both ranked paths share: collapse siblings, window by source, then
+ * serialize. Semantic and lexical retrieval differ in how they SCORE, not in
+ * what happens to the rows afterwards, so the ordering constraint lives here
+ * once instead of being restated at two call sites.
+ *
+ * Grouping runs unwindowed and before windowing, and that order is forced
+ * rather than stylistic: sibling collapse records the duplicates it merges ON
+ * the row it keeps, so a second pass appends every also_in twice, and because
+ * it only ever drops rows past the limit, the full run's first `max` rows are
+ * what a limited run would have returned anyway.
+ *
+ * A drill-down is confined to one source, so it has no siblings to collapse and
+ * skips grouping entirely.
+ *
+ * The envelope stays with the caller: `retrieval`, `below_cutoff_count` and
+ * `retrieval_reason` are each meaningful on one path only.
+ */
+function finishRanked(args: {
+   rows: ResultEntity[];
+   scoped: boolean;
+   max: number;
+   sourceContext: Map<string, SourceContextEntry>;
+   environmentName: string;
+   packageName: string;
+   searchTexts: Map<number, string>;
+}): { sources: SourceCard[]; totalSources: number; entitiesDropped: number } {
+   const grouped = args.scoped
+      ? args.rows
+      : groupSiblings(args.rows, args.rows.length);
+   const windowed = windowBySource(grouped, args.max);
+   const sources = toSourceResults(
+      windowed.rows,
+      args.sourceContext,
+      args.environmentName,
+      args.packageName,
+      args.searchTexts,
+   );
+   return {
+      sources,
+      totalSources: windowed.totalSources,
+      entitiesDropped: windowed.entitiesDropped,
+   };
+}
+
 function truncateDoc(doc: string, max: number): string {
    if (doc.length <= max) return doc;
    const cut = doc.slice(0, max);
@@ -1676,19 +1757,7 @@ async function runContextQuery(
       // that a second call. toSourceResults carries the complete joins
       // list onto every entry, so empty means none declared.
       const sources = toSourceResults(
-         capped.map((e) => ({
-            kind: e.kind,
-            name: e.name,
-            source: e.source,
-            environmentName,
-            packageName,
-            modelPath: e.modelPath,
-            doc: e.doc,
-            ...(e.relationship ? { relationship: e.relationship } : {}),
-            ...(e.aliases ? { aliases: e.aliases } : {}),
-            ...(e.joinPath ? { joinPath: e.joinPath } : {}),
-            ...(e.dataType ? { dataType: e.dataType } : {}),
-         })),
+         capped.map((e) => projectEntity(e, environmentName, packageName)),
          sourceContext,
          environmentName,
          packageName,
@@ -1756,7 +1825,8 @@ async function runContextQuery(
    // A drill-down is confined to one source, so no two hits can be the
    // same concept in parallel sources and there is nothing to collapse.
    const scoped = Boolean(sourceName);
-   let semanticResults: ResultEntity[] | undefined;
+   /** Ranked but NOT yet collapsed or windowed; finishRanked does both. */
+   let semanticRanked: ResultEntity[] | undefined;
    let belowCutoffCount = 0;
    // The denominator belowCutoffCount is read against; see
    // SemanticSearchResult. Undefined on the lexical path, where there
@@ -1766,12 +1836,6 @@ async function runContextQuery(
    // is a dead end: an agent cannot tell a cold index, which clears in
    // seconds and is worth retrying, from a down provider, which is not.
    let retrievalReason: RetrievalReason | undefined;
-   // How many entities matched before the limit cut the list, so a
-   // capped response can say what it left behind.
-   let semanticEntitiesDropped = 0;
-   // Distinct sources across everything that matched, so total_available
-   // can exceed the returned card count when the entity cap cut rows.
-   let semanticTotalSources: number | undefined;
    if (configured) {
       let provider: EmbeddingProvider | null = null;
       try {
@@ -1843,19 +1907,7 @@ async function runContextQuery(
                      if (!e) return [];
                      return [
                         {
-                           kind: e.kind,
-                           name: e.name,
-                           source: e.source,
-                           environmentName,
-                           packageName,
-                           modelPath: e.modelPath,
-                           doc: e.doc,
-                           ...(e.relationship
-                              ? { relationship: e.relationship }
-                              : {}),
-                           ...(e.aliases ? { aliases: e.aliases } : {}),
-                           ...(e.joinPath ? { joinPath: e.joinPath } : {}),
-                           ...(e.dataType ? { dataType: e.dataType } : {}),
+                           ...projectEntity(e, environmentName, packageName),
                            score: Math.round(hit.score * 10_000) / 10_000,
                            targetScores: hit.targetScores,
                         },
@@ -1904,21 +1956,9 @@ async function runContextQuery(
                      ...row,
                      targetScores: matchedTargets.get(key),
                   }));
-               // Grouped ONCE, with no window, then windowed. Sibling
-               // collapse records the duplicates it merges ON the row it
-               // keeps, so calling it twice appends every also_in twice;
-               // and because it only ever drops rows past the limit, the
-               // full run's first `max` rows are what a limited run
-               // returns. That makes the ungrouped length the honest
-               // denominator for the truncation warning: concepts
-               // available, not rows before merging.
-               const grouped = scoped
-                  ? ranked
-                  : groupSiblings(ranked, ranked.length);
-               const windowed = windowBySource(grouped, max);
-               semanticResults = windowed.rows;
-               semanticTotalSources = windowed.totalSources;
-               semanticEntitiesDropped = windowed.entitiesDropped;
+               // Collapse, windowing and serialization are finishRanked's,
+               // shared with the lexical path so the two cannot drift.
+               semanticRanked = ranked;
                totalEntities = unionTotalEntities;
                // An entity that cleared NO target's floor is below the
                // cutoff. Derived from the union rather than taken from one
@@ -1949,18 +1989,20 @@ async function runContextQuery(
       }
    }
 
-   if (semanticResults !== undefined) {
-      const sources = toSourceResults(
-         semanticResults,
+   if (semanticRanked !== undefined) {
+      const { sources, totalSources, entitiesDropped } = finishRanked({
+         rows: semanticRanked,
+         scoped,
+         max,
          sourceContext,
          environmentName,
          packageName,
-         searchTextsByIndex,
-      );
+         searchTexts: searchTextsByIndex,
+      });
       return jsonResource(uri, {
          sources,
          ranking: "relevance" as const,
-         total_available: semanticTotalSources ?? sources.length,
+         total_available: totalSources,
          returned: sources.length,
          retrieval: "semantic",
          // Always present on a semantic response, including 0: the
@@ -1980,11 +2022,8 @@ async function runContextQuery(
             // count: a folded sibling's card rides along with the row that
             // names it rather than spending a slot of its own, so a response
             // can carry more cards than `limit` matched sources.
-            sourceCutWarning(
-               sources.length,
-               semanticTotalSources ?? sources.length,
-            ),
-            entityCutWarning(semanticEntitiesDropped),
+            sourceCutWarning(sources.length, totalSources),
+            entityCutWarning(entitiesDropped),
          ),
       });
    }
@@ -2043,17 +2082,7 @@ async function runContextQuery(
       .sort((a, b) => b.score - a.score);
 
    const scored: ResultEntity[] = ranking.map(({ e, score }) => ({
-      kind: e.kind,
-      name: e.name,
-      source: e.source,
-      environmentName,
-      packageName,
-      modelPath: e.modelPath,
-      doc: e.doc,
-      ...(e.relationship ? { relationship: e.relationship } : {}),
-      ...(e.aliases ? { aliases: e.aliases } : {}),
-      ...(e.joinPath ? { joinPath: e.joinPath } : {}),
-      ...(e.dataType ? { dataType: e.dataType } : {}),
+      ...projectEntity(e, environmentName, packageName),
       // targetScores is deliberately NOT carried on this path. It would reach
       // the wire as matched_targets[].relevance, whose relevance is required
       // and would therefore publish a lexical score -- the exact number this
@@ -2063,32 +2092,27 @@ async function runContextQuery(
       // response answers both.
       lexicalScore: score,
    }));
-   // Grouped once, unwindowed, then windowed: see the semantic path for
-   // why calling it twice doubles every alsoIn. A drill-down is confined
-   // to one source, so it has no siblings to collapse.
-   const grouped = scoped ? scored : groupSiblings(scored, scored.length);
-   // Same windowing as the semantic path: `limit` counts sources, and each
-   // card is capped per target. This path carries no per-target scores, so
-   // its rows share one cap per source rather than one each.
-   const lexicalWindow = windowBySource(grouped, max);
-   const results = lexicalWindow.rows;
-
-   const sources = toSourceResults(
-      results,
+   // This path carries no per-target scores, so its rows share one cap per
+   // source rather than one each; everything else about the tail is the
+   // semantic path's, which is why it is the same function.
+   const { sources, totalSources, entitiesDropped } = finishRanked({
+      rows: scored,
+      scoped,
+      max,
       sourceContext,
       environmentName,
       packageName,
-      searchTextsByIndex,
-   );
+      searchTexts: searchTextsByIndex,
+   });
    const envelope = {
       sources,
       ranking: "relevance" as const,
-      total_available: lexicalWindow.totalSources,
+      total_available: totalSources,
       returned: sources.length,
    };
    const lexicalWarnings = warningsFor(
-      sourceCutWarning(sources.length, lexicalWindow.totalSources),
-      entityCutWarning(lexicalWindow.entitiesDropped),
+      sourceCutWarning(sources.length, totalSources),
+      entityCutWarning(entitiesDropped),
    );
    return jsonResource(
       uri,
