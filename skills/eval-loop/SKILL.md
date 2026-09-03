@@ -176,6 +176,16 @@ the run measure something other than what it names:
   `mcp__<server>__<tool>` prefix and the OAuth cache key, so it has to match the
   name the answerer authenticated under, and `--hosted-tools` lists the bare
   tools that host exposes.
+- **Prefer a SCOPED endpoint URL over asking for scope.** A hosted MCP is
+  usually reachable two ways: a global endpoint where every call carries an
+  organization and workspace, and a scoped one where the URL itself is the
+  scope. `--scope` and the prompt can only ASK an answerer to stay in one
+  package; a scoped URL enforces it. For an agent being measured that is the
+  difference between a case answered against the package it names and one
+  answered against whatever else the account can see. Authenticate once
+  interactively (`claude`, `/mcp`) under the same server name the run will use;
+  the token is cached per name, and a spawned headless answerer cannot complete
+  an OAuth flow.
 
 ## Before you start
 

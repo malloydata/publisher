@@ -1024,6 +1024,16 @@ def main(argv: list[str] | None = None) -> int:
                          else manifest_skills(a.answerer_manifest,
                                               ext_repo or REPO_ROOT))
     a.judge_skills = list(JUDGE_SKILLS)
+    if a.target == "platform" and not a.scope and "/workspace/" not in a.mcp_url:
+        # A hosted MCP is reachable as a global endpoint (scope passed per call)
+        # or as a scoped one (the URL is the scope). For an answerer being
+        # MEASURED the difference matters: the prompt can only ASK it to stay in
+        # one package, and an answerer that wanders into another workspace was
+        # not answering the question the case asked. A scoped URL enforces it.
+        print("  ! platform run on what looks like a global endpoint with no "
+              "--scope: the answerer is only ASKED to stay in one package.")
+        print("    Prefer a scoped URL (the host's per-org or per-workspace "
+              "form), which enforces it, or pass --scope ENV/PACKAGE.")
     if a.target == "platform" and a.answerer_skills:
         mismatched = publisher_only_skills(a.answerer_skills, a.roots)
         if mismatched:
