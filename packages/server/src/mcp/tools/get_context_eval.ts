@@ -188,9 +188,29 @@ const K = Number(process.argv[2] || 5);
 const WARMUP_ATTEMPTS = 15;
 const WARMUP_DELAY_MS = 2_000;
 
-async function callGetContext(
+/**
+ * Every entity kind `get_context` can search, sent as one target apiece.
+ *
+ * A target names the kind it wants, so a request that does not name a kind
+ * cannot return it. The measure this eval reports is recall over the whole
+ * model -- the answer to "revenue by category" is a dimension, to "top selling
+ * products" a view, to "the customer who placed the order" a join -- so the
+ * request has to span the kinds the cases span. `dimensional_value` is left
+ * out: Publisher indexes no values, and asking for it only adds a warning.
+ */
+const ALL_TARGET_TYPES = [
+   "source",
+   "dimension",
+   "measure",
+   "view",
+   "join",
+] as const;
+
+/** Call one MCP tool and return its JSON resource payload. */
+async function callTool(
+   name: string,
    args: Record<string, unknown>,
-): Promise<GetContextPayload> {
+): Promise<string | undefined> {
    const res = await fetch(ENDPOINT, {
       method: "POST",
       headers: {
@@ -201,24 +221,54 @@ async function callGetContext(
          jsonrpc: "2.0",
          id: 1,
          method: "tools/call",
-         params: { name: "get_context", arguments: args },
+         params: { name, arguments: args },
       }),
    });
    const text = await res.text();
    const dataLine = text.split("\n").find((l) => l.startsWith("data: "));
-   if (!dataLine) return { sources: [] };
+   if (!dataLine) return undefined;
    const msg = JSON.parse(dataLine.slice(6)) as {
       result?: { content?: { resource?: { text?: string } }[] };
    };
-   const payloadText = msg.result?.content?.[0]?.resource?.text;
+   return msg.result?.content?.[0]?.resource?.text;
+}
+
+/**
+ * Rank one plain-English query across every searchable kind in one package.
+ *
+ * `limit` is deliberately not passed: it counts SOURCE cards, not entities, so
+ * using it as the recall cutoff would measure a different K per case. The
+ * cutoff is applied to the flattened entity list instead.
+ */
+async function callGetContext(
+   env: string,
+   pkg: string,
+   query: string,
+): Promise<GetContextPayload> {
+   const payloadText = await callTool("get_context", {
+      search_targets: ALL_TARGET_TYPES.map((target_type) => ({
+         target_type,
+         search_text: query,
+      })),
+      scopes: [{ environment: env, package: pkg }],
+   });
    if (!payloadText) return { sources: [] };
    return JSON.parse(payloadText) as GetContextPayload;
 }
 
-/** True when the environment exists on the server (tier-2 listing works). */
+/**
+ * True when the environment exists on the server. The catalog moved out of
+ * get_context -- its `scopes` name a package, so it cannot answer "which
+ * environments are there" -- so this asks list_packages, which is where those
+ * names now come from.
+ */
 async function environmentServed(env: string): Promise<boolean> {
-   const payload = await callGetContext({ environmentName: env });
-   return payload.error === undefined;
+   const payloadText = await callTool("list_packages", {});
+   if (!payloadText) return false;
+   const payload = JSON.parse(payloadText) as {
+      environments?: Array<{ name?: string }>;
+   };
+   return (payload.environments ?? []).some((e) => e.name === env);
 }
 
 /**
@@ -229,12 +279,7 @@ async function environmentServed(env: string): Promise<boolean> {
 async function warmUp(env: string, pkg: string): Promise<string | undefined> {
    let mode: string | undefined;
    for (let attempt = 0; attempt < WARMUP_ATTEMPTS; attempt++) {
-      const payload = await callGetContext({
-         environmentName: env,
-         packageName: pkg,
-         query: "warm up",
-         limit: 1,
-      });
+      const payload = await callGetContext(env, pkg, "warm up");
       mode = payload.retrieval;
       // No marker: the server has no embedding provider configured, so
       // there is nothing to warm up.
@@ -275,13 +320,8 @@ async function main(): Promise<void> {
          await warmUp(c.env, c.pkg);
       }
 
-      const payload = await callGetContext({
-         environmentName: c.env,
-         packageName: c.pkg,
-         query: c.query,
-         limit: K,
-      });
-      const results = rankedEntities(payload);
+      const payload = await callGetContext(c.env, c.pkg, c.query);
+      const results = rankedEntities(payload).slice(0, K);
       const mode = payload.retrieval ?? "lexical (no provider)";
       modesSeen.add(mode);
 

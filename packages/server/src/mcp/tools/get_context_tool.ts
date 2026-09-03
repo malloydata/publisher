@@ -1545,20 +1545,17 @@ function contextError(uri: string, identifier: string, error: unknown) {
 }
 
 /**
- * Registers the get_context MCP tool. It is a progressive-discovery tool:
- * with no environment it lists environments, with an environment but no package
- * it lists packages, with a package but no query it lists the package's sources,
- * and with a query it runs lexical (lunr/BM25) retrieval over the package's model
- * entities (sources, views, dimension/measure fields, joins, named queries). The entity
- * index is built once per Package and cached (see getPackageIndex), rebuilding
- * automatically when the package reloads.
- */
-/**
- * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by a resolved
- * request. Shared by both registered tools: the converged `get_context` and
- * the flat `get_context` it replaces, so the two can never drift on what
- * a listing returns, how the floor is applied, or what a card carries. Only
- * the request parsing differs between them, and that happens before this.
+ * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by an already
+ * resolved request, so a ranking decision and a request-parsing decision stay
+ * separately reviewable. Retrieval runs over the package's model entities
+ * (sources, views, dimension/measure fields, joins, named queries), semantic
+ * when an embedding provider is configured and lexical (lunr/BM25) otherwise.
+ * The entity index is built once per Package and cached (see getPackageIndex),
+ * rebuilding automatically when the package reloads.
+ *
+ * There is no progressive-discovery tier here any more: the catalog is
+ * `list_packages`, and every request that reaches this names one package,
+ * because `scopes` requires it.
  */
 async function runContextQuery(
    request: ResolvedRequest,

@@ -174,21 +174,21 @@ export function getMalloyErrorDetails(
          refined = true;
          const [, viewName, sourceName] = viewNotFoundMatch;
          suggestions.unshift(
-            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling or call get_context with sourceName '${sourceName}' to see the list of available views. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
+            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling, or list that source's views with get_context: pass search_targets [{"target_type": "view"}] and a scopes entry whose source is '${sourceName}'. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
          );
       } else if (sourceNotFoundMatch) {
          refined = true;
          const [, sourceName] = sourceNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Source '${sourceName}' was not found or could not be accessed. Verify its definition (e.g., \`source: ${sourceName} is table('...')\` or \`duckdb.sql("...")\`) and ensure any associated connections are valid.`,
-            `Suggestion: Check the spelling of '${sourceName}'. You can list the sources in the package using get_context.`,
+            `Suggestion: Check the spelling of '${sourceName}'. List the package's sources with get_context: pass search_targets [{"target_type": "source"}] and a scopes entry naming the environment and package.`,
          );
       } else if (queryNotFoundMatch) {
          refined = true;
          const [, queryName] = queryNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Named query '${queryName}' was not found. Verify its definition (e.g., \`query: ${queryName} is source_name -> { ... }\`) within the model '${modelIdentifier}'.`,
-            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. You can list named queries using get_context.`,
+            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. List them with get_context: pass search_targets [{"target_type": "view"}], which covers named queries too.`,
          );
       } else if (fieldNotFoundMatch) {
          refined = true;
@@ -196,7 +196,7 @@ export function getMalloyErrorDetails(
             fieldNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Field '${fieldName}' was not found in ${fieldContextType} '${fieldContextName}'. Check the spelling of the field name within the definition of '${fieldContextName}'.`,
-            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. You can inspect the ${fieldContextType}'s fields using get_context.`,
+            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. Inspect its fields with get_context: pass search_targets [{"target_type": "dimension"}, {"target_type": "measure"}], scoped to the source that holds it.`,
          );
       } else if (referenceErrorMatch) {
          refined = true;
