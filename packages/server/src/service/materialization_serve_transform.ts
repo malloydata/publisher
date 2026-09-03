@@ -131,6 +131,58 @@ export interface ServeBinding {
 }
 
 /**
+ * For each persist source in a build plan, the sources that materialize into its
+ * table — the `aliasesBySourceName` argument {@link deriveServeBindings} takes.
+ *
+ * Grouped BY content address, because that is what decides which sources really
+ * share a table, then keyed BY name, because a name is the only identifier a
+ * manifest entry carries that means the same thing whoever built it (an
+ * instructed build stamps the caller's `sourceEntityId` on its entry).
+ *
+ * A name declared at more than ONE address is dropped from aliasing entirely.
+ * Source names are not unique in a package — two models may each declare `daily`,
+ * which is why the wire plan is keyed by sourceID — so such a name cannot be
+ * resolved to a table by name at all, and picking one by map order would
+ * eventually bind the same name to two different tables. Two `source: daily`
+ * declarations then land in one serve shape, which fails to compile and takes the
+ * storage tier out for EVERY model in the package (bindings are pushed
+ * package-wide), silently: base-only is the tier the ladder trusts without a
+ * probe, so the failure surfaces per query rather than at shape build where the
+ * tier-drop metric would see it. Dropping the ambiguous name costs that one source
+ * its routing and keeps everything else correct.
+ *
+ * The source that OWNS a name still binds it — see the builder rule in
+ * {@link deriveServeBindings}. Only aliasing is withheld.
+ */
+export function groupAliasesByName(
+   planSources: { name?: string; sourceEntityId?: string }[],
+): Record<string, string[]> {
+   const namesByAddress = new Map<string, string[]>();
+   for (const source of planSources) {
+      if (!source.sourceEntityId || !source.name) continue;
+      const group = namesByAddress.get(source.sourceEntityId);
+      if (!group) namesByAddress.set(source.sourceEntityId, [source.name]);
+      else if (!group.includes(source.name)) group.push(source.name);
+   }
+
+   const addressesPerName = new Map<string, number>();
+   for (const group of namesByAddress.values()) {
+      for (const name of group) {
+         addressesPerName.set(name, (addressesPerName.get(name) ?? 0) + 1);
+      }
+   }
+
+   const byName: Record<string, string[]> = {};
+   for (const group of namesByAddress.values()) {
+      const unambiguous = group.filter(
+         (name) => addressesPerName.get(name) === 1,
+      );
+      for (const name of unambiguous) byName[name] = unambiguous;
+   }
+   return byName;
+}
+
+/**
  * Derive the publisher's self-maintained serve bindings from a build's manifest
  * entries — the standalone half of the injectable binding seam (a host/control
  * plane can supply {@link ServeBinding}s directly instead). Only entries that
@@ -144,11 +196,43 @@ export interface ServeBinding {
  * in the mapped table path (`physicalTableName`), not the handle. This is the one
  * hard cross-producer contract: whoever supplies the binding (this function, or
  * a host) must key the handle the same way the build did.
+ *
+ * An entry can serve MORE THAN ONE source. `#@ persist` is inherited and `extend`
+ * does not change a source's materialization SQL, so a base and its extension
+ * share a content address and therefore one entry and one table — the extension
+ * correctly gets no table of its own, but it still has to READ the base's. An
+ * entry names only the source that BUILT it, so `aliasesBySourceName` supplies the
+ * rest, and every one of them is bound to the same virtual handle. That is the
+ * handle's purpose: it is identity-scoped, so several sources resolving to one
+ * virtual table is the design rather than a collision.
+ *
+ * Without it exactly one alias routes and the others silently serve live, chosen
+ * by whichever source happened to build the table.
+ *
+ * Keyed by source NAME, deliberately, not by `entry.sourceEntityId`. That field
+ * carries the identity the BUILDER stamped, which on an instructed build is the
+ * caller's — `executeInstructedBuild` treats an instruction's `sourceEntityId` as
+ * opaque precisely so a host may derive it any way it likes — while the alias
+ * grouping has to be computed from the publisher's own content addresses. Keying
+ * on the entry's id would agree with the group only while the host happened to
+ * hash exactly as the publisher does, and would silently degrade to one-alias
+ * routing the moment it did not. A name is the one identifier both sides mean the
+ * same thing by.
  */
 export function deriveServeBindings(
    entries: Record<string, ManifestEntry>,
+   aliasesBySourceName: Record<string, string[]>,
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
+   // Every name that OWNS a table in this manifest. An alias never claims one:
+   // the owner is the source whose SQL produced that table, and a name bound
+   // twice — once as its owner, once as someone else's alias — puts two
+   // `source: <name>` declarations in one serve shape.
+   const builders = new Set(
+      Object.values(entries)
+         .map((entry) => entry.sourceName)
+         .filter((name): name is string => !!name),
+   );
    for (const entry of Object.values(entries)) {
       // Need the source name to rebind it, plus a storage destination + table.
       if (
@@ -163,20 +247,31 @@ export function deriveServeBindings(
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string }));
       if (schema.length === 0) continue;
-      bindings.push({
-         sourceName: entry.sourceName,
-         destinationName: entry.storageDestinationName,
-         virtualHandle: entry.sourceEntityId,
-         // Qualify the table with the destination catalog (the attach alias) so
-         // the serve reads `<store>.<table>` — the build wrote it there, and an
-         // unqualified name would resolve against the serve session's default
-         // catalog, not the attached store.
-         tablePath: `${entry.storageDestinationName}.${entry.physicalTableName}`,
-         schema,
-         freshAsOf: entry.dataAsOf,
-         freshnessWindowSeconds: entry.freshnessWindowSeconds,
-         freshnessFallback: entry.freshnessFallback,
-      });
+      // The builder's own name first, so it wins any ordering downstream; the
+      // aliases follow. Deduplicated because the builder's name is normally in
+      // the address group too.
+      const names = [
+         entry.sourceName,
+         ...(aliasesBySourceName[entry.sourceName] ?? []).filter(
+            (name) => !builders.has(name),
+         ),
+      ].filter((name, i, all) => all.indexOf(name) === i);
+      for (const sourceName of names) {
+         bindings.push({
+            sourceName,
+            destinationName: entry.storageDestinationName,
+            virtualHandle: entry.sourceEntityId,
+            // Qualify the table with the destination catalog (the attach alias) so
+            // the serve reads `<store>.<table>` — the build wrote it there, and an
+            // unqualified name would resolve against the serve session's default
+            // catalog, not the attached store.
+            tablePath: `${entry.storageDestinationName}.${entry.physicalTableName}`,
+            schema,
+            freshAsOf: entry.dataAsOf,
+            freshnessWindowSeconds: entry.freshnessWindowSeconds,
+            freshnessFallback: entry.freshnessFallback,
+         });
+      }
    }
    return bindings;
 }
@@ -367,6 +462,30 @@ function serveShapeFragment(binding: ServeBinding): string {
  * join/view that reaches a non-materialized source) does not compile against
  * this model, and the serve path falls back to serving it live.
  */
+/**
+ * The two source sets that explain a serve-shape fallback.
+ *
+ * The compiler names the symbol it could not resolve, which is a symptom shared
+ * by both reasons a source can be missing from the shape: it carries no
+ * `#@ persist`, or the freshness gate withheld it. "Reference to undefined
+ * object" reads identically either way, so the sets are reported next to it.
+ *
+ * A name the query wants that appears in NEITHER is not materialized at all.
+ */
+export function serveShapeDiagnostics(
+   allBindings: ServeBinding[],
+   freshBindings: ServeBinding[],
+): { shapeSources: string[]; staleSources: string[] } {
+   const shapeSources = freshBindings.map((b) => b.sourceName);
+   const fresh = new Set(shapeSources);
+   return {
+      shapeSources,
+      staleSources: allBindings
+         .map((b) => b.sourceName)
+         .filter((name) => !fresh.has(name)),
+   };
+}
+
 export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
    modelText: string;
 } {
