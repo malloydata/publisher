@@ -31,6 +31,51 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] (BREAKING) — every MCP tool loses its `malloy_` prefix, and get_context answers in one shape
+
+**Every MCP tool is renamed.** The `malloy_` prefix is gone and the names are bare
+snake_case. There is no alias and no deprecation window: the old names are removed,
+so an agent or client that calls them gets an unknown-tool error until it is updated.
+
+| Before | Now |
+|---|---|
+| `malloy_getContext` | `get_context` |
+| `malloy_executeQuery` | `execute_query` |
+| `malloy_compile` | `compile_model` |
+| `malloy_reloadPackage` | `reload_package` |
+| `malloy_getStatus` | `get_status` |
+| `malloy_searchDatabaseSchema` | `search_database_schema` |
+| `malloy_searchDocs` | `search_malloy_docs` |
+
+**What to do.** Hosts that discover tools at connect time (Claude Code, Cursor, Codex)
+pick the new names up on reconnect with no config change — the names appear in the
+tool list, not in `.mcp.json`. Anything that hardcodes a tool name in a prompt, a
+script, or a saved agent config has to be edited. The bundled skills and every doc in
+this repo already use the new names.
+
+**`get_context` also answers in a new response shape.** It used to return a flat ranked
+`results[]` of entities; it now returns `sources[]`, where each source carries the
+entities that matched inside it. A client that reads `results[0].name` finds nothing —
+`results` is gone from success payloads. Error payloads carry both `results: []` and
+`sources: []`, because an error is raised before the tier is known. Alongside the shape,
+the response gained `below_cutoff_count`, `retrieval_reason`, `aliases`, `also_in`,
+`givens`, `authorize`, `data_type`, `one_line_summary`, and `warnings[]` (which replaces
+the single `note` string). The tool's own description is the contract and is pinned by a
+test; re-read it rather than working from a cached copy.
+
+**Listing the catalog is now its own tool, `list_packages`.** `malloy_getContext` with
+no arguments used to list the environments; `get_context` requires its `search_targets`
+and a `scopes` naming a package, so the catalog moved to a sibling tool that supplies
+those names. Call `list_packages` first when you do not already know an environment and
+package name.
+
+Why now rather than behind an alias: no SDK surface exposes these names, and the
+consumers that do use them (agents) re-read the tool list and the tool description on
+every session, so a clean cut costs one reconnect where an alias would have left two
+spellings in the docs indefinitely.
+
+---
+
 ## [Unreleased] — a boolean query param you misspell now fails instead of doing nothing
 
 `reload`, `dropTables` and `bypass_filters` were each read as `=== "true"`, so
@@ -1041,13 +1086,13 @@ See [docs/configuration.md](docs/configuration.md) for the rule and the recommen
 > of stacked annotations, are all **retired and refused at model load** — see the dimension-form
 > section at the top of this page for the current syntax.
 
-**Sources can now gate query access on givens.** A `#(authorize) "<bool expr>"` annotation (source-level) or `##(authorize)` (file-level) is evaluated against the request's [givens](docs/givens.md) before any query that reads the source runs; access is denied with **HTTP 403** unless at least one in-scope expression is `true` (OR semantics). Enforced on `POST /…/query`, the notebook-cell `GET`, `POST /…/compile`, and the MCP `execute_query` tool. Malformed or invalid annotations fail model load with **424**.
+**Sources can now gate query access on givens.** A `#(authorize) "<bool expr>"` annotation (source-level) or `##(authorize)` (file-level) is evaluated against the request's [givens](docs/givens.md) before any query that reads the source runs; access is denied with **HTTP 403** unless at least one in-scope expression is `true` (OR semantics). Enforced on `POST /…/query`, the notebook-cell `GET`, `POST /…/compile`, and the MCP `malloy_executeQuery` tool. Malformed or invalid annotations fail model load with **424**.
 
 **Important — this is a trusted-tier boundary, not end-user authn.** Givens are caller-asserted, so `#(authorize)` enforces policy only when Publisher sits behind a trusted tier that sets givens from verified context and the query API is network-isolated from untrusted callers. See [docs/authorize.md](docs/authorize.md) (Security model) for the deployment contract, the locked-base + curated-extension pattern, and known limitations.
 
 ## [0.0.201] — Givens
 
-**Givens are now the recommended way to supply runtime parameters.** Models declare `given:` blocks (per [Malloy's experimental givens feature](https://docs.malloydata.dev/documentation/experiments/givens)); callers send values via the new `givens` body field on `POST /…/query` and `POST /…/compile`, the `givens` query parameter on the notebook-cell GET, or the `givens` argument on the MCP `execute_query` tool. The notebook UI automatically renders a Parameters panel for any model that declares givens.
+**Givens are now the recommended way to supply runtime parameters.** Models declare `given:` blocks (per [Malloy's experimental givens feature](https://docs.malloydata.dev/documentation/experiments/givens)); callers send values via the new `givens` body field on `POST /…/query` and `POST /…/compile`, the `givens` query parameter on the notebook-cell GET, or the `givens` argument on the MCP `malloy_executeQuery` tool. The notebook UI automatically renders a Parameters panel for any model that declares givens.
 
 `filterParams`, `bypassFilters`, the matching `filter_params` / `bypass_filters` query parameters, and `#(filter)` annotations are **deprecated** and will be removed in a future release after a coordinated migration with current users. Models that use `#(filter)` will continue to work unchanged during the deprecation window; affected responses now carry a `Deprecation: true` header (per RFC 8594) pointing at `docs/givens.md`, and the server logs a one-time migration notice when such a model is loaded. See [docs/givens.md](docs/givens.md) for the migration recipe.
 
