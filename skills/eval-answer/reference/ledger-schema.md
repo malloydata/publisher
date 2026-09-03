@@ -124,7 +124,8 @@ on that axis.
 | `scope` | Platform target only: the `environment/package` the answerer was told to pass as an explicit `scopes` entry on every `get_context` / `execute_query` call. A workspace can serve many packages (a personal workspace serves every package the user can read), so without this the run also measures whether retrieval picks the right package -- a different measurement. Absent means unscoped. |
 | `mcpUrl` / `publisher` | The endpoints the answerer and the re-execution used. |
 | `predictionsReExecuted` | Whether the judge saw re-executed rows (false when the served bytes no longer match the pinned snapshot). |
-| `label` / `effort` | |
+| `label` | `<set>-<phase>-<nn>`, assigned by `run_baseline.py` from the set name, the run's phase and the next free number beside it (`ecommerce-baseline-01`, `ecommerce-baseline-02`, `ecommerce-blind_gate-01`). The A/A pair is two runs of the same phase; the post-edit arms are two runs of `blind_gate`. Hand-typed names do not survive one afternoon of runs -- `base`, `rejudged2`, `r3`, `post1` sort wrongly, group not at all, and cannot be matched to an arm. `--label` overrides for a run that genuinely needs a human name. |
+| `effort` | |
 | `answererCostUsd` / `judgeCostUsd` | What the arm cost, split by role. The judge's half was discarded until 2026-09-02, so every "cost per arm" quoted before then was the answerer alone. |
 | `goldenCheck` | What `verify_goldens.py` said before the run started: `N ok, M drifted, K other finding(s)`, or why it did not run (no truth server on a platform target; `--skip-golden-check`; rebuild). A run that started on a drifted set says so here rather than pretending its verdicts mean something. |
 | `status` | `complete`, or `aborted` when four consecutive attempts errored or found the server dead and the harness stopped rather than spend the rest of the budget on attempts nobody will trust. |

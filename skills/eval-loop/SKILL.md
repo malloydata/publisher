@@ -210,7 +210,10 @@ python3 skills/eval-loop/scripts/run_baseline.py \
   --truth-publisher http://localhost:4881
 python3 skills/eval-loop/scripts/run_baseline.py \
   --set <repo>/evals/ecommerce --out results/<arm> \
-  --label "<arm>" --parallel 4 --truth-publisher http://localhost:4881
+  --parallel 4 --truth-publisher http://localhost:4881
+#    the run names itself <set>-<phase>-<nn> (ecommerce-baseline-01, then -02
+#    for the second arm of the A/A). Pass --label only for a run that needs a
+#    human name; hand-typed arm names stop being readable within an afternoon.
 
 # 3. compare two arms, or two runs of one arm
 python3 skills/eval-loop/scripts/flip_table.py --a results/<a> --b results/<b>
@@ -378,6 +381,46 @@ population, or convention are still yours to check.
 
 When one turns up it is `BAD-REFERENCE`, and it goes through this side door.
 Never let it reach improve: the model is right, and an edit would be damage.
+
+### A golden must match the state the model is in
+
+A case whose golden holds a value asserts that the value is obtainable. If the
+model has no trace of the concept, that assertion is false, and the case is now
+asking two questions at once: "did the answer contain the golden" (no) and
+"should the answerer have complied" (no). Both readings are defensible, so the
+verdict stops being a measurement.
+
+Measured, holding the answer, the model and the rubric fixed and varying only
+how the case was authored:
+
+| the case says | verdicts over four samples |
+|---|---|
+| golden holds three counts, model defines no such concept | `match` / `no_match` / `match` / `near_match` |
+| `golden.kind: unanswerable`, pass is a refusal that names what is missing | `match` x4 |
+
+The judge is not being unreliable in the first row. It is being asked a question
+with two right answers.
+
+So a coverage case has two states and needs a golden for each:
+
+1. **Before the model defines the concept.** `coverage: absent`,
+   `golden.kind: unanswerable`. The pass is a refusal that NAMES what is
+   missing; inventing boundaries and reporting them as the company's is
+   `no_match`. This is the state that measures whether the model documents its
+   conventions.
+2. **After improve adds it.** Bump `goldenRevision`, replace the golden with the
+   real value, bump `datasetVersion`. A refusal is now a failure, and the run
+   measures whether the new entity is discoverable.
+
+Never one case straddling both. The straddle is what produces an oscillating
+verdict, and no amount of rubric wording fixes it -- four prompt edits were
+tried against exactly this case and none of them did.
+
+**This is the mirror of "A model fix can invalidate a golden".** That section
+warns that adding a definition can move a golden nobody was working on. This one
+warns of the same seam from the other side: a golden written for a model that
+does not exist yet is invalid until the model catches up. Both are golden side
+door work, and neither is improve.
 
 ### Hold an ambiguous golden
 

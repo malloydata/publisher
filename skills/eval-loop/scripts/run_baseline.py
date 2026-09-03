@@ -171,6 +171,40 @@ def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None
         return None
 
 
+# --- Run naming --------------------------------------------------------------
+#
+# A run's label is what every comparison, flip table and report prints, so a set
+# of hand-typed names -- base, rejudged, rejudged2, r3, post1, post2 -- becomes
+# unreadable within one afternoon and cannot be sorted, grouped or matched to an
+# arm. Runs are named for what they ARE, from fields the run already carries:
+#
+#     <set>-<phase>-<nn>        ecommerce-baseline-01, ecommerce-baseline-02
+#                               ecommerce-blind_gate-01
+#
+# `phase` is the ledger's own vocabulary (baseline / loop / blind_gate / canary
+# / final), so the A/A pair is two runs of the SAME phase and the post-edit arms
+# are two runs of `blind_gate`. The sequence number is assigned by looking at
+# what already exists beside this run, so a second arm cannot silently overwrite
+# the first or be given a name that sorts before it.
+#
+# `--label` still overrides, for the rare run that needs a human name.
+
+
+def next_run_label(out: pathlib.Path, set_name: str, phase: str) -> str:
+    """`<set>-<phase>-<nn>`, with nn the next free number beside `out`."""
+    stem = f"{set_name}-{phase}"
+    siblings = out.parent.glob(f"{stem}-*") if out.parent.exists() else []
+    used = set()
+    for s in siblings:
+        tail = s.name[len(stem) + 1:]
+        if tail.isdigit():
+            used.add(int(tail))
+    n = 1
+    while n in used:
+        n += 1
+    return f"{stem}-{n:02d}"
+
+
 def judge_pins(judge_md: pathlib.Path) -> tuple[str, str | None]:
     """(JUDGE_VERSION, content sha) declared by the judge file itself.
 
@@ -1002,7 +1036,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  ! no truth server for a golden check on a platform target "
               "(--truth-publisher); goldens are taken as they stand")
 
-    label = a.label or f"{a.model}-{a.phase}"
+    label = a.label or next_run_label(a.out, a.set_dir.name, a.phase)
     art = a.out / "artifacts"
     art.mkdir(parents=True, exist_ok=True)
 
