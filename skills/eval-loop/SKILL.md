@@ -162,6 +162,21 @@ Which target for which job:
 So a measure-only run can use any target; a run that includes **improve** needs
 a local one.
 
+Two things to check before a platform run, because neither errors and both make
+the run measure something other than what it names:
+
+- **The answerer's skills must be written for THIS host.** A shared skill names
+  an MCP tool by its bare name (`get_context`) so it reads correctly anywhere,
+  but a host/router skill names its own host's tools directly. Install the
+  latter for the wrong host and the answerer is told to call tools it does not
+  have. `run_baseline.py` warns when the manifest it loaded names Publisher-only
+  tools on a platform target; point `--answerer-manifest`, or `--skills-root`,
+  at the checkout that ships this host's manifest.
+- **The tool names are configuration.** `--hosted-mcp-server` is both the
+  `mcp__<server>__<tool>` prefix and the OAuth cache key, so it has to match the
+  name the answerer authenticated under, and `--hosted-tools` lists the bare
+  tools that host exposes.
+
 ## Before you start
 
 1. The model package under evaluation must live in a git repository, with

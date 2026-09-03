@@ -210,6 +210,32 @@ def next_run_label(out: pathlib.Path, set_name: str, phase: str) -> str:
     return f"{stem}-{n:02d}"
 
 
+# Tools only the open-source Publisher exposes. A shared skill refers to an MCP
+# tool by its BARE name (`get_context`, `execute_query`) precisely so it reads
+# correctly on any host; a skill naming these is a host/router skill written for
+# Publisher, and on a hosted target it teaches the answerer tools it does not
+# have. That does not error -- the answerer simply reads instructions for a
+# different surface -- so it has to be said out loud or the run quietly measures
+# a different system than the one it names.
+PUBLISHER_ONLY_TOOLS = ("malloy_getContext", "malloy_executeQuery",
+                        "malloy_compile", "malloy_reloadPackage")
+
+
+def publisher_only_skills(names: list[str],
+                          roots: list[pathlib.Path]) -> list[str]:
+    """Which of `names` name a Publisher-only tool in their SKILL.md."""
+    out = []
+    for name in names:
+        for r in roots:
+            f = r / "skills" / name / "SKILL.md" if (r / "skills").is_dir() else r / name / "SKILL.md"
+            if f.exists():
+                text = f.read_text()
+                if any(tool in text for tool in PUBLISHER_ONLY_TOOLS):
+                    out.append(name)
+                break
+    return out
+
+
 def judge_pins(judge_md: pathlib.Path) -> tuple[str, str | None]:
     """(JUDGE_VERSION, content sha) declared by the judge file itself.
 
@@ -998,6 +1024,15 @@ def main(argv: list[str] | None = None) -> int:
                          else manifest_skills(a.answerer_manifest,
                                               ext_repo or REPO_ROOT))
     a.judge_skills = list(JUDGE_SKILLS)
+    if a.target == "platform" and a.answerer_skills:
+        mismatched = publisher_only_skills(a.answerer_skills, a.roots)
+        if mismatched:
+            print(f"  ! {len(mismatched)} answerer skill(s) name Publisher-only "
+                  f"tools on a PLATFORM run: {', '.join(mismatched)}")
+            print(f"    The answerer holds mcp__{a.hosted_mcp_server}__* tools "
+                  f"and will be told to call malloy_* ones. Point "
+                  f"--answerer-manifest at a manifest written for this host, or "
+                  f"--skills-root at the checkout that ships it.")
     print(f"answerer skills: "
           + (f"{a.answerer_manifest} ({len(a.answerer_skills)} skills)"
              if a.answerer_skills else "NONE -- measuring the model, not the product"))
