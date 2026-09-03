@@ -455,8 +455,10 @@ export function recordServeShapeTypeFallback(
  * one outcome with no compile attempt behind it, so without this label a
  * blocked query recorded nothing at all rather than reading as a fallback.
  * This hit rate is the headline KPI of the storage tier; the fallback side also
- * logs its reason per query at INFO, which is the only per-query account of a
- * miss there is.
+ * logs its reason per query at INFO — the compile error, plus the sources the
+ * shape offered and the ones the freshness gate withheld, which is what
+ * separates "never materialized" from "materialized but stale". That is the only
+ * per-query account of a miss there is.
  *
  * ⚠️ `live_fallback` here is NOT `QueryResult.servedFrom`'s `live_fallback`, and
  * joining a dashboard across the two on that token is wrong in both directions.

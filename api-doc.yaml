@@ -4296,8 +4296,12 @@ components:
             distinguishes it from case 1. The server does log it: one
             `storage serve-shape ineligible for this query; serving live` line at
             INFO per routed query, carrying the compile error that made the shape
-            ineligible. That log is currently the only per-query account of a
-            storage-tier miss. It is not a hypothetical shape — a source
+            ineligible, plus `shapeSources` (what the shape offered) and
+            `staleSources` (bound, but withheld by the freshness gate). The
+            compile error alone does not separate those: `Reference to undefined
+            object 'x'` reads identically whether `x` carries no `#@ persist` at
+            all or is materialized and merely past its freshness window. That log
+            is currently the only per-query account of a storage-tier miss. It is not a hypothetical shape — a source
             warehouse that folds unquoted identifiers to upper case made every
             query on every `storage=` source in a package ineligible, and the
             whole tier reported null for months while looking exactly like a
