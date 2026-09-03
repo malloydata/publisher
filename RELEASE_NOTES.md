@@ -31,6 +31,55 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — bound the memory a wide DuckLake write spends buffering Parquet
+
+`PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` caps how much column data DuckLake buffers
+before it flushes a Parquet row group. Unset, nothing changes: no option is set and the
+attach issues exactly the SQL it issued before.
+
+Worth reading even if you do not plan to set it, because it corrects an assumption
+`PUBLISHER_DUCKDB_MEMORY_LIMIT` invites. A DuckLake write buffers a whole row group **per
+column**, so the memory it needs follows the table's WIDTH rather than its row count — and
+those buffers sit outside DuckDB's buffer manager, so the memory limit does not bound them
+at any value. A deployment sized on `memory_limit` alone is therefore sized on the wrong
+axis: it survives long narrow materializations and is killed by short wide ones. The
+symptom is a worker OOM-killed on one source while every other source in the same package
+builds comfortably, with each DuckDB session reporting itself well inside its budget
+throughout. If that is familiar, the source that killed it is almost certainly your widest.
+
+Measured on a 72-column, 5,000,000-row `CREATE TABLE AS` into DuckLake, sampling cgroup
+`memory.stat` `anon`:
+
+| `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` | peak anon | rows per row group |
+|---|---|---|
+| unset (DuckLake's default of 122,880 rows) | 2772 MiB | ~122,880 |
+| `64MB` | 1530 MiB | ~42,300 |
+| `32MB` | 1360 MiB | ~21,900 |
+| `16MB` | 1006 MiB | ~11,700 |
+
+If you measure this yourself, read `anon` and not `memory.current`: the latter includes the
+page cache of the Parquet being written, which scales with output size, roughly doubles the
+apparent figure, and carries enough run-to-run variance to hide the effect entirely.
+
+**Costs to know before adopting.** Smaller row groups are not free — more of them means more
+Parquet metadata and coarser row-group pruning at read time, and only the write side of that
+trade is measured here. Start at `32MB` rather than the smallest value that fits; go lower
+only if a wide source still will not build.
+
+The value is expressed in bytes rather than DuckLake's `parquet_row_group_size` row count on
+purpose: one row count cannot suit a 9-column and a 110-column table at once, while a byte
+budget derives rows-per-group from the data actually buffered and so tracks width as models
+change.
+
+Two mechanics that surprise people. It is applied as a **catalog** option, so it persists in
+`ducklake_metadata` and is seen by every writer of that lake — Publisher skips it on a
+read-only attach, and a catalog that refuses the option is logged and attached anyway. And
+it requires `preserve_insertion_order=false`, which Publisher sets on the attaching session:
+DuckLake plans its copy parallel unconditionally and does not preserve input order on these
+writes regardless, so the guarantee being waived is not one that was being provided.
+Measured on a 1.5M-row write from a sorted source: 15 adjacent inversions with the setting
+on, 10 with it off.
+
 ## [0.2.2] — one materialized table, written once and readable by every source that shares it
 
 Malloy [#3029](https://github.com/malloydata/malloy/pull/3029) settled that several sources naming one
