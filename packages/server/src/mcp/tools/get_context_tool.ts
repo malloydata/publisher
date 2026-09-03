@@ -935,16 +935,14 @@ interface JoinSchemaField {
 /**
  * Index the fields reachable THROUGH a join, under their dotted Malloy path.
  *
- * A join used to be indexed as a single entity and its target's fields left
- * out, on the reasoning that they were already indexed under the target
- * source. That reasoning does not survive contact with the caller: the path
- * is what a query needs, and the path cannot be derived from anything the
- * response carries. The stable `JoinInfo` inlines the target's schema without
- * naming the target source (#1100), so an agent holding a join entity knows a
- * relationship exists and has no way to learn what it reaches. Meanwhile the
- * tool description tells it to "traverse a join as joinName.fieldName" -- a
- * path it was being asked to guess. The published shape indexes these as
- * entities in their own right and reports the traversal as `join_path`.
+ * Indexing the join alone is not enough, even though the target source is
+ * already indexed on its own: the caller needs the PATH, and the path cannot
+ * be derived from anything else the response carries. The stable `JoinInfo`
+ * inlines the target's schema without naming the target source (#1100), so an
+ * agent holding only a join entity knows a relationship exists with no way to
+ * learn what it reaches -- while the tool description tells it to "traverse a
+ * join as joinName.fieldName". So each reachable field is indexed as an entity
+ * in its own right, reporting its traversal as `join_path`.
  *
  * `fanout` is the widest relationship on the path, not the last one: a single
  * `many` hop anywhere means aggregating through this field fans out, which is
