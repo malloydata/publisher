@@ -113,7 +113,7 @@ on that axis.
 | `target` *(required)* | Which server answered, and how it reached the data: `local`, `local-proxied`, or `platform`. Decides what an improve step is even allowed to do (see `skill:eval-loop`). |
 | `answererModel` *(required)* | |
 | `phase` / `started` *(required)* | |
-| `judgeModel` / `judgeVersion` / `rubricSha` *(pins)* | The judge's model, and the version + content sha of `reference/judge.md`. |
+| `judgeModel` / `judgeVersion` / `rubricSha` *(pins)* | The judge's model, and the version + content sha of `skill:eval-judge`. |
 | `datasetVersion` *(pin)* | From `set.json` at run time. |
 | `modelSha` *(pin)* | Content sha of the `model.malloy` snapshot in the run directory -- the bytes the answerer actually queried. A git sha is not enough: a snapshot host serves a copy, often of a dirty tree no commit names. |
 | `skillsVersion` *(pin)* | HEAD of the checkout the agents' skills were loaded from, dirty-marked (`ledger.skills_git_sha(root)`). The skills are the doctrine the agents load; a run that cannot name their version cannot anchor a skills A/B. |
@@ -201,7 +201,7 @@ terms, and is not something a customer run reports.
 ### `score`
 
 The answer judge's verdict for one attempt (protocol in
-`reference/judge.md`). Every attempt in a scored run gets exactly one.
+`skill:eval-judge`). Every attempt in a scored run gets exactly one.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -224,7 +224,7 @@ Aggregates count decided verdicts only. `match` and `no_match` are the pass and
 the fail; **`near_match`, `needs_human` and null are none of the above** and stay
 out of acceptance arithmetic. `near_match` is excluded because it means "defensibly
 different", and an arguable verdict that moves a pass rate is a measurement
-artefact rather than a result (`reference/judge.md` rule 7). Report its count:
+artefact rather than a result (`skill:eval-judge` rule 7). Report its count:
 it rising is how a set tells you its rubrics are going vague.
 
 This applies to `score`. On `retrieval_score` below, `near_match` **is** counted
@@ -318,5 +318,5 @@ model bytes live in git, not in this payload.
 
 Append a line whenever a human overrules a judge verdict: the case or intent,
 the judge's verdict, the human's, and why. Re-run this file against the judge
-whenever `reference/judge.md` or the judge model changes; a rubric change that
+whenever `skill:eval-judge` or the judge model changes; a rubric change that
 flips old human-settled verdicts is a judge regression, not new truth.

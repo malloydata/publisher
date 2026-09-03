@@ -1,6 +1,6 @@
 ---
 name: eval-answer
-description: 'Score one analytical answer against a verified golden, and score which of the entities the golden depends on retrieval delivered to the answerer. Run the contamination checklist, re-execute the submitted query yourself, then spawn a judge subagent per reference/judge.md. Append attempt, tool_call, score, and retrieval_score events to the file ledger (reference/ledger-schema.md). Never explain the failure (eval-diagnose) or edit the model (eval-improve). Use when asked whether an answer was correct, to score a run, or to baseline a model.'
+description: 'Score one analytical answer against a verified golden, and score which of the entities the golden depends on retrieval delivered to the answerer. Run the contamination checklist, re-execute the submitted query yourself, then spawn a judge subagent per skill:eval-judge. Append attempt, tool_call, score, and retrieval_score events to the file ledger (reference/ledger-schema.md). Never explain the failure (eval-diagnose) or edit the model (eval-improve). Use when asked whether an answer was correct, to score a run, or to baseline a model.'
 ---
 
 # Evaluate One Answer
@@ -61,7 +61,7 @@ ambiguous, or when a verified golden has no local artifact to compare.
 ## Step 3: Judge the answer
 
 Spawn one fresh judge subagent per attempt, following
-`reference/judge.md` (the rubric, the anchors, and the output shape live
+`skill:eval-judge` (the rubric, the anchors, and the output shape live
 there; this skill does not restate them). Give it the question, the golden,
 your re-executed prediction rows, the canonical query when present, and the
 relevant source and field definitions from the model. It returns
@@ -113,7 +113,7 @@ uniform duplication. Classify `verified_wrong` (exclude from scoring) vs
 **The judge produces this, not you.** It is the only station holding the golden,
 the re-executed rows and the model source at once, so it is the only one that can
 see the key contradict any of them; the rules and the four values are in
-`reference/judge.md`. Carry its `gold_status` and `gold_note` onto the score
+`skill:eval-judge`. Carry its `gold_status` and `gold_note` onto the score
 event unchanged, and where it says nothing, fall back to the case's standing
 `golden.status`.
 

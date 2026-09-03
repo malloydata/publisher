@@ -71,9 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     # CLI never defined, so the checker died on its first fixture with an
     # AttributeError -- which is how the only thing that checks the judge came
     # to be unrunnable. `rebuild`/`rejudge` are set below; these are the rest.
-    # judge_skills is empty on purpose: the judge IS the pasted rubric, and a
-    # skill loaded here would be doctrine the real run does not have.
-    a.judge_skills = []
+    # The SAME skills a run gives its judge. Empty here would hand the judge
+    # nothing at all now that the doctrine is skill:eval-judge rather than a
+    # pasted file -- which is exactly what happened, and every fixture came
+    # back with no parseable verdict.
+    a.judge_skills = list(rb.JUDGE_SKILLS)
     a.roots = rb.skills_roots(None)
 
     fx_path = a.fixtures or (a.set_dir / "judge-regressions.jsonl")
@@ -96,9 +98,9 @@ def main(argv: list[str] | None = None) -> int:
         fixtures = [f for f in fixtures if f["qid"] in want]
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
 
-    judge_md = HERE.parent.parent / "eval-answer" / "reference" / "judge.md"
+    judge_md = HERE.parent.parent / "eval-judge" / "SKILL.md"
     jv, rsha = rb.judge_pins(judge_md)
-    JUDGE_MD = judge_md.read_text() if judge_md.exists() else ""
+    JUDGE_MD = ""   # the judge LOADS the skill; this arg only pins it
     served = rb.served_model_path(a.publisher, a.environment, a.package, a.model_path)
     model_src = served.read_text() if served else ""
     if not model_src:
@@ -128,14 +130,12 @@ def main(argv: list[str] | None = None) -> int:
             art = pathlib.Path(tempfile.mkdtemp(prefix="judgefix-"))
             (art / f["qid"]).mkdir(parents=True, exist_ok=True)
             try:
-                # judge.md in the {rubric} slot, exactly as a run does. This
-                # argument used to be the CASE rubric, which the prompt also
-                # supplies separately as `rubric_note` -- so the judge saw the
-                # case rubric twice and judge.md not at all. The checker then
-                # agreed with the human on fixtures the real run got wrong,
-                # which is the failure its own docstring warns about: a
-                # different prompt here can pass while the thing it stands for
-                # is broken.
+                # Same prompt a run builds. This argument used to be the CASE
+                # rubric, which the prompt also supplies as `rubric_note`, so
+                # the judge saw it twice and the judge doctrine not at all --
+                # the failure this file's docstring warns about. Now the judge
+                # doctrine is skill:eval-judge, installed for both paths, and
+                # this argument carries nothing.
                 v = rb.run_judge(c, att, a, art, JUDGE_MD, model_src,
                                  bool(model_src))
                 got.append(v.get("verdict"))

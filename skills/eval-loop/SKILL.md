@@ -87,7 +87,7 @@ a time. Checkpoint only after the acceptance check **accepts**.
 | Role | Sees |
 |---|---|
 | **Answerer** | The question and the Malloy tools. Never the golden, `evals/`, the model file, or any hint it is being evaluated. |
-| **Judge** | The golden and the prediction. Never conducts, never answers, never edits. One fresh subagent per verdict (`reference/judge.md`). |
+| **Judge** | The golden and the prediction. Never conducts, never answers, never edits. One fresh subagent per verdict (`skill:eval-judge`). |
 | **You (conductor / improver)** | Everything, including goldens and traces. |
 | **Acceptance check** | The edit and the evidence. Never the improver's self-assessment alone. |
 
@@ -322,7 +322,7 @@ This is **your** job as conductor, after `eval-diagnose` writes
 change the model.
 
 Diagnosis is not the only way one arrives. The judge also reports a
-`gold_status` on every score (`skill:eval-answer` `reference/judge.md`), and a
+`gold_status` on every score (`skill:eval-judge`), and a
 `suspect` or `verified_wrong` comes through this same door -- earlier, because it
 lands during scoring rather than after. Treat it as a `BAD-REFERENCE` with the
 judge's `gold_note` as its evidence. Adjudicate it **before** improve runs: a
@@ -668,7 +668,7 @@ conductor. Do not:
 ## Related skills
 
 - `skill:eval-answer`: contamination, judge protocol, events. Its
-  `reference/ledger-schema.md` is the file contract; `reference/judge.md` is
+  `reference/ledger-schema.md` is the file contract; `skill:eval-judge` is
   the judge.
 - `skill:eval-diagnose`: component, owner, issue events. No edit.
 - `skill:eval-improve`: smallest model edit, probe receipts, no self-accept.

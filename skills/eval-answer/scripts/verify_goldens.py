@@ -46,7 +46,7 @@ WHAT IT CHECKS, AND WHAT EACH CATCHES
                  rubric that goes stale when the model is fixed.
 
 What it deliberately does NOT do: score an answer. The oracle for an answer is
-the judge (`reference/judge.md`); scripted row comparison fails correct answers
+the judge (`skill:eval-judge`); scripted row comparison fails correct answers
 over an extra column and passes wrong ones whose numbers coincide.
 
 TABLE REWRITE

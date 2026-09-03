@@ -1,13 +1,31 @@
+---
+name: eval-judge
+description: 'Decide whether ONE answer matches its golden, and say whether you believe the golden. Read this before emitting any verdict. Covers containment, column pairing, near_match, refusals, and the gold_status judgement. Use when scoring an attempt in an evaluation run; never to conduct a run (eval-loop), diagnose a failure (eval-diagnose) or edit a model (eval-improve).'
+---
+
 # The judge
 
 JUDGE_VERSION: 4
 
-This file IS the judge prompt. `eval-answer` spawns one fresh judge subagent
-per attempt (answer judge) or per intent (retrieval judge) and pastes the
-relevant section plus the case materials. Record `judge_version` and this
-file's git blob sha (`git rev-parse HEAD:skills/eval-answer/reference/judge.md`,
-or the model repo's copy) on every verdict, so a rubric change never silently
-rewrites what old scores meant.
+This skill IS the judge. One fresh judge subagent is spawned per attempt, with
+this skill installed in its workspace and the case materials in its prompt. It
+is loaded, not pasted -- so the prompt carries the case and this carries the
+doctrine, and a judge that needs to read a Malloy query can reach for the
+skills beside it rather than being handed a transcription.
+
+Measured when it stopped being pasted, on the case that had oscillated
+(a valued golden against a model with no trace of the concept):
+
+    pasted into the prompt   match / no_match / match / match
+    loaded as this skill     no_match x4, and the reasoning cites the rule
+
+It costs about 2.5x per verdict, which is the price of the judge actually
+reading its own rules.
+
+Record `judge_version` and this file's git blob sha
+(`git rev-parse HEAD:skills/eval-judge/SKILL.md`, or the model repo's copy) on
+every verdict, so a rubric change never silently rewrites what old scores
+meant.
 
 The judge is not blind. It sees the golden. It must never be the same
 subagent that answered, and it never edits anything: it returns a verdict

@@ -140,7 +140,12 @@ REPO_ROOT = SKILLS_ROOT.parent
 # What the judge is allowed to know. Grain, fan-out and query-shape knowledge
 # so it can tell a wrong answer from a wrong answer key -- and nothing that
 # teaches it how the answerer was told to work.
-JUDGE_SKILLS = ("malloy-analysis-pitfalls", "malloy-gotchas-queries")
+# The judge is a SKILL, installed into its workspace like every other agent's
+# doctrine, not 20KB pasted into the prompt. Two reasons beyond consistency: the
+# prompt stops having to define everything, and a judge that needs to understand
+# a Malloy query can reach for the skills beside it instead of being handed a
+# transcription of them.
+JUDGE_SKILLS = ("eval-judge", "malloy-analysis-pitfalls", "malloy-gotchas-queries")
 
 
 def sha256(data: bytes) -> str:
@@ -619,7 +624,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
     }
 
 
-JUDGE_PROMPT = """{rubric}
+JUDGE_PROMPT = """/eval-judge
+
+Follow `skill:eval-judge`. It defines every verdict, the anchors,
+the output shape and the `gold_status` judgement. Read it before you
+emit anything; reach for the other skills in your workspace if a
+Malloy query needs understanding.
 
 ---
 
@@ -830,7 +840,11 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # from every aggregate. The judge is instrumentation, so a retry can only
     # help -- the measurement-integrity argument against retrying applies to
     # the answerer alone.
-    events = claude(prompt, work, a.judge_model, mcp=None, turns=3,
+    # Six turns, not three: the judge now LOADS skill:eval-judge rather than
+    # being handed it, and the load costs a turn before it has read a word of
+    # the rubric. Three left it emitting a verdict with the skill still
+    # unopened on a bad day.
+    events = claude(prompt, work, a.judge_model, mcp=None, turns=6,
                     timeout=300, skills=bool(a.judge_skills),
                     retry_when=no_text)
     shutil.rmtree(work, ignore_errors=True)
@@ -1041,8 +1055,10 @@ def main(argv: list[str] | None = None) -> int:
     art.mkdir(parents=True, exist_ok=True)
 
     rubric_path = (pathlib.Path(__file__).parent.parent.parent
-                   / "eval-answer" / "reference" / "judge.md")
-    rubric = rubric_path.read_text() if rubric_path.exists() else ""
+                   / "eval-judge" / "SKILL.md")
+    # Not pasted any more -- read only to PIN it. A verdict still has to say
+    # which judge produced it, and the skill's own content is that identity.
+    rubric = ""
     JUDGE_VERSION, RUBRIC_SHA = judge_pins(rubric_path)
 
     set_meta = {}

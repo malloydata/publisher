@@ -6,8 +6,8 @@ Shared by the eval scripts, following the cross-skill import pattern already in
 
 WHY SKILLS ARE INSTALLED, NOT PASTED
 
-`reference/judge.md` says of itself "This file IS the judge prompt", so the judge
-is pasted and that is its design. `eval-diagnose` and `eval-improve` are skills:
+`skill:eval-judge` is the judge, and it is INSTALLED like any other skill
+rather than pasted into the prompt. `eval-diagnose` and `eval-improve` are skills:
 they live in `skills/`, they are listed in the manifests, and they refer to each
 other as `skill:eval-improve`, `skill:eval-diagnose`. Those references are
 meant to RESOLVE. Pasting a skill's text into a prompt leaves every one of

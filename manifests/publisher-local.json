@@ -6,6 +6,7 @@
     "eval-answer",
     "eval-diagnose",
     "eval-improve",
+    "eval-judge",
     "eval-loop",
     "malloy",
     "malloy-analysis",
@@ -88,6 +89,12 @@
       "malloy-dashboards",
       "malloy-getting-started"
     ],
-    "eval": ["eval-loop", "eval-answer", "eval-diagnose", "eval-improve"]
+    "eval": [
+      "eval-loop",
+      "eval-answer",
+      "eval-diagnose",
+      "eval-improve",
+      "eval-judge"
+    ]
   }
 }
