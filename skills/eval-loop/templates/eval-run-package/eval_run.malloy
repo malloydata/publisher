@@ -260,7 +260,7 @@ include {
   public: phase
   #(doc) match, near_match, no_match, needs_human, or empty when not scorable.
   public: verdict
-  #(doc) pass, fail or neither: the verdict classified by the same function the gate uses (flip_table.outcome). Read this, never re-derive it from verdict - a second definition is how this package and the flip table came to disagree about what a flip is.
+  #(doc) pass, fail or neither: the verdict classified by the same function the acceptance check uses (flip_table.outcome). Read this, never re-derive it from verdict - a second definition is how this package and the flip table came to disagree about what a flip is.
   public: outcome
   #(doc) The judge's one-line why. Read this before re-running anything.
   public: reason
@@ -290,9 +290,9 @@ extend {
   measure:
     #(doc) Rows with a verdict, scorable or not.
     scored_count is count()
-    #(doc) Verdicts the gate counts: decided ones only. near_match and needs_human are excluded, both being the judge declining to decide.
+    #(doc) Verdicts the acceptance check counts: decided ones only. near_match and needs_human are excluded, both being the judge declining to decide.
     confident_count is count() { where: outcome ? 'pass' | 'fail' }
-    #(doc) Attempts the judge accepted. A near_match is NOT a pass: it means defensibly different, and an arguable verdict must not move a gate.
+    #(doc) Attempts the judge accepted. A near_match is NOT a pass: it means defensibly different, and an arguable verdict must not move an acceptance check.
     passed is count() { where: outcome = 'pass' }
     #(doc) Attempts the judge rejected.
     failed is count() { where: outcome = 'fail' }
@@ -634,7 +634,7 @@ query: coverage_gaps is cases -> {
   order_by: coverage, qid
 }
 
-#(doc) The A/B gate: cases that moved between PASS and FAIL across arms.
+#(doc) The A/B acceptance check: cases that moved between PASS and FAIL across arms.
 #(doc) A difference in pass RATE is not evidence -- two arms can score alike while
 #(doc) disagreeing on half the set. Counting the cases that actually moved is what
 #(doc) separates a real gain from noise, so this is the table an A/B is read from.

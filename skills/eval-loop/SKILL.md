@@ -1,6 +1,6 @@
 ---
 name: eval-loop
-description: 'Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files under the model package''s evals/ directory; checkpoints are git commits of the model repo. Use to score a model, diagnose failures, improve behind a gate, or roll back a bad direction.'
+description: 'Conduct a local Publisher evaluation loop in five steps: scrape/run, eval, diagnose, improve, checkpoint. You are the conductor: import cases into the file ledger, spawn a blind answerer, then run eval-answer, eval-diagnose, and eval-improve. Persistence is plain files under the model package''s evals/ directory; checkpoints are git commits of the model repo. Use to score a model, diagnose failures, improve behind an acceptance check, or roll back a bad direction.'
 ---
 
 # The Evaluation Loop
@@ -23,9 +23,10 @@ scrape/run  ->  eval  ->  diagnose  ->  improve  ->  checkpoint
 Edit rules live in `skill:eval-improve`.
 
 Do not merge **eval** into **diagnose**. A conductor who scores while
-explaining writes the explanation into the score. Do not skip the **gate**
-inside improve. The gate decides whether *this* edit stays. **Checkpoint**
-decides whether a *sequence* of accepted edits can be undone.
+explaining writes the explanation into the score. Do not skip the **acceptance
+check** inside improve. The acceptance check decides whether *this* edit
+stays. **Checkpoint** decides whether a *sequence* of accepted edits can be
+undone.
 
 ## The five steps
 
@@ -34,8 +35,8 @@ decides whether a *sequence* of accepted edits can be undone.
 | **a. scrape / run** | Put cases in the ledger; spawn a blind answerer | cases; `attempt`, `tool_call` |
 | **b. eval** | Judge the answer; score which required entities retrieval delivered | `score` |
 | **c. diagnose** | Why it failed, who owns it | `issue` / `issue_status`. Stop. Do not edit. |
-| **d. improve** | One smallest model edit, then the gate | improve writes `candidate`; you write `gate`. Revert on reject. |
-| **e. checkpoint** | Git commit after an accepted gate | `checkpoint` event, then the commit |
+| **d. improve** | One smallest model edit, then the acceptance check | improve writes `candidate`; you write `acceptance_check`. Revert on reject. |
+| **e. checkpoint** | Git commit after an accepted acceptance check | `checkpoint` event, then the commit |
 
 **scrape** and **run** share a letter but are not the same job. Scrape writes
 cases. Run writes attempts. Do not invent questions and score
@@ -48,7 +49,7 @@ Importing an existing corpus IS the scrape step: copy the set from its home
 ledger shapes. While importing:
 
 - Freeze each case's `split`: `dev` or `holdout`. Diagnose and improve read
-  dev cases only; the gate runs both. A set that is all dev cannot defend an
+  dev cases only; the acceptance check runs both. A set that is all dev cannot defend an
   accept.
 - Later, each diagnosed-and-fixed failure becomes a new frozen dev case, so a
   fixed bug cannot silently return.
@@ -71,7 +72,7 @@ Older mode names still work as aliases for how far one run walks:
 |---|---|
 | `measure` | scrape/run + eval |
 | `triage` | plus diagnose |
-| `improve` | plus improve + gate + checkpoint on accept |
+| `improve` | plus improve + acceptance check + checkpoint on accept |
 
 Say which alias (or which steps) you are running before the first question.
 Record it in `run.json`. Do not mix steps in a way that lets the answerer see
@@ -79,7 +80,7 @@ gold, issues, or the model file.
 
 Most runs should stop after eval. Diagnose when you need a histogram of
 components and owners. Improve only for diagnosed *model* gaps, one batch at
-a time. Checkpoint only after the gate **accepts**.
+a time. Checkpoint only after the acceptance check **accepts**.
 
 ## Roles
 
@@ -88,7 +89,7 @@ a time. Checkpoint only after the gate **accepts**.
 | **Answerer** | The question and the Malloy tools. Never the golden, `evals/`, the model file, or any hint it is being evaluated. |
 | **Judge** | The golden and the prediction. Never conducts, never answers, never edits. One fresh subagent per verdict (`reference/judge.md`). |
 | **You (conductor / improver)** | Everything, including goldens and traces. |
-| **Gate** | The edit and the evidence. Never the improver's self-assessment alone. |
+| **Acceptance check** | The edit and the evidence. Never the improver's self-assessment alone. |
 
 The answerer stays blind. That is not optional. A grader-visible answerer
 writes toward the expected answer, and the score is fiction.
@@ -134,7 +135,7 @@ Which target for which job:
   through the deployed engine, which is the thing they actually hit. The judge
   sees no re-executed rows on a Remote run (there is no local copy of the
   bytes), so its verdicts rest on the answer text and the golden; say so.
-- **Improve and gate:** local, because the gate needs compile, reload, and a
+- **Improve and accept:** local, because the acceptance check needs compile, reload, and a
   fresh re-answer between edits. Publishing to a customer environment to score
   an edit is not something this loop does. Where the host offers draft
   execution, that counts as local for this purpose.
@@ -274,7 +275,7 @@ Two failure modes worth pre-empting, because both produce a clean-looking run:
 5. `skill:eval-diagnose` only when this run includes diagnose, only on dev
    cases, and only after the score event exists.
 6. `skill:eval-improve` only when this run includes improve, and only for
-   `owner: model`. Then gate. On accept, checkpoint.
+   `owner: model`. Then run the acceptance check. On accept, checkpoint.
 
 ## Golden side door (not a sixth step)
 
@@ -398,16 +399,16 @@ unspecified; later samples might confirm a convention).
 
 If later evidence makes one replacement obvious, then Repair a bad golden.
 
-## The gate (inside improve)
+## The acceptance check (inside improve)
 
-You own the gate. The improver does not accept its own edit.
+You own the acceptance check. The improver does not accept its own edit.
 
 **Before any of it: is the answer key still valid?** An edit that changed what
 an entity means can have moved goldens for cases nobody was working on, and a
 rerun against a stale key measures nothing -- it reads as a win or a regression
 with equal confidence and neither is real. `skill:eval-improve` Step 4 reports
 these as `golden_suspect` on the candidate; the judge reports its own doubts as
-`gold_status`. **Any unadjudicated one halts the gate.** Settle each through the
+`gold_status`. **Any unadjudicated one halts the acceptance check.** Settle each through the
 golden side door -- repair and bump `goldenRevision`, or dismiss it explicitly --
 and only then re-answer. Do not net a suspect golden against the flip count; an
 uncertain key is not noise you can average out.
@@ -427,12 +428,12 @@ Acceptance rules (replacing any vague "results improve"):
 
 - **Per-case, not aggregate.** No previously-passing case may regress: diff
   the new run's verdicts against the baseline, case by case (`jq` over the
-  two `events.jsonl` files). `regressions` on the gate event must be empty to
+  two `events.jsonl` files). `regressions` on the acceptance check event must be empty to
   accept, and the regressed qids go in the checkpoint commit message if you
   proceed anyway after a human call.
 - **Confident verdicts only.** `needs_human` and null verdicts are neither
   passes nor failures; the delta is computed without them.
-- **Both splits.** The gate runs the affected dev cases AND the holdout
+- **Both splits.** The acceptance check runs the affected dev cases AND the holdout
   slice. Diagnose and improve never saw holdout; that is what makes its delta
   evidence rather than memorization.
 - **Twice.** An improvement must survive a second independent run with fresh
@@ -444,10 +445,10 @@ Acceptance rules (replacing any vague "results improve"):
   including the flip-count bar in Measurement, which means enough affected
   cases to clear it.
 - Independent deterministic justification (a probed-wrong definition
-  corrected) may accept without a measured win. Record that as the gate
+  corrected) may accept without a measured win. Record that as the acceptance check
   `reason`.
 
-Write the `gate` event (decision, class, baseline and final run ids,
+Write the `acceptance_check` event (decision, class, baseline and final run ids,
 regressions, holdout delta, reason) BEFORE any commit, so a rejected
 direction leaves a record. On reject: revert the files (`git checkout --`
 or `git restore`) and reload. On accept: `issue_status: fixed` for what the
@@ -455,7 +456,7 @@ edit actually closed, **then checkpoint**.
 
 ## Checkpoint
 
-A checkpoint is a git commit of the model repository, taken after a gate
+A checkpoint is a git commit of the model repository, taken after an acceptance check
 accepts, so a bad improve direction can be rolled back. It is not a report,
 and it is not a remote publish.
 
@@ -576,7 +577,7 @@ The reason to expect this, rather than treat it as bad luck: **a correct new
 entity is not a safe one.** Adding a measure changes what agents reach for on
 questions nobody was thinking about, so a well-named addition can pull a
 neighbouring question onto the wrong denominator. That makes the untargeted half
-of the gate the half that matters, and it needs two arms to be readable at all.
+of the acceptance check the half that matters, and it needs two arms to be readable at all.
 
 The one retrieval number this loop reports is **per-question entity recall**:
 of the entities each golden answer depends on, how many did the agent's own

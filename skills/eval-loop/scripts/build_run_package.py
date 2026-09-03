@@ -326,7 +326,7 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
                              "prediction": rendered[:40000]})
             scores.append({"attempt_key": ak, "run_id": run_id, "qid": qid,
                            "sample": e.get("sample"), "phase": e.get("phase"),
-                           # Classified here, by the same function the gate
+                           # Classified here, by the same function the acceptance check
                            # uses, so the package cannot disagree with the
                            # flip table about what a flip is.
                            "outcome": outcome(s.get("verdict")),

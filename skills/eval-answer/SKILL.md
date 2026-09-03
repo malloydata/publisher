@@ -70,9 +70,9 @@ relevant source and field definitions from the model. It returns
 - The judge sees gold. It is therefore never the answerer, and its verdict
   never leaks back to any answerer.
 - Confidence 5 or lower records as `needs_human`: neither a pass nor a fail,
-  excluded from gate arithmetic, queued for a human look.
+  excluded from acceptance arithmetic, queued for a human look.
 - `near_match` is also neither. It means defensibly different, not "nearly a
-  pass", and it stays out of the pass rate and the gate for the same reason
+  pass", and it stays out of the pass rate and the acceptance check for the same reason
   `needs_human` does. Report the count; do not fold it into either column.
 - When a human overrules a verdict, append the case to
   `evals/<set>/judge-regressions.jsonl`.

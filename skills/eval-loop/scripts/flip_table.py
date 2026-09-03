@@ -25,7 +25,7 @@ from typing import Any
 # `near_match` is deliberately in NEITHER set. It means "defensibly different" --
 # a tie broken the other way, a caveat buried, a reading the rubric allows but
 # did not prefer -- and a verdict whose whole content is "this is arguable" has
-# no business deciding a gate. As a pass it was a large share of the measured
+# no business deciding an acceptance check. As a pass it was a large share of the measured
 # noise -- the judge stepping across the match/near_match line on an unchanged
 # answer, which is noise wearing a verdict's clothes. It is still counted and
 # reported, just not as a pass or a fail. Per-set numbers live in that set's
@@ -157,7 +157,7 @@ def targeted_report(args: argparse.Namespace, A: dict, B: dict,
               f"\n  the fix having no untargeted effect.")
     elif not o_worse:
         # Saying "investigate before accepting" when every flip is an improvement
-        # is a false alarm, and a gate that cries wolf is a gate people learn to
+        # is a false alarm, and an acceptance check that cries wolf is one people learn to
         # click through. The count still exceeds the band, which is worth saying;
         # the direction is what changes what to do about it.
         print(f"\n  above the measured noise band of {band}, but every untargeted"

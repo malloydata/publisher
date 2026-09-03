@@ -90,7 +90,7 @@ REFUSAL = ("construction", "agent-skill", "refusal behaviour")
 UNATTRIBUTED = ("", "", "")
 
 PASSING = {"match", "near_match"}
-# Verdicts the gate counts as neither a pass nor a failure.
+# Verdicts the acceptance check counts as neither a pass nor a failure.
 UNSCORED = (None, "", "needs_human")
 
 
@@ -208,7 +208,7 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
     delivered = {e for e, r in route.items() if r != "missing"}
 
     # needs_human is neither a pass nor a failure, exactly like a null verdict:
-    # the gate excludes both, so counting one as failed would put it in an
+    # the acceptance check excludes both, so counting one as failed would put it in an
     # attribution bucket it has not earned.
     passed = None if verdict in UNSCORED else verdict in PASSING
 

@@ -349,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     codes = skill_codes()
 
     # Dev failures only. A holdout case the improve step never saw is the only
-    # thing that makes the gate mean anything, and a diagnosis describes the fix.
+    # thing that makes the acceptance check mean anything, and a diagnosis describes the fix.
     failed = []
     for e in events:
         if e.get("kind") != "score" or e.get("verdict") != "no_match":

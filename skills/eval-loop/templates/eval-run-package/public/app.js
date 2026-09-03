@@ -16,7 +16,7 @@
  * includes classifying a verdict: the `outcome` column is decided once, in
  * flip_table.outcome, and travels through the CSV. This file used to keep its
  * own `undecided()` and the Malloy kept a third copy, which is how the package
- * and the gate came to disagree about what a flip was.
+ * and the acceptance check came to disagree about what a flip was.
  */
 
 const MODEL = 'eval_run.malloy';
@@ -26,7 +26,7 @@ const MODES = [
   ['failures',  'Failures',      r => r.arms.some(a => a.outcome === 'fail')],
   // "Undecided" is the honest name: near_match means the judge found the
   // answer defensibly different, needs_human means it would not commit. Neither
-  // is a pass or a fail, and neither moves a gate.
+  // is a pass or a fail, and neither moves an acceptance check.
   ['undecided', 'Undecided',     r => r.arms.some(a => a.outcome === 'neither')],
   ['different', 'Disagreements', r => r.arms.length > 1 &&
       new Set(r.arms.filter(a => a.outcome !== 'neither')

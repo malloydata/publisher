@@ -1,6 +1,6 @@
 ---
 name: eval-improve
-description: 'Make the smallest safe Malloy model edit that closes a diagnosed model-owned gap, with a probe receipt for every factual claim. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the gate belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose).'
+description: 'Make the smallest safe Malloy model edit that closes a diagnosed model-owned gap, with a probe receipt for every factual claim. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose).'
 ---
 
 # Improve the Model
@@ -13,7 +13,7 @@ the gap. Every factual claim is backed by a query you ran.
 1. **No diagnosis evidence, no edit.** If the issue cannot name a concrete gap
    with a trace or probe, record that and stop. Edits from an empty diagnosis
    have been the inert and wrong ones.
-2. **This skill never accepts its own edit.** You propose and verify. The gate
+2. **This skill never accepts its own edit.** You propose and verify. The acceptance check
    in `skill:eval-loop` admits or reverts. An improver writing the query it
    already knows proves the fix is possible, not that the next blind agent
    will find it.
@@ -140,7 +140,7 @@ and the old and new values. **Do not repair them yourself.** Goldens are the
 side door in `skill:eval-loop`, and an improver that edits the answer key its own
 edit is scored against has removed the only independent check on the edit.
 
-A non-empty `golden_suspect` list blocks the gate until the conductor settles
+A non-empty `golden_suspect` list blocks the acceptance check until the conductor settles
 each one, because a rerun against stale goldens measures nothing.
 
 ## Step 5: Verify, report, hand off
@@ -150,8 +150,8 @@ Append a `candidate` event to the run's `events.jsonl` (shape in
 `skill:eval-answer` `reference/ledger-schema.md`): the files touched, a
 one-line diff summary per file, the issue_ids, probe receipts, and this
 report. Every proposal gets its event, accepted or not; a rejected direction
-keeps its record. Then stop and wait for the gate in `skill:eval-loop`. That
-skill writes the `gate` event, accepts or reverts, and **only on accept**
+keeps its record. Then stop and wait for the acceptance check in `skill:eval-loop`. That
+skill writes the `acceptance_check` event, accepts or reverts, and **only on accept**
 checkpoints. This skill never checkpoints and never self-accepts.
 
 ```
@@ -171,7 +171,7 @@ its instructions' mistakes. Report from the files on disk, not from memory.
 ## Related skills
 
 - `skill:eval-diagnose`: the issue this requires.
-- `skill:eval-loop`: the gate that accepts or reverts, then checkpoints on accept. Golden hold/repair lives there, not here.
+- `skill:eval-loop`: the acceptance check that accepts or reverts, then checkpoints on accept. Golden hold/repair lives there, not here.
 - `skill:eval-answer`: scoring after a blind re-answer.
 - The `malloy-gotchas-modeling` skill: mistakes an edit must not introduce.
   It arrives with the `modeling` manifest group, not the `eval` group.

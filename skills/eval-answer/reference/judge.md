@@ -66,7 +66,7 @@ Output, exactly this shape:
    third outcome meaning *defensibly different*: the answer took a reading the
    rubric allows but did not prefer, broke a tie the other way, or buried a
    caveat that should have been plain. It is excluded from the pass rate and
-   from the gate, exactly like `needs_human`.
+   from the acceptance check, exactly like `needs_human`.
 
    So do not reach for it to avoid a hard call. If the prediction contains the
    gold answer, that is `match` -- extra columns and benign extra context never

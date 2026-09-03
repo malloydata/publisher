@@ -24,7 +24,7 @@ THIS SCRIPT DOES NOT ACCEPT ANYTHING
 The skill's second hard boundary is that an improver never accepts its own edit,
 and the reason is specific: an improver verifying its own fix writes the query
 it already knows, which proves the fix is expressible, not that the next blind
-answerer will find it. So this stops at `candidate`. The gate -- re-answering
+answerer will find it. So this stops at `candidate`. The acceptance check -- re-answering
 with fresh agents that never saw the diagnosis, then comparing against the noise
 band -- belongs to `skill:eval-loop`, and the command is printed at the end.
 
@@ -386,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{len(new)} candidate events in {ev_path}; cost ${spend:.2f}")
 
     # A rerun against a golden this edit invalidated measures nothing, so the
-    # gate does not get to start until a human settles each one. Reported, not
+    # acceptance check does not get to start until a human settles each one. Reported, not
     # repaired: an improver editing its own answer key removes the only
     # independent check on the edit.
     blocked = [(r, r.get("goldenSuspect") or [],
@@ -395,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
     blocked = [(r, g, aud) for r, g, aud in blocked
                if g or (aud.get("ran") and not aud.get("clean"))]
     if blocked:
-        print(f"\nGATE BLOCKED: {len(blocked)} cluster(s) may have invalidated a "
+        print(f"\nACCEPTANCE CHECK BLOCKED: {len(blocked)} cluster(s) may have invalidated a "
               f"golden. Settle each through the golden side door in "
               f"skill:eval-loop before re-answering.")
         for r, g, aud in blocked:
@@ -409,11 +409,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if a.isolate and edited:
         print(f"\nEach edit is a patch under {art}/clusters/<issue_id>/"
-              "edit.patch and the tree is clean. Apply the one to gate:")
+              "edit.patch and the tree is clean. Apply the one to check:")
         print(f"  git -C {a.model_dir} apply <patch>")
     if edited:
         targets = ",".join(q for r in edited for q in r["qids"])
-        print("\nTHIS IS NOT ACCEPTED YET. The gate belongs to eval-loop: "
+        print("\nTHIS IS NOT ACCEPTED YET. The acceptance check belongs to eval-loop: "
               "re-answer with fresh agents that never saw the diagnosis, then")
         print(f"  python ../eval-loop/scripts/flip_table.py \\\n"
               f"      --a <baseline-run> --b <post-edit-run> \\\n"

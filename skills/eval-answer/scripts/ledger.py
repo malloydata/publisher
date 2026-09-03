@@ -89,7 +89,7 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      "patchPath", "meaningChanged", "goldenSuspect",
                      "goldenAudit", "improvedBy", "at"},
     },
-    "gate": {
+    "acceptance_check": {
         "required": {"decision", "baselineRunId", "finalRunIds",
                      "regressions", "reason"},
         "optional": {"issue_ids", "class", "holdoutDelta", "at"},
@@ -129,7 +129,19 @@ def now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+# `acceptance_check` was called `gate` until 2026-09-03. Run directories written
+# before the rename still validate: the old kind is read as the new one, and
+# nothing rewrites them. Only the name changed -- "gate" meant a CI gate, a
+# feature gate and this, and the word carried none of what the step does.
+LEGACY_KINDS = {"gate": "acceptance_check"}
+
+
+def canonical_kind(kind: str) -> str:
+    return LEGACY_KINDS.get(kind, kind)
+
+
 def _check(kind: str, fields: dict[str, Any]) -> list[str]:
+    kind = canonical_kind(kind)
     spec = EVENTS.get(kind)
     if spec is None:
         return [f"unknown event kind {kind!r}"]

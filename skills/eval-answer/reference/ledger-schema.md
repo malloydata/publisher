@@ -8,7 +8,7 @@ writes these files directly; the stages share them as their contract.
 `probe`; both stay in this contract so one validator covers every run
 directory.
 `eval-diagnose` writes `issue` and `issue_status`. `eval-improve` writes
-`candidate`. `eval-loop` writes `gate`, further `issue_status`, and
+`candidate`. `eval-loop` writes `acceptance_check`, further `issue_status`, and
 `checkpoint`.
 
 **The contract is code: `eval-answer/scripts/ledger.py`.** Every script that
@@ -77,7 +77,7 @@ One JSON object per line:
 |---|---|
 | `qid` | Stable case id. |
 | `question` | Exact text the answerer will see. |
-| `split` | `dev` or `holdout`. Frozen at import. Diagnose and improve read `dev` only; the gate runs both. |
+| `split` | `dev` or `holdout`. Frozen at import. Diagnose and improve read `dev` only; the acceptance check runs both. |
 | `tags` | list |
 | `state` | `candidate` / `selected` / `excluded`. |
 | `source` | Where the case came from. |
@@ -138,7 +138,7 @@ run-level kinds do not. (An earlier draft of this document nested fields under
 a `payload` with a `caseId`; no writer ever did that, and 23 run directories
 exist in the flat shape, so the flat shape is the contract.) `kind` is one of:
 `attempt`, `tool_call`, `score`, `retrieval_score`, `issue`, `issue_status`,
-`candidate`, `gate`, `checkpoint`.
+`candidate`, `acceptance_check`, `checkpoint`.
 
 ### `attempt`
 
@@ -219,7 +219,7 @@ pass and a confident numeric answer is the fail.
 
 Aggregates count decided verdicts only. `match` and `no_match` are the pass and
 the fail; **`near_match`, `needs_human` and null are none of the above** and stay
-out of gate arithmetic. `near_match` is excluded because it means "defensibly
+out of acceptance arithmetic. `near_match` is excluded because it means "defensibly
 different", and an arguable verdict that moves a pass rate is a measurement
 artefact rather than a result (`reference/judge.md` rule 7). Report its count:
 it rising is how a set tells you its rubrics are going vague.
@@ -279,12 +279,15 @@ rejected direction keeps its record.
 | `diffSummary` | One line per file. |
 | `probes` | Query and result for each factual claim. |
 | `meaningChanged` | Entities whose *meaning* the edit changed; `[]` for a docs-only edit. |
-| `goldenSuspect` | Each `{qid, entity, stored, rederived}`: a golden this edit may have invalidated. Reported by the improver, never repaired by it. **Non-empty halts the gate** until adjudicated through the golden side door. |
+| `goldenSuspect` | Each `{qid, entity, stored, rederived}`: a golden this edit may have invalidated. Reported by the improver, never repaired by it. **Non-empty halts the acceptance check** until adjudicated through the golden side door. |
 | `goldenAudit` | The set's `verify_goldens.py` run against the edited model: `{ran, clean, model, tail}`. Catches drift and rubric-vs-model contradictions only; a golden whose value silently moved is invisible to it, which is why `goldenSuspect` exists alongside. |
 
-### `gate`
+### `acceptance_check`
 
-Written by `eval-loop`, one per gate decision, BEFORE any checkpoint commit.
+Called `gate` before 2026-09-03. `ledger.py` reads the old kind as this one, so
+run directories written earlier still validate and nothing rewrites them.
+
+Written by `eval-loop`, one per acceptance check decision, BEFORE any checkpoint commit.
 
 | Field | Notes |
 |---|---|
@@ -298,7 +301,7 @@ Written by `eval-loop`, one per gate decision, BEFORE any checkpoint commit.
 
 ### `checkpoint`
 
-Written by `eval-loop` after an accepted gate, or when a restore runs. The
+Written by `eval-loop` after an accepted acceptance check, or when a restore runs. The
 model bytes live in git, not in this payload.
 
 | Field | Notes |

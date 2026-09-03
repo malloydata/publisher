@@ -195,7 +195,7 @@ take the latest `issue_status` for that `issue_id`.
 
 The issue backlog in the event log is the output, not per-question prose.
 Diagnose reads dev cases only; a holdout case with a bad score stays
-undiagnosed so the gate keeps something the improve step never saw.
+undiagnosed so the acceptance check keeps something the improve step never saw.
 
 ## Step 5: Cluster before anyone improves
 
@@ -244,4 +244,4 @@ how models accumulate scar tissue.
 
 - `skill:eval-answer`: the score this consumes.
 - `skill:eval-improve`: smallest model edit, `owner: model` only.
-- `skill:eval-loop`: golden hold/repair, the gate, and checkpoint.
+- `skill:eval-loop`: golden hold/repair, the acceptance check, and checkpoint.
