@@ -4348,14 +4348,66 @@ components:
             to degrade to the live warehouse. **The rows are correct and the
             request succeeded**, which is why this needs its own value: it is
             indistinguishable from a storage hit at the call site, and treating it
-            as one would report a healthy hit rate for a broken store.
+            as one would report a healthy hit rate for a broken store. This value
+            is NOT the same event as the `live_fallback` label on
+            `publisher_storage_serve_routing_total` — see the warning below.
 
-            Null when the query never had a storage binding to consider — every
-            query on a deployment with no `storage=` sources, which is the default.
+            **This field describes the `storage=` tier and nothing else.** It
+            records how the storage routing decision came out, so it says nothing
+            about the colocated `#@ persist` tier, which answers a query by
+            substituting the materialized table into the model and never reaches
+            that decision.
 
-            A storage-served result is byte-identical to a live one by design, so
-            this field is the only way a caller can tell that materialization did
-            anything, or show a user which of their sources it applies to.
+            **Null is three different outcomes**, and they are worth telling
+            apart because two of them mean materialization worked and one means
+            it silently did not:
+
+            1. The query never had a storage binding to consider — every query on
+               a deployment with no `storage=` sources, which is the default.
+            2. It was answered from a **colocated** materialized table. The
+               query never reached the routing decision, so a fully materialized
+               answer reports the same null a fully live one does.
+            3. The storage transform was **ineligible** for this query, so it was
+               served live. The query DID reach the routing decision and the tier
+               declined it — a storage-tier miss, reported identically to "no
+               materialization exists anywhere."
+
+            Case 3 is the one that costs time, because nothing about the response
+            distinguishes it from case 1. The server does log it: one
+            `storage serve-shape ineligible for this query; serving live` line at
+            INFO per routed query, carrying the compile error that made the shape
+            ineligible, plus `shapeSources` (what the shape offered) and
+            `staleSources` (bound, but withheld by the freshness gate). The
+            compile error alone does not separate those: `Reference to undefined
+            object 'x'` reads identically whether `x` carries no `#@ persist` at
+            all or is materialized and merely past its freshness window. That log
+            is currently the only per-query account of a storage-tier miss. It is not a hypothetical shape — a source
+            warehouse that folds unquoted identifiers to upper case made every
+            query on every `storage=` source in a package ineligible, and the
+            whole tier reported null for months while looking exactly like a
+            deployment that had never enabled it.
+
+            For the colocated tier there is no per-query signal at all. The
+            package-grain fields are the nearest thing —
+            `manifestBindingStatus`, `manifestEntryCount` and
+            `storageServeBindings` — but read what each actually claims:
+            `bound` reports that the bind ran to completion, explicitly NOT that
+            any query routes to a materialized table, and `manifestEntryCount`
+            counts colocated entries only, so a package whose sources are all
+            `storage=` reports 0 while being fully bound.
+
+            ⚠️ **`live_fallback` names two different things across two surfaces,
+            and correlating them on the token is wrong in both directions.** On
+            this field it means the store failed at run time. On
+            `publisher_storage_serve_routing_total{outcome}` it means the
+            transform was ineligible — this field's null case 3 — and that
+            metric spells the run-time failure `runtime_live_fallback`. So the
+            field's `live_fallback` is the metric's `runtime_live_fallback`, and
+            the metric's `live_fallback` is this field's `null`. A third surface,
+            `manifestBindingStatus`, uses the same token for a third thing: a
+            configured `manifestLocation` whose fetch or bind failed. Each
+            surface is internally consistent; none of them means what the others
+            do.
         executionTimeMs:
           type: integer
           description: >-
