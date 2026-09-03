@@ -668,6 +668,9 @@ export class Package {
             // unquoted name is dropped from the build plan, so the source would
             // publish but never materialize. Scan the raw `.malloy` source (the
             // ground truth for quoting); throws a ModelCompilationError (424).
+            // `.malloy` only: `#@ persist` is a model-file directive and does not
+            // appear in `.malloynb` notebooks. If that ever changes, widen this
+            // guard so the identifier-injection check still covers notebooks.
             if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
                const modelSource = await fs.readFile(
                   path.join(packagePath, sm.modelPath),
