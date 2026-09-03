@@ -877,6 +877,12 @@ def main(argv: list[str] | None = None) -> int:
                          "not the product -- and every run before 2026-09-01 "
                          "was accidentally this. Recorded in run.json so the "
                          "two can never be compared by mistake")
+    ap.add_argument("--truth-environment", default=None,
+                    help="the environment name on the TRUTH server, when it "
+                         "differs from --environment. A truth package is "
+                         "usually served on its own server, which the answerer "
+                         "has no route to, and that server names its "
+                         "environments independently")
     ap.add_argument("--truth-publisher", default=None,
                     help="the Publisher serving the set's truthPackage, for the "
                          "pre-run golden check. Defaults to --publisher on a "
@@ -967,7 +973,13 @@ def main(argv: list[str] | None = None) -> int:
         golden_check = "not run (rebuild)"
     elif truth and not a.skip_golden_check:
         print("checking goldens against the truth package")
-        r = verify_goldens.verify(a.set_dir, truth, a.environment, quiet=True)
+        # The truth server is a SEPARATE server and names its environments
+        # however it likes; assuming it reuses the model server's environment
+        # name made the check report "nothing to re-derive against" on a truth
+        # package that was serving correctly two ports away.
+        r = verify_goldens.verify(a.set_dir, truth,
+                                  a.truth_environment or a.environment,
+                                  quiet=True)
         if r.get("skipped"):
             golden_check = r["skipped"]
             print(f"  {golden_check}")

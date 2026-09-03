@@ -65,6 +65,9 @@ Rules that make the ledger trustworthy:
 | `description` | |
 | `datasetVersion` | Integer. Bump on any golden repair or case change. Runs record the version they scored against. |
 | `targetModelPath` | Model path within the package. |
+| `truthPackage` | Name of the package holding the semantics-free sources every golden is re-derived from -- a package NAME, not an object. `verify_goldens.py` skips every check without it, reporting "nothing to re-derive against", so a set that omits it silently has no golden verification at all. `init_truth_package.py` scaffolds the package. |
+| `truthModel` | Model file inside that package. Default `truth.malloy`. |
+| `truthTableRewrite` | Boolean, default false. Rewrites `duckdb.table('data/x.parquet')` refs to bare `x` in canonical queries, for a truth package whose tables are registered rather than read from files. |
 
 ## `cases.jsonl`
 

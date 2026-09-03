@@ -60,10 +60,33 @@ def table_refs(package: pathlib.Path) -> list[tuple[str, str]]:
     return list(seen)
 
 
+# Data-file extensions a table ref may carry. Stripped before anything else
+# looks at the ref, because the order is the whole bug: a file path's last
+# DOT-segment IS its extension, so splitting first left `parquet` as the table
+# name and a package of parquet files scaffolded as t_parquet, t_parquet_2,
+# t_parquet_3 -- names no golden author can write a query against.
+DATA_EXT = re.compile(r"\.(parquet|csv|tsv|json|jsonl|ndjson|orc|avro)$", re.I)
+
+
 def stem(ref: str) -> str:
-    """t_<last path segment>, lowercased, with V_/FACT_/TBL_ noise trimmed."""
-    last = re.split(r"[./]", ref.strip("/"))[-1]
-    last = re.sub(r"\.(parquet|csv|json)$", "", last, flags=re.I)
+    """t_<table>, lowercased, with v_/fact_/dim_/tbl_ noise trimmed.
+
+    Two ref shapes reach this. A PATH (`data/users.parquet`) names a file, so
+    the table is the basename without its extension. A WAREHOUSE ref
+    (`analytics.public.orders`) has no slash, and there the last dot-segment is
+    the table. Deciding which on the presence of a slash keeps both correct.
+    """
+    raw = ref.strip("/")
+    cut = DATA_EXT.sub("", raw)
+    had_ext = cut != raw
+    if "/" in cut:
+        last = cut.rsplit("/", 1)[-1]
+        # Only guess at a further extension when the known list did not match,
+        # so `data/a.b.parquet` keeps the `.b` that is part of the name.
+        if not had_ext:
+            last = re.sub(r"\.[A-Za-z0-9_]{1,10}$", "", last)
+    else:
+        last = cut if had_ext else cut.split(".")[-1]
     last = re.sub(r"^(v_|vw_|fact_|dim_|tbl_)+", "", last, flags=re.I)
     return "t_" + re.sub(r"\W+", "_", last).strip("_").lower()
 
