@@ -155,9 +155,15 @@ a local one.
    the golden that depended on it stops being possible. It is safe -- measured
    on a running server, a `cases.jsonl` inside a package appears in no model
    listing, no notebook listing, no package resource, and 404s over HTTP, so an
-   MCP-only answerer has no route to it. What it does NOT get you is free
-   versioning: `sourceContentSha` hashes model paths only, so the set needs its
-   own `datasetSha`.
+   MCP-only answerer has no route to it.
+
+   What it buys differs by target. On a LOCAL Publisher it does not get you free
+   versioning -- `sourceContentSha` hashes model paths only, so the set needs
+   its own `datasetSha`. On a hosted target that publishes the whole package
+   directory as an IMMUTABLE version, the set rides inside that version and
+   `targetVersion` pins model and answer key together; nothing can be edited
+   under a published version, which is what makes it a pin. Check which you have
+   before deciding how much of this you need.
 
 2. The server must be up with retrieval tracing on, so a call's ranked results
    can be recovered afterwards (open-source Publisher: `PUBLISHER_MCP_TRACE=retrieval`).
