@@ -149,16 +149,33 @@ type Handler = (params: Record<string, unknown>) => Promise<{
    content: Content;
 }>;
 
-function captureHandler(store: Partial<EnvironmentStore>): Handler {
-   let handler: Handler | undefined;
+/**
+ * Two tools register from one call, so capture by NAME rather than by taking
+ * whichever registered last. Defaults to the flat tool, which is what the bulk
+ * of this file exercises; `captureConverged` takes the other.
+ */
+function captureNamed(
+   store: Partial<EnvironmentStore>,
+   wanted: string,
+): Handler {
+   const handlers = new Map<string, Handler>();
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
-         handler = h;
+      tool: (name: string, _desc: string, _shape: unknown, h: Handler) => {
+         handlers.set(name, h);
       },
    };
    registerGetContextTool(fakeServer as never, store as EnvironmentStore);
-   if (!handler) throw new Error("handler was not registered");
+   const handler = handlers.get(wanted);
+   if (!handler) throw new Error(`${wanted} was not registered`);
    return handler;
+}
+
+function captureHandler(store: Partial<EnvironmentStore>): Handler {
+   return captureNamed(store, "malloy_getContext");
+}
+
+function captureConverged(store: Partial<EnvironmentStore>): Handler {
+   return captureNamed(store, "get_context");
 }
 
 function parse(result: { content: Content }) {
@@ -214,6 +231,7 @@ interface RankedEntity {
    relevance?: number;
    relationship?: string;
    join_path?: string;
+   matched_targets?: Array<{ search_text: string; relevance: number }>;
    aliases?: string[];
    also_in?: string[];
 }
@@ -2584,5 +2602,162 @@ describe("get_context lexical sibling collapse", () => {
       expect(
          rankedEntities(payload).every((e) => e.also_in === undefined),
       ).toBe(true);
+   });
+});
+
+describe("get_context converged request shape", () => {
+   // A package with two sources so a target's kind filter is observable:
+   // `orders` carries a measure and a dimension, `customers` only a dimension.
+   const convergedModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: ["#(doc) One row per order."],
+            schema: {
+               fields: [
+                  {
+                     kind: "measure",
+                     name: "revenue",
+                     annotations: ["#(doc) Total order revenue."],
+                  },
+                  {
+                     kind: "dimension",
+                     name: "category",
+                     annotations: ["#(doc) Product category of the order."],
+                  },
+               ],
+            },
+         },
+         {
+            name: "customers",
+            annotations: ["#(doc) One row per customer."],
+            schema: {
+               fields: [
+                  {
+                     kind: "dimension",
+                     name: "category",
+                     annotations: ["#(doc) Customer segment category."],
+                  },
+               ],
+            },
+         },
+      ],
+      getQueries: () => [],
+   };
+   const handler = () =>
+      captureConverged({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "m.malloy" }],
+               getModel: () => convergedModel,
+            })),
+      });
+   const scope = [{ environment: "specs", package: "shop" }];
+
+   it("answers a multi-target question in ONE call, grouped by source", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+               { target_type: "dimension", search_text: "category" },
+            ],
+            scopes: scope,
+         }),
+      );
+      // No source scope was given and none was needed: the response says which
+      // sources hold these fields. That is the whole point of the shape.
+      const names = rankedEntities(payload)
+         .map((e) => `${e.source}.${e.name}`)
+         .sort();
+      expect(names).toContain("orders.revenue");
+      expect(names).toContain("orders.category");
+      expect(payload.ranking).toBe("relevance");
+   });
+
+   it("a target only claims the kinds it selects", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "measure", search_text: "category" },
+            ],
+            scopes: scope,
+         }),
+      );
+      // "category" matches two DIMENSIONS by text, but a measure target must
+      // not surface them: that filter is what target_type buys over a single
+      // untyped query string.
+      expect(
+         rankedEntities(payload).every((e) => e.entity_type === "measure"),
+      ).toBe(true);
+   });
+
+   it("names the target that matched, with its own relevance", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+               { target_type: "dimension", search_text: "category" },
+            ],
+            scopes: scope,
+         }),
+      );
+      const revenue = rankedEntities(payload).find((e) => e.name === "revenue");
+      expect(revenue!.matched_targets).toBeDefined();
+      // The text the caller wrote, not an index: the caller should not have to
+      // map positions back to its own request to read the answer.
+      expect(revenue!.matched_targets!.map((m) => m.search_text)).toEqual([
+         "revenue",
+      ]);
+      expect(revenue!.matched_targets![0].relevance).toBeGreaterThan(0);
+   });
+
+   it("enumerates instead of ranking when no target carries text", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [{ target_type: "source" }],
+            scopes: scope,
+         }),
+      );
+      expect(payload.ranking).toBe("prominence");
+      expect(
+         payload.sources
+            .map(
+               (c: { source_info: { resource_id: { source: string } } }) =>
+                  c.source_info.resource_id.source,
+            )
+            .sort(),
+      ).toEqual(["customers", "orders"]);
+   });
+
+   it("narrows to one source when the scope names it", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "dimension", search_text: "category" },
+            ],
+            scopes: [
+               { environment: "specs", package: "shop", source: "customers" },
+            ],
+         }),
+      );
+      expect(
+         rankedEntities(payload).every((e) => e.source === "customers"),
+      ).toBe(true);
+   });
+
+   it("says so, with the remedy, for a target type it cannot search", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "dimensional_value", search_text: "premium" },
+            ],
+            scopes: scope,
+         }),
+      );
+      // Publisher indexes the model, not the values in it. Silence would read
+      // as "no such value"; this says which it is and what to do instead.
+      const warning = (payload.warnings as string[]).join(" ");
+      expect(warning).toContain("dimensional_value");
+      expect(warning).toContain("malloy_executeQuery");
    });
 });

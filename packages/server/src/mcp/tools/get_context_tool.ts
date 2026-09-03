@@ -134,6 +134,8 @@ interface ResultEntity {
    dataType?: string;
    /** The join traversal reaching this field; absent on a source's own. */
    joinPath?: string;
+   /** Score per search target index that matched this row, for matched_targets. */
+   targetScores?: Map<number, number>;
 }
 
 /**
@@ -227,7 +229,15 @@ export const SIBLING_SCORE_EPSILON = 0.03;
  * window, and this bounds the scan it can ask for. Defined once because the
  * parameter schema, the truncation warning and that scan must agree.
  */
-const MAX_LIMIT = 50;
+const MAX_LIMIT = 150;
+
+/**
+ * Sources a ranked search returns when the caller sets no limit. A listing
+ * defaults to MAX_LIMIT instead: a browse that stops early is not a browse,
+ * and its cards are cheap because they carry no entities. Both match the
+ * published defaults.
+ */
+const DEFAULT_RANKED_LIMIT = 20;
 
 /**
  * Why a server that HAS an embedding provider answered lexically. Reported
@@ -376,6 +386,8 @@ interface SourceCardEntity {
    relationship?: Relationship;
    /** The join traversal reaching this field, when it is not the source's own. */
    join_path?: string;
+   /** Which search targets matched this entity, and how well. */
+   matched_targets?: Array<{ search_text: string; relevance: number }>;
    aliases?: string[];
    also_in?: string[];
 }
@@ -403,6 +415,8 @@ function toSourceResults(
    sourceContext: Map<string, SourceContextEntry>,
    environmentName: string,
    packageName: string,
+   /** Search texts by target index, for matched_targets. Empty on a listing. */
+   searchTexts: Map<number, string> = new Map(),
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -464,6 +478,7 @@ function toSourceResults(
          ...(r.dataType ? { data_type: r.dataType } : {}),
          ...(r.relationship ? { relationship: r.relationship } : {}),
          ...(r.joinPath ? { join_path: r.joinPath } : {}),
+         ...matchedTargetsFor(r, searchTexts),
          ...(r.aliases ? { aliases: r.aliases } : {}),
          ...(r.alsoIn ? { also_in: r.alsoIn } : {}),
       };
@@ -478,6 +493,32 @@ function toSourceResults(
       }
    }
    return Array.from(bySource.values());
+}
+
+/**
+ * Which of the caller's search targets matched this row, and how well.
+ *
+ * Only targets that carry text can match, so a listing produces none and the
+ * key is omitted rather than sent empty -- the published shape omits null
+ * fields, so absence is in-contract. Ordered by target index so the response
+ * reads in the order the caller wrote its targets, not in score order, which
+ * would make two responses to the same request look different.
+ */
+function matchedTargetsFor(
+   r: ResultEntity,
+   searchTexts: Map<number, string>,
+): { matched_targets?: Array<{ search_text: string; relevance: number }> } {
+   if (!r.targetScores || r.targetScores.size === 0) return {};
+   const matched = [...r.targetScores.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .flatMap(([index, relevance]) => {
+         const search_text = searchTexts.get(index);
+         if (search_text === undefined) return [];
+         return [
+            { search_text, relevance: Math.round(relevance * 10_000) / 10_000 },
+         ];
+      });
+   return matched.length > 0 ? { matched_targets: matched } : {};
 }
 
 /**
@@ -505,6 +546,132 @@ function truncateDoc(doc: string, max: number): string {
    const lastSpace = cut.lastIndexOf(" ");
    return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
+
+/**
+ * The request shape, matching the hosted retrieval API's `GetContextRequest`
+ * field for field, so one caller, one skill and one eval harness serve a local
+ * server and a hosted one. See the response-shape note on SourceCard for the
+ * other half.
+ *
+ * Two behavioural divergences, both stated rather than left to be discovered:
+ *
+ * 1. `scopes` is optional in the published schema; here exactly one entry is
+ *    REQUIRED, and it must name an environment and a package. Publisher builds
+ *    its retrieval indexes per package and lazily -- a package nothing has
+ *    queried has no vectors at all -- so an unscoped search would answer from
+ *    whatever happened to be warm and could not tell "not modelled" from "not
+ *    indexed yet". Refusing is the honest answer; guessing is not. Relaxing
+ *    this later is purely additive and changes no caller.
+ * 2. `target_type` is a SUPERSET, adding `join`: a model's declared joins are
+ *    retrievable entities here, and an agent that cannot see one concludes the
+ *    model has none. `dimensional_value` is accepted and answered with a
+ *    warning, because Publisher indexes no dimensional values.
+ */
+const SEARCH_TARGET_TYPES = [
+   "source",
+   "dimension",
+   "measure",
+   "view",
+   "dimensional_value",
+   "join",
+] as const;
+
+type SearchTargetType = (typeof SEARCH_TARGET_TYPES)[number];
+
+/**
+ * Which indexed entity kinds a target selects. `view` covers named queries as
+ * well, because the published shape defines that target as "pre-built analyses
+ * or named queries" and a model-level named query is exactly that.
+ * `dimensional_value` selects nothing: there is no value index to select from.
+ */
+const KINDS_BY_TARGET: Record<SearchTargetType, string[]> = {
+   source: ["source"],
+   dimension: ["dimension"],
+   measure: ["measure"],
+   view: ["view", "query"],
+   join: ["join"],
+   dimensional_value: [],
+};
+
+const convergedContextShape = {
+   search_targets: z
+      .array(
+         z.object({
+            target_type: z
+               .enum(SEARCH_TARGET_TYPES)
+               .describe(
+                  "What to look for. `dimension`/`measure`/`view` match fields and the response groups them by source; `source` matches or lists sources; `join` matches a declared relationship.",
+               ),
+            search_text: z
+               .string()
+               .max(500)
+               .nullish()
+               .describe(
+                  'Plain-English description of what you need, e.g. "the total revenue". Omit or null to enumerate this type instead of ranking it.',
+               ),
+         }),
+      )
+      .min(1)
+      .describe(
+         "What to find. One target per concept; several targets of different types answer one question in one call.",
+      ),
+   scopes: z
+      .array(
+         z.object({
+            environment: z.string().describe("Environment name."),
+            package: z.string().describe("Package name."),
+            version: z
+               .string()
+               .nullish()
+               .describe("Package version. Omit to use the served version."),
+            model_path: z
+               .string()
+               .nullish()
+               .describe('Model file within the package, e.g. "model.malloy".'),
+            source: z
+               .string()
+               .nullish()
+               .describe("Narrow to one source within the model."),
+            entity_name: z
+               .string()
+               .nullish()
+               .describe("Narrow to one entity within the source."),
+         }),
+      )
+      .length(1)
+      .describe(
+         "Required, exactly one: the environment and package to search, optionally narrowed to a model, source, or entity. Call malloy_listEnvironments for the names.",
+      ),
+   filter_params: z
+      .record(z.union([z.string(), z.array(z.string())]))
+      .nullish()
+      .describe(
+         "Values for filters a source declares via #(filter), keyed by filter name.",
+      ),
+   user_prompt: z
+      .string()
+      .nullish()
+      .describe(
+         "The user's question that led to this call, verbatim on the first turn. Used for observability; does not affect matching.",
+      ),
+   limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_LIMIT)
+      .nullish()
+      .describe(
+         `Sources per page (max ${MAX_LIMIT}). PREFER OMITTING: ranked search defaults to ${DEFAULT_RANKED_LIMIT}, a pure listing to ${MAX_LIMIT}.`,
+      ),
+   offset: z
+      .number()
+      .int()
+      .min(0)
+      .nullish()
+      .describe(
+         "Sources to skip, from a previous response's next_offset. Pure listings only; ranked results cannot be resumed.",
+      ),
+};
 
 const getContextShape = {
    environmentName: z
@@ -540,7 +707,153 @@ const getContextShape = {
          "Maximum results to return (max 50). Ranked retrieval defaults to 10; the listing tiers return everything unless you set this.",
       ),
 };
-type GetContextParams = z.infer<z.ZodObject<typeof getContextShape>>;
+type LegacyContextParams = z.infer<z.ZodObject<typeof getContextShape>>;
+type GetContextParams = z.infer<z.ZodObject<typeof convergedContextShape>>;
+
+/** One search target that carries text, kept with the index it came in at. */
+interface ResolvedSearch {
+   /** Position in the caller's search_targets, reported as matched_targets. */
+   targetIndex: number;
+   targetType: SearchTargetType;
+   text: string;
+   /** Entity kinds this target may match. */
+   kinds: string[];
+}
+
+/**
+ * The request reduced to what retrieval works in: one scope, the set of kinds
+ * in play, and the searches to rank. Resolved ONCE here rather than re-derived
+ * per tier, so the listing and ranked paths cannot disagree about what the
+ * caller asked for.
+ */
+interface ResolvedRequest {
+   environmentName: string;
+   packageName: string;
+   modelPath?: string;
+   sourceName?: string;
+   entityName?: string;
+   /** Every kind any target selects. Empty only if every target was unsupported. */
+   kinds: Set<string>;
+   searches: ResolvedSearch[];
+   /** True when no target carried search text: enumerate, do not rank. */
+   listingOnly: boolean;
+   /** Targets naming a type this server cannot search, for a warning. */
+   unsupported: SearchTargetType[];
+   limit: number;
+   offset: number;
+}
+
+export function resolveRequest(params: GetContextParams): ResolvedRequest {
+   const scope = params.scopes[0];
+   const kinds = new Set<string>();
+   const searches: ResolvedSearch[] = [];
+   const unsupported: SearchTargetType[] = [];
+
+   params.search_targets.forEach((target, targetIndex) => {
+      const targetKinds = KINDS_BY_TARGET[target.target_type];
+      if (targetKinds.length === 0) {
+         unsupported.push(target.target_type);
+         return;
+      }
+      for (const kind of targetKinds) kinds.add(kind);
+      // Whitespace-only text is not a search; treat it as an enumeration of
+      // that type rather than ranking every entity against nothing.
+      const text = target.search_text?.trim();
+      if (text) {
+         searches.push({
+            targetIndex,
+            targetType: target.target_type,
+            text,
+            kinds: targetKinds,
+         });
+      }
+   });
+
+   const listingOnly = searches.length === 0;
+   return {
+      environmentName: scope.environment,
+      packageName: scope.package,
+      ...(scope.model_path ? { modelPath: scope.model_path } : {}),
+      ...(scope.source ? { sourceName: scope.source } : {}),
+      ...(scope.entity_name ? { entityName: scope.entity_name } : {}),
+      kinds,
+      searches,
+      listingOnly,
+      unsupported,
+      limit: params.limit ?? (listingOnly ? MAX_LIMIT : DEFAULT_RANKED_LIMIT),
+      offset: params.offset ?? 0,
+   };
+}
+
+/** Every kind the indexer emits. The flat request ranked across all of them. */
+const ALL_INDEXED_KINDS = [
+   "source",
+   "view",
+   "query",
+   "dimension",
+   "measure",
+   "join",
+] as const;
+
+/**
+ * The shipped flat request expressed as a ResolvedRequest, so it runs the same
+ * core. Its DEFAULTS are preserved deliberately and differ from the converged
+ * ones: ranked retrieval returns 10 rather than 20, and a listing returns
+ * everything rather than a page of 150. Those are observable, and a caller
+ * written against this tool did not ask for the new numbers.
+ */
+function resolveLegacyRequest(params: LegacyContextParams): ResolvedRequest {
+   const text = params.query?.trim();
+   // The shipped listing returns SOURCES for a package and everything for a
+   // drill-down; ranked retrieval always ranged over every kind. Reproduced
+   // here rather than approximated, because both are observable.
+   const kinds =
+      !text && !params.sourceName
+         ? new Set<string>(["source"])
+         : new Set<string>(ALL_INDEXED_KINDS);
+   return {
+      // Only reached once both are known: the wrapper answers the environment
+      // and package listings before calling this.
+      environmentName: params.environmentName as string,
+      packageName: params.packageName as string,
+      ...(params.sourceName ? { sourceName: params.sourceName } : {}),
+      kinds,
+      // One untyped search over every kind, which is what `query` always was.
+      searches: text
+         ? [
+              {
+                 targetIndex: 0,
+                 targetType: "source" as const,
+                 text,
+                 kinds: [...kinds],
+              },
+           ]
+         : [],
+      listingOnly: !text,
+      unsupported: [],
+      limit: params.limit ?? (text ? 10 : Number.POSITIVE_INFINITY),
+      offset: 0,
+   };
+}
+
+/** Does this entity survive the scope's model/source/entity refinements? */
+function matchesScope(
+   e: { source?: string; name: string; modelPath: string; kind: string },
+   request: ResolvedRequest,
+): boolean {
+   if (request.modelPath && e.modelPath !== request.modelPath) return false;
+   if (request.sourceName && e.source !== request.sourceName) return false;
+   // A source row survives an entity_name scope: it is the card the named
+   // entity nests in, not a competitor for the slot.
+   if (
+      request.entityName &&
+      e.kind !== "source" &&
+      e.name !== request.entityName
+   ) {
+      return false;
+   }
+   return true;
+}
 
 /**
  * Pull #(doc) text from annotation lines, falling back to the raw lines.
@@ -1067,19 +1380,48 @@ async function getPackageIndex(
 }
 
 /**
+ * The converged tool's description. Same budget and same ordering rule as the
+ * one below it: contract rules first, reference last, because a tail-truncating
+ * client drops whatever is last. See server.protocol.spec.ts.
+ */
+const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most relevant to a plain-English question.
+
+## Contract rules
+- Use the names it returns verbatim; never invent one that is not in the results.
+- One call answers: describe the fields you need as search_targets; each matching source returns with those fields nested. No drill-down call.
+- scopes is REQUIRED: exactly one, naming an environment and package. malloy_listEnvironments lists them.
+- Read warnings and any error/stale field before trusting a number.
+- A source's joins list is complete: empty means it declares none, so write that relationship inline.
+- Read a source's doc before querying it: it carries grain and population rules its fields do not.
+- A source with authorize is gated: supply the givens it names or the query is denied.
+
+## Parameters
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, and omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150; ranked 20, listing 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question, for observability.
+
+## Response
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in, matched_targets, relevance, entity_id. A joined field's name IS its dotted path: use it verbatim.
+ranking, returned of total_available sources, next_offset on a listing, warnings[].
+Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
+
+## Example
+{"search_targets":[{"target_type":"measure","search_text":"total revenue"}],"scopes":[{"environment":"examples","package":"storefront"}]}`;
+
+/**
  * Kept under the truncation budget pinned by server.protocol.spec.ts: a client
  * was observed cutting this description off mid-sentence, and a tail cut takes
  * whatever is last. So the contract rules an agent cannot self-correct come
  * first and the reference material last, and the reference stays terse to buy
  * room for it. Full prose belongs in docs/ai-agents.md, not here.
  */
-const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes and retrieve the entities most relevant to a plain-English question, so you ground queries in names the model defines.
+const LEGACY_GET_CONTEXT_DESCRIPTION = `DEPRECATED: use get_context (typed search_targets + scopes, same response).
+
+Discover what a Publisher deployment exposes and retrieve the entities most relevant to a plain-English question, so you ground queries in names the model defines.
 
 ## Contract rules
 - Use the names it returns verbatim; never invent one that is not in the results.
 - A query returns whole source cards with fields nested: one call, no drill-down.
-- Read warnings and any error/stale field before trusting a number: data may be missing, stale, or cut short.
-- A source's joins list is complete: empty means it declares none, so write that relationship inline rather than probe for one.
+- Read warnings and any error/stale field before trusting a number.
+- A source's joins list is complete: empty means it declares none, so write that relationship inline.
 - Read a source's doc before querying it: it carries grain and population rules its fields do not.
 - A source with authorize is gated: supply the givens it names or the query is denied.
 
@@ -1087,9 +1429,9 @@ const GET_CONTEXT_DESCRIPTION = `Discover what a Publisher deployment exposes an
 All optional; supply what you know. None lists environments and their packages; environmentName lists its packages; + packageName lists its sources with their joins; + query ranks its entities. sourceName alone returns one source's full card ([] = no such source); with a query it ranks inside it. limit caps entities (max 50; retrieval 10).
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases (other spellings), also_in (equal-scoring peers; pick by docs), relevance, entity_id. A joined field's name IS its full dotted path: use it verbatim. Pass a source as sourceName, a view or query as queryName.
-ranking (relevance|prominence), returned of total_available sources, warnings[] for what was cut or stale.
-Semantic fills relevance: no sources means nothing cleared the floor; below_cutoff_count of total_entities were rejected. A "lexical" retrieval adds retrieval_reason; only "indexing" is worth a retry.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> malloy_executeQuery's environmentName/packageName/modelPath; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only). entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in (equal-scoring peers), relevance, entity_id. A joined field's name IS its full dotted path: use it verbatim. Pass a source as sourceName, a view or query as queryName.
+ranking, returned of total_available sources, warnings[] for what was cut or stale.
+Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
 
 ## Example
 {"environmentName":"examples","packageName":"storefront","query":"revenue by category"}`;
@@ -1131,18 +1473,697 @@ function contextError(uri: string, identifier: string, error: unknown) {
  * index is built once per Package and cached (see getPackageIndex), rebuilding
  * automatically when the package reloads.
  */
+/**
+ * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by a resolved
+ * request. Shared by both registered tools: the converged `get_context` and
+ * the flat `malloy_getContext` it replaces, so the two can never drift on what
+ * a listing returns, how the floor is applied, or what a card carries. Only
+ * the request parsing differs between them, and that happens before this.
+ */
+async function runContextQuery(
+   request: ResolvedRequest,
+   environmentStore: EnvironmentStore,
+   extraWarnings: string[] = [],
+): Promise<ReturnType<typeof jsonResource>> {
+   const { environmentName, packageName, sourceName } = request;
+   const max = request.limit;
+   // One lookup from target index back to the text the caller wrote, so
+   // matched_targets can name a target without re-walking the request.
+   const searchTextsByIndex = new Map(
+      request.searches.map((search) => [search.targetIndex, search.text]),
+   );
+   logger.info("[MCP Tool getContext] Retrieving context", {
+      environmentName,
+      packageName,
+      sourceName,
+      searches: request.searches.length,
+      listingOnly: request.listingOnly,
+   });
+
+   // Tiers 3 and 4 need the package's entity index.
+   let pkgIndex: PackageIndex;
+   try {
+      pkgIndex = await getPackageIndex(
+         environmentStore,
+         environmentName,
+         packageName,
+      );
+   } catch (error) {
+      logger.warn("[MCP Tool getContext] index build failed", {
+         environmentName,
+         packageName,
+         sourceName,
+         error: error instanceof Error ? error.message : String(error),
+      });
+      return contextError(
+         buildMalloyUri(
+            { environment: environmentName, package: packageName },
+            "get-context",
+         ),
+         `${environmentName}/${packageName}`,
+         error,
+      );
+   }
+
+   const { byId, index, sourceContext } = pkgIndex;
+   const uri = buildMalloyUri(
+      { environment: environmentName, package: packageName },
+      "get-context",
+   );
+
+   // A stale package answers every tier below exactly like a current one:
+   // the index is the last model that compiled, so the names are real and
+   // the queries succeed, and the numbers are from before the last save.
+   // Nothing else in this payload can say so, and telling the agent to go
+   // call malloy_getStatus is weaker than saying it here, where it is
+   // already looking. Attached to tiers 3 and 4 alike, because tier 4 is
+   // the path that goes straight from a question to field names to a
+   // query.
+   //
+   // Best effort: this is a health annotation, so a lookup that fails
+   // must not take discovery down with it. Logged, never thrown.
+   let staleNote: string | undefined;
+   try {
+      const environment = await environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const stale = environment.getStaleCompileErrors().get(packageName);
+      if (stale) {
+         staleNote = `This package is STALE: its most recent reload failed to compile at ${stale.failedAt}, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call malloy_reloadPackage; malloy_getStatus has the compile error.`;
+      }
+   } catch (error) {
+      logger.debug("[MCP Tool getContext] staleness lookup failed", {
+         environmentName,
+         packageName,
+         error: error instanceof Error ? error.message : String(error),
+      });
+   }
+   /**
+    * Spread into a payload to attach `warnings`. Returns {} when there is
+    * nothing to say, so a healthy package's payload carries no key at all
+    * rather than an empty array a caller has to test.
+    *
+    * A list rather than one joined string: staleness and truncation are
+    * separate facts with separate remedies, and joining them made the
+    * second read as a continuation of the first.
+    */
+   const warningsFor = (...extra: (string | undefined)[]) => {
+      const warnings = [staleNote, ...extraWarnings, ...extra].filter(
+         (warning): warning is string => Boolean(warning),
+      );
+      return warnings.length > 0 ? { warnings } : {};
+   };
+
+   /**
+    * The warning for a capped result set, or undefined when nothing was
+    * cut. It names the remedy that works here: raising the limit, or
+    * narrowing the question. Telling an agent to "search more
+    * specifically" when the cut was a flat cap sends it to re-query at
+    * the one stage that cannot change the outcome.
+    */
+   const truncationWarning = (returned: number, matched: number) =>
+      matched > returned
+         ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
+         : undefined;
+
+   // Tier 3: nothing to rank -> enumerate what the targets name.
+   if (request.listingOnly) {
+      // With sourceName set this is the drill-down, so it lists every
+      // entity the named source offers: the source row itself, then its
+      // views, dimensions, measures, and any named query built on it.
+      // Filtering to kind === "source" here as well returned exactly one
+      // row — the source — which the caller already had from the tier-3
+      // listing, and never the fields the tool description promises.
+      // collectEntities pushes a source ahead of its own fields, and
+      // Array.from preserves that insertion order, so the source's doc
+      // still leads the drill-down.
+      //
+      // Enumeration: return everything unless the caller sets an explicit
+      // limit. slice(0, undefined) keeps the whole list, so discovery is
+      // not silently capped the way ranked retrieval (tier 4) is.
+      // A drill-down (sourceName, no query) lists every entity the
+      // named source offers, so the card carries its views, dimensions,
+      // measures, joins and named queries. Listing only the source row
+      // there returned what the caller already had from the package
+      // listing and never the fields the tool description promises.
+      // collectEntities pushes a source ahead of its own fields, and
+      // Array.from preserves that insertion order, so toSourceResults
+      // sees the source before the entities that nest under it.
+      //
+      // Enumeration: return everything unless the caller sets an explicit
+      // limit. slice(0, undefined) keeps the whole list, so discovery is
+      // not silently capped the way ranked retrieval (tier 4) is.
+      const inScope = Array.from(byId.values()).filter(
+         (e) =>
+            // A scoped source's own row always survives: it becomes the
+            // card rather than competing for an entity slot.
+            ((sourceName && e.kind === "source" && e.source === sourceName) ||
+               request.kinds.has(e.kind)) &&
+            matchesScope(e, request),
+      );
+      // The limit caps entities. A drill-down's source row becomes the
+      // card rather than an entity, so it does not spend a slot; a
+      // package listing has only source rows, so there the cap is on
+      // cards, which is what the listing is made of.
+      let entityBudget = request.limit;
+      const capped = inScope.filter((e) => {
+         if (sourceName && e.kind === "source") return true;
+         if (entityBudget <= 0) return false;
+         entityBudget -= 1;
+         return true;
+      });
+      // Counted in the same unit the cap spends, so the warning below is
+      // about the rows a caller actually lost.
+      const cappable = sourceName
+         ? inScope.filter((e) => e.kind !== "source").length
+         : inScope.length;
+      // The overview is where an agent decides how to combine sources,
+      // so each one states its relationships here rather than making
+      // that a second call. toSourceResults carries the complete joins
+      // list onto every entry, so empty means none declared.
+      const sources = toSourceResults(
+         capped.map((e) => ({
+            kind: e.kind,
+            name: e.name,
+            source: e.source,
+            environmentName,
+            packageName,
+            modelPath: e.modelPath,
+            doc: e.doc,
+            ...(e.relationship ? { relationship: e.relationship } : {}),
+            ...(e.aliases ? { aliases: e.aliases } : {}),
+            ...(e.joinPath ? { joinPath: e.joinPath } : {}),
+            ...(e.dataType ? { dataType: e.dataType } : {}),
+         })),
+         sourceContext,
+         environmentName,
+         packageName,
+      );
+      // A listing is deterministic catalog order, not a ranking, and
+      // Publisher has no query-usage signal to fill the hosted API's
+      // `prominence` with, so it names the ordering and omits the
+      // score rather than inventing a number nobody should rank on.
+      // Both counts are in SOURCES, the unit the payload is made of. A
+      // drill-down is one source's card, so it is 1-of-1 however many
+      // entities nest inside it; the entity cap is reported separately.
+      const listingEnvelope = {
+         ranking: "prominence" as const,
+         total_available: sourceName
+            ? Math.min(inScope.length, 1)
+            : inScope.length,
+         returned: sources.length,
+      };
+      // An empty enumeration is ambiguous to an agent: "no data here" and
+      // "the package exposes nothing" look identical. The package DID
+      // load (a failed load throws out of getPackageIndex above), so an
+      // empty result means its models expose no sources: a curation gap
+      // (explores/export {}), not an empty database. Say so, only in the
+      // empty case, so the populated payload stays byte-identical.
+      if (sources.length === 0 && !sourceName) {
+         return jsonResource(uri, {
+            sources,
+            ...listingEnvelope,
+            ...warningsFor(
+               "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call malloy_getStatus for load errors and stale packages.",
+            ),
+         });
+      }
+      return jsonResource(uri, {
+         sources,
+         ...listingEnvelope,
+         ...warningsFor(
+            truncationWarning(capped.length - (sourceName ? 1 : 0), cappable),
+         ),
+      });
+   }
+
+   // Tier 4: retrieval over the package's entities. With an
+   // embedding provider configured, ranking is semantic (DuckDB
+   // cosine over cached entity embeddings); otherwise, or whenever
+   // the semantic path is unavailable (index still building,
+   // provider down, oversized package), it is lexical lunr. The
+   // `retrieval` marker and per-entity `score` appear ONLY when a
+   // provider is configured, so the unconfigured payload stays
+   // byte-identical to the lexical-only releases.
+   const configured = embeddingConfigured();
+   // A drill-down is confined to one source, so no two hits can be the
+   // same concept in parallel sources and there is nothing to collapse.
+   const scoped = Boolean(sourceName);
+   let semanticResults: ResultEntity[] | undefined;
+   let belowCutoffCount = 0;
+   // The denominator belowCutoffCount is read against; see
+   // SemanticSearchResult. Undefined on the lexical path, where there
+   // is no floor and so no count to anchor.
+   let totalEntities: number | undefined;
+   // Why a configured server answered lexically. Without it "lexical"
+   // is a dead end: an agent cannot tell a cold index, which clears in
+   // seconds and is worth retrying, from a down provider, which is not.
+   let retrievalReason: RetrievalReason | undefined;
+   // How many entities matched before the limit cut the list, so a
+   // capped response can say what it left behind.
+   let semanticMatchCount: number | undefined;
+   // Distinct sources across everything that matched, so total_available
+   // can exceed the returned card count when the entity cap cut rows.
+   let semanticTotalSources: number | undefined;
+   if (configured) {
+      let provider: EmbeddingProvider | null = null;
+      try {
+         provider = getEmbeddingProvider();
+      } catch (error) {
+         retrievalReason = "unavailable";
+         logger.warn(
+            "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
+            {
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+      }
+      if (provider) {
+         try {
+            // One pass per target, merged on score. A max ACROSS passes is
+            // meaningful here and only here: cosine is an absolute scale,
+            // so 0.7 from the measure target and 0.7 from the dimension
+            // target mean the same thing. (The lexical path below has to
+            // normalize first, because lunr scores are relative to their
+            // own query.) The next commit collapses these passes into one
+            // batched embed and one scan; the merge rule does not change.
+            const merged = new Map<string, ResultEntity>();
+            const matchedTargets = new Map<string, Map<number, number>>();
+            let searchFailure: RetrievalReason | undefined;
+            let unionTotalEntities: number | undefined;
+            for (const search of request.searches) {
+               // The raw query embeds better than the lunr-sanitized
+               // one; sanitize() only exists to strip lunr operators.
+               const semantic = await trySemanticSearch({
+                  db: environmentStore.storageManager.getDuckDbConnection(),
+                  provider,
+                  pkg: pkgIndex.pkg,
+                  environmentName,
+                  packageName,
+                  entities: Array.from(byId.values()),
+                  query: search.text,
+                  // Over-fetch so sibling collapsing can refill the
+                  // window with genuinely different concepts instead of
+                  // returning fewer results than asked for. A drill-down
+                  // is already confined to one source, so nothing there
+                  // can collapse and the extra rows would be waste.
+                  limit: scoped ? max : Math.min(MAX_LIMIT, max * 3),
+                  // "" means no drill-down, matching the lexical
+                  // path's truthiness filter.
+                  sourceName: sourceName || undefined,
+               });
+               if ("hits" in semantic) {
+                  const byKey = new Map(
+                     Array.from(byId.values()).map((e) => [
+                        entityRowKey(e.kind, e.source ?? "", e.name),
+                        e,
+                     ]),
+                  );
+                  // Rows are only a vector cache: modelPath and doc
+                  // come from the live entity, and a hit with no live
+                  // entity (deleted since the last sync) is dropped.
+                  const ranked = semantic.hits.flatMap((hit) => {
+                     const e = byKey.get(
+                        entityRowKey(hit.kind, hit.source ?? "", hit.name),
+                     );
+                     if (!e) return [];
+                     return [
+                        {
+                           kind: e.kind,
+                           name: e.name,
+                           source: e.source,
+                           environmentName,
+                           packageName,
+                           modelPath: e.modelPath,
+                           doc: e.doc,
+                           ...(e.relationship
+                              ? { relationship: e.relationship }
+                              : {}),
+                           ...(e.aliases ? { aliases: e.aliases } : {}),
+                           ...(e.joinPath ? { joinPath: e.joinPath } : {}),
+                           ...(e.dataType ? { dataType: e.dataType } : {}),
+                           score: Math.round(hit.score * 10_000) / 10_000,
+                        },
+                     ];
+                  });
+                  for (const row of ranked) {
+                     // A target only claims the kinds it selects.
+                     if (!search.kinds.includes(row.kind)) continue;
+                     const key = entityRowKey(
+                        row.kind,
+                        row.source ?? "",
+                        row.name,
+                     );
+                     const previous = merged.get(key);
+                     if (
+                        !previous ||
+                        (row.score ?? 0) > (previous.score ?? 0)
+                     ) {
+                        merged.set(key, row);
+                     }
+                     const scores =
+                        matchedTargets.get(key) ?? new Map<number, number>();
+                     scores.set(
+                        search.targetIndex,
+                        Math.max(
+                           scores.get(search.targetIndex) ?? 0,
+                           row.score ?? 0,
+                        ),
+                     );
+                     matchedTargets.set(key, scores);
+                  }
+                  // Same denominator whichever target asked: it counts the
+                  // package's entities, not the query's hits.
+                  unionTotalEntities = semantic.totalEntities;
+               } else {
+                  searchFailure = REASON_BY_UNAVAILABLE[semantic.unavailable];
+               }
+            }
+            if (merged.size > 0 || searchFailure === undefined) {
+               const ranked = [...merged.entries()]
+                  .sort((a, b) => (b[1].score ?? 0) - (a[1].score ?? 0))
+                  .map(([key, row]) => ({
+                     ...row,
+                     targetScores: matchedTargets.get(key),
+                  }));
+               // Grouped ONCE, with no window, then windowed. Sibling
+               // collapse records the duplicates it merges ON the row it
+               // keeps, so calling it twice appends every also_in twice;
+               // and because it only ever drops rows past the limit, the
+               // full run's first `max` rows are what a limited run
+               // returns. That makes the ungrouped length the honest
+               // denominator for the truncation warning: concepts
+               // available, not rows before merging.
+               const grouped = scoped
+                  ? ranked
+                  : groupSiblings(ranked, ranked.length);
+               semanticMatchCount = grouped.length;
+               semanticTotalSources = distinctSourceCount(grouped);
+               semanticResults = grouped.slice(0, max);
+               totalEntities = unionTotalEntities;
+               // An entity that cleared NO target's floor is below the
+               // cutoff. Derived from the union rather than taken from one
+               // pass, which would have counted the others' hits as
+               // rejections.
+               belowCutoffCount =
+                  unionTotalEntities === undefined
+                     ? 0
+                     : Math.max(0, unionTotalEntities - merged.size);
+            } else {
+               retrievalReason = searchFailure;
+            }
+         } catch (error) {
+            // Defensive: trySemanticSearch does not throw, but the
+            // storage handle lookup can (e.g. before initialization
+            // or under a partial test double). Semantic retrieval
+            // must never take tier 4 down with it.
+            retrievalReason = "unavailable";
+            logger.warn(
+               "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
+               {
+                  error: error instanceof Error ? error.message : String(error),
+               },
+            );
+         }
+      }
+   }
+
+   if (semanticResults !== undefined) {
+      const sources = toSourceResults(
+         semanticResults,
+         sourceContext,
+         environmentName,
+         packageName,
+      );
+      return jsonResource(uri, {
+         sources,
+         ranking: "relevance" as const,
+         total_available: semanticTotalSources ?? sources.length,
+         returned: sources.length,
+         retrieval: "semantic",
+         // Always present on a semantic response, including 0: the
+         // reading depends on being able to tell 0 from absent. Paired
+         // with total_entities, without which the count is a bare number
+         // an agent cannot scale -- see SemanticSearchResult for why
+         // the ratio, not the count, carries the signal.
+         below_cutoff_count: belowCutoffCount,
+         ...(totalEntities !== undefined
+            ? { total_entities: totalEntities }
+            : {}),
+         // Both counts in ranked ROWS, the unit the cap spends and the
+         // unit the lexical path below already uses. entityCountIn
+         // counts nested entities, which excludes a source that matched
+         // on its own terms -- toSourceResults turns that into the card
+         // rather than a row under it -- so pairing it with a row count
+         // reported a cut that never happened whenever a source ranked.
+         ...warningsFor(
+            truncationWarning(
+               semanticResults.length,
+               semanticMatchCount ?? semanticResults.length,
+            ),
+         ),
+      });
+   }
+
+   // One lunr pass per target, merged. Each target's hits are normalized
+   // against ITS OWN top hit before merging, which is what makes two
+   // targets' scores comparable at all: raw lunr scores are relative to
+   // the query that produced them. All targets share one index, so the
+   // IDF corpus is the same and the normalization is the only correction
+   // needed.
+   const bestByRef = new Map<string, Map<number, number>>();
+   for (const search of request.searches) {
+      const sanitized = sanitize(search.text);
+      if (!sanitized) continue;
+      let targetHits: lunr.Index.Result[] = [];
+      try {
+         targetHits = index.search(sanitized);
+      } catch (error) {
+         logger.warn("[MCP Tool getContext] lunr search failed", {
+            query: search.text,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         continue;
+      }
+      const top = targetHits[0]?.score ?? 0;
+      for (const hit of targetHits) {
+         const entity = byId.get(hit.ref);
+         // A target only claims the kinds it selects, so a `measure`
+         // target never surfaces a dimension that happened to match.
+         if (!entity || !search.kinds.includes(entity.kind)) continue;
+         const score = top > 0 ? hit.score / top : 0;
+         const scores = bestByRef.get(hit.ref) ?? new Map<number, number>();
+         scores.set(
+            search.targetIndex,
+            Math.max(scores.get(search.targetIndex) ?? 0, score),
+         );
+         bestByRef.set(hit.ref, scores);
+      }
+   }
+   // Already normalized per target and merged, so this is the ranked list
+   // rather than raw lunr output -- no fake lunr Result needs constructing
+   // to carry it.
+   const ranking = [...bestByRef.entries()]
+      .flatMap(([ref, targetScores]) => {
+         const e = byId.get(ref);
+         // Defensive: skip a ref missing from the entity map.
+         if (!e) return [];
+         // Drill-down: narrow to one source when sourceName is set.
+         if (sourceName && e.source !== sourceName) return [];
+         if (!matchesScope(e, request)) return [];
+         // The row ranks on its best target, the same MAX-over-facets rule
+         // the semantic path uses one level down.
+         const score = Math.max(...targetScores.values());
+         return [{ e, score, targetScores }];
+      })
+      .sort((a, b) => b.score - a.score);
+
+   const scored: ResultEntity[] = ranking.map(({ e, score, targetScores }) => ({
+      kind: e.kind,
+      name: e.name,
+      source: e.source,
+      environmentName,
+      packageName,
+      modelPath: e.modelPath,
+      doc: e.doc,
+      ...(e.relationship ? { relationship: e.relationship } : {}),
+      ...(e.aliases ? { aliases: e.aliases } : {}),
+      ...(e.joinPath ? { joinPath: e.joinPath } : {}),
+      ...(e.dataType ? { dataType: e.dataType } : {}),
+      targetScores,
+      lexicalScore: score,
+   }));
+   // Grouped once, unwindowed, then windowed: see the semantic path for
+   // why calling it twice doubles every alsoIn. A drill-down is confined
+   // to one source, so it has no siblings to collapse.
+   const grouped = scoped ? scored : groupSiblings(scored, scored.length);
+   const results = grouped.slice(0, max);
+
+   const sources = toSourceResults(
+      results,
+      sourceContext,
+      environmentName,
+      packageName,
+      searchTextsByIndex,
+   );
+   const envelope = {
+      sources,
+      ranking: "relevance" as const,
+      total_available: distinctSourceCount(grouped),
+      returned: sources.length,
+   };
+   const lexicalWarnings = warningsFor(
+      truncationWarning(results.length, grouped.length),
+   );
+   return jsonResource(
+      uri,
+      configured
+         ? {
+              ...envelope,
+              retrieval: "lexical",
+              ...(retrievalReason ? { retrieval_reason: retrievalReason } : {}),
+              ...lexicalWarnings,
+           }
+         : { ...envelope, ...lexicalWarnings },
+   );
+}
+
+/**
+ * A target type this server cannot search, said plainly with the remedy that
+ * works. Publisher indexes the model, not the values inside it, so a
+ * `dimensional_value` target has nothing to match -- and the answer is the one
+ * the analysis skill already gives: target the dimension, then read its
+ * distinct values with a query.
+ */
+function unsupportedTargetWarnings(request: ResolvedRequest): string[] {
+   if (request.unsupported.length === 0) return [];
+   const named = [...new Set(request.unsupported)].join(", ");
+   return [
+      `No index for target_type ${named}: this server indexes the semantic model, not the values stored in it. Target the dimension instead, then read its distinct values with malloy_executeQuery (e.g. run: source -> { group_by: the_dimension }).`,
+   ];
+}
+
+const LIST_ENVIRONMENTS_DESCRIPTION = `List what this Publisher serves: every environment, and the packages in each.
+
+Call this when you do not already know an environment and package name. get_context requires one of each in its \`scopes\`, and those names come from here; never guess them.
+
+Each package reports \`name\`, its \`description\` where it has one, and two health facts that are otherwise invisible:
+- \`error\` with no \`stale\`: the package FAILED to load. It is not queryable, and it would otherwise simply be missing, which reads as "does not exist".
+- \`error\` with \`stale: true\`: the package IS serving and answering, but its most recent reload failed to compile, so its names and any numbers you get from it come from the model compiled BEFORE that save. Fix the model and call malloy_reloadPackage.
+
+Takes no arguments.`;
+
+/**
+ * The environment and package catalog, which `get_context` deliberately does
+ * not carry: its `search_targets` are required and its `scopes` name a package,
+ * so something has to answer "which packages are there" first. The hosted
+ * surface splits the same way, for the same reason -- its scope parameters are
+ * required and a sibling tool supplies them.
+ *
+ * This also inherits the job the flat tool's environment listing did: a package
+ * that failed to load is ABSENT from a plain listing, which reads as "does not
+ * exist" rather than "is broken". Reporting it with its error is the only place
+ * that distinction is visible outside malloy_getStatus.
+ */
+export function registerListEnvironmentsTool(
+   mcpServer: McpServer,
+   environmentStore: EnvironmentStore,
+): void {
+   mcpServer.tool(
+      "malloy_listEnvironments",
+      LIST_ENVIRONMENTS_DESCRIPTION,
+      {},
+      async () => {
+         const uri = buildMalloyUri({}, "list-environments");
+         try {
+            const environments = await environmentStore.listEnvironments();
+            const results = [];
+            for (const env of environments) {
+               const name = env.name;
+               if (!name) continue;
+               let packages: unknown[] = [];
+               try {
+                  const environment = await environmentStore.getEnvironment(
+                     name,
+                     false,
+                  );
+                  const staleErrors = environment.getStaleCompileErrors();
+                  packages = (await environment.listPackages()).map((pkg) => {
+                     const stale = pkg.name
+                        ? staleErrors.get(pkg.name)
+                        : undefined;
+                     return {
+                        name: pkg.name,
+                        ...(pkg.description
+                           ? { description: pkg.description }
+                           : {}),
+                        ...(stale && { error: stale.message, stale: true }),
+                     };
+                  });
+                  for (const [
+                     failed,
+                     message,
+                  ] of environment.getFailedPackages()) {
+                     packages.push({ name: failed, error: message });
+                  }
+               } catch (error) {
+                  // One unreachable environment must not hide the others: the
+                  // point of this tool is to say what IS there.
+                  logger.warn(
+                     "[MCP Tool listEnvironments] listing packages failed",
+                     {
+                        environmentName: name,
+                        error:
+                           error instanceof Error
+                              ? error.message
+                              : String(error),
+                     },
+                  );
+                  packages = [];
+               }
+               results.push({ name, packages });
+            }
+            return jsonResource(uri, { environments: results });
+         } catch (error) {
+            logger.warn("[MCP Tool listEnvironments] listing failed", {
+               error: error instanceof Error ? error.message : String(error),
+            });
+            return contextError(uri, "environments", error);
+         }
+      },
+   );
+}
+
 export function registerGetContextTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
    mcpServer.tool(
-      "malloy_getContext",
+      "get_context",
       GET_CONTEXT_DESCRIPTION,
-      getContextShape,
+      convergedContextShape,
       async (params: GetContextParams) => {
+         const request = resolveRequest(params);
+         return runContextQuery(
+            request,
+            environmentStore,
+            unsupportedTargetWarnings(request),
+         );
+      },
+   );
+
+   // The flat request this replaces, still registered and still behaving
+   // exactly as it shipped. It is a released public contract, so it gets a
+   // deprecation window rather than being changed underneath its callers;
+   // both tools run the same core, so they cannot drift while it lasts.
+   mcpServer.tool(
+      "malloy_getContext",
+      LEGACY_GET_CONTEXT_DESCRIPTION,
+      getContextShape,
+      async (params: LegacyContextParams) => {
          const { environmentName, packageName, query, sourceName, limit } =
             params;
-         const max = limit ?? 10;
          logger.info("[MCP Tool getContext] Retrieving context", {
             environmentName,
             packageName,
@@ -1256,455 +2277,7 @@ export function registerGetContextTool(
             }
          }
 
-         // Tiers 3 and 4 need the package's entity index.
-         let pkgIndex: PackageIndex;
-         try {
-            pkgIndex = await getPackageIndex(
-               environmentStore,
-               environmentName,
-               packageName,
-            );
-         } catch (error) {
-            logger.warn("[MCP Tool getContext] index build failed", {
-               environmentName,
-               packageName,
-               sourceName,
-               error: error instanceof Error ? error.message : String(error),
-            });
-            return contextError(
-               buildMalloyUri(
-                  { environment: environmentName, package: packageName },
-                  "get-context",
-               ),
-               `${environmentName}/${packageName}`,
-               error,
-            );
-         }
-
-         const { byId, index, sourceContext } = pkgIndex;
-         const uri = buildMalloyUri(
-            { environment: environmentName, package: packageName },
-            "get-context",
-         );
-
-         // A stale package answers every tier below exactly like a current one:
-         // the index is the last model that compiled, so the names are real and
-         // the queries succeed, and the numbers are from before the last save.
-         // Nothing else in this payload can say so, and telling the agent to go
-         // call malloy_getStatus is weaker than saying it here, where it is
-         // already looking. Attached to tiers 3 and 4 alike, because tier 4 is
-         // the path that goes straight from a question to field names to a
-         // query.
-         //
-         // Best effort: this is a health annotation, so a lookup that fails
-         // must not take discovery down with it. Logged, never thrown.
-         let staleNote: string | undefined;
-         try {
-            const environment = await environmentStore.getEnvironment(
-               environmentName,
-               false,
-            );
-            const stale = environment.getStaleCompileErrors().get(packageName);
-            if (stale) {
-               staleNote = `This package is STALE: its most recent reload failed to compile at ${stale.failedAt}, so these names, and any query you run against them, come from the model compiled BEFORE that save, not from the files on disk. Fix the model and call malloy_reloadPackage; malloy_getStatus has the compile error.`;
-            }
-         } catch (error) {
-            logger.debug("[MCP Tool getContext] staleness lookup failed", {
-               environmentName,
-               packageName,
-               error: error instanceof Error ? error.message : String(error),
-            });
-         }
-         /**
-          * Spread into a payload to attach `warnings`. Returns {} when there is
-          * nothing to say, so a healthy package's payload carries no key at all
-          * rather than an empty array a caller has to test.
-          *
-          * A list rather than one joined string: staleness and truncation are
-          * separate facts with separate remedies, and joining them made the
-          * second read as a continuation of the first.
-          */
-         const warningsFor = (...extra: (string | undefined)[]) => {
-            const warnings = [staleNote, ...extra].filter(
-               (warning): warning is string => Boolean(warning),
-            );
-            return warnings.length > 0 ? { warnings } : {};
-         };
-
-         /**
-          * The warning for a capped result set, or undefined when nothing was
-          * cut. It names the remedy that works here: raising the limit, or
-          * narrowing the question. Telling an agent to "search more
-          * specifically" when the cut was a flat cap sends it to re-query at
-          * the one stage that cannot change the outcome.
-          */
-         const truncationWarning = (returned: number, matched: number) =>
-            matched > returned
-               ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
-               : undefined;
-
-         // Tier 3: package but no query -> list the package's sources as an
-         // overview the agent can then query or drill into.
-         const sanitized = query ? sanitize(query) : "";
-         if (!sanitized) {
-            // With sourceName set this is the drill-down, so it lists every
-            // entity the named source offers: the source row itself, then its
-            // views, dimensions, measures, and any named query built on it.
-            // Filtering to kind === "source" here as well returned exactly one
-            // row — the source — which the caller already had from the tier-3
-            // listing, and never the fields the tool description promises.
-            // collectEntities pushes a source ahead of its own fields, and
-            // Array.from preserves that insertion order, so the source's doc
-            // still leads the drill-down.
-            //
-            // Enumeration: return everything unless the caller sets an explicit
-            // limit. slice(0, undefined) keeps the whole list, so discovery is
-            // not silently capped the way ranked retrieval (tier 4) is.
-            // A drill-down (sourceName, no query) lists every entity the
-            // named source offers, so the card carries its views, dimensions,
-            // measures, joins and named queries. Listing only the source row
-            // there returned what the caller already had from the package
-            // listing and never the fields the tool description promises.
-            // collectEntities pushes a source ahead of its own fields, and
-            // Array.from preserves that insertion order, so toSourceResults
-            // sees the source before the entities that nest under it.
-            //
-            // Enumeration: return everything unless the caller sets an explicit
-            // limit. slice(0, undefined) keeps the whole list, so discovery is
-            // not silently capped the way ranked retrieval (tier 4) is.
-            const inScope = Array.from(byId.values()).filter((e) =>
-               sourceName ? e.source === sourceName : e.kind === "source",
-            );
-            // The limit caps entities. A drill-down's source row becomes the
-            // card rather than an entity, so it does not spend a slot; a
-            // package listing has only source rows, so there the cap is on
-            // cards, which is what the listing is made of.
-            let entityBudget = limit ?? Number.POSITIVE_INFINITY;
-            const capped = inScope.filter((e) => {
-               if (sourceName && e.kind === "source") return true;
-               if (entityBudget <= 0) return false;
-               entityBudget -= 1;
-               return true;
-            });
-            // Counted in the same unit the cap spends, so the warning below is
-            // about the rows a caller actually lost.
-            const cappable = sourceName
-               ? inScope.filter((e) => e.kind !== "source").length
-               : inScope.length;
-            // The overview is where an agent decides how to combine sources,
-            // so each one states its relationships here rather than making
-            // that a second call. toSourceResults carries the complete joins
-            // list onto every entry, so empty means none declared.
-            const sources = toSourceResults(
-               capped.map((e) => ({
-                  kind: e.kind,
-                  name: e.name,
-                  source: e.source,
-                  environmentName,
-                  packageName,
-                  modelPath: e.modelPath,
-                  doc: e.doc,
-                  ...(e.relationship ? { relationship: e.relationship } : {}),
-                  ...(e.aliases ? { aliases: e.aliases } : {}),
-                  ...(e.joinPath ? { joinPath: e.joinPath } : {}),
-                  ...(e.dataType ? { dataType: e.dataType } : {}),
-               })),
-               sourceContext,
-               environmentName,
-               packageName,
-            );
-            // A listing is deterministic catalog order, not a ranking, and
-            // Publisher has no query-usage signal to fill the hosted API's
-            // `prominence` with, so it names the ordering and omits the
-            // score rather than inventing a number nobody should rank on.
-            // Both counts are in SOURCES, the unit the payload is made of. A
-            // drill-down is one source's card, so it is 1-of-1 however many
-            // entities nest inside it; the entity cap is reported separately.
-            const listingEnvelope = {
-               ranking: "prominence" as const,
-               total_available: sourceName
-                  ? Math.min(inScope.length, 1)
-                  : inScope.length,
-               returned: sources.length,
-            };
-            // An empty enumeration is ambiguous to an agent: "no data here" and
-            // "the package exposes nothing" look identical. The package DID
-            // load (a failed load throws out of getPackageIndex above), so an
-            // empty result means its models expose no sources: a curation gap
-            // (explores/export {}), not an empty database. Say so, only in the
-            // empty case, so the populated payload stays byte-identical.
-            if (sources.length === 0 && !sourceName) {
-               return jsonResource(uri, {
-                  sources,
-                  ...listingEnvelope,
-                  ...warningsFor(
-                     "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call malloy_getStatus for load errors and stale packages.",
-                  ),
-               });
-            }
-            return jsonResource(uri, {
-               sources,
-               ...listingEnvelope,
-               ...warningsFor(
-                  truncationWarning(
-                     capped.length - (sourceName ? 1 : 0),
-                     cappable,
-                  ),
-               ),
-            });
-         }
-
-         // Tier 4: retrieval over the package's entities. With an
-         // embedding provider configured, ranking is semantic (DuckDB
-         // cosine over cached entity embeddings); otherwise, or whenever
-         // the semantic path is unavailable (index still building,
-         // provider down, oversized package), it is lexical lunr. The
-         // `retrieval` marker and per-entity `score` appear ONLY when a
-         // provider is configured, so the unconfigured payload stays
-         // byte-identical to the lexical-only releases.
-         const configured = embeddingConfigured();
-         // A drill-down is confined to one source, so no two hits can be the
-         // same concept in parallel sources and there is nothing to collapse.
-         const scoped = Boolean(sourceName);
-         let semanticResults: ResultEntity[] | undefined;
-         let belowCutoffCount = 0;
-         // The denominator belowCutoffCount is read against; see
-         // SemanticSearchResult. Undefined on the lexical path, where there
-         // is no floor and so no count to anchor.
-         let totalEntities: number | undefined;
-         // Why a configured server answered lexically. Without it "lexical"
-         // is a dead end: an agent cannot tell a cold index, which clears in
-         // seconds and is worth retrying, from a down provider, which is not.
-         let retrievalReason: RetrievalReason | undefined;
-         // How many entities matched before the limit cut the list, so a
-         // capped response can say what it left behind.
-         let semanticMatchCount: number | undefined;
-         // Distinct sources across everything that matched, so total_available
-         // can exceed the returned card count when the entity cap cut rows.
-         let semanticTotalSources: number | undefined;
-         if (configured) {
-            let provider: EmbeddingProvider | null = null;
-            try {
-               provider = getEmbeddingProvider();
-            } catch (error) {
-               retrievalReason = "unavailable";
-               logger.warn(
-                  "[MCP Tool getContext] Embedding configuration invalid; using lexical ranking",
-                  {
-                     error:
-                        error instanceof Error ? error.message : String(error),
-                  },
-               );
-            }
-            if (provider) {
-               try {
-                  // The raw query embeds better than the lunr-sanitized
-                  // one; sanitize() only exists to strip lunr operators.
-                  const semantic = await trySemanticSearch({
-                     db: environmentStore.storageManager.getDuckDbConnection(),
-                     provider,
-                     pkg: pkgIndex.pkg,
-                     environmentName,
-                     packageName,
-                     entities: Array.from(byId.values()),
-                     query: query ?? sanitized,
-                     // Over-fetch so sibling collapsing can refill the
-                     // window with genuinely different concepts instead of
-                     // returning fewer results than asked for. A drill-down
-                     // is already confined to one source, so nothing there
-                     // can collapse and the extra rows would be waste.
-                     limit: scoped ? max : Math.min(MAX_LIMIT, max * 3),
-                     // "" means no drill-down, matching the lexical
-                     // path's truthiness filter.
-                     sourceName: sourceName || undefined,
-                  });
-                  if ("hits" in semantic) {
-                     const byKey = new Map(
-                        Array.from(byId.values()).map((e) => [
-                           entityRowKey(e.kind, e.source ?? "", e.name),
-                           e,
-                        ]),
-                     );
-                     // Rows are only a vector cache: modelPath and doc
-                     // come from the live entity, and a hit with no live
-                     // entity (deleted since the last sync) is dropped.
-                     const ranked = semantic.hits.flatMap((hit) => {
-                        const e = byKey.get(
-                           entityRowKey(hit.kind, hit.source ?? "", hit.name),
-                        );
-                        if (!e) return [];
-                        return [
-                           {
-                              kind: e.kind,
-                              name: e.name,
-                              source: e.source,
-                              environmentName,
-                              packageName,
-                              modelPath: e.modelPath,
-                              doc: e.doc,
-                              ...(e.relationship
-                                 ? { relationship: e.relationship }
-                                 : {}),
-                              ...(e.aliases ? { aliases: e.aliases } : {}),
-                              ...(e.joinPath ? { joinPath: e.joinPath } : {}),
-                              ...(e.dataType ? { dataType: e.dataType } : {}),
-                              score: Math.round(hit.score * 10_000) / 10_000,
-                           },
-                        ];
-                     });
-                     // Grouped ONCE, with no window, then windowed. Sibling
-                     // collapse records the duplicates it merges ON the row it
-                     // keeps, so calling it twice appends every also_in twice;
-                     // and because it only ever drops rows past the limit, the
-                     // full run's first `max` rows are what a limited run
-                     // returns. That makes the ungrouped length the honest
-                     // denominator for the truncation warning: concepts
-                     // available, not rows before merging.
-                     const grouped = scoped
-                        ? ranked
-                        : groupSiblings(ranked, ranked.length);
-                     semanticMatchCount = grouped.length;
-                     semanticTotalSources = distinctSourceCount(grouped);
-                     semanticResults = grouped.slice(0, max);
-                     belowCutoffCount = semantic.belowCutoffCount;
-                     totalEntities = semantic.totalEntities;
-                  } else {
-                     retrievalReason =
-                        REASON_BY_UNAVAILABLE[semantic.unavailable];
-                  }
-               } catch (error) {
-                  // Defensive: trySemanticSearch does not throw, but the
-                  // storage handle lookup can (e.g. before initialization
-                  // or under a partial test double). Semantic retrieval
-                  // must never take tier 4 down with it.
-                  retrievalReason = "unavailable";
-                  logger.warn(
-                     "[MCP Tool getContext] Semantic retrieval unavailable; using lexical ranking",
-                     {
-                        error:
-                           error instanceof Error
-                              ? error.message
-                              : String(error),
-                     },
-                  );
-               }
-            }
-         }
-
-         if (semanticResults !== undefined) {
-            const sources = toSourceResults(
-               semanticResults,
-               sourceContext,
-               environmentName,
-               packageName,
-            );
-            return jsonResource(uri, {
-               sources,
-               ranking: "relevance" as const,
-               total_available: semanticTotalSources ?? sources.length,
-               returned: sources.length,
-               retrieval: "semantic",
-               // Always present on a semantic response, including 0: the
-               // reading depends on being able to tell 0 from absent. Paired
-               // with total_entities, without which the count is a bare number
-               // an agent cannot scale -- see SemanticSearchResult for why
-               // the ratio, not the count, carries the signal.
-               below_cutoff_count: belowCutoffCount,
-               ...(totalEntities !== undefined
-                  ? { total_entities: totalEntities }
-                  : {}),
-               // Both counts in ranked ROWS, the unit the cap spends and the
-               // unit the lexical path below already uses. entityCountIn
-               // counts nested entities, which excludes a source that matched
-               // on its own terms -- toSourceResults turns that into the card
-               // rather than a row under it -- so pairing it with a row count
-               // reported a cut that never happened whenever a source ranked.
-               ...warningsFor(
-                  truncationWarning(
-                     semanticResults.length,
-                     semanticMatchCount ?? semanticResults.length,
-                  ),
-               ),
-            });
-         }
-
-         let hits: lunr.Index.Result[] = [];
-         try {
-            hits = index.search(sanitized);
-         } catch (error) {
-            logger.warn("[MCP Tool getContext] lunr search failed", {
-               query,
-               error: error instanceof Error ? error.message : String(error),
-            });
-            hits = [];
-         }
-
-         // Defensive: skip any hit whose ref is missing from the entity map.
-         const matched = hits
-            .map((hit) => byId.get(hit.ref))
-            .filter((e): e is Entity => e !== undefined)
-            // Drill-down: narrow to one source when sourceName is set.
-            .filter((e) => !sourceName || e.source === sourceName);
-         // Normalized against the top hit, so the sibling epsilon means the
-         // same thing here as it does on the semantic path: lunr's raw scores
-         // are relative to the query, not on a fixed scale.
-         const topScore = hits[0]?.score ?? 0;
-         const scoreByRef = new Map(
-            hits.map((hit) => [
-               hit.ref,
-               topScore > 0 ? hit.score / topScore : undefined,
-            ]),
-         );
-         const scored: ResultEntity[] = matched.map((e) => ({
-            kind: e.kind,
-            name: e.name,
-            source: e.source,
-            environmentName,
-            packageName,
-            modelPath: e.modelPath,
-            doc: e.doc,
-            ...(e.relationship ? { relationship: e.relationship } : {}),
-            ...(e.aliases ? { aliases: e.aliases } : {}),
-            ...(e.joinPath ? { joinPath: e.joinPath } : {}),
-            ...(e.dataType ? { dataType: e.dataType } : {}),
-            ...(scoreByRef.get(e.id) !== undefined
-               ? { lexicalScore: scoreByRef.get(e.id) }
-               : {}),
-         }));
-         // Grouped once, unwindowed, then windowed: see the semantic path for
-         // why calling it twice doubles every alsoIn. A drill-down is confined
-         // to one source, so it has no siblings to collapse.
-         const grouped = scoped ? scored : groupSiblings(scored, scored.length);
-         const results = grouped.slice(0, max);
-
-         const sources = toSourceResults(
-            results,
-            sourceContext,
-            environmentName,
-            packageName,
-         );
-         const envelope = {
-            sources,
-            ranking: "relevance" as const,
-            total_available: distinctSourceCount(grouped),
-            returned: sources.length,
-         };
-         const lexicalWarnings = warningsFor(
-            truncationWarning(results.length, grouped.length),
-         );
-         return jsonResource(
-            uri,
-            configured
-               ? {
-                    ...envelope,
-                    retrieval: "lexical",
-                    ...(retrievalReason
-                       ? { retrieval_reason: retrievalReason }
-                       : {}),
-                    ...lexicalWarnings,
-                 }
-               : { ...envelope, ...lexicalWarnings },
-         );
+         return runContextQuery(resolveLegacyRequest(params), environmentStore);
       },
    );
 }
