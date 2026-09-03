@@ -478,6 +478,43 @@ def wait_alive(a: argparse.Namespace, tries: int = 3, pause: float = 10.0) -> bo
     return False
 
 
+def hosted_tools_reachable(a: argparse.Namespace) -> tuple[bool, str]:
+    """Spawn ONE cheap agent to prove the hosted tools are actually granted.
+
+    A headless answerer cannot complete an OAuth flow. Without a cached token
+    the hosted server contributes no tools, and the failure does not look like
+    a missing login: every answerer runs, finds nothing to call, and says the
+    model cannot answer. A whole arm comes back looking like a terrible model,
+    and the bill is the same as a real one.
+
+    So one probe before the arm, costing a single small call. Returns
+    (reachable, what it said).
+    """
+    work = tempfile.mkdtemp(prefix="hostedprobe-")
+    try:
+        mcp = os.path.join(work, "mcp.json")
+        with open(mcp, "w") as fh:
+            json.dump({"mcpServers": {a.hosted_mcp_server: {
+                "type": "http", "url": a.mcp_url}}}, fh)
+        events = claude(
+            "Call get_context once with no arguments, or the closest tool you "
+            "have. Reply with the single word REACHED if the call returned "
+            "anything at all, otherwise reply with the reason in one line.",
+            work, "sonnet", mcp=mcp, tools=a.hosted_tools, turns=4,
+            timeout=120, skills=False, retry=0)
+        said = ""
+        for e in events:
+            if e.get("type") == "assistant":
+                for c in e["message"].get("content") or []:
+                    if c.get("type") == "text":
+                        said += c["text"]
+                    if c.get("type") == "tool_use" and c["name"] in a.hosted_tools:
+                        return True, c["name"]
+        return "REACHED" in said.upper(), said.strip()[:200] or "no reply"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                  art: pathlib.Path) -> dict[str, Any]:
     qid = case["qid"]
@@ -1024,6 +1061,27 @@ def main(argv: list[str] | None = None) -> int:
                          else manifest_skills(a.answerer_manifest,
                                               ext_repo or REPO_ROOT))
     a.judge_skills = list(JUDGE_SKILLS)
+    if a.target == "platform" and not a.rebuild:
+        ok, said = hosted_tools_reachable(a)
+        if not ok:
+            raise SystemExit(
+                f"the hosted tools are not reachable, so every answerer in this "
+                f"run would find nothing to call and the arm would read as a "
+                f"terrible model.\n"
+                f"  the probe said: {said}\n"
+                f"  looked for: {', '.join(a.hosted_tools)}\n"
+                f"  Two causes, and the probe cannot tell them apart:\n"
+                f"  (a) NOT AUTHENTICATED. A headless answerer cannot complete "
+                f"an OAuth flow, so authenticate once interactively under the "
+                f"SAME server name this run uses -- the token is cached per "
+                f"name:\n"
+                f"      claude mcp add --transport http {a.hosted_mcp_server} {a.mcp_url}\n"
+                f"      claude        # then /mcp -> {a.hosted_mcp_server} -> Authenticate\n"
+                f"  (b) WRONG TOOL NAMES. The server answered but exposes other "
+                f"tools; --hosted-tools takes the BARE names it actually has "
+                f"(the prefix is added). A local proxy fronting a hosted engine "
+                f"may expose either surface depending on how it is configured.")
+        print(f"  hosted tools reachable via {a.hosted_mcp_server}")
     if a.target == "platform" and not a.scope and "/workspace/" not in a.mcp_url:
         # A hosted MCP is reachable as a global endpoint (scope passed per call)
         # or as a scoped one (the URL is the scope). For an answerer being

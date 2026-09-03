@@ -176,6 +176,35 @@ the run measure something other than what it names:
   `mcp__<server>__<tool>` prefix and the OAuth cache key, so it has to match the
   name the answerer authenticated under, and `--hosted-tools` lists the bare
   tools that host exposes.
+- **Get the hosted tools in front of a headless answerer, one of two ways.**
+  A spawned answerer cannot complete an OAuth flow, so the tools have to be
+  reachable before the run starts. `run_baseline.py` proves it with one cheap
+  probe and refuses to spend an arm otherwise -- a run whose answerers have no
+  tools does not error, it reads as a terrible model.
+
+  1. **Authenticate once, interactively.** Works anywhere, including a plain
+     CLI install, and is the route to assume unless you know otherwise. The
+     token is cached per server NAME, so authenticate under the same name the
+     run passes to `--hosted-mcp-server`:
+
+     ```bash
+     claude mcp add --transport http <name> <scoped-url>
+     claude          # then /mcp -> <name> -> Authenticate
+     ```
+
+     Then come back and run. This is a hand-off to a person; there is no
+     headless equivalent, so plan for it rather than discovering it mid-run.
+
+  2. **A local proxy that already holds the credential.** Some hosts ship an
+     editor extension whose local MCP proxy can expose the hosted
+     `get_context` / `execute_query` -- often behind a setting that is off by
+     default. Where that exists, point `--mcp-url` at the proxy on localhost
+     and no OAuth step is needed, because the extension holds it. Check what
+     the proxy actually exposes before relying on it: the same proxy may serve
+     a local Publisher's `malloy_*` tools instead, and then `--hosted-tools` is
+     naming tools that are not there. This route is not available to someone
+     running the CLI alone.
+
 - **Prefer a SCOPED endpoint URL over asking for scope.** A hosted MCP is
   usually reachable two ways: a global endpoint where every call carries an
   organization and workspace, and a scoped one where the URL itself is the
