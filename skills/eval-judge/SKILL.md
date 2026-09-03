@@ -40,15 +40,15 @@ wrong, which is why they are called out rather than summarised.
 
 | If | Read |
 |---|---|
-| the answer declines, or gives no value at all | `references/refusal.md` |
-| the golden itself looks wrong to you | `references/suspect-goldens.md` |
-| you are judging retrieval, not an answer | `references/retrieval-judge.md` |
-| you are AUTHORING a case rather than judging one | `references/writing-rubrics.md` |
+| the answer declines, or gives no value at all | `reference/refusal.md` |
+| the golden itself looks wrong to you | `reference/suspect-goldens.md` |
+| you are judging retrieval, not an answer | `reference/retrieval-judge.md` |
+| you are AUTHORING a case rather than judging one | `reference/writing-rubrics.md` |
 
 The first row is the one that catches people. A refusal is only exempt from
 containment when `golden.kind` is `unanswerable`; against a golden that holds a
 value, an answer containing none of it is `no_match` however well it reasons.
-`references/refusal.md` is the whole rule.
+`reference/refusal.md` is the whole rule.
 
 ## Answer judge
 

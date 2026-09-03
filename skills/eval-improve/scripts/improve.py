@@ -115,7 +115,7 @@ One edit for the cluster's shared root cause, not one per case.
 
 WHEN YOU ARE DONE
 
-Read `references/output-contract.md` in the eval-improve skill. It defines the
+Read `reference/output-contract.md` in the eval-improve skill. It defines the
 report block and the JSON object a script parses out of your reply, and the
 golden re-derivation you must run BEFORE either -- Step 4 of the skill, which
 this file does not restate.

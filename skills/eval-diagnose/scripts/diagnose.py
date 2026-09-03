@@ -168,7 +168,7 @@ EVIDENCE FROM THE RUN
 In `getContextCalls`, `targets` is what the agent searched for and
 `returnedInRankOrder` is what came back, in rank order.
 
-Emit the object defined in `references/output-contract.md` of the
+Emit the object defined in `reference/output-contract.md` of the
 eval-diagnose skill as the LAST thing in your reply. Read that file; it
 is the contract a script parses, and a shape invented here is dropped.
 """
@@ -241,7 +241,7 @@ These are the per-case diagnoses from one run. Cluster them.
 DIAGNOSED ISSUES
 {issues}
 
-Emit the object defined in `references/output-contract.md` of the
+Emit the object defined in `reference/output-contract.md` of the
 eval-diagnose skill as the LAST thing in your reply. Read that file; it
 is the contract a script parses, and a shape invented here is dropped.
 """
@@ -257,7 +257,7 @@ def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
         model=a.cluster_model,
         # 14, not 8. The output contract moved into
-        # references/output-contract.md, and FETCHING it costs turns before the
+        # reference/output-contract.md, and FETCHING it costs turns before the
         # agent has written a word. At 8 the whole reply was "I'll read the
         # output contract now." -- text, so no retry fired, and the run
         # recorded zero clusters. A turn budget tuned for a pasted prompt is

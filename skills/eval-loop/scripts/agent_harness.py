@@ -307,7 +307,7 @@ def build_workspace(skills: Iterable[str],
     COPIED, not symlinked. A symlink loads SKILL.md fine -- the skills mechanism
     follows it -- but the agent cannot Read anything BESIDE it: the link
     resolves outside the session's allowed directory and every read of
-    `references/*.md` comes back "permission not granted". A clustering agent
+    `reference/*.md` comes back "permission not granted". A clustering agent
     said so itself and refused to guess a shape it could not see, and the run
     recorded zero clusters.
 
