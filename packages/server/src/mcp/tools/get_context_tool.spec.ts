@@ -247,7 +247,7 @@ interface RankedEntity {
    join_path?: string;
    matched_targets?: Array<{ search_text: string; relevance: number }>;
    aliases?: string[];
-   also_in?: string[];
+   code?: string;
 }
 
 /** The sources a response returned, by name, in response order. */
@@ -355,15 +355,68 @@ const mockAliasModel = {
       },
    ],
    getQueries: () => [],
+   // The compiled IR behind that schema. `site` is declared as `SITE`, which
+   // is what a real `dimension: site is SITE` compiles to and the only thing
+   // that proves the two are one column; `height` is an ordinary raw column
+   // and references nothing.
+   getModelDef: () => ({
+      contents: {
+         fclt_building: {
+            name: "fclt_building",
+            fields: [
+               { name: "SITE" },
+               {
+                  name: "site",
+                  code: "SITE",
+                  e: { node: "field", path: ["SITE"] },
+               },
+               { name: "height" },
+            ],
+         },
+      },
+   }),
 };
 const mockAliasPackage = {
    listModels: async () => [{ path: "b.malloy" }],
    getModel: () => mockAliasModel,
 };
 
-// Two spellings that humanize identically but are NOT one column: a raw
-// amount and a filtered measure, each documented, and the docs are the only
-// thing that tells them apart.
+// Both carry an expression, and NEITHER is a bare reference to the other:
+// `netSales` is computed with a filter. Under the old name-humanizing rule
+// these folded unless their docs differed; under the reference rule they are
+// simply two fields.
+const mockDistinctSpellingDefs = {
+   contents: {
+      orders: {
+         name: "orders",
+         fields: [
+            { name: "net_sales", code: "gross - returns" },
+            {
+               name: "netSales",
+               code: "gross { where: status = 'complete' } - returns",
+            },
+         ],
+      },
+   },
+};
+
+// Three parallel sources carrying the same concept, the shape that produced
+// the largest measured failure class.
+const SIBLING_SOURCES = ["fac_building", "fclt_building", "fclt_building_hist"];
+const mockSiblingModel = {
+   getSourceInfos: () =>
+      SIBLING_SOURCES.map((name) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [{ kind: "dimension", name: "site", annotations: [] }],
+         },
+      })),
+   getQueries: () => [],
+};
+// Two names that humanize identically but are NOT one column: a raw amount
+// and a filtered measure. Neither is declared as the other, and that -- not
+// their docs -- is what keeps them apart now.
 const mockDistinctSpellingModel = {
    getSourceInfos: () => [
       {
@@ -388,25 +441,11 @@ const mockDistinctSpellingModel = {
       },
    ],
    getQueries: () => [],
+   getModelDef: () => mockDistinctSpellingDefs,
 };
 const mockDistinctSpellingPackage = {
    listModels: async () => [{ path: "d.malloy" }],
    getModel: () => mockDistinctSpellingModel,
-};
-
-// Three parallel sources carrying the same concept, the shape that produced
-// the largest measured failure class.
-const SIBLING_SOURCES = ["fac_building", "fclt_building", "fclt_building_hist"];
-const mockSiblingModel = {
-   getSourceInfos: () =>
-      SIBLING_SOURCES.map((name) => ({
-         name,
-         annotations: [],
-         schema: {
-            fields: [{ kind: "dimension", name: "site", annotations: [] }],
-         },
-      })),
-   getQueries: () => [],
 };
 const mockSiblingPackage = {
    listModels: async () => [{ path: "sib.malloy" }],
@@ -1015,11 +1054,12 @@ describe("get_context discovery tiers", () => {
       expect(payload.total_available).toBe(0);
    });
 
-   it("collapses a raw column into its documented alias, naming the raw one", async () => {
-      // `SITE` and `site` are one physical column indexed twice, and both
-      // competed for the same scarce slots: 34% of returned slots were a
-      // concept the result set already held. The documented spelling wins,
-      // because a modeller who wrote the #(doc) said which name they meant.
+   it("collapses a raw column into the alias declared as it", async () => {
+      // `dimension: site is SITE` puts one physical column in the schema
+      // twice, and both competed for the same scarce slots. The fold is
+      // decided by the compiled expression -- `site` IS `SITE` -- not by the
+      // two names looking alike, and the authored name is the survivor
+      // because it is the one the modeller meant an agent to use.
       const handler = captureHandler({
          getEnvironment: async () =>
             ({ getPackage: async () => mockAliasPackage }) as never,
@@ -1039,14 +1079,134 @@ describe("get_context discovery tiers", () => {
       expect(sites[0].aliases).toEqual(["SITE"]);
    });
 
-   it("keeps two spellings apart when each carries its own doc", async () => {
-      // The judgment call this heuristic turns on. `net_sales` and `netSales`
-      // humanize the same, so a name-only rule folds them - but they are a
-      // raw amount and a filtered measure, and the doc is exactly what a
-      // caller would read to choose. A dropped entity leaves the index
-      // entirely, so folding here would destroy that doc, and `aliases`
-      // carries only a name. Differing docs are the one signal available
-      // that these are two concepts.
+   it("does not fold a derivation that merely humanizes the same", async () => {
+      // The false positive the old rule could produce and could not detect.
+      // `site_code` humanizes to "site code" and `SITE_CODE` to the same, but
+      // here the second is computed rather than declared as the first, so
+      // there is no reference and nothing folds. Under name matching these
+      // collapsed unless their docs happened to differ.
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "bldg",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "dimension", name: "site_code", annotations: [] },
+                     { kind: "dimension", name: "siteCode", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+         getModelDef: () => ({
+            contents: {
+               bldg: {
+                  name: "bldg",
+                  fields: [
+                     { name: "site_code" },
+                     { name: "siteCode", code: "upper(site_code)" },
+                  ],
+               },
+            },
+         }),
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "b.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const names = rankedEntities(
+         parse(
+            await handler({
+               search_targets: [{ target_type: "dimension" }],
+               scopes: [{ environment: "e", package: "p", source: "bldg" }],
+            }),
+         ),
+      ).map((r) => r.name);
+      expect(names.sort()).toEqual(["siteCode", "site_code"]);
+   });
+
+   it("does not fold a reference that traverses a join", async () => {
+      // `dimension: category is products.category` is a bare field reference
+      // too, but it reaches a DIFFERENT column through a relationship that
+      // may filter or fan out. Only a single-segment path names a sibling of
+      // the same source. This is not hypothetical: order_items.category,
+      // .brand and .region in the bundled storefront model are all exactly
+      // this shape.
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "order_items",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "dimension", name: "category", annotations: [] },
+                  ],
+               },
+            },
+            {
+               name: "products",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "dimension", name: "category", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+         getModelDef: () => ({
+            contents: {
+               order_items: {
+                  name: "order_items",
+                  fields: [
+                     {
+                        name: "category",
+                        code: "products.category",
+                        e: { node: "field", path: ["products", "category"] },
+                     },
+                  ],
+               },
+               products: {
+                  name: "products",
+                  fields: [{ name: "category" }],
+               },
+            },
+         }),
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const rows = rankedEntities(
+         parse(
+            await handler({
+               search_targets: [{ target_type: "dimension" }],
+               scopes: [{ environment: "e", package: "p" }],
+            }),
+         ),
+      ).filter((r) => r.name === "category");
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.source).sort()).toEqual([
+         "order_items",
+         "products",
+      ]);
+      expect(rows.every((r) => r.aliases === undefined)).toBe(true);
+   });
+
+   it("keeps two same-humanizing fields apart when neither declares the other", async () => {
+      // `net_sales` and `netSales` humanize identically, so the old name-only
+      // rule folded them unless their docs happened to differ -- it had no
+      // way to see that one is a raw amount and the other a filtered measure.
+      // Now the docs are beside the point: neither field's expression is a
+      // reference to the other, so there is nothing to fold and the doc is
+      // free to be whatever the modeller wrote.
       const handler = captureHandler({
          getEnvironment: async () =>
             ({ getPackage: async () => mockDistinctSpellingPackage }) as never,
@@ -1741,11 +1901,12 @@ describe("get_context semantic retrieval", () => {
       expect([...kinds].sort()).toEqual(["dimension", "measure", "view"]);
    });
 
-   it("keeps siblings apart on differing docs even at IDENTICAL scores", async () => {
-      // The epsilon gate cannot catch this and never could. Both rows score
-      // 1.0 on a name facet embedded from the same text, so their difference
-      // is 0 -- inside any epsilon. Only the docs separate them, and one of
-      // them is the doc that says the numbers are gated.
+   it("returns a same-named measure from every source that declares it", async () => {
+      // Two sources, one measure name, identical scores -- both rows come
+      // back, each under its own card. Nothing folds across sources, because
+      // a shared name is not a shared number: `sales_secured` is `sales`
+      // narrowed by an access gate, and the caller picks between them by
+      // reading each source's doc.
       _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
       const payload = await callUntilSemantic(siblingHandler(GATED_DOC), {
          search_targets: anyKind("total order amount"),
@@ -1756,17 +1917,21 @@ describe("get_context semantic retrieval", () => {
       );
       expect(rows).toHaveLength(2);
       expect(rows[0].relevance).toBe(rows[1].relevance);
+      expect(rows.map((r) => r.source).sort()).toEqual([
+         "sales",
+         "sales_secured",
+      ]);
       expect(rows.map((r) => r.description).sort()).toEqual(
          [OPEN_DOC, GATED_DOC].sort(),
       );
-      expect(rows.every((r) => r.also_in === undefined)).toBe(true);
    });
 
-   it("gives a folded sibling's source a card, so its own doc still arrives", async () => {
-      // Identical docs DO fold: nothing is lost but a name, and alsoIn keeps
-      // that. What must not be lost is the sibling SOURCE -- its card is
-      // where "only orders this caller may see" is written, and before this
-      // the folded row was the only thing that would have emitted it.
+   it("returns both sources even when the measure docs are IDENTICAL", async () => {
+      // The case the old collapse got most wrong. An inherited measure
+      // carries its parent's doc verbatim, so a doc comparison sees no
+      // difference and folded one row away -- while the SOURCE doc, the only
+      // place "only orders this caller may see" is written, said the numbers
+      // differ. Identical field docs are not evidence of identical numbers.
       _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
       const payload = await callUntilSemantic(siblingHandler(OPEN_DOC), {
          search_targets: anyKind("total order amount"),
@@ -1775,10 +1940,8 @@ describe("get_context semantic retrieval", () => {
       const rows = rankedEntities(payload).filter(
          (e) => e.name === "total_amount",
       );
-      expect(rows).toHaveLength(1);
-      // Which of the two is kept is a tie-break, so assert the pair, not the
-      // winner.
-      expect([rows[0].source, ...(rows[0].also_in ?? [])].sort()).toEqual([
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.source).sort()).toEqual([
          "sales",
          "sales_secured",
       ]);
@@ -1790,15 +1953,20 @@ describe("get_context semantic retrieval", () => {
       expect(cards.map((c) => c.source_info.resource_id.source).sort()).toEqual(
          ["sales", "sales_secured"],
       );
-      // Whichever was folded, BOTH sources arrive carrying their own doc --
-      // that is the whole contract, and it does not depend on the tie-break.
-      const docFor = (name: string) =>
-         cards.find((c) => c.source_info.resource_id.source === name)
-            ?.source_info.docs;
-      expect(docFor("sales")).toContain("Every order");
-      expect(docFor("sales_secured")).toContain("this caller may see");
-      // total_available counts sources, and the folded one is a source.
+      // Each card carries its OWN doc, which is what the caller reads to
+      // choose -- and every card carries entities now, where a folded
+      // sibling used to arrive empty.
+      const cardFor = (name: string) =>
+         cards.find((c) => c.source_info.resource_id.source === name);
+      expect(cardFor("sales")?.source_info.docs).toContain("Every order");
+      expect(cardFor("sales_secured")?.source_info.docs).toContain(
+         "this caller may see",
+      );
+      expect(cards.every((c) => (c.entities ?? []).length > 0)).toBe(true);
       expect(payload.total_available).toBe(2);
+      // returned never exceeds the caller's window now: a folded sibling's
+      // card used to be materialised outside it.
+      expect(payload.returned).toBe(cards.length);
    });
 
    it("ranks semantically once the index syncs, with scores and a marker", async () => {
@@ -2159,14 +2327,14 @@ describe("get_context semantic retrieval", () => {
       expect(payload.below_cutoff_count).toBe(payload.total_entities);
    });
 
-   it("collapses the same concept across sibling sources into one marked row", async () => {
-      // The measured worst case: "site of the building" returned SITE at an
-      // identical 0.96 from fac_building, fclt_building and
-      // fclt_building_hist, presented as three peers with nothing to choose
-      // between them. Agents picked arbitrarily, and choosing wrong between
-      // sibling families was the largest single failure class. One row now,
-      // naming the alternatives, so the ambiguity is stated rather than
-      // inferred — and the freed slots go to different concepts.
+   it("returns a sibling family's shared field once per source", async () => {
+      // The case that motivated cross-source folding: "site of the building"
+      // returns `site` at an identical score from fac_building,
+      // fclt_building and fclt_building_hist. Folding them into one row
+      // named the alternatives but dropped two rows' docs, data_types and
+      // entity_ids, and the three are not one column -- a `_hist` table is
+      // not the live one. All three come back, each under its own card, and
+      // the caller chooses by reading those cards' docs.
       _setEmbeddingProviderForTests(
          stubProviderFor({
             site: [1, 0],
@@ -2182,14 +2350,23 @@ describe("get_context semantic retrieval", () => {
          scopes: [{ environment: "specs", package: "sibling-pkg" }],
       });
       const sites = rankedEntities(payload).filter((r) => r.name === "site");
-      expect(sites).toHaveLength(1);
-      expect(sites[0].also_in).toHaveLength(2);
-      expect([sites[0].source, ...(sites[0].also_in ?? [])].sort()).toEqual(
+      expect(sites).toHaveLength(3);
+      expect(sites.map((r) => r.source).sort()).toEqual(
          [...SIBLING_SOURCES].sort(),
       );
+      // One card per source, and each is a real card rather than the empty
+      // stand-in a folded sibling used to get.
+      const cards = payload.sources as Array<{
+         source_info: { resource_id: { source: string } };
+         entities?: unknown[];
+      }>;
+      expect(cards.map((c) => c.source_info.resource_id.source).sort()).toEqual(
+         [...SIBLING_SOURCES].sort(),
+      );
+      expect(cards.every((c) => (c.entities ?? []).length > 0)).toBe(true);
    });
 
-   it("keeps siblings separate under a drill-down, where they cannot be duplicates", async () => {
+   it("narrows to the scoped source, leaving its siblings out", async () => {
       _setEmbeddingProviderForTests(
          stubProviderFor({
             site: [1, 0],
@@ -2213,7 +2390,6 @@ describe("get_context semantic retrieval", () => {
       const drilled = rankedEntities(payload);
       expect(drilled).toHaveLength(1);
       expect(drilled[0].source).toBe("fclt_building");
-      expect(drilled[0].also_in).toBeUndefined();
    });
 
    it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
@@ -2769,16 +2945,17 @@ describe("get_context duplicate and visibility handling", () => {
 });
 
 /**
- * Duplicate collapsing on the LEXICAL path, which is what an unconfigured
- * server runs.
+ * Same-named fields in sibling sources, on the LEXICAL path, which is what an
+ * unconfigured server runs.
  *
  * A model whose sources extend a common base repeats every inherited field
- * verbatim, so the duplicates score identically and fill the window with one
- * concept. Measured on the bundled governed-analytics package, a search for
- * "total order amount" spent 2 of 6 slots that way. Collapsing is not a
- * property of the ranker that happens to be configured.
+ * verbatim -- same name, same inherited #(doc), same score. These used to
+ * fold into one row, and the identical doc was read as evidence they were one
+ * number. They are not: `sales_secured` is `sales` behind an access gate, and
+ * the difference is stated on the SOURCE, which a field-doc comparison never
+ * looks at. Both are returned, on either ranker.
  */
-describe("get_context lexical sibling collapse", () => {
+describe("get_context same-named fields in sibling sources", () => {
    const inheritedField = (doc: string) => ({
       kind: "measure",
       name: "total_amount",
@@ -2808,7 +2985,7 @@ describe("get_context lexical sibling collapse", () => {
             })),
       });
 
-   it("collapses a field two sibling sources inherited unchanged", async () => {
+   it("returns both when two sources inherited the field unchanged", async () => {
       const doc = "Total order amount.";
       const payload = parse(
          await handlerFor(siblingModel(doc, doc))({
@@ -2819,14 +2996,16 @@ describe("get_context lexical sibling collapse", () => {
       const rows = rankedEntities(payload).filter(
          (e) => e.name === "total_amount",
       );
-      expect(rows).toHaveLength(1);
-      expect(rows[0].also_in).toEqual(["sales_secured"]);
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.source).sort()).toEqual([
+         "sales",
+         "sales_secured",
+      ]);
    });
 
-   it("keeps them apart when their docs say different things", async () => {
+   it("returns both when their docs say different things", async () => {
       // Different docs are different guidance, and the agent chooses between
-      // them by reading both. Collapsing here would hide the one that says
-      // the numbers are filtered.
+      // them by reading both.
       const payload = parse(
          await handlerFor(
             siblingModel(
@@ -2842,10 +3021,13 @@ describe("get_context lexical sibling collapse", () => {
          (e) => e.name === "total_amount",
       );
       expect(rows).toHaveLength(2);
-      expect(rows.every((r) => r.also_in === undefined)).toBe(true);
+      expect(rows.map((r) => r.description).sort()).toEqual([
+         "Total order amount visible to this caller, after the access gate.",
+         "Total order amount.",
+      ]);
    });
 
-   it("never collapses within a drill-down, where there are no siblings", async () => {
+   it("narrows to the scoped source under a drill-down", async () => {
       const doc = "Total order amount.";
       const payload = parse(
          await handlerFor(siblingModel(doc, doc))({
@@ -2854,9 +3036,75 @@ describe("get_context lexical sibling collapse", () => {
          }),
       );
       expect(sourceNames(payload)).toEqual(["sales"]);
-      expect(
-         rankedEntities(payload).every((e) => e.also_in === undefined),
-      ).toBe(true);
+   });
+});
+
+describe("get_context include_code", () => {
+   // A measure with an expression and a raw column without one, so the flag's
+   // two outcomes are both observable: code present, and code meaningfully
+   // ABSENT because the field is physical rather than derived.
+   const model = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: [],
+            schema: {
+               fields: [
+                  { kind: "measure", name: "revenue", annotations: [] },
+                  { kind: "dimension", name: "order_id", annotations: [] },
+               ],
+            },
+         },
+      ],
+      getQueries: () => [],
+      getModelDef: () => ({
+         contents: {
+            orders: {
+               name: "orders",
+               fields: [
+                  { name: "revenue", code: "sale_price.sum()" },
+                  { name: "order_id" },
+               ],
+            },
+         },
+      }),
+   };
+   const handler = () =>
+      captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "o.malloy" }],
+               getModel: () => model,
+            })),
+      });
+   const request = (extra: Record<string, unknown>) => ({
+      search_targets: [
+         { target_type: "measure" },
+         { target_type: "dimension" },
+      ],
+      scopes: [{ environment: "e", package: "p", source: "orders" }],
+      ...extra,
+   });
+
+   it("omits code unless the caller asks", async () => {
+      // Off by default: an expression is long, and a source's #(doc) is meant
+      // to carry the meaning. A caller that wants the mechanics opts in.
+      const rows = rankedEntities(parse(await handler()(request({}))));
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((r) => r.code === undefined)).toBe(true);
+   });
+
+   it("returns each field's expression when include_code is set", async () => {
+      const rows = rankedEntities(
+         parse(await handler()(request({ include_code: true }))),
+      );
+      const revenue = rows.find((r) => r.name === "revenue");
+      expect(revenue?.code).toBe("sale_price.sum()");
+      // A physical column has no expression, so absence under the flag is the
+      // fact that the field is raw -- not a gap in the response.
+      const orderId = rows.find((r) => r.name === "order_id");
+      expect(orderId).toBeDefined();
+      expect(orderId?.code).toBeUndefined();
    });
 });
 

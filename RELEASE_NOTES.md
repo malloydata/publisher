@@ -58,10 +58,20 @@ this repo already use the new names.
 entities that matched inside it. A client that reads `results[0].name` finds nothing —
 `results` is gone from success payloads. Error payloads carry both `results: []` and
 `sources: []`, because an error is raised before the tier is known. Alongside the shape,
-the response gained `below_cutoff_count`, `retrieval_reason`, `aliases`, `also_in`,
+the response gained `below_cutoff_count`, `retrieval_reason`, `aliases`,
 `givens`, `authorize`, `data_type`, `one_line_summary`, and `warnings[]` (which replaces
 the single `note` string). The tool's own description is the contract and is pinned by a
 test; re-read it rather than working from a cached copy.
+
+**Duplicate rows are decided by the compiled model, not by names.** A field whose
+whole definition is a reference to a sibling of the same source (`dimension: site is
+SITE`) folds into it, reported in `aliases`. That used to be a guess from
+name-humanization, which could not tell a rename from a derivation that happened to
+look like one. And nothing folds ACROSS sources any more: two sources exposing a
+same-named field are two different numbers, so each is returned under its own card
+with its own `docs`, which is where the `where:` or grain rule that makes them differ
+is written. Pass `include_code` to see a field's Malloy expression as `code`; off by
+default.
 
 **Listing the catalog is now its own tool, `list_packages`.** `malloy_getContext` with
 no arguments used to list the environments; `get_context` requires its `search_targets`

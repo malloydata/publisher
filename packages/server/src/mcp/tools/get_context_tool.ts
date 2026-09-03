@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import lunr from "lunr";
 import type { Relationship } from "@malloydata/malloy-interfaces";
+import type { ModelDef } from "@malloydata/malloy";
 import { EnvironmentStore } from "../../service/environment_store";
 import { Package } from "../../service/package";
 import {
@@ -20,7 +21,6 @@ import { logger } from "../../logger";
 import {
    entityRowKey,
    getEmbeddingIndexStatus,
-   humanizeName,
    trySemanticSearch,
    type EmbeddingIndexStatus,
    type SemanticUnavailableReason,
@@ -49,6 +49,18 @@ interface Entity {
    // Other spellings of this same field in the same source that were
    // collapsed into it (see collapseAliases). Present only when non-empty.
    aliases?: string[];
+   // The authored expression text, from the compiled model. Absent on a
+   // physical column, which HAS no expression -- so absence is the fact that
+   // the field is raw, not a gap. Serialized only when the caller asks with
+   // `include_code`.
+   code?: string;
+   // When this field's whole definition is a reference to another field of
+   // the SAME source (`dimension: site is SITE`), the name it refers to.
+   // This is what makes alias collapsing exact instead of a guess about
+   // names; see collapseAliases. A reference that traverses a join carries a
+   // multi-segment path and is deliberately NOT recorded here: that is a
+   // different column reached through a relationship, not another spelling.
+   aliasOf?: string;
    // Malloy type of a dimension or measure ("string", "number", "date", ...).
    // What an agent needs to know before it filters or aggregates the field.
    dataType?: string;
@@ -121,16 +133,9 @@ interface ResultEntity {
    relationship?: Relationship;
    /** Other spellings of this field in its own source, collapsed into it. */
    aliases?: string[];
-   /** Other sources carrying this same concept, when near-identically scored. */
-   alsoIn?: string[];
+   /** The field's Malloy expression; serialized only on `include_code`. */
+   code?: string;
    score?: number;
-   /**
-    * The lexical hit's score, normalized against the top hit so it shares the
-    * [0, 1] scale the semantic path uses. Internal to ranking: serialization
-    * never reads it, because a lexical relevance is not comparable between
-    * queries and publishing one would invite exactly that comparison.
-    */
-   lexicalScore?: number;
    /** Malloy type of a dimension or measure. */
    dataType?: string;
    /** The join traversal reaching this field; absent on a source's own. */
@@ -233,16 +238,8 @@ interface SourceContextAuthorize {
 }
 
 /**
- * How close two sibling scores must be before they are treated as the same
- * concept found in parallel sources rather than as two ranked answers.
- * Tuned against get_context_eval.ts; deliberately tight, so a sibling that
- * is genuinely a worse match keeps its own row.
- */
-export const SIBLING_SCORE_EPSILON = 0.03;
-
-/**
  * The most entities one call may return, and so also the ceiling on what the
- * semantic query may fetch: sibling collapsing over-fetches to refill the
+ * semantic query may fetch: the ranked scan over-fetches to fill its source
  * window, and this bounds the scan it can ask for. Defined once because the
  * parameter schema, the truncation warning and that scan must agree.
  */
@@ -285,79 +282,13 @@ const REASON_BY_UNAVAILABLE: Record<
 };
 
 /**
- * Collapse the same concept appearing in parallel sources into one row that
- * names the others.
- *
- * A model with sibling source families returns the same field from each of
- * them at effectively the same score, presented as independent peers with
- * nothing to say they are near-duplicates or how to choose between them.
- *
- * Collapsing does double duty: it returns the wasted slots to genuinely
- * different concepts, and `alsoIn` makes the ambiguity explicit instead of
- * leaving it to be inferred from three rows that look independent. Only
- * near-identical scores group — a sibling that really is a worse match is a
- * ranked answer, not a duplicate.
- */
-/** The [0, 1] score this row was ranked on, whichever path produced it. */
-function rankScore(r: ResultEntity): number | undefined {
-   return r.score ?? r.lexicalScore;
-}
-
-function groupSiblings(results: ResultEntity[], limit: number): ResultEntity[] {
-   const keptByConcept = new Map<string, ResultEntity>();
-   const kept: ResultEntity[] = [];
-   for (const r of results) {
-      // joinPath is in the key for the reason collapseAliases carries it:
-      // humanizeName maps "." and "_" alike to a space, so a joined
-      // `orders.amount` and a local `orders_amount` key identically.
-      const key = `${r.kind}\x00${r.joinPath ?? ""}\x00${humanizeName(r.name)}`;
-      const peer = keptByConcept.get(key);
-      const peerScore = rankScore(peer ?? r);
-      const rowScore = rankScore(r);
-      if (
-         peer &&
-         r.source &&
-         peer.source !== r.source &&
-         // Unscored rows never group: with no score there is nothing to say
-         // the two are equally good, and collapsing on the name alone would
-         // hide a genuinely better match behind a worse one.
-         peerScore !== undefined &&
-         rowScore !== undefined &&
-         Math.abs(peerScore - rowScore) <= SIBLING_SCORE_EPSILON &&
-         // A sibling carrying its OWN, different doc is kept as its own row.
-         // The score gate cannot stand in for this: entityFacets embeds a
-         // name facet of humanizeName(name) with no source in it, so two
-         // same-named fields in different sources embed byte-identical text
-         // and score IDENTICALLY whenever the name facet wins -- however far
-         // apart their docs are. Folding there destroys the one thing that
-         // tells the caller which source to trust, and a folded row leaves
-         // the result entirely: its doc, data_type and entity_id are
-         // unrecoverable, and alsoIn carries only a source name. Same rule,
-         // and the same reasoning, as collapseAliases after 3e8cb76b.
-         (!r.doc || r.doc === peer.doc)
-      ) {
-         peer.alsoIn = [...(peer.alsoIn ?? []), r.source];
-         continue;
-      }
-      // Keep scanning the over-fetch after the window is full: a later hit
-      // can still be the sibling that makes an already-kept row's ambiguity
-      // visible, and dropping it would report a lone confident answer where
-      // the model actually offers three.
-      if (kept.length >= limit) continue;
-      keptByConcept.set(key, r);
-      kept.push(r);
-   }
-   return kept;
-}
-
-/**
  * The response shape: source-centric, snake_case, identity in a structured
  * `resource_id`. It matches a hosted Malloy retrieval API's `get_context`, so
  * one parser serves both and a retrieval score computed here is comparable to
  * one computed there.
  *
- * ONLY SERIALIZATION HAPPENS HERE. Ranking, sibling grouping, alias collapse
- * and the relevance floor all run over the flat `ResultEntity[]` upstream;
+ * ONLY SERIALIZATION HAPPENS HERE. Ranking, alias collapse and the relevance
+ * floor all run over the flat `ResultEntity[]` upstream;
  * this converts that list at the boundary, so a ranking bug and a shape bug
  * stay separately reviewable.
  *
@@ -368,7 +299,8 @@ function groupSiblings(results: ResultEntity[], limit: number): ResultEntity[] {
  *    (a model-level named query). A `source` never appears as an entity_type:
  *    a source is the container.
  * 2. Publisher-only fields ride along: `source_info.joins`, `entity_id`,
- *    `relationship`, `aliases`, `also_in`, and the response-level `retrieval`
+ *    `relationship`, `aliases`, `code` (only when the caller asks for it with
+ *    `include_code`), and the response-level `retrieval`
  *    / `retrieval_reason` / `below_cutoff_count` / `total_entities`.
  * 3. Fields Publisher cannot honestly fill are OMITTED, not sent empty:
  *    `summary`, `prominence`, `values`, `values_indexed`, `match_reason`.
@@ -401,13 +333,18 @@ interface SourceCardEntity {
    data_type?: string;
    /** Publisher extension. Stable `kind:source:name`; see {@link entityId}. */
    entity_id: string;
+   /**
+    * Publisher extension. The field's Malloy expression, present only when the
+    * caller passed `include_code`. A physical column has none, so absence
+    * under that flag means the field is raw rather than derived.
+    */
+   code?: string;
    relationship?: Relationship;
    /** The join traversal reaching this field, when it is not the source's own. */
    join_path?: string;
    /** Which search targets matched this entity, and how well. */
    matched_targets?: Array<{ search_text: string; relevance: number }>;
    aliases?: string[];
-   also_in?: string[];
 }
 
 interface SourceCard {
@@ -435,6 +372,8 @@ function toSourceResults(
    packageName: string,
    /** Search texts by target index, for matched_targets. Empty on a listing. */
    searchTexts: Map<number, string> = new Map(),
+   /** Serialize each entity's Malloy expression; off unless asked for. */
+   includeCode = false,
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -472,15 +411,6 @@ function toSourceResults(
    for (const r of results) {
       const entry = cardFor(r.source, r.modelPath);
       if (!entry) continue;
-      // A folded sibling left the result set, so nothing else would emit its
-      // source. Its card is exactly where the grain rule or the `where:` that
-      // makes it a DIFFERENT number from the row we kept would be written, so
-      // materialise it here, entity-less, adjacent to the peer that names it.
-      // Without this, collapsing does not merely cost a row -- it removes the
-      // only evidence that a second reading of the concept exists.
-      for (const sibling of r.alsoIn ?? []) {
-         cardFor(sibling, r.modelPath);
-      }
       if (r.kind === "source") {
          // The source itself matched: its score belongs on the container, and
          // its full (untruncated) doc supersedes the truncated context copy.
@@ -497,9 +427,9 @@ function toSourceResults(
          ...(r.dataType ? { data_type: r.dataType } : {}),
          ...(r.relationship ? { relationship: r.relationship } : {}),
          ...(r.joinPath ? { join_path: r.joinPath } : {}),
+         ...(includeCode && r.code ? { code: r.code } : {}),
          ...matchedTargetsFor(r, searchTexts),
          ...(r.aliases ? { aliases: r.aliases } : {}),
-         ...(r.alsoIn ? { also_in: r.alsoIn } : {}),
       };
       (entry.entities ??= []).push(entity);
       // A source with no hit of its own still ranks by its best entity, so a
@@ -578,10 +508,6 @@ function windowBySource(
 } {
    const order: string[] = [];
    const bySource = new Map<string, ResultEntity[]>();
-   // A folded sibling has no row of its own but does get a card, so it is one
-   // of the sources this count is about -- the same reason the old
-   // distinctSourceCount walked alsoIn.
-   const alsoIn = new Set<string>();
    for (const r of rows) {
       const key = r.source ?? "";
       let bucket = bySource.get(key);
@@ -591,10 +517,6 @@ function windowBySource(
          order.push(key);
       }
       bucket.push(r);
-      for (const sibling of r.alsoIn ?? []) alsoIn.add(sibling);
-   }
-   for (const sibling of alsoIn) {
-      if (!bySource.has(sibling)) order.push(sibling);
    }
    const keptSources = order.slice(0, sourceLimit);
    const kept: ResultEntity[] = [];
@@ -637,15 +559,14 @@ function windowBySource(
  *
  * Browse, semantic and lexical each wrote this projection out by hand, and a
  * field added to one was simply absent from the others: `matched_targets` never
- * reached the semantic path, and sibling collapse shipped on the semantic path
- * before the lexical one had it. Neither was caught by a test, because a
- * missing field is a smaller response, not a failing one. One projection means
+ * reached the semantic path. That was not caught by a test, because a missing
+ * field is a smaller response, not a failing one. One projection means
  * a new field arrives everywhere or nowhere.
  *
- * The ranking-specific fields stay at the call site on purpose: `score`,
- * `lexicalScore` and `targetScores` are each honest on one path and not the
- * others, and folding them in here would invite exactly the mistake of
- * publishing a lexical score as a relevance.
+ * The ranking-specific fields stay at the call site on purpose: `score` and
+ * `targetScores` are each honest on one path and not the other, and folding
+ * them in here would invite exactly the mistake of publishing a lexical score
+ * as a relevance.
  */
 function projectEntity(
    e: Entity,
@@ -664,46 +585,45 @@ function projectEntity(
       ...(e.aliases ? { aliases: e.aliases } : {}),
       ...(e.joinPath ? { joinPath: e.joinPath } : {}),
       ...(e.dataType ? { dataType: e.dataType } : {}),
+      ...(e.code ? { code: e.code } : {}),
    };
 }
 
 /**
- * The tail both ranked paths share: collapse siblings, window by source, then
- * serialize. Semantic and lexical retrieval differ in how they SCORE, not in
- * what happens to the rows afterwards, so the ordering constraint lives here
- * once instead of being restated at two call sites.
+ * The tail both ranked paths share: window by source, then serialize.
+ * Semantic and lexical retrieval differ in how they SCORE, not in what happens
+ * to the rows afterwards, so the ordering lives here once instead of being
+ * restated at two call sites.
  *
- * Grouping runs unwindowed and before windowing, and that order is forced
- * rather than stylistic: sibling collapse records the duplicates it merges ON
- * the row it keeps, so a second pass appends every also_in twice, and because
- * it only ever drops rows past the limit, the full run's first `max` rows are
- * what a limited run would have returned anyway.
- *
- * A drill-down is confined to one source, so it has no siblings to collapse and
- * skips grouping entirely.
+ * Nothing is folded across sources. Two sources exposing a same-named measure
+ * are two different numbers -- `in_store_sales.sales` and `online_sales.sales`,
+ * or a source and a filtered extension of it -- and the response nests each
+ * under its own card with its own `source_info.docs`, which is what tells a
+ * caller which to use. An earlier version merged them into one row naming the
+ * others; it was written when this returned a flat `results[]` with no source
+ * cards to separate them, and it dropped the losing row's doc, data_type and
+ * entity_id to do it.
  *
  * The envelope stays with the caller: `retrieval`, `below_cutoff_count` and
  * `retrieval_reason` are each meaningful on one path only.
  */
 function finishRanked(args: {
    rows: ResultEntity[];
-   scoped: boolean;
    max: number;
    sourceContext: Map<string, SourceContextEntry>;
    environmentName: string;
    packageName: string;
    searchTexts: Map<number, string>;
+   includeCode: boolean;
 }): { sources: SourceCard[]; totalSources: number; entitiesDropped: number } {
-   const grouped = args.scoped
-      ? args.rows
-      : groupSiblings(args.rows, args.rows.length);
-   const windowed = windowBySource(grouped, args.max);
+   const windowed = windowBySource(args.rows, args.max);
    const sources = toSourceResults(
       windowed.rows,
       args.sourceContext,
       args.environmentName,
       args.packageName,
       args.searchTexts,
+      args.includeCode,
    );
    return {
       sources,
@@ -826,6 +746,12 @@ const convergedContextShape = {
       .describe(
          "The user's question that led to this call, verbatim on the first turn. Used for observability; does not affect matching.",
       ),
+   include_code: z
+      .boolean()
+      .nullish()
+      .describe(
+         "Return each field's Malloy expression as `code`. Off by default: a source's #(doc) should say what a field means, and expressions are long. Turn it on to inspect what a measure actually computes -- typically once you have narrowed to the few fields you care about.",
+      ),
    limit: z
       .number()
       .int()
@@ -880,6 +806,8 @@ interface ResolvedRequest {
    searches: ResolvedSearch[];
    /** True when no target carried search text: enumerate, do not rank. */
    listingOnly: boolean;
+   /** Serialize each entity's Malloy expression as `code`. */
+   includeCode: boolean;
    /** Targets naming a type this server cannot search, for a warning. */
    unsupported: SearchTargetType[];
    limit: number;
@@ -927,6 +855,7 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       kinds,
       searches,
       listingOnly,
+      includeCode: params.include_code ?? false,
       unsupported,
       limit: params.limit ?? (listingOnly ? MAX_LIMIT : DEFAULT_RANKED_LIMIT),
       offset: params.offset ?? 0,
@@ -1003,6 +932,75 @@ export function sanitize(query: string): string {
  * joined source's field count, against a hard cap of MAX_EMBEDDED_ENTITIES.
  */
 const MAX_JOIN_PATH_DEPTH = 2;
+
+/**
+ * What the compiled model knows about a field that the stable SourceInfo does
+ * not: the expression it was defined by. `code` is the authored text
+ * ("sale_price.sum()"); `aliasOf` is set only when the whole definition is a
+ * reference to a sibling field of the same source.
+ */
+interface FieldProvenance {
+   code?: string;
+   aliasOf?: string;
+}
+
+/**
+ * Read per-field provenance for one source out of the compiled model IR.
+ *
+ * Keyed by field name so the caller can join it onto the curated
+ * `SourceInfo.schema.fields` it already walks. The IR is deliberately
+ * uncurated (see Model.getModelDef), so it is used as a LOOKUP for fields the
+ * curated list already admitted, never as a field list of its own.
+ *
+ * The alias rule is `e.node === "field"` with a SINGLE-segment path, and that
+ * restriction carries the whole correctness argument. It is not theoretical:
+ * in the bundled storefront model `order_items.category`, `.brand` and
+ * `.region` are all bare field references -- to `["products","category"]`,
+ * `["products","brand"]` and `["regions","region"]`. Those traverse a join to
+ * reach a DIFFERENT column, and folding them into their target is exactly the
+ * error this guard exists to prevent. Only a single-segment path names a
+ * sibling field of the same source.
+ */
+function readFieldProvenance(
+   modelDef: ModelDef | undefined,
+   sourceName: string,
+): Map<string, FieldProvenance> {
+   const provenance = new Map<string, FieldProvenance>();
+   const contents = modelDef?.contents;
+   if (!contents) return provenance;
+   // Match on the ACTIVE name -- `as` when a rename set one, else `name`.
+   // That is what `to_stable` puts in SourceInfo, and it is what the caller
+   // joins on. Keying the raw `name` here silently gave every renamed field
+   // no provenance at all: `include { rename: b is a }` compiles to
+   // `{name: "a", as: "b"}`, so the map said "a" while the lookup asked "b".
+   const active = (v: { name?: string; as?: string }) => v.as ?? v.name;
+   const entry = Object.values(contents).find(
+      (candidate) =>
+         active(candidate as { name?: string; as?: string }) === sourceName,
+   ) as { fields?: unknown[] } | undefined;
+   if (!entry?.fields) return provenance;
+   for (const raw of entry.fields) {
+      const field = raw as {
+         name?: string;
+         as?: string;
+         code?: string;
+         e?: { node?: string; path?: string[] };
+      };
+      const fieldName = active(field);
+      if (!fieldName) continue;
+      const referent =
+         field.e?.node === "field" && field.e.path?.length === 1
+            ? field.e.path[0]
+            : undefined;
+      provenance.set(fieldName, {
+         ...(field.code ? { code: field.code } : {}),
+         // A self-reference cannot occur in valid Malloy; guarded anyway,
+         // because recording one would make a field its own alias and drop it.
+         ...(referent && referent !== fieldName ? { aliasOf: referent } : {}),
+      });
+   }
+   return provenance;
+}
 
 /** The shape of a field inside a join's inlined schema. */
 interface JoinSchemaField {
@@ -1121,9 +1119,16 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       // pick up its own, and read defensively because a spec's model stand-in
       // implements only the two accessors above.
       const apiSources = model.getSources?.() ?? [];
+      // The compiled IR, for the one thing SourceInfo cannot carry: a field's
+      // expression. Optional-chained on the same grounds as getSources above
+      // -- a spec's model stand-in implements only the accessors it needs --
+      // and a model that failed to compile has none. Either way the fields
+      // still index, just without provenance.
+      const modelDef = model.getModelDef?.();
 
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
+         const provenance = readFieldProvenance(modelDef, sourceName);
          // First model wins, matching the entity dedupe below, so a source's
          // identity and its governance always come from the same model.
          if (!governance.has(sourceName)) {
@@ -1220,6 +1225,11 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             ) {
                continue;
             }
+            // A view's definition is a query pipeline rather than a scalar
+            // expression, and nothing folds or displays it, so provenance is
+            // read for dimensions and measures only.
+            const fieldProvenance =
+               field.kind === "view" ? undefined : provenance.get(field.name);
             entities.push({
                id: String(n++),
                kind: field.kind,
@@ -1231,6 +1241,10 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                ...(field.kind === "view"
                   ? {}
                   : { dataType: malloyType(field) }),
+               ...(fieldProvenance?.code ? { code: fieldProvenance.code } : {}),
+               ...(fieldProvenance?.aliasOf
+                  ? { aliasOf: fieldProvenance.aliasOf }
+                  : {}),
             });
          }
       }
@@ -1288,76 +1302,117 @@ function malloyType(field: { type?: { kind?: string } }): string | undefined {
 }
 
 /**
- * Collapse entities within one source that differ only in the spelling of
- * the same name, keeping the documented one and recording the rest.
+ * Collapse a field that is DEFINED AS another field of the same source into
+ * it, keeping the documented spelling and reporting the rest in `aliases`.
  *
  * A model that renames a physical column without hiding the original leaves
- * both in the schema: `SITE` and `site` are one column, indexed twice, and
- * both then compete for the same scarce result slots.
+ * both in the schema: `dimension: site is SITE` puts `site` beside `SITE` --
+ * one column indexed twice, both competing for the same scarce slots.
  *
- * Detection is by humanized name, and it has to be: the stable Malloy
- * interface gives a dimension only `{name, type, annotations}`, with no
- * expression, so there is no way to prove `site` is a rename of `SITE`
- * rather than a derivation. The heuristic covers the measured case (a pure
- * case/separator respelling inside one source) and stops there. Two
- * genuinely distinct fields whose names humanize identically would collapse,
- * so the heuristic is narrowed by the one signal available: a spelling that
- * carries its own, different `#(doc)` is kept as its own row, because that
- * doc is what a caller would read to choose between them and a dropped entity
- * leaves the index entirely. What folds is an undocumented spelling, or one
- * repeating the kept doc, and its name is still reported in `aliases`.
+ * Detection is EXACT, read off the compiled model: `aliasOf` is set only when
+ * a field's entire definition is a reference to a single-segment sibling name
+ * (see readFieldProvenance). This replaces a heuristic that matched humanized
+ * names, which could not tell `site is SITE` from a derivation that happened
+ * to humanize the same way. The comment here used to justify that heuristic by
+ * saying the expression was unavailable. It is available: the stable
+ * `Malloy.DimensionInfo` does not carry it, but the compiled `ModelDef` does,
+ * and Publisher holds one (see Model.getModelDef).
  *
- * The real fix belongs in the model: Malloy's `include { internal: ... }`
- * hides the raw column outright, and the indexer already honours it, because
- * the compiler drops non-public fields before this code ever sees them (see
- * the access-modifier spec). This collapse is what the tool can do for the
- * models that have not done that.
+ * Because a reference is proof rather than a guess, the differing-doc escape
+ * hatch is gone. The old rule kept two spellings apart when each carried its
+ * own `#(doc)`, since a doc was the only evidence they might be two concepts.
+ * A proven reference settles it: they ARE one column, and two docs on one
+ * column is a modelling mistake, not a second concept. The documented
+ * spelling still wins, so the doc a modeller wrote is the one returned.
+ *
+ * The better fix remains in the model: `include { internal: ... }` hides the
+ * raw column outright and the indexer honours it already, because the compiler
+ * drops non-public fields before this code sees them (see the access-modifier
+ * spec). This is what the tool can do for models that have not done that.
  */
 function collapseAliases(entities: Entity[]): Entity[] {
-   const groups = new Map<string, Entity[]>();
+   // Every same-source field a reference could name. Dimensions and measures
+   // only: a source is its own namespace, a join names a relationship rather
+   // than a column, and a view is a pipeline. A joined field is indexed under
+   // its dotted path and belongs to the source it is reached FROM, so it can
+   // never be a same-source sibling -- and its own expression may reference a
+   // leaf name that collides with one of that source's own fields, which is
+   // exactly the fold that must not happen.
+   const foldable = (e: Entity) =>
+      (e.kind === "dimension" || e.kind === "measure") && !e.joinPath;
+   const key = (e: Entity) => `${e.source ?? ""}\x00${e.name}`;
+   const byName = new Map<string, Entity>();
+   for (const e of entities) if (foldable(e)) byName.set(key(e), e);
+
+   /** The field this one is defined as, when the index holds it. */
+   const referentOf = (e: Entity): Entity | undefined => {
+      if (!e.aliasOf || !foldable(e)) return undefined;
+      const target = byName.get(`${e.source ?? ""}\x00${e.aliasOf}`);
+      // The referent has to be a field this index actually holds, and it may
+      // not be: `include { internal: SITE }` hides the raw column from the
+      // public schema while `site` still references it. That is the model
+      // doing the right thing -- `site` is then the only spelling and there
+      // is nothing to fold. A rename moves a field's active name without
+      // rewriting its siblings' expressions, which lands here the same way.
+      if (!target || target === e) return undefined;
+      // A measure defined over a dimension is not another spelling of it.
+      return target.kind === e.kind ? target : undefined;
+   };
+
+   // Walk each chain to its root, so `a is b` and `b is c` land in ONE group
+   // rather than making `b` both a survivor and a dropped row -- which would
+   // leave `a` reporting an alias of a field no longer in the index.
+   const rootOf = new Map<Entity, Entity>();
+   const groups = new Map<Entity, Entity[]>();
    for (const e of entities) {
-      // Sources are their own namespace, and joins name a relationship
-      // rather than a column; only fields within one source can be two
-      // spellings of one thing.
-      if (e.kind !== "dimension" && e.kind !== "measure") continue;
-      // joinPath is part of the key because humanizeName maps "." and "_"
-      // alike to a space, so a joined `orders.amount` and a local
-      // `orders_amount` would otherwise key identically and collapse into
-      // one row -- two different columns, one of them reached through a join
-      // that may filter or fan out.
-      const key = `${e.kind}\x00${e.source ?? ""}\x00${e.joinPath ?? ""}\x00${humanizeName(e.name)}`;
-      const group = groups.get(key);
+      if (!foldable(e) || !e.aliasOf) continue;
+      const seen = new Set<Entity>([e]);
+      let node = e;
+      for (;;) {
+         const next = referentOf(node);
+         // A cycle cannot occur in valid Malloy; the guard costs nothing and
+         // turns a malformed model into "no fold" instead of a hang.
+         if (!next || seen.has(next)) break;
+         seen.add(next);
+         node = next;
+      }
+      if (node === e) continue;
+      rootOf.set(e, node);
+      const group = groups.get(node);
       if (group) group.push(e);
-      else groups.set(key, [e]);
+      else groups.set(node, [e]);
    }
 
    const dropped = new Map<string, Entity>();
-   for (const group of groups.values()) {
-      if (group.length < 2) continue;
-      // Prefer the documented spelling: a modeller who wrote a #(doc) said
-      // which name they meant an agent to use. Failing that, prefer the
-      // lowercase-looking one (`site` over `SITE`), then be deterministic.
-      const [keep, ...rest] = [...group].sort((a, b) => {
+   for (const [root, refs] of groups) {
+      const members = [root, ...refs];
+      // The NAME that survives is an authored alias, never the raw column it
+      // points at: `dimension: site is SITE` says the modeller wants `site`
+      // used, and it is the spelling that still works once they hide the raw
+      // one with `include { internal: SITE }`. Direction is the thing the old
+      // name-matching rule could not know, so it had to guess from casing.
+      // Among several authored names (a chain, or two names for one column)
+      // prefer a documented one, then be deterministic.
+      const candidates = refs.length > 0 ? refs : members;
+      const keep = [...candidates].sort((a, b) => {
          if (Boolean(b.embedDoc) !== Boolean(a.embedDoc)) {
             return b.embedDoc ? 1 : -1;
          }
-         const aRaw = a.name === a.name.toUpperCase();
-         const bRaw = b.name === b.name.toUpperCase();
-         if (aRaw !== bRaw) return aRaw ? 1 : -1;
          return a.name.localeCompare(b.name);
-      });
-      // Only fold in a spelling that adds no documentation of its own, or
-      // repeats the kept one's. Two documented spellings whose docs DIFFER
-      // are the evidence available that they are two concepts rather than
-      // one column named twice, and the doc is exactly what a caller would
-      // read to tell them apart -- so collapsing there would destroy the
-      // thing that resolves the ambiguity. A dropped entity is removed from
-      // the index entirely, not merely hidden from a result, so its doc is
-      // unrecoverable; `aliases` carries only a name.
-      const folded = rest.filter(
-         (e) => !e.embedDoc || e.embedDoc === keep.embedDoc,
-      );
-      if (folded.length === 0) continue;
+      })[0];
+      // The DOC survives independently of the name. A raw column that carries
+      // the only `#(doc)` in the group would otherwise lose it, and `aliases`
+      // carries names, not text. Two members documented DIFFERENTLY is a
+      // modelling mistake rather than two concepts -- the reference proves one
+      // column -- so the survivor's own doc wins and the other is dropped.
+      if (!keep.embedDoc) {
+         const donor = members.find((e) => e !== keep && e.embedDoc);
+         if (donor) {
+            keep.doc = donor.doc;
+            keep.embedDoc = donor.embedDoc;
+         }
+      }
+      const folded = members.filter((e) => e !== keep);
       keep.aliases = folded.map((e) => e.name);
       for (const e of folded) {
          dropped.set(entityRowKey(e.kind, e.source ?? "", e.name), e);
@@ -1507,10 +1562,10 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - authorize means gated: supply the givens it names or the query is denied.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150; ranked 20, listing 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question, for observability.
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question asked. include_code adds each field's expression as code.
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, also_in, matched_targets, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, matched_targets, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
 ranking, returned of total_available sources, next_offset on a listing, warnings[].
 Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
 
@@ -1769,6 +1824,8 @@ async function runContextQuery(
          sourceContext,
          environmentName,
          packageName,
+         new Map(),
+         request.includeCode,
       );
       // A listing is deterministic catalog order, not a ranking, and
       // Publisher has no query-usage signal to fill the hosted API's
@@ -1832,8 +1889,8 @@ async function runContextQuery(
    // provider is configured, so the unconfigured payload stays
    // byte-identical to the lexical-only releases.
    const configured = embeddingConfigured();
-   // A drill-down is confined to one source, so no two hits can be the
-   // same concept in parallel sources and there is nothing to collapse.
+   // A drill-down is confined to one source, so the scan needs no over-fetch
+   // to reach a spread of source cards.
    const scoped = Boolean(sourceName);
    /** Ranked but NOT yet collapsed or windowed; finishRanked does both. */
    let semanticRanked: ResultEntity[] | undefined;
@@ -1890,11 +1947,13 @@ async function runContextQuery(
                      targetIndex: search.targetIndex,
                      text: search.text,
                   })),
-                  // Over-fetch so sibling collapsing can refill the
-                  // window with genuinely different concepts instead of
-                  // returning fewer results than asked for. A drill-down
-                  // is already confined to one source, so nothing there
-                  // can collapse and the extra rows would be waste.
+                  // Over-fetch, because `max` counts SOURCE CARDS while
+                  // this limit counts entity ROWS, and windowBySource admits
+                  // up to MAX_ENTITIES_PER_SOURCE_TARGET rows per source per
+                  // target. Fetching exactly `max` rows lets them all land in
+                  // one source and return a single card where `max` were
+                  // asked for. A drill-down is confined to one source, so
+                  // there the extra rows are waste.
                   limit: scoped ? max : Math.min(MAX_LIMIT, max * 3),
                   // "" means no drill-down, matching the lexical
                   // path's truthiness filter.
@@ -2002,12 +2061,12 @@ async function runContextQuery(
    if (semanticRanked !== undefined) {
       const { sources, totalSources, entitiesDropped } = finishRanked({
          rows: semanticRanked,
-         scoped,
          max,
          sourceContext,
          environmentName,
          packageName,
          searchTexts: searchTextsByIndex,
+         includeCode: request.includeCode,
       });
       return jsonResource(uri, {
          sources,
@@ -2027,11 +2086,8 @@ async function runContextQuery(
          // Each cut in its own unit: `limit` drops whole sources, the
          // per-source cap drops entities inside the ones it kept.
          ...warningsFor(
-            // Counted in CARDS, the same unit `returned` reports, so the two
-            // cannot disagree. They are not the same as the windowed source
-            // count: a folded sibling's card rides along with the row that
-            // names it rather than spending a slot of its own, so a response
-            // can carry more cards than `limit` matched sources.
+            // Counted in CARDS, the same unit `returned` reports, so the
+            // two cannot disagree.
             sourceCutWarning(sources.length, totalSources),
             entityCutWarning(entitiesDropped),
          ),
@@ -2091,7 +2147,7 @@ async function runContextQuery(
       })
       .sort((a, b) => b.score - a.score);
 
-   const scored: ResultEntity[] = ranking.map(({ e, score }) => ({
+   const scored: ResultEntity[] = ranking.map(({ e }) => ({
       ...projectEntity(e, environmentName, packageName),
       // targetScores is deliberately NOT carried on this path. It would reach
       // the wire as matched_targets[].relevance, whose relevance is required
@@ -2099,20 +2155,21 @@ async function runContextQuery(
       // path withholds from the entity's own `relevance`, because a lunr score
       // is relative to its own query and comparing two of them means nothing.
       // Naming the matched target is not worth contradicting that; a semantic
-      // response answers both.
-      lexicalScore: score,
+      // response answers both. The normalized lexical score itself is not
+      // carried either: the only thing that ever read it was the sibling
+      // grouping this no longer does.
    }));
    // This path carries no per-target scores, so its rows share one cap per
    // source rather than one each; everything else about the tail is the
    // semantic path's, which is why it is the same function.
    const { sources, totalSources, entitiesDropped } = finishRanked({
       rows: scored,
-      scoped,
       max,
       sourceContext,
       environmentName,
       packageName,
       searchTexts: searchTextsByIndex,
+      includeCode: request.includeCode,
    });
    const envelope = {
       sources,

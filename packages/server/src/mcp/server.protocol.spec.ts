@@ -142,7 +142,10 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          // source it reaches (#1100).
          "join_path",
          "aliases",
-         "also_in",
+         // Opt-in, and the description is where a caller learns it exists at
+         // all -- an expression is the one fact a #(doc) cannot be trusted to
+         // restate, so a caller that never hears of the flag cannot ask.
+         "include_code",
          // The hand-off. The response renames these into resource_id, so
          // without the mapping an agent holding a card cannot reach
          // executeQuery; the sentence that said so was once dropped while

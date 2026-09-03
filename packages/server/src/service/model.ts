@@ -3287,6 +3287,31 @@ export class Model {
    }
 
    /**
+    * The compiled model IR, or undefined when the model failed to compile.
+    *
+    * This is the only place a field's EXPRESSION is available. `sourceInfos`
+    * and `sources` are both expression-free projections -- the stable
+    * `Malloy.DimensionInfo` is `{name, type, annotations}`, and `ApiSource`
+    * carries no field list at all -- so a caller that needs to know whether
+    * one field is a rename of another, or what a measure computes, has
+    * nowhere else to look. Retrieval used to guess the first from the field
+    * NAME, and that guess is what this exists to retire.
+    *
+    * Deliberately NOT curated: `curateForDiscovery` filters the discovery
+    * surface by the package's `explores` list, and this is IR rather than a
+    * discovery surface. Callers that also read `getSourceInfos()` are already
+    * curated by it, and should join onto that -- taking this only as a lookup
+    * for fields the curated list has already admitted.
+    *
+    * Populated on both construction paths, `Model.create` and
+    * `Model.fromSerialized`, so it is present for worker-pool package loads
+    * (the production path) as well as for in-process compiles.
+    */
+   public getModelDef(): ModelDef | undefined {
+      return this.modelDef;
+   }
+
+   /**
     * The facts dashboard discovery reads off this model, or undefined when the
     * model failed to compile.
     *
