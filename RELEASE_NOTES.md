@@ -76,7 +76,7 @@ spellings in the docs indefinitely.
 
 ---
 
-## [Unreleased] — one materialized table, written once and readable by every source that shares it
+## [0.2.2] — one materialized table, written once and readable by every source that shares it
 
 Malloy [#3029](https://github.com/malloydata/malloy/pull/3029) settled that several sources naming one
 physical table is the design, not a defect: `#@ persist` is inherited through `extend`, `extend` never
@@ -110,7 +110,7 @@ rows it overwrote.
 | `publisher_materialization_table_collision_total` | Two definitions materializing into one table — serve-time wrong data. **This is the one to alert on.** Its rate is also what enabling `PERSIST_COLLISION_ENFORCE` would begin refusing, so a rollout can be measured before it is turned on. |
 
 
-## [Unreleased] — a boolean query param you misspell now fails instead of doing nothing
+## [0.2.2] — a boolean query param you misspell now fails instead of doing nothing
 
 `reload`, `dropTables` and `bypass_filters` were each read as `=== "true"`, so
 every other spelling — `?reload=1`, `?dropTables=yes`, `?reload=TRUE`, or the
