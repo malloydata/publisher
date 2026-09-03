@@ -68,6 +68,9 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(names.has("malloy_reloadPackage")).toBe(true);
       expect(names.has("malloy_searchDatabaseSchema")).toBe(true);
       expect(names.has("malloy_getStatus")).toBe(true);
+      // The converged retrieval tool and the catalog that supplies its scopes.
+      expect(names.has("get_context")).toBe(true);
+      expect(names.has("malloy_listEnvironments")).toBe(true);
    });
 
    /**
@@ -120,8 +123,12 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // `joins` list it was never told about. Pin the contract terms to the
       // description so a new response field cannot land silently.
       const { tools } = await client.listTools();
-      const description =
-         tools.find((t) => t.name === "malloy_getContext")?.description ?? "";
+      // Both tools answer in the same shape, so both must describe it. The
+      // converged one is where callers are going; the flat one is still
+      // shipped. A term dropped from either is a field shipping unexplained.
+      const description = ["get_context", "malloy_getContext"]
+         .map((name) => tools.find((t) => t.name === name)?.description ?? "")
+         .join("\n");
       // snake_case throughout since the response converged on the hosted
       // retrieval API's shape: one shape, one parser, one mental model across
       // a local server and a hosted one.
