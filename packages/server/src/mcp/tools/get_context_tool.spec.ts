@@ -2978,6 +2978,29 @@ describe("get_context catalog browse", () => {
       expect(card.joins).toEqual([]);
    });
 
+   it("names paging, not the limit, as the remedy on a browse", async () => {
+      // A listing has a resumable order, so the rest is one offset away.
+      // Telling a caller to raise the limit sends them at the one control
+      // that cannot reach source 151.
+      const payload = parse(await handler()(browse({ limit: 2 })));
+      const warning = payload.warnings.join(" ");
+      expect(warning).toContain("Returned 2 of 5 sources in scope");
+      expect(warning).toContain("next_offset");
+      expect(warning).not.toContain("Raise limit");
+   });
+
+   it("reports the same source count in the envelope and the warning", async () => {
+      // These are the same fact in the same unit, and they drifted: the
+      // warning counted matched sources while `returned` counted CARDS, which
+      // differ whenever a folded sibling's card rides along with the row that
+      // names it.
+      const payload = parse(await handler()(browse({ limit: 2 })));
+      expect(payload.returned).toBe(payload.sources.length);
+      expect(payload.warnings.join(" ")).toContain(
+         `Returned ${payload.returned} of`,
+      );
+   });
+
    it("pages with offset and says where the next page starts", async () => {
       const first = parse(await handler()(browse({ limit: 2 })));
       expect(sourceNames(first)).toEqual(["src_1", "src_2"]);

@@ -1601,6 +1601,16 @@ async function runContextQuery(
       matched > returned
          ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
          : undefined;
+   /**
+    * A browse that stopped early. Its remedy is NOT the ranked one: a listing
+    * has a resumable order, so the rest is one `offset` away and raising the
+    * limit is the wrong advice -- it caps at 150 either way, and paging is
+    * what actually reaches source 151.
+    */
+   const listingPageWarning = (returned: number, matched: number) =>
+      matched > returned
+         ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
+         : undefined;
    const entityCutWarning = (dropped: number) =>
       dropped > 0
          ? `${dropped} further ${dropped === 1 ? "entity" : "entities"} matched but were cut at ${MAX_ENTITIES_PER_SOURCE_TARGET} per source per target. Scope to one source to list all of its fields.`
@@ -1724,7 +1734,14 @@ async function runContextQuery(
          sources,
          ...listingEnvelope,
          ...warningsFor(
-            truncationWarning(capped.length - (sourceName ? 1 : 0), cappable),
+            // A pure browse pages; every other listing shape is capped in
+            // entities and says so.
+            request.pureSourceListing
+               ? listingPageWarning(sources.length, inScope.length)
+               : truncationWarning(
+                    capped.length - (sourceName ? 1 : 0),
+                    cappable,
+                 ),
          ),
       });
    }
@@ -1753,7 +1770,6 @@ async function runContextQuery(
    let retrievalReason: RetrievalReason | undefined;
    // How many entities matched before the limit cut the list, so a
    // capped response can say what it left behind.
-   let semanticReturnedSources: number | undefined;
    let semanticEntitiesDropped = 0;
    // Distinct sources across everything that matched, so total_available
    // can exceed the returned card count when the entity cap cut rows.
@@ -1904,7 +1920,6 @@ async function runContextQuery(
                const windowed = windowBySource(grouped, max);
                semanticResults = windowed.rows;
                semanticTotalSources = windowed.totalSources;
-               semanticReturnedSources = windowed.returnedSources;
                semanticEntitiesDropped = windowed.entitiesDropped;
                totalEntities = unionTotalEntities;
                // An entity that cleared NO target's floor is below the
@@ -1962,8 +1977,13 @@ async function runContextQuery(
          // Each cut in its own unit: `limit` drops whole sources, the
          // per-source cap drops entities inside the ones it kept.
          ...warningsFor(
+            // Counted in CARDS, the same unit `returned` reports, so the two
+            // cannot disagree. They are not the same as the windowed source
+            // count: a folded sibling's card rides along with the row that
+            // names it rather than spending a slot of its own, so a response
+            // can carry more cards than `limit` matched sources.
             sourceCutWarning(
-               semanticReturnedSources ?? sources.length,
+               sources.length,
                semanticTotalSources ?? sources.length,
             ),
             entityCutWarning(semanticEntitiesDropped),
@@ -2069,10 +2089,7 @@ async function runContextQuery(
       returned: sources.length,
    };
    const lexicalWarnings = warningsFor(
-      sourceCutWarning(
-         lexicalWindow.returnedSources,
-         lexicalWindow.totalSources,
-      ),
+      sourceCutWarning(sources.length, lexicalWindow.totalSources),
       entityCutWarning(lexicalWindow.entitiesDropped),
    );
    return jsonResource(
