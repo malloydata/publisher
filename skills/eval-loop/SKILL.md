@@ -135,10 +135,10 @@ Which target for which job:
   through the deployed engine, which is the thing they actually hit. The judge
   sees no re-executed rows on a Remote run (there is no local copy of the
   bytes), so its verdicts rest on the answer text and the golden; say so.
-- **Improve and accept:** local, because the acceptance check needs compile, reload, and a
-  fresh re-answer between edits. Publishing to a customer environment to score
-  an edit is not something this loop does. Where the host offers draft
-  execution, that counts as local for this purpose.
+- **Improve and accept:** local, because the acceptance check needs compile,
+  reload, and a fresh re-answer between edits. Publishing to a customer
+  environment to score an edit is not something this loop does. Where the host
+  offers draft execution, that counts as local for this purpose.
 - **Measure real data without touching production:** local proxied.
 
 So a measure-only run can use any target; a run that includes **improve** needs
@@ -230,15 +230,16 @@ python3 skills/eval-loop/scripts/build_run_package.py \
   --run results/<a> --run results/<b> --set <repo>/evals/ecommerce --out <pkg>
 ```
 
-Order of magnitude for planning, **calibrated on ecommerce over local duckdb**: a
-Sonnet arm over a few dozen cases costs single-digit dollars and finishes in
+Order of magnitude for planning, **calibrated on ecommerce over local duckdb**:
+a Sonnet arm over a few dozen cases costs single-digit dollars and finishes in
 minutes, at roughly a dime and a handful of turns per case. A proxied warehouse
 is a different regime: the VideoAmp set ran at $0.33 per case on Sonnet and
 $0.57–0.71 on Opus, ~100 s per case, driven by warehouse latency and query
-errors -- budget 4x when the data is not local. Budget **five** such arms for a defensible
-claim -- a baseline, two for the A/A, and two post-edit -- plus the diagnose and
-improve agents, which are far cheaper per case but use a larger model. Measured
-per-arm figures for a given set belong in that set's `CALIBRATION.md`.
+errors -- budget 4x when the data is not local. Budget **five** such arms for a
+defensible claim -- a baseline, two for the A/A, and two post-edit -- plus the
+diagnose and improve agents, which are far cheaper per case but use a larger
+model. Measured per-arm figures for a given set belong in that set's
+`CALIBRATION.md`.
 
 `--rebuild` re-derives the ledger from saved transcripts without calling a model,
 and `--rebuild --rejudge` re-scores existing answers in place. `--from <run>
@@ -408,10 +409,10 @@ an entity means can have moved goldens for cases nobody was working on, and a
 rerun against a stale key measures nothing -- it reads as a win or a regression
 with equal confidence and neither is real. `skill:eval-improve` Step 4 reports
 these as `golden_suspect` on the candidate; the judge reports its own doubts as
-`gold_status`. **Any unadjudicated one halts the acceptance check.** Settle each through the
-golden side door -- repair and bump `goldenRevision`, or dismiss it explicitly --
-and only then re-answer. Do not net a suspect golden against the flip count; an
-uncertain key is not noise you can average out.
+`gold_status`. **Any unadjudicated one halts the acceptance check.** Settle
+each through the golden side door -- repair and bump `goldenRevision`, or
+dismiss it explicitly -- and only then re-answer. Do not net a suspect golden
+against the flip count; an uncertain key is not noise you can average out.
 
 Cheap and deterministic, every edit:
 
@@ -426,11 +427,11 @@ Cheap and deterministic, every edit:
 
 Acceptance rules (replacing any vague "results improve"):
 
-- **Per-case, not aggregate.** No previously-passing case may regress: diff
-  the new run's verdicts against the baseline, case by case (`jq` over the
-  two `events.jsonl` files). `regressions` on the acceptance check event must be empty to
-  accept, and the regressed qids go in the checkpoint commit message if you
-  proceed anyway after a human call.
+- **Per-case, not aggregate.** No previously-passing case may regress: diff the
+  new run's verdicts against the baseline, case by case (`jq` over the two
+  `events.jsonl` files). `regressions` on the acceptance check event must be
+  empty to accept, and the regressed qids go in the checkpoint commit message
+  if you proceed anyway after a human call.
 - **Confident verdicts only.** `needs_human` and null verdicts are neither
   passes nor failures; the delta is computed without them.
 - **Both splits.** The acceptance check runs the affected dev cases AND the holdout
@@ -576,8 +577,9 @@ case broke in every post arm. One arm cannot tell that from a coin toss.
 The reason to expect this, rather than treat it as bad luck: **a correct new
 entity is not a safe one.** Adding a measure changes what agents reach for on
 questions nobody was thinking about, so a well-named addition can pull a
-neighbouring question onto the wrong denominator. That makes the untargeted half
-of the acceptance check the half that matters, and it needs two arms to be readable at all.
+neighbouring question onto the wrong denominator. That makes the untargeted
+half of the acceptance check the half that matters, and it needs two arms to be
+readable at all.
 
 The one retrieval number this loop reports is **per-question entity recall**:
 of the entities each golden answer depends on, how many did the agent's own
