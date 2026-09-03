@@ -18,6 +18,8 @@ Say "model my data" and the agent will orchestrate the full modeling workflow au
 
 Every skill in this deployment, by what it is for. Start at a driver; it routes to the rest.
 
+This table is a catalogue of what exists, not of what is loaded. A host that installs one group takes that group's skills alone: `analysis`, `modeling`, or `eval`. A row naming a skill from a group you did not install says that the skill exists. It is not an instruction to load it. The evaluation rows are the common case, because neither `analysis` nor `modeling` includes `eval`.
+
 **Start here**
 
 | Skill | Use when... |
