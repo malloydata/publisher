@@ -165,6 +165,40 @@ describe("a rollup is placed in a storage destination by its own line", () => {
    });
 });
 
+describe("the generated name is a single unqualified identifier", () => {
+   // The name is also the rollup's physical table name — the build self-assigns
+   // it, there being no `name=` — so a consumer reading a dotted name as
+   // schema-qualified would refuse it or address the wrong table. Pinned here
+   // rather than left to the publish gate that refuses dotted grains, so the
+   // property belongs to the name instead of to a gate elsewhere agreeing to hold.
+   it("has no dot, for a legal grain or an illegal one", () => {
+      expect(rollupSourceName("orders", ["category"])).toBe(
+         "orders__preagg__category__edb2cd3b",
+      );
+      expect(rollupSourceName("orders", ["category", "d"])).not.toContain(".");
+      // Refused at publish and fatal at load, so it cannot reach a build plan —
+      // asserted anyway, because "cannot reach" is a claim about other code.
+      expect(rollupSourceName("orders", ["d.month"])).not.toContain(".");
+   });
+
+   it("a folded dot still does not collide with a real underscore", () => {
+      // The digest is over the RAW dimensions, so folding cannot merge two grains
+      // that differ only where the dot was.
+      expect(rollupSourceName("orders", ["a.b"])).not.toBe(
+         rollupSourceName("orders", ["a_b"]),
+      );
+   });
+
+   it("is stable across everything but the base and the grain", () => {
+      // Not the connection, and not the destination: neither is an input. The
+      // CONTENT address (sourceEntityId) folds the connection digest; the name
+      // does not, so it is stable per (base, grain) alone.
+      expect(rollupSourceName("orders", ["category"])).toBe(
+         rollupSourceName("orders", ["category"]),
+      );
+   });
+});
+
 describe("the planner never plans what the source hides", () => {
    // These two skips ARE the access control, not a tidy agreement with the
    // validator. A rollup stores its grain and each measure's partial, and the
