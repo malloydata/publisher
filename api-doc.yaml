@@ -5498,7 +5498,11 @@ components:
       properties:
         graphs:
           type: array
-          description: Dependency-ordered build graphs, one per connection.
+          description: >-
+            Dependency-ordered build graphs. One per connection per model, not one
+            per connection: a model contributes a graph for each connection its ROOT
+            persist sources use, and a package's plan concatenates every model's, so
+            the same source appears in the graph of every model that imports it.
           items:
             $ref: "#/components/schemas/BuildGraph"
         sources:
