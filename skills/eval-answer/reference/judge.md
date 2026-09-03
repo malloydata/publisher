@@ -229,14 +229,27 @@ Whether the model should be able to answer is what `coverage` records and what
 `eval-diagnose` decides. Settling it here converts a model gap into a passing
 case, and the gap then never reaches the backlog.
 
-Observed twice on one run, which is why this now leads the section: two answers
-that declined were scored `match` against goldens holding concrete values, on
-the reasoning that the model defined no such field. Both cases had been authored
-with their rubric at the case's top level instead of on the golden, so the judge
-was shown `CASE RUBRIC: none` and had nothing but the value and the answer to go
-on. That is the likelier cause than a judge ignoring a rule it was given -- but
-the rule belongs at the top of this section either way, because a judge reaching
-for its own reasonableness standard is exactly what an absent rubric invites.
+This rule is here because refusals against a valued golden are where the judge
+is least stable, and the instability has been localised rather than guessed at.
+Holding the answer, the rubric and the golden fixed and varying ONLY the model
+source shown to the judge, over samples of three to four:
+
+| model source shown | verdicts |
+|---|---|
+| lacks the concept entirely | `match` / `no_match` / `match` / `match` -- unstable |
+| defines something adjacent | `no_match` x3 -- stable |
+| withheld | `no_match` x3 -- stable |
+
+So a model with no trace of the concept is what destabilises the verdict: the
+judge starts weighing whether the answerer *could* have complied instead of
+whether it did. Four prompt edits were tried against it -- this rule, deleting
+the Refusal section, deleting the model-beats-rubric bullet, and splitting that
+bullet into "the model CONTRADICTS the rubric" versus "the model LACKS what the
+rubric names" -- and none of them stabilised it.
+
+Treat a refusal on a coverage case as unstable until that changes: score it with
+`check_judge.py --repeat`, not from one verdict. The rule below is still the
+rule; it is just not yet enforceable by prompt alone.
 
 Applies when the case's `golden.kind` is `unanswerable`. Every rule above assumes
 a gold result to contain and columns to pair, and here there is neither: no
