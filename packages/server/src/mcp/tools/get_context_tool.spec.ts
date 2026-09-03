@@ -3143,9 +3143,12 @@ describe("list_packages", () => {
       ]);
    });
 
-   it("keeps listing when one environment cannot be read", async () => {
+   it("keeps listing when one environment cannot be read, and says why", async () => {
       // The point of this tool is to say what IS there, so one unreachable
-      // environment must not take the catalog down with it.
+      // environment must not take the catalog down with it. But surviving the
+      // failure is only half of it: an empty `packages` is also what a
+      // genuinely empty environment looks like, so the reason has to come
+      // back with it.
       const handler = listHandler({
          listEnvironments: async () => [{ name: "broken" }] as never,
          getEnvironment: async () => {
@@ -3153,7 +3156,39 @@ describe("list_packages", () => {
          },
       });
       const { environments } = parse(await handler({}));
-      expect(environments).toEqual([{ name: "broken", packages: [] }]);
+      expect(environments).toEqual([
+         {
+            name: "broken",
+            error: "Environment 'broken' could not be resolved",
+            packages: [],
+         },
+      ]);
+   });
+
+   it("leaves a genuinely empty environment without an error", async () => {
+      // The other half of the pair above: `error` is what separates "the
+      // listing failed" from "there is nothing here", so an environment that
+      // really holds no packages must not carry one.
+      const handler = listHandler(
+         storeWith({
+            listPackages: async () => [],
+            getFailedPackages: () => new Map(),
+            getStaleCompileErrors: () => new Map(),
+         }),
+      );
+      const { environments } = parse(await handler({}));
+      expect(environments).toEqual([{ name: "specs", packages: [] }]);
+   });
+
+   it("reports a non-Error thrown while listing one environment's packages", async () => {
+      const handler = listHandler({
+         listEnvironments: async () => [{ name: "broken" }] as never,
+         getEnvironment: async () => {
+            throw "the store exploded";
+         },
+      });
+      const { environments } = parse(await handler({}));
+      expect(environments[0].error).toBe("the store exploded");
    });
 
    it("reports a non-Error throwable without inventing 'Unknown error'", async () => {

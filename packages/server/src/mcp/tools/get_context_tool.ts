@@ -2128,6 +2128,8 @@ Each package reports \`name\`, its \`description\` where it has one, and two hea
 - \`error\` with no \`stale\`: the package FAILED to load. It is not queryable, and it would otherwise simply be missing, which reads as "does not exist".
 - \`error\` with \`stale: true\`: the package IS serving and answering, but its most recent reload failed to compile, so its names and any numbers you get from it come from the model compiled BEFORE that save. Fix the model and call reload_package.
 
+An environment carries \`error\` on the same terms: its packages could not be listed at all (an unreachable store, expired credentials), so its \`packages\` is empty because the listing FAILED, not because the environment is empty. Without that field the two are the same payload. Report the error rather than telling the user there is nothing there.
+
 Takes no arguments.`;
 
 /**
@@ -2159,6 +2161,7 @@ export function registerListPackagesTool(
                const name = env.name;
                if (!name) continue;
                let packages: unknown[] = [];
+               let environmentError: string | undefined;
                try {
                   const environment = await environmentStore.getEnvironment(
                      name,
@@ -2185,24 +2188,32 @@ export function registerListPackagesTool(
                   }
                } catch (error) {
                   // One unreachable environment must not hide the others: the
-                  // point of this tool is to say what IS there.
+                  // point of this tool is to say what IS there. But an empty
+                  // list is what a genuinely empty environment looks like, so
+                  // the failure has to be reported as well as survived --
+                  // otherwise an unreachable store reads as "models nothing",
+                  // which is the same wrong conclusion `error` exists to stop
+                  // a failed PACKAGE from producing.
+                  environmentError =
+                     error instanceof Error ? error.message : String(error);
                   logger.warn(
-                     "[MCP Tool listEnvironments] listing packages failed",
+                     "[MCP Tool listPackages] listing packages failed",
                      {
                         environmentName: name,
-                        error:
-                           error instanceof Error
-                              ? error.message
-                              : String(error),
+                        error: environmentError,
                      },
                   );
                   packages = [];
                }
-               results.push({ name, packages });
+               results.push({
+                  name,
+                  ...(environmentError ? { error: environmentError } : {}),
+                  packages,
+               });
             }
             return jsonResource(uri, { environments: results });
          } catch (error) {
-            logger.warn("[MCP Tool listEnvironments] listing failed", {
+            logger.warn("[MCP Tool listPackages] listing failed", {
                error: error instanceof Error ? error.message : String(error),
             });
             return contextError(uri, "environments", error);
