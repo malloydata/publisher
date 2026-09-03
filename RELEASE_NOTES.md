@@ -31,7 +31,41 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a boolean query param you misspell now fails instead of doing nothing
+## [0.2.2] — one materialized table, written once and readable by every source that shares it
+
+Malloy [#3029](https://github.com/malloydata/malloy/pull/3029) settled that several sources naming one
+physical table is the design, not a defect: `#@ persist` is inherited through `extend`, `extend` never
+changes a source's materialization SQL, and `#@ -persist` is the opt-out. The publisher still assumed
+one source owned one table. Two consequences, in opposite directions.
+
+**A table was written more than once.** The build loop iterated per SOURCE, so it wrote a table once
+per name that reached it, and once per graph that reached it. It now writes each physical table once,
+keyed on the table's coordinate (destination-or-connection plus physical name) rather than on the
+content address — the address says what a table contains, the coordinate says which table it is.
+
+**An extension of a persisted source served LIVE instead of reading its base's table.** Serve
+bindings are derived one per manifest entry and keyed on that entry's source name, and an entry names
+only the source that built the table — so of a base and its extension, exactly one was bound and the
+other silently recomputed, decided by build order. Every source sharing the table is now bound, on one
+virtual handle. The colocated tier was never affected: it substitutes through the same-connection
+manifest, which is keyed by content address.
+
+Two definitions with DIFFERENT content landing on one physical table is the same guard read backwards:
+each build overwrites the other's rows while both addresses resolve to the table at serve time. That is
+reported, and refused when `PERSIST_COLLISION_ENFORCE` is set — **before anything is written**, since a
+refusal that lands mid-build leaves the first table already replaced and no reclaim can restore the
+rows it overwrote.
+
+### New metrics
+
+| Counter | Meaning |
+|---|---|
+| `publisher_materialization_duplicate_target_skipped_total` | A source whose table this run already wrote. Ordinary for a package that extends a persisted source — a volume signal, not a fault. |
+| `publisher_materialization_shared_address_instructions_total` | One content address instructed to build more than one table. Wasteful, not wrong: the content is the same either way. |
+| `publisher_materialization_table_collision_total` | Two definitions materializing into one table — serve-time wrong data. **This is the one to alert on.** Its rate is also what enabling `PERSIST_COLLISION_ENFORCE` would begin refusing, so a rollout can be measured before it is turned on. |
+
+
+## [0.2.2] — a boolean query param you misspell now fails instead of doing nothing
 
 `reload`, `dropTables` and `bypass_filters` were each read as `=== "true"`, so
 every other spelling — `?reload=1`, `?dropTables=yes`, `?reload=TRUE`, or the
