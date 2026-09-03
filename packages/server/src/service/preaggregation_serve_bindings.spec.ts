@@ -79,7 +79,9 @@ describe("deriveServeBindings carries the entry's origin", () => {
    });
 
    it("reads preaggregate through", () => {
-      const [b] = deriveServeBindings({ e1: entry("e1", "preaggregate") });
+      // No aliases: origin is a property of the entry, not of the names it is
+      // bound under, so the alias map is irrelevant to what this asserts.
+      const [b] = deriveServeBindings({ e1: entry("e1", "preaggregate") }, {});
       expect(b.origin).toBe("preaggregate");
    });
 
@@ -88,7 +90,7 @@ describe("deriveServeBindings carries the entry's origin", () => {
       // only ever have described an authored `#@ persist` source. Defaulting the
       // other way would send an ordinary binding down the rollup path, where the
       // author-model lookups it depends on are deliberately skipped.
-      const [b] = deriveServeBindings({ e1: entry("e1") });
+      const [b] = deriveServeBindings({ e1: entry("e1") }, {});
       expect(b.origin).toBe("persist");
    });
 });
