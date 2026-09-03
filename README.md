@@ -183,7 +183,7 @@ directory you launch from:
 claude mcp add --transport http malloy http://127.0.0.1:4040/mcp -s user
 ```
 
-That is also the fix when an agent reports no `malloy_*` tools. Two things cause it: the session
+That is also the fix when an agent reports no Malloy tools. Two things cause it: the session
 started somewhere other than the directory holding the config, or there is no config there because
 the server skipped one of the cases above. Check the server's startup log, which says which,
 and `ls -a` to see whether the file is there at all. Other MCP clients take the same endpoint through
@@ -198,7 +198,7 @@ and field names, runs the query (`execute_query`), and returns an answer backed 
 semantic model. No schema spelunking, no hallucinated column names.
 
 - **Trust the directory first.** This is a second gate, separate from connecting the server: in a
-  workspace nobody has trusted yet, Claude Code lists the `malloy_*` tools and then refuses every
+  workspace nobody has trusted yet, Claude Code lists the Malloy tools and then refuses every
   call, and a `.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
   interactively there once and answer the trust prompt, asked once per directory. A headless run is
   never asked, so it cannot clear the gate either. You will know it cleared when a query returns data.

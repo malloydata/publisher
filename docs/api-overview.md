@@ -14,7 +14,7 @@ SPDX-License-Identifier: MIT
 | Surface | Port | For |
 | --- | --- | --- |
 | **REST API** | `4000` (base path `/api/v0`) | Applications, dashboards, scripts, and unattended agents: list content, compile models, run queries. See the [REST loop](ai-agents.md#unattended-and-one-shot-agents-the-rest-loop). |
-| **MCP API** | `4040` (`/mcp`) | AI agents in interactive sessions: discovery, query, and authoring over the [Model Context Protocol](https://modelcontextprotocol.io), via the five `malloy_*` tools. See [ai-agents.md](ai-agents.md). |
+| **MCP API** | `4040` (`/mcp`) | AI agents in interactive sessions: discovery, query, and authoring over the [Model Context Protocol](https://modelcontextprotocol.io), via the eight MCP tools. See [ai-agents.md](ai-agents.md). |
 
 Both are read-through onto the same resource hierarchy. Neither surface authenticates callers —
 put the server behind your own gateway before exposing it beyond localhost.

@@ -170,7 +170,7 @@ scaffolded more than once serves more than that, so take the packages, sources a
 views you do not see here from the list above and from `get_context`, never
 from their absence here.
 {{trustNote}}
-If you started this server yourself in this session, your `malloy_*` tools will not
+If you started this server yourself in this session, your Malloy tools will not
 appear however long you wait: an MCP client fixes its tool list when it connects, so
 it never saw a server that did not yet exist. You cannot reconnect yourself. Say so,
 and {{reconnectNote}} Do not quietly switch to curl instead and call it done: it

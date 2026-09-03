@@ -176,7 +176,7 @@ PostgreSQL and other database-specific connections may also honor their respecti
 ### The `.mcp.json` the server writes
 
 On startup the server writes a `.mcp.json` into the directory it was run in, naming the MCP endpoint it
-actually bound, so an agent started in that directory finds the `malloy_*` tools with no registration
+actually bound, so an agent started in that directory finds the Malloy tools with no registration
 step. This is the one place these rules are written down; the README, `AGENTS.md` and
 [deployment.md](deployment.md) point here rather than repeating them.
 
