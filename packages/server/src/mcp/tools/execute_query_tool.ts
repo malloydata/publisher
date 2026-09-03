@@ -270,6 +270,7 @@ export function registerExecuteQueryTool(
             );
             const renderLogs = filterPublisherOwnedRenderLogs(
                validateRenderTags(result),
+               modelPath,
             );
 
             const resultUri = buildMalloyUri(

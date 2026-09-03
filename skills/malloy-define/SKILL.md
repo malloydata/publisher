@@ -159,7 +159,7 @@ The user will:
 - **Remove** fields they don't need.
 - **Change** priorities.
 
-Once the definitions are confirmed, write them into the `.malloy` model (see your modeling workflow). Use `#(doc)` annotations to document sources and fields, and `#(filter)` annotations to declare server-side filterable dimensions where appropriate. Keep the confirmed definitions in the conversation; there is no separate plan-file store.
+Once the definitions are confirmed, write them into the `.malloy` model (see your modeling workflow). Use `#(doc)` annotations to document sources and fields, and `given:` parameters to declare runtime-filterable dimensions where appropriate. `#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. See `skill:malloy-model` § Legacy: Parameterizable Filters. Keep the confirmed definitions in the conversation; there is no separate plan-file store.
 
 ## Data-driven proposals
 

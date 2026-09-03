@@ -23,7 +23,7 @@ Do NOT build the notebook in the same turn as `execute_query`. Explain first, th
 
 ## Filters are inherited from the model, don't declare them in the report
 
-Reports do not (and cannot) define their own filters. If the source has `#(filter)` annotations, Publisher renders the filter widgets, parses caller parameters, and injects `where:` clauses server-side automatically: the report inherits and displays those filters with no extra work. If the analysis needs a knob the source doesn't expose, the right move is to add a `#(filter)` to the source itself (see your modeling workflow's parameterizable-filter guidance for `#(filter)`), not to wedge a filter widget into the report. For curated notebooks with their own per-notebook filter UI on top of the model, see `skill:malloy-notebooks` instead.
+Reports do not (and cannot) define their own filters. If the source declares `given:` parameters (or legacy `#(filter)` annotations), Publisher renders the controls, parses caller parameters, and applies them server-side automatically: the report inherits and displays them with no extra work. If the analysis needs a knob the source doesn't expose, the right move is to add a `given:` to the source itself, not to wedge a filter widget into the report. `#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. The `malloy-model` skill covers this under § Legacy: Parameterizable Filters. For curated notebooks with their own per-notebook filter UI on top of the model, see `skill:malloy-notebooks` instead.
 
 ## What goes in the report
 

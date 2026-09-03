@@ -1,16 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box } from "@mui/material";
+import { Box, useTheme } from "@mui/material";
 import React, {
    Suspense,
    useCallback,
    useEffect,
    useLayoutEffect,
+   useMemo,
    useRef,
 } from "react";
 import { buildMalloyExplicitTheme } from "../../theme/buildMalloyExplicitTheme";
-import { buildTableCssVars } from "../../theme/buildTableCssVars";
+import {
+   buildTableCssVars,
+   DASHBOARD_CARD_PADDING_PX,
+   type DashboardCardGeometry,
+} from "../../theme/buildTableCssVars";
 import { buildVegaThemeOverride } from "../../theme/buildVegaThemeOverride";
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
@@ -153,8 +158,12 @@ async function extractChartThemeOverride(parsed: unknown) {
    }
 }
 
-function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
-   const vars = buildTableCssVars(theme);
+function applyTableCssVars(
+   element: HTMLElement,
+   theme: ResolvedTheme,
+   card: DashboardCardGeometry,
+): void {
+   const vars = buildTableCssVars(theme, card);
    for (const [key, value] of Object.entries(vars)) {
       element.style.setProperty(key, value);
    }
@@ -174,6 +183,18 @@ function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
  * than the renderer's own so they win regardless of stylesheet order.
  */
 const PUBLISHER_RENDERER_OVERRIDES_CSS = `
+/* Card geometry, through the renderer's OWN theme vars rather than over the top
+   of them. It declares --malloy-theme--dashboard-* on .malloy-render itself and
+   passes each through to the --malloy-render--* the card CSS reads, so a value
+   inherited from our wrapper loses to that declaration however early it is set:
+   this has to be a rule on the same element, at higher specificity. Doubling the
+   class does that, and then no !important is needed — which matters, because
+   !important here also lands on .dashboard-item-borderless and repaints a card
+   the author asked to have no card. */
+.malloy-render.malloy-render {
+   --malloy-theme--dashboard-card-radius: var(--publisher-dashboard-card-radius);
+   --malloy-theme--dashboard-card-padding: var(--publisher-dashboard-card-padding);
+}
 /* dashboard.css hardcodes background: #f7f9fc on .malloy-dashboard
    and .dashboard-row-header, which would paint light grey in dark
    mode and also bleed an operator-picked palette.background across
@@ -208,11 +229,16 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    background: var(--publisher-dashboard-root) !important;
    background-color: var(--publisher-dashboard-root) !important;
 }
-.malloy-render .malloy-dashboard .dashboard-item {
+.malloy-render .malloy-dashboard .dashboard-item:not(.dashboard-item-borderless) {
    /* Tile padding around each chart / table. Uses our custom
       --malloy-render--tile-background so the operator can theme the
       tile separately from the table header row (which paints from
-      --malloy-render--table-pinned-background below). */
+      --malloy-render--table-pinned-background below).
+
+      A flat bordered card rather than the renderer's shadow ring, which is what
+      makes it match the composite tile's Paper. :not(borderless) because
+      # borderless asks for no card at all, and an !important background and
+      border drew one anyway. */
    background: var(--malloy-render--tile-background) !important;
    color: var(--malloy-render--table-body-color) !important;
    box-shadow: none !important;
@@ -340,6 +366,19 @@ function RenderedResultInner({
    // bails, so overlapping renders can't leave two charts or leak a viz.
    const renderGenRef = useRef(0);
    const { theme: baseTheme, layers, mode } = usePublisherTheme();
+   // The host app's card radius, so a dashboard card reads as a card of the app
+   // it is embedded in rather than as the renderer's 8px on a 4px page. Both
+   // cards take it from here; see DashboardTile, which is the other one.
+   const cardRadius = useTheme().shape.borderRadius;
+   // Memoized because it is a dependency of the render effect below, and a fresh
+   // object each render would re-render the chart on every render.
+   const cardGeometry = useMemo<DashboardCardGeometry>(
+      () => ({
+         radius: `${cardRadius}px`,
+         padding: `${DASHBOARD_CARD_PADDING_PX}px`,
+      }),
+      [cardRadius],
+   );
 
    // Dispose the last live viz on unmount only. Deliberately NOT done in the
    // render effect's cleanup: a re-run must keep the old chart until the new
@@ -453,7 +492,7 @@ function RenderedResultInner({
          // child of the container, so writing the new per-chart CSS vars there
          // would repaint the old chart's chrome to the new theme before it is
          // swapped out. Scoping the vars to this stage keeps each chart stable.
-         applyTableCssVars(stage, effectiveTheme);
+         applyTableCssVars(stage, effectiveTheme, cardGeometry);
          if (previous) {
             element.style.position = "relative";
             stage.style.position = "absolute";
@@ -757,6 +796,7 @@ function RenderedResultInner({
       baseTheme,
       layers,
       mode,
+      cardGeometry,
    ]);
 
    // Malloy renderer requires explicit pixel height to render visualizations

@@ -175,6 +175,7 @@ describe("Dashboard discovery (E2E)", () => {
          "grid",
          "overview",
          "regions",
+         "tiled",
       ]);
 
       const overview = dashboards.find((d) => d.name === "overview");
@@ -290,6 +291,57 @@ describe("Dashboard discovery (E2E)", () => {
       ]);
       // The control row is the union across tiles.
       expect(manifest.givens?.map((s) => s.name)).toEqual(["BRAND", "REGION"]);
+   });
+
+   // The per-tile layout, off the VIEW each tile names rather than off the tile
+   // entry, which is what lets one view lay out the same as a tile and as a
+   // `nest:`. Asserted end to end because the reader walks a compiled ModelDef:
+   // the unit tests hand it annotations directly and cannot show that a real
+   // compile puts them where it looks.
+   it("carries each tile's label, colspan and break off its view", async () => {
+      const manifest = await getManifest("tiled");
+      expect(manifest).toMatchObject({ dashboardColumns: 12 });
+      expect(manifest.tiles).toEqual([
+         {
+            query: "tiles -> order_tile",
+            givenNames: ["BRAND"],
+            label: "Orders",
+            colspan: 6,
+         },
+         {
+            query: "tiles -> revenue_tile",
+            givenNames: ["BRAND"],
+            label: "Revenue",
+            colspan: 6,
+         },
+         {
+            query: "tiles -> brand_tile",
+            givenNames: ["BRAND"],
+            label: "By brand",
+            colspan: 6,
+            break: true,
+         },
+         {
+            query: "tiles -> region_tile",
+            givenNames: ["BRAND"],
+            label: "By region",
+            colspan: 6,
+         },
+      ]);
+   });
+
+   // Every tile is a standalone query and the renderer reads colspan and break
+   // only for the children of a `# dashboard` nest, so without Publisher owning
+   // those two tag names each tile answers "Unknown render tag 'colspan'".
+   it("runs a laid-out tile with no spurious render warning", async () => {
+      const res = await fetch(apiUrl("/models/dashboards/tiled.malloy/query"), {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ query: "run: tiles -> brand_tile" }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { renderLogs?: unknown[] };
+      expect(body.renderLogs).toBeUndefined();
    });
 
    it("404s an unknown slug, and a dashboards/ file that is only an include", async () => {
@@ -939,7 +991,15 @@ describe("Dashboard discovery (E2E)", () => {
          );
          expect(messages).toContainEqual(
             expect.stringContaining(
-               "dashboard_columns must be a positive integer",
+               "# dashboard { columns=… } must be a positive integer",
+            ),
+         );
+         // The other half of the one-spelling change, and the reason the
+         // enumeration lint exists: nothing reads `dashboard_columns` any more,
+         // so without this the grid silently falls back to the default width.
+         expect(messages).toContainEqual(
+            expect.stringContaining(
+               "`dashboard_columns` in the artifact tag does nothing in Publisher",
             ),
          );
          expect(messages).toContainEqual(

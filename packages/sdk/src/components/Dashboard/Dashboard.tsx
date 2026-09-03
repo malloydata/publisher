@@ -16,7 +16,7 @@ import { useServer } from "../ServerProvider";
 import { DashboardTile } from "./DashboardTile";
 
 export interface DashboardProps {
-   /** `publisher://environments/{env}/packages/{pkg}`, env and package only. */
+   /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
    resourceUri: string;
    /** The dashboard's slug, as listed by the dashboards endpoint. */
    dashboard: string;
@@ -80,6 +80,26 @@ const TILE_HEIGHT = 400;
  */
 const WHOLE_PAGE_HEIGHT = 20000;
 
+/** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
+const DEFAULT_COLUMNS = 2;
+
+/**
+ * The `grid-column` one tile occupies: its `# colspan`, and a `# break` forcing
+ * it to start a fresh row.
+ *
+ * Clamped to the grid width the same way @malloydata/render clamps it, so one
+ * view laid out as a composite tile and as a `nest:` under `# dashboard` lands
+ * in the same place. A break is `1 / span N` — an explicit start line, which is
+ * what pushes the tile down to the next row; the renderer's grid does the same.
+ */
+export function tileGridColumn(
+   tile: { colspan?: number; break?: boolean },
+   columns: number,
+): string {
+   const span = Math.min(tile.colspan ?? 1, columns);
+   return tile.break ? `1 / span ${span}` : `span ${span}`;
+}
+
 /**
  * A Malloyyo-style dashboard: a control row over one or more query results,
  * declared entirely by tags in a package's `dashboards/*.malloy`.
@@ -110,6 +130,7 @@ export function Dashboard({
    // than here, so every hook still runs in the same order.
    const environmentName = parsed.environmentName ?? "";
    const packageName = parsed.packageName ?? "";
+   const versionId = parsed.versionId;
    const uriNamesBoth = !!parsed.environmentName && !!parsed.packageName;
 
    const {
@@ -118,12 +139,23 @@ export function Dashboard({
       isError,
       error,
    } = useQueryWithApiError({
-      queryKey: ["dashboard", environmentName, packageName, dashboard],
+      // Every value the request is built from, so the key cannot drift out of
+      // step with it. A version that reached the request alone would leave two
+      // versions of one dashboard on a single cache entry, each able to serve
+      // the other's manifest.
+      queryKey: [
+         "dashboard",
+         environmentName,
+         packageName,
+         versionId,
+         dashboard,
+      ],
       queryFn: () =>
          apiClients.dashboards.getDashboard(
             environmentName,
             packageName,
             dashboard,
+            versionId,
          ),
       // No point asking for a dashboard under a name the URI never carried.
       enabled: uriNamesBoth,
@@ -171,7 +203,13 @@ export function Dashboard({
       // their starting VALUES alone, so two dashboards whose starting values
       // coincide (the common case: both empty) look like one document, and the
       // one you came from keeps filtering the one you drilled into.
-      documentKey: `${environmentName}/${packageName}/${dashboard}`,
+      // The version belongs in that identity too, so a swap between versions
+      // drops the edits a reader made to the one they came from. Only the
+      // EDITS: `initial` is `startingValues` merged with `params`, so a host
+      // that round-trips givens through its own URL hands them straight back
+      // and they still apply across the swap. That one is the host's call, and
+      // this key neither can nor should overrule it.
+      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${dashboard}`,
       // Absent means autorun; only an explicit `autorun=false` batches.
       autorun: manifest?.autorun !== false,
    });
@@ -180,7 +218,13 @@ export function Dashboard({
       options,
       isLoading: optionsLoading,
       failed: optionsFailed,
-   } = useSuggestOptions(environmentName, packageName, manifest?.path, specs);
+   } = useSuggestOptions(
+      environmentName,
+      packageName,
+      manifest?.path,
+      specs,
+      versionId,
+   );
 
    // A drill tag names its given as the model spells it, and `# drill` with no
    // `given=` falls back to the DIMENSION's spelling, which need not match. The
@@ -295,6 +339,7 @@ export function Dashboard({
 
    const modelPath = manifest.path;
    const tiles = manifest.tiles ?? [];
+   const columns = manifest.dashboardColumns ?? DEFAULT_COLUMNS;
 
    return (
       <Stack spacing={2}>
@@ -327,6 +372,7 @@ export function Dashboard({
             <DashboardTile
                environmentName={environmentName}
                packageName={packageName}
+               versionId={versionId}
                modelPath={modelPath}
                queryName={manifest.query}
                givens={applied}
@@ -344,29 +390,43 @@ export function Dashboard({
                   display: "grid",
                   gridTemplateColumns: {
                      xs: "1fr",
-                     md: `repeat(${manifest.dashboardColumns ?? 2}, minmax(0, 1fr))`,
+                     md: `repeat(${columns}, minmax(0, 1fr))`,
                   },
                   gap: 2,
                }}
             >
                {tiles.map((tile, index) => (
-                  <DashboardTile
+                  <Box
                      // Position too, not the expression alone: `tiles=[…]` can
                      // repeat one, which is a typo rather than a request for two
                      // identical panels, and keying on the expression made the
                      // duplicate warn and reconcile onto its twin.
                      key={`${index}:${tile.query}`}
-                     environmentName={environmentName}
-                     packageName={packageName}
-                     modelPath={modelPath}
-                     tile={tile.query}
-                     givens={applied}
-                     declaredTypes={declaredTypes}
-                     givenNames={tile.givenNames}
-                     height={height ?? TILE_HEIGHT}
-                     maxResultSize={maxResultSize}
-                     drill={drill}
-                  />
+                     sx={{
+                        display: "grid",
+                        // Only above `md`: the narrow breakpoint is one column,
+                        // where a span would overflow the grid rather than widen
+                        // anything.
+                        gridColumn: { md: tileGridColumn(tile, columns) },
+                     }}
+                  >
+                     <DashboardTile
+                        environmentName={environmentName}
+                        packageName={packageName}
+                        versionId={versionId}
+                        modelPath={modelPath}
+                        tile={tile.query}
+                        label={tile.label}
+                        subtitle={tile.subtitle}
+                        borderless={tile.borderless}
+                        givens={applied}
+                        declaredTypes={declaredTypes}
+                        givenNames={tile.givenNames}
+                        height={height ?? TILE_HEIGHT}
+                        maxResultSize={maxResultSize}
+                        drill={drill}
+                     />
+                  </Box>
                ))}
             </Box>
          ) : (

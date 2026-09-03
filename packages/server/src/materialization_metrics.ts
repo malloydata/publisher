@@ -158,6 +158,32 @@ const manifestBindDegradedCounter = lazyCounter(
       "(build-side seed). A misconfiguration that breaks the source on a " +
       "case-folding engine (Snowflake); alertable.",
 );
+const duplicateTargetSkipCounter = lazyCounter(
+   "publisher_materialization_duplicate_target_skipped_total",
+   "Sources skipped because the physical table they name was already built in " +
+      "this run. Ordinary for a package that extends a persisted source; a " +
+      "rising count against a package with no extension means the plan is " +
+      "enumerating one table under more names than expected.",
+);
+const sharedAddressInstructionCounter = lazyCounter(
+   "publisher_materialization_shared_address_instructions_total",
+   "Content addresses that arrived with more than one instruction naming a " +
+      "DIFFERENT physical table. The host minted a table per source where " +
+      "several sources share one artifact. With a sourceID on each instruction " +
+      "every table is built and only one is recorded, so the rest are orphaned; " +
+      "without one the last instruction wins and the earlier names are never " +
+      "built. Wasteful, not wrong — the table's CONTENT is the same either way.",
+);
+const tableCollisionCounter = lazyCounter(
+   "publisher_materialization_table_collision_total",
+   "Two definitions with DIFFERENT content addresses materializing into ONE " +
+      "physical table. Each build overwrites the other's rows while both " +
+      "addresses resolve to the table at serve time, so a query is answered " +
+      "from another source's data. A wrong answer, not wasted work — page on " +
+      "this one. Refused instead of counted-and-continued when " +
+      "PERSIST_COLLISION_ENFORCE is set, so a non-zero rate here is also the " +
+      "measure of what flipping that flag would start refusing.",
+);
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
    "Wall-clock duration of building a single persist source.",
@@ -330,6 +356,34 @@ export function recordAutoLoadOutcome(outcome: "success" | "failure"): void {
  */
 export function recordConnectionDigestSkipped(): void {
    connectionDigestSkipCounter().add(1);
+}
+
+/**
+ * Record a source skipped because its physical table was already built in this
+ * run. Expected whenever several sources map onto one artifact — a base and its
+ * `extend` share a content address — so this is a volume signal, not a fault.
+ */
+export function recordDuplicateTargetSkipped(): void {
+   duplicateTargetSkipCounter().add(1);
+}
+
+/**
+ * Record a content address that arrived with instructions naming more than one
+ * physical table. The publisher cannot resolve this — the host asked for both
+ * tables — so it builds each and records one, leaving the others unreferenced.
+ */
+export function recordSharedAddressInstructions(): void {
+   sharedAddressInstructionCounter().add(1);
+}
+
+/**
+ * Record two definitions materializing into one physical table. Distinct from
+ * {@link recordSharedAddressInstructions}: that one is a host minting more tables
+ * than an artifact needs (wasteful), this one is two different relations sharing a
+ * table (serve-time wrong data).
+ */
+export function recordTableCollision(): void {
+   tableCollisionCounter().add(1);
 }
 
 /**

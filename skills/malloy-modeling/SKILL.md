@@ -95,9 +95,8 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 
 **Two paths to a model: both produce the same fully documented result:**
 - **Schema-first:** "Model my data" → 8-step workflow above using the relevant skills
-- **Analysis-first:** "Explore this data" → `skill:malloy-analyze` → formalize via `skill:malloy-model` (`reference/analysis-to-model.md`)
-
-After analysis completes, **always recommend formalizing into a model.**
+- **Analysis-first:** a data question arrives before any model exists → `skill:malloy-model-as-you-go`. It answers the question with `skill:malloy-analysis`, then codifies what the answer assumed into the model, one question at a time, confirming binding decisions first. The model exists by the end; there is no separate formalize step.
+- **Open-ended exploration** with no intent to keep anything: `skill:malloy-analyze`. If it turns into something worth keeping, formalize via `skill:malloy-model` (`reference/analysis-to-model.md`).
 
 ## Agent Behavior
 
@@ -119,9 +118,9 @@ After analysis completes, **always recommend formalizing into a model.**
 | "Model from LookML" | 8-step with prior art via `skill:malloy-lookml-review` |
 | "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analyze` (EDA) |
 | "Build a dashboard", "create views" on existing model | `skill:malloy-analyze` (views), plus `skill:malloy-charts` or `skill:malloy-notebooks` as needed |
-| "Build a model but not sure what metrics" | `skill:malloy-analyze` first, then formalize via `skill:malloy-model` |
+| "Build a model but not sure what metrics" | `skill:malloy-model-as-you-go`: answer their first real question, codify what it assumed, repeat |
 
-**If the user's first message is a data question** (not "build me a model"), route to `skill:malloy-analyze`. After analysis completes, **always recommend formalizing via the analysis-to-model workflow** (`skill:malloy-model` → `reference/analysis-to-model.md`).
+**If the user's first message is a data question** (not "build me a model"), route to `skill:malloy-model-as-you-go`. It answers with `skill:malloy-analysis` and grows the model from what each answer assumed, so there is nothing to formalize afterwards.
 
 ## Additional Support Skills
 

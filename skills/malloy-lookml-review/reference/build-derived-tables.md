@@ -12,7 +12,7 @@ SPDX-License-Identifier: MIT
 ```
 derived_table:
 ├── explore_source: → NDT path
-│   ├── Simple aggregation → Malloy from() extend {}
+│   ├── Simple aggregation → Malloy (query) extend {}
 │   ├── With derived_column: (window functions) → Malloy window function patterns
 │   ├── Chained NDTs → dependency ordering, multi-stage computed source
 │   └── With bind_filters → flag, no direct Malloy equivalent
@@ -25,10 +25,12 @@ derived_table:
 
 ### Simple Aggregation NDT
 
-Express the aggregation as a Malloy query, then build a source from it:
+Express the aggregation as a Malloy query, then build a source from it by
+wrapping the query in parentheses and extending it (`from(...)` was removed from
+the language and no longer parses):
 
 ```malloy
-source: source_name is from(
+source: source_name is (
   base_source -> {
     group_by: group_field
     aggregate:

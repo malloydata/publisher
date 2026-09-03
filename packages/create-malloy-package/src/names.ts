@@ -29,6 +29,25 @@ const MAX_FILENAME = 255;
 const MAX_PACKAGE_NAME = MAX_FILENAME - ".malloy".length;
 
 export function validatePackageName(name: string): void {
+   // "." and ".." are what someone types reaching for the npm-create convention
+   // ("scaffold into this directory"), and the generic message answers them
+   // badly: it says "." is an allowed character while refusing "." as a name,
+   // which reads as a contradiction rather than as a rule. Neither is a name
+   // Publisher can serve (path_safety.ts refuses both), and this tool has no
+   // mode that writes a package's files straight into the working directory —
+   // createPackage always makes cwd/<name>/. So name the two things that do
+   // work instead of restating the character rule.
+   if (name === "." || name === "..") {
+      throw new ScaffoldError(
+         `"${name}" is not a package name, and this tool cannot scaffold a ` +
+            `package into the directory you are already in.\n\n` +
+            `To create a package, name it — it goes in a new subdirectory:\n` +
+            `  create-malloy-package sales\n\n` +
+            `To set this directory up as a Publisher workspace without ` +
+            `creating a package, pass no name at all:\n` +
+            `  create-malloy-package`,
+      );
+   }
    if (!SAFE_NAME_RE.test(name)) {
       // preview(), not the raw name. This is the one message that echoes a name
       // the rule has just refused, so by construction it holds characters

@@ -230,6 +230,7 @@ export default function Notebook({
       packageName,
       notebookPath,
       declaredGivens,
+      versionId,
    );
 
    // The declared names, indexed case-insensitively, so a drill tag resolves

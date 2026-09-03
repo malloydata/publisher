@@ -112,6 +112,7 @@ import {
    type FilterParams,
 } from "./filter";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import { filterPublisherOwnedRenderLogs } from "./dashboard";
 import {
    docCommentTitleAndDescription,
    motlyTag,
@@ -283,10 +284,12 @@ function quoteMalloyIdentifier(name: string | undefined): string {
 }
 
 /**
- * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an
- * error-severity issue that affects only how a field renders, never whether the
- * model compiles or a query runs. `subject` is the query or view it sits on
- * (e.g. `by_carrier` or `flights -> by_carrier`).
+ * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an issue
+ * that affects only how a field renders, never whether the model compiles or a
+ * query runs. `subject` is the query or view it sits on (e.g. `by_carrier` or
+ * `flights -> by_carrier`). `severity` is the renderer's own: `error` for a tag
+ * malformed for its field, `warn` for one that is well-formed but inert where it
+ * sits and therefore silently ignored.
  */
 export interface RenderTagWarning {
    subject: string;
@@ -3652,14 +3655,24 @@ export class Model {
     * annotated source view (`run: <source> -> <view>`) compile-only -- no
     * execution -- to get a stable result schema, then runs the renderer's
     * headless `validateRenderTags`. Targets with no annotations carry no render
-    * tags, so they are skipped without compiling. Any error-severity finding
-    * (e.g. a child-only `# big_value { sparkline=... }` placed on a view with no
-    * activating big_value) is logged as a warning naming the offending target;
-    * it does not fail the package load. Such a tag still renders as
-    * "[object Object]" at query time, so the warning is the operator-facing
-    * signal. Lower-severity findings are left for the query-time `renderLogs`
-    * surface. The findings are returned so the owning Package can surface them
-    * as non-fatal `warnings` on its response.
+    * tags, so they are skipped without compiling. Every finding the renderer
+    * reports is logged as a warning naming the offending target; none of them
+    * fail the package load. The findings are returned so the owning Package can
+    * surface them as non-fatal `warnings` on its response, tagged with the
+    * renderer's own severity:
+    *
+    *   - `error`: the tag is malformed for the field it sits on (e.g. a
+    *     child-only `# big_value { sparkline=... }` on a view with no activating
+    *     big_value, or `# colspan=abc`). It renders as "[object Object]" or an
+    *     inline error at query time.
+    *   - `warn`: the tag is well-formed but inert where it sits, so the renderer
+    *     ignores it (`# colspan` outside `# dashboard { columns=N }`, or a
+    *     colspan wider than the grid, which is clamped). Nothing looks broken at
+    *     query time -- the layout just is not what the author wrote -- which is
+    *     why load time is the only place this becomes visible.
+    *
+    * `warn` and `error` are the only severities the renderer emits, so no
+    * finding is dropped here.
     */
    public async validateRenderTags(): Promise<RenderTagWarning[]> {
       const mm = this.modelMaterializer;
@@ -3723,20 +3736,45 @@ export class Model {
             // compile path; don't mask that with a render-tag error.
             continue;
          }
-         const errors = validateRenderTags(result).filter(
-            (log) => log.severity === "error",
+         // Keep both severities. The renderer reports a tag that is well-formed
+         // but inert as `warn`, not `error` -- `# colspan` outside columns mode
+         // ("Ignored # colspan ... colspan only applies in columns mode"), or a
+         // colspan wider than the grid -- so filtering to error-severity
+         // dropped exactly the findings an author cannot otherwise see: the tag
+         // parses, the package loads, the query runs, and the layout silently
+         // ignores it. `warn` and `error` are the only severities the renderer
+         // emits, so this is everything it reports, and `severity` keeps the two
+         // apart for the operator.
+         //
+         // Publisher-owned tags are dropped first. `# artifact` and `# drill`
+         // share the `#` namespace but mean nothing to the renderer, which
+         // reports each as `Unknown render tag` at WARN severity -- invisible
+         // while this filtered to errors, and a finding on every dashboard file
+         // the moment it stopped. The query-time paths already route through
+         // filterPublisherOwnedRenderLogs for the same reason; this is the
+         // third call site, not a second mechanism.
+         // No severity filter here. `warn` and `error` are the only two the
+         // renderer emits today, but filtering to that pair would make an
+         // unrecognized third vanish -- this same bug again, a finding the
+         // author cannot see any other way, dropped on the way out. The
+         // narrowing below surfaces anything unexpected as `warn` instead.
+         const logs = filterPublisherOwnedRenderLogs(
+            validateRenderTags(result),
+            this.modelPath,
          );
-         if (errors.length > 0) {
+         if (logs.length > 0) {
+            // An inert tag is not an invalid one, so don't call it "Invalid";
+            // the per-finding messages already say which kind each is.
             logger.warn(
-               `Invalid renderer configuration on '${target.label}': ${errors
-                  .map((e) => e.message)
+               `Render tag findings on '${target.label}': ${logs
+                  .map((e) => `[${e.severity}] ${e.message}`)
                   .join("; ")}`,
             );
-            for (const e of errors) {
+            for (const e of logs) {
                findings.push({
                   subject: target.label,
                   message: e.message,
-                  severity: "error",
+                  severity: e.severity === "error" ? "error" : "warn",
                });
             }
          }

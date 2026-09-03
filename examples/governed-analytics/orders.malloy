@@ -58,9 +58,10 @@ source: sales is orders_base extend {
   }
 
   #(doc) KPIs + trend and breakdowns, all scoped by the current givens
-  # dashboard
+  # dashboard { columns=2 }
   view: overview is {
     nest:
+      # colspan=2
       # big_value
       kpis is {
         aggregate:

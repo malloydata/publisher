@@ -191,6 +191,10 @@ paths:
         Retrieves a list of all environments currently hosted on this Malloy Publisher server.
         Each environment contains metadata about its packages, connections, and configuration.
         This endpoint is typically used to discover available environments and their basic information.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-environment: use `GET /environments/{environmentName}?reload=true`.
       responses:
         "200":
           description: A list of all available environments
@@ -200,6 +204,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -256,7 +262,13 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: reload
           in: query
-          description: Load / reload the environment before returning result
+          description: |
+            Load / reload the environment before returning result.
+
+            Only the two spellings OpenAPI serializes a boolean as are accepted:
+            `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
+            parameter repeated) is refused with 400 rather than read as `false`,
+            which would answer 200 without recompiling.
           required: false
           schema:
             type: boolean
@@ -267,6 +279,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1286,6 +1300,10 @@ paths:
         Retrieves a list of all Malloy packages within the specified environment. Each package
         contains models, notebooks, databases, and other resources. This endpoint is useful
         for discovering available packages and their basic metadata.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-package: use `GET /environments/{environmentName}/packages/{packageName}?reload=true`.
       parameters:
         - name: environmentName
           in: path
@@ -1302,6 +1320,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1382,7 +1402,13 @@ paths:
             $ref: "#/components/schemas/VersionIdPattern"
         - name: reload
           in: query
-          description: Load / reload the package before returning result
+          description: |
+            Load / reload the package before returning result.
+
+            Only the two spellings OpenAPI serializes a boolean as are accepted:
+            `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
+            parameter repeated) is refused with 400 rather than read as `false`,
+            which would answer 200 without recompiling.
           required: false
           schema:
             type: boolean
@@ -1393,6 +1419,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1811,7 +1839,7 @@ paths:
         Retrieves everything a viewer needs to render one dashboard: the artifact
         tag's declarations plus the control contract derived from the givens its
         query references. Running the dashboard needs no further endpoint — its
-        query, each composite tile, and each control's suggest query all run
+        query, each tile, and each control's suggest query all run
         through the model query endpoint with `givens`, using the manifest's
         `path` as the model.
       parameters:
@@ -2521,12 +2549,18 @@ paths:
             When true, also drop the physical tables recorded in the
             materialization's manifest before deleting the record. Defaults to
             false (record-only delete; the caller owns table GC).
+
+            Only `true` and `false` are accepted. Any other value is refused
+            with 400 rather than read as `false`, which would delete the record,
+            leave the tables on disk, and still answer 204.
           schema:
             type: boolean
             default: false
       responses:
         "204":
           description: Materialization deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -2997,9 +3031,11 @@ components:
           description: >-
             Non-fatal findings collected when the package loaded, none of which
             stop the model compiling or the package loading. Render-tag
-            findings: a render annotation (e.g. `# big_value` or `# currency`)
-            misconfigured for the field it sits on, so it renders as
-            "[object Object]" or an inline error at query time. Materialization
+            findings: a render annotation (e.g. `# big_value`, `# currency` or
+            `# colspan`) the renderer cannot apply as written, either malformed
+            for the field it sits on, so it renders as "[object Object]" or an
+            inline error at query time, or inert where it sits and silently
+            ignored. Materialization
             findings: a `storage=` source not served from storage, a `#@ persist`
             source that was not recognized as materializable, a persist-target
             collision, and materialization-config problems that degrade
@@ -3090,9 +3126,15 @@ components:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Render findings are surfaced here only at
-                  `error` severity; lower-severity render findings remain on the
-                  query-time `renderLogs` surface. Materialization and dashboard
+                  Finding severity. Render-tag findings use both: `error` for
+                  a tag malformed for the field it sits on, which renders as
+                  "[object Object]" or an inline error at query time, and `warn`
+                  for one that is well-formed but inert where it sits and so is
+                  silently ignored (e.g. `# colspan` outside
+                  `# dashboard { columns=N }`), where nothing looks broken at
+                  query time and the layout simply is not what was written.
+                  Those are the only two severities the renderer emits, so no
+                  render finding is withheld. Materialization and dashboard
                   findings use both: `error` for something that cannot work as
                   written, such as a tile naming a view the source does not
                   have, and `warn` for something that works but not as the
@@ -3476,7 +3518,7 @@ components:
         Everything a viewer needs to render one dashboard: the artifact tag's
         declarations plus the control contract derived from the givens its query
         references. Running needs no dashboard-specific endpoint — the query,
-        each composite tile, and each control's suggest query all run through
+        each tile, and each control's suggest query all run through
         the ordinary model query endpoint with `givens`.
       properties:
         resource:
@@ -3513,24 +3555,29 @@ components:
         query:
           type: string
           description: >-
-            Name of the tagged query to run. Present for the single-query form
-            only; a composite dashboard carries `tiles` instead. A NAME rather
-            than an expression, so it goes in the `queryName` field of a
-            `POST …/models/{path}/query` body. A tile's `query` is the other
-            shape and is not interchangeable with this one; see
-            `DashboardTile.query`.
+            Name of the tagged query whose single result IS the page. Set when the
+            `# artifact` tag sits on a `query:`; a dashboard authored the ordinary
+            way carries `tiles` instead and leaves this absent. A NAME rather than
+            an expression, so it goes in the `queryName` field of a
+            `POST …/models/{path}/query` body. A tile's `query` is the other shape
+            and is not interchangeable with this one; see `DashboardTile.query`.
         tiles:
           type: array
-          description:
-            Tiles of a composite dashboard, run separately and combined into one
-            grid. Present for the composite form only.
+          description: >-
+            The dashboard's tiles, each run as its own query and combined into one
+            grid. This is how a dashboard is normally authored, and the only form
+            that can span sources. Absent when the `# artifact` tag sits on a
+            `query:` instead, in which case `query` is set.
           items:
             $ref: "#/components/schemas/DashboardTile"
         dashboardColumns:
           type: integer
-          description:
-            Grid width — from the `# dashboard {columns=N}` render tag, or
-            `dashboard_columns=N` on a composite artifact tag
+          description: >-
+            Grid width, from the `# dashboard {columns=N}` render tag beside the
+            artifact tag. One spelling wherever the artifact tag sits: Publisher
+            reads it at model level to lay out `tiles`, and `@malloydata/render`
+            reads the same tag off a tagged `query:`. Absent means the viewer's
+            default.
         startingGivens:
           allOf:
             - $ref: "#/components/schemas/EncodedGivenValues"
@@ -3546,9 +3593,9 @@ components:
           type: array
           description: |
             The control row. Normally one entry per given the dashboard runs
-            with, which is what its `query` references on the single-query form
-            and the union over `tiles` on a composite, and which the entry file
-            can bind. A composite widens it to
+            with: the union over `tiles`, or what `query` references when the tag
+            sits on a query, and which the entry file
+            can bind. The row widens to
             every given the entry file surfaces when any tile is one discovery
             cannot resolve, because that tile's givens are otherwise absent from
             the row it filters by; see `DashboardTile.givenNames`. So an entry
@@ -3576,7 +3623,7 @@ components:
 
     DashboardTile:
       type: object
-      description: One tile of a composite dashboard
+      description: One tile of a dashboard
       properties:
         query:
           type: string
@@ -3601,6 +3648,39 @@ components:
             widens `DashboardManifest.givens` to every given the entry file
             surfaces, rather than the union over the resolvable tiles, so that
             the row actually contains the givens that tile filters by.
+        label:
+          type: string
+          description: >-
+            Heading for the tile, from a `# label` on the view or query it names.
+            Absent when it carries none, in which case a viewer derives one from
+            the run expression.
+        subtitle:
+          type: string
+          description:
+            Second line under the heading, from a `# subtitle` on the view or
+            query it names.
+        colspan:
+          type: integer
+          description: >-
+            Grid columns this tile spans, from a `# colspan=N` on the view or
+            query it names. Clamped to `dashboardColumns` at render time. Absent
+            means one column.
+        break:
+          type: boolean
+          description: >-
+            Start a new grid row at this tile, from a `# break` on the view or
+            query it names. Named for the tag, so every per-tile field on this
+            schema is spelled the way an author writes it. A generated client
+            escapes the attribute where the word is reserved (the Python client
+            exposes `break_`) while the wire key stays `break`.
+        borderless:
+          type: boolean
+          description: >-
+            Draw the result with no card around it, from a `# borderless` on the
+            view or query it names. Together with `label`, `subtitle`, `colspan`
+            and `break` this is the whole per-child tag set `@malloydata/render`
+            resolves for a `# dashboard` nest child, read the same way here so one
+            view presents identically as a tile and as a nest.
 
     DataApp:
       type: object
@@ -4720,25 +4800,62 @@ components:
       type: object
       description: AWS S3 connection configuration for DuckDB
       properties:
+        # No schema `default:` here on purpose, though the reason is narrower than
+        # it looks: at the pinned openapi-typescript (6.x) a defaulted property
+        # still generates as optional, so a `default:` would be harmless today. It
+        # is at 7.x that a default makes the property REQUIRED, which would force
+        # every caller to name a provider. Omitted for robustness across that bump,
+        # not to avoid a present-day break. Note `region` below carries a default
+        # and so already has that exposure — a 7.x upgrade has to deal with it
+        # either way. The default is stated in the description and applied when the
+        # connection is attached.
+        provider:
+          type: string
+          enum:
+            - config
+            - credential_chain
+          description: >-
+            How credentials are obtained; defaults to `config` when omitted.
+            `config` uses the accessKeyId and secretAccessKey on this object,
+            which are then required.
+            `credential_chain` resolves them from the host instead — an instance
+            profile, a web-identity token, or the environment — so no key is
+            stored, and supplying one is rejected. Chain resolution happens when
+            the connection is attached, so a host that cannot supply credentials
+            fails there rather than on first object access.
+        chain:
+          type: string
+          description: >-
+            Ordered list of credential providers to try, semicolon-separated,
+            for `provider: credential_chain` (DuckDB's CHAIN). Recognized
+            providers are env, config, sts, instance, sso, process, and
+            web_identity. Omit to use Publisher's default order, which covers
+            the environment, a web-identity token, and an instance profile.
+            Rejected under `provider: config`, where the key pair beside it
+            is what grants access.
         accessKeyId:
           type: string
-          description: AWS access key ID
+          description: "AWS access key ID (required for `provider: config`)"
         secretAccessKey:
           type: string
-          description: AWS secret access key
+          description: "AWS secret access key (required for `provider: config`)"
         region:
           type: string
-          description: AWS region (e.g., us-east-1)
-          default: us-east-1
+          description: >-
+            AWS region (e.g., us-east-1). Optional, and Publisher falls back to
+            us-east-1 when it is absent — but the fallback is applied in code, not
+            by this schema: a `default:` here would be documentation only, since
+            the generated clients leave an omitted property undefined rather than
+            filling it. Stated this way so a caller reading the schema does not
+            conclude the wire supplies it. A remote root in another region MUST
+            set this; omitting it reaches us-east-1 and fails as a missing bucket
+            rather than as a misconfiguration.
         endpoint:
           type: string
           description: Custom S3-compatible endpoint URL (optional, for MinIO, etc.)
         sessionToken:
           type: string
           description: AWS session token for temporary credentials (optional)
-      required:
-        - accessKeyId
-        - secretAccessKey
 
     AzureConnection:
       type: object
@@ -5433,7 +5550,11 @@ components:
       properties:
         graphs:
           type: array
-          description: Dependency-ordered build graphs, one per connection.
+          description: >-
+            Dependency-ordered build graphs. One per connection per model, not one
+            per connection: a model contributes a graph for each connection its ROOT
+            persist sources use, and a package's plan concatenates every model's, so
+            the same source appears in the graph of every model that imports it.
           items:
             $ref: "#/components/schemas/BuildGraph"
         sources:

@@ -31,7 +31,106 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — every DuckDB session is now bounded
+## [Unreleased] — one materialized table, written once and readable by every source that shares it
+
+Malloy [#3029](https://github.com/malloydata/malloy/pull/3029) settled that several sources naming one
+physical table is the design, not a defect: `#@ persist` is inherited through `extend`, `extend` never
+changes a source's materialization SQL, and `#@ -persist` is the opt-out. The publisher still assumed
+one source owned one table. Two consequences, in opposite directions.
+
+**A table was written more than once.** The build loop iterated per SOURCE, so it wrote a table once
+per name that reached it, and once per graph that reached it. It now writes each physical table once,
+keyed on the table's coordinate (destination-or-connection plus physical name) rather than on the
+content address — the address says what a table contains, the coordinate says which table it is.
+
+**An extension of a persisted source served LIVE instead of reading its base's table.** Serve
+bindings are derived one per manifest entry and keyed on that entry's source name, and an entry names
+only the source that built the table — so of a base and its extension, exactly one was bound and the
+other silently recomputed, decided by build order. Every source sharing the table is now bound, on one
+virtual handle. The colocated tier was never affected: it substitutes through the same-connection
+manifest, which is keyed by content address.
+
+Two definitions with DIFFERENT content landing on one physical table is the same guard read backwards:
+each build overwrites the other's rows while both addresses resolve to the table at serve time. That is
+reported, and refused when `PERSIST_COLLISION_ENFORCE` is set — **before anything is written**, since a
+refusal that lands mid-build leaves the first table already replaced and no reclaim can restore the
+rows it overwrote.
+
+### New metrics
+
+| Counter | Meaning |
+|---|---|
+| `publisher_materialization_duplicate_target_skipped_total` | A source whose table this run already wrote. Ordinary for a package that extends a persisted source — a volume signal, not a fault. |
+| `publisher_materialization_shared_address_instructions_total` | One content address instructed to build more than one table. Wasteful, not wrong: the content is the same either way. |
+| `publisher_materialization_table_collision_total` | Two definitions materializing into one table — serve-time wrong data. **This is the one to alert on.** Its rate is also what enabling `PERSIST_COLLISION_ENFORCE` would begin refusing, so a rollout can be measured before it is turned on. |
+
+
+## [Unreleased] — a boolean query param you misspell now fails instead of doing nothing
+
+`reload`, `dropTables` and `bypass_filters` were each read as `=== "true"`, so
+every other spelling — `?reload=1`, `?dropTables=yes`, `?reload=TRUE`, or the
+parameter repeated — quietly read as `false`. The request then succeeded while
+doing nothing of what it asked.
+
+The worst of the three was `dropTables`. `DELETE
+…/materializations/{id}?dropTables=1` deleted the materialization record, left
+its physical tables on disk, and answered `204 No Content`, so nothing in the
+response said half the operation had been skipped. `reload=1` on a package cost
+callers more often: they edited a model, saw `200`, and queried the model the
+server had never recompiled.
+
+All three now accept only `true` and `false` — the two spellings `api-doc.yaml`
+already declared — and refuse anything else with `400`, quoting the value back
+and naming a form that works. `bypass_filters` was already declared in the spec
+as an enum of exactly those two, so this makes the server match its own
+contract.
+
+Separately, `reload` on a **collection** route (`GET /environments`,
+`GET …/packages`, and their legacy `/projects` twins) now answers `400` naming
+the per-resource route. Reload recompiles one named resource, so a collection
+never could; it used to answer `200` with the list, which reads as a reload that
+worked.
+
+**Who is affected.** Anyone sending a non-`true`/`false` value to these three
+params, or sending `reload` to a collection route, gets a `400` where they used
+to get success. Every such request was already a silent no-op, so no working
+behaviour changes — but a client that ignored the response body and trusted the
+status will now see the failure it was previously missing. Generated clients
+send real booleans and are unaffected. `api-doc.yaml` now documents the `400` on
+each of these routes.
+
+## [0.2.0] — a colocated persist into a non-default schema now lands there (ACTION REQUIRED)
+
+A colocated `#@ persist name=` that names a container — `name="analytics.orders"`
+rather than `name="orders"` — was materialized into the connection's **default**
+container instead, on Snowflake and MySQL.
+
+The build finishes by staging a table and renaming it into place, and it named the
+rename target by its bare table name. Snowflake and MySQL resolve an unqualified
+rename target against the session's current container, so the table was created in
+the right place and then moved to the wrong one. Two ways it showed up:
+
+- **Silently.** The build reported success and the manifest recorded
+  `analytics.orders`, while the table sat in the default container. Anything
+  serving that source then resolved a path holding no table.
+- **As a nonsense error.** ``Object '"orders"' already exists`` when something of
+  that name was already in the default container — while `analytics` was empty.
+
+The rename target is now qualified on the dialects that resolve a bare one against
+the session (Snowflake, MySQL, Trino) and stays bare on those that reject a
+qualified one (Postgres, DuckDB, BigQuery).
+
+**Action required.** Tables built before this release from a container-qualified
+colocated persist name are in the default container, with manifests pointing at a
+path that holds nothing. Upgrading does not move them. Rebuild those sources — a
+forced refresh or a republish — so the table is written where the name says. The
+strays in the default container are not referenced by any manifest and can be
+dropped once the rebuild is confirmed.
+
+Unaffected: `storage=` sources (a different write path), colocated sources whose
+`name=` carries no container, and every dialect other than the three above.
+
+## [0.2.0] — every DuckDB session is now bounded
 
 DuckDB sizes its `memory_limit` from the container, at roughly 80%, and it does that **independently per instance**. Publisher runs several instances in one process — the metadata store, a serve-shape gate session, the environment lookup funnel, a sandbox per loaded package, and a disposable session for each materialization build — and none of them accounts for the resident runtime baseline or for any of the others. Measured in a 3 GiB container, three instances each reported a 2.3 GiB limit: 6.9 GiB of committed budget against 3 GiB of real memory. The process is then killed by the kernel while every instance still believes it is comfortably inside its budget, so none of them looks at fault and the growth presents as untracked native memory.
 
@@ -41,7 +140,75 @@ Unset now logs a startup warning naming the condition, so the oversubscription i
 
 One thing worth knowing before tuning: setting a `memory_limit` does **not** by itself introduce spill on the `storage=` build path. That pipeline pushes its SQL to the source warehouse and streams the result into the destination, with nothing to spill — measured at a flat peak across a 30× range of output, with zero bytes written to the temp directory at any limit, including one tight enough to fail. An over-tight limit fails the query and leaves the process up, which is the intended trade against losing the pod.
 
-## [Unreleased] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
+---
+
+## [0.2.1] — a versioned dashboard URI is now honoured
+
+`<Dashboard>` accepted a `?versionId=` in its `resourceUri` and dropped it. It now sends it, on the
+manifest fetch, on each tile's query, and on each control's suggest query, and each is cached per
+version. `<Package>`'s dashboards listing sends it too, and a notebook's suggest queries — shared
+code, and the only part of `<Notebook>` that was still unversioned while its own fetch and its cell
+execution were not.
+
+Omit `versionId` and nothing is sent, so a URI without one behaves exactly as before. **Point a
+versioned URI at Publisher and the page now reports an error where it used to render the latest**:
+Publisher answers `501 Not Implemented` to a `versionId` on every route that declares one, and
+these calls no longer hide it. That is the same contract `<Notebook>` and `<Model>` have always
+had, and it is why the components are useful to a host that resolves versions at its own routing
+layer. See [docs/dashboards.md](docs/dashboards.md#rendering-one-in-your-own-react-app).
+
+The in-package HTML data apps stay unversioned, deliberately: `/data-apps` serves static files and
+declares no `versionId`.
+
+---
+
+## [0.2.1] — one way to build a dashboard, and per-tile layout for it (BREAKING)
+
+A Publisher dashboard is `## artifact { tiles=[…] }`. The `# artifact` on a `query:` still works and
+is still served, but it is no longer offered as a second way to build one: it is a rendered Malloy
+query, the same thing a notebook cell shows, and it cannot span sources because a nest's pipeline
+starts from its own query's source.
+
+Two things changed to make that one form sufficient.
+
+**Per-tile layout.** The per-child dashboard tags on the view a tile names are now read by Publisher
+and applied in its own grid: `# colspan=N`, `# break`, `# subtitle`, `# borderless` and `# label`,
+which is the whole set `@malloydata/render` resolves for a `# dashboard` nest child, validated and
+clamped the same way. So one view presents identically whether it is named as a tile or nested under
+a query, and a dashboard is no longer limited to equal-width tiles. `DashboardTile` on the wire gains
+`label`, `subtitle`, `colspan`, `break` and `borderless`, each spelled the way the tag is (a generated
+client escapes the attribute where the word is reserved, so the Python client exposes `break_`, while
+the wire key stays `break`).
+
+**One spelling of the grid width. `dashboard_columns` is gone.** Write
+`# dashboard { columns=N }` beside the artifact tag, on either form:
+
+```malloy
+## artifact { title="Overview" tiles=["overview -> kpis", "overview -> trend"] } dashboard { columns=12 }
+```
+
+Nothing reads `dashboard_columns` any more, so a package still spelling it lays out at the default
+width. That is not silent: a new lint enumerates the artifact tag and names every property Publisher
+does not read, `dashboard_columns` included, with the spelling to use instead. It also catches a
+misspelling and a `tiles=` on a query-level tag, neither of which was reported before — the reader
+looks properties up by name, so an unrecognised one was simply never asked for.
+
+`DashboardManifest.dashboardColumns` therefore narrows on a tiles-form dashboard: it now reflects
+only `# dashboard { columns=N }`. Downstream artifacts spelling `dashboard_columns=2`, which equals
+the viewer's default, do not visibly move, but their lint output changes.
+
+This is also where Publisher stops being byte-compatible with Malloyyo, which reads
+`dashboard_columns`. That is one property and it is deliberate — the render tag already covers a
+tagged `query:`, so one spelling covers both forms — and the docs that claimed byte-compatibility now
+say so. `docs/malloyyo-dashboards-design.md` §Where Publisher diverges is the record, and the
+divergence is an input to the shared-grammar extraction rather than a settled thing.
+
+`examples/storefront/dashboards/overview.malloy` is the first dashboard the bundled examples ship,
+and it is the same figures as the model's `business_overview` view laid out with these tags.
+
+---
+
+## [0.2.0] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
 
 This is the headline change of this release, and it supersedes every earlier section on this page
 that shows `#(authorize) "<expr>"` on a `source:` line — including the `[0.0.248]` and `[0.0.205]`
@@ -177,7 +344,7 @@ constant-`false` lock does not hold there and `includeSql` returns the ungrafted
 
 ---
 
-## [Unreleased] — a proven row-level `#(authorize)` gate can now be colocated-persisted
+## [0.2.0] — a proven row-level `#(authorize)` gate can now be colocated-persisted
 
 This supersedes the "A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED" bullet
 further down this file, before that section has even shipped: unconditional refusal is no longer the
@@ -209,7 +376,7 @@ either — its delta is bounded by the watermark, so a row that changes owner wi
 advancing is never re-read. Only a full rebuild recomputes the gate column. See
 [docs/materialization.md § freshness contract](docs/materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source).
 
-## [Unreleased] — `BuildPlan.refusedSources`, and a materialization-ordering fix
+## [0.2.0] — `BuildPlan.refusedSources`, and a materialization-ordering fix
 
 **`BuildPlan` gains a `refusedSources` collection**, alongside the existing `sources` map, so a host can tell
 "this package declares no persist source" from "every persist source was refused". It is a SEPARATE
@@ -243,7 +410,7 @@ Also added a routing-outcome label, `blocked_by_row_level_gate`, on `publisher_s
 previously a row-level-gated entry point that vetoed both the storage and pre-aggregation tiers recorded no
 routing outcome at all.
 
-## [Unreleased] — a gated `#@ preaggregate` rollup now reports its own refusal
+## [0.2.0] — a gated `#@ preaggregate` rollup now reports its own refusal
 
 `BuildPlan.refusedSources` gains a `preaggregate` tier. A gated rollup's pre-aggregation gate refuses
 unconditionally when its base is `#(authorize)`-gated (rollups group away the gate column, so there is
@@ -257,7 +424,7 @@ instruction before instructing it.
 
 ---
 
-## [Unreleased] — every `#(authorize)` gate is a row filter now, not just a field-referencing one (BREAKING)
+## [0.2.0] — every `#(authorize)` gate is a row filter now, not just a field-referencing one (BREAKING)
 
 This supersedes the "a gate that references only givens is unaffected" line in the section below, before
 that section has even shipped: there is no longer a separate given-only shape. A gate that reads no row

@@ -19,8 +19,11 @@ import {
    recordAutoLoadOutcome,
    recordChainedStorageBuild,
    recordDropTables,
+   recordDuplicateTargetSkipped,
    recordManifestBindDegraded,
    recordMaterializationRun,
+   recordSharedAddressInstructions,
+   recordTableCollision,
    recordSourceBuildDuration,
    recordStorageTableRetained,
    recordSourcesOutcome,
@@ -77,7 +80,7 @@ import {
    type QueryMetadata,
 } from "./query_metadata";
 import type { components } from "../api";
-import { getPersistStorageMode } from "../config";
+import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
 import {
    assertColocatedPersistNotAuthorizeGated,
@@ -108,8 +111,7 @@ import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import {
-   bareTableName,
-   quoteIdentifier,
+   quoteRenameTarget,
    quoteManifestTablePath,
    quoteTablePath,
 } from "./quoting";
@@ -337,17 +339,29 @@ const SENSITIVE_KEY =
    /pass(word)?|secret|private_?key|service_?account|access_?key|token|connection_?string|account/i;
 
 /** Collect credential string values (from sensitively-named keys) in a config. */
-function collectSensitiveValues(value: unknown, out: Set<string>): void {
+function collectSensitiveValues(
+   value: unknown,
+   out: Set<string>,
+   seen: WeakSet<object> = new WeakSet(),
+): void {
    if (value === null || typeof value !== "object") return;
+   // The callers pass a LIVE connection, not its config, so this walks driver
+   // and pool internals whose graph can contain a back-reference. Without this
+   // guard such a cycle recurses until the stack is exhausted, and the
+   // RangeError replaces the build error being redacted -- turning any failure
+   // on a cyclic connection into "Maximum call stack size exceeded". Mirrors the
+   // guard in redactSensitive.
+   if (seen.has(value)) return;
+   seen.add(value);
    if (Array.isArray(value)) {
-      for (const v of value) collectSensitiveValues(v, out);
+      for (const v of value) collectSensitiveValues(v, out, seen);
       return;
    }
    for (const [key, v] of Object.entries(value)) {
       if (typeof v === "string" && v.length >= 4 && SENSITIVE_KEY.test(key)) {
          out.add(v);
       } else {
-         collectSensitiveValues(v, out);
+         collectSensitiveValues(v, out, seen);
       }
    }
 }
@@ -393,7 +407,11 @@ export function redactConnectionSecrets(
    ...connections: unknown[]
 ): string {
    const secrets = new Set<string>();
-   for (const c of connections) collectSensitiveValues(c, secrets);
+   // One `seen` across every argument: the multi-connection sites hand in a
+   // source and a destination that share a subgraph, and walking it twice
+   // collects nothing new.
+   const seen = new WeakSet<object>();
+   for (const c of connections) collectSensitiveValues(c, secrets, seen);
    let redacted = redactPgSecrets(message);
    for (const s of secrets) {
       redacted = redacted.split(s).join("***");
@@ -563,6 +581,35 @@ export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
  * {@link MaterializationRepository}). Cancellation is cooperative via
  * AbortController.
  */
+/**
+ * The physical table an instruction writes, as a comparable key.
+ *
+ * The counterpart to `sourceEntityId`: the address says what a table CONTAINS,
+ * this says which table it IS, and only this answers "have I written that
+ * already". Encoded rather than concatenated because a physical name can contain
+ * a space (see the `quoted-persist-name` scenarios), so a plain separator could
+ * make two different coordinates read as one.
+ *
+ * Exact-match, and so blind in the same place its load-time sibling is: `Foo`,
+ * `foo` and `"foo"` land in different slots here but in ONE table on a
+ * case-folding engine. See the note on Package.persistenceCollisionWarnings —
+ * neither guard is stricter than the other.
+ */
+function physicalTargetKey(
+   instruction: BuildInstruction,
+   connectionName: string,
+): string {
+   return JSON.stringify(
+      instruction.destination
+         ? [
+              "destination",
+              instruction.destination,
+              instruction.physicalTableName,
+           ]
+         : ["connection", connectionName, instruction.physicalTableName],
+   );
+}
+
 export class MaterializationService {
    /** In-flight runs, so they can be cancelled. In-process only. */
    private runningAbortControllers = new Map<string, AbortController>();
@@ -1737,6 +1784,45 @@ export class MaterializationService {
          if (instruction.sourceID) {
             bySourceID.set(instruction.sourceID, instruction);
          }
+         // One address, several instructions naming DIFFERENT tables. A host that
+         // mints a physical name per source produces this for an ordinary package:
+         // several sources share one artifact (`#@ persist` is inherited and
+         // `extend` does not change materialization SQL), so a per-source name is a
+         // second table for content that already has one.
+         //
+         // What happens next depends on whether the instructions carry a
+         // `sourceID`, which is optional on the wire:
+         //  - WITH one, each source finds its own instruction, so every named table
+         //    is built, the last to finish is the one `entries` records, and the
+         //    rest are left unreferenced — a manifest-driven reclaim never names
+         //    them.
+         //  - WITHOUT one, this index is the only way back to an instruction and it
+         //    holds one per address, so the LAST instruction wins and the earlier
+         //    names are never built at all. Nothing can attribute them: an address
+         //    is all the publisher has, and it maps to every one of them equally.
+         //
+         // Reported, not resolved, in both shapes. Picking one would leave the host
+         // with an anchor for a table the build declined to write, which is a worse
+         // failure than the wasted one and is invisible from the host's side. The
+         // fix belongs where the names are minted; this makes the condition visible
+         // until then.
+         const clash = bySourceEntityId.get(instruction.sourceEntityId);
+         if (
+            clash &&
+            clash.physicalTableName !== instruction.physicalTableName
+         ) {
+            recordSharedAddressInstructions();
+            logger.warn(
+               "One content address was instructed to build more than one table",
+               {
+                  sourceEntityId: instruction.sourceEntityId,
+                  physicalTableNames: [
+                     clash.physicalTableName,
+                     instruction.physicalTableName,
+                  ],
+               },
+            );
+         }
          bySourceEntityId.set(instruction.sourceEntityId, instruction);
       }
 
@@ -1781,6 +1867,97 @@ export class MaterializationService {
       const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
       const builtSources: string[] = [];
+      // What this run has already written, keyed by the physical table rather than
+      // by the content address: the address says what a table CONTAINS, the
+      // coordinate says which table it IS, and only the second answers "have I
+      // written this already". Both halves of the guard below need that
+      // distinction, in opposite directions.
+      const writtenTargets = new Map<
+         string,
+         { sourceEntityId: string; sourceName: string }
+      >();
+      // Two definitions on one physical table is refused BEFORE anything is
+      // written, rather than when the loop reaches the second one.
+      //
+      // A mid-loop throw leaves the pair's FIRST table already replaced, and
+      // nothing puts it back: the failure path reclaims storage tables only, so a
+      // colocated collision strands a half-written table in the customer's own
+      // warehouse, and even a reclaimed one cannot restore the rows it
+      // overwrote. The publish gate refuses this before any CTAS runs; a rebuild
+      // has to match it.
+      //
+      // It cannot be reasoned away as host-only, either. Collisions are ALWAYS
+      // warn-only at load, whatever PERSIST_COLLISION_ENFORCE says (see the note
+      // in loadPackage), so a package that was published before the flag went on
+      // stays loaded and reaches this build with a MODEL-declared collision
+      // intact.
+      const claimedBy = new Map<
+         string,
+         { sourceName: string; sourceEntityId: string }
+      >();
+      const collisions: { first: string; second: string; table: string }[] = [];
+      for (const graph of graphs) {
+         for (const persistSource of iterGraphSources(graph, sources)) {
+            let address: string;
+            try {
+               address = computeSourceEntityId(
+                  persistSource,
+                  connectionDigests,
+               );
+            } catch {
+               // getSQL() throws for a source the eligibility gate is about to
+               // refuse with a clean 422. That refusal is the build loop's to
+               // give; a source with no readable address claims no table here.
+               continue;
+            }
+            const instruction =
+               bySourceID.get(persistSource.sourceID) ??
+               bySourceEntityId.get(address);
+            if (!instruction) continue;
+            // Same key as the write guard below, and it has to be: a pre-pass that
+            // grouped by a different coordinate would report a collision the guard does
+            // not dedupe, or miss one it does.
+            const target = physicalTargetKey(instruction, graph.connectionName);
+            const claim = claimedBy.get(target);
+            if (!claim) {
+               claimedBy.set(target, {
+                  sourceName: persistSource.name,
+                  sourceEntityId: address,
+               });
+            } else if (claim.sourceEntityId !== address) {
+               collisions.push({
+                  first: claim.sourceName,
+                  second: persistSource.name,
+                  table: instruction.physicalTableName,
+               });
+            }
+         }
+      }
+      for (const c of collisions) {
+         recordTableCollision();
+         logger.warn("Two definitions are materializing into one table", {
+            physicalTableName: c.table,
+            sourceNames: [c.first, c.second],
+         });
+      }
+      if (collisions.length > 0 && getPersistCollisionEnforce()) {
+         const detail = collisions
+            .map(
+               (c) =>
+                  `'${c.first}' and '${c.second}' compile to different SQL but ` +
+                  `both materialize into table '${c.table}'`,
+            )
+            .join("; ");
+         throw new MaterializationEligibilityError({
+            message:
+               `${detail}, so each would overwrite the other's rows while both ` +
+               `resolve to it at serve time. Give them distinct definitions, or ` +
+               `distinct physical names: a model-declared collision is fixed ` +
+               `with '#@ persist name=', a host-assigned one by the caller that ` +
+               `minted the names.`,
+         });
+      }
+
       try {
          for (const graph of graphs) {
             const connection = connections.get(graph.connectionName);
@@ -1919,6 +2096,37 @@ export class MaterializationService {
                   assertMaterializationEligible(persistSource);
                }
 
+               // One physical table, written once. Several sources routinely map
+               // onto one artifact: `#@ persist` is inherited and `extend` does not
+               // change a source's materialization SQL, so a base and its extension
+               // compile to the same address and resolve to the same instruction.
+               // Iterating per SOURCE wrote the table once per name that reached it
+               // — and once per graph that reached it, since a source declared in one
+               // model and consumed in another appears in both models' graphs.
+               //
+               // Only the same-content case is decided here. Two DIFFERENT
+               // definitions on one table was already reported, and refused under
+               // PERSIST_COLLISION_ENFORCE, by the pre-pass above — before anything
+               // was written. Reaching it here means the deployment chose to warn
+               // and carry on, so the write proceeds as it did before.
+               const target = physicalTargetKey(
+                  instruction,
+                  graph.connectionName,
+               );
+               const written = writtenTargets.get(target);
+               if (written && written.sourceEntityId === sourceEntityId) {
+                  // The extra name is another route to one artifact. Its address
+                  // already names the table it was built under, so there is nothing
+                  // to build and nothing to record.
+                  recordDuplicateTargetSkipped();
+                  logger.debug("Skipping a source whose table this run built", {
+                     sourceName: persistSource.name,
+                     builtAs: written.sourceName,
+                     physicalTableName: instruction.physicalTableName,
+                  });
+                  continue;
+               }
+
                let entry;
                try {
                   entry = await this.buildOneSource(
@@ -1943,13 +2151,32 @@ export class MaterializationService {
                   // belongs to rather than to the whole command. A build that
                   // loses every source still fails, below.
                   //
-                  // Redacted against this source's own connection for the same
-                  // reason the run-level message is: a warehouse error can echo
-                  // the credentials it was handed, and this value is persisted.
-                  const reason = redactConnectionSecrets(
-                     errMessage(buildErr),
-                     connection,
-                  );
+                  // Redacted against this source's connection CONFIG, not the
+                  // live connection: a warehouse error can echo the credentials it
+                  // was handed, and this value is persisted. The config is where
+                  // the declared secrets are, and it is what every other redaction
+                  // site passes. Walking a live connection instead is both
+                  // unnecessary and unsound -- an enumerable accessor that throws
+                  // once its resource is gone (the state a build failure runs in)
+                  // escapes the walk and fails the whole run, taking the sources
+                  // that did materialize with it, and state held in a Map is not
+                  // walked at all, so a secret there passes through in the clear.
+                  //
+                  // A connection missing from the environment is not a reason to
+                  // leak: getApiConnection throws, so fall back to the
+                  // connection-free string redactor that redactConnectionSecrets
+                  // applies anyway.
+                  let reason: string;
+                  try {
+                     reason = redactConnectionSecrets(
+                        errMessage(buildErr),
+                        environment.getApiConnection(
+                           persistSource.connectionName,
+                        ),
+                     );
+                  } catch {
+                     reason = redactPgSecrets(errMessage(buildErr));
+                  }
                   // The manifest carries this reason to the control plane, but a
                   // build that lost a source no longer throws -- so without a log
                   // here the failure is invisible to anyone reading the server's
@@ -2002,6 +2229,10 @@ export class MaterializationService {
                }
                builtSources.push(persistSource.name);
                entries[sourceEntityId] = entry;
+               writtenTargets.set(target, {
+                  sourceEntityId,
+                  sourceName: persistSource.name,
+               });
                if (isReclaimableStorageTable(entry)) {
                   builtThisRun.push(entry);
                } else if (entry.storageDestinationName) {
@@ -2427,7 +2658,6 @@ export class MaterializationService {
          if (applied) return applied;
       }
 
-      const bareName = bareTableName(physicalTableName);
       const stagingTableName = `${physicalTableName}${stagingSuffix(sourceEntityId)}`;
       // The control plane sends the logical (unquoted) physical name; dialect-
       // quote each identifier here so a container path or quote-requiring name
@@ -2435,7 +2665,10 @@ export class MaterializationService {
       // echoes the logical name (below) so the CP stays in logical-name space.
       const quotedStaging = quoteTablePath(stagingTableName, dialect);
       const quotedPhysical = quotedPhysicalPath;
-      const quotedBareName = quoteIdentifier(bareName, dialect);
+      // Not the bare name unconditionally: on a dialect that resolves an
+      // unqualified rename target against the session, a bare target moves the
+      // finished table into the session's default container.
+      const quotedRenameTarget = quoteRenameTarget(physicalTableName, dialect);
 
       // The rebuild below replaces the table the boundary describes, so the
       // boundary is dropped BEFORE it starts rather than overwritten after: a
@@ -2469,7 +2702,7 @@ export class MaterializationService {
             runOptions,
          );
          await connection.runSQL(
-            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedBareName}`,
+            `ALTER TABLE ${quotedStaging} RENAME TO ${quotedRenameTarget}`,
             runOptions,
          );
       } catch (err) {
@@ -3102,8 +3335,16 @@ export class MaterializationService {
       // DIFFERENT destination is absent here, so the downstream def fails to
       // compile against the rebind model and the caller falls back — cross-catalog
       // parent reuse is out of scope for the spike.
+      // No aliases, and the consequence is a scope boundary rather than a
+      // compile problem: two aliases are two DISTINCT names on one handle, which
+      // is what the serve path emits and compiles. What passing none means is
+      // that a chained downstream reading the EXTENSION's name finds it absent
+      // from the rebind model and falls back to recomputing its upstream from
+      // raw. Correct-but-slower, and out of scope here; the serve path is where
+      // an alias has to resolve.
       const upstreams: ServeBinding[] = deriveServeBindings(
          builtEntries,
+         {},
       ).filter((b) => b.destinationName === destinationName);
       if (upstreams.length === 0) {
          throw new MaterializationEligibilityError({
@@ -3534,15 +3775,39 @@ export class MaterializationService {
 
       run(abortController.signal)
          .catch(async (err) => {
-            const message = errMessage(err);
-            const next = abortController.signal.aborted
-               ? "CANCELLED"
-               : "FAILED";
+            // Per-source build failures arrive already redacted (see the "Source
+            // failed to materialize" site). A whole-run throw carries no
+            // connection to redact against, but it can still echo a DSN -- a
+            // connect failure while resolving the package's connections does --
+            // and redactPgSecrets needs none, so it is the floor for both the log
+            // and the persisted record.
+            const message = redactPgSecrets(errMessage(err));
+            const cancelled = abortController.signal.aborted;
+            const next = cancelled ? "CANCELLED" : "FAILED";
+            // The materialization record carries the message to whoever polls
+            // it, but a background run's throw answers no request -- so without
+            // a log here the failure is invisible in the server's own output,
+            // and the stack, the only thing that locates the throw, is dropped.
+            if (cancelled) {
+               // The error too: an abort that races a genuine failure records
+               // "Cancelled", and this is then the only place the real one is
+               // reported.
+               logger.info("Materialization run cancelled", {
+                  materializationId: id,
+                  error: message,
+               });
+            } else {
+               logger.error("Materialization run failed", {
+                  materializationId: id,
+                  error: message,
+                  stack: err instanceof Error ? err.stack : undefined,
+               });
+            }
             try {
                await this.repository.updateMaterialization(id, {
                   status: next,
                   completedAt: new Date(),
-                  error: abortController.signal.aborted ? "Cancelled" : message,
+                  error: cancelled ? "Cancelled" : message,
                });
             } catch (transitionErr) {
                logger.error("Failed to record materialization failure", {
