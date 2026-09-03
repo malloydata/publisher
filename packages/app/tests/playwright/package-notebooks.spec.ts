@@ -79,4 +79,45 @@ test.describe("package-notebooks", () => {
       );
       await expect(page.getByText(/does not exist/i)).toHaveCount(0);
    });
+
+   test("a table cell is as tall as its table, not as tall as the cell cap", async ({
+      page,
+   }) => {
+      await page.goto(
+         `/${DEFAULT_ENV}/${PACKAGES.storefront}/storefront.malloynb`,
+      );
+
+      // Every notebook table, measured against the box the cell gives it. The
+      // renderer signals ready before a table's virtualized grid has settled,
+      // so the cell used to latch onto the height it read at that moment --
+      // scrollHeight 10028 for a four-row table -- clamp it to the 700px cap
+      // and paint ~390px of blank space under the rows. Asserted on the ratio
+      // rather than on a pixel count so it survives a row-height or font
+      // change, and over every table on the page rather than the first,
+      // because the first one to settle is not deterministic.
+      const tables = page.locator(".malloy-render > .malloy-table.root");
+      await expect(tables.first()).toBeVisible();
+      await expect
+         .poll(
+            () =>
+               tables.evaluateAll((nodes) =>
+                  nodes
+                     .map((node) => {
+                        const table = node as HTMLElement;
+                        const box = table.parentElement as HTMLElement;
+                        return {
+                           table: table.offsetHeight,
+                           box: box.offsetHeight,
+                        };
+                     })
+                     // Only the ones with dead space left under the table, so a
+                     // failure names the measurements rather than saying false.
+                     .filter(
+                        ({ table, box }) => table === 0 || box - table > 4,
+                     ),
+               ),
+            { timeout: 30_000 },
+         )
+         .toEqual([]);
+   });
 });
