@@ -2086,6 +2086,42 @@ export class MaterializationService {
                   );
                }
 
+               // The mirror case, and the one that actually reaches a warehouse
+               // write: the SOURCE declares `storage=` and the instruction carries
+               // NO destination.
+               //
+               // Every guard above tests `instruction.destination`, which is what
+               // the caller asked for. None tests what the source DECLARED, so a
+               // host that resolved no destination — because the org is not
+               // enabled for one, because resolution failed, because it simply
+               // omitted the field — leaves `isStorageBuild` false in
+               // buildOneSource and the source is CTAS'd into its own warehouse.
+               //
+               // Declaring `storage=` is a statement about where this data may be
+               // written, and it is the only one the author made. It is not
+               // consent to a warehouse write, and in production the read-only
+               // credential this server is given usually cannot perform one
+               // anyway, so the observable outcome is a permission error whose
+               // cause names neither the destination nor the annotation. Refusing
+               // is both the author's instruction and the better diagnosis.
+               //
+               // Deliberately independent of the mode: "no destination could be
+               // resolved" is the same fact whether the tier is off, the org is
+               // not enabled, or the host had some other reason. There is no
+               // reading of `storage=` under which the source warehouse is the
+               // right answer.
+               const declared = declaredStorage(persistSource);
+               if (declared && !instruction.destination) {
+                  throw new BadRequestError(
+                     `Source '${persistSource.name}' declares ` +
+                        `\`#@ persist storage=${declared}\`, but the build was ` +
+                        `instructed with no storage destination, so there is ` +
+                        `nowhere it may be written. Refusing rather than building ` +
+                        `the table into the source warehouse, which the source's ` +
+                        `own annotation asked it not to be written to.`,
+                  );
+               }
+
                // Auto-run already gated pre-getSQL in deriveSelfInstructions;
                // re-assert (idempotent) so no path into a storage build is ungated.
                if (
