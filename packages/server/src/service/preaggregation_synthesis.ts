@@ -146,7 +146,24 @@ export function rollupSourceName(
    baseSourceName: string,
    grainDimensions: string[],
 ): string {
-   const slug = grainDimensions.join("_").slice(0, NAME_SLUG_LIMIT);
+   // Dots are folded out of the readable part, which keeps the generated name a
+   // single unqualified identifier.
+   //
+   // That matters downstream rather than here: the name IS the rollup's physical
+   // table name (the build self-assigns it, there being no `name=`), and a
+   // consumer that reads a dotted physical name as schema-qualified would refuse
+   // it or address the wrong thing. A grain naming anything dotted — a join path
+   // or an inline truncation — is already refused at publish and fails the load,
+   // so a dotted slug cannot reach a build plan anyway; folding it makes that a
+   // property of the name rather than of a gate somewhere else agreeing to hold.
+   //
+   // A no-op for every grain that can legally reach here, so it renames nothing.
+   // The digest is computed over the RAW dimensions, so `a.b` and `a_b` still
+   // land on different names rather than colliding once folded.
+   const slug = grainDimensions
+      .join("_")
+      .replace(/\./g, "_")
+      .slice(0, NAME_SLUG_LIMIT);
    return `${baseSourceName}__preagg__${slug}__${grainDigest(grainDimensions)}`;
 }
 
