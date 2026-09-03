@@ -87,14 +87,11 @@ test.describe("package-notebooks", () => {
          `/${DEFAULT_ENV}/${PACKAGES.storefront}/storefront.malloynb`,
       );
 
-      // Every notebook table, measured against the box the cell gives it. The
-      // renderer signals ready before a table's virtualized grid has settled,
-      // so the cell used to latch onto the height it read at that moment --
-      // scrollHeight 10028 for a four-row table -- clamp it to the 700px cap
-      // and paint ~390px of blank space under the rows. Asserted on the ratio
-      // rather than on a pixel count so it survives a row-height or font
-      // change, and over every table on the page rather than the first,
-      // because the first one to settle is not deterministic.
+      // Every notebook table, measured against the box the cell gives it: a
+      // cell must end up as tall as its table, not as tall as the 700px cap.
+      // Asserted on the ratio rather than on a pixel count so it survives a
+      // row-height or font change, and over every table on the page rather
+      // than the first, because the first one to settle is not deterministic.
       const tables = page.locator(".malloy-render > .malloy-table.root");
       await expect(tables.first()).toBeVisible();
       await expect

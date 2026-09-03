@@ -40,6 +40,15 @@ type MalloyRenderElement = HTMLElement & Record<string, unknown>;
  * `@malloydata/render` if more methods are needed.
  */
 interface MalloyVizHandle extends DrillMetadataSource {
+   // Narrowed from `DrillMetadataSource`, which only declares the part the
+   // drill affordance reads. `getRootField().renderAs()` is what decides
+   // whether one measurement is enough; see `sizesToContent`.
+   getMetadata: () =>
+      | (NonNullable<ReturnType<DrillMetadataSource["getMetadata"]>> & {
+           getRootField: () => { renderAs: () => string };
+        })
+      | null
+      | undefined;
    setResult: (result: unknown) => void;
    render: (element: HTMLElement) => void;
    remove: () => void;
@@ -324,31 +333,36 @@ function injectRendererOverrides(): void {
  * than to the box it was handed, which decides whether measuring it once is
  * enough.
  *
- * It is not, for a table, and that is the bug this predicate exists for. The
- * renderer signals `onReady` as soon as it knows it can paint, and for a table
- * that is immediately — a chart waits for a non-zero parent size, a table does
- * not. The single measurement taken there therefore lands before the table's
- * virtualized grid has settled: measured, a four-row table reported
- * `scrollHeight` 10028 at that moment and 308 once settled. The cell latched
- * onto the 10028, clamped it to its 700px cap, and painted ~390px of blank
- * space under every table in a notebook.
+ * It is not, for a table. The renderer signals `onReady` as soon as it knows it
+ * can paint, and for a table that is immediately — a chart waits for a non-zero
+ * parent size, a table does not — so the single measurement taken there lands
+ * before the table's virtualized grid has laid out, and reads a height the
+ * table never keeps.
  *
- * Re-measuring a table terminates. `.malloy-table.root` is
+ * Re-measuring a table TERMINATES: `.malloy-table.root` is
  * `height: fit-content; max-height: 100%` in the renderer's own CSS and the
- * wrappers between it and the container add no padding (measured), so shrinking
- * the container to the table's content height is the exact point at which the
- * cap stops binding: the next measurement reports the same number.
+ * wrappers between it and the container add no padding, so shrinking the
+ * container to the table's content height is the exact point at which the cap
+ * stops binding and the next measurement reports the same number.
  *
- * A root that FILLS its container stays on the one-shot path deliberately. A
- * chart draws itself inset from the box it is given (8px, measured), so feeding
- * its height back as the new container height would ratchet the container down
- * by that inset on every pass and never converge.
+ * A root that FILLS its container stays on the one-shot path deliberately: a
+ * chart draws itself inset from the box it is given, so feeding its height back
+ * as the new container height would ratchet the container down by that inset
+ * every pass and never converge.
+ *
+ * A table is the only root that needs this, and the reason is the virtualized
+ * grid rather than the sizing strategy it shares with a `# size=` chart: that
+ * chart takes its dimensions from a lookup synchronously, so its first
+ * measurement is already right. Measured, for every size value and spelling.
  */
-function sizesToContent(rendered: HTMLElement): boolean {
-   return (
-      rendered.classList.contains("malloy-table") &&
-      rendered.classList.contains("root")
-   );
+function sizesToContent(viz: MalloyVizHandle): boolean {
+   try {
+      return viz.getMetadata()?.getRootField().renderAs() === "table";
+   } catch {
+      // Metadata unavailable: measure once, which is the behavior every
+      // non-table root gets anyway.
+      return false;
+   }
 }
 
 function RenderedResultInner({
@@ -465,9 +479,15 @@ function RenderedResultInner({
          if (!grandchild) return;
          // A table reports a height of its own, so it keeps being measured
          // even after the first one lands. Everything else measures once.
-         const contentSized = sizesToContent(grandchild);
+         const contentSized = viz !== undefined && sizesToContent(viz);
          if (hasMeasuredRef.current && !contentSized) return;
          const greatgrandchild = grandchild.firstElementChild as HTMLElement;
+         // `scrollHeight` is the CONTENT height, so this assumes the box adds
+         // no chrome of its own. True today: `.malloy-table.root` has no
+         // border, and a horizontal scrollbar costs no layout where scrollbars
+         // overlay. A wide table clipped by a few pixels on a platform that
+         // draws classic scrollbars would be this assumption breaking, and the
+         // fix is `+ (offsetHeight - clientHeight)`.
          let renderedHeight =
             grandchild.scrollHeight || grandchild.offsetHeight || 0;
 
@@ -562,6 +582,13 @@ function RenderedResultInner({
                // unconditionally gave up on a stage whose renderer output was
                // still empty at the first settle, leaving nothing to measure it
                // later.
+               //
+               // Staying connected cannot loop the way the version this
+               // disconnect was first added to guard (#531) could: THAT
+               // observer watched the container, with `attributes: true`, so
+               // reporting a height re-triggered it through the container's own
+               // style. This one watches `stage`, a descendant, which that
+               // style write is outside of.
                if (hasMeasuredRef.current) observer?.disconnect();
             }, 100);
          });
