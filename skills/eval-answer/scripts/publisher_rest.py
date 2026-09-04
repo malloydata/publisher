@@ -132,6 +132,47 @@ def get_json(base: str, path: str, timeout: int = 30) -> Any:
         return json.loads(resp.read())
 
 
+def served_package_dir(base: str, environment: str,
+                       package: str) -> pathlib.Path | None:
+    """The directory the running Publisher serves this package FROM, or None.
+
+    A host commonly serves a copy rather than your working tree, so this is the
+    only path whose bytes are the ones answering queries.
+    """
+    try:
+        for proj in get_json(base, "api/v0/projects"):
+            if proj.get("name") == environment and proj.get("location"):
+                p = pathlib.Path(proj["location"]) / package
+                return p if p.is_dir() else None
+    except Exception:            # noqa: BLE001 - absence is reported, not fatal
+        return None
+    return None
+
+
+def package_skill_names(base: str, environment: str, package: str) -> list[str]:
+    """Skills the server says this package ships, or [] if it ships none.
+
+    Read from the server rather than from the working tree, because those are
+    two different questions: a host serves a COPY of the package, and the
+    deployment can withhold package skills entirely
+    (`PUBLISHER_PACKAGE_SKILLS=off`). What the answerer can actually reach is
+    what this returns.
+
+    An unreachable or older server returns [] rather than raising: the caller
+    decides whether "the server serves none" contradicts what it asked for.
+    """
+    try:
+        rows = get_json(
+            base,
+            f"api/v0/environments/{urllib.parse.quote(environment)}"
+            f"/packages/{urllib.parse.quote(package)}/skills")
+    except Exception:                                   # noqa: BLE001
+        return []
+    return sorted(r["name"] for r in rows
+                  if isinstance(r, dict) and r.get("origin") == "package"
+                  and isinstance(r.get("name"), str))
+
+
 def served_model_path(base: str, environment: str, package: str,
                       model_path: str) -> pathlib.Path | None:
     """Where the running Publisher reads this model from, or None.

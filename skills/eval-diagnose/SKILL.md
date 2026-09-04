@@ -30,9 +30,19 @@ never "C1" / "C2" / "C3":
 | `construction` | Did sufficient context arrive, and the agent still built the wrong query? |
 | `model-definition` | Is a measure, join, filter convention, or source semantically wrong? |
 
-`owner` is separate: `model`, `retrieval`, `agent-skill`, or `dataset`. There
-is no environment owner: an environment failure stops the run before
-diagnosis (see the boundary above), so no issue can carry it.
+`owner` is separate: `model`, `package-skill`, `retrieval`, `agent-skill`, or
+`dataset`. There is no environment owner: an environment failure stops the run
+before diagnosis (see the boundary above), so no issue can carry it.
+
+`package-skill` and `agent-skill` are both "the guidance was wrong", split by
+who can fix it here. A package can ship its own guides under `skills/`, and one
+whose name matches a built-in REPLACES it for that package, so a fix scoped to
+this package is a file in the model repo and lands in the same commit as a model
+edit. `agent-skill` is the shared skill, outside this repo and outside this
+loop. Choose `package-skill` only when the fix is genuinely specific to this
+package: this customer's vocabulary, this model's conventions, a trap only these
+sources have. A gap every package would hit is `agent-skill`, and widening a
+shared skill by editing one package's copy hides it from every other package.
 
 `construction` requires proving the needed entities and governing guidance were
 in the returned context. A server trace proves what Publisher returned, not what
@@ -110,13 +120,19 @@ Prior `score` events are not rewritten. They keep the old `golden_revision`.
 | Code | When | Owner |
 |---|---|---|
 | `NEVER-ASKED` | no utterance targeted a needed concept | agent-skill, and model if nothing would have prompted the ask |
-| `VAGUE` | compound or generic utterances, so nothing could rank | agent-skill |
-| `QUESTION-VOCAB` | utterances parroted the question where the data uses other words | agent-skill, and model if that vocabulary is undocumented |
+| `VAGUE` | compound or generic utterances, so nothing could rank | agent-skill: decomposition is a general skill. package-skill only if this package's concepts are what defeated it |
+| `QUESTION-VOCAB` | utterances parroted the question where the data uses other words | package-skill: map this business's words to the model's. model if the vocabulary belongs on the entity itself |
 | `NO-DISAMBIG` | two plausible candidates, never resolved | model: docs should answer, not require the question |
 | `ASSUMED` | assumed a scope or convention instead of checking | model if nothing warned; agent-skill otherwise |
 | `WRONG-TYPE-OR-SCOPE` | asked, but with the wrong target type or an empty/wrong scope | agent-skill |
 
 If the agent could not reasonably have known to ask, that is a model gap.
+
+Between `package-skill` and `model` on any of these rows: if the fact belongs to
+one entity, put it on that entity's `#(doc)`, because a doc reaches every agent
+whether or not it loaded a guide. Reach for `package-skill` when the fact spans
+entities or is a rule rather than a property: which source to prefer, what the
+house default population is, what this business calls things.
 
 ### get_context / model
 
@@ -126,8 +142,8 @@ If the agent could not reasonably have known to ask, that is a model gap.
 | `NOT-RETURNED` | it exists, the ask was on target, it never came back | model: labels, docs, synonyms, index |
 | `LOW-RANK` | returned, buried under noise the agent reasonably skipped | model |
 | `AMBIGUOUS` | several near-identical candidates | model: "use X for …, Y when …" |
-| `GUIDANCE-NOT-RETRIEVED` | entities came back, governing guidance did not | model: put guidance on the entities agents search for |
-| `GUIDANCE-DECLINED` | guidance was retrieved and judged inapplicable | model: state the business default, not a caveat |
+| `GUIDANCE-NOT-RETRIEVED` | entities came back, governing guidance did not | model: put guidance on the entities agents search for. package-skill when it governs several sources and belongs on none |
+| `GUIDANCE-DECLINED` | guidance was retrieved and judged inapplicable | model: state the business default, not a caveat. package-skill if the default is a house rule rather than a property of one field |
 
 A missing join is coverage, not an agent-call miss. The model has to volunteer
 relationships. A declared join is not a retrieval entity; do not look for it in
@@ -147,11 +163,11 @@ with both queries. Otherwise it is still `NOT-RETURNED` / `LOW-RANK`.
 
 | Code | When | Owner |
 |---|---|---|
-| `WRONG-PICK` | needed entity returned, used a different one | model if indistinguishable; agent-skill if docs distinguished them |
+| `WRONG-PICK` | needed entity returned, used a different one | model if indistinguishable; package-skill if choosing between them is a rule of this package; agent-skill if the docs already distinguished them |
 | `SCOPE` | right entities, wrong population | model if the scope rule was undocumented |
 | `GRAIN` | right entities, wrong grain | model or agent-skill |
 | `FILTER-LITERAL` | filter literal did not match stored values | model (document the stored form) and agent-skill |
-| `CONVENTION` | right data, wrong statistical or business convention | model: expose a named measure |
+| `CONVENTION` | right data, wrong statistical or business convention | model: expose a named measure. package-skill when no measure can carry it, e.g. which population to default to |
 | `SYNTAX` | could not express it; execute errors; never submitted | agent-skill |
 
 ### model-definition
@@ -210,9 +226,10 @@ convention explains both. Same `owner` and same `component` is a hint, never a
 criterion: two `COVERAGE` issues about different missing entities are two
 clusters, and merging them produces an edit that fixes neither cleanly.
 
-Order clusters by how many cases they would fix. Cluster the non-model owners
-too, in their own clusters, so nothing is lost on the way to the backlog --
-but keep them separate, because only `owner: model` may proceed to an edit.
+Order clusters by how many cases they would fix. Cluster every owner in its own
+clusters, so nothing is lost on the way to the backlog, and keep the owners
+separate: `model` and `package-skill` each license a different edit, and the
+rest license none here.
 
 Say what you considered merging and chose not to. A cluster is a claim that one
 change fixes N cases, and the near-misses are what a reviewer needs to falsify
@@ -223,13 +240,20 @@ can design the edit is the whole job here; the edit itself is
 `skill:eval-improve`, working from this. A cluster carrying an honest open
 question is more useful than one carrying a remedy nobody probed.
 
-**Only `owner: model` proceeds to `eval-improve`.** Skill findings go back into
-the analysis or phrase-detection skill. Retrieval findings go to the tool.
+**`owner: model` and `owner: package-skill` proceed to `eval-improve`.** Both
+are fixable in the model repo, so both are checkpointed and rolled back by the
+same git commit. They are still separate owners, because the edit they license
+is different and the acceptance check treats them differently: a model edit
+changes what the data means, a package-skill edit changes what the agent is told.
+
+`owner: agent-skill` findings go back into the shared analysis or
+phrase-detection skill, outside this loop. Retrieval findings go to the tool.
 `BAD-REFERENCE` and `AMBIGUOUS-REFERENCE` go to the golden side door in
 `skill:eval-loop` (repair or hold). Do not send them to improve. Other dataset
 findings (a bad question, a case worth excluding) go back to the case in
-`cases.jsonl` via the conductor. Routing a skill bug into the model is
-how models accumulate scar tissue.
+`cases.jsonl` via the conductor. Routing a guidance bug into the model is how
+models accumulate scar tissue: if the entity was there, correctly defined, and
+the agent still misused it, the fix is guidance, not a new field.
 
 ## Anti-patterns
 
@@ -243,5 +267,6 @@ how models accumulate scar tissue.
 ## Related skills
 
 - `skill:eval-answer`: the score this consumes.
-- `skill:eval-improve`: smallest model edit, `owner: model` only.
+- `skill:eval-improve`: the smallest edit, for `owner: model` and
+  `owner: package-skill`.
 - `skill:eval-loop`: golden hold/repair, the acceptance check, and checkpoint.

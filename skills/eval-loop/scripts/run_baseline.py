@@ -124,7 +124,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import doc_tokens, entity_ids, search_terms  # noqa: E402
-from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
+from publisher_rest import (package_identity, package_skill_names,  # noqa: E402
+                            served_model_path, served_package_dir, try_query)
 from score_retrieval import score_case, summarise  # noqa: E402
 from check_contamination import check as path_check  # noqa: E402
 import verify_goldens  # noqa: E402
@@ -568,7 +569,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         # the cwd, so `Read` reaches the doctrine and never the eval set.
         if a.answerer_skills:
             work = str(build_workspace(a.answerer_skills, a.roots,
-                                       mcp_url=None, prefix=f"ans-{qid}-"))
+                                       mcp_url=None, prefix=f"ans-{qid}-",
+                                       package_skills_dir=a.package_skills_dir))
         else:
             work = tempfile.mkdtemp(prefix=f"ans-{qid}-")
         mcp = os.path.join(work, "mcp.json")
@@ -954,6 +956,88 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     return {**parse_verdict(text), "judge_cost_usd": res.get("total_cost_usd")}
 
 
+def resolve_package_skills(a: argparse.Namespace) -> None:
+    """Settle --package-skills against what the server actually serves.
+
+    The mode is a claim about the answerer's environment, and its parts live in
+    different places: the flag, the files in the model repo, and whether the
+    deployment serves them at all (`PUBLISHER_PACKAGE_SKILLS`). A run that asked
+    for one arm and measured another is worse than a run that refused, because
+    the label on the result is wrong and nothing downstream can tell.
+
+    So each mode is checked, not assumed:
+
+    - `install`: the package must have a skills/ directory to copy. Nothing to
+      copy means this arm is silently the `off` arm.
+    - `tool`: the server must be serving the package's skills, or the answerer
+      has nothing to fetch and this arm is silently the `off` arm too.
+    - `off`: the server must NOT be serving them, or the answerer can reach
+      guidance the baseline is supposed to exclude.
+
+    Sets `package_skills_dir` (the tree to install, or None) and
+    `package_skills_sha` (a content hash pinned on the run, so two runs
+    differing only in guidance are distinguishable in the ledger).
+    """
+    a.package_skills_dir = None
+    a.package_skills_sha = None
+
+    # The SERVED copy, not the working tree. The `tool` arm fetches what the
+    # server holds, so installing those same bytes is what makes the two arms
+    # differ only in delivery -- which is the whole comparison. An explicit
+    # --package-skills-dir wins, for a server whose tree is not local.
+    local = None
+    if a.package_skills_dir_override:
+        # Checked here rather than left to build_workspace: this resolver runs
+        # before the first spawn precisely so a mistyped path stops the run at
+        # second zero instead of after it has started answering.
+        override = pathlib.Path(a.package_skills_dir_override)
+        if not override.is_dir():
+            raise SystemExit(
+                f"--package-skills-dir {override} is not a directory.")
+        local = override
+    elif a.target != "platform":
+        pkg_dir = served_package_dir(a.publisher, a.environment, a.package)
+        if pkg_dir is not None and (pkg_dir / "skills").is_dir():
+            local = pkg_dir / "skills"
+    served = package_skill_names(a.publisher, a.environment, a.package)
+
+    if a.package_skills == "install":
+        if local is None:
+            raise SystemExit(
+                "--package-skills=install, but no skills/ directory was found "
+                "for the package. Installing nothing measures the 'off' arm "
+                "under the 'install' label. Pass --package-skills-dir, or pick "
+                "another mode.")
+        a.package_skills_dir = local
+    elif a.package_skills == "tool":
+        if not served:
+            raise SystemExit(
+                "--package-skills=tool, but the server serves no package "
+                f"skills for {a.environment}/{a.package}. The answerer would "
+                "have nothing to fetch, so this would measure the 'off' arm "
+                "under the 'tool' label. Check the package ships skills/, and "
+                "that the server was not started with "
+                "PUBLISHER_PACKAGE_SKILLS=off.")
+    elif a.package_skills == "off":
+        if served:
+            raise SystemExit(
+                "--package-skills=off, but the server IS serving package "
+                f"skills for {a.environment}/{a.package}: "
+                f"{', '.join(served)}. The answerer could fetch them with "
+                "get_skill, so this is not a baseline. Restart the server with "
+                "PUBLISHER_PACKAGE_SKILLS=off.")
+
+    if local is not None:
+        h = hashlib.sha256()
+        for f in sorted(local.rglob("*")):
+            if f.is_file():
+                h.update(str(f.relative_to(local)).encode())
+                h.update(b"\0")
+                h.update(f.read_bytes())
+                h.update(b"\0")
+        a.package_skills_sha = h.hexdigest()
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
@@ -995,6 +1079,22 @@ def main(argv: list[str] | None = None) -> int:
                     help="local: the served package. "
                          "platform: the hosted WORKSPACE")
     ap.add_argument("--mcp-url", default="http://localhost:4040/mcp")
+    ap.add_argument("--package-skills", choices=("install", "tool", "off"),
+                    default="tool",
+                    help="how the package's own skills reach the answerer. "
+                         "install = copied into its workspace, so they load "
+                         "like any other skill. tool = not installed; the "
+                         "answerer must call get_skill, which is what a real "
+                         "agent against this server does. off = the server is "
+                         "asked to withhold them entirely, the baseline arm. "
+                         "The default is `tool` because it is the unmodified "
+                         "product behaviour.")
+    ap.add_argument("--package-skills-dir", dest="package_skills_dir_override",
+                    default=None,
+                    help="the skills/ tree to install for --package-skills="
+                         "install. Defaults to the served package's own, which "
+                         "is what the `tool` arm would fetch; pass this only "
+                         "when the served tree is not reachable locally.")
     ap.add_argument("--publisher", default="http://localhost:4811",
                     help="Publisher REST base, used to re-execute the answerer's "
                          "final query so the judge sees rows rather than prose")
@@ -1185,6 +1285,7 @@ def main(argv: list[str] | None = None) -> int:
               "(--truth-publisher); goldens are taken as they stand")
 
     served_identity = package_identity(a.publisher, a.environment, a.package)
+    resolve_package_skills(a)
     label = a.label or next_run_label(a.out, a.set_dir.name, a.phase)
     art = a.out / "artifacts"
     art.mkdir(parents=True, exist_ok=True)
@@ -1294,6 +1395,8 @@ def main(argv: list[str] | None = None) -> int:
         skillsVersion=ledger.skills_git_sha(a.roots[0]),
         skillsRoot=str(a.roots[0]),
         harnessVersion=ledger.skills_git_sha(),
+        packageSkillsMode=a.package_skills,
+        packageSkillsSha=a.package_skills_sha,
         answererManifest=a.answerer_manifest if a.answerer_skills else None,
         answererSkills=a.answerer_skills or [],
         judgeSkills=a.judge_skills or [],

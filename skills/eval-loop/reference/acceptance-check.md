@@ -50,6 +50,18 @@ Acceptance rules (replacing any vague "results improve"):
 - Independent deterministic justification (a probed-wrong definition
   corrected) may accept without a measured win. Record that as the acceptance check
   `reason`.
+- **Package-skill edits (`class: skill`) get the full rules, never the
+  documentation shortcut.** A `get_context` probe proves an entity is
+  discoverable. Nothing deterministic proves an agent read a guide and behaved
+  differently, so the only evidence a skill edit has is a fresh blind
+  re-answer: both splits, twice, clearing the flip-count bar. Treat the
+  documentation shortcut as unavailable here even when the edit reads like
+  documentation, because a guide is prompt text written next to the case it
+  failed and is the easiest artifact in this loop to overfit.
+
+  Read the diff before measuring it, too. A guide that names the case, quotes
+  its expected number, or encodes the shape of one question fails the expert
+  test in `skill:eval-improve` and is rejected without a run.
 
 Write the `acceptance_check` event (decision, class, baseline and final run ids,
 regressions, holdout delta, reason) BEFORE any commit, so a rejected

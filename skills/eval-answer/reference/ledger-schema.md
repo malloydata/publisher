@@ -282,7 +282,7 @@ rejected direction keeps its record.
 | `issue_ids` | |
 | `files` | Paths the edit touched. |
 | `diffSummary` | One line per file. |
-| `probes` | Query and result for each factual claim. |
+| `probes` | Query and result for each factual claim. May be empty for a `class: skill` candidate that asserts nothing about the data: a guide making no factual claim has nothing to probe. Empty is not a missing receipt there; a guide that DOES quote a number still needs one. |
 | `meaningChanged` | Entities whose *meaning* the edit changed; `[]` for a docs-only edit. |
 | `goldenSuspect` | Each `{qid, entity, stored, rederived}`: a golden this edit may have invalidated. Reported by the improver, never repaired by it. **Non-empty halts the acceptance check** until adjudicated through the golden side door. |
 | `goldenAudit` | The set's `verify_goldens.py` run against the edited model: `{ran, clean, model, tail}`. Catches drift and rubric-vs-model contradictions only; a golden whose value silently moved is invisible to it, which is why `goldenSuspect` exists alongside. |
@@ -298,7 +298,7 @@ Written by `eval-loop`, one per acceptance check decision, BEFORE any checkpoint
 |---|---|
 | `issue_ids` | |
 | `decision` | `accepted` / `rejected`. |
-| `class` | `docs` / `definition` / `retrieval` / `justified`. |
+| `class` | `docs` / `definition` / `skill` / `retrieval` / `justified`. `skill` is an edit to a package skill under the package's `skills/`; it never takes the documentation shortcut in the acceptance check. |
 | `baselineRunId` / `finalRunIds` | Plural: acceptance needs two independent runs. |
 | `regressions` | Case ids whose verdict got worse vs baseline. Must be empty to accept. |
 | `holdoutDelta` | Confident-verdict delta on the holdout slice. |
