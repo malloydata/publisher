@@ -52,12 +52,15 @@ source: orders is orders_pg.table('public.pm_orders') extend {
 
 ## Warns pm
 
-The degraded state is visible on `/status` rather than silent, and the wording is a
-rollup's own. Saying the source "is served live from its own warehouse" would be wrong
-twice over here, since a rollup is not a source anyone queries by name and there is no
-live reading of one to fall back to.
+The degraded state is visible on `/status` rather than silent, and the warning names what
+the author WROTE — the base source and the grain — rather than the rollup's generated
+name, which appears in no file they can open. Asserted on the base name because that is
+the part a reader can act on: a warning naming only a digest is one step from no warning.
 
-cites: pre-aggregation rollup
+This is also the only signal in the default configuration, since `off` is what every
+deployment ships with. A first author of a `storage=` rollup reads this and nothing else.
+
+cites: Measures of `orders` pre-aggregated at grain
 
 ## Query by category
 

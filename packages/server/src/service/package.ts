@@ -1645,17 +1645,34 @@ export class Package {
          // the base, correctly. Reusing the authored text would also imply the
          // annotation is merely inert, when the thing an operator needs to know is
          // that nothing was built at all.
-         const isRollup = source.origin === "preaggregate";
-         const message = isRollup
+         const rollup = source.preaggregate;
+         // Named by the BASE source and the grain, never by the rollup's own
+         // name. A rollup's name is generated and appears in no file the author
+         // can open, so a warning carrying it — as the `subject` did — gives them
+         // nothing to act on: they wrote `storage=` on a measure and get back a
+         // digest. The base and grain are what they typed, and the wire plan
+         // carries both right here.
+         //
+         // This is the only signal in the DEFAULT configuration. `off` is what
+         // every deployment ships with, so this warning, not any refusal, is what
+         // a first author of a `storage=` rollup actually reads — and in a feature
+         // whose characteristic failure is correct answers with no acceleration
+         // and no error, a warning nobody can trace back is one step from no
+         // signal at all.
+         const at = rollup
+            ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at grain ` +
+              `"${rollup.grainDimensions.join(", ")}" declare `
+            : "";
+         const message = rollup
             ? mode === "off"
-               ? `is a pre-aggregation rollup declared into storage "${storage}", ` +
-                 `but PERSIST_STORAGE_MODE is off, so it is not built. Queries ` +
-                 `that would have used it are answered from the base source ` +
-                 `instead — correct, but unaccelerated.`
-               : `is a pre-aggregation rollup materialized into storage ` +
-                 `"${storage}", but PERSIST_STORAGE_MODE is write-only, so the ` +
-                 `serve path does not route to it. Queries are answered from the ` +
-                 `base source — correct, but unaccelerated.`
+               ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
+                 `the rollup is not built. Queries that would have used it are ` +
+                 `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
+                 `but unaccelerated.`
+               : `${at}storage="${storage}", and the rollup is built, but ` +
+                 `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
+                 `route to it. Queries are answered from ` +
+                 `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
             : mode === "off"
               ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
                 `the annotation is ignored and the source is served live from ` +
@@ -1665,7 +1682,10 @@ export class Package {
                 `routed to the materialized table (served live).`;
          warnings.push({
             model: source.modelPath ?? "",
-            subject: source.name,
+            // The base source for a rollup: the thing the author can find. Its
+            // own generated name would be the accurate answer to a question
+            // nobody asked.
+            subject: rollup ? rollup.baseSourceName : source.name,
             message,
          });
       }
