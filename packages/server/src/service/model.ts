@@ -56,7 +56,10 @@ import {
    PayloadTooLargeError,
 } from "../errors";
 import { getPersistStorageMode } from "../config";
-import type { RollupPlan } from "./preaggregation_synthesis";
+import {
+   planModelPreaggregation,
+   type RollupPlan,
+} from "./preaggregation_synthesis";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
 import { restrictMalloyConfigToConnections } from "./connection";
@@ -417,6 +420,19 @@ export class Model {
     * disable lake serving.
     */
    private preaggregateRollupPlans: RollupPlan[] = [];
+   /**
+    * Bumped whenever {@link preaggregateRollupPlans} is replaced, and folded into
+    * the serve-shape cache key.
+    *
+    * Clearing the cache when the plans change is not enough on its own, because a
+    * query in flight can outlive the clear: it reads the plans, awaits a compile,
+    * and writes its shape afterwards. A package reload publishes its new models
+    * before this method has run for them, so that in-flight query can be one that
+    * saw NO plans — and its group-less shape would then be cached under a key that
+    * depends only on the bindings, and reused by every later query until the next
+    * bind. Keying on the version means such a write is simply never read again.
+    */
+   private preaggregatePlansVersion = 0;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -3685,12 +3701,16 @@ export class Model {
       // Planned directly rather than taken from the compile below, so a companion
       // that fails to compile still leaves the storage tier able to serve these
       // rollups: planning is pure, the compile is not.
-      const { planModelPreaggregation } = await import(
-         "./preaggregation_synthesis"
-      );
+      //
+      // Statically imported, unlike the compile helper below. That one needs a
+      // dynamic import to break a real cycle; this module is already in this
+      // file's static graph by way of `preaggregation_serve_bindings`, so a
+      // dynamic import here bought nothing and put an await between the reset
+      // above and the assignment below.
       this.preaggregateRollupPlans = planModelPreaggregation(
          this.modelDef.contents as Record<string, unknown>,
       );
+      this.preaggregatePlansVersion += 1;
       // Dynamic import to break a module cycle: the helper compiles through
       // Model.getModelRuntime, so importing it at the top of this file would make
       // the two modules import each other.
@@ -4041,10 +4061,14 @@ export class Model {
          // nothing to serve from storage; fall through to live (caller's catch).
          throw new Error("no fresh storage serve bindings for this query");
       }
-      const key = freshBindings
-         .map((b) => `${b.sourceName}@${b.destinationName}/${b.virtualHandle}`)
-         .sort()
-         .join("|");
+      const key =
+         `v${this.preaggregatePlansVersion}|` +
+         freshBindings
+            .map(
+               (b) => `${b.sourceName}@${b.destinationName}/${b.virtualHandle}`,
+            )
+            .sort()
+            .join("|");
       // Split by origin. A rollup CANNOT go through serveBindingsWithRefinements:
       // its source name names nothing in the author's model, so the refinement
       // lift finds no fields and the schema narrowing intersects to nothing — see
