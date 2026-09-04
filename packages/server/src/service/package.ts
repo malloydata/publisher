@@ -46,6 +46,8 @@ import {
    type PackageLoadStatus,
 } from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
+import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
+import { readPackageSkills } from "../mcp/skills/package_skills";
 import {
    computeSourceContentSha,
    mintServedRevision,
@@ -286,12 +288,20 @@ export class Package {
    /**
     * What this package is currently serving, refreshed on load and on every
     * reload. `servedRevision` identifies the load; `sourceContentSha` is a
-    * content hash over the model files, so it answers the question a caller
-    * actually has after an edit -- did the bytes the server compiled change --
+    * content hash over the served files, so it answers the question a caller
+    * actually has after an edit -- did the bytes the server read change --
     * which `servedRevision` cannot, being minted fresh either way.
     */
    private servedRevision: string = mintServedRevision();
    private sourceContentSha: string = "";
+   /**
+    * The agent skills this package ships, read from `skills/` on load and on
+    * every reload. Refreshed in the same call that recomputes the content sha,
+    * so a skill edit is covered by the reload receipt by construction rather
+    * than by remembering to add it.
+    */
+   private packageSkills: SkillEntry[] = [];
+   private packageSkillWarnings: string[] = [];
    private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -334,17 +344,34 @@ export class Package {
       return this.sourceContentSha;
    }
 
+   /** The agent skills this package ships, in on-disk order. */
+   public listSkills(): SkillEntry[] {
+      return this.packageSkills;
+   }
+
    /**
-    * Re-derive the serving identity. Call after anything that changes which
-    * models are served or what they contain; a reload that leaves the bytes
-    * identical still mints a new revision, and correctly leaves the sha alone.
+    * Re-derive the serving identity, and re-read the package's own skills.
+    *
+    * The two are one operation on purpose. The sha is the reload receipt, and
+    * a receipt that ignored skill files would report "nothing changed" for a
+    * skill edit that did in fact reach the server -- the exact false negative
+    * the receipt exists to prevent. Reading the skills here is what supplies
+    * the paths, so the set that is served and the set that is hashed are the
+    * same set.
+    *
+    * Call after anything that changes which files are served or what they
+    * contain; a reload that leaves the bytes identical still mints a new
+    * revision, and correctly leaves the sha alone.
     */
    private refreshServingIdentity(): void {
       this.servedRevision = mintServedRevision();
-      this.sourceContentSha = computeSourceContentSha(
-         this.packagePath,
-         this.models.keys(),
-      );
+      const skills = readPackageSkills(this.packagePath);
+      this.packageSkills = skills.skills;
+      this.packageSkillWarnings = skills.warnings;
+      this.sourceContentSha = computeSourceContentSha(this.packagePath, [
+         ...this.models.keys(),
+         ...skills.paths,
+      ]);
    }
 
    /**
@@ -1107,6 +1134,11 @@ export class Package {
       const allWarnings = [
          ...this.renderTagWarnings,
          ...this.dashboardWarnings,
+         // A package skill that could not be read or is missing a description.
+         // Advisory like the rest: a bad markdown file must not cost the
+         // package its models, and this is the only non-log signal that a
+         // skill the author wrote is not being served.
+         ...this.packageSkillWarnings.map((message) => ({ message })),
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
          // A listed model whose curated surface is empty. Advisory (an

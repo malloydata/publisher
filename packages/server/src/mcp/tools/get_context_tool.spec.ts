@@ -580,6 +580,63 @@ describe("get_context discovery tiers", () => {
       });
    });
 
+   it("names the guides a package ships, without their bodies", async () => {
+      // The listing rides on every package-scoped response because the agent
+      // that most needs it is the one that did not think to ask. Descriptions
+      // only: bodies are what get_skill is for.
+      const withSkills = {
+         ...mockPackage,
+         listSkills: () => [
+            {
+               name: "storefront-conventions",
+               description: "What the measures actually count.",
+               body: "LONG BODY",
+            },
+            {
+               name: "storefront-conventions/margin",
+               description: "Reference detail.",
+               body: "REFERENCE BODY",
+            },
+         ],
+      };
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => withSkills),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      // The reference entry is addressed by its parent's pointer, so it is not
+      // one of the things a caller chooses from.
+      expect(payload.skills).toEqual([
+         {
+            name: "storefront-conventions",
+            description: "What the measures actually count.",
+         },
+      ]);
+      expect(JSON.stringify(payload)).not.toContain("LONG BODY");
+      expect(typeof payload.skills_note).toBe("string");
+   });
+
+   it("carries no skills key for a package that ships none", async () => {
+      // Most packages ship none, and an empty array is a key every consumer
+      // would then have to test.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({ ...mockPackage, listSkills: () => [] })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      expect("skills" in payload).toBe(false);
+      expect("skills_note" in payload).toBe(false);
+   });
+
    it("tier 3: a populated listing of a current package carries no warnings", async () => {
       // Warnings are for the ambiguous cases only; a healthy payload must stay
       // byte-identical to what it was before warnings existed.

@@ -20,6 +20,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(404, error.message);
    } else if (error instanceof DashboardNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof SkillNotFoundError) {
+      return httpError(404, error.message);
    } else if (error instanceof NotQueryableError) {
       return httpError(404, error.message);
    } else if (error instanceof MalloyError) {
@@ -124,6 +126,17 @@ export class ModelNotFoundError extends Error {
  * dashboard.
  */
 export class DashboardNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * No skill with that name is in force for the package. Covers both a name
+ * nothing defines and a reference file (`<skill>/<stem>`) that no served skill
+ * carries.
+ */
+export class SkillNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }

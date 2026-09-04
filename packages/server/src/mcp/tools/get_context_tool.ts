@@ -15,6 +15,7 @@ import {
 } from "../../service/embedding_provider";
 import { referencedGivenNames } from "../../service/authorize";
 import { InvalidArgumentError } from "../../errors";
+import { getPackageSkillsMode } from "../../config";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { logger } from "../../logger";
@@ -1798,6 +1799,56 @@ async function runContextQuery(
    };
 
    /**
+    * Spread into a payload to attach `skills`: the guides this package ships
+    * about itself, name and description only. Returns {} when it ships none,
+    * so the overwhelming majority of payloads carry no key at all.
+    *
+    * Descriptions rather than bodies, and every one of them rather than a
+    * ranked subset. A description is one line, a handful of them cost a couple
+    * of hundred tokens, and that buys a listing that cannot miss -- where
+    * ranking guidance against the question would sometimes hide the guide that
+    * says the question is being asked wrong. Bodies stay behind get_skill,
+    * which is the same split a skill-aware host makes.
+    *
+    * Sits OUTSIDE the response envelope, alongside `retrieval`, `warnings` and
+    * the rest: the envelope tracks the hosted retrieval API's shape, which has
+    * no notion of a package-shipped guide, and these siblings are already
+    * Publisher's own.
+    */
+   const skillsFor = () => {
+      if (getPackageSkillsMode() !== "on") return {};
+      let skills: Array<{ name: string; description: string }>;
+      try {
+         skills = pkgIndex.pkg
+            .listSkills()
+            // Reference entries are on-demand detail addressed by the parent's
+            // pointer, not something to choose from a list.
+            .filter((skill) => !skill.name.includes("/"))
+            .map((skill) => ({
+               name: skill.name,
+               description: skill.description,
+            }));
+      } catch (error) {
+         // Best effort, on the same rule as staleNote above: this is an
+         // annotation on the response, so a failure to read it must not take
+         // discovery down with it. Logged, never thrown.
+         logger.debug("[MCP Tool getContext] package skills lookup failed", {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return {};
+      }
+      return skills.length > 0
+         ? {
+              skills,
+              skills_note:
+                 "This package ships its own guidance. Read the relevant guide with get_skill(skill_name, scopes) before relying on names or conventions from this package. A guide whose name matches a built-in one replaces it here.",
+           }
+         : {};
+   };
+
+   /**
     * The warning for a capped result set, or undefined when nothing was
     * cut. It names the remedy that works here: raising the limit, or
     * narrowing the question. Telling an agent to "search more
@@ -1948,6 +1999,7 @@ async function runContextQuery(
          return jsonResource(uri, {
             sources,
             ...listingEnvelope,
+            ...skillsFor(),
             ...warningsFor(
                "This package loaded but exposes no sources. That is a curation gap, not an empty database: check the package's explores list and export {} statements, and call get_status for load errors and stale packages.",
             ),
@@ -1956,6 +2008,7 @@ async function runContextQuery(
       return jsonResource(uri, {
          sources,
          ...listingEnvelope,
+         ...skillsFor(),
          ...warningsFor(
             // A pure browse pages; every other listing shape is capped in
             // entities and says so.
@@ -2156,6 +2209,7 @@ async function runContextQuery(
          ...(totalEntities !== undefined
             ? { total_entities: totalEntities }
             : {}),
+         ...skillsFor(),
          // Each cut in its own unit: `limit` drops whole sources, the
          // per-source cap drops entities inside the ones it kept.
          ...warningsFor(
@@ -2259,9 +2313,10 @@ async function runContextQuery(
               ...envelope,
               retrieval: "lexical",
               ...(retrievalReason ? { retrieval_reason: retrievalReason } : {}),
+              ...skillsFor(),
               ...lexicalWarnings,
            }
-         : { ...envelope, ...lexicalWarnings },
+         : { ...envelope, ...skillsFor(), ...lexicalWarnings },
    );
 }
 

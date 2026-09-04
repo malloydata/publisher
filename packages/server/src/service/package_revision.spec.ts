@@ -144,6 +144,36 @@ describe("Package serving identity", () => {
       expect(build().getSourceContentSha()).not.toBe(before);
    });
 
+   it("moves the sha when a package skill changes, so a skill edit has a receipt", () => {
+      // eval-improve reads the sha to prove its edit reached the served copy.
+      // If skill files were outside the hash, a skill-only edit would report
+      // "nothing changed" while in fact being served: a false negative on the
+      // one check that catches the publisher_data/ copy trap.
+      const skillDir = path.join(dir, "skills", "house");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+         path.join(skillDir, "SKILL.md"),
+         "---\nname: house\ndescription: d\n---\n\nPrefer net revenue.\n",
+      );
+      const before = build().getSourceContentSha();
+      fs.writeFileSync(
+         path.join(skillDir, "SKILL.md"),
+         "---\nname: house\ndescription: d\n---\n\nPrefer gross revenue.\n",
+      );
+      expect(build().getSourceContentSha()).not.toBe(before);
+   });
+
+   it("moves the sha when a package skill is added", () => {
+      const before = build().getSourceContentSha();
+      const skillDir = path.join(dir, "skills", "new");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+         path.join(skillDir, "SKILL.md"),
+         "---\nname: new\ndescription: d\n---\n\nbody\n",
+      );
+      expect(build().getSourceContentSha()).not.toBe(before);
+   });
+
    it("leaves the sha alone when a non-model file in the package changes", () => {
       // The publisher_data/ copy trap makes this the load-bearing case: the sha
       // must track what the compiler read, so that an unchanged value is real

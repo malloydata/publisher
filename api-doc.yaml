@@ -1750,6 +1750,112 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/skills:
+    get:
+      tags:
+        - skills
+      operationId: list-skills
+      summary: List the agent skills in force for a package
+      description: |
+        Lists the agent skills that apply to this package: the guides bundled
+        with this server, plus any the package ships under `skills/`.
+
+        Resolution is name shadowing. A package skill whose `name` matches a
+        bundled skill REPLACES it for this package; one with a new name is
+        added. Nothing is merged, because the server does not know which guides
+        the calling agent already holds and so cannot patch one. Read `origin`
+        on each entry to tell a replaced skill from the original.
+
+        Bodies are not returned here. Fetch one with
+        `GET .../skills/{skillName}`. An entry whose `name` contains a slash
+        (`<skill>/<stem>`) is a skill's on-demand reference file, addressed by
+        the pointer at the end of its parent's body.
+
+        The REST half of the `get_skill` MCP tool, for callers running
+        unattended. Under `PUBLISHER_PACKAGE_SKILLS=off` the package's own
+        skills are withheld and only the bundled set is listed.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: The skills in force for the package
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SkillSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/skills/{skillName}:
+    get:
+      tags:
+        - skills
+      operationId: get-skill
+      summary: Get one agent skill, with its body
+      description: |
+        Returns one skill in force for this package, including its full
+        Markdown. `skillName` is a name from the listing, exactly as spelled
+        there; a reference file is addressed as `<skill>/<stem>` and must be
+        URL-encoded.
+
+        404 when no skill of that name is in force, which includes the case
+        where the package ships one but `PUBLISHER_PACKAGE_SKILLS=off`.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: skillName
+          in: path
+          description: >-
+            Skill name as returned by the listing. A reference file is
+            `<skill>/<stem>` and must be URL-encoded.
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The skill and its body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Skill"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/dashboards:
     get:
       tags:
@@ -3451,6 +3557,57 @@ components:
             publisher.json all leave it unchanged, because none of them changes
             what the compiler read.
 
+
+    SkillSummary:
+      type: object
+      readOnly: true
+      description: >-
+        One agent skill in force for a package, without its body. This is what
+        a caller reads to decide which skill to fetch.
+      properties:
+        name:
+          type: string
+          description: >-
+            The skill's name, and the identifier for fetching it. A name
+            containing a slash (`<skill>/<stem>`) is one skill's on-demand
+            reference file rather than a skill in its own right.
+        description:
+          type: string
+          description: >-
+            One line saying when to read this skill. Empty when the package
+            author omitted it, which is also reported as a package warning.
+        origin:
+          type: string
+          enum:
+            - bundled
+            - package
+          description: >-
+            `bundled` = shipped with this server. `package` = shipped by the
+            package under `skills/`, which includes a package skill whose name
+            matches a bundled one and therefore REPLACES it for this package.
+            Present so a caller can tell a replaced skill from the original,
+            which is otherwise invisible.
+
+    Skill:
+      type: object
+      readOnly: true
+      description: An agent skill with its full Markdown body.
+      properties:
+        name:
+          type: string
+          description: The skill's name.
+        description:
+          type: string
+          description: One line saying when to read this skill.
+        content:
+          type: string
+          description: The skill's full guidance, Markdown.
+        origin:
+          type: string
+          enum:
+            - bundled
+            - package
+          description: Where this skill came from. See SkillSummary.origin.
 
     PackageEmbeddingIndex:
       type: object
