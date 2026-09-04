@@ -57,6 +57,7 @@ export type PreaggregateViolationCode =
    | "empty_grain"
    | "invalid_namespace"
    | "empty_storage"
+   | "invalid_storage"
    | "conflicting_namespace"
    | "conflicting_storage"
    | "namespace_with_storage"

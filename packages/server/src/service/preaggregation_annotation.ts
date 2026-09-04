@@ -135,7 +135,8 @@ export interface PreaggregateDeclarationError {
       | "missing_grain"
       | "empty_grain"
       | "invalid_namespace"
-      | "empty_storage";
+      | "empty_storage"
+      | "invalid_storage";
    /** Names the measure and the fix; becomes the body of a publish-time 400. */
    message: string;
 }
@@ -314,6 +315,17 @@ export function readPreaggregateAnnotation(
             errors.push({
                kind: "empty_storage",
                message: `Measure \`${name}\` declares \`#@ preaggregate storage=""\` with no destination. Name the storage destination the rollup should be built into, or remove the key to build it alongside its base.`,
+            });
+            continue;
+         }
+         // A quote or backslash cannot survive being re-emitted into the
+         // synthesized `#@ persist storage="…"`, which is a string literal in an
+         // annotation. Refused rather than mangled, per this module's rule; every
+         // other character is fine because the emit quotes.
+         if (/["\\]/.test(candidate)) {
+            errors.push({
+               kind: "invalid_storage",
+               message: `Measure \`${name}\` declares \`#@ preaggregate storage=\` naming a destination that contains a quote or backslash. Publisher re-declares the destination on the rollup it synthesizes, and such a name cannot be written there. Rename the destination.`,
             });
             continue;
          }

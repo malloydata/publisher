@@ -480,6 +480,13 @@ function emitRollup(plan: RollupPlan): string {
    const merged = plan.measures
       .map((m) => `    ${m.name} is ${m.partialName}.${m.reaggregate}()`)
       .join("\n");
+   // The destination is QUOTED. Unquoted, the tag parser splits a name at its
+   // first non-identifier character and does so SILENTLY — measured:
+   // `storage=my-lake` yields `storage="my"` plus a stray `lake` tag and an empty
+   // parse log, so the rollup would target a destination called `my` with nothing
+   // anywhere saying so. The author's own annotation may have been quoted and
+   // read back correctly; it is this re-emit that would lose it.
+   //
    // A destination wins, and takes NO `name=`. Placement inside a destination is
    // derived rather than authored: the resolver refuses a dotted `name=` outright
    // because a freshly provisioned catalog has no schema and the build emits a
@@ -496,7 +503,7 @@ function emitRollup(plan: RollupPlan): string {
    // is what every dialect but BigQuery accepts, and inventing one would be a
    // guess.
    const persist = plan.storage
-      ? `#@ persist storage=${plan.storage}`
+      ? `#@ persist storage=${JSON.stringify(plan.storage)}`
       : plan.namespace
         ? `#@ persist name="${plan.namespace}.${plan.rollupSourceName}"`
         : "#@ persist";

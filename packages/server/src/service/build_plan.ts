@@ -1061,6 +1061,22 @@ export function deriveBuildPlan(
             // filtered afterwards — and the storage-destination gate is the same
             // one an authored `#@ persist storage=` passes. Neither subsumes the
             // other, so a storage rollup runs both.
+            // The two gates are recorded differently, and the difference is the
+            // `continue` below rather than the message.
+            //
+            // The AUTHORIZE refusal leaves the rollup in `sources`: Malloy
+            // synthesized it, and the colocated companion may still offer it, so
+            // refused-and-present is both true at once. That is the coexistence the
+            // spec permits for this tier alone.
+            //
+            // The STORAGE refusal does not. Such a rollup cannot build anywhere —
+            // its destination is the only place it was ever going to be written —
+            // so leaving it in `sources` carrying `annotationFields.storage` states
+            // that a table is coming that never is. `Package.storageWarnings` reads
+            // that field with no refusal check and would announce a write-only
+            // rollup as materialized; the auto-run walks the same compiled sources
+            // and would try to build it.
+            let storageRefused = false;
             try {
                assertColocatedPersistNotAuthorizeGated(
                   source,
@@ -1068,7 +1084,11 @@ export function deriveBuildPlan(
                   "preaggregate",
                   options?.sourceGateOutcomes?.[sourceID],
                );
-               if (declaresStorage) assertMaterializationEligible(source);
+               if (declaresStorage) {
+                  storageRefused = true;
+                  assertMaterializationEligible(source);
+                  storageRefused = false;
+               }
             } catch (err) {
                if (!(err instanceof MaterializationEligibilityError)) throw err;
                // Deliberately no `continue`: this sourceID lands in BOTH refusedSources
@@ -1100,6 +1120,10 @@ export function deriveBuildPlan(
                   reason: err.reason || "authorize",
                   message: errMessage(err),
                };
+               // Present in BOTH collections only for the authorize refusal; a
+               // storage-refused rollup is absent from `sources`, like any other
+               // source whose only build path was refused.
+               if (storageRefused) continue;
             }
          }
          // EFFECTIVE per-source freshness, resolved most-specific-wins
