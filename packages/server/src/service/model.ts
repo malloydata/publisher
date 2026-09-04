@@ -4853,18 +4853,24 @@ export class Model {
          // storage destination, because for those the colocated companion is a
          // PESSIMIZATION rather than a second chance.
          //
-         // A storage rollup's table is in the store, so the colocated manifest has
-         // no entry for it. The companion's composite still offers the rollup
-         // member and still picks it for a covered query — membership does not
-         // depend on the table existing — and with no entry to substitute, the
-         // member compiles as its own definition: a GROUP BY of the base, then the
-         // merge on top. Two stages where serving live is one, for a query that
-         // reached here only because the storage rung could not serve it.
+         // A storage rollup is NOT a member of the companion's composite —
+         // synthesis leaves it out, because a member there resolves through the
+         // colocated manifest and no storage entry ever reaches one. So for a
+         // model whose every rollup is storage-bound the composite is just
+         // `compose(base_alias)`: it covers everything, and covers it by reading
+         // the base.
+         //
+         // Which is why this gate survives that filter rather than being made
+         // redundant by it. Without the gate the probe SUCCEEDS against that
+         // degenerate composite, sets `preaggRouted`, and the run is then handed
+         // the full build manifest instead of `liveBuildManifest` — a different
+         // manifest for an answer identical to serving live, plus a compile to
+         // reach it. Skipping the rung is both cheaper and the honest description
+         // of what it can do here, which is nothing.
          //
          // Scoped to "every rollup is storage-bound" rather than "any": a model
-         // mixing colocated and storage rollups still has colocated tables the
-         // companion can legitimately hit, and giving those up would trade a real
-         // acceleration for avoiding a slower path on the others.
+         // mixing the two still has colocated members that CAN be substituted, and
+         // giving those up would trade a real acceleration for nothing.
          const everyRollupIsStorageBound =
             this.preaggregateRollupPlans.length > 0 &&
             this.preaggregateRollupPlans.every((plan) => !!plan.storage);

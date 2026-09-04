@@ -240,11 +240,18 @@ source: orders is orders_pg.table('public.orders') extend {
 Nothing about the query changes. It still names `orders` and still knows no rollup
 exists; only where the answer is read from moves.
 
-**A rollup may not store what the source hides.** `#@ preaggregate` on a measure the
-source does not publicly expose is refused, and so is a grain naming a hidden dimension.
-A rollup stores its grain and each measure's partial, and the stored table is served
-under the base's name without the source's field visibility applying to it — so
-pre-aggregating a hidden field would publish it.
+**A rollup may not store what the source hides.** A rollup stores its grain and each
+measure's partial, and the stored table is served under the base's name without the
+source's field visibility applying to it — so pre-aggregating a hidden field would publish
+it. The planner therefore refuses to plan one: `#@ preaggregate` on a measure the source
+does not publicly expose builds nothing, and neither does a grain naming a hidden
+dimension.
+
+That is reported as a **warning** rather than refusing your publish, unlike everything
+else in this section. Partly because such a package published before the rule existed and
+an upgrade must not break it, and partly because the refusal was unfollowable: an
+annotation inherited onto a source that then hides the measure would raise it, while that
+source produces no rollup at all and exposes nothing.
 
 **Write it on the `#@ preaggregate` line.** A destination is not inherited from the
 base's `#@ persist storage=`, and the reason is worth knowing because the opposite reads

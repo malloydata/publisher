@@ -64,16 +64,14 @@ import type {
 } from "./preaggregation_validation";
 
 /**
- * Pre-aggregation violations that REJECT a publish but only WARN at load.
+ * Pre-aggregation violations that WARN at both gates rather than refusing.
  *
- * Both concern a field the source does not publicly expose. They are refused so
- * an author is told, and warned rather than fatal at load because a package
- * annotating a hidden field loaded before this validation existed — failing it
- * now would stop an already-published package from loading because a new rule
- * was added. What actually stops a hidden field reaching a rollup is the
- * planner's own skip, not this gate.
+ * Both concern a field the source does not publicly expose. What stops a hidden
+ * field reaching a rollup is the planner's own skip, not either gate — see
+ * {@link Package.formatInvalidPreaggregatePolicy} for that, and for the two
+ * reasons refusing was wrong rather than merely strict.
  */
-const PREAGG_LOAD_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
+const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
    "non_public_measure",
    "grain_dimension_not_public",
 ]);
@@ -857,7 +855,7 @@ export class Package {
          throw new BadRequestError(invalidIncremental);
       }
       // `#@ preaggregate` gets the same strict-at-load treatment, for the reason
-      // given on preaggregatePolicyWarnings: a declaration that cannot take
+      // given on formatInvalidPreaggregatePolicy: a declaration that cannot take
       // effect is invisible in the answers, so warning here would leave the
       // author believing they had a rollup.
       //
@@ -1851,14 +1849,14 @@ export class Package {
     */
    public formatInvalidPreaggregatePolicy(): string {
       return this.preaggregateMessages(
-         (code) => !PREAGG_LOAD_WARN_ONLY.has(code),
+         (code) => !PREAGG_WARN_ONLY.has(code),
       ).join("\n");
    }
 
    /** The access-modifier violations, surfaced at load as warnings. */
    public preaggregateAccessWarnings(): ApiPackageWarning[] {
       return this.preaggregateFindings((code) =>
-         PREAGG_LOAD_WARN_ONLY.has(code),
+         PREAGG_WARN_ONLY.has(code),
       ).map(({ modelPath, violation }) => ({
          model: modelPath,
          // A source-level violation carries no field, so the source is the

@@ -253,7 +253,7 @@ function validateGrainDimension(
    if (isAccessRestricted(field)) {
       return violation(
          "grain_dimension_not_public",
-         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which \`${sourceName}\` does not publicly expose. A rollup STORES its grain, and the stored table is served without the source's field visibility applying to it, so grouping by a hidden dimension would publish it. Group by a public dimension, or make \`${grainDimension}\` public.`,
+         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which \`${sourceName}\` does not publicly expose. A rollup STORES its grain, and the stored table is served without the source's field visibility applying to it, so no rollup is built at this grain. Group by a public dimension, or expose \`${grainDimension}\` publicly.`,
       );
    }
 
@@ -363,7 +363,7 @@ export function validateSourcePreaggregation(
             code: "non_public_measure",
             sourceName,
             fieldName: name,
-            message: `Measure \`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, but the source does not publicly expose it. A rollup stores the measure's partial aggregate and serves it back under the measure's name, without the source's field visibility applying to the stored table — so pre-aggregating a hidden measure would publish it. Make \`${name}\` public, or remove the annotation.`,
+            message: `Measure \`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, but the source does not publicly expose it. A rollup stores the measure's partial aggregate and serves it back under the measure's name, without the source's field visibility applying to the stored table — so no rollup is built for it here. If it should be pre-aggregated on \`${sourceName}\`, expose it publicly; if this source deliberately hides a measure it inherited the annotation with, nothing is wrong and the rollup on the source that exposes it is unaffected.`,
          });
          continue;
       }
