@@ -317,6 +317,33 @@ export const getDuckDBMemoryLimit = (): string | undefined => {
 };
 
 /**
+ * Bound on how much column data DuckLake buffers before flushing a Parquet row
+ * group, in bytes (`PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES`, e.g. `16MB`).
+ * Unset leaves DuckLake's own default of 122,880 ROWS, and issues nothing at all
+ * on attach.
+ *
+ * A DuckLake write buffers a whole row group per column, so its memory is driven
+ * by the table's WIDTH rather than its row count -- a 72-column write measured
+ * 2.7 GiB at the default and 1.0 GiB at 16MB, with the read side under 200 MiB
+ * either way. `memory_limit` does not bound this: the buffers sit outside the
+ * buffer manager, so a low limit and a large row group OOM together.
+ *
+ * Bytes rather than DuckLake's own row count, because a row count cannot suit a
+ * 9-column and a 110-column table at once: the byte form derives the rows per group
+ * from the data actually buffered, so it tracks width without anyone estimating it.
+ * It requires `preserve_insertion_order=false`, which DuckLake's write path does not
+ * honour anyway (it plans the copy parallel unconditionally), so the guarantee being
+ * waived is not one that was being provided.
+ *
+ * Absolute rather than derived, for the same reason {@link getDuckDBMemoryLimit}
+ * is: the number of concurrent builds is not known when a lake is attached.
+ */
+export const getDuckLakeRowGroupSizeBytes = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
+/**
  * Directory DuckDB spills to. A materialization build overrides this with its
  * own disposable working directory; every other session and instance uses this.
  *
@@ -361,6 +388,16 @@ export function assertDuckDBResourceConfig(): void {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKDB_MEMORY_LIMIT: expected a size like ` +
             `"1GB" or "512MB" (or "off" to disable), got "${memoryLimit}"`,
+      );
+   }
+   const rowGroupSizeBytes = getDuckLakeRowGroupSizeBytes();
+   if (
+      rowGroupSizeBytes !== undefined &&
+      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB)$/i.test(rowGroupSizeBytes)
+   ) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: expected a ` +
+            `size like "16MB", got "${rowGroupSizeBytes}"`,
       );
    }
    const tempDirectory = getDuckDBTempDirectory();
