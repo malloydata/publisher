@@ -541,10 +541,28 @@ export function synthesizePreaggregationModel(
 
    // The base LAST in every compose(), so it is the fallback member: the resolver
    // takes the first member that covers the query, and the base covers everything.
+   //
+   // A `storage=` rollup is DECLARED above (it must be, or it is never built) but is
+   // NOT a member here. This composite is the colocated serve path, and its members
+   // are resolved through the same-connection build manifest — which deliberately
+   // carries no storage entries, since those tables live on another engine. So a
+   // storage-bound member can never be substituted: the resolver would pick it for
+   // a query it covers, find no table, and recompute the rollup from the base.
+   //
+   // That costs more than it sounds. Ordering members by grain breadth means a
+   // narrow storage-bound grain is offered BEFORE a wider colocated one, so in a
+   // model mixing the two it wins queries the colocated rollup covers and has a
+   // built table for — turning a table read into a GROUP BY of the base. Under
+   // `PERSIST_STORAGE_MODE=off` the storage rollup has no table anywhere, so it is
+   // not a transient cost that a build clears; it is permanent.
+   //
+   // Filtering the MEMBER list rather than the plan list is the whole of the fix:
+   // the rollup's own `#@ persist` declaration stays, so the build still builds it
+   // and both legs still synthesize identical text.
    const composites = bases
       .map((base) => {
          const members = plans
-            .filter((p) => p.baseSourceName === base)
+            .filter((p) => p.baseSourceName === base && !p.storage)
             .map((p) => p.rollupSourceName);
          return `source: ${base} is compose(${[...members, baseAlias(base)].join(", ")})`;
       })
