@@ -52,6 +52,14 @@ contract probes) is deliberately **not** here: it is Credible's question about i
 lives in an unlisted skill upstream. `credibledata/malloy-samples#23` is a set anyone can run the
 loop on.
 
+The five eval skills are mirrored FROM here to `ms2data/agent-skills`, like every other shared
+skill. The upstream copy has drifted before and it matters more here than elsewhere, because the
+scripts are the harness: a run made with a stale copy produces a ledger that reads as current and
+is not. Three files exist only upstream and are not part of the set: `eval-loop/scripts/run_all.py`
+(a sequencing orchestrator, which `skill:eval-loop` forbids), `eval-answer/reference/judge.md` (now
+`skill:eval-judge`) and `eval-answer/scripts/mcp_client.py`. Delete them when mirroring rather than
+copying them back.
+
 ## Tool names in shared skills
 
 Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query`, `search_malloy_docs`), plus a note that the exact prefixed name depends on the host. `search_database_schema` maps the same way if a shared skill starts using it. This Publisher server exposes them as **`malloy_getContext`**, **`malloy_executeQuery`**, **`malloy_searchDocs`**, and **`malloy_searchDatabaseSchema`** (and adds `malloy_compile` / `malloy_reloadPackage`, which are Publisher-only and appear only in the host/router skills). When a shared skill says `get_context`, use `malloy_getContext`; match each bare name to the tool you actually have. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.

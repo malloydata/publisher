@@ -100,6 +100,10 @@ include {
   public: submitted
   #(doc) The Malloy the answerer finally ran. What makes a failure reproducible.
   public: final_query
+  #(doc) How final_query was chosen: declared (the answer named it), last_ok
+  #(doc) (the last call the server answered) or last. `last` means a trailing
+  #(doc) sanity probe may be standing in for the answer's own query.
+  public: final_query_source
   #(doc) The answer text the judge scored. Readable without opening the transcript.
   public: answer_text
   #(doc) Answerer input tokens.
@@ -120,8 +124,10 @@ include {
   public: n_execute
   #(doc) execute_query calls that errored. High values mean the agent is guessing at syntax.
   public: n_execute_errors
-  #(doc) Host-side tool uses, including Read and Shell.
+  #(doc) Every tool use the host logged, MCP calls included.
   public: host_tool_uses
+  #(doc) get_context and execute_query calls, the MCP subset of host_tool_uses.
+  public: mcp_tool_uses
   #(doc) Whether the attempt saw gold or eval paths. Anything but false voids the verdict.
   public: contaminated
   #(doc) Package revision actually queried.
@@ -155,13 +161,23 @@ extend {
     #(doc) Mean execute_query calls per attempt.
     avg_execute_per_attempt is n_execute.avg()
     #(doc) Attempts flagged contaminated. Any value above zero voids the run.
+    -- Compared as a STRING on purpose, and it is not a leftover from when the
+    -- ledger wrote "true"/"false". build_run_package writes a bool as lowercase
+    -- `true`/`false`, and DuckDB then sniffs a populated column as BOOLEAN but
+    -- a header-only one as VARCHAR. Verified against the compiler: `= 'true'`
+    -- compiles and evaluates correctly under BOTH typings, while a bare
+    -- `where: contaminated` fails as `non-boolean-filter` on the VARCHAR one.
     contaminated_count is count() { where: contaminated = 'true' }
     #(doc) What the arm cost to run. Half of the product claim; correctness is the other half.
     total_cost_usd is cost_usd.sum()
     #(doc) Mean cost per attempt. Compare across arms only at equal case counts.
     avg_cost_usd is cost_usd.avg()
     #(doc) Total tokens the answerer consumed.
-    total_tokens is input_tokens.sum() + output_tokens.sum()
+    -- Cast, like cases_covered below and for the same reason: a column that is
+    -- empty in every row types as VARCHAR, and a platform run reports no token
+    -- usage at all. Untyped, `sum()` then fails to compile and takes the whole
+    -- package with it, so the run that most needs reading shows nothing.
+    total_tokens is sum(input_tokens::number) + sum(output_tokens::number)
     #(doc) Mean turns per attempt. Rises when the agent is groping rather than reading.
     avg_turns is num_turns.avg()
     #(doc) Mean wall-clock seconds per attempt.
@@ -274,6 +290,12 @@ include {
   public: golden_revision
   #(doc) verified, verified_benign, suspect or verified_wrong. verified_wrong is excluded from aggregates.
   public: gold_status
+  #(doc) Fields from golden.mustNotUse found in the final query, pipe-separated.
+  #(doc) A hit forces no_match: a script decides this, never the judge.
+  public: must_not_use_hits
+  #(doc) What the judge said when a mustNotUse hit overrode it. Empty otherwise,
+  #(doc) so the judge's own agreement rate stays measurable across vetoes.
+  public: judge_verdict
   #(doc) Full judge output on disk.
   public: artifactPath
 }
@@ -331,6 +353,10 @@ include {
   public: entity_ids
   #(doc) Non-null when the call failed.
   public: error
+  #(doc) Which retriever answered: semantic, lexical, or empty when the server
+  #(doc) named none. Comparing a semantic arm with a lexical one measures the
+  #(doc) retriever, not the model.
+  public: retrieval_mode
 }
 extend {
   join_one: runs with run_id

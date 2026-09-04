@@ -26,13 +26,30 @@ python3 skills/eval-loop/scripts/run_baseline.py \
   --truth-publisher http://localhost:4881
 python3 skills/eval-loop/scripts/run_baseline.py \
   --set <repo>/evals/ecommerce --out results/<arm> \
-  --parallel 4 --truth-publisher http://localhost:4881
+  --parallel 4 --truth-publisher http://localhost:4881 \
+  --model-repo <repo>   # the checkout the MODEL is versioned in, recorded as
+                        # modelGitSha. It cannot be inferred: Publisher serves
+                        # a copy under publisher_data/, whose surrounding tree
+                        # is the server's storage, not the model's history.
 #    the run names itself <set>-<phase>-<nn> (ecommerce-baseline-01, then -02
 #    for the second arm of the A/A). Pass --label only for a run that needs a
 #    human name; hand-typed arm names stop being readable within an afternoon.
 
-# 3. compare two arms, or two runs of one arm
+# 3. compare two arms, or two runs of one arm. It exits 2 when the arms used
+#    different retrievers, because those flips measure the retriever.
 python3 skills/eval-loop/scripts/flip_table.py --a results/<a> --b results/<b>
+
+# 3a. on an A/A, write the band into the set's calibration record. Nothing
+#     else may quote a band, and a band only covers runs whose pins match.
+python3 skills/eval-loop/scripts/flip_table.py \
+  --a results/aa-1 --b results/aa-2 --calibration \
+  >> <repo>/evals/ecommerce/CALIBRATION.md
+
+# 3b. check the JUDGE, not the model, after any change to the judge skill, a
+#     rubric, or what the judge is shown. It also reports which fixtures are
+#     unpinned and which decision classes nothing covers.
+python3 skills/eval-loop/scripts/check_judge.py \
+  --set <repo>/evals/ecommerce --repeat 3
 
 # 4. FIRST: any golden the judge did not believe. `jq .doubtedGoldens
 #    results/<arm>/run.json` -- non-empty means settle those through the golden

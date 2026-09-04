@@ -320,9 +320,12 @@ conductor. Do not:
 
 - publish the model to a hosted platform as a "true" checkpoint or learning
   curve
-- start a Python orchestrator (`loop.py`, `improve_batch.py`) that runs the
-  five steps end to end unattended. You conduct; the scripts are the steps,
-  not the sequencing
+- start a Python orchestrator (`loop.py`, `run_all.py`, `improve_batch.py`)
+  that runs the five steps end to end unattended. You conduct; the scripts are
+  the steps, not the sequencing. There are more than twenty of them and they
+  are not the exception to this: each does one step you invoke and hands back a
+  result you read. What is forbidden is a script that decides what to do next,
+  because every judgement this loop protects lives in that decision
 - score by string-diffing rows instead of judging them, or reintroduce a
   scripted row oracle: one that can pass a wrong answer is worse than none
 - wait for a bigger gold set before the loop can run; dev/holdout on what

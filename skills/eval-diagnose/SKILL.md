@@ -15,6 +15,14 @@ is allowed to edit becomes justification for an edit somebody already wanted.
 Do not diagnose a contaminated attempt or an environment failure. Those are
 harness or ops, not model work.
 
+**Which cases.** `no_match` on the dev split, which is what `diagnose.py`
+selects by default. One exception, and it needs two arms to earn it: a case that
+came back `near_match` in BOTH runs of a pair is not the judge hedging, it is
+the model failing to distinguish two readings the question does, and no rubric
+repair closes that. Take the stable list `flip_table.py` prints and pass
+`--only <qids> --verdicts near_match`. Never diagnose a one-armed `near_match`;
+that is noise, and it sends an agent to fix a model that is already right.
+
 ## Components, in order
 
 Walk **in this order** and stop at the first with positive evidence. A later

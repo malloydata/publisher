@@ -81,7 +81,7 @@ One JSON object per line:
 | `tags` | list |
 | `state` | `candidate` / `selected` / `excluded`. |
 | `source` | Where the case came from. |
-| `golden` | `status` (`verified` / `provisional` / `invalid` / `ambiguous`), `kind`, `value` or `path` (artifact under the set directory), `canonicalQuery` (runs against the **truth** package, never the model under test), `verifiedBy`, and `verification` -- `{primaryAxis, variesAxis, note}` naming what the second derivation varied. **A golden is written only after two differently shaped derivations agree** (the truth query and a second one that varies a different axis -- group by something else, sum a different way, take a different route through the raw tables); `gold/<qid>.json` holds both (`truthRows`, `verifyRows`, `agreement`). Two derivations that vary the same axis share every other blind spot: that is how a golden that summed three overlapping time slices, 3x too high, passed its check. `verify_goldens.py` re-derives the value, reads the accepting clause of the rubric against the rows, and flags a second derivation that names no axis. **The question asks for data, never for an interpretation of it**, and either fixes the grain or the rubric accepts a correct figure at any stated grain (`judge.md` rules 9 and 10). |
+| `golden` | `status` (`verified` / `provisional` / `invalid` / `ambiguous`), `kind`, `value` or `path` (artifact under the set directory), `canonicalQuery` (runs against the **truth** package, never the model under test), `verifiedBy`, and `verification` -- `{primaryAxis, variesAxis, note}` naming what the second derivation varied. **A golden is written only after two differently shaped derivations agree** (the truth query and a second one that varies a different axis -- group by something else, sum a different way, take a different route through the raw tables); `gold/<qid>.json` holds both (`truthRows`, `verifyRows`, `agreement`). Two derivations that vary the same axis share every other blind spot: that is how a golden that summed three overlapping time slices, 3x too high, passed its check. `verify_goldens.py` re-derives the value, reads the accepting clause of the rubric against the rows, and flags a second derivation that names no axis. **The question asks for data, never for an interpretation of it**, and either fixes the grain or the rubric accepts a correct figure at any stated grain (`skill:eval-judge` rules 10 and 11). |
 | `golden.rubric` | **On the golden, not on the case.** The prose the judge is shown as `CASE RUBRIC`, naming what counts as correct and what does not. `run_baseline.py` reads `golden.rubric`; a rubric written at the case's top level is silently not passed, the judge is told `CASE RUBRIC: none`, and it then scores from the golden value and the answer alone -- which reads as a judge that ignores its instructions. |
 | `golden.mustState` | **On the golden, not on the case.** What the answer has to say out loud. Read from `golden.mustState` by the run-package builder. |
 | `goldenRevision` | Integer. Bump on every golden change; `score` events stamp the revision they compared against. |
@@ -119,11 +119,15 @@ on that axis.
 | `skillsVersion` *(pin)* | HEAD of the checkout the agents' skills were loaded from, dirty-marked (`ledger.skills_git_sha(root)`). The skills are the doctrine the agents load; a run that cannot name their version cannot anchor a skills A/B. |
 | `skillsRoot` / `harnessVersion` | Which checkout supplied the doctrine (`--skills-root`, e.g. a Publisher checkout for the open-source skills; default this one), and this checkout's own HEAD. The eval-* skills always come from the harness checkout, whatever `skillsRoot` says. Two runs whose `skillsRoot` differ are a skills A/B only if their manifests name the same skills. |
 | `diagnoserModel` / `improverModel` | Written by `diagnose.py` / `improve.py` when those stages run, so the run names every LLM that touched it. Absent on a run that was only answered and judged. |
-| `modelGitSha` | Commit of the model repo, when the target served working files; `-dirty` suffix when the tree had uncommitted changes -- fine for a band measurement, not for an A/B pin. Omit for a platform target, where a local commit pins nothing. |
+| `modelGitSha` | Commit of the model repo, from `--model-repo`; `-dirty` suffix when that path had uncommitted changes -- fine for a band measurement, not for an A/B pin. **Null unless `--model-repo` names the repo.** It cannot be inferred: Publisher serves a COPY under `publisher_data/`, so the tree around the served file is the server's storage, not the model's history, and the field named that until 2026-09-03. `modelSha` above is the pin that always works; this is the pointer to where those bytes are versioned, and absent beats wrong. |
+| `modelRepo` | The path `--model-repo` named, so a reader can tell an absent pin from an unrecorded one. |
 | `environment` / `package` / `modelPath` | What was served, and from where. On a platform target `environment` is the organization and `package` is the workspace the MCP URL is scoped to. |
 | `scope` | Platform target only: the `environment/package` the answerer was told to pass as an explicit `scopes` entry on every `get_context` / `execute_query` call. A workspace can serve many packages (a personal workspace serves every package the user can read), so without this the run also measures whether retrieval picks the right package -- a different measurement. Absent means unscoped. |
 | `mcpUrl` / `publisher` | The endpoints the answerer and the re-execution used. |
-| `predictionsReExecuted` | Whether the judge saw re-executed rows (false when the served bytes no longer match the pinned snapshot). |
+| `predictionsReExecuted` | Whether re-execution was POSSIBLE: the server was serving the bytes this run is pinned to. It is one bool for the whole run and says nothing about any given query, so it reads stronger than it is; `reExecution` below is what actually happened. |
+| `reExecution` | `{attempted, ok, failed, noQuery}` over the run's predictions. `failed` means the query ran and the server returned an error, which is a different thing from an answer with no query at all. |
+| `retrievalMode` | Which retriever answered: `semantic`, `lexical`, `mixed` (it changed mid-run, so nothing can be averaged across it) or `unreported` (the server named none, meaning no embedding provider). Local retrieval degrades to lexical SILENTLY without an embedding key, and a pair compared across that reads as a model change, so `flip_table.py` refuses the pair unless both sides match. |
+| `retrievalCalls` | `{semantic, lexical, unreported}` call counts behind `retrievalMode`. |
 | `label` | `<set>-<phase>-<nn>`, assigned by `run_baseline.py` from the set name, the run's phase and the next free number beside it (`ecommerce-baseline-01`, `ecommerce-baseline-02`, `ecommerce-blind_gate-01`). The A/A pair is two runs of the same phase; the post-edit arms are two runs of `blind_gate`. Hand-typed names do not survive one afternoon of runs -- `base`, `rejudged2`, `r3`, `post1` sort wrongly, group not at all, and cannot be matched to an arm. `--label` overrides for a run that genuinely needs a human name. |
 | `effort` | |
 | `answererCostUsd` / `judgeCostUsd` | What the arm cost, split by role. The judge's half was discarded until 2026-09-02, so every "cost per arm" quoted before then was the answerer alone. |
@@ -154,11 +158,13 @@ exist in the flat shape, so the flat shape is the contract.) `kind` is one of:
 | `phase` | string | `baseline` / `loop` / `blind_gate` / `canary` / `final`. `phase` lives here, on the attempt, not in run config. |
 | `question_sha` | string | Hash of the exact text the answerer saw. |
 | `submitted` | bool | False when there was no final query. Not a wrong answer. |
-| `final_query` | string or null | Required to replay. |
+| `final_query` | string or null | Required to replay. A named view is recorded as the Malloy it stands for, `run: <source> -> <view>`, so every consumer sees one shape and the query re-executes. |
+| `final_query_source` | string or null | How `final_query` was chosen: `declared` (the answer printed it), `last_ok` (the last call the server answered) or `last`. `last` is a warning: a trailing sanity probe may be standing in for the answer's own query. |
 | `servedRevision` | string or null | From the package actually queried. |
 | `n_get_context` / `n_execute` / `n_execute_errors` | int | |
-| `host_tool_uses` | int | Host-side count, including Read and Shell. |
-| `reported_calls` | int | MCP calls the answerer claimed. |
+| `host_tool_uses` | int | EVERY tool use the host logged, MCP calls included. It counted only the non-MCP ones until 2026-09-03, which made the under-report check below true of almost every clean attempt. |
+| `mcp_tool_uses` | int or null | The MCP subset: `get_context` plus `execute_query`. Null on a run written before the split. |
+| `reported_calls` | int | MCP calls the answerer claimed. `reported_calls > host_tool_uses` is the under-report floor from `skill:eval-answer`: the answerer cannot have made more calls than the host logged. `validate_run` warns on it, and only for runs that carry `mcp_tool_uses`, because the field meant something narrower before. |
 | `contaminated` | bool or `"unknown"` | `"unknown"` when no host log exists. Read it with `ledger.is_contaminated`, never for truthiness: runs written before 2026-09-03 carry the strings `"true"`/`"false"`, and `bool("false")` is True. `ledger.event` now rejects those strings on write; `validate_run` grandfathers them on read as a warning. |
 | `contamination_reasons` | list | Empty when clean. |
 | `input_tokens` / `output_tokens` / `cache_read_tokens` | int or null | Answerer token usage. Null when the host does not report it. |
@@ -182,6 +188,9 @@ One event per MCP `get_context` or `execute_query` the attempt made.
 | `traceId` | string or null | `get_context` only; look up in your host's trace store. |
 | `targets` | string, list or null | **What the answerer asked for**: the search terms it sent to `get_context`. Null for `execute_query`. |
 | `rankedSummary` | object | Copied at capture from the trace so evidence survives trace eviction: `entityIds`, `ranks`, `resultCount`, and per-target `targets` with within-target ranks. |
+| `retrieval_mode` | string or null | `get_context` only: the `retrieval` field of the response that answered, `semantic` or `lexical`. Null when the server named none, which means no embedding provider. Recorded per call because the semantic path can fall over partway through a run. |
+| `query` | string or null | `execute_query` only: the Malloy the call sent, so the final query can be chosen by which call the server actually answered. |
+| `modelPath` | string or null | `execute_query` only: the model file the call named. A source does not resolve outside the file that declares it, so re-execution needs this. |
 | `error` | string or null | |
 
 Never persist `execute_query` result rows, givens, or credentials.
@@ -214,13 +223,20 @@ The answer judge's verdict for one attempt (protocol in
 | `judge_version` / `rubric_sha` | string | Pins which rubric produced this verdict. |
 | `golden_revision` | int | From the case at score time. |
 | `contaminated` | bool or `"unknown"` | Copied from the attempt; true or unknown means `verdict: null`. |
+| `must_not_use_hits` | list or null | Entries of `golden.mustNotUse` a script found in the final query. A hit forces `verdict: no_match`. Decided by `check_must_not_use.py`, never by the judge: it is a question about query text. Prose entries and a path's bare leaf are not vetoed; they go to the judge instead. |
+| `judge_verdict` | string or null | What the judge said when a `must_not_use_hits` veto overrode it. Null otherwise, so the judge's own agreement rate stays measurable across vetoes. |
 | `artifactPath` | string | The full judge output under `artifacts/`. |
 | `gold_status` | string | `verified` / `verified_benign` / `suspect` / `verified_wrong`. **From the judge**, which scored against the golden as written and reports separately whether it believes it; falls back to the case's standing `golden.status` when the judge does not say. `verified_wrong` excludes the case from run aggregates. `suspect` and `verified_wrong` route to the golden side door as `dataset` issues, never to improve. |
 | `gold_note` | string or null | The judge's evidence for a non-`verified` status: the two values, or the model line against the rubric sentence. Null when `verified`. |
 
-A `submitted: false` attempt gets `verdict: null, reason: "not_submitted"`,
-except for an `unanswerable` golden, where a refusal that names the gap is the
-pass and a confident numeric answer is the fail.
+`not_submitted` means the attempt produced NOTHING to judge: no answer text and
+no query. An attempt that wrote prose without querying **is judged**, and
+against a golden that holds a value an answer containing none of it is
+`no_match` (`skill:eval-judge`, `reference/refusal.md` rule 10). Excusing those
+as unscorable dropped a confident refusal on an answerable case out of the pass
+rate, which is the one thing the answerable-sounds-unanswerable cases exist to
+measure. A refusal is exempt only where `golden.kind` is `unanswerable`, and
+there naming the gap is the pass and a confident number is the fail.
 
 Aggregates count decided verdicts only. `match` and `no_match` are the pass and
 the fail; **`near_match`, `needs_human` and null are none of the above** and stay

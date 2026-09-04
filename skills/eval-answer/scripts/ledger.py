@@ -64,19 +64,29 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                              "transcriptPath"},
         "optional": {"question_sha", "servedRevision", "n_get_context",
                      "n_execute", "n_execute_errors", "host_tool_uses",
+                     "mcp_tool_uses", "final_query_source",
                      "reported_calls", "contaminated", "contamination_reasons",
                      "input_tokens", "output_tokens", "cache_read_tokens",
                      "cost_usd", "num_turns", "wall_seconds", "run_error", "at"},
     },
     "tool_call": {
         "required": _CASE | {"tool"},
-        "optional": {"targets", "rankedSummary", "error", "traceId", "at"},
+        # `retrieval_mode` is get_context's own `retrieval` field: "semantic",
+        # "lexical", or absent on a server with no embedding provider. Which
+        # retriever answered decides whether two runs are comparable at all,
+        # and it is only knowable from the response that answered.
+        "optional": {"targets", "rankedSummary", "error", "traceId",
+                     "query", "modelPath", "retrieval_mode", "at"},
     },
     "score": {
         "required": _CASE | {"verdict", "reason"},
+        # `judge_verdict` keeps what the judge said when a mechanical veto
+        # (`must_not_use_hits`) overrode it, so a veto is auditable and the
+        # judge's own agreement rate stays measurable.
         "optional": {"judge_version", "rubric_sha", "golden_revision",
                      "artifactPath", "confidence", "column_pairing",
-                     "contaminated", "gold_status", "gold_note", "at"},
+                     "contaminated", "gold_status", "gold_note",
+                     "must_not_use_hits", "judge_verdict", "at"},
     },
     "retrieval_score": {
         "required": {"intentId", "term"},
@@ -143,7 +153,9 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "skillsRoot", "harnessVersion",
                 "judgeSkills", "diagnoserManifest",
                 "improverManifest", "doubtedGoldens",
-                "packageSha", "servedRevision", "datasetSha"} | RUN_RECOMMENDED
+                "packageSha", "servedRevision", "datasetSha",
+                "retrievalMode", "retrievalCalls", "reExecution",
+                "modelRepo"} | RUN_RECOMMENDED
 
 
 def dataset_sha(set_dir: pathlib.Path) -> str | None:
@@ -354,6 +366,23 @@ def validate_run(run_dir: pathlib.Path) -> tuple[list[str], list[str]]:
             (warnings if ("unknown field" in p or "legacy shape" in p)
              else errors).append(
                 f"events.jsonl:{n}: {p}")
+        # The under-report floor from skill:eval-answer's contamination
+        # checklist: the answerer cannot have made more MCP calls than the host
+        # saw tool uses in total. Written into the ledger by every run and
+        # applied nowhere until now, so an under-reporting answerer passed.
+        # `host_tool_uses` counts EVERY tool use, MCP included -- it counted
+        # only the non-MCP ones until 2026-09-03, which made the comparison
+        # true of almost every clean attempt and unusable as a signal.
+        if kind == "attempt":
+            rep, host = e.get("reported_calls"), e.get("host_tool_uses")
+            mcp = e.get("mcp_tool_uses")
+            if (isinstance(rep, int) and isinstance(host, int)
+                    and isinstance(mcp, int) and rep > host):
+                warnings.append(
+                    f"events.jsonl:{n}: {e.get('qid')}: reported_calls {rep} > "
+                    f"host_tool_uses {host} -- the answerer claims more calls "
+                    f"than the host logged; treat the attempt as contaminated")
+
         if kind == "score":
             key = (e.get("qid"), e.get("sample"), e.get("phase"))
             if key in seen_scores:

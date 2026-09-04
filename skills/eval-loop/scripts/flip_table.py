@@ -17,6 +17,7 @@ import argparse
 import json
 import statistics
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,89 @@ def cost(run: Path) -> dict[str, float]:
         tot["turns"] += e.get("num_turns") or 0
         tot["seconds"] += e.get("wall_seconds") or 0.0
     return tot
+
+
+def config(run: Path) -> dict[str, Any]:
+    f = run / "run.json"
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
+# The pins two runs must share to be one measurement. A difference in any of
+# them is a difference in what was measured, so a flip count across it is not a
+# noise band and not an A/B -- it is two numbers about two different things.
+COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
+              "answererModel", "judgeModel", "answererManifest",
+              "retrievalMode")
+
+
+def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
+                   allow: bool) -> int:
+    """Refuse a pair whose runs used different retrievers.
+
+    Local retrieval falls back to lexical SILENTLY when no embedding key is
+    set, and partway through a run when the provider fails. Either way the two
+    arms searched differently, and the flips that produces read as a model
+    change. eval-mvp's standing gate: no A/B is scored under an unavailable
+    semantic path. A run written before the harness recorded this carries
+    nothing, and an unrecorded mode is not evidence that it matched -- so that
+    is reported and allowed, because refusing every historical run would make
+    the gate unusable rather than safe.
+    """
+    ma, mb = ca.get("retrievalMode"), cb.get("retrievalMode")
+    if ma is None or mb is None:
+        print(f"\n  ! retrieval mode not recorded ({la}: {ma or 'absent'}, "
+              f"{lb}: {mb or 'absent'}), so which retriever answered cannot be "
+              f"checked. Re-run with a harness that records it before quoting "
+              f"this pair.")
+        return 0
+    if ma == mb and ma != "mixed":
+        if ma != "semantic":
+            print(f"\n  ! both arms retrieved {ma}, not semantic. The pair is "
+                  f"internally consistent, so a band measured here holds for "
+                  f"{ma} retrieval and for nothing else.")
+        return 0
+    print(f"\n  ! retrieval differs: {la} {ma}, {lb} {mb}. The arms did not "
+          f"search the same way, so these flips are not a measurement of the "
+          f"change.")
+    if allow:
+        print("    --allow-retrieval-mismatch given; reporting anyway.")
+        return 0
+    print("    Fix the embedding provider and re-run, or pass "
+          "--allow-retrieval-mismatch to report anyway.")
+    return 2
+
+
+def calibration_block(ca: dict, cb: dict, la: str, lb: str, pa: int, pb: int,
+                      scored: int, flips: int, stable_near: list[str]) -> str:
+    """The set's CALIBRATION.md entry for this pair, ready to append.
+
+    A band is only quotable against the configuration it was measured on, and
+    observed bands have moved by a factor of three across a fortnight of
+    ordinary work. So the block records every pin that has to match, and a
+    reader compares them rather than trusting the number.
+    """
+    rows = [f"| {k} | {ca.get(k) if ca.get(k) == cb.get(k) else f'{ca.get(k)} / {cb.get(k)}'} |"
+            for k in COMPARABLE]
+    return "\n".join([
+        f"## {ca.get('datasetVersion')} / judge v{ca.get('judgeVersion')} "
+        f"/ {ca.get('answererModel')} answerer",
+        "",
+        f"Measured {time.strftime('%Y-%m-%d')} from `{la}` and `{lb}`.",
+        "",
+        "| pin | value |",
+        "| --- | --- |",
+        *rows,
+        "",
+        f"- **Flips: {flips}** over {scored} cases scored in both arms.",
+        f"- Passed {pa} and {pb}, a difference of {pb - pa:+d} with no change "
+        f"between the arms.",
+        f"- Stable near_match: {len(stable_near)}"
+        + (f" ({', '.join(stable_near)})" if stable_near else ""),
+        "",
+        "Quote this band only for a run whose pins above all match. One that "
+        "differs in any of them is a different measurement.",
+        "",
+    ])
 
 
 def targeted_report(args: argparse.Namespace, A: dict, B: dict,
@@ -225,6 +309,13 @@ def main() -> int:
     p.add_argument("--noise-band", type=int, default=None,
                    help="flips your A/A measured. Untargeted flips at or below "
                         "this are consistent with noise.")
+    p.add_argument("--allow-retrieval-mismatch", action="store_true",
+                   help="report a pair whose arms used different retrievers. "
+                        "The flips are then not a measurement of the change; "
+                        "say so wherever the number is quoted.")
+    p.add_argument("--calibration", action="store_true",
+                   help="print the set's CALIBRATION.md entry for this pair, "
+                        "ready to append. Use it on an A/A.")
     a_args = p.parse_args()
 
     la = a_args.label_a or a_args.a.name
@@ -301,6 +392,36 @@ def main() -> int:
         targeted_report(a_args, A, B, la, lb,
                         verdicts(a_args.b2) if a_args.b2 else None)
 
+    # Stable on both sides: the judge is not hedging at random, it is saying
+    # the model cannot distinguish two readings the question does. That is a
+    # coverage finding for eval-diagnose, which selects no_match by default and
+    # so never sees these.
+    stable_near = sorted(q for q in shared
+                         if A[q]["verdict"] == "near_match"
+                         and B[q]["verdict"] == "near_match")
+    if stable_near:
+        print(f"\nstable near_match ({len(stable_near)})\n"
+              f"{'-' * 20}")
+        print("  near_match in BOTH arms, so not judge noise. Each is a "
+              "coverage gap, not a rubric to soften:")
+        for q in stable_near:
+            print(f"    {q}")
+        print(f"  diagnose.py --only {','.join(stable_near)} "
+              f"--verdicts near_match")
+
+    cfg_a, cfg_b = config(a_args.a), config(a_args.b)
+    differing = [k for k in COMPARABLE
+                 if cfg_a.get(k) != cfg_b.get(k)]
+    if differing:
+        print(f"\nthe arms differ in {len(differing)} pin(s): "
+              f"{', '.join(differing)}")
+        for k in differing:
+            print(f"    {k:<20} {cfg_a.get(k)}  ->  {cfg_b.get(k)}")
+        print("  More than one pin moving makes the flips unattributable.")
+
+    gate = retrieval_gate(cfg_a, cfg_b, la, lb,
+                          a_args.allow_retrieval_mismatch)
+
     ca, cb = cost(a_args.a), cost(a_args.b)
     print(f"\ncost\n----")
     print(f"  {la:<24} ${ca['usd']:.2f}  {ca['turns']:.0f} turns  "
@@ -308,7 +429,13 @@ def main() -> int:
     print(f"  {lb:<24} ${cb['usd']:.2f}  {cb['turns']:.0f} turns  "
           f"{cb['seconds'] / 60:.0f} min")
 
-    return 0
+    if a_args.calibration:
+        print("\n--- CALIBRATION.md entry, append to the set "
+              "---------------------\n")
+        print(calibration_block(cfg_a, cfg_b, la, lb, pa, pb, scored, flips,
+                                stable_near))
+
+    return gate
 
 
 if __name__ == "__main__":

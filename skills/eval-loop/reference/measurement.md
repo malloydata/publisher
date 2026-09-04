@@ -63,6 +63,45 @@ An A/A is not a repeat in the sense the sampling rule forbids. It is a one-off
 calibration of the instrument, and the loop's whole acceptance rule rests on
 the constant it produces.
 
+## What CALIBRATION.md holds
+
+The file lives with the set, beside `cases.jsonl`, and holds one block per
+configuration measured. `flip_table.py --calibration` writes the block from the
+two runs, so nothing is transcribed by hand:
+
+```
+python3 scripts/flip_table.py --a runs/aa-1 --b runs/aa-2 --calibration   >> <set>/CALIBRATION.md
+```
+
+Each block names the flip count and the pins the number is a property of:
+`datasetVersion`, `datasetSha`, `judgeVersion`, `rubricSha`, `answererModel`,
+`judgeModel`, `answererManifest`, `retrievalMode`. A band is quotable only for a
+run whose pins all match a block. That is not bookkeeping. A band measured with
+a bare-model answerer says nothing about a skills-loaded one, and a band
+measured under semantic retrieval says nothing about a lexical run, so a block
+that cannot be matched to the run being defended is not evidence about it.
+
+A set with no `CALIBRATION.md` has no band. Say "unresolved" and measure one; do
+not carry a number over from another configuration or from another set.
+
+## Which retriever answered
+
+Retrieval is part of the configuration, and locally it changes without being
+asked to: with no embedding key the semantic path degrades to lexical
+**silently**, and a provider that fails partway leaves one run searching two
+ways. Compared across that, the flips read as a model change.
+
+So every run records `retrievalMode` (`semantic`, `lexical`, `mixed` or
+`unreported`) and `retrievalCalls` from the `retrieval` field of the responses
+that answered it. `flip_table.py` refuses a pair whose arms disagree, or where
+either is `mixed`, unless `--allow-retrieval-mismatch` says to report anyway.
+Two lexical arms are a valid pair; the band they produce is a band for lexical
+retrieval and for nothing else, and the block records that.
+
+`unreported` on both sides is reported and allowed, because refusing every run
+written before the harness recorded this would make the gate unusable rather
+than safe. It is not evidence that the arms matched.
+
 ## A targeted fix needs a targeted test
 
 The flip-count table is the right instrument for a broad change and the wrong
