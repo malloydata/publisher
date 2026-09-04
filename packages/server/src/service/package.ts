@@ -861,10 +861,9 @@ export class Package {
       // effect is invisible in the answers, so warning here would leave the
       // author believing they had a rollup.
       //
-      // Except the access-modifier pair, which is warn-at-load and reject-at-
-      // publish — see formatLoadFatalPreaggregatePolicy for why that split is
-      // about upgrade safety rather than severity, and why warning is safe here
-      // when it would not be for the others.
+      // Except the access-modifier pair, which warns at publish and at load —
+      // see formatInvalidPreaggregatePolicy for why, and why warning is safe
+      // there when it would not be for the others.
       const accessWarnings = pkg.preaggregateAccessWarnings();
       if (accessWarnings.length > 0) {
          logger.warn(
@@ -875,7 +874,7 @@ export class Package {
             },
          );
       }
-      const invalidPreaggregate = pkg.formatLoadFatalPreaggregatePolicy();
+      const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
       if (invalidPreaggregate) {
          logger.error(
             `Package ${packageName} has an invalid pre-aggregation declaration`,
@@ -1818,30 +1817,34 @@ export class Package {
     * operator's log and leave the one person who can fix it reading a clean
     * publish.
     */
-   public preaggregatePolicyWarnings(): string[] {
-      return this.preaggregateMessages(() => true);
-   }
-
    /**
-    * The violations that fail a package LOAD, which is every one except the
-    * access-modifier pair.
+    * The violations that make a package invalid, which is every one except the
+    * access-modifier pair. Used by BOTH the publish gate and the load gate.
     *
-    * Those two are refused at publish and warned at load, following the same
-    * split persist-target collisions already use ("ALWAYS warn-only at load,
-    * never fail an already-published package"). The reason is upgrade safety
-    * rather than severity: before this validation existed a package annotating a
-    * hidden field LOADED — nothing read access modifiers, and the companion whose
-    * compile would have failed is swallowed — so making it load-fatal would stop
-    * an already-published package from loading because a new rule was added, and
-    * a permanent load failure is retried rather than abandoned.
+    * Those two warn instead, and appear in the package's `warnings`. Two reasons,
+    * and neither is that they matter less.
     *
-    * Safe to warn precisely because the refusal is not what enforces this: the
-    * planner skips a hidden measure and a hidden grain dimension outright
+    * Upgrade safety: before this validation existed a package annotating a hidden
+    * field published and loaded — nothing read access modifiers, and the companion
+    * whose compile would have failed is swallowed — so refusing it now would stop
+    * an already-published package from loading because a new rule was added, and a
+    * permanent load failure is retried rather than abandoned.
+    *
+    * And they produce a refusal an author cannot act on. An annotation INHERITED
+    * onto a source that then hides the measure raises this, while that source
+    * produces no plan at all — the base's rollup is unaffected and nothing is
+    * exposed. The message asks them to make the field public or drop an annotation
+    * that is not on that source, so following it means giving up either the hiding
+    * or the rollup. Refusing a safe model with unfollowable advice is worse than
+    * saying plainly that the annotation does nothing here.
+    *
+    * Safe to warn because the refusal was never the enforcement: the planner skips
+    * a hidden measure and a hidden grain dimension outright
     * (planSourcePreaggregation), so no plan exists, nothing is built, and nothing
-    * can be served. The message tells the author; the skip is the control. Which
-    * is also why that skip has its own tests rather than resting on this gate.
+    * can be served whether or not anyone reads the message. Which is also why that
+    * skip has its own tests rather than resting on this gate.
     */
-   public formatLoadFatalPreaggregatePolicy(): string {
+   public formatInvalidPreaggregatePolicy(): string {
       return this.preaggregateMessages(
          (code) => !PREAGG_LOAD_WARN_ONLY.has(code),
       ).join("\n");
@@ -1892,16 +1895,6 @@ export class Package {
          }
       }
       return findings;
-   }
-
-   /**
-    * The {@link preaggregatePolicyWarnings} joined into one string, or "" when
-    * every `#@ preaggregate` in the package can take effect. Used by the PUBLISH
-    * gate, which refuses all of them; the load gate uses
-    * {@link formatLoadFatalPreaggregatePolicy}.
-    */
-   public formatInvalidPreaggregatePolicy(): string {
-      return this.preaggregatePolicyWarnings().join("\n");
    }
 
    /**
