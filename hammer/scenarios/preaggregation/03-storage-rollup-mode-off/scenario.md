@@ -60,7 +60,7 @@ the part a reader can act on: a warning naming only a digest is one step from no
 This is also the only signal in the default configuration, since `off` is what every
 deployment ships with. A first author of a `storage=` rollup reads this and nothing else.
 
-cites: Measures of `orders` pre-aggregated at grain
+cites: Measures of `orders` pre-aggregated at grain (category)
 
 ## Query by category
 

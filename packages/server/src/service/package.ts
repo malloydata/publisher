@@ -1658,9 +1658,14 @@ export class Package {
          // whose characteristic failure is correct answers with no acceleration
          // and no error, a warning nobody can trace back is one step from no
          // signal at all.
+         // The grain is rendered as a SET, not quoted back. The wire plan carries
+         // only canonically sorted, de-duplicated dimensions — the authored text
+         // does not cross that boundary — so quoting would misrepresent any
+         // multi-dimension grain the author did not happen to write in
+         // alphabetical order. A set claims only what is true of it.
          const at = rollup
             ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at grain ` +
-              `"${rollup.grainDimensions.join(", ")}" declare `
+              `(${rollup.grainDimensions.join(", ")}) declare `
             : "";
          const message = rollup
             ? mode === "off"

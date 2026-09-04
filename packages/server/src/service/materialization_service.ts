@@ -2165,7 +2165,12 @@ export class MaterializationService {
                   // right answer.
                   const declared = declaredStorage(persistSource);
                   if (declared && !instruction.destination) {
-                     // A ROLLUP names neither of the things this message otherwise
+                     // The grain renders as a SET rather than quoted text: the wire
+                  // plan carries only canonically sorted, de-duplicated dimensions,
+                  // so quoting would misrepresent any grain the author did not
+                  // write alphabetically.
+                  //
+                  // A ROLLUP names neither of the things this message otherwise
                      // reaches for: its source name is synthesized and its
                      // `#@ persist storage=` line was written by the publisher, so
                      // quoting both would send an author looking for a line nobody
@@ -2186,7 +2191,7 @@ export class MaterializationService {
                         (rollup
                            ? `Measures of \`${rollup.baseSourceName}\` ` +
                              `pre-aggregated at grain ` +
-                             `"${rollup.grainDimensions.join(", ")}" declare ` +
+                             `(${rollup.grainDimensions.join(", ")}) declare ` +
                              `\`storage=${declared}\``
                            : `Source '${persistSource.name}' declares ` +
                              `\`#@ persist storage=${declared}\``) +
