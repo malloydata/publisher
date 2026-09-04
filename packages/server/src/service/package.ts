@@ -58,6 +58,23 @@ import {
    deriveServeBindings,
    groupAliasesByName,
 } from "./materialization_serve_transform";
+import type {
+   PreaggregateViolation,
+   PreaggregateViolationCode,
+} from "./preaggregation_validation";
+
+/**
+ * Pre-aggregation violations that WARN at both gates rather than refusing.
+ *
+ * Both concern a field the source does not publicly expose. What stops a hidden
+ * field reaching a rollup is the planner's own skip, not either gate — see
+ * {@link Package.formatInvalidPreaggregatePolicy} for that, and for the two
+ * reasons refusing was wrong rather than merely strict.
+ */
+const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
+   "non_public_measure",
+   "grain_dimension_not_public",
+]);
 import {
    ColocatedSourceEligibility,
    computePackageBuildPlan,
@@ -838,9 +855,23 @@ export class Package {
          throw new BadRequestError(invalidIncremental);
       }
       // `#@ preaggregate` gets the same strict-at-load treatment, for the reason
-      // given on preaggregatePolicyWarnings: a declaration that cannot take
+      // given on formatInvalidPreaggregatePolicy: a declaration that cannot take
       // effect is invisible in the answers, so warning here would leave the
       // author believing they had a rollup.
+      //
+      // Except the access-modifier pair, which warns at publish and at load —
+      // see formatInvalidPreaggregatePolicy for why, and why warning is safe
+      // there when it would not be for the others.
+      const accessWarnings = pkg.preaggregateAccessWarnings();
+      if (accessWarnings.length > 0) {
+         logger.warn(
+            `Package ${packageName} pre-aggregates a field the source hides`,
+            {
+               packageName,
+               detail: accessWarnings.map((w) => w.message).join("\n"),
+            },
+         );
+      }
       const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
       if (invalidPreaggregate) {
          logger.error(
@@ -1052,6 +1083,14 @@ export class Package {
          // (alongside the load-path log) so an operator can see it on the status
          // API like the other persist warnings — see persistenceCollisionWarnings.
          ...this.persistenceCollisionWarnings().map((message) => ({ message })),
+         // `#@ preaggregate` on a field the source hides. These are the two
+         // violations that WARN at load rather than failing it, and this array is
+         // what makes that a warning rather than silence: without it the package
+         // loads, the rollup does not happen, and the only trace is a line in the
+         // server log. The operator-facing fact is the same one storageWarnings()
+         // reports for a mode-off rollup — it is not built, and queries are
+         // answered from the base — so it belongs in the same place.
+         ...this.preaggregateAccessWarnings(),
          // Incremental declarations that are LEGAL but probably not what the
          // author meant: an unrecognized persist key (the only guard against a
          // typo'd merge_key=, which degrades silently), and the keyless-delta
@@ -1072,7 +1111,14 @@ export class Package {
       // Surface what's bound for the cross-connection storage serve so a caller
       // can confirm a materialized source is routed (vs. inferring from logs).
       if (this.storageServeBindings.length > 0) {
+         // `origin` rides the projection for the same reason it rides the routing
+         // metric: this list now contains rows whose `sourceName` names nothing in
+         // any model file, and a caller resolving them against the package's
+         // models would read a miss as corruption. An added attribute breaks no
+         // consumer, where a caller that has to guess from the name shape would be
+         // guessing from a digest.
          metadata.storageServeBindings = this.storageServeBindings.map((b) => ({
+            origin: b.origin ?? "persist",
             sourceName: b.sourceName,
             storageDestinationName: b.destinationName,
             tablePath: b.tablePath,
@@ -1366,6 +1412,16 @@ export class Package {
          groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
       );
       const eligibility = this.sourceEligibility;
+      // Keyed by source NAME, and a rollup's name is generated — so a rollup
+      // binding passes this filter only because `collectSourceEligibility` walks
+      // the compiled sources, which INCLUDE the synthesized rollups, and records
+      // them under those generated names.
+      //
+      // That is load-bearing and easy to break from a distance: scoping
+      // `collectSourceEligibility` to authored sources would switch off every
+      // storage rollup in every package, with one warn line per binding as the
+      // only symptom and nothing else failing. Stated here because this is where
+      // the dependency is consumed rather than where it is created.
       const eligible = new Set(eligibility?.eligible ?? []);
       const allowed = derived.filter((binding) => {
          if (eligible.has(binding.sourceName)) return true;
@@ -1379,6 +1435,11 @@ export class Package {
             {
                packageName: this.packageName,
                sourceName: binding.sourceName,
+               // A rollup's name is generated, so on its own it names nothing an
+               // operator can look up. Saying what it is rescues the line.
+               ...(binding.origin === "preaggregate"
+                  ? { kind: "pre-aggregation rollup" }
+                  : {}),
                reason,
             },
          );
@@ -1573,17 +1634,60 @@ export class Package {
       for (const source of Object.values(this.buildPlan.sources)) {
          const storage = source.annotationFields?.storage?.trim();
          if (!storage) continue;
-         const message =
-            mode === "off"
-               ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
-                 `the annotation is ignored and the source is served live from ` +
-                 `its own warehouse.`
-               : `is materialized into storage "${storage}" but ` +
-                 `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
-                 `routed to the materialized table (served live).`;
+         // A rollup needs its own wording, and not for tidiness. The authored
+         // message says the source "is served live from its own warehouse", which
+         // for a rollup is doubly wrong: a rollup is not a source anyone queries
+         // by name, and there is no live reading of it to fall back to — the
+         // acceleration simply does not happen and every query is answered from
+         // the base, correctly. Reusing the authored text would also imply the
+         // annotation is merely inert, when the thing an operator needs to know is
+         // that nothing was built at all.
+         const rollup = source.preaggregate;
+         // Named by the BASE source and the grain, never by the rollup's own
+         // name. A rollup's name is generated and appears in no file the author
+         // can open, so a warning carrying it — as the `subject` did — gives them
+         // nothing to act on: they wrote `storage=` on a measure and get back a
+         // digest. The base and grain are what they typed, and the wire plan
+         // carries both right here.
+         //
+         // This is the only signal in the DEFAULT configuration. `off` is what
+         // every deployment ships with, so this warning, not any refusal, is what
+         // a first author of a `storage=` rollup actually reads — and in a feature
+         // whose characteristic failure is correct answers with no acceleration
+         // and no error, a warning nobody can trace back is one step from no
+         // signal at all.
+         // The grain is rendered as a SET, not quoted back. The wire plan carries
+         // only canonically sorted, de-duplicated dimensions — the authored text
+         // does not cross that boundary — so quoting would misrepresent any
+         // multi-dimension grain the author did not happen to write in
+         // alphabetical order. A set claims only what is true of it.
+         const at = rollup
+            ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at grain ` +
+              `(${rollup.grainDimensions.join(", ")}) declare `
+            : "";
+         const message = rollup
+            ? mode === "off"
+               ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
+                 `the rollup is not built. Queries that would have used it are ` +
+                 `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
+                 `but unaccelerated.`
+               : `${at}storage="${storage}", and the rollup is built, but ` +
+                 `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
+                 `route to it. Queries are answered from ` +
+                 `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
+            : mode === "off"
+              ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
+                `the annotation is ignored and the source is served live from ` +
+                `its own warehouse.`
+              : `is materialized into storage "${storage}" but ` +
+                `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
+                `routed to the materialized table (served live).`;
          warnings.push({
             model: source.modelPath ?? "",
-            subject: source.name,
+            // The base source for a rollup: the thing the author can find. Its
+            // own generated name would be the accurate answer to a question
+            // nobody asked.
+            subject: rollup ? rollup.baseSourceName : source.name,
             message,
          });
       }
@@ -1716,24 +1820,84 @@ export class Package {
     * operator's log and leave the one person who can fix it reading a clean
     * publish.
     */
-   public preaggregatePolicyWarnings(): string[] {
-      const messages: string[] = [];
-      for (const [modelPath, model] of this.models) {
-         for (const violation of model.preaggregateViolations()) {
-            // The model path is prepended because the same source name can occur
-            // in two models, and the author needs to know which file to open.
-            messages.push(`${modelPath}: ${violation.message}`);
-         }
-      }
-      return messages;
+   /**
+    * The violations that make a package invalid, which is every one except the
+    * access-modifier pair. Used by BOTH the publish gate and the load gate.
+    *
+    * Those two warn instead, and appear in the package's `warnings`. Two reasons,
+    * and neither is that they matter less.
+    *
+    * Upgrade safety: before this validation existed a package annotating a hidden
+    * field published and loaded — nothing read access modifiers, and the companion
+    * whose compile would have failed is swallowed — so refusing it now would stop
+    * an already-published package from loading because a new rule was added, and a
+    * permanent load failure is retried rather than abandoned.
+    *
+    * And they produce a refusal an author cannot act on. An annotation INHERITED
+    * onto a source that then hides the measure raises this, while that source
+    * produces no plan at all — the base's rollup is unaffected and nothing is
+    * exposed. The message asks them to make the field public or drop an annotation
+    * that is not on that source, so following it means giving up either the hiding
+    * or the rollup. Refusing a safe model with unfollowable advice is worse than
+    * saying plainly that the annotation does nothing here.
+    *
+    * Safe to warn because the refusal was never the enforcement: the planner skips
+    * a hidden measure and a hidden grain dimension outright
+    * (planSourcePreaggregation), so no plan exists, nothing is built, and nothing
+    * can be served whether or not anyone reads the message. Which is also why that
+    * skip has its own tests rather than resting on this gate.
+    */
+   public formatInvalidPreaggregatePolicy(): string {
+      return this.preaggregateMessages(
+         (code) => !PREAGG_WARN_ONLY.has(code),
+      ).join("\n");
+   }
+
+   /** The access-modifier violations, surfaced at load as warnings. */
+   public preaggregateAccessWarnings(): ApiPackageWarning[] {
+      return this.preaggregateFindings((code) =>
+         PREAGG_WARN_ONLY.has(code),
+      ).map(({ modelPath, violation }) => ({
+         model: modelPath,
+         // A source-level violation carries no field, so the source is the
+         // subject; a field-level one names the field.
+         subject: violation.fieldName ?? violation.sourceName,
+         message: violation.message,
+      }));
+   }
+
+   private preaggregateMessages(
+      keep: (code: PreaggregateViolationCode) => boolean,
+   ): string[] {
+      return this.preaggregateFindings(keep).map(
+         // The model path is prepended because the same source name can occur
+         // in two models, and the author needs to know which file to open.
+         ({ modelPath, violation }) => `${modelPath}: ${violation.message}`,
+      );
    }
 
    /**
-    * The {@link preaggregatePolicyWarnings} joined into one string, or "" when
-    * every `#@ preaggregate` in the package can take effect.
+    * Violations kept by `keep`, paired with the model that produced them.
+    *
+    * Structured rather than pre-formatted because the two consumers want
+    * different things: the publish/load gates want one prose blob, while the
+    * warnings array wants `{model, subject, message}` like every other member of
+    * it. Flattening first would make the second parse back out what the violation
+    * already carries.
     */
-   public formatInvalidPreaggregatePolicy(): string {
-      return this.preaggregatePolicyWarnings().join("\n");
+   private preaggregateFindings(
+      keep: (code: PreaggregateViolationCode) => boolean,
+   ): { modelPath: string; violation: PreaggregateViolation }[] {
+      const findings: {
+         modelPath: string;
+         violation: PreaggregateViolation;
+      }[] = [];
+      for (const [modelPath, model] of this.models) {
+         for (const violation of model.preaggregateViolations()) {
+            if (keep(violation.code)) findings.push({ modelPath, violation });
+         }
+      }
+      return findings;
    }
 
    /**

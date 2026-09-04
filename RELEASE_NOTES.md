@@ -31,6 +31,70 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a pre-aggregation rollup can be built into and served from a storage destination
+
+`storage=` now works on a `#@ preaggregate` line: the rollup is built into that
+destination and served from it, and a query that names the base source is unchanged — it
+still knows no rollup exists.
+
+```malloy
+source: orders is orders_pg.table('public.orders') extend {
+  measure:
+    #@ preaggregate grain="category" storage=lake
+    total is amount.sum()
+}
+```
+
+Before this the key parsed, passed validation, and did nothing: the reader took only
+`grain` and `namespace`, nothing rejected the unknown key, and the rollup was built
+alongside its base. No documented path reached it, which is why support arrives together
+with refusals for the parts that are still not supported, rather than as two changes.
+
+What is refused, and why each is a refusal rather than a silent choice:
+
+- **`namespace=` with `storage=` on one line.** Placement inside a destination is
+  derived, not authored — a freshly provisioned catalog has no schema to create the
+  table in.
+- **Two measures at one grain naming different destinations.** One grain is one table.
+
+Two things that are NOT refusals, both of which read like they should be.
+
+**A hidden field warns**, at publish and at load alike. A rollup stores its grain and each
+measure's partial and is served under the base's name with none of the source's field
+visibility applying, so the planner refuses to plan one at all — nothing is built and
+nothing can be served. It warns rather than refusing because a package of that shape
+published before the rule existed, and because the refusal was unfollowable: an annotation
+inherited onto a source that then hides the measure raises it, while that source produces
+no rollup and exposes nothing.
+
+**Two grains on one base naming different destinations is dropped at serve, not refused at
+publish.** Two grains are two tables, so nothing at publish has grounds to refuse what it
+allows for `namespace=`. But a base's rollups are offered through ONE composite and every
+member of a composite must live on one connection, so such a base serves from its rollups
+not at all and its queries are answered from the base.
+
+A destination is written on the `#@ preaggregate` line and is **not** inherited from the
+base's `#@ persist storage=`, which stays as it was: a `storage=` base lends its rollups
+nothing. Inheriting it would not work — a base that can carry that annotation builds a
+stored table of its own, and a rollup over a stored base is built by reading that table,
+along a path that recovers the rollup's definition from a model file it does not have. So
+the build fails. Even had it succeeded, the base's own table already claims the name its
+rollups would be served under.
+
+With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is not built — and not built
+alongside its base either, which would put a table in your warehouse under a generated
+name you never wrote. Queries are answered from the base and the package reports the
+degraded state as a warning.
+
+**Also changed for rollups that are not in a store.** Where several rollups cover one
+query, the **coarsest** is now used. Members were previously ordered by generated name,
+so with `grain="b"` and `grain="a, b"` a query grouping by `b` alone read the `a, b`
+table because `a_b` sorts first. Grain dimensions are counted rather than measured, so
+this is a proxy for size and not a reading of it. One consequence worth knowing: a rollup
+is offered whether or not it has been built yet, so adding a coarse grain to a package
+that already has a built finer rollup costs acceleration until the new one builds —
+answers are unaffected, and it lasts one build.
+
 ## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
 
 `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` caps how much column data DuckLake buffers

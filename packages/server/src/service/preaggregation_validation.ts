@@ -56,13 +56,19 @@ export type PreaggregateViolationCode =
    | "missing_grain"
    | "empty_grain"
    | "invalid_namespace"
+   | "empty_storage"
+   | "invalid_storage"
    | "conflicting_namespace"
+   | "conflicting_storage"
+   | "namespace_with_storage"
    | "non_additive_measure"
+   | "non_public_measure"
    // The grain does not resolve against the base source.
    | "unknown_grain_dimension"
    | "grain_dimension_is_measure"
    | "grain_dimension_is_view"
    | "grain_dimension_is_join"
+   | "grain_dimension_not_public"
    | "grain_path_through_join"
    | "grain_truncation_expression"
    | "truncation_on_non_temporal"
@@ -87,6 +93,33 @@ interface FieldLike {
    join?: string;
    expressionType?: string;
    annotations?: unknown;
+   accessModifier?: unknown;
+}
+
+/**
+ * A field the source does not publicly expose — `include { private: … }` or
+ * `internal:`.
+ *
+ * Pre-aggregation must refuse these, and the reason is an access-control leak
+ * rather than tidiness. A rollup is a table of its own: the grain's dimensions and
+ * each measure's partial are STORED, and the serve path rebinds that table under
+ * the base's name with the stored columns declared. Nothing in that path consults
+ * the author's model, so a field hidden on the source is not hidden on the rollup
+ * — a query refused live ("`total` is private") is answered from the table.
+ *
+ * The colocated tier does not have the hole, but only by accident: its companion
+ * imports the author's model, so a private reference fails to compile across the
+ * file boundary and no table is ever built. The storage tier plans from the
+ * compiled contents directly (so a companion that will not compile cannot disable
+ * it), which removed the only thing enforcing access modifiers. Hence a rule here,
+ * at the front, where it is a message rather than a silent difference between the
+ * two tiers.
+ *
+ * Mirrors `isAccessRestricted` in materialization_serve_transform.ts, which drops
+ * hidden fields, joins and views from the serve shape for the same reason.
+ */
+function isAccessRestricted(f: FieldLike): boolean {
+   return f.accessModifier != null && f.accessModifier !== "public";
 }
 
 /** The shape of a compiled source this module reads. */
@@ -218,6 +251,13 @@ function validateGrainDimension(
       );
    }
 
+   if (isAccessRestricted(field)) {
+      return violation(
+         "grain_dimension_not_public",
+         `Measure \`${measure}\` declares a grain naming \`${grainDimension}\`, which \`${sourceName}\` does not publicly expose. A rollup STORES its grain, and the stored table is served without the source's field visibility applying to it, so no rollup is built at this grain. Group by a public dimension, or expose \`${grainDimension}\` publicly.`,
+      );
+   }
+
    if (isView(field)) {
       return violation(
          "grain_dimension_is_view",
@@ -271,6 +311,10 @@ export function validateSourcePreaggregation(
    // named it. Joined on the same NUL separator `planSourcePreaggregation` keys
    // `byGrain` with, so "one grain" cannot mean two things across the two modules.
    const namespacesByGrain = new Map<string, Map<string, string>>();
+   // The same, for `storage=`. A grain is one table, so it can be built in one
+   // store; two measures at one grain naming different destinations is
+   // unsatisfiable in exactly the way two namespaces are.
+   const storagesByGrain = new Map<string, Map<string, string>>();
    const grainTextByKey = new Map<string, string>();
    for (const field of fields) {
       const name = fieldName(field);
@@ -306,6 +350,21 @@ export function validateSourcePreaggregation(
             sourceName,
             fieldName: name,
             message: `\`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, but it is a dimension, not a measure. Dimensions are named in a measure's \`grain=\`; annotate the measure you want pre-aggregated and list \`${name}\` in its grain.`,
+         });
+         continue;
+      }
+
+      // Hidden measures first: a rollup stores each measure's partial and serves
+      // it back under the measure's own name, with none of the source's field
+      // visibility applying to the stored table. So a private measure that is
+      // pre-aggregated is readable through its rollup while the live path refuses
+      // it. Refused rather than skipped, per this module's rule.
+      if (isAccessRestricted(field)) {
+         violations.push({
+            code: "non_public_measure",
+            sourceName,
+            fieldName: name,
+            message: `Measure \`${name}\` on \`${sourceName}\` carries \`#@ preaggregate\`, but the source does not publicly expose it. A rollup stores the measure's partial aggregate and serves it back under the measure's name, without the source's field visibility applying to the stored table — so no rollup is built for it here. If it should be pre-aggregated on \`${sourceName}\`, expose it publicly; if this source deliberately hides a measure it inherited the annotation with, nothing is wrong and the rollup on the source that exposes it is unaffected.`,
          });
          continue;
       }
@@ -359,6 +418,13 @@ export function validateSourcePreaggregation(
             namespacesByGrain.set(key, named);
             grainTextByKey.set(key, grain.text);
          }
+         if (grain.storage !== undefined && additivity.additive) {
+            const key = grain.dimensions.join("\u0000");
+            const placed = storagesByGrain.get(key) ?? new Map();
+            if (!placed.has(grain.storage)) placed.set(grain.storage, name);
+            storagesByGrain.set(key, placed);
+            grainTextByKey.set(key, grain.text);
+         }
       }
    }
 
@@ -376,6 +442,57 @@ export function validateSourcePreaggregation(
          sourceName,
          message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grainTextByKey.get(key)}\` with different namespaces: ${choices}. One grain is one rollup table, so it can only be created in one of them. Give every measure at this grain the same \`namespace=\`, or move one to a different grain.`,
       });
+   }
+
+   // One grain is one table, so it can be built in exactly one store. Same shape
+   // and same reasoning as `conflicting_namespace` above: unsatisfiable, so it is
+   // refused rather than resolved by field order.
+   for (const [key, placed] of storagesByGrain) {
+      if (placed.size < 2) continue;
+      const choices = [...placed.entries()]
+         .map(([dest, measure]) => `\`${dest}\` (on \`${measure}\`)`)
+         .join(", ");
+      violations.push({
+         code: "conflicting_storage",
+         sourceName,
+         message: `Measures on \`${sourceName}\` declare \`#@ preaggregate\` at the grain \`${grainTextByKey.get(key)}\` with different storage destinations: ${choices}. One grain is one rollup table, so it can only be built into one of them. Give every measure at this grain the same \`storage=\`, or move one to a different grain.`,
+      });
+   }
+
+   // `namespace=` and `storage=` together, which is refused rather than ranked.
+   //
+   // Placement inside a storage destination is DERIVED, not authored: the
+   // destination resolver refuses a dotted `name=` outright, because a
+   // freshly-provisioned catalog has no schema and the build emits a bare
+   // `CREATE OR REPLACE TABLE` with no `CREATE SCHEMA`. Honouring the namespace
+   // would aim the CREATE at a schema that need not exist; ignoring it would place
+   // the rollup somewhere the author did not choose and say nothing. Neither is
+   // acceptable, so the combination is refused while it means nothing — which
+   // keeps the option of giving it a meaning later without a data migration.
+   //
+   // Both keys were written on the same `#@ preaggregate` line, necessarily: a
+   // destination is never inherited from the base's `#@ persist storage=`, so the
+   // only `storage=` in play here is one the author typed beside the `namespace=`.
+   // The message can therefore name both flatly rather than hedging about where
+   // each came from.
+   for (const [key, named] of namespacesByGrain) {
+      const ownStorage = storagesByGrain.get(key);
+      const [namespace, namespaceMeasure] = [...named.entries()][0];
+      const grainText = grainTextByKey.get(key);
+      if (ownStorage && ownStorage.size > 0) {
+         const [destination, storageMeasure] = [...ownStorage.entries()][0];
+         violations.push({
+            code: "namespace_with_storage",
+            sourceName,
+            message: `The grain \`${grainText}\` on \`${sourceName}\` declares both \`namespace="${namespace}"\` (on \`${namespaceMeasure}\`) and \`storage=${destination}\` (on \`${storageMeasure}\`). A rollup built into a storage destination is placed by the destination, not by a namespace, so the two cannot both apply. Remove the \`namespace=\`, or remove the \`storage=\` to build this rollup alongside its base.`,
+         });
+         continue;
+      }
+      // Only a pair written on ONE `#@ preaggregate` line is refused, and there is
+      // no other pair to consider: a destination is never inherited from the
+      // base's `#@ persist storage=`, so a `namespace=` beside such a base is the
+      // configuration the shipped docs already describe and still means what it
+      // always did.
    }
 
    // A v1 scope restriction rather than a mistake, so it is reported once for the

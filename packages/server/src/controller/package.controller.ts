@@ -27,7 +27,7 @@ export type PackageReloadMode = "in-place" | "reinstalled";
  * real, orderable, non-aggregate output column, on a supported dialect — see
  * Package.incrementalPolicyWarnings), plus the pre-aggregation gate (a
  * `#@ preaggregate` must sit on a measure that can be re-aggregated, at a grain
- * of dimensions its source declares — see Package.preaggregatePolicyWarnings),
+ * of dimensions its source declares — see Package.formatInvalidPreaggregatePolicy),
  * plus persist-target
  * collisions ONLY when `PERSIST_COLLISION_ENFORCE` is set (otherwise those are
  * surfaced warn-only so a pre-existing latent collision doesn't block a routine
