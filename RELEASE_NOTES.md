@@ -76,8 +76,10 @@ not at all and its queries are answered from the base.
 A destination is written on the `#@ preaggregate` line and is **not** inherited from the
 base's `#@ persist storage=`, which stays as it was: a `storage=` base lends its rollups
 nothing. Inheriting it would not work — a base that can carry that annotation builds a
-stored table of its own, and it claims the name its rollups would need to be served
-under, so every inherited rollup would be built, refreshed and never read.
+stored table of its own, and a rollup over a stored base is built by reading that table,
+along a path that recovers the rollup's definition from a model file it does not have. So
+the build fails. Even had it succeeded, the base's own table already claims the name its
+rollups would be served under.
 
 With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is not built — and not built
 alongside its base either, which would put a table in your warehouse under a generated
