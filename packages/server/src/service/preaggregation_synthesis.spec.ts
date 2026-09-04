@@ -199,6 +199,78 @@ describe("the generated name is a single unqualified identifier", () => {
    });
 });
 
+describe("a storage rollup is declared but is not a composite member", () => {
+   // The composite here is the COLOCATED serve path, and its members resolve
+   // through the same-connection build manifest, which carries no storage
+   // entries. A storage-bound member could therefore never be substituted: the
+   // resolver would pick it for a query it covers, find no table, and recompute
+   // from the base — beating a colocated rollup that has a built table for the
+   // same query.
+   //
+   // Both assertions below fail on the pre-fix behaviour, which is the point of
+   // writing them: the member was present, and a storage-only base emitted a
+   // composite whose only member could never resolve.
+   const withGrains = async (body: string) => {
+      const text = `##! experimental { persistence composite_sources }
+source: orders is duckdb.sql("""${ROWS}""") extend {
+${body}
+}
+`;
+      const compiled = await loadTestModel(connections, text).getModel();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const contents = (compiled as any)._modelDef.contents;
+      const plans = planSourcePreaggregation(
+         "orders",
+         contents["orders"] as ValidatableSource,
+      );
+      return {
+         plans,
+         composeLine: (
+            synthesizePreaggregationModel(plans, "./orders.malloy") ?? ""
+         )
+            .split("\n")
+            .find((l) => l.startsWith("source: orders is compose")) as string,
+      };
+   };
+
+   it("omits the storage member while a colocated one keeps its place", async () => {
+      const { plans, composeLine } = await withGrains(
+         `  measure:\n` +
+            `    #@ preaggregate grain="order_date" storage=lake\n` +
+            `    #@ preaggregate grain="category, order_date"\n` +
+            `    total is sum(amount)`,
+      );
+      const stored = plans.find((p) => p.storage)!.rollupSourceName;
+      const colocated = plans.find((p) => !p.storage)!.rollupSourceName;
+      // Both are still PLANNED — the storage one must still be built.
+      expect(plans).toHaveLength(2);
+      expect(composeLine).not.toContain(stored);
+      expect(composeLine).toContain(colocated);
+   });
+
+   it("a storage-only base still emits a composite, and it compiles", async () => {
+      // The degenerate case the filter creates, and the one worth pinning against
+      // the real compiler rather than by reading: the companion is ONE compile per
+      // model, so a composite that failed here would take every colocated base in
+      // the same model down with it.
+      const { composeLine } = await withGrains(
+         `  measure:\n` +
+            `    #@ preaggregate grain="category" storage=lake\n` +
+            `    total is sum(amount)`,
+      );
+      expect(composeLine).toBe(
+         "source: orders is compose(orders__preagg_base)",
+      );
+      const model = `##! experimental { persistence composite_sources }
+source: orders__preagg_base is duckdb.sql("""${ROWS}""")
+${composeLine}
+`;
+      await expect(
+         loadTestModel(connections, model).getModel(),
+      ).resolves.toBeDefined();
+   });
+});
+
 describe("the planner never plans what the source hides", () => {
    // These two skips ARE the access control, not a tidy agreement with the
    // validator. A rollup stores its grain and each measure's partial, and the

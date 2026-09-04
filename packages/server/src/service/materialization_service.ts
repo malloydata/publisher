@@ -2073,18 +2073,6 @@ export class MaterializationService {
                // write is safe, redirecting one is not. Auto-run cannot reach this:
                // resolveStorageDestination returns undefined while off, so an
                // instruction still carrying a destination here is caller-supplied.
-               if (
-                  instruction.destination &&
-                  getPersistStorageMode() === "off"
-               ) {
-                  throw new BadRequestError(
-                     `Source '${persistSource.name}' was instructed to build into ` +
-                        `storage destination '${instruction.destination}', but ` +
-                        `PERSIST_STORAGE_MODE is off, so no destination can be ` +
-                        `written. Refusing rather than building the table into the ` +
-                        `source warehouse instead.`,
-                  );
-               }
 
                // Auto-run already gated pre-getSQL in deriveSelfInstructions;
                // re-assert (idempotent) so no path into a storage build is ungated.
@@ -2129,6 +2117,19 @@ export class MaterializationService {
 
                let entry;
                try {
+                  if (
+                     instruction.destination &&
+                     getPersistStorageMode() === "off"
+                  ) {
+                     throw new BadRequestError(
+                        `Source '${persistSource.name}' was instructed to build into ` +
+                           `storage destination '${instruction.destination}', but ` +
+                           `PERSIST_STORAGE_MODE is off, so no destination can be ` +
+                           `written. Refusing rather than building the table into the ` +
+                           `source warehouse instead.`,
+                     );
+                  }
+
                   // Inside the per-source try, deliberately: a host that resolved
                   // no destination for ONE source has partly-resolved its
                   // instruction list, and the reasons named below — the org not
@@ -2166,11 +2167,11 @@ export class MaterializationService {
                   const declared = declaredStorage(persistSource);
                   if (declared && !instruction.destination) {
                      // The grain renders as a SET rather than quoted text: the wire
-                  // plan carries only canonically sorted, de-duplicated dimensions,
-                  // so quoting would misrepresent any grain the author did not
-                  // write alphabetically.
-                  //
-                  // A ROLLUP names neither of the things this message otherwise
+                     // plan carries only canonically sorted, de-duplicated dimensions,
+                     // so quoting would misrepresent any grain the author did not
+                     // write alphabetically.
+                     //
+                     // A ROLLUP names neither of the things this message otherwise
                      // reaches for: its source name is synthesized and its
                      // `#@ persist storage=` line was written by the publisher, so
                      // quoting both would send an author looking for a line nobody

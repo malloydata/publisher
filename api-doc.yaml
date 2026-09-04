@@ -3056,10 +3056,10 @@ components:
             when there are such findings.
 
 
-            **A `#@ preaggregate` that cannot be honored REJECTS A PUBLISH — a
-            400 at publish or PATCH — without exception.** Most also fail a load
-            thereafter; the two access-modifier violations instead warn at load
-            and appear in this array. See the split below.
+            **Almost every `#@ preaggregate` that cannot be honored REJECTS A
+            PUBLISH — a 400 at publish or PATCH — and fails a load thereafter.**
+            The two access-modifier violations are the exception: they warn at
+            BOTH gates and appear in this array. See the split below.
             Rejected are a `#@ preaggregate` anywhere but on a measure;
             a `#@ preaggregate` with no `grain=`;
             a grain naming anything but a dimension the base source itself
@@ -3075,11 +3075,14 @@ components:
             while a `join_one` is permitted and a measure aggregating through one
             is served normally; a base source that already fails persist eligibility (unbound
             parameters, `given` references, `#(authorize)` gates); `sharing=` or
-            `schedule=` at the resource level; a synthesized rollup name that
-            collides with an existing model object; and a `#@ preaggregate` on a
-            measure the source does not publicly expose, or a grain naming a
-            hidden dimension — a rollup STORES its grain and each measure's
-            partial, and the stored table is served under the base's name without
+            `schedule=` at the resource level; and a synthesized rollup name that
+            collides with an existing model object.
+
+
+            WARNED rather than rejected, at publish and at load alike, is a
+            `#@ preaggregate` on a measure the source does not publicly expose, or
+            a grain naming a hidden dimension — a rollup STORES its grain and each
+            measure's partial, and the stored table is served under the base's name without
             the source's field visibility applying to it. Each names the measure
             and the fix.
 
@@ -3106,16 +3109,24 @@ components:
 
 
             The two access-modifier violations are the deliberate exception, and
-            for a different reason rather than a lesser one. They WARN at load and
-            appear in this array, because a package annotating a hidden field
-            loaded before this rule existed — making it load-fatal would stop an
-            already-published package from loading because a new validation was
-            added, which is not a thing a server upgrade may do. Warning is safe
-            here and would not be for the others: what keeps a hidden field out of
-            a rollup is that the planner refuses to plan one at all, so no table
-            is built and nothing can be served whether or not anyone reads the
-            message. For the other violations the refusal IS the enforcement,
-            which is why they stay fatal.
+            for two reasons rather than a lesser severity. They WARN at publish and
+            at load alike and appear in this array. First, a package annotating a
+            hidden field published and loaded before this rule existed — refusing
+            it would stop an already-published package from doing either because a
+            new validation was
+            added, which is not a thing a server upgrade may do. Second, the
+            refusal was unfollowable: an annotation INHERITED onto a source that
+            then hides the measure raises it, while that source produces no plan at
+            all and nothing is exposed, so the advice to make the field public or
+            drop the annotation asks an author to give up either the hiding or the
+            rollup over a model that was already safe.
+
+
+            Warning is safe here and would not be for the others: what keeps a
+            hidden field out of a rollup is that the planner refuses to plan one at
+            all, so no table is built and nothing can be served whether or not
+            anyone reads the message. For the other violations the refusal IS the
+            enforcement, which is why they stay fatal.
           items:
             type: object
             properties:

@@ -55,15 +55,23 @@ What is refused, and why each is a refusal rather than a silent choice:
 - **`namespace=` with `storage=` on one line.** Placement inside a destination is
   derived, not authored — a freshly provisioned catalog has no schema to create the
   table in.
-- **`#@ preaggregate` on a measure the source does not publicly expose**, and a grain
-  naming a hidden dimension. A rollup stores its grain and each measure's partial, and
-  the stored table is served under the base's name without the source's field
-  visibility applying to it, so pre-aggregating a hidden field would publish it.
 - **Two measures at one grain naming different destinations.** One grain is one table.
-- **Two grains on one base naming different destinations.** Unlike `namespace=`, which
-  may legitimately send two grains to two schemas, a base's rollups are offered to a
-  query through a single composite and every member of a composite must live on one
-  connection. Such a base serves from its rollups not at all.
+
+Two things that are NOT refusals, both of which read like they should be.
+
+**A hidden field warns**, at publish and at load alike. A rollup stores its grain and each
+measure's partial and is served under the base's name with none of the source's field
+visibility applying, so the planner refuses to plan one at all — nothing is built and
+nothing can be served. It warns rather than refusing because a package of that shape
+published before the rule existed, and because the refusal was unfollowable: an annotation
+inherited onto a source that then hides the measure raises it, while that source produces
+no rollup and exposes nothing.
+
+**Two grains on one base naming different destinations is dropped at serve, not refused at
+publish.** Two grains are two tables, so nothing at publish has grounds to refuse what it
+allows for `namespace=`. But a base's rollups are offered through ONE composite and every
+member of a composite must live on one connection, so such a base serves from its rollups
+not at all and its queries are answered from the base.
 
 A destination is written on the `#@ preaggregate` line and is **not** inherited from the
 base's `#@ persist storage=`, which stays as it was: a `storage=` base lends its rollups
