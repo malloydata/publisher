@@ -60,6 +60,10 @@ function binding(
       tablePath: `lake.t_${sourceName}`,
       schema: [
          { name: "category", type: "VARCHAR" },
+         // Carried because a binding is now checked against its plan's columns:
+         // a fixture whose schema omits a grain column is a table that predates
+         // its plan, which is exactly what the check exists to skip.
+         { name: "order_date", type: "DATE" },
          { name: "total__partial", type: "HUGEINT" },
       ],
    };
@@ -140,8 +144,53 @@ describe("a rollup's measures come from its plan, not from the author model", ()
       );
       expect(groups[0].members[0].schema.map((c) => c.name)).toEqual([
          "category",
+         "order_date",
          "total__partial",
       ]);
+   });
+});
+
+describe("a table that predates its plan is skipped, not composed", () => {
+   // A manifest entry is matched to a plan by NAME, and a rollup's name folds its
+   // base and grain but NOT its measures. So a plan whose measure set grew since
+   // the build matches an entry whose schema predates the new measure, and the
+   // member would declare a merge over a column the table does not have.
+   //
+   // Caught here rather than at compile because of the blast radius there: the
+   // shape is built once per package, so one stale entry would fail it and take
+   // every other base's rollups down. Fails on the pre-fix behaviour, which
+   // composed the member regardless.
+   it("skips a member whose schema lacks a measure the plan gained", () => {
+      const { groups } = rollupServeBindings(
+         [binding("r_cat")],
+         [
+            plan(
+               "r_cat",
+               ["category"],
+               [
+                  { name: "total", reaggregate: "sum" },
+                  // Added after the table was built; no `revenue__partial` column.
+                  { name: "revenue", reaggregate: "sum" },
+               ],
+            ),
+         ],
+      );
+      expect(groups).toEqual([]);
+   });
+
+   it("skips a member whose schema lacks a grain column", () => {
+      const stale = binding("r_cat");
+      stale.schema = stale.schema.filter((c) => c.name !== "category");
+      expect(
+         rollupServeBindings([stale], [plan("r_cat", ["category"])]).groups,
+      ).toEqual([]);
+   });
+
+   it("keeps a member whose schema covers its plan", () => {
+      expect(
+         rollupServeBindings([binding("r_cat")], [plan("r_cat", ["category"])])
+            .groups,
+      ).toHaveLength(1);
    });
 });
 

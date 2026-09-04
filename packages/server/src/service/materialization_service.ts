@@ -1164,7 +1164,36 @@ export class MaterializationService {
                // given makes getSQL() (called inside computeSourceEntityId)
                // throw opaquely, so the eligibility refusal must fire first to
                // give a clean, actionable 422.
-               assertMaterializationEligible(persistSource);
+               //
+               // A ROLLUP is SKIPPED rather than thrown for, and only a rollup.
+               // The throw is right for an authored source: the author asked for
+               // this table and a 422 naming their annotation is the answer. A
+               // rollup asked for nothing an author can see, its refusal is already
+               // reported in the build plan's `refusedSources`, and throwing here
+               // aborts the auto-run — so one ineligible rollup would stop every
+               // other source in the package building, on every tick, forever.
+               //
+               // Reachable only since rollups gained destinations: before that
+               // `resolveStorageDestination` returned undefined for one and this
+               // branch was never entered.
+               if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
+                  try {
+                     assertMaterializationEligible(persistSource);
+                  } catch (err) {
+                     if (!(err instanceof MaterializationEligibilityError))
+                        throw err;
+                     logger.warn(
+                        "Skipping a pre-aggregation rollup the storage tier refuses",
+                        {
+                           sourceName: persistSource.name,
+                           reason: errMessage(err),
+                        },
+                     );
+                     continue;
+                  }
+               } else {
+                  assertMaterializationEligible(persistSource);
+               }
             } else {
                // No storage destination: this is the colocated `#@ persist`
                // path (a CTAS into the source's own warehouse). It is not

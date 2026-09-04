@@ -4160,11 +4160,28 @@ export class Model {
          keep: ReadonlySet<string>;
          groups: RollupShapeGroup[];
       }> = [
-         ...keepKinds.map((keep) => ({ keep, groups: rollupGroups })),
-         // Appended only when there is a group to drop, so a package with none
-         // keeps exactly the four tiers it had.
+         // Richest, with groups.
+         { keep: keepKinds[0], groups: rollupGroups },
+         // Then groups DROPPED while every authored refinement is kept. This tier
+         // exists because the two failure sources are independent and the ladder
+         // otherwise conflates them: a single uncompilable group failed all four
+         // thinning tiers, and the tier that finally dropped it had already
+         // stripped every join, view, dimension and measure — so one bad rollup
+         // degraded every authored `storage=` source in the package to base-only,
+         // where before this feature it served at the richest tier. Trying this
+         // second means a group-caused failure costs the rollups and nothing else.
          ...(rollupGroups.length > 0
-            ? [{ keep: new Set<string>(), groups: [] }]
+            ? [{ keep: keepKinds[0], groups: [] as RollupShapeGroup[] }]
+            : []),
+         // Then the ordinary thinning ladder, still WITH groups: reaching here
+         // means dropping the groups alone did not fix it, so an authored
+         // refinement is implicated and the groups may be fine.
+         ...keepKinds.slice(1).map((keep) => ({ keep, groups: rollupGroups })),
+         // The floor: no refinements and no groups. Pure virtual bases, so it
+         // always compiles. Appended only when there is a group to drop, since
+         // without one the last thinning tier is already this shape.
+         ...(rollupGroups.length > 0
+            ? [{ keep: new Set<string>(), groups: [] as RollupShapeGroup[] }]
             : []),
       ];
       // Skip escalation entirely when nothing beyond the base is carried — but a

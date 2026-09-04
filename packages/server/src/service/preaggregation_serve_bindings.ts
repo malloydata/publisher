@@ -145,6 +145,32 @@ export function rollupServeBindings(
          );
          continue;
       }
+      // The manifest entry was matched to this plan by NAME, and a rollup's name
+      // folds only its base and grain — not its measures. So a plan whose measure
+      // set has grown since the table was built matches an entry whose schema
+      // predates the new measure, and the member would declare
+      // `revenue is revenue__partial.sum()` over a table with no such column.
+      //
+      // That is worth catching here rather than at compile because of what it
+      // costs there: an uncompilable member fails the shape, and the shape is
+      // built once per package, so one stale entry takes every other base's
+      // rollups with it. Checked against the captured schema, which is the only
+      // description of the table that actually exists.
+      const columns = new Set(binding.schema.map((c) => c.name));
+      const missing = [
+         ...plan.grainDimensions,
+         ...plan.measures.map((m) => m.partialName),
+      ].filter((name) => !columns.has(name));
+      if (missing.length > 0) {
+         logger.info(
+            "Skipping a rollup serve binding whose table predates its plan; serving from the base",
+            {
+               sourceName: binding.sourceName,
+               missingColumns: missing,
+            },
+         );
+         continue;
+      }
       const forBase = byBase.get(plan.baseSourceName) ?? [];
       forBase.push({ plan, binding });
       byBase.set(plan.baseSourceName, forBase);

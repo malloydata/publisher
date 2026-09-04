@@ -129,8 +129,26 @@ describe("a rollup is placed in a storage destination by its own line", () => {
       expect(plans[0].storage).toBe("lake");
       const emitted =
          synthesizePreaggregationModel(plans, "./orders.malloy") ?? "";
-      expect(emitted).toContain("#@ persist storage=lake");
+      expect(emitted).toContain('#@ persist storage="lake"');
       expect(emitted).not.toContain("name=");
+   });
+
+   it("quotes the destination, so a non-identifier name survives the re-emit", async () => {
+      // Unquoted, the tag parser splits a name at its first non-identifier
+      // character and does so SILENTLY: `storage=my-lake` parses as
+      // `storage="my"` plus a stray `lake` tag with an empty parse log, so the
+      // rollup would target a destination called `my` and nothing would say so.
+      // Fails on the pre-fix emit, which is the point.
+      const plans = planSourcePreaggregation(
+         "orders",
+         await compileOrders(
+            `  measure:\n    #@ preaggregate grain="category" storage="my-lake"\n    total is sum(amount)`,
+         ),
+      );
+      expect(plans[0].storage).toBe("my-lake");
+      expect(
+         synthesizePreaggregationModel(plans, "./orders.malloy") ?? "",
+      ).toContain('#@ persist storage="my-lake"');
    });
 
    it("a colocated base still lends its namespace, unchanged", async () => {
