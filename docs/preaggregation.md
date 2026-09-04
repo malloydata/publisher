@@ -250,11 +250,14 @@ pre-aggregating a hidden field would publish it.
 base's `#@ persist storage=`, and the reason is worth knowing because the opposite reads
 as obviously right — a rollup of X belongs where X's rows live.
 
-It does not work. A base can only carry `#@ persist storage=` if it is query-shaped, such
-a base builds a stored table of its own, and rollups are served by rebinding the base's
-name to a composite of them — so the base's own stored table already claims that name and
-its rollups cannot take it. Every inherited rollup would be built, refreshed, and never
-read. So a rollup goes to a destination because its own line says so, which is also the
+It does not work, in either of the two cases — and they are exhaustive, because inheriting
+would require `#@ persist` on the base. If the base is **query-shaped** it builds a stored
+table of its own, and rollups are served by rebinding the base's name to a composite of
+them, so that table's binding already claims the name and its rollups cannot take it:
+every inherited rollup would be built, refreshed, and never read. If the base is **not
+query-shaped** — a table extended with measures — the annotation parses, and the build
+refuses the whole run for a `#@ persist` source that was dropped from the plan. So a
+rollup goes to a destination because its own line says so, which is also the
 common case: a rollup's base is usually a table extended with measures, and Malloy admits
 only query-shaped sources as build roots, so most bases cannot carry `#@ persist` at all.
 

@@ -119,9 +119,12 @@ export interface PreaggregateGrain {
     * differently. A destination that outranged its grain would move a rollup its
     * author never named.
     *
-    * Undefined when unspecified on the line, in which case a sibling
-    * `#@ persist storage=` on the base supplies it — a rollup of X follows X to
-    * the store unless its author said otherwise.
+    * Undefined when unspecified on the line, and NOTHING supplies it: a
+    * destination is never inherited from a sibling `#@ persist storage=` on the
+    * base. Unlike {@link PreaggregateGrain.namespace} directly above, which IS
+    * inherited from the base's `#@ persist name=` — the two fields read alike and
+    * genuinely differ. See `basePersistNamespace` for why a destination cannot
+    * usefully inherit.
     */
    storage?: string;
 }

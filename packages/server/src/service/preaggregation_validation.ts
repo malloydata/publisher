@@ -469,10 +469,11 @@ export function validateSourcePreaggregation(
    // acceptable, so the combination is refused while it means nothing — which
    // keeps the option of giving it a meaning later without a data migration.
    //
-   // The two keys can arrive from different places, which is why the message says
-   // where each came from rather than asserting the author wrote both: a
-   // `storage=` may be inherited from the source's own `#@ persist` while only the
-   // `namespace=` was written on the preagg line.
+   // Both keys were written on the same `#@ preaggregate` line, necessarily: a
+   // destination is never inherited from the base's `#@ persist storage=`, so the
+   // only `storage=` in play here is one the author typed beside the `namespace=`.
+   // The message can therefore name both flatly rather than hedging about where
+   // each came from.
    for (const [key, named] of namespacesByGrain) {
       const ownStorage = storagesByGrain.get(key);
       const [namespace, namespaceMeasure] = [...named.entries()][0];

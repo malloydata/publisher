@@ -2112,13 +2112,36 @@ export class MaterializationService {
                // right answer.
                const declared = declaredStorage(persistSource);
                if (declared && !instruction.destination) {
+                  // A ROLLUP names neither of the things this message otherwise
+                  // reaches for: its source name is synthesized and its
+                  // `#@ persist storage=` line was written by the publisher, so
+                  // quoting both would send an author looking for a line nobody
+                  // typed. Named by the base and grain instead, which are what
+                  // they wrote.
+                  //
+                  // Worth branching even though a host that always resolves a
+                  // destination makes this unreachable. This message is only ever
+                  // READ when that invariant does not hold, so writing it as
+                  // though the invariant were reliable is writing it for the one
+                  // case it cannot occur in. This branch has twice been the shape
+                  // of a real defect here — an enforcement held by an accident of
+                  // an import boundary, and an eligibility filter held by an
+                  // accident of what a walk collected.
+                  const rollup =
+                     compiled.preaggregatePlans?.[persistSource.sourceID];
                   throw new BadRequestError(
-                     `Source '${persistSource.name}' declares ` +
-                        `\`#@ persist storage=${declared}\`, but the build was ` +
-                        `instructed with no storage destination, so there is ` +
-                        `nowhere it may be written. Refusing rather than building ` +
-                        `the table into the source warehouse, which the source's ` +
-                        `own annotation asked it not to be written to.`,
+                     (rollup
+                        ? `Measures of \`${rollup.baseSourceName}\` ` +
+                          `pre-aggregated at grain ` +
+                          `"${rollup.grainDimensions.join(", ")}" declare ` +
+                          `\`storage=${declared}\``
+                        : `Source '${persistSource.name}' declares ` +
+                          `\`#@ persist storage=${declared}\``) +
+                        `, but the build was instructed with no storage ` +
+                        `destination, so there is nowhere it may be written. ` +
+                        `Refusing rather than building the table into the source ` +
+                        `warehouse, which the annotation asked it not to be ` +
+                        `written to.`,
                   );
                }
 
