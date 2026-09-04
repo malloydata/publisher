@@ -31,6 +31,60 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a pre-aggregation rollup can be built into and served from a storage destination
+
+`storage=` now works on a `#@ preaggregate` line: the rollup is built into that
+destination and served from it, and a query that names the base source is unchanged — it
+still knows no rollup exists.
+
+```malloy
+source: orders is orders_pg.table('public.orders') extend {
+  measure:
+    #@ preaggregate grain="category" storage=lake
+    total is amount.sum()
+}
+```
+
+Before this the key parsed, passed validation, and did nothing: the reader took only
+`grain` and `namespace`, nothing rejected the unknown key, and the rollup was built
+alongside its base. No documented path reached it, which is why support arrives together
+with refusals for the parts that are still not supported, rather than as two changes.
+
+What is refused, and why each is a refusal rather than a silent choice:
+
+- **`namespace=` with `storage=` on one line.** Placement inside a destination is
+  derived, not authored — a freshly provisioned catalog has no schema to create the
+  table in.
+- **`#@ preaggregate` on a measure the source does not publicly expose**, and a grain
+  naming a hidden dimension. A rollup stores its grain and each measure's partial, and
+  the stored table is served under the base's name without the source's field
+  visibility applying to it, so pre-aggregating a hidden field would publish it.
+- **Two measures at one grain naming different destinations.** One grain is one table.
+- **Two grains on one base naming different destinations.** Unlike `namespace=`, which
+  may legitimately send two grains to two schemas, a base's rollups are offered to a
+  query through a single composite and every member of a composite must live on one
+  connection. Such a base serves from its rollups not at all.
+
+A destination is written on the `#@ preaggregate` line and is **not** inherited from the
+base's `#@ persist storage=`, which stays as it was: a `storage=` base lends its rollups
+nothing. Inheriting it would not work — a base that can carry that annotation builds a
+stored table of its own, and it claims the name its rollups would need to be served
+under, so every inherited rollup would be built, refreshed and never read.
+
+With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is not built — and not built
+alongside its base either, which would put a table in your warehouse under a generated
+name you never wrote. Queries are answered from the base and the package reports the
+degraded state as a warning.
+
+**Also changed for rollups that are not in a store.** Where several rollups cover one
+query, the **coarsest** is now used. Members were previously ordered by generated name,
+so with `grain="b"` and `grain="a, b"` a query grouping by `b` alone read the `a, b`
+table because `a_b` sorts first. Grain dimensions are counted rather than measured, so
+this is a proxy for size and not a reading of it. One consequence worth knowing: a rollup
+is offered whether or not it has been built yet, so adding a coarse grain to a package
+that already has a built finer rollup costs acceleration until the new one builds —
+answers are unaffected, and it lasts one build.
+
 ## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
 
 `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` caps how much column data DuckLake buffers
@@ -115,62 +169,6 @@ rows it overwrote.
 
 
 ## [0.2.2] — a boolean query param you misspell now fails instead of doing nothing
-
-## [Unreleased] — a pre-aggregation rollup can be built into and served from a storage destination
-
-`storage=` now works on a `#@ preaggregate` line: the rollup is built into that
-destination and served from it, and a query that names the base source is unchanged — it
-still knows no rollup exists.
-
-```malloy
-source: orders is orders_pg.table('public.orders') extend {
-  measure:
-    #@ preaggregate grain="category" storage=lake
-    total is amount.sum()
-}
-```
-
-Before this the key parsed, passed validation, and did nothing: the reader took only
-`grain` and `namespace`, nothing rejected the unknown key, and the rollup was built
-alongside its base. No documented path reached it, which is why support arrives together
-with refusals for the parts that are still not supported, rather than as two changes.
-
-What is refused, and why each is a refusal rather than a silent choice:
-
-- **`namespace=` with `storage=` on one line.** Placement inside a destination is
-  derived, not authored — a freshly provisioned catalog has no schema to create the
-  table in.
-- **`#@ preaggregate` on a measure the source does not publicly expose**, and a grain
-  naming a hidden dimension. A rollup stores its grain and each measure's partial, and
-  the stored table is served under the base's name without the source's field
-  visibility applying to it, so pre-aggregating a hidden field would publish it.
-- **Two measures at one grain naming different destinations.** One grain is one table.
-- **Two grains on one base naming different destinations.** Unlike `namespace=`, which
-  may legitimately send two grains to two schemas, a base's rollups are offered to a
-  query through a single composite and every member of a composite must live on one
-  connection. Such a base serves from its rollups not at all.
-
-A destination is written on the `#@ preaggregate` line and is **not** inherited from the
-base's `#@ persist storage=`, which stays as it was: a `storage=` base lends its rollups
-nothing. Inheriting it would not work — a base that can carry that annotation builds a
-stored table of its own, and it claims the name its rollups would need to be served
-under, so every inherited rollup would be built, refreshed and never read.
-
-With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is not built — and not built
-alongside its base either, which would put a table in your warehouse under a generated
-name you never wrote. Queries are answered from the base and the package reports the
-degraded state as a warning.
-
-**Also changed for rollups that are not in a store.** Where several rollups cover one
-query, the **coarsest** is now used. Members were previously ordered by generated name,
-so with `grain="b"` and `grain="a, b"` a query grouping by `b` alone read the `a, b`
-table because `a_b` sorts first. Grain dimensions are counted rather than measured, so
-this is a proxy for size and not a reading of it. One consequence worth knowing: a rollup
-is offered whether or not it has been built yet, so adding a coarse grain to a package
-that already has a built finer rollup costs acceleration until the new one builds —
-answers are unaffected, and it lasts one build.
-
-## [Unreleased] — a boolean query param you misspell now fails instead of doing nothing
 
 `reload`, `dropTables` and `bypass_filters` were each read as `=== "true"`, so
 every other spelling — `?reload=1`, `?dropTables=yes`, `?reload=TRUE`, or the
