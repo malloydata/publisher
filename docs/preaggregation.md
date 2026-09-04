@@ -259,12 +259,18 @@ as obviously right — a rollup of X belongs where X's rows live.
 
 It does not work, in either of the two cases — and they are exhaustive, because inheriting
 would require `#@ persist` on the base. If the base is **query-shaped** it builds a stored
-table of its own, and rollups are served by rebinding the base's name to a composite of
-them, so that table's binding already claims the name and its rollups cannot take it:
-every inherited rollup would be built, refreshed, and never read. If the base is **not
-query-shaped** — a table extended with measures — the annotation parses, and the build
-refuses the whole run for a `#@ persist` source that was dropped from the plan. So a
-rollup goes to a destination because its own line says so, which is also the
+table of its own, and a rollup over it is then built by reading that table rather than the
+raw source — a path that recovers the rollup's definition from the model file, which a
+rollup does not have, so the build fails. If the base is **not query-shaped** — a table
+extended with measures — the annotation parses, and the build refuses the whole run for a
+`#@ persist` source that was dropped from the plan.
+
+That first case is reachable deliberately, not only by inheritance: writing `storage=` on
+both the base's `#@ persist` and the `#@ preaggregate` line hits the same wall, and the
+build reports it against the rollup. Even had it built, the base's own stored table already
+claims the name its rollups would be served under, so nothing would have read it.
+
+So a rollup goes to a destination because its own line says so, which is also the
 common case: a rollup's base is usually a table extended with measures, and Malloy admits
 only query-shaped sources as build roots, so most bases cannot carry `#@ persist` at all.
 
