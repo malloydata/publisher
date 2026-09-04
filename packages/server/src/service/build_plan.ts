@@ -1078,9 +1078,25 @@ export function deriveBuildPlan(
                   name: source.name,
                   sourceID: source.sourceID,
                   modelPath: sourceModelPaths?.[sourceID],
-                  // The DESTINATION is what a storage rollup was refused for, so a
-                  // host reading `refusedSources` sees which tier it lost.
-                  tier: declaresStorage ? "storage" : "preaggregate",
+                  // `preaggregate` whether or not the rollup declared a
+                  // destination, and the reason is a contract the other values
+                  // carry rather than a preference.
+                  //
+                  // This branch deliberately does NOT `continue`: a refused rollup
+                  // lands in BOTH `refusedSources` and `sources`, because Malloy
+                  // still synthesized it. The spec makes that legal for exactly one
+                  // tier — "a `preaggregate`-tier entry can coexist with an entry of
+                  // the same sourceID in `BuildPlan.sources` … unlike
+                  // `storage`/`colocated` where a refusal means absence from
+                  // `sources`". Reporting `storage` for a rollup would therefore
+                  // tell a consumer the entry cannot be in `sources` while it is,
+                  // which reads as a corrupt plan.
+                  //
+                  // It also loses the only provenance this collection carries. The
+                  // name is synthesized, so `preaggregate` is what says the entry
+                  // describes a rollup at all; which gate refused it is in
+                  // `reason` and the message.
+                  tier: "preaggregate",
                   reason: err.reason || "authorize",
                   message: errMessage(err),
                };
