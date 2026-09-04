@@ -47,6 +47,10 @@ import {
 } from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
+   computeSourceContentSha,
+   mintServedRevision,
+} from "./package_revision";
+import {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
@@ -279,6 +283,15 @@ export class Package {
     * package: it is a property of the manifest text, not of the loaded package.
     */
    private manifestWarnings: string[] = [];
+   /**
+    * What this package is currently serving, refreshed on load and on every
+    * reload. `servedRevision` identifies the load; `sourceContentSha` is a
+    * content hash over the model files, so it answers the question a caller
+    * actually has after an edit -- did the bytes the server compiled change --
+    * which `servedRevision` cannot, being minted fresh either way.
+    */
+   private servedRevision: string = mintServedRevision();
+   private sourceContentSha: string = "";
    private static meter = publisherMeter();
    private static packageLoadHistogram = this.meter.createHistogram(
       "malloy_package_load_duration",
@@ -310,6 +323,28 @@ export class Package {
       this.malloyConfig = malloyConfig;
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
+      this.refreshServingIdentity();
+   }
+
+   public getServedRevision(): string {
+      return this.servedRevision;
+   }
+
+   public getSourceContentSha(): string {
+      return this.sourceContentSha;
+   }
+
+   /**
+    * Re-derive the serving identity. Call after anything that changes which
+    * models are served or what they contain; a reload that leaves the bytes
+    * identical still mints a new revision, and correctly leaves the sha alone.
+    */
+   private refreshServingIdentity(): void {
+      this.servedRevision = mintServedRevision();
+      this.sourceContentSha = computeSourceContentSha(
+         this.packagePath,
+         this.models.keys(),
+      );
    }
 
    /**
@@ -1059,6 +1094,8 @@ export class Package {
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
          buildPlan: this.buildPlan,
+         servedRevision: this.servedRevision,
+         sourceContentSha: this.sourceContentSha,
       };
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
@@ -2265,6 +2302,11 @@ export class Package {
          }
       }
       this.models = nextModels;
+      // Before the serve/pre-aggregate re-application below, which does not
+      // change what is on disk: the identity describes the source bytes just
+      // compiled, and a caller polling it after an edit needs it to move as
+      // soon as the new models are installed.
+      this.refreshServingIdentity();
       // The freshly-compiled models start with no serve bindings and no serve
       // connections; re-apply both so a reload preserves serve routing.
       this.pushStorageServeBindingsToModels();

@@ -3421,6 +3421,35 @@ components:
             discovery index, which is what `get_context` ranks against
             when an embedding provider is configured. Absent when the server
             has no provider, because there is no index to describe.
+        servedRevision:
+          type: string
+          readOnly: true
+          description: >-
+            Server-computed, read-only: an identifier for the load that produced
+            what this package is currently serving. Minted fresh per load, so
+            two loads of byte-identical files carry different revisions. Use it
+            to tell one load from another, NOT to tell whether content changed:
+            it moves on every reload regardless. `sourceContentSha` answers that.
+        sourceContentSha:
+          type: string
+          readOnly: true
+          description: >-
+            Server-computed, read-only: SHA-256 over the package-relative path
+            and bytes of every model file the package is serving.
+
+            This is the reload receipt. Publisher serves a COPY of a package
+            under `publisher_data/<env>/<pkg>/` unless the environment was
+            started with `--watch-env`, so an edit to the original source
+            directory reaches nothing and the reload still reports success.
+            Comparing this value across a reload is what distinguishes "the
+            server recompiled my edit" from "the server recompiled the same
+            bytes it already had".
+
+            It covers EVERY model path in the package, so an edit to an imported
+            file moves it where a hash of one model path would not. It covers
+            nothing else: a data file, a `public/` asset, or a `version` bump in
+            publisher.json all leave it unchanged, because none of them changes
+            what the compiler read.
 
 
     PackageEmbeddingIndex:
