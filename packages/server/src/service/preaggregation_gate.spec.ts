@@ -75,8 +75,8 @@ describe("a valid declaration does not disturb the load", () => {
             model(`  #@ preaggregate grain="category"
   measure: total is amount.sum()`),
          );
-         expect(pkg.preaggregatePolicyWarnings()).toEqual([]);
          expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         expect(pkg.preaggregateAccessWarnings()).toEqual([]);
       },
       { timeout: 30000 },
    );
@@ -87,7 +87,7 @@ describe("a valid declaration does not disturb the load", () => {
          const pkg = await loadPackage(
             model(`  measure: total is amount.sum()`),
          );
-         expect(pkg.preaggregatePolicyWarnings()).toEqual([]);
+         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
       },
       { timeout: 30000 },
    );

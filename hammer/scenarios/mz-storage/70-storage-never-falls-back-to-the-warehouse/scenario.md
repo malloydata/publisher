@@ -51,26 +51,40 @@ source: daily is orders -> {
   group_by: category
   aggregate: total is amount.sum()
 }
+
+#@ persist
+source: colocated_daily is orders -> {
+  group_by: category
+  aggregate: n is count()
+}
 ```
 
 ## Publish
 
-## Build refused (orchestrated, pkg=nw)
+## Build (orchestrated, pkg=nw)
 
-The instruction names a physical table and NO destination — the shape a host sends when
-it resolved none. Every other guard on this path tests what the instruction asked for;
-this one tests what the source declared, which is the only thing that says the warehouse
-is off limits.
+`daily` is instructed with a physical table and NO destination — the shape a host sends
+when it resolved none. Every other guard on this path tests what the instruction asked
+for; this one tests what the source DECLARED, which is the only thing that says the
+warehouse is off limits.
 
-- daily -> nw_daily_tbl
+It fails as its own source and the run carries on, which is what the colocated sibling
+below is here to demonstrate. A host that resolved no destination for one source has
+partly resolved its list, so failing the run would take down colocated sources that have
+no destination to resolve and nothing to do with the refusal.
 
-cites: declares
+- daily -> nw_daily_tbl (failed)
+- colocated_daily -> nw_colocated_tbl
 
 ## Operator orders_pg
 
-Nothing was written. Asked of the warehouse directly rather than inferred from the
-refusal, because the refusal and the write are separate events: the build could refuse
-after having already created the table.
+`nw_daily_tbl` is absent — the refused source wrote nothing. Everything else is present:
+`nw_colocated_tbl` from the instructed sibling, and `colocated_daily` from the auto-run
+that publishing kicked off, both of which are colocated and unaffected.
+
+Asked of the warehouse directly rather than inferred from the failure, because the refusal
+and the write are separate events: a build could refuse after having already created the
+table.
 
 ```sql
 SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name
@@ -78,9 +92,11 @@ SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORD
 
 Expect:
 
-| table_name |
-| ---------- |
-| nw_orders  |
+| table_name       |
+| ---------------- |
+| colocated_daily  |
+| nw_colocated_tbl |
+| nw_orders        |
 
 ## Note
 

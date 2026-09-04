@@ -2086,65 +2086,6 @@ export class MaterializationService {
                   );
                }
 
-               // The mirror case, and the one that actually reaches a warehouse
-               // write: the SOURCE declares `storage=` and the instruction carries
-               // NO destination.
-               //
-               // Every guard above tests `instruction.destination`, which is what
-               // the caller asked for. None tests what the source DECLARED, so a
-               // host that resolved no destination — because the org is not
-               // enabled for one, because resolution failed, because it simply
-               // omitted the field — leaves `isStorageBuild` false in
-               // buildOneSource and the source is CTAS'd into its own warehouse.
-               //
-               // Declaring `storage=` is a statement about where this data may be
-               // written, and it is the only one the author made. It is not
-               // consent to a warehouse write, and in production the read-only
-               // credential this server is given usually cannot perform one
-               // anyway, so the observable outcome is a permission error whose
-               // cause names neither the destination nor the annotation. Refusing
-               // is both the author's instruction and the better diagnosis.
-               //
-               // Deliberately independent of the mode: "no destination could be
-               // resolved" is the same fact whether the tier is off, the org is
-               // not enabled, or the host had some other reason. There is no
-               // reading of `storage=` under which the source warehouse is the
-               // right answer.
-               const declared = declaredStorage(persistSource);
-               if (declared && !instruction.destination) {
-                  // A ROLLUP names neither of the things this message otherwise
-                  // reaches for: its source name is synthesized and its
-                  // `#@ persist storage=` line was written by the publisher, so
-                  // quoting both would send an author looking for a line nobody
-                  // typed. Named by the base and grain instead, which are what
-                  // they wrote.
-                  //
-                  // Worth branching even though a host that always resolves a
-                  // destination makes this unreachable. This message is only ever
-                  // READ when that invariant does not hold, so writing it as
-                  // though the invariant were reliable is writing it for the one
-                  // case it cannot occur in. This branch has twice been the shape
-                  // of a real defect here — an enforcement held by an accident of
-                  // an import boundary, and an eligibility filter held by an
-                  // accident of what a walk collected.
-                  const rollup =
-                     compiled.preaggregatePlans?.[persistSource.sourceID];
-                  throw new BadRequestError(
-                     (rollup
-                        ? `Measures of \`${rollup.baseSourceName}\` ` +
-                          `pre-aggregated at grain ` +
-                          `"${rollup.grainDimensions.join(", ")}" declare ` +
-                          `\`storage=${declared}\``
-                        : `Source '${persistSource.name}' declares ` +
-                          `\`#@ persist storage=${declared}\``) +
-                        `, but the build was instructed with no storage ` +
-                        `destination, so there is nowhere it may be written. ` +
-                        `Refusing rather than building the table into the source ` +
-                        `warehouse, which the annotation asked it not to be ` +
-                        `written to.`,
-                  );
-               }
-
                // Auto-run already gated pre-getSQL in deriveSelfInstructions;
                // re-assert (idempotent) so no path into a storage build is ungated.
                if (
@@ -2188,6 +2129,75 @@ export class MaterializationService {
 
                let entry;
                try {
+                  // Inside the per-source try, deliberately: a host that resolved
+                  // no destination for ONE source has partly-resolved its
+                  // instruction list, and the reasons named below — the org not
+                  // enabled, the field omitted — are exactly the ones that hit some
+                  // sources and not others. Failing the whole run would take down
+                  // the package's colocated persist sources too, which have no
+                  // destination to resolve and nothing to do with the refusal. The
+                  // catch below records it as this source's own build failure, per
+                  // "one source failing does not end the build".
+                  //
+                  // The mirror case, and the one that actually reaches a warehouse
+                  // write: the SOURCE declares `storage=` and the instruction carries
+                  // NO destination.
+                  //
+                  // Every guard above tests `instruction.destination`, which is what
+                  // the caller asked for. None tests what the source DECLARED, so a
+                  // host that resolved no destination — because the org is not
+                  // enabled for one, because resolution failed, because it simply
+                  // omitted the field — leaves `isStorageBuild` false in
+                  // buildOneSource and the source is CTAS'd into its own warehouse.
+                  //
+                  // Declaring `storage=` is a statement about where this data may be
+                  // written, and it is the only one the author made. It is not
+                  // consent to a warehouse write, and in production the read-only
+                  // credential this server is given usually cannot perform one
+                  // anyway, so the observable outcome is a permission error whose
+                  // cause names neither the destination nor the annotation. Refusing
+                  // is both the author's instruction and the better diagnosis.
+                  //
+                  // Deliberately independent of the mode: "no destination could be
+                  // resolved" is the same fact whether the tier is off, the org is
+                  // not enabled, or the host had some other reason. There is no
+                  // reading of `storage=` under which the source warehouse is the
+                  // right answer.
+                  const declared = declaredStorage(persistSource);
+                  if (declared && !instruction.destination) {
+                     // A ROLLUP names neither of the things this message otherwise
+                     // reaches for: its source name is synthesized and its
+                     // `#@ persist storage=` line was written by the publisher, so
+                     // quoting both would send an author looking for a line nobody
+                     // typed. Named by the base and grain instead, which are what
+                     // they wrote.
+                     //
+                     // Worth branching even though a host that always resolves a
+                     // destination makes this unreachable. This message is only ever
+                     // READ when that invariant does not hold, so writing it as
+                     // though the invariant were reliable is writing it for the one
+                     // case it cannot occur in. This branch has twice been the shape
+                     // of a real defect here — an enforcement held by an accident of
+                     // an import boundary, and an eligibility filter held by an
+                     // accident of what a walk collected.
+                     const rollup =
+                        compiled.preaggregatePlans?.[persistSource.sourceID];
+                     throw new BadRequestError(
+                        (rollup
+                           ? `Measures of \`${rollup.baseSourceName}\` ` +
+                             `pre-aggregated at grain ` +
+                             `"${rollup.grainDimensions.join(", ")}" declare ` +
+                             `\`storage=${declared}\``
+                           : `Source '${persistSource.name}' declares ` +
+                             `\`#@ persist storage=${declared}\``) +
+                           `, but the build was instructed with no storage ` +
+                           `destination, so there is nowhere it may be written. ` +
+                           `Refusing rather than building the table into the source ` +
+                           `warehouse, which the annotation asked it not to be ` +
+                           `written to.`,
+                     );
+                  }
+
                   entry = await this.buildOneSource(
                      persistSource,
                      instruction,
