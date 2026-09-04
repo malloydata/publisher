@@ -253,6 +253,14 @@ ${body}
       // the real compiler rather than by reading: the companion is ONE compile per
       // model, so a composite that failed here would take every colocated base in
       // the same model down with it.
+      //
+      // This compiles a SYNTHETIC stand-in — a local base rather than the import
+      // alias, and without the unreferenced rollup declaration — so it pins "a
+      // one-member composite compiles", one step off the artifact. The real
+      // degenerate companion is compiled by the `preaggregate-storage-*` hammer
+      // scenarios, whose bases are storage-only. Noted because it makes this
+      // property depend on hammer scenarios nobody would think to connect to this
+      // test: delete those and it stops being covered anywhere real.
       const { composeLine } = await withGrains(
          `  measure:\n` +
             `    #@ preaggregate grain="category" storage=lake\n` +
