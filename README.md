@@ -157,20 +157,68 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 
 ## What you can do
 
+### Model
+
+- **Build the model with an agent.** The bundled open-source [skills](skills/) carry the whole loop —
+  discover what a database holds, define sources and measures, model as you go, review, document,
+  publish. A LookML review skill covers coming from Looker.
+- **Start from a warehouse.** `malloy_searchDatabaseSchema` ranks a connection's tables against a
+  plain-English description and returns the `source:` line for each.
+- **Validate without a restart.** `malloy_compile` checks an edit without running it;
+  `malloy_reloadPackage` recompiles a package from disk. Watch mode does the same for a human editing
+  in an IDE.
+
+### Analyze
+
+- **Ask in plain English.** An agent grounds itself with `malloy_getContext`, runs
+  `malloy_executeQuery`, and answers from the model, never from raw tables. Analysis skills teach it the
+  pitfalls and how to write up a finding — [docs/ai-agents.md](docs/ai-agents.md).
+- **Work in notebooks.** `.malloynb` notebooks live inside a package, mix prose and queries, and run on
+  the same governed endpoints — [docs/choosing-a-surface.md](docs/choosing-a-surface.md).
 - **Explore, no code.** Build and drill into queries visually with [Malloy Explorer](docs/explorer.md);
   every action generates valid Malloy, so metrics stay correct across joins.
-- **Answer questions with AI.** Connect an agent over MCP and ask in plain English —
-  [docs/ai-agents.md](docs/ai-agents.md).
-- **Surface analytics your way.** Explore and share in the [Publisher Console](docs/console.md), or
-  ship a no-build [HTML data app](docs/html-data-apps.md) that Publisher hosts inside a package.
-- **Build and validate models.** Author with the bundled [skills](skills/), then publish. Agents get the
-  same loop over MCP: `malloy_compile` checks an edit without running it; `malloy_reloadPackage`
-  recompiles a package from disk, no restart.
-- **Govern access.** [Givens](docs/givens.md) power filter widgets,
-  [row-level access](docs/row-level-access.md), and [`#(authorize)`](docs/authorize.md) gates; curate
-  what is [discoverable and queryable](docs/discovery-and-access.md) separately.
-- **Materialize for cost and speed.** `#@ persist` turns an expensive source into a table, rebuilt on
-  demand or on a cron with the opt-in scheduler — [docs/materialization.md](docs/materialization.md).
+
+### Surface
+
+- **Dashboards declared in Malloy.** A `dashboards/*.malloy` file *is* the dashboard: filterable,
+  clickable, grid-laid-out, no code and no build step — [docs/dashboards.md](docs/dashboards.md).
+- **No-build HTML data apps.** Ship HTML, CSS, and JavaScript inside a package and Publisher hosts it
+  against the model — [docs/html-data-apps.md](docs/html-data-apps.md).
+- **The Publisher Console.** Browse packages, models, and every artifact in the built-in web UI, with
+  your own [colors, fonts, and dark mode](docs/theming.md) — [docs/console.md](docs/console.md).
+- **Your own applications.** The REST API serves any language; a Python client ships in
+  [`packages/python-client`](packages/python-client), and the running server publishes its OpenAPI spec.
+
+### Govern
+
+- **Decide who sees what.** [Givens](docs/givens.md) declare runtime parameters and drive filter
+  widgets; [row-level access](docs/row-level-access.md) and [`#(authorize)`](docs/authorize.md) gate
+  which rows a caller gets and whether they may query a source at all.
+- **Decide what is visible.** Curate what is [discoverable and queryable](docs/discovery-and-access.md)
+  separately, so an agent sees only the sources you meant it to.
+- **Know the boundary.** [docs/security-posture.md](docs/security-posture.md) lists what Publisher
+  defends against and what it leaves to the gateway in front of it.
+
+### Perform
+
+- **Materialize.** One `#@ persist` annotation turns an expensive source into a table, rebuilt on
+  demand, from the `malloy-pub` CLI, or on a cron with the opt-in scheduler —
+  [docs/materialization.md](docs/materialization.md).
+- **Pre-aggregate.** `#@ preaggregate` rolls a measure up to a coarse grain so covered queries read a
+  small table instead of the fact table — [docs/preaggregation.md](docs/preaggregation.md).
+- **Store it where you like.** Persist into a [DuckLake](docs/ducklake.md) storage tier, attach a
+  DuckLake catalog read-only, and run offline or air-gapped —
+  [docs/persist-storage-tutorial.md](docs/persist-storage-tutorial.md).
+- **Attribute every query.** [Query metadata](docs/query-metadata.md) tags each statement with a team,
+  a workload, a request id, so the warehouse's own reporting can say who asked.
+
+### Run anywhere
+
+- **Any data.** DuckDB is built in for CSV, Parquet, JSON, and Excel; connect BigQuery, Snowflake,
+  Postgres, MySQL, Trino, Databricks, MotherDuck, and DuckLake — [docs/connections.md](docs/connections.md).
+- **Any host.** `npx`, Docker, or Docker Compose, in minutes — [docs/deployment.md](docs/deployment.md).
+- **Alongside dbt.** Where Malloy and dbt fit together, and the plan to close the gaps —
+  [docs/dbt-roadmap.md](docs/dbt-roadmap.md).
 
 ## Documentation
 
