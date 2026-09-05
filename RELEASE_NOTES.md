@@ -48,19 +48,24 @@ value.
 Writing the same data to a local path does not do this; it streams. A deployment that
 materializes to `s3://` or `gs://` pays a cost its local-disk testing will not show.
 
-Measured on a 72-column, 20,000,000-row write, sampling cgroup `memory.stat` `anon`:
+Measured on a 72-column, 20,000,000-row DuckLake write to GCS, sampling cgroup
+`memory.stat` `anon` — all six cells in one batch, since this number moves with link speed
+and with catalog state left by earlier runs:
 
-| destination | `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` | files | peak anon |
-|---|---|---|---|
-| local disk | n/a | 1 | 149 MiB |
-| object storage | unset (one file) | 1 | 2979 MiB |
-| object storage | `512MB` | 6 | 549 MiB |
-| object storage | `256MB` | 12 | 372 MiB |
-| object storage | `128MB` | 23 | 258 MiB |
-| object storage | `64MB` | 45 | 249 MiB |
+| `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` | files | peak anon |
+|---|---|---|
+| unset — DuckLake's own default, ~512MB files | 6 | 650 MiB |
+| `1024MB` | 3 | 892 MiB |
+| `512MB` | 6 | 550 MiB |
+| `256MB` | 12 | 373 MiB |
+| `128MB` | 23 | 262 MiB |
+| `64MB` | 45 | 255 MiB |
 
-S3 and GCS measured within 0.1% of each other (2976 vs 2979 MiB unset), so this is not
-specific to either.
+So the realistic gain is **650 → 373 MiB, about 1.74×** — DuckLake already rotates files, and
+this option moves where it rotates. The underlying effect is much larger than that ratio
+suggests: a plain single-file `COPY` of the same data measured 2979 MiB, against 149 MiB
+writing to local disk, and S3 and GCS agreed within 0.1% (2976 vs 2979). But DuckLake never
+writes the single file, so ~650 MiB is the baseline this option actually improves on.
 
 Each bound alone leaves the other term unpaid. On one 5M-row write: row group only −18%,
 file size only −34%, both −65%.

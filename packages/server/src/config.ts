@@ -351,10 +351,13 @@ export const getDuckLakeRowGroupSizeBytes = (): string | undefined => {
  * Writing to object storage, DuckDB copies each multipart part into a buffer it
  * allocates itself, so a file's bytes stay resident until that file completes:
  * peak memory tracks the FILE size, not the row group. Measured on a 72-column,
- * 20M-row write to both GCS and S3 -- 2979 MiB as one file, 258 MiB at 128MB and
- * 372 MiB at 256MB, against 149 MiB for the same write to local disk, which
- * streams. `memory_limit` does not bound it; the allocation is tagged for the
- * extension and the limit is not enforced against it.
+ * 20M-row DuckLake write to GCS, one batch: 650 MiB at DuckLake's own default
+ * (~512MB files), 550 at 512MB, 373 at 256MB, 262 at 128MB, 255 at 64MB.
+ * `memory_limit` does not bound it; the allocation is tagged for the extension
+ * and the limit is not enforced against it. The effect is far larger without
+ * DuckLake's rotation -- a plain single-file COPY of the same data measured
+ * 2979 MiB against 149 MiB writing to local disk -- but DuckLake always rotates,
+ * so ~650 MiB is the baseline this option actually improves on.
  *
  * This is a DIFFERENT term from {@link getDuckLakeRowGroupSizeBytes}, not a
  * replacement: the row group bounds the per-column buffer WITHIN a file, this
