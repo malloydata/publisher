@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 <h1 align="center">Malloy Publisher</h1>
 
 <p align="center"><b>The Analytics Engine for <a href="https://malloydata.dev">Malloy</a></b><br>
-The modern data stack in a box, built AI-first: one data model, served to AI agents, applications, and BI tools over MCP and REST.<br>
+A more modern data stack in a box, built AI-first: one data model, served to AI agents, applications, and BI tools over MCP and REST.<br>
 <sub>Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.<br>
 AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
 
