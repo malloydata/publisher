@@ -9,6 +9,10 @@ import { EnvironmentStore } from "../../service/environment_store";
 import { CompileController } from "../../controller/compile.controller";
 import { type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
+import {
+   type QuerySlotHandle,
+   tryAcquireQuerySlot,
+} from "../../query_concurrency";
 import { jsonResource, jsonToolError } from "../tool_response";
 
 // Zod shape for malloy_compile. environmentName/packageName mirror the other
@@ -158,7 +162,15 @@ export function registerCompileTool(
             "compile",
          );
 
+         // Compile resolves source schemas against the connection, so it draws on
+         // the same warehouse work the query cap exists to bound. Gated here for
+         // the same reason the HTTP compile route is: leaving one surface ungated
+         // relocates the bypass rather than closing it. A refusal throws
+         // ServiceUnavailableError, which the catch below turns into the standard
+         // MCP error payload.
+         let querySlot: QuerySlotHandle | null = null;
          try {
+            querySlot = tryAcquireQuerySlot("mcp:compile");
             const result = await compileController.compile(
                environmentName,
                packageName,
@@ -223,6 +235,8 @@ export function registerCompileTool(
                error,
             );
             return jsonToolError(uri, errorDetails);
+         } finally {
+            querySlot?.release();
          }
       },
    );

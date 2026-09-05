@@ -31,7 +31,164 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a boolean query param you misspell now fails instead of doing nothing
+## [Unreleased] — compile and sqlSource now count against the concurrency cap
+
+`PUBLISHER_MAX_CONCURRENT_QUERIES` bounds how much work a pod runs at once so a
+flood cannot saturate it. It covered `query`, `sqlQuery` and `sqlTemporaryTable`,
+but not `compile` or `sqlSource` -- and both of those reach the database too:
+compile resolves a source's schema against the connection, and sqlSource runs a
+live introspection. A burst of either bypassed the cap its sibling routes
+enforce. The legacy `/projects/...` routes and the `malloy_compile` MCP tool had
+the same gap, so all three surfaces are gated together; leaving one open would
+just move the bypass.
+
+What changes for an operator: the cap now has to be sized for authoring traffic
+as well as query traffic. An agent loop or a notebook that compiles on every edit
+draws on the same pool a query does, so a deployment that sits near its cap may
+start seeing 503s on compile and sqlSource that it did not see before. The cap
+defaults to 32 and `0` still disables it entirely.
+
+## [Unreleased] — 500 and 502 responses no longer echo the internal error
+
+A 500 or a 502 returned `error.message` verbatim. That message is not always
+something a caller should see: an unrecognised internal failure carries a stack
+fragment or a filesystem path, and a connection failure wraps the driver's own
+text, which can name an internal host and port, echo the SQL the caller sent, or
+distinguish "refused" from "timed out" from "auth failed" -- a reachability
+oracle for anything the server can reach.
+
+Both now answer with a fixed message (`Internal server error.`,
+`Upstream connection error.`) and the real error is logged server-side instead.
+The status codes are unchanged.
+
+Two things are deliberately *not* generalised, because the point is to drop what
+a caller cannot use rather than everything:
+
+- Every 4xx keeps its message. A 400 compile error, a 404 naming the package it
+  could not find, and the 424 that quotes an offending annotation are all
+  actionable, and a caller needs them to fix the request.
+- A 502 the server wrote itself keeps its message too. `Table x.y not found`
+  names nothing internal and tells the caller which table to correct, so it is
+  marked caller-safe at the point it is raised; only the driver passthrough is
+  generalised. A new throw site that does not mark itself is generalised by
+  default.
+
+If you parse the body of a 5xx rather than reading its status, that text is now
+fixed. The detail moved to the logs, which is where it was always meant to be:
+before this change it reached them only incidentally, via response-body logging.
+
+---
+
+## [Unreleased] — a persist name must now be a plain identifier path
+
+`#@ persist name=` accepts the table name a source materializes into, and that
+value is pasted into the `CREATE OR REPLACE TABLE` and `DROP TABLE IF EXISTS`
+statements the builder runs. It was only ever checked for being *quoted*, never
+for what the quotes contained, so a name carrying its own quote character closed
+the identifier early and the rest of the value continued as SQL.
+
+The accepted grammar is now dot-separated segments of letters, digits,
+underscores and hyphens -- `^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`. That covers
+every shape a table path takes today, including a hyphenated BigQuery project id
+(`my-proj.mydataset.engaged_events`), a leading-digit segment, and a three-part
+`project.dataset.table`. It is the same character set the control plane already
+applies to physical names, so the two agree on what a name may contain. A value
+with a quote, a backtick, a semicolon or a space is refused when the model loads,
+with an error naming the annotation and the allowed shape.
+
+To check a package without reading the diff: if every `#@ persist name=` value is
+letters, digits, underscores, hyphens and dots, nothing changes for it.
+
+A census of the packages we can see -- 438 persist annotations across 47
+packages, 152 distinct names -- found none that this refuses, so no package that
+loads today stops loading. The check exists because the value is author-supplied
+input on a server that loads packages it did not write, not because a name in the
+wild was doing this.
+
+## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
+
+`PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` caps how much column data DuckLake buffers
+before it flushes a Parquet row group. Unset, nothing changes: no option is set and the
+attach issues exactly the SQL it issued before.
+
+Worth reading even if you do not plan to set it, because it corrects an assumption
+`PUBLISHER_DUCKDB_MEMORY_LIMIT` invites. A DuckLake write buffers a whole row group **per
+column**, so the memory it needs follows the table's WIDTH rather than its row count — and
+those buffers sit outside DuckDB's buffer manager, so the memory limit does not bound them
+at any value. A deployment sized on `memory_limit` alone is therefore sized on the wrong
+axis: it survives long narrow materializations and is killed by short wide ones. The
+symptom is a worker OOM-killed on one source while every other source in the same package
+builds comfortably, with each DuckDB session reporting itself well inside its budget
+throughout. If that is familiar, the source that killed it is almost certainly your widest.
+
+Measured on a 72-column, 5,000,000-row `CREATE TABLE AS` into DuckLake, sampling cgroup
+`memory.stat` `anon`:
+
+| `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` | peak anon | rows per row group |
+|---|---|---|
+| unset (DuckLake's default of 122,880 rows) | 2772 MiB | ~122,880 |
+| `64MB` | 1530 MiB | ~42,300 |
+| `32MB` | 1360 MiB | ~21,900 |
+| `16MB` | 1006 MiB | ~11,700 |
+
+If you measure this yourself, read `anon` and not `memory.current`: the latter includes the
+page cache of the Parquet being written, which scales with output size, roughly doubles the
+apparent figure, and carries enough run-to-run variance to hide the effect entirely.
+
+**Costs to know before adopting.** Smaller row groups are not free — more of them means more
+Parquet metadata and coarser row-group pruning at read time, and only the write side of that
+trade is measured here. Start at `32MB` rather than the smallest value that fits; go lower
+only if a wide source still will not build.
+
+The value is expressed in bytes rather than DuckLake's `parquet_row_group_size` row count on
+purpose: one row count cannot suit a 9-column and a 110-column table at once, while a byte
+budget derives rows-per-group from the data actually buffered and so tracks width as models
+change.
+
+Two mechanics that surprise people. It is applied as a **catalog** option, so it persists in
+`ducklake_metadata` and is seen by every writer of that lake — Publisher skips it on a
+read-only attach, and a catalog that refuses the option is logged and attached anyway. And
+it requires `preserve_insertion_order=false`, which Publisher sets on the attaching session:
+DuckLake plans its copy parallel unconditionally and does not preserve input order on these
+writes regardless, so the guarantee being waived is not one that was being provided.
+Measured on a 1.5M-row write from a sorted source: 15 adjacent inversions with the setting
+on, 10 with it off.
+
+## [0.2.2] — one materialized table, written once and readable by every source that shares it
+
+Malloy [#3029](https://github.com/malloydata/malloy/pull/3029) settled that several sources naming one
+physical table is the design, not a defect: `#@ persist` is inherited through `extend`, `extend` never
+changes a source's materialization SQL, and `#@ -persist` is the opt-out. The publisher still assumed
+one source owned one table. Two consequences, in opposite directions.
+
+**A table was written more than once.** The build loop iterated per SOURCE, so it wrote a table once
+per name that reached it, and once per graph that reached it. It now writes each physical table once,
+keyed on the table's coordinate (destination-or-connection plus physical name) rather than on the
+content address — the address says what a table contains, the coordinate says which table it is.
+
+**An extension of a persisted source served LIVE instead of reading its base's table.** Serve
+bindings are derived one per manifest entry and keyed on that entry's source name, and an entry names
+only the source that built the table — so of a base and its extension, exactly one was bound and the
+other silently recomputed, decided by build order. Every source sharing the table is now bound, on one
+virtual handle. The colocated tier was never affected: it substitutes through the same-connection
+manifest, which is keyed by content address.
+
+Two definitions with DIFFERENT content landing on one physical table is the same guard read backwards:
+each build overwrites the other's rows while both addresses resolve to the table at serve time. That is
+reported, and refused when `PERSIST_COLLISION_ENFORCE` is set — **before anything is written**, since a
+refusal that lands mid-build leaves the first table already replaced and no reclaim can restore the
+rows it overwrote.
+
+### New metrics
+
+| Counter | Meaning |
+|---|---|
+| `publisher_materialization_duplicate_target_skipped_total` | A source whose table this run already wrote. Ordinary for a package that extends a persisted source — a volume signal, not a fault. |
+| `publisher_materialization_shared_address_instructions_total` | One content address instructed to build more than one table. Wasteful, not wrong: the content is the same either way. |
+| `publisher_materialization_table_collision_total` | Two definitions materializing into one table — serve-time wrong data. **This is the one to alert on.** Its rate is also what enabling `PERSIST_COLLISION_ENFORCE` would begin refusing, so a rollout can be measured before it is turned on. |
+
+
+## [0.2.2] — a boolean query param you misspell now fails instead of doing nothing
 
 `reload`, `dropTables` and `bypass_filters` were each read as `=== "true"`, so
 every other spelling — `?reload=1`, `?dropTables=yes`, `?reload=TRUE`, or the

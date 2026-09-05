@@ -36,7 +36,7 @@ describe("assertPersistNamesQuoted identifier-injection hardening (F-3)", () => 
       },
       {
          desc: "embedded backtick (backtick-dialect break-out)",
-         // eslint-disable-next-line prettier/prettier -- keep double-quoted so the embedded backtick reads as the injection payload
+         // prettier-ignore
          line: "#@ persist name=\"orders`; DROP TABLE x; --\"",
       },
       {

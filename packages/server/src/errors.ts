@@ -14,6 +14,44 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
 
+/**
+ * Cap on the logged detail. `error.message` here is unbounded and
+ * caller-influenced: a MalloyError embeds the whole compile error text, and the
+ * sqlQuery path wraps a driver error that can echo the caller's entire SQL
+ * statement, bounded only by the request body limit. With a stack appended that
+ * is multi-KB per failure, and a log sink with a max line size drops the largest
+ * lines first -- precisely the ones worth keeping.
+ */
+const MAX_LOGGED_DETAIL_CHARS = 2000;
+
+/**
+ * Log an internal failure's detail server-side, in the one place the response
+ * stops carrying it.
+ *
+ * The fields are copied out explicitly rather than passed as `{ error }`:
+ * `message` and `stack` are non-enumerable own properties of `Error`, so
+ * `logger.error(msg, { error })` serializes to `{"error":{}}` under both formats
+ * this server configures -- the detail would exist nowhere at all. A bare splat
+ * (`logger.error(msg, error)`) does carry both, but copying the fields is what
+ * lets the two guards below apply to them.
+ *
+ * Newlines and other control characters are stripped because the default format
+ * (colorize + simple, whenever OTEL_EXPORTER_OTLP_ENDPOINT is unset) is
+ * newline-delimited plain text, so a message carrying `\n` -- and caller SQL can
+ * -- could otherwise forge log entries. `format.json()` escapes them, so this
+ * matters only on the non-telemetry path.
+ */
+function logInternalFailure(summary: string, error: Error): void {
+   const sanitize = (value: string): string =>
+      // eslint-disable-next-line no-control-regex
+      value.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, MAX_LOGGED_DETAIL_CHARS);
+   logger.error(summary, {
+      name: error.name,
+      message: sanitize(error.message ?? ""),
+      stack: sanitize(error.stack ?? ""),
+   });
+}
+
 export function internalErrorToHttpError(error: Error) {
    if (error instanceof BadRequestError) {
       return httpError(400, error.message);
@@ -46,10 +84,14 @@ export function internalErrorToHttpError(error: Error) {
    } else if (error instanceof ModelCompilationError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
-      // 502: an upstream/connection failure. The driver message can name the
-      // internal host/port or leak a driver-error oracle, so log it and return a
-      // generic body.
-      logger.error("Upstream connection error", { error });
+      // 502. A server-authored message (see ConnectionError.callerSafe) is
+      // actionable and returned as-is; anything wrapping a driver message is
+      // logged and generalized, because it can name an internal host/port, echo
+      // the caller's SQL, or distinguish refused from timed-out from auth-failed.
+      if (error.callerSafe) {
+         return httpError(502, error.message);
+      }
+      logInternalFailure("Upstream connection error", error);
       return httpError(502, GENERIC_UPSTREAM_MESSAGE);
    } else if (error instanceof MaterializationNotFoundError) {
       return httpError(404, error.message);
@@ -73,7 +115,7 @@ export function internalErrorToHttpError(error: Error) {
       // Unrecognized error: a genuine internal failure. Its message may carry a
       // stack fragment, path, or SQL, so log it server-side and return a generic
       // body to the client.
-      logger.error("Unhandled internal error", { error });
+      logInternalFailure("Unhandled internal error", error);
       return httpError(500, GENERIC_INTERNAL_MESSAGE);
    }
 }
@@ -153,8 +195,27 @@ export class ConnectionNotFoundError extends Error {
 }
 
 export class ConnectionError extends Error {
-   constructor(message: string) {
+   /**
+    * True when {@link message} was authored by this server and is safe to return
+    * to the caller; false (the default) when it carries a driver or upstream
+    * error verbatim.
+    *
+    * The 502 class covers two different things. Some are server-authored and
+    * purely actionable -- "Table x.y not found" tells the caller to fix the table
+    * name and names nothing internal. The rest wrap a driver message that can
+    * carry an internal host/port, the caller's own SQL, or a failure-mode oracle
+    * (refused vs timed out vs auth-failed). Genericizing the whole class to
+    * suppress the second kind would throw away the first, so the distinction is
+    * made where the error is raised, by whoever knows which one it is.
+    *
+    * Defaults to false so an unmarked message is generalized: a new throw site
+    * that forgets to think about this leaks nothing.
+    */
+   readonly callerSafe: boolean;
+
+   constructor(message: string, options?: { callerSafe?: boolean }) {
       super(message);
+      this.callerSafe = options?.callerSafe ?? false;
    }
 }
 

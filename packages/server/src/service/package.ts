@@ -54,7 +54,10 @@ import {
 } from "../storage/DatabaseInterface";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
-import { deriveServeBindings } from "./materialization_serve_transform";
+import {
+   deriveServeBindings,
+   groupAliasesByName,
+} from "./materialization_serve_transform";
 import {
    ColocatedSourceEligibility,
    computePackageBuildPlan,
@@ -1361,7 +1364,10 @@ export class Package {
    public bindStorageServeBindings(
       entries: Record<string, ManifestEntry>,
    ): void {
-      const derived = deriveServeBindings(entries);
+      const derived = deriveServeBindings(
+         entries,
+         groupAliasesByName(Object.values(this.buildPlan?.sources ?? {})),
+      );
       const eligibility = this.sourceEligibility;
       const eligible = new Set(eligibility?.eligible ?? []);
       const allowed = derived.filter((binding) => {
