@@ -33,21 +33,19 @@ build; over REST to applications and BI tools. Agents compose queries against th
 writing SQL from scratch, so there is no wrong join, no invented column, no fan-out that double-counts
 but looks plausible — and the same question returns the same numbers tomorrow.
 
-- **Any AI, one endpoint** — Claude, Cursor, Codex, VS Code, or an agent you build connect over MCP;
-  an agent running unattended uses REST.
-- **Tight control** — agents work through the sources the model defines, never your raw tables.
-  [Givens](docs/givens.md), [row-level access](docs/row-level-access.md), and
-  [`#(authorize)`](docs/authorize.md) decide who sees what; [discovery curation](docs/discovery-and-access.md)
+- **Model** — an agent builds the model with the bundled open-source [skills](skills/), from a
+  warehouse or a file, and validates each edit without a restart.
+- **Analyze** — Claude, Cursor, Codex, or an agent you build asks over MCP; unattended agents and
+  applications use REST. Queries are Malloy, legible enough to review at a glance, and run against
+  the model, never your raw tables.
+- **Surface** — dashboards declared in Malloy, notebooks, and no-build HTML data apps, all shipped
+  inside the package, plus the Console for browsing it all.
+- **Govern** — givens, row-level access, and `#(authorize)` decide who sees what; discovery curation
   decides what is even visible.
-- **Readable, full-featured queries** — Malloy joins, nests, aggregates, and filters, and stays legible
-  enough to review at a glance. Agents already write it as fluently as Python.
-- **DuckDB built in** — serve CSV, Parquet, JSON, or Excel files with no warehouse required, or connect
-  BigQuery, Snowflake, Postgres, Databricks, MotherDuck, and more.
-- **Fast where it counts** — one `#@ persist` annotation materializes an expensive source into a table,
-  rebuilt on demand or on a schedule.
-- **Ships with the skills** — the open-source Malloy modeling and analysis [skills](skills/) agents use
-  to build and query models, auto-discovered by most AI coding hosts.
-- **Runs anywhere** — `npx`, Docker, or Compose, in minutes.
+- **Perform** — one `#@ persist` annotation materializes an expensive source into a table and
+  `#@ preaggregate` rolls it up, rebuilt on demand or on a schedule.
+- **Run anywhere** — DuckDB built in for CSV, Parquet, JSON, and Excel; BigQuery, Snowflake, Postgres,
+  Databricks, MotherDuck, and more by connection; `npx`, Docker, or Compose, in minutes.
 
 ## Requirements
 
