@@ -271,3 +271,24 @@ which has no such guard on its own path.
 
 Publisher renders charts, tables, and dashboard tiles with a configurable light/dark theme. See
 [theming.md](theming.md) for the config-file, editor, and per-chart annotation layers.
+
+## Startup signals
+
+The server prints one line to stderr when it is ready, so a script can wait for it instead of polling
+`/api/v0/status`:
+
+```
+PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=1 packages=3 load_errors=0
+```
+
+- `load_errors` counts configured packages and environments that failed to load. When it is not 0,
+  `/api/v0/status` names each one under `.loadErrors`.
+- `url=` reads `localhost` when the server binds every interface (the default); a configured `--host`
+  shows as itself.
+- If initialization fails, `PUBLISHER_INIT_FAILED` is printed in its place. A startup failure outside
+  initialization — a port already in use, say — crashes without either token.
+- On a Node older than 20 the server prints `PUBLISHER_UNSUPPORTED_NODE required=>=20 detected=<version>`
+  and exits non-zero before binding anything, so a script waiting on `PUBLISHER_READY` fails fast
+  instead of hanging. Every `@malloydata/*` dependency shares that floor; older runtimes are untested
+  and have failed in ways that never mention Node.
+

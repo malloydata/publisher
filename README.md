@@ -18,60 +18,70 @@ Serve governed data models to applications, BI tools, and AI agents — over RES
 </p>
 <p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze. <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d">Watch the video</a> for playback controls.</sub></p>
 
-When an AI queries your database directly, it writes its own SQL — and gets it subtly wrong: the wrong
-join, an invented column, a fan-out that double-counts but still looks plausible. Publisher puts a
-Malloy model — what the industry calls a semantic layer — in front of your data, where measures,
-dimensions, and joins are defined once, correctly. Applications, BI tools, and **AI agents** compose queries against that model instead of
-writing raw SQL, so the numbers come back **right by construction**. Agents work through the sources
-the model defines — not your raw tables — and you decide exactly what each caller can see.
+> **Working with an AI agent?** Start with [AGENTS.md](AGENTS.md) — the canonical, step-by-step
+> guide to running Publisher and connecting over MCP. Most coding hosts read it automatically; Claude
+> Code reads it through [CLAUDE.md](CLAUDE.md). This README is the map for people.
 
-Point Publisher at your Malloy models and it serves them over a REST API and a single MCP endpoint.
+**Problem:** pointed at a raw database, an AI writes SQL from scratch — the wrong join, an invented
+column, a fan-out that double-counts but still looks plausible — and the same question tomorrow
+yields a different query and different numbers.
+
+**Solution:** put a [Malloy](https://malloydata.dev) model — what the industry calls a semantic
+layer — between the AI and your data. Measures, dimensions, and joins are defined once, correctly;
+applications, BI tools, and **AI agents** compose queries against the model instead of writing SQL,
+so the numbers come back **right by construction**, the same way every time.
+
+Publisher is the open-source server that serves that model, over a REST API and a single MCP endpoint.
+
+- **Any AI, one endpoint** — Claude, Cursor, Codex, VS Code, or an agent you build connect over MCP;
+  an agent running unattended uses REST.
+- **Tight control** — agents work through the sources the model defines, never your raw tables.
+  [Givens](docs/givens.md), [row-level access](docs/row-level-access.md), and
+  [`#(authorize)`](docs/authorize.md) decide who sees what; [discovery curation](docs/discovery-and-access.md)
+  decides what is even visible.
+- **Readable, full-featured queries** — Malloy joins, nests, aggregates, and filters, and stays legible
+  enough to review at a glance. Agents already write it as fluently as Python.
+- **DuckDB built in** — serve CSV, Parquet, JSON, or Excel files with no warehouse required, or connect
+  BigQuery, Snowflake, Postgres, Databricks, MotherDuck, and more.
+- **Fast where it counts** — one `#@ persist` annotation materializes an expensive source into a table,
+  rebuilt on demand or on a schedule.
+- **Ships with the skills** — the open-source Malloy modeling and analysis [skills](skills/) agents use
+  to build and query models, auto-discovered by most AI coding hosts.
+- **Runs anywhere** — `npx`, Docker, or Compose, in minutes.
 
 ## Requirements
 
-Node.js 20 or newer. Publisher refuses to start on anything older, printing both the version it
-needs and the version it found. Every `@malloydata/*` dependency requires the same floor, as does
-this repository, so older runtimes are untested and have failed in ways that never mention Node.
-
-Building from a clone also needs [Bun](https://bun.sh/) 1.3.13 or newer. The Docker image carries
-its own runtime and needs neither.
+Node.js 20 or newer (the server refuses to start on anything older and says so). Building from a clone
+also needs [Bun](https://bun.sh/) 1.3.13+. The Docker image carries its own runtime and needs neither.
 
 ## Quick start
+
+### Run the examples
 
 ```bash
 npx @malloy-publisher/server --port 4000
 ```
 
-Open **http://localhost:4000** and explore the bundled example packages —
-[`storefront`](examples/storefront) (a complete ecommerce model),
-[`governed-analytics`](examples/governed-analytics) (access control), and
-[`html-data-app`](examples/html-data-app) (a no-build dashboard) —
-all DuckDB-backed, no credentials required. Give the server a moment to report `serving`:
+Open **http://localhost:4000**. Three example packages are bundled — [`storefront`](examples/storefront)
+(a complete ecommerce model), [`governed-analytics`](examples/governed-analytics) (access control), and
+[`html-data-app`](examples/html-data-app) (a no-build dashboard) — all DuckDB-backed, no credentials
+required. The first run fetches them from GitHub.
 
-```bash
-curl -s http://localhost:4000/api/v0/status | jq .operationalState   # → "serving"
-```
+### Know when it's ready
 
-A first `npx` run fetches the example packages from GitHub and reports its download progress on
-stderr. When the server is ready it prints a single line, also to stderr, that scripts can wait for
-instead of polling:
+The server prints one line to stderr when it is serving, which scripts can wait for instead of polling:
 
 ```
 PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=1 packages=3 load_errors=0
 ```
 
-`load_errors` counts configured packages and environments that failed to load. When it is not 0,
-`/api/v0/status` names each one under `.loadErrors`. The `url=` host reads `localhost` when the
-server binds every interface (the default); a configured `--host` shows as itself. If initialization
-fails, a `PUBLISHER_INIT_FAILED` line is printed in its place; a startup failure outside
-initialization, like a port already in use, crashes without either token. On a Node older than 20
-the server prints `PUBLISHER_UNSUPPORTED_NODE required=>=20 detected=<version>` and exits non-zero
-before it binds anything, so a script waiting on `PUBLISHER_READY` fails fast instead of hanging.
+`load_errors` counts packages and environments that failed to load; `/api/v0/status` names them. The
+failure lines, and what each means, are in
+[docs/configuration.md](docs/configuration.md#startup-signals).
 
 ## Start from your own data
 
-The command above serves the bundled examples. To build a package around your own data instead,
-scaffold one:
+### Scaffold a package
 
 ```bash
 mkdir my-data && cd my-data
@@ -79,149 +89,73 @@ npm create @malloy-publisher/malloy-package@latest sales
 npm start
 ```
 
-Keep the `@latest`. `npm create` resolves the scaffolder through npm's npx cache, and on a machine
-that has run the command before, an unversioned name is satisfied by whatever copy is already
-cached, so npm never asks the registry. Drop it and you can quietly scaffold from a months-old
-scaffolder that pins an older server than the one you meant to run. The scaffolder checks its own
-version against the registry once it has finished writing and tells you when it is behind; that
-check is bounded and fails open, it is skipped where `CI` or `NO_UPDATE_NOTIFIER` is set,
-and `CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK=1` turns it off anywhere else.
+This writes a package to `./sales` — plus, in the current directory, a small workspace: start and
+reset scripts, an MCP config, agent instructions, and the Malloy skills as files your agent can read.
+`npm start` serves the package in watch mode, so edits take effect as you save. Keep the `@latest`:
+without it npm may reuse a cached, older scaffolder.
 
-Make the directory first. The package lands in `./sales`, but the workspace around it is written to
-the current directory, so running this somewhere you did not mean to scatters config files through
-it. That workspace is start and reset scripts, an MCP config, agent instructions, and the Malloy
-agent skills as files your agent can read. `npm start` runs the server version the scaffolder pinned,
-against your package, in watch mode, so edits to the model take effect as you save them.
-
-Run bare like that, the package comes with a small sample dataset, so there is something to query
-before you have wired up anything of your own. To start from one of your own files instead, pass
-`--data` (CSV, Parquet, JSON, newline-delimited JSON, or Excel `.xlsx` - DuckDB reads all of them
-in place, so nothing needs converting first):
+### Bring a file
 
 ```bash
 npm create @malloy-publisher/malloy-package@latest sales -- --data ./orders.csv
 ```
 
-`./orders.csv` is a placeholder for a file you actually have — pasting the line verbatim fails if
-no such file exists. Any plain delimited file with a header row works; this is the whole shape:
+CSV, Parquet, JSON, newline-delimited JSON, or Excel `.xlsx` — DuckDB reads all of them in place. The
+`--` is required, and the path is relative to where you run the command. A seeded package starts
+small: a row count and an overview, which is the moment to point an agent at it.
 
-```csv
-order_id,category,amount
-1001,Furniture,789
-1002,Electronics,489.95
-```
-
-That path is relative to the directory you run the command in, so either move your file there first
-or point at wherever it already lives. Either way the scaffolder copies it into the package, so the
-original stays where it is.
-
-The `--` is required. Without it, `npm create` reads `--data` as one of its own options and only the
-filename reaches the scaffolder, as a stray argument, so it stops.
-
-A seeded package starts smaller than the sample one, which is worth knowing before you go looking
-for what is missing: the scaffolder does not read your columns, so you get a row count and an
-overview over your file, and the modelling starts there. That is the point at which pointing an agent
-at the workspace pays off.
-
-A package is just Malloy, so it is not limited to a local file: point its model at a database
-connection your config defines and the same workspace serves a warehouse. The directory it creates is
-ordinary, so you can commit it, move it, or hand it to someone else.
-
-Either way the server serves your package rather than the bundled examples: `npm start` points it at
-the `publisher.config.json` the scaffolder wrote, and a bare `npx @malloy-publisher/server` run from
-this directory picks up the same file. The walkthrough in the next section is written against the
-examples, so run that one from a directory without this config.
-
-To run the scaffolder without `npm create`, call the package by its full name:
-`npx @malloy-publisher/create-malloy-package@latest sales --data ./orders.csv`. Note that the name is
-`create-malloy-package` here, where `npm create` takes the `malloy-package` shorthand, that the same
-caching applies so `@latest` is worth keeping, and that npx needs no separator: it forwards flags as
-they are, so a `--` there leaves the flags after it to arrive as stray arguments.
+A package is just Malloy, so it is not limited to a file: point its model at a
+[database connection](docs/connections.md) and the same workspace serves a warehouse. The finer points
+of the scaffolder — caching, workspace layout, the bare `npx` form — are in
+[docs/scaffolding.md](docs/scaffolding.md).
 
 ## Point your agent at it
 
-This is the fast path to the "wow." In a directory you just made for the purpose there is nothing
-to configure; in a directory inside a git repo, which most real projects are, the server tells you
-the one command to run instead. On
-startup the server writes a `.mcp.json` into the directory you ran it in, pointing at the MCP port it
-actually bound. In one terminal:
+### Connect Claude Code
+
+In one terminal:
 
 ```bash
-npx @malloy-publisher/server --port 4000 --host 127.0.0.1   # writes ./.mcp.json unless one of the cases below applies
+npx @malloy-publisher/server --port 4000 --host 127.0.0.1
 ```
 
-and in a second terminal, in that same directory:
+On startup the server writes a `.mcp.json` into the directory you ran it in, pointing at the MCP port
+it bound. In a second terminal, **in that same directory**:
 
 ```bash
 claude
 ```
 
-Your agent may ask you to trust the folder, to use the server it found, and to approve the first tool
-call. Say yes, then ask it a question about the data.
+Say yes when the agent asks to trust the folder, use the server it found, and approve the first tool
+call — the trust prompt is asked once per directory, and only interactively, so a headless run can't
+clear it. Then ask, in plain English:
 
-The file is only read by a session that **started** in that directory, so launch your agent there.
+> _"Use Malloy to explore the storefront sales data and chart revenue by category."_
 
-It also stays on disk after you stop the server, and is never corrected. That matters more than a
-broken link: if something else later holds that port, perhaps a second Publisher serving different
-data, an agent started there connects to it and answers confidently from the wrong model. Nothing marks
-the file as the server's, so do not go hunting for ones to delete: a `.mcp.json` may be your own, and it
-may hold other servers and their credentials. If you made a scratch directory for this, deleting the
-directory is enough. If you are ever unsure what an agent is connected to, ask it to run
-`malloy_getContext`, which names the environment and packages it is actually talking to.
+The agent discovers what exists (`malloy_getContext`), grounds itself in real source, view, and field
+names, runs the query (`malloy_executeQuery`), and answers from your model — no schema spelunking, no
+hallucinated columns.
 
-**When the server does not write one.** It skips a directory that already has a `.mcp.json`, anything
-inside a git working tree (so, usually, your own project), your home directory, and a few other cases.
-You do not have to memorise them: whenever it skips, it says so in the startup log and prints the one
-command that connects an agent anyway. The full list is in
-[docs/configuration.md](docs/configuration.md#the-mcpjson-the-server-writes).
+### When the config isn't written
 
-`--no-mcp-config` turns the whole thing off, as does `PUBLISHER_NO_MCP_CONFIG=1`.
-
-To register the server for yourself rather than for one directory, so the tools are there whichever
-directory you launch from:
+The server skips a directory that already has a `.mcp.json`, anything inside a git working tree, and
+your home directory, and says so in its startup log along with the one command that connects an agent
+anyway. To register the server for yourself rather than one directory:
 
 ```bash
 claude mcp add --transport http malloy http://127.0.0.1:4040/mcp -s user
 ```
 
-That is also the fix when an agent reports no `malloy_*` tools. Two things cause it: the session
-started somewhere other than the directory holding the config, or there is no config there because
-the server skipped one of the cases above. Check the server's startup log, which says which,
-and `ls -a` to see whether the file is there at all. Other MCP clients take the same endpoint through
-their own config file; see [docs/ai-agents.md](docs/ai-agents.md).
+That is also the fix when an agent reports no `malloy_*` tools. The file the server writes outlives
+it and is never corrected, so a stale one can point an agent at whatever later holds that port —
+[docs/configuration.md](docs/configuration.md#the-mcpjson-the-server-writes) has the full story.
+`--no-mcp-config` turns the whole thing off.
 
-Then just ask, in plain English:
+### Other clients, and unattended agents
 
-> _"Use Malloy to explore the storefront sales data and chart revenue by category."_
-
-The agent discovers what data exists (`malloy_getContext`), grounds itself in the real source, view,
-and field names, runs the query (`malloy_executeQuery`), and returns an answer backed by your
-semantic model. No schema spelunking, no hallucinated column names.
-
-- **Trust the directory first.** This is a second gate, separate from connecting the server: in a
-  workspace nobody has trusted yet, Claude Code lists the `malloy_*` tools and then refuses every
-  call, and a `.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
-  interactively there once and answer the trust prompt, asked once per directory. A headless run is
-  never asked, so it cannot clear the gate either. You will know it cleared when a query returns data.
-- **Starting from a database instead of a model.** If you have a warehouse but no Malloy model yet,
-  ask the agent what is in it. `malloy_searchDatabaseSchema` walks a configured connection's schemas
-  and tables and ranks them against a plain-English description, then hands back the `source:` line
-  for each table it found. Ranking works out of the box with no API key; the optional
-  embedding-backed mode, and exactly what it sends where, are covered in
-  [docs/configuration.md](docs/configuration.md#semantic-ranking-for-malloy_searchdatabaseschema).
-  To point Publisher at your warehouse in the first place, add a connection: see
-  [docs/connections.md](docs/connections.md).
-- **Agents:** this repo ships an [AGENTS.md](AGENTS.md) and a bundled skill library
-  ([`skills/`](skills/)) that most AI coding hosts auto-discover. Start there.
-- **Any MCP client** (Cursor, VS Code, Codex, Claude Desktop): see
-  [docs/ai-agents.md](docs/ai-agents.md) for per-client config and the stdio bridge.
-
-> The server, MCP and REST alike, is stateless and unauthenticated, and it can read any data your
-> models connect to. Bind it to loopback (`--host 127.0.0.1`) for local use, and put an
-> authenticating gateway in front before exposing it more widely.
-
-No MCP client, or an agent running unattended that started the server itself? The same loop is
-available over plain REST:
+Cursor, VS Code, Codex, and Claude Desktop take the same endpoint through their own config; see
+[docs/ai-agents.md](docs/ai-agents.md). An agent working unattended that started the server itself uses
+the same loop over REST:
 
 ```bash
 curl -s -X POST \
@@ -230,32 +164,35 @@ curl -s -X POST \
   -d '{"query":"run: order_items -> by_category","compactJson":true}' | jq -r .result
 ```
 
-A package is just a directory with a `publisher.json` and a `.malloy` model;
-[docs/packages.md](docs/packages.md) is the format reference. The running server serves its full
-OpenAPI spec at `http://localhost:4000/api-doc.yaml`, and [docs/ai-agents.md](docs/ai-agents.md)
-covers agents in both modes, MCP and REST.
+The running server serves its full OpenAPI spec at `http://localhost:4000/api-doc.yaml`.
+
+### Starting from a database instead of a model
+
+Have a warehouse but no model yet? Add a [connection](docs/connections.md) and ask the agent what is
+in it: `malloy_searchDatabaseSchema` ranks a connection's tables against a plain-English description
+and hands back the `source:` line for each. Ranking needs no API key; the optional embedding-backed
+mode is in [docs/configuration.md](docs/configuration.md#semantic-ranking-for-malloy_searchdatabaseschema).
+
+> **Security.** The server — MCP and REST alike — is stateless and unauthenticated, and it can read any
+> data your models connect to. Bind it to loopback (`--host 127.0.0.1`) for local use, and put an
+> authenticating gateway in front before exposing it more widely.
 
 ## What you can do
 
-- **Explore, no code.** Build and drill into queries visually with [Malloy Explorer](docs/explorer.md) —
-  every action generates valid Malloy, so metrics stay correct even across joins.
-- **Answer questions with AI.** Connect an agent over MCP and ask in plain English — see above and
+- **Explore, no code.** Build and drill into queries visually with [Malloy Explorer](docs/explorer.md);
+  every action generates valid Malloy, so metrics stay correct across joins.
+- **Answer questions with AI.** Connect an agent over MCP and ask in plain English —
   [docs/ai-agents.md](docs/ai-agents.md).
-- **Surface analytics your way.** Explore and share with zero code in the
-  [Publisher Console](docs/console.md), or ship a no-build
-  [HTML data app](docs/html-data-apps.md) that Publisher hosts inside a package.
-- **Build & validate models.** Author Malloy models guided by the bundled [skills](skills/), then
-  publish them for serving. Agents get the same loop over MCP: `malloy_compile` checks an edit and
-  returns diagnostics without running it, and `malloy_reloadPackage` recompiles a package from disk
-  so a new source or view is queryable by name, no restart.
-- **Govern access.** [Givens](docs/givens.md) are one runtime-parameter mechanism that powers filter
-  widgets, [row-level access](docs/row-level-access.md) (which rows a caller sees), and
-  [`#(authorize)`](docs/authorize.md) source gates (who can query). Separately, curate _what_ is
-  [discoverable and queryable](docs/discovery-and-access.md).
-- **Materialize for cost & speed.** Persist an expensive source into a table with `#@ persist`, then
-  rebuild it on demand or on a cron with the opt-in standalone scheduler — see
-  [docs/materialization.md](docs/materialization.md) and the `malloy-pub schedule` /
-  `list materialization` CLI.
+- **Surface analytics your way.** Explore and share in the [Publisher Console](docs/console.md), or
+  ship a no-build [HTML data app](docs/html-data-apps.md) that Publisher hosts inside a package.
+- **Build and validate models.** Author with the bundled [skills](skills/), then publish. Agents get the
+  same loop over MCP: `malloy_compile` checks an edit without running it; `malloy_reloadPackage`
+  recompiles a package from disk, no restart.
+- **Govern access.** [Givens](docs/givens.md) power filter widgets,
+  [row-level access](docs/row-level-access.md), and [`#(authorize)`](docs/authorize.md) gates; curate
+  what is [discoverable and queryable](docs/discovery-and-access.md) separately.
+- **Materialize for cost and speed.** `#@ persist` turns an expensive source into a table, rebuilt on
+  demand or on a cron with the opt-in scheduler — [docs/materialization.md](docs/materialization.md).
 
 ## Documentation
 

@@ -32,6 +32,7 @@ every doc below points back to one of them, and each example's README points bac
 | [architecture.md](architecture.md) | Understand how Malloy, Render, Publisher, and the SDK fit together.                                 |
 | [api-overview.md](api-overview.md) | Understand the REST + MCP surfaces and the resource hierarchy.                                      |
 | [packages.md](packages.md)         | Understand the package format: `publisher.json`, models, data files, and how a package gets served. |
+| [scaffolding.md](scaffolding.md) | Scaffold a package with `npm create` — the `@latest` rule, the workspace it writes, seeding from a file. |
 | [dbt-roadmap.md](dbt-roadmap.md)   | See how Malloy and dbt fit together, where the gaps are, and the plan to close them.                |
 
 ## Use it
