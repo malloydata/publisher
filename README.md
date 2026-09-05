@@ -20,14 +20,16 @@ AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
 <p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze. <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d">Watch the video</a> for playback controls.</sub></p>
 
 Modeling, a query engine, materialization, access control, and an API — the pieces you used to assemble
-from five vendors — ship as one server, and the first consumer of everything it serves is an agent.
+from five tools and projects — ship as one server, built assuming the first builder or consumer is an
+agent.
 
-Write down what your data means once, in [Malloy](https://malloydata.dev): the sources, the joins, the
-measures, who may see what. Publisher serves that model to every surface — over MCP to Claude, Cursor,
-Codex, or an agent you build; over REST to applications and BI tools. Agents compose queries against
-the model instead of writing SQL from scratch, so there is no wrong join, no invented column, no
-fan-out that double-counts but looks plausible — and the same question returns the same numbers
-tomorrow.
+Write down what your data means, in [Malloy](https://malloydata.dev): the sources, the joins, the
+measures, who may see what. The open-source Malloy [skills](skills/) ship alongside, so an agent can do
+the writing — build the model, then the dashboards, notebooks, and data apps on top of it. Publisher
+serves that model to every surface — over MCP to Claude, Cursor, Codex, or an agent you build; over
+REST to applications and BI tools. Agents compose queries against the model instead of writing SQL
+from scratch, so there is no wrong join, no invented column, no fan-out that double-counts but looks
+plausible — and the same question returns the same numbers tomorrow.
 
 - **Any AI, one endpoint** — Claude, Cursor, Codex, VS Code, or an agent you build connect over MCP;
   an agent running unattended uses REST.
