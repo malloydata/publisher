@@ -94,4 +94,26 @@ describe("target file size configuration", () => {
          /PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES/,
       );
    });
+
+   // A validator narrower than the engine fails the pod on a value DuckDB would
+   // have taken, and says "expected a size like 256MB" while doing it -- which
+   // reads as the operator's typo rather than ours. Probed against v1.5.5: it
+   // takes TB and TiB here and refuses PB.
+   it.each(["1TB", "1TIB", "1tb", "512MB", "1.5GB", "0.5GiB"])(
+      "accepts %s, which DuckDB accepts",
+      (value) => {
+         process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = value;
+         expect(() => assertDuckDBResourceConfig()).not.toThrow();
+      },
+   );
+
+   it.each(["1PB", "268435456", "1GBB", "MB", "0MB", "0"])(
+      "rejects %s, which DuckDB refuses or stores uselessly",
+      (value) => {
+         process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = value;
+         expect(() => assertDuckDBResourceConfig()).toThrow(
+            /PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES/,
+         );
+      },
+   );
 });

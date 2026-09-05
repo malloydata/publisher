@@ -106,13 +106,6 @@ export type InternalConnection = ApiConnection & {
 const extensionSessionPinned = new WeakSet<Connection>();
 
 /**
- * Sessions that already carry their resource limits, mapped to the spill
- * directory they were given, so the funnel can be reached twice for one
- * connection without re-issuing the SETs — while a caller that owns a directory
- * can still re-point one that was set from the global default.
- */
-
-/**
  * Bound the Parquet row group DuckLake buffers before flushing, when configured.
  *
  * Applied after the ATTACH rather than as a session `SET`, because DuckLake carries
@@ -136,8 +129,12 @@ export async function applyDuckLakeRowGroupBound(
    }
    try {
       // ROW_GROUP_SIZE_BYTES is refused outright while insertion order is being
-      // preserved. Set on the session, not the catalog, so it binds this
-      // connection's writes and nothing else.
+      // preserved -- a Binder Error, not a silent ignore. Unlike the CALL below
+      // this is a SET rather than a catalog option, so it does not persist in
+      // `ducklake_metadata`; but its scope is GLOBAL, so it binds the whole DuckDB
+      // instance rather than this connection. What keeps it contained is the
+      // caller: a build gets its own instance from `createIsolatedBuildSession`,
+      // and a read-only attach never reaches here.
       await connection.runSQL("SET preserve_insertion_order=false");
       await connection.runSQL(
          `CALL ${dbName}.set_option('parquet_row_group_size_bytes', '${escapeSQL(bytes)}')`,
@@ -156,7 +153,10 @@ export async function applyDuckLakeRowGroupBound(
  *
  * Same catalog-option mechanics, and the same reason for being skipped on a
  * read-only attach, as {@link applyDuckLakeRowGroupBound} above -- and the same
- * swallowed failure, for the same reason.
+ * swallowed failure, for the same reason. NOT shared: that one must also clear
+ * `preserve_insertion_order`, which DuckDB refuses the byte-based row group
+ * without. This option carries no such requirement, and the order the two are
+ * applied in does not matter.
  *
  * Separate from the row group because it bounds a separate term. Writing to object
  * storage, DuckDB copies each multipart part into its own buffer and holds it until
@@ -185,6 +185,12 @@ export async function applyDuckLakeTargetFileSize(
    }
 }
 
+/**
+ * Sessions that already carry their resource limits, mapped to the spill
+ * directory they were given, so the funnel can be reached twice for one
+ * connection without re-issuing the SETs — while a caller that owns a directory
+ * can still re-point one that was set from the global default.
+ */
 const sessionLimitsApplied = new WeakMap<
    DuckDBConnection,
    string | undefined

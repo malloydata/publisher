@@ -405,17 +405,28 @@ export const getDuckDBTempDirectory = (): string | undefined => {
  * that set it. Creating it here turns both that and an unwritable path into a
  * startup failure naming the variable.
  */
+/**
+ * The byte sizes DuckDB itself accepts, for every size-valued setting Publisher
+ * validates at boot. Probed against v1.5.5 rather than assumed: it takes the
+ * 1000^i units (KB MB GB TB) and the 1024^i units (KiB MiB GiB TiB), refuses
+ * anything larger (`1PB`), and refuses a bare byte count -- its own error names
+ * exactly this set. Anchored to those units rather than any letters, so trailing
+ * garbage like `1GBB` fails here instead of at the first session that opens.
+ *
+ * One constant rather than three literals: a validator NARROWER than the engine
+ * fails the pod on a value DuckDB would have taken, with a message that reads as
+ * if the operator wrote something malformed. The two DuckLake settings were
+ * narrower than this -- no `TB`/`TIB` -- until they were pointed here.
+ *
+ * Zero is rejected: DuckDB accepts `0MB` and stores it, and none of these
+ * settings has a sensible zero.
+ */
+const DUCKDB_BYTE_SIZE =
+   /^(?!0+(\.0+)?\s*[A-Za-z])\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i;
+
 export function assertDuckDBResourceConfig(): void {
    const memoryLimit = getDuckDBMemoryLimit();
-   if (
-      memoryLimit !== undefined &&
-      // Anchored to the units DuckDB actually accepts rather than any letters:
-      // trailing garbage like `1GBB` passes a `[a-zA-Z]+` shape and is then
-      // rejected by DuckDB, which is the late failure this check exists to pull
-      // forward. A bare byte count is correctly rejected too — DuckDB refuses
-      // `1073741824` with "Unknown unit for memory" — so a unit is required.
-      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i.test(memoryLimit)
-   ) {
+   if (memoryLimit !== undefined && !DUCKDB_BYTE_SIZE.test(memoryLimit)) {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKDB_MEMORY_LIMIT: expected a size like ` +
             `"1GB" or "512MB" (or "off" to disable), got "${memoryLimit}"`,
@@ -424,7 +435,7 @@ export function assertDuckDBResourceConfig(): void {
    const rowGroupSizeBytes = getDuckLakeRowGroupSizeBytes();
    if (
       rowGroupSizeBytes !== undefined &&
-      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB)$/i.test(rowGroupSizeBytes)
+      !DUCKDB_BYTE_SIZE.test(rowGroupSizeBytes)
    ) {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: expected a ` +
@@ -434,7 +445,7 @@ export function assertDuckDBResourceConfig(): void {
    const targetFileSizeBytes = getDuckLakeTargetFileSizeBytes();
    if (
       targetFileSizeBytes !== undefined &&
-      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB)$/i.test(targetFileSizeBytes)
+      !DUCKDB_BYTE_SIZE.test(targetFileSizeBytes)
    ) {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: expected a ` +

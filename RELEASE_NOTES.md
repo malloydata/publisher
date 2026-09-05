@@ -80,7 +80,13 @@ small end buys nothing back on reads.
 
 Same catalog mechanics as the row group bound: it persists in `ducklake_metadata`, is seen by
 every writer of that lake, is skipped on a read-only attach, and a catalog that refuses it is
-logged and attached anyway. It does **not** require `preserve_insertion_order=false`.
+logged and attached anyway. It does **not** require `preserve_insertion_order=false`, and the
+order the two options are applied in does not matter.
+
+One consequence of persistence worth knowing before you tune: **unsetting the variable does not
+revert the lake.** The last value written stays in `ducklake_metadata` for every writer of that
+catalog. To go back, write the old value explicitly — `CALL <lake>.set_option('target_file_size',
+'<value>')` — rather than removing the environment variable.
 
 This is expected to be temporary. DuckDB's object-storage upload was reworked in
 [duckdb-httpfs#389](https://github.com/duckdb/duckdb-httpfs/pull/389) to stream from buffers
