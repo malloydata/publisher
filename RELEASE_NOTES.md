@@ -31,6 +31,62 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] (BREAKING) — every MCP tool loses its `malloy_` prefix, and get_context answers in one shape
+
+**Every MCP tool is renamed.** The `malloy_` prefix is gone and the names are bare
+snake_case. There is no alias and no deprecation window: the old names are removed,
+so an agent or client that calls them gets an unknown-tool error until it is updated.
+
+| Before | Now |
+|---|---|
+| `malloy_getContext` | `get_context` |
+| `malloy_executeQuery` | `execute_query` |
+| `malloy_compile` | `compile_model` |
+| `malloy_reloadPackage` | `reload_package` |
+| `malloy_getStatus` | `get_status` |
+| `malloy_searchDatabaseSchema` | `search_database_schema` |
+| `malloy_searchDocs` | `search_malloy_docs` |
+
+**What to do.** Hosts that discover tools at connect time (Claude Code, Cursor, Codex)
+pick the new names up on reconnect with no config change — the names appear in the
+tool list, not in `.mcp.json`. Anything that hardcodes a tool name in a prompt, a
+script, or a saved agent config has to be edited. The bundled skills and every doc in
+this repo already use the new names.
+
+**`get_context` also answers in a new response shape.** It used to return a flat ranked
+`results[]` of entities; it now returns `sources[]`, where each source carries the
+entities that matched inside it. A client that reads `results[0].name` finds nothing —
+`results` is gone from every payload. An error payload keeps the empty collection of the
+tool it came from: `sources: []` from `get_context`, `environments: []` from
+`list_packages`, so a client can read either without branching on success first. Alongside the shape,
+the response gained `below_cutoff_count`, `retrieval_reason`, `aliases`,
+`givens`, `authorize`, `data_type`, `one_line_summary`, and `warnings[]` (which replaces
+the single `note` string). The tool's own description is the contract and is pinned by a
+test; re-read it rather than working from a cached copy.
+
+**Duplicate rows are decided by the compiled model, not by names.** A field whose
+whole definition is a reference to a sibling of the same source (`dimension: site is
+SITE`) folds into it, reported in `aliases`. That used to be a guess from
+name-humanization, which could not tell a rename from a derivation that happened to
+look like one. And nothing folds ACROSS sources any more: two sources exposing a
+same-named field are two different numbers, so each is returned under its own card
+with its own `docs`, which is where the `where:` or grain rule that makes them differ
+is written. Pass `include_code` to see a field's Malloy expression as `code`; off by
+default.
+
+**Listing the catalog is now its own tool, `list_packages`.** `malloy_getContext` with
+no arguments used to list the environments; `get_context` requires its `search_targets`
+and a `scopes` naming a package, so the catalog moved to a sibling tool that supplies
+those names. Call `list_packages` first when you do not already know an environment and
+package name.
+
+Why now rather than behind an alias: no SDK surface exposes these names, and the
+consumers that do use them (agents) re-read the tool list and the tool description on
+every session, so a clean cut costs one reconnect where an alias would have left two
+spellings in the docs indefinitely.
+
+---
+
 ## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
 
 `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` caps how much column data DuckLake buffers

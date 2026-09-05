@@ -218,7 +218,7 @@ Query parameter `givens` accepts URL-encoded JSON:
 
 ### MCP Tool
 
-The `malloy_executeQuery` tool accepts a `givens` parameter on the same wire shape:
+The `execute_query` tool accepts a `givens` parameter on the same wire shape:
 
 ```json
 {

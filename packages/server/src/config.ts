@@ -189,14 +189,26 @@ function parseIntEnv(name: string): number | undefined {
    return value;
 }
 
-function parseFloatEnv(name: string): number | undefined {
+function parseFloatEnv(name: string, example: string): number | undefined {
    const raw = process.env[name];
    if (raw === undefined || raw.trim() === "") return undefined;
-   const value = Number.parseFloat(raw);
-   if (!Number.isFinite(value)) {
-      throw new Error(
-         `Invalid value for ${name}: expected a finite number, got "${raw}"`,
+   const trimmed = raw.trim();
+   // Number.parseFloat stops at the first character it cannot read, so
+   // "0.5abc" parses as 0.5 and would drive behaviour as though the operator
+   // had written a valid setting. Match the whole string first. A round-trip
+   // check like parseIntEnv's cannot serve here: it would reject "0.50",
+   // ".5" and "1e-3", all of which are meant.
+   const invalid = () =>
+      new Error(
+         `Invalid value for ${name}: expected a finite number, got "${raw}". ` +
+            `Fix: ${name}=${example}`,
       );
+   if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
+      throw invalid();
+   }
+   const value = Number.parseFloat(trimmed);
+   if (!Number.isFinite(value)) {
+      throw invalid();
    }
    return value;
 }
@@ -233,10 +245,10 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
    }
 
    const highWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION") ??
+      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION", "0.8") ??
       DEFAULT_HIGH_WATER_FRACTION;
    const lowWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION") ??
+      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION", "0.7") ??
       DEFAULT_LOW_WATER_FRACTION;
    const checkIntervalMs =
       parseIntEnv("PUBLISHER_MEMORY_CHECK_INTERVAL_MS") ??
@@ -422,7 +434,7 @@ export function assertDuckDBResourceConfig(): void {
 
 /**
  * Settings for the optional embedding provider behind semantic
- * `malloy_getContext` retrieval. See {@link getEmbeddingConfig}.
+ * `get_context` retrieval. See {@link getEmbeddingConfig}.
  */
 export interface EmbeddingConfig {
    /** Bearer token sent to the embedding endpoint. */
@@ -436,13 +448,31 @@ export interface EmbeddingConfig {
     * unset; the vector length then comes from the provider's response.
     */
    dimensions?: number;
+   /**
+    * Cosine-similarity floor a match must clear to be returned at all.
+    * See {@link DEFAULT_EMBEDDING_MIN_SIMILARITY}.
+    */
+   minSimilarity: number;
 }
 
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
 
 /**
- * Embedding-provider settings for semantic `malloy_getContext` retrieval,
+ * Default cosine-similarity floor for semantic retrieval.
+ *
+ * Tunable because the right value is a property of the embedding model, not
+ * of Publisher: cosine similarity is not calibrated across models, so a floor
+ * that separates signal from noise for one endpoint does not for another.
+ * Deliberately permissive, letting a few weak matches through rather than
+ * discarding a real one; operators who would rather see nothing than noise
+ * should raise it. `belowCutoffCount` against `totalEntities` in each
+ * response is the measurement to tune with. See docs/configuration.md.
+ */
+export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
+
+/**
+ * Embedding-provider settings for semantic `get_context` retrieval,
  * or `null` when the feature is disabled. The feature is enabled iff
  * `EMBEDDING_API_KEY` is set and non-empty; without it the tool keeps its
  * lexical (lunr) ranking unchanged.
@@ -484,11 +514,25 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
       );
    }
 
-   return { apiKey, model, baseUrl, dimensions };
+   const minSimilarity =
+      parseFloatEnv("EMBEDDING_MIN_SIMILARITY", "0.35") ??
+      DEFAULT_EMBEDDING_MIN_SIMILARITY;
+   // Rejected rather than clamped: a floor of 1 returns nothing and a
+   // negative one returns everything, and both look like a broken index
+   // rather than a bad setting. An invalid value must never go on to drive
+   // retrieval.
+   if (minSimilarity < 0 || minSimilarity >= 1) {
+      throw new Error(
+         `Invalid EMBEDDING_MIN_SIMILARITY: expected a number in [0, 1), got ${minSimilarity}. ` +
+            `Fix: EMBEDDING_MIN_SIMILARITY=0.35 (default ${DEFAULT_EMBEDDING_MIN_SIMILARITY})`,
+      );
+   }
+
+   return { apiKey, model, baseUrl, dimensions, minSimilarity };
 };
 
 /**
- * Whether `malloy_searchDatabaseSchema` may send a connection's table and
+ * Whether `search_database_schema` may send a connection's table and
  * column names to the configured embedding provider. Off unless set.
  *
  * Deliberately a SECOND switch on top of `EMBEDDING_API_KEY` rather than
@@ -496,7 +540,7 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
  * `OPENAI_API_KEY`: the two authorise different disclosures. `EMBEDDING_API_KEY`
  * covers the operator's own model text (entity names and `#(doc)`), which is
  * already on their disk; a warehouse's table and column names are the
- * customer's, and turning on semantic `malloy_getContext` must not silently
+ * customer's, and turning on semantic `get_context` must not silently
  * start shipping them to a third party.
  *
  * With this off (the default) schema search still works: it ranks lexically,
@@ -972,18 +1016,14 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       rawConfig = JSON.parse(fileContent);
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error(
-         `Failed to parse ${publisherConfigPath}: ${message}. Using default empty config.`,
-         {
-            path: publisherConfigPath,
-            error: message,
-            stack: error instanceof Error ? error.stack : undefined,
-         },
-      );
-      return {
-         frozenConfig: false,
-         environments: [],
-      };
+      // Raised, not absorbed into an empty config. A file that exists and does
+      // not parse is an operator's typo, and returning `environments: []` for
+      // it produced a server that booted, reported "serving" with an empty
+      // loadErrors, and served nothing -- with the reason only in the log.
+      // Callers that can carry on without a config already catch this
+      // (isPublisherConfigFrozen defaults to false, getConnectionsFrom...
+      // returns none); the manifest read turns it into a refusal to start.
+      throw new Error(`Failed to parse ${publisherConfigPath}: ${message}`);
    }
 
    // Process environment variables in config values
@@ -1186,7 +1226,7 @@ export const isPublisherConfigFrozen = (serverRoot: string) => {
    } catch (error) {
       logger.error(
          `Error checking if ${PUBLISHER_CONFIG_NAME} is frozen. Defaulting to false.`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return false;
    }
@@ -1210,7 +1250,7 @@ export const getConnectionsFromPublisherConfig = (
    } catch (error) {
       logger.error(
          `Error getting connections for environment "${environmentName}" from ${PUBLISHER_CONFIG_NAME}`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return [];
    }
@@ -1364,7 +1404,7 @@ export const getInstanceTheme = (serverRoot: string): Theme | undefined => {
    } catch (error) {
       logger.error(
          `Error reading instance theme from ${PUBLISHER_CONFIG_NAME}`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return undefined;
    }

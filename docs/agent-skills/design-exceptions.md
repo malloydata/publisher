@@ -27,8 +27,8 @@ emission order.
 Why: some MCP clients truncate a tool description, and a tail cut removes whatever was placed last.
 Under the literal numbering that is Contract rules and Worked examples, which is the worst possible
 outcome: an agent that loses the worked example still calls the tool correctly, while one that loses
-the invariants cannot, and nothing signals that anything was dropped. `malloy_getContext` was
-observed arriving cut off mid-sentence at 2271 characters, with `malloy_searchDocs` carrying the same
+the invariants cannot, and nothing signals that anything was dropped. `get_context` was
+observed arriving cut off mid-sentence at 2271 characters, with `search_malloy_docs` carrying the same
 inverted ordering. This applies to every tool, so it is a standing rule rather than a per-tool
 divergence, and `server.protocol.spec.ts` enforces it over the real protocol.
 
@@ -56,20 +56,24 @@ These divergences are expected to apply once the corresponding tools land in the
 surface. They are recorded now so the rationale is not lost when the tools arrive. Promote each
 to an active exception (or discard it) when the tool exists.
 
-### A retrieval tool description carrying its two-phase pattern summary
+### A retrieval tool description explaining what its parameters do
 
 Tension: Principle 3 says tools should not carry workflow instructions; the workflow belongs in
 skills.
 
-Decision (when a retrieval tool ships): the description keeps a brief two-to-three sentence
-summary of the source-discovery then entity-drill-down pattern, plus one request example per
-phase. Refinement, retry, and gap-handling workflow stays in the analysis skill.
+Decision (when a retrieval tool ships): the description states what each parameter does and what
+the response groups by, with a request example per shape. It does NOT prescribe a call sequence.
+For `get_context` that means saying a query returns whole source cards with their matched
+fields nested, so one call answers, and that the listing tiers exist for finding an environment
+or package name rather than as steps to walk. Refinement, retry, and gap-handling workflow stays
+in the analysis skill; `search_text` phrasing stays in `malloy-phrase-detection`.
 
-Why: the two-phase pattern is so tightly coupled to the response shape (phase 1 returns the
-sources you scope phase 2 to) that omitting it leaves the response inscrutable on first read.
-The examples are the most efficient way to disambiguate the parameter shape. The skill still
-owns the reasoning (when to retry, when to widen, when to flag a gap); the description frames
-only the call pattern.
+Why: what a response groups by is API behaviour, not optional workflow advice. An earlier version
+of this exception blessed a two-phase "source discovery then entity drill-down" summary, and that
+turned a capability into a prescribed sequence: callers spent an extra call per question fetching
+a source list the query tier already returns. The examples are still the most efficient way to
+disambiguate the parameter shape, and the skill still owns the reasoning (when to retry, when to
+widen, when to flag a gap).
 
 ### malloy-analysis-report carrying cell-shape examples
 
@@ -91,7 +95,7 @@ report templates, not a chart-type catalog.
 Tension: Principle 1's under-20% rule for reference content suggests docs lookups should be
 on-demand via a tool, not pre-loaded as a skill.
 
-Resolution: now that the docs-search tool has shipped (`malloy_searchDocs`), a single small
+Resolution: now that the docs-search tool has shipped (`search_malloy_docs`), a single small
 topic-index skill, `malloy-patterns`, holds the table of valid topic strings. It loads only when
 the agent already knows it needs to search docs, giving it a vocabulary of topics so it does not
 waste calls on poorly phrased queries; it carries no doc content itself. The earlier

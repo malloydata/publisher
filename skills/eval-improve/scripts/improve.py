@@ -65,17 +65,17 @@ import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-IMPROVE_TOOLS = ("mcp__publisher__malloy_getContext",
-                 "mcp__publisher__malloy_executeQuery",
-                 "mcp__publisher__malloy_compile",
-                 "mcp__publisher__malloy_reloadPackage",
+IMPROVE_TOOLS = ("mcp__publisher__get_context",
+                 "mcp__publisher__execute_query",
+                 "mcp__publisher__compile_model",
+                 "mcp__publisher__reload_package",
                  "Read", "Edit", "Write", "Grep", "Glob",
                  "Bash(bash ./sync_and_reload.sh)")
 
 RELOAD = """curl -s -m 60 -X POST "{mcp_url}" \\
   -H "Content-Type: application/json" \\
   -H "Accept: application/json, text/event-stream" \\
-  -d '{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"malloy_reloadPackage","arguments":{{"environmentName":"{environment}","packageName":"{package}"}}}}}}' \\
+  -d '{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"reload_package","arguments":{{"environmentName":"{environment}","packageName":"{package}"}}}}}}' \\
   | grep -o '"sourceContentSha":"[^"]*"' | head -1"""
 
 SYNC_SCRIPT = """#!/bin/bash

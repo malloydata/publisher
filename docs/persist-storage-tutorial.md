@@ -56,7 +56,7 @@ bun run build          # bakes the DuckDB extensions the build/serve path needs
 ```
 
 The REST API is at `http://localhost:4000/api/v0`. Everything here also works
-over the MCP endpoint (`malloy_executeQuery` / `malloy_reloadPackage`); REST is
+over the MCP endpoint (`execute_query` / `reload_package`); REST is
 used so every step is a copy-pasteable `curl` you can inspect.
 
 ---

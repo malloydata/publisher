@@ -8,7 +8,7 @@ export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
 /**
  * Timeout for the single per-request query embedding. Much shorter than
  * the bulk timeout: this call sits on the latency path of every semantic
- * `malloy_getContext` call, and a slow endpoint must degrade to lexical
+ * `get_context` call, and a slow endpoint must degrade to lexical
  * quickly rather than stall the tool.
  */
 export const EMBEDDING_QUERY_TIMEOUT_MS = 5_000;
@@ -60,6 +60,16 @@ export class EmbeddingProvider {
 
    get model(): string {
       return this.config.model;
+   }
+
+   /**
+    * Cosine-similarity floor for this provider's vectors. Carried on the
+    * provider because the right floor is a property of the embedding model
+    * (see DEFAULT_EMBEDDING_MIN_SIMILARITY), so it belongs with the model
+    * that produced the vectors rather than at each comparison site.
+    */
+   get minSimilarity(): number {
+      return this.config.minSimilarity;
    }
 
    get dimensions(): number | undefined {
@@ -219,6 +229,7 @@ export function getEmbeddingProvider(): EmbeddingProvider | null {
       config.model,
       config.dimensions ?? "",
       config.apiKey,
+      config.minSimilarity,
    ].join("\u0000");
    if (!cached || cached.fingerprint !== fingerprint) {
       cached = { fingerprint, provider: new EmbeddingProvider(config) };

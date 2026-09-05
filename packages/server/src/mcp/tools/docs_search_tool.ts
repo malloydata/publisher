@@ -90,7 +90,7 @@ const SEARCH_DOCS_DESCRIPTION = `Search the Malloy documentation by keyword and 
 
 ## When to use
 - Before writing unfamiliar Malloy syntax (window functions, autobin, dialect-specific functions, rendering tags) or when a query fails with a syntax error you do not recognize.
-- Do NOT use it to look up field or source names in a model; use malloy_getContext for that.
+- Do NOT use it to look up field or source names in a model; use get_context for that.
 - Do NOT use it for anything about running Publisher itself — server flags, deployment, connection or embedding-provider configuration, publisher.json, packages, watch mode. This index covers the Malloy LANGUAGE docs only. Those answers live in the deployment's own docs/ directory and bundled skills, not here.
 
 ## Contract rules
@@ -109,7 +109,7 @@ A JSON array of matches, each with title, url (a docs.malloydata.dev link), and 
 { "query": "window functions lag" }`;
 
 /**
- * Registers the malloy_searchDocs MCP tool: lexical (lunr/BM25) search over a bundled
+ * Registers the search_malloy_docs MCP tool: lexical (lunr/BM25) search over a bundled
  * index of the Malloy documentation.
  */
 export function registerDocsSearchTool(
@@ -117,7 +117,7 @@ export function registerDocsSearchTool(
    _environmentStore: EnvironmentStore,
 ): void {
    mcpServer.tool(
-      "malloy_searchDocs",
+      "search_malloy_docs",
       SEARCH_DOCS_DESCRIPTION,
       searchDocsShape,
       async (params: SearchDocsParams) => {

@@ -74,9 +74,9 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-ANSWER_TOOLS = ("mcp__publisher__malloy_getContext",
-                "mcp__publisher__malloy_executeQuery",
-                "mcp__publisher__malloy_compile")
+ANSWER_TOOLS = ("mcp__publisher__get_context",
+                "mcp__publisher__execute_query",
+                "mcp__publisher__compile_model")
 # The platform target: a hosted MCP server exposing the same two operations
 # under its own names. The CLI addresses a tool as `mcp__<server>__<tool>`, so
 # both halves are configuration -- `--hosted-mcp-server` names the server (which
@@ -210,15 +210,20 @@ def next_run_label(out: pathlib.Path, set_name: str, phase: str) -> str:
     return f"{stem}-{n:02d}"
 
 
-# Tools only the open-source Publisher exposes. A shared skill refers to an MCP
-# tool by its BARE name (`get_context`, `execute_query`) precisely so it reads
-# correctly on any host; a skill naming these is a host/router skill written for
-# Publisher, and on a hosted target it teaches the answerer tools it does not
-# have. That does not error -- the answerer simply reads instructions for a
-# different surface -- so it has to be said out loud or the run quietly measures
-# a different system than the one it names.
-PUBLISHER_ONLY_TOOLS = ("malloy_getContext", "malloy_executeQuery",
-                        "malloy_compile", "malloy_reloadPackage")
+# Tools only the open-source Publisher exposes. A skill naming these is a
+# host/router skill written for Publisher, and on a hosted target it teaches the
+# answerer tools it does not have. That does not error -- the answerer simply
+# reads instructions for a different surface -- so it has to be said out loud or
+# the run quietly measures a different system than the one it names.
+#
+# Keyed on tools Publisher HAS and a hosted target does not. It used to be keyed
+# on the `malloy_` prefix, on the reasoning that a bare name was the portable
+# spelling and a prefixed one meant Publisher. That distinction is gone:
+# Publisher's tools are bare names now, so `get_context` and `execute_query` are
+# what BOTH surfaces call them and neither can mark a skill as Publisher-only.
+# Authoring, catalog and health have no hosted counterpart, so they still can.
+PUBLISHER_ONLY_TOOLS = ("compile_model", "reload_package",
+                        "list_packages", "get_status")
 
 
 def publisher_only_skills(names: list[str],
@@ -411,8 +416,8 @@ Package: {package}
 
 Question: {question}
 
-Use malloy_getContext to find the entities you need, then malloy_executeQuery to
-run a Malloy query against the model. Base the answer only on what the model
+Use get_context to find the entities you need, then execute_query to run a
+Malloy query against the model. Base the answer only on what the model
 returns. If the model genuinely cannot answer the question, say so plainly and
 name the specific data that is missing rather than substituting a proxy.
 
@@ -601,9 +606,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     answer.append(c["text"])
                 elif c.get("type") == "tool_use":
                     name = c["name"]
-                    # Both surfaces: Publisher's malloy_getContext/
-                    # malloy_executeQuery and a hosted server's get_context/
-                    # execute_query.
+                    # Both surfaces answer to the bare names now. The old
+                    # malloy_-prefixed names stay matched so a run recorded
+                    # against an older Publisher still parses.
                     if (name.endswith("malloy_getContext")
                             or name.endswith("__get_context")):
                         n_get += 1

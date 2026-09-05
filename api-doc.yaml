@@ -2752,7 +2752,7 @@ components:
                 description:
                   When true, the package did load earlier and is still serving
                   that last successful compile; the message is why its most
-                  recent reload (a watch-mode save, malloy_reloadPackage, or
+                  recent reload (a watch-mode save, reload_package, or
                   reload=true) failed. The served model is older than the files
                   on disk. Absent on ordinary load failures. This array is the
                   only place staleness is reported, because the package's entry
@@ -3357,6 +3357,76 @@ components:
             (package version, connection config). Returned by default whenever the
             package is compiled; null only when the package declares no persist
             source.
+        embeddingIndex:
+          oneOf:
+            - $ref: "#/components/schemas/PackageEmbeddingIndex"
+            - type: "null"
+          readOnly: true
+          description: >-
+            Server-computed, read-only: the state of this package's semantic
+            discovery index, which is what `get_context` ranks against
+            when an embedding provider is configured. Absent when the server
+            has no provider, because there is no index to describe.
+
+
+    PackageEmbeddingIndex:
+      type: object
+      readOnly: true
+      description: >-
+        State of a package's semantic discovery index. Poll `status` until
+        `ready` to know retrieval is warm - before this, that state existed
+        only as a server log line, so anything waiting on a warm index had to
+        scrape logs. Every count is scoped to the embedding model currently
+        configured, matching what the search path reads, so a server pointed
+        at a new model reports the index as not yet ready rather than
+        reporting rows retrieval would reject. Reading it takes no locks, so
+        polling cannot perturb an indexing run; note that the first read after
+        a package loads or reloads builds the package's entity index, which is
+        work a metadata read would not otherwise do.
+      properties:
+        status:
+          type: string
+          enum:
+            - indexing
+            - ready
+            - cooldown
+            - too-many-entities
+          description: >-
+            `indexing` = at least one current entity has no usable vector yet.
+            Retrieval answers lexically meanwhile. This clears once a
+            `get_context` question triggers a sync, which is what builds
+            the index; it does not clear on its own for a package nothing has
+            queried. `ready` = every entity the package exposes has a vector
+            under the current model and the cache is serving semantic ranking.
+            `cooldown` = the provider failed recently, so the semantic path is
+            short-circuited for a window. `too-many-entities` = the package has
+            more entities than the embedding cap, so it stays lexical
+            permanently rather than transiently. The same vocabulary as
+            `get_context`'s `retrieval_reason`, deliberately.
+        embeddedRows:
+          type: integer
+          description: >-
+            Cached vectors for this package under the current embedding model.
+            An entity contributes one row for its name plus one per chunk of
+            its documentation, so this exceeds `totalEntities` on a documented
+            model and is not a count of entities.
+        totalEntities:
+          type: integer
+          description: Entities the package currently exposes to retrieval.
+        embeddedEntities:
+          type: integer
+          description: >-
+            Of `totalEntities`, how many have at least one usable vector. The
+            two are equal exactly when `status` is `ready`. Reported because a
+            row count cannot show a model edit that removes two entities and
+            adds two others: the row total is unchanged while the new entities
+            have no vector at all.
+        lastSyncedAt:
+          type: string
+          format: date-time
+          description: >-
+            Most recent write to this package's vectors. Absent when nothing
+            has been embedded yet.
 
     PackageMaterializationConfig:
       type: object

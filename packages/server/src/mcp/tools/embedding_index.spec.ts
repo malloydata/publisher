@@ -14,11 +14,21 @@ import * as os from "os";
 import * as path from "path";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
-import { EmbeddingProvider } from "../../service/embedding_provider";
+import {
+   EmbeddingProvider,
+   prepareEmbeddingInput,
+} from "../../service/embedding_provider";
 import type { Package } from "../../service/package";
 import {
+   CHUNK_MAX_CHARS,
    EmbeddableEntity,
-   MIN_SIMILARITY,
+   MAX_DOC_CHARS,
+   MAX_DOC_CHUNKS,
+   MAX_EMBEDDED_ENTITIES,
+   DEFAULT_EMBEDDING_MIN_SIMILARITY,
+   chunkDoc,
+   entityFacets,
+   getEmbeddingIndexStatus,
    SemanticSearchResult,
    _clearProviderCooldownForTests,
    _lastPurgeAtMsForTests,
@@ -92,6 +102,7 @@ function mapProvider(
          apiKey: "test",
          model: options.model ?? "stub-model",
          baseUrl: "https://stub.example.com/v1",
+         minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
          dimensions: options.dimensions,
       },
       fetchStub,
@@ -105,6 +116,10 @@ function entity(
    embedDoc = "",
 ): EmbeddableEntity {
    return { kind: "measure", name, source, modelPath: "m.malloy", embedDoc };
+}
+
+function entityOfKind(kind: string, name: string): EmbeddableEntity {
+   return { kind, name, source: "src", modelPath: "m.malloy", embedDoc: "" };
 }
 
 /** Poll through the cold-start "indexing" response until the sync lands. */
@@ -160,6 +175,125 @@ describe("humanizeName / embeddingText", () => {
    });
 });
 
+describe("chunkDoc / entityFacets", () => {
+   const sentence = (n: number) =>
+      `Fact number ${n} about the grain of this source and how to read it.`;
+
+   it("keeps a short doc as one chunk, so short docs never re-embed", () => {
+      // The upgrade property: anything at or under the ceiling produces the
+      // same single chunk the unchunked scheme produced, so its content hash
+      // is unchanged and it is not re-embedded when chunking ships.
+      expect(chunkDoc("One row per product sold.")).toEqual([
+         "One row per product sold.",
+      ]);
+      const exactly = "a".repeat(CHUNK_MAX_CHARS);
+      expect(chunkDoc(exactly)).toEqual([exactly]);
+   });
+
+   it("returns nothing for an absent or whitespace-only doc", () => {
+      expect(chunkDoc("")).toEqual([]);
+      expect(chunkDoc("   \n  ")).toEqual([]);
+   });
+
+   it("splits a long doc on sentence boundaries, packing toward the target", () => {
+      const doc = Array.from({ length: 12 }, (_, i) => sentence(i)).join(" ");
+      const chunks = chunkDoc(doc);
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const chunk of chunks) {
+         expect(chunk.length).toBeLessThanOrEqual(CHUNK_MAX_CHARS);
+         // Whole sentences: never cut mid-clause.
+         expect(chunk).toEndWith(".");
+      }
+      // Every sentence survives somewhere; chunking must not drop text.
+      const rejoined = chunks.join(" ");
+      for (let i = 0; i < 12; i++) {
+         expect(rejoined).toContain(sentence(i));
+      }
+   });
+
+   it("covers a long doc within the chunk cap, as EMBEDDED text", () => {
+      // Asserted on what prepareEmbeddingInput actually sends, not on
+      // chunkDoc's return value. The earlier version of this test checked
+      // chunks.join(" ") and so passed while the folded last chunk was cut
+      // from 1,649 chars to 1,024 downstream and sentences 50-59 were never
+      // embedded at all.
+      const doc = Array.from({ length: 60 }, (_, i) => sentence(i)).join(" ");
+      expect(chunkDoc(doc).length).toBeLessThanOrEqual(MAX_DOC_CHUNKS);
+
+      const embedded = entityFacets(entity("fclt_rooms", "src", doc)).map((f) =>
+         prepareEmbeddingInput(f.text),
+      );
+      for (let i = 0; i < 60; i++) {
+         expect(embedded.some((text) => text.includes(sentence(i)))).toBe(true);
+      }
+   });
+
+   it("never emits a facet prepareEmbeddingInput would cut", () => {
+      // The invariant that makes the coverage test above meaningful: if a
+      // facet could still exceed the provider input cap, coverage would be a
+      // property of this fixture rather than of the code. Asserted on facets
+      // rather than chunks, because a single over-long sentence is kept whole
+      // by chunkDoc and split into facets only once the prefix is known.
+      const runOn = `${"word ".repeat(400).trim()}.`;
+      for (const doc of [
+         Array.from({ length: 12 }, (_, i) => sentence(i)).join(" "),
+         Array.from({ length: 200 }, (_, i) => sentence(i)).join(" "),
+         runOn,
+      ]) {
+         for (const facet of entityFacets(entity("s", "src", doc))) {
+            expect(prepareEmbeddingInput(facet.text)).toBe(facet.text);
+         }
+      }
+   });
+
+   it("splits an over-long sentence across facets instead of cutting it", () => {
+      const runOn = `${"word ".repeat(400).trim()}.`;
+      const facets = entityFacets(entity("s", "src", runOn));
+      const docFacets = facets.filter((f) => f.facet !== "name");
+      expect(docFacets.length).toBeGreaterThan(1);
+      // Every word survives somewhere, which cutting at the input cap did not.
+      const rejoined = docFacets.map((f) => f.text).join(" ");
+      expect(rejoined.split("word").length - 1).toBe(400);
+   });
+
+   it("cuts a doc past the per-entity limit at one stated bound", () => {
+      // Past MAX_DOC_CHARS coverage genuinely stops -- a fixed embedding
+      // budget cannot cover an unbounded doc. Pin that it stops HERE, in
+      // chunkDoc where the bound is named, rather than downstream.
+      const doc = Array.from({ length: 800 }, (_, i) => sentence(i)).join(" ");
+      expect(doc.length).toBeGreaterThan(MAX_DOC_CHARS);
+      const covered = chunkDoc(doc).join(" ").length;
+      expect(covered).toBeLessThanOrEqual(MAX_DOC_CHARS);
+      expect(covered).toBeGreaterThan(MAX_DOC_CHARS * 0.9);
+   });
+
+   it("keeps an over-long single sentence whole rather than cutting it", () => {
+      const runOn = `${"word ".repeat(200).trim()}.`;
+      expect(chunkDoc(runOn)).toEqual([runOn]);
+   });
+
+   it("prefixes each chunk with the entity name and numbers the facets", () => {
+      const doc = Array.from({ length: 12 }, (_, i) => sentence(i)).join(" ");
+      const facets = entityFacets(entity("fclt_rooms", "src", doc));
+      expect(facets[0]).toEqual({ facet: "name", text: "fclt rooms" });
+      expect(facets.length).toBeGreaterThan(2);
+      facets.slice(1).forEach((f, i) => {
+         expect(f.facet).toBe(`doc:${i}`);
+         // The name anchors a bare fact to the thing it is about.
+         expect(f.text).toStartWith("fclt rooms: ");
+      });
+   });
+
+   it("keeps every chunk within the provider input cap once prefixed", () => {
+      const doc = Array.from({ length: 40 }, (_, i) => sentence(i)).join(" ");
+      for (const facet of entityFacets(entity("some_source", "src", doc))) {
+         expect(prepareEmbeddingInput(facet.text)).toBe(
+            facet.text.replace(/\s+/g, " ").trim(),
+         );
+      }
+   });
+});
+
 describe("trySemanticSearch", () => {
    it("cold start reports indexing, then ranks by cosine with a floor", async () => {
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
@@ -175,7 +309,7 @@ describe("trySemanticSearch", () => {
             entity("beta", "src"),
             entity("gamma", "src"),
          ],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
 
@@ -187,7 +321,48 @@ describe("trySemanticSearch", () => {
       expect(ready.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
       expect(ready.hits[0].score).toBeCloseTo(1.0, 3);
       expect(ready.hits[1].score).toBeCloseTo(0.8, 3);
-      expect(ready.hits.every((h) => h.score >= MIN_SIMILARITY)).toBe(true);
+      expect(
+         ready.hits.every((h) => h.score >= DEFAULT_EMBEDDING_MIN_SIMILARITY),
+      ).toBe(true);
+   });
+
+   it("fills each target's window with rows the target can claim", async () => {
+      // Three dimensions sit exactly on the query and one measure sits a
+      // little off it. With a window of 2 and no kind predicate in the scan,
+      // the dimensions take both slots, the measure never reaches the caller,
+      // and a kind filter applied afterwards returns nothing at all -- while
+      // reporting below_cutoff 0, the combination the result type rules out.
+      // The claim belongs inside the scan, so the window holds the measure.
+      const { provider } = mapProvider({
+         "dim a": [1, 0, 0],
+         "dim b": [1, 0, 0],
+         "dim c": [1, 0, 0],
+         revenue: [0.9, 0.436, 0],
+         "total revenue": [1, 0, 0],
+      });
+      const ready = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "kind-window",
+         entities: [
+            entityOfKind("dimension", "dim_a"),
+            entityOfKind("dimension", "dim_b"),
+            entityOfKind("dimension", "dim_c"),
+            entityOfKind("measure", "revenue"),
+         ],
+         queries: [
+            { targetIndex: 0, text: "total revenue", kinds: ["measure"] },
+         ],
+         limit: 2,
+      });
+      if (!("hits" in ready)) throw new Error("expected hits");
+      expect(ready.hits.map((h) => h.name)).toEqual(["revenue"]);
+      // The counts are scoped the same way: the dimensions were never
+      // weighed for a measure target, so they are in neither number.
+      expect(ready.totalEntities).toBe(1);
+      expect(ready.belowCutoffCount).toBe(0);
    });
 
    it("does not re-embed unchanged entities for a new package instance", async () => {
@@ -202,7 +377,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities,
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
 
@@ -228,7 +403,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
 
@@ -246,16 +421,378 @@ describe("trySemanticSearch", () => {
             entity("beta", "src"),
          ],
       });
+      // Only the NEW doc facet is embedded. alpha's name facet is unchanged
+      // by documenting it, so it is not re-embedded, and neither is beta.
       expect(counts.get("alpha: now documented")).toBe(1);
+      expect(counts.get("alpha")).toBe(1);
       expect(counts.get("beta")).toBe(1);
-      if (!("hits" in changed)) throw new Error("expected hits");
-      // alpha's new vector is orthogonal to the query, so beta leads now.
-      expect(changed.hits.map((h) => h.name)).toEqual(["beta"]);
 
+      // The point of faceting: documenting alpha must not cost alpha its own
+      // name. Its doc vector here is orthogonal to the query, which under a
+      // single averaged vector per entity is exactly what used to sink it
+      // below beta. Scored on its best facet, alpha still leads.
+      if (!("hits" in changed)) throw new Error("expected hits");
+      expect(changed.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
+      expect(changed.hits[0].score).toBeCloseTo(1.0, 3);
+
+      // Three rows: alpha's name and doc, beta's name. One row per entity
+      // still comes back from the search, because scoring groups by entity.
       const rows = await db.all<{ n: number }>(
          "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
       );
-      expect(rows[0].n).toBe(2);
+      expect(rows[0].n).toBe(3);
+   });
+
+   it("reports index readiness without taking locks or writing", async () => {
+      // Before this, "is the index warm?" was answerable only by scraping a
+      // server log line, so a harness measuring retrieval had no supported
+      // way to wait for a fair measurement.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: documented": [0, 1, 0],
+      });
+      const entities = [
+         entity("alpha", "src", "documented"),
+         entity("beta", "src"),
+      ];
+      const args = {
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "status",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+         entities,
+      };
+
+      const cold = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "status",
+         entities,
+      );
+      expect(cold.status).toBe("indexing");
+      expect(cold.embeddedRows).toBe(0);
+      expect(cold.embeddedEntities).toBe(0);
+      expect(cold.lastSyncedAt).toBeUndefined();
+
+      await searchReady(args);
+
+      const warm = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "status",
+         entities,
+      );
+      expect(warm.status).toBe("ready");
+      // alpha contributes a name row and a doc row, beta only a name row, so
+      // rows exceed entities on a documented model.
+      expect(warm.embeddedRows).toBe(3);
+      expect(warm.totalEntities).toBe(2);
+      expect(warm.embeddedEntities).toBe(2);
+      expect(warm.lastSyncedAt).toBeDefined();
+   });
+
+   it("is not ready when the rows belong to a different embedding model", async () => {
+      // The search path filters on embedding_model, so rows written by an
+      // earlier model cannot serve a query. Counting them reported ready
+      // while retrieval had nothing -- and the documented use of this field
+      // is an operator checking that an upgrade re-embedded.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+      });
+      const entities = [entity("alpha", "src"), entity("beta", "src")];
+      await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "model-switch",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+         entities,
+      });
+      expect(
+         (
+            await getEmbeddingIndexStatus(
+               db,
+               provider,
+               "env",
+               "model-switch",
+               entities,
+            )
+         ).status,
+      ).toBe("ready");
+
+      // Same rows, a provider on a different model: nothing usable.
+      const { provider: other } = mapProvider(
+         { ...ENTITY_VECTORS, ...QUERY_VECTORS },
+         { model: "other-model" },
+      );
+      const status = await getEmbeddingIndexStatus(
+         db,
+         other,
+         "env",
+         "model-switch",
+         entities,
+      );
+      expect(status.status).toBe("indexing");
+      expect(status.embeddedRows).toBe(0);
+      expect(status.embeddedEntities).toBe(0);
+      expect(status.totalEntities).toBe(2);
+   });
+
+   it("is not ready when an edit swapped entities without changing the count", async () => {
+      // The failure a row count cannot see: remove two entities, add two
+      // others, and the total is unchanged while the new ones have no vector.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+      });
+      const before = [entity("alpha", "src"), entity("beta", "src")];
+      await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "swapped",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+         entities: before,
+      });
+      expect(
+         (await getEmbeddingIndexStatus(db, provider, "env", "swapped", before))
+            .status,
+      ).toBe("ready");
+
+      const after = [entity("alpha", "src"), entity("gamma", "src")];
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "swapped",
+         after,
+      );
+      expect(status.status).toBe("indexing");
+      expect(status.totalEntities).toBe(2);
+      expect(status.embeddedEntities).toBe(1);
+   });
+
+   it("reports a package past the cap as too-many-entities, not as indexing", async () => {
+      // A permanent condition an operator must act on, not a transient one to
+      // wait out: reporting it as "indexing" would poll forever. Named the
+      // same as getContext's retrieval_reason for the identical condition.
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "huge",
+         Array.from({ length: MAX_EMBEDDED_ENTITIES + 1 }, (_, i) =>
+            entity(`e${i}`, "src"),
+         ),
+      );
+      expect(status.status).toBe("too-many-entities");
+   });
+
+   it("counts the entities that matched only below the floor", async () => {
+      // gamma is orthogonal to the query and dropped by the floor. Without a
+      // count, an agent cannot tell "dropped as irrelevant" from "not
+      // modelled here at all", and we watched analysts conclude the latter.
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "cutoff",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+         entities: [
+            entity("alpha", "src"),
+            entity("beta", "src"),
+            entity("gamma", "src"),
+         ],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits.map((h) => h.name)).toEqual(["alpha", "beta"]);
+      expect(result.belowCutoffCount).toBe(1);
+   });
+
+   it("reports a true negative as no hits and nothing below the floor", async () => {
+      // The distinction the count exists for: an empty result with a zero
+      // count means the package genuinely models nothing related.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "find something absent": [0, 1, 0],
+      });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "true-negative",
+         queries: [
+            {
+               targetIndex: 0,
+               text: "find something absent",
+               kinds: ["measure"],
+            },
+         ],
+         limit: 10,
+         entities: [entity("alpha", "src")],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits).toEqual([]);
+      // alpha scored 0 against an orthogonal query: below the floor, so it
+      // is counted rather than silently absent.
+      expect(result.belowCutoffCount).toBe(1);
+   });
+
+   it("counts within the drill-down scope, not the whole package", async () => {
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "scoped-cutoff",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+         entities: [
+            entity("alpha", "a"),
+            entity("gamma", "a"),
+            entity("gamma", "b"),
+         ],
+      };
+      await searchReady({ ...base, pkg: {} as unknown as Package });
+      const scoped = await searchReady({
+         ...base,
+         pkg: {} as unknown as Package,
+         sourceName: "a",
+      });
+      if (!("hits" in scoped)) throw new Error("expected hits");
+      // Only source `a`'s gamma is below the floor here; `b`'s is out of
+      // scope entirely, exactly as it is for the ranked query.
+      expect(scoped.belowCutoffCount).toBe(1);
+   });
+
+   it("retrieves a fact buried mid-doc by that fact's own content", async () => {
+      // Symptom B of the same finding: on a ~300-word source doc, a rare
+      // token retrieved the source at rank 1 but near-verbatim business
+      // phrasing from the same doc did not retrieve it at all. Averaged over
+      // everything a long doc mentions, no single fact in it is close to
+      // anything. Here the population rule lives in the doc's fifth
+      // sentence, and the query is that rule in the modeller's own words.
+      const filler = Array.from(
+         { length: 4 },
+         (_, i) => `Unrelated background sentence number ${i} about history.`,
+      ).join(" ");
+      const rule =
+         "Restrict to the buildings Facilities currently holds, excluding leased space.";
+      const doc = `${filler} ${rule} ${filler}`;
+      const chunks = chunkDoc(doc);
+      const ruleChunk = chunks.find((c) => c.includes(rule));
+      if (!ruleChunk) throw new Error("fixture: the rule must land in a chunk");
+
+      // Only the chunk carrying the rule points at the query; the entity's
+      // name and its other chunks point elsewhere.
+      const vectors: Record<string, number[]> = {
+         ...QUERY_VECTORS,
+         "which buildings does facilities hold": [1, 0, 0],
+         "fclt building hist": [0, 0, 1],
+      };
+      for (const chunk of chunks) {
+         vectors[`fclt building hist: ${chunk}`] =
+            chunk === ruleChunk ? [1, 0, 0] : [0, 0, 1];
+      }
+
+      const result = await searchReady({
+         db,
+         provider: mapProvider(vectors).provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "symptom-b",
+         queries: [
+            {
+               targetIndex: 0,
+               text: "which buildings does facilities hold",
+               kinds: ["measure"],
+            },
+         ],
+         limit: 10,
+         entities: [entity("fclt_building_hist", "src", doc)],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits[0].name).toBe("fclt_building_hist");
+      expect(result.hits[0].score).toBeCloseTo(1.0, 3);
+   });
+
+   it("keeps a documented entity findable by its own name", async () => {
+      // A long doc must not bury the entity's own name. Here alpha's doc
+      // points away from the query and its short-doc'd sibling beta points at
+      // it; alpha must still win on the name it is named.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: a long aside about unrelated matters": [0, 0, 1],
+         "beta: alpha-ish": [0.9, 0.4, 0],
+      });
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: {} as unknown as Package,
+         environmentName: "env",
+         packageName: "dilution",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+         entities: [
+            entity("alpha", "src", "a long aside about unrelated matters"),
+            entity("beta", "src", "alpha-ish"),
+         ],
+      });
+      if (!("hits" in result)) throw new Error("expected hits");
+      expect(result.hits[0].name).toBe("alpha");
+      expect(result.hits[0].score).toBeCloseTo(1.0, 3);
+   });
+
+   it("drops a doc facet when the doc is removed, keeping the name facet", async () => {
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: documented": [0, 1, 0],
+      });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "undoc",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+      };
+      // A fresh Package per call: the sync memo is per instance, exactly as
+      // a reload swaps the instance in production.
+      await searchReady({
+         ...base,
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src", "documented")],
+      });
+      await searchReady({
+         ...base,
+         pkg: {} as unknown as Package,
+         entities: [entity("alpha", "src")],
+      });
+
+      const rows = await db.all<{ facet: string }>(
+         `SELECT facet FROM entity_embeddings
+          WHERE environment_name = 'env' AND package_name = 'undoc'`,
+      );
+      expect(rows.map((r) => r.facet)).toEqual(["name"]);
    });
 
    it("re-embeds everything on a model switch without a key collision", async () => {
@@ -265,7 +802,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src"), entity("beta", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       await searchReady({
@@ -306,7 +843,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       await searchReady({ ...base, provider: first.provider });
@@ -329,7 +866,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       await searchReady({
@@ -357,7 +894,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "orders"), entity("beta", "customers")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
          sourceName: "customers",
       };
@@ -372,7 +909,7 @@ describe("trySemanticSearch", () => {
          db,
          provider,
          environmentName: "env",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       await searchReady({
@@ -399,7 +936,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       await searchReady({
@@ -440,7 +977,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -496,7 +1033,7 @@ describe("trySemanticSearch", () => {
          db,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       await searchReady({
@@ -545,7 +1082,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -588,7 +1125,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -646,7 +1183,7 @@ describe("trySemanticSearch", () => {
          provider,
          environmentName: "env",
          packageName: "pkg",
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -675,6 +1212,9 @@ describe("trySemanticSearch", () => {
          },
       });
       const changed = mapProvider({
+         // Name facets included: rewording a doc leaves alpha's name facet
+         // alone, but beta is new here and needs both of its facets.
+         ...ENTITY_VECTORS,
          ...QUERY_VECTORS,
          "alpha: reworded": [0, 1, 0],
          "beta: new": [0, 0, 1],
@@ -702,7 +1242,11 @@ describe("trySemanticSearch", () => {
       // the cool-down so the failed sync has fully settled. This
       // converges with or without the finally bump, so it does not mask
       // the pin below.
-      let settled: SemanticSearchResult = { hits: [] };
+      let settled: SemanticSearchResult = {
+         hits: [],
+         belowCutoffCount: 0,
+         totalEntities: 0,
+      };
       for (let i = 0; i < 200; i++) {
          settled = await trySemanticSearch({
             ...base,
@@ -737,7 +1281,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -779,7 +1323,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       // Sync 1 (holds the mutex at its embed once it starts).
@@ -826,7 +1370,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       const pkgA = {} as unknown as Package;
@@ -928,7 +1472,12 @@ describe("trySemanticSearch", () => {
 
    it("deletion helpers drop a package's and an environment's rows", async () => {
       const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
-      const base = { db, provider, query: "find alpha", limit: 10 };
+      const base = {
+         db,
+         provider,
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+      };
       await searchReady({
          ...base,
          environmentName: "env",
@@ -970,7 +1519,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       await searchReady({
@@ -1034,7 +1583,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       // Sync at 3 dims, then flip to 4: one purge + resync leaves 4-dim rows.
@@ -1101,7 +1650,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       const narrow = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
@@ -1155,7 +1704,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg-a",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
       let a = await trySemanticSearch(argsA);
@@ -1177,7 +1726,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg-b",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       });
       expect("hits" in b).toBe(true);
@@ -1196,7 +1745,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "pkg",
          entities: [entity("alpha", "src")],
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       };
 
@@ -1230,7 +1779,7 @@ describe("trySemanticSearch", () => {
          environmentName: "env",
          packageName: "huge",
          entities,
-         query: "find alpha",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          limit: 10,
       });
       expect(result).toEqual({ unavailable: "too-many-entities" });

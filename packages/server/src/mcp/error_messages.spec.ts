@@ -90,7 +90,7 @@ describe("getMalloyErrorDetails — restricted-mode branch", () => {
       // One suggestion: where the construct IS allowed and the loop to use.
       expect(details.suggestions).toHaveLength(1);
       expect(details.suggestions[0]).toContain("model file");
-      expect(details.suggestions[0]).toContain("malloy_reloadPackage");
+      expect(details.suggestions[0]).toContain("reload_package");
       // The generic syntax advice must not attach — it misdirects here.
       expect(details.suggestions.join(" ")).not.toMatch(
          /Verify the structure and syntax/i,

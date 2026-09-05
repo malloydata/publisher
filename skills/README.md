@@ -30,7 +30,7 @@ Most of these skills are **shared, open-source Malloy skills**, and **this repos
 Two rules make it work:
 
 - **`credible-*` skills never land here.** Anything named `credible-*` in the upstream repo is Credible-platform-specific and is never copied into this open-source repo. The copy keys off the `credible-` prefix. If you ever see a `credible-*` file under this tree, it is a stray: it should be git-ignored, not committed (`git ls-files | grep credible-` must stay empty).
-- **Shared skills carry no Credible-platform-specific answers.** They describe generic Malloy and the open-source Publisher only, with no hosted draft/publish flow, retrieval-engine annotations (`#(index)`/`#(agent-hidden)`), or platform tools like `execute_query_draft`. Open-source Publisher features (`publisher.json` `explores`/`queryableSources`, `export {}`) are fair game. The Publisher-only authoring tools `malloy_compile` / `malloy_reloadPackage` stay in the host/router skills, not the shared set (see the tool-names section below).
+- **Shared skills carry no Credible-platform-specific answers.** They describe generic Malloy and the open-source Publisher only, with no hosted draft/publish flow, retrieval-engine annotations (`#(index)`/`#(agent-hidden)`), or platform tools like `execute_query_draft`. Open-source Publisher features (`publisher.json` `explores`/`queryableSources`, `export {}`) are fair game. The Publisher-only authoring tools `compile_model` / `reload_package` stay in the host/router skills, not the shared set (see the tool-names section below).
 
 ## Shared vs Publisher-specific
 
@@ -54,7 +54,18 @@ loop on.
 
 ## Tool names in shared skills
 
-Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query`, `search_malloy_docs`), plus a note that the exact prefixed name depends on the host. `search_database_schema` maps the same way if a shared skill starts using it. This Publisher server exposes them as **`malloy_getContext`**, **`malloy_executeQuery`**, **`malloy_searchDocs`**, and **`malloy_searchDatabaseSchema`** (and adds `malloy_compile` / `malloy_reloadPackage`, which are Publisher-only and appear only in the host/router skills). When a shared skill says `get_context`, use `malloy_getContext`; match each bare name to the tool you actually have. The Publisher-specific host/router skills and `AGENTS.md` name the `malloy_*` tools directly.
+Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query`, `search_malloy_docs`), plus a note that the exact prefixed name depends on the host. `search_database_schema` maps the same way if a shared skill starts using it.
+
+**`get_context` is now literally correct here.** This server exposes a tool by that exact name, taking the same typed `search_targets` and `scopes` the shared skills describe and answering in the same shape. Until it landed, this repo shipped skills describing a request its own server rejected, and this section existed to paper over that. What remains of the mapping is smaller:
+
+| Shared skills say | This server exposes |
+| --- | --- |
+| `get_context` | `get_context` |
+| `execute_query` | `execute_query` |
+| `search_malloy_docs` | `search_malloy_docs` |
+| `search_database_schema` | `search_database_schema` |
+
+`list_packages` supplies the environment and package names `get_context`'s `scopes` requires, and `compile_model` / `reload_package` / `get_status` are Publisher-only and appear only in the host/router skills. Publisher registers these tools under exactly the bare names above, so on a Publisher host the mapping is the identity and the host/router skills name them as written.
 
 ## Adding or updating a skill
 

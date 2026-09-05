@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """python mcp_payload_test.py
 
-The fixtures are trimmed copies of real `malloy_getContext` exchanges. The
+The fixtures are trimmed copies of real `get_context` exchanges. The
 regression they exist for: an extractor written against the flat `results`
 shape returned [] for the nested one, which scored attempts that had received
 everything at 0% recall and moved three baseline failures off "query
