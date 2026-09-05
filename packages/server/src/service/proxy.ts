@@ -38,10 +38,10 @@ type ConnectionProxy = components["schemas"]["ConnectionProxy"];
 // Deployment opt-in to connect an SSH tunnel whose bastion host key is not pinned.
 // Off by default (fail closed): whether to accept an unverified host key is an
 // operator posture, so it is an env flag rather than a per-connection spec field.
-const ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV =
+export const ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV =
    "PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY";
 
-function allowUnverifiedHostKey(): boolean {
+export function allowUnverifiedHostKey(): boolean {
    return (
       (process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] ?? "")
          .trim()

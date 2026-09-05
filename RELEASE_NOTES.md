@@ -31,6 +31,32 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — an SSH tunnel with no pinned host key is now refused (ACTION REQUIRED)
+
+`proxy.ssh.hostKey` pins the bastion's host key. When it was omitted the tunnel
+connected to whatever key the far end presented, which means a
+machine-in-the-middle on the publisher-to-bastion hop could not be detected. That
+was the documented default, so a deployment relying on it is doing what the docs
+told it to.
+
+It now fails closed: a connection whose `ssh.hostKey` is unset is refused when a
+query first uses it. **If you run an SSH-proxy connection without a pinned host
+key, queries through it will start failing after this upgrade.**
+
+Two ways forward, and the first is the one to prefer:
+
+- Pin the key. Put the bastion's host key in `ssh.hostKey` -- an OpenSSH
+  `known_hosts` line or a bare base64 blob, one per line. A load-balanced bastion
+  presents a different key per backend, so list every backend's key; any listed
+  key is accepted.
+- Or opt out for the deployment. `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true`
+  restores the old behaviour and logs a warning on every unpinned connect. Only
+  the exact value `true` opts in.
+
+You do not have to wait for a failing query to find out which connections are
+affected: on config load the server now logs a warning naming each SSH connection
+that pins no host key while the opt-in is off, so the list is in the startup log.
+
 ## [Unreleased] — compile and sqlSource now count against the concurrency cap
 
 `PUBLISHER_MAX_CONCURRENT_QUERIES` bounds how much work a pod runs at once so a
