@@ -31,6 +31,60 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — bound the memory a LARGE DuckLake write spends holding Parquet
+
+`PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` caps how large a Parquet file DuckLake writes
+before rotating to the next one. Unset, nothing changes: no option is set and the attach
+issues exactly the SQL it issued before.
+
+This is a **second, separate** term from the row group bound in 0.2.3 below, not a
+replacement. The row group bounds the per-column buffer *within* a file; this bounds how much
+of the file is resident. Writing to object storage, DuckDB copies each multipart part into a
+buffer it allocates itself and holds it until the file completes, so a file's bytes stay
+resident however they are grouped inside it. Peak memory therefore tracks the FILE size —
+and, like the row group buffers, is not bounded by `PUBLISHER_DUCKDB_MEMORY_LIMIT` at any
+value.
+
+Writing the same data to a local path does not do this; it streams. A deployment that
+materializes to `s3://` or `gs://` pays a cost its local-disk testing will not show.
+
+Measured on a 72-column, 20,000,000-row write, sampling cgroup `memory.stat` `anon`:
+
+| destination | `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` | files | peak anon |
+|---|---|---|---|
+| local disk | n/a | 1 | 149 MiB |
+| object storage | unset (one file) | 1 | 2979 MiB |
+| object storage | `512MB` | 6 | 549 MiB |
+| object storage | `256MB` | 12 | 372 MiB |
+| object storage | `128MB` | 23 | 258 MiB |
+| object storage | `64MB` | 45 | 249 MiB |
+
+S3 and GCS measured within 0.1% of each other (2976 vs 2979 MiB unset), so this is not
+specific to either.
+
+Each bound alone leaves the other term unpaid. On one 5M-row write: row group only −18%,
+file size only −34%, both −65%.
+
+**Pick the LARGEST value that clears your memory ceiling, not the smallest.** Memory is the
+only axis where smaller wins, and it stops improving below ~`128MB`. Everything else gets
+worse: a full scan of the same data took 21.6s at `64MB` against 13.0s at `512MB`, the write
+itself ran 70s against 42s, and the catalog carries one row per file per column — 3,240 rows
+at `64MB` against 216 at `1024MB` for one 2.7 GiB table, in a catalog database every writer
+of that lake shares. File-level pruning was already effective at every size tested, so the
+small end buys nothing back on reads.
+
+Same catalog mechanics as the row group bound: it persists in `ducklake_metadata`, is seen by
+every writer of that lake, is skipped on a read-only attach, and a catalog that refuses it is
+logged and attached anyway. It does **not** require `preserve_insertion_order=false`.
+
+This is expected to be temporary. DuckDB's object-storage upload was reworked in
+[duckdb-httpfs#389](https://github.com/duckdb/duckdb-httpfs/pull/389) to stream from buffers
+the engine already owns rather than copying each part, which should remove the term this
+option exists to bound. That work landed after the DuckDB version Publisher currently pins,
+so until it ships in a release, this is the lever available.
+
+---
+
 ## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
 
 `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` caps how much column data DuckLake buffers

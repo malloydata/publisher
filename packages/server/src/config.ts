@@ -344,6 +344,34 @@ export const getDuckLakeRowGroupSizeBytes = (): string | undefined => {
 };
 
 /**
+ * Bound on how large a Parquet file DuckLake writes before rotating to the next
+ * one (`PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES`, e.g. `256MB`). Unset leaves
+ * DuckLake's own default and issues nothing at all on attach.
+ *
+ * Writing to object storage, DuckDB copies each multipart part into a buffer it
+ * allocates itself, so a file's bytes stay resident until that file completes:
+ * peak memory tracks the FILE size, not the row group. Measured on a 72-column,
+ * 20M-row write to both GCS and S3 -- 2979 MiB as one file, 258 MiB at 128MB and
+ * 372 MiB at 256MB, against 149 MiB for the same write to local disk, which
+ * streams. `memory_limit` does not bound it; the allocation is tagged for the
+ * extension and the limit is not enforced against it.
+ *
+ * This is a DIFFERENT term from {@link getDuckLakeRowGroupSizeBytes}, not a
+ * replacement: the row group bounds the per-column buffer WITHIN a file, this
+ * bounds how much of the file is resident. Measured separately on one write, each
+ * alone gives 18% and 34%, and together 65%.
+ *
+ * Larger is better on every axis except memory -- full scans, write throughput and
+ * catalog rows all improve with file size and plateau around 512MB, while file-level
+ * pruning is already effective at every size. So the value to want is the LARGEST
+ * that clears the deployment's memory ceiling, not the smallest.
+ */
+export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
+/**
  * Directory DuckDB spills to. A materialization build overrides this with its
  * own disposable working directory; every other session and instance uses this.
  *
@@ -398,6 +426,16 @@ export function assertDuckDBResourceConfig(): void {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: expected a ` +
             `size like "16MB", got "${rowGroupSizeBytes}"`,
+      );
+   }
+   const targetFileSizeBytes = getDuckLakeTargetFileSizeBytes();
+   if (
+      targetFileSizeBytes !== undefined &&
+      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB)$/i.test(targetFileSizeBytes)
+   ) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: expected a ` +
+            `size like "256MB", got "${targetFileSizeBytes}"`,
       );
    }
    const tempDirectory = getDuckDBTempDirectory();

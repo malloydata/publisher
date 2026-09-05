@@ -37,6 +37,7 @@ import { components } from "../api";
 import {
    getDuckDBMemoryLimit,
    getDuckLakeRowGroupSizeBytes,
+   getDuckLakeTargetFileSizeBytes,
    getDuckDBTempDirectory,
    getExtensionFetchPolicy,
 } from "../config";
@@ -145,6 +146,40 @@ export async function applyDuckLakeRowGroupBound(
    } catch (error) {
       logger.warn(
          `Could not set the DuckLake row group bound on ${dbName}; the lake keeps ` +
+            `its existing value: ${error instanceof Error ? error.message : String(error)}`,
+      );
+   }
+}
+
+/**
+ * Bound how large a Parquet file DuckLake writes before rotating, when configured.
+ *
+ * Same catalog-option mechanics, and the same reason for being skipped on a
+ * read-only attach, as {@link applyDuckLakeRowGroupBound} above -- and the same
+ * swallowed failure, for the same reason.
+ *
+ * Separate from the row group because it bounds a separate term. Writing to object
+ * storage, DuckDB copies each multipart part into its own buffer and holds it until
+ * the file completes, so a file's bytes stay resident however they are grouped
+ * inside it: the row group bounds the per-column buffer, this bounds the file. A
+ * write that sets only one of the two keeps paying the other.
+ */
+export async function applyDuckLakeTargetFileSize(
+   connection: DuckDBConnection,
+   dbName: string,
+): Promise<void> {
+   const bytes = getDuckLakeTargetFileSizeBytes();
+   if (bytes === undefined) {
+      return;
+   }
+   try {
+      await connection.runSQL(
+         `CALL ${dbName}.set_option('target_file_size', '${escapeSQL(bytes)}')`,
+      );
+      logger.info(`DuckLake target file size applied to ${dbName}: ${bytes}`);
+   } catch (error) {
+      logger.warn(
+         `Could not set the DuckLake target file size on ${dbName}; the lake keeps ` +
             `its existing value: ${error instanceof Error ? error.message : String(error)}`,
       );
    }
@@ -854,6 +889,7 @@ async function attachDuckLakeWithMode(
       );
       if (!options.readOnly) {
          await applyDuckLakeRowGroupBound(connection, dbName);
+         await applyDuckLakeTargetFileSize(connection, dbName);
       }
    } catch (error) {
       // Handle case where DuckLake database is already attached
