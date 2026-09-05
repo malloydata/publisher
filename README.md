@@ -18,9 +18,7 @@ Serve governed data models to applications, BI tools, and AI agents — over RES
 </p>
 <p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze. <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d">Watch the video</a> for playback controls.</sub></p>
 
-> **Working with an AI agent?** Start with [AGENTS.md](AGENTS.md) — the canonical, step-by-step
-> guide to running Publisher and connecting over MCP. Most coding hosts read it automatically; Claude
-> Code reads it through [CLAUDE.md](CLAUDE.md). This README is the map for people.
+> **AI agents:** read [AGENTS.md](AGENTS.md) first.
 
 **Problem:** pointed at a raw database, an AI writes SQL from scratch — the wrong join, an invented
 column, a fan-out that double-counts but still looks plausible — and the same question tomorrow
