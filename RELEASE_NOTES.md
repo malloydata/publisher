@@ -31,6 +31,32 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a persist name must now be a plain identifier path
+
+`#@ persist name=` accepts the table name a source materializes into, and that
+value is pasted into the `CREATE OR REPLACE TABLE` and `DROP TABLE IF EXISTS`
+statements the builder runs. It was only ever checked for being *quoted*, never
+for what the quotes contained, so a name carrying its own quote character closed
+the identifier early and the rest of the value continued as SQL.
+
+The accepted grammar is now dot-separated segments of letters, digits,
+underscores and hyphens -- `^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`. That covers
+every shape a table path takes today, including a hyphenated BigQuery project id
+(`my-proj.mydataset.engaged_events`), a leading-digit segment, and a three-part
+`project.dataset.table`. It is the same character set the control plane already
+applies to physical names, so the two agree on what a name may contain. A value
+with a quote, a backtick, a semicolon or a space is refused when the model loads,
+with an error naming the annotation and the allowed shape.
+
+To check a package without reading the diff: if every `#@ persist name=` value is
+letters, digits, underscores, hyphens and dots, nothing changes for it.
+
+A census of the packages we can see -- 438 persist annotations across 47
+packages, 152 distinct names -- found none that this refuses, so no package that
+loads today stops loading. The check exists because the value is author-supplied
+input on a server that loads packages it did not write, not because a name in the
+wild was doing this.
+
 ## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
 
 `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` caps how much column data DuckLake buffers
