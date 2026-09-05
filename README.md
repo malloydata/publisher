@@ -19,16 +19,16 @@ AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
 </p>
 <p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze. <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d">Watch the video</a> for playback controls.</sub></p>
 
-**Problem:** pointed at a raw database, an AI writes SQL from scratch — the wrong join, an invented
-column, a fan-out that double-counts but still looks plausible — and the same question tomorrow
-yields a different query and different numbers.
+**Publisher is the open-source AI Analytics Engine: the modern data stack in a box, built AI-first.**
+Modeling, a query engine, materialization, access control, and an API — the pieces you used to assemble
+from five vendors — ship as one server, and the first consumer of everything it serves is an agent.
 
-**Solution:** put a [Malloy](https://malloydata.dev) model — what the industry calls a semantic
-layer — between the AI and your data. Measures, dimensions, and joins are defined once, correctly;
-applications, BI tools, and **AI agents** compose queries against the model instead of writing SQL,
-so the numbers come back **right by construction**, the same way every time.
-
-Publisher is the open-source server that serves that model, over a REST API and a single MCP endpoint.
+Write down what your data means once, in [Malloy](https://malloydata.dev): the sources, the joins, the
+measures, who may see what. Publisher serves that model to every surface — over MCP to Claude, Cursor,
+Codex, or an agent you build; over REST to applications and BI tools. Agents compose queries against
+the model instead of writing SQL from scratch, so there is no wrong join, no invented column, no
+fan-out that double-counts but looks plausible — and the same question returns the same numbers
+tomorrow.
 
 - **Any AI, one endpoint** — Claude, Cursor, Codex, VS Code, or an agent you build connect over MCP;
   an agent running unattended uses REST.
