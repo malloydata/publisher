@@ -116,20 +116,17 @@ The agent discovers what exists (`malloy_getContext`), grounds itself in real so
 names, runs the query (`malloy_executeQuery`), and answers from your model — no schema spelunking, no
 hallucinated columns.
 
-### When the config isn't written
-
-The server skips a directory that already has a `.mcp.json`, anything inside a git working tree, and
-your home directory, and says so in its startup log along with the one command that connects an agent
-anyway. To register the server for yourself rather than one directory:
+If the agent reports no `malloy_*` tools, register the server for yourself instead of relying on that
+file:
 
 ```bash
 claude mcp add --transport http malloy http://127.0.0.1:4040/mcp -s user
 ```
 
-That is also the fix when an agent reports no `malloy_*` tools. The file the server writes outlives
-it and is never corrected, so a stale one can point an agent at whatever later holds that port —
-[docs/configuration.md](docs/configuration.md#the-mcpjson-the-server-writes) has the full story.
-`--no-mcp-config` turns the whole thing off.
+The server skips writing the file in some directories (a git working tree, your home directory, one
+that already has a `.mcp.json`) and says so in its startup log. When it is written, why it can go
+stale, and how to turn it off:
+[docs/configuration.md](docs/configuration.md#the-mcpjson-the-server-writes).
 
 ### Other clients, and unattended agents
 
