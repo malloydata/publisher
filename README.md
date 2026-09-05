@@ -5,8 +5,8 @@ SPDX-License-Identifier: MIT
 
 <h1 align="center">Malloy Publisher</h1>
 
-<p align="center"><b>The open-source semantic model server for <a href="https://malloydata.dev">Malloy</a></b><br>
-Serve governed data models to applications, BI tools, and AI agents — over REST and MCP.<br>
+<p align="center"><b>The open-source AI Analytics Engine for <a href="https://malloydata.dev">Malloy</a></b><br>
+The modern data stack in a box, built AI-first: one data model, served to AI agents, applications, and BI tools over MCP and REST.<br>
 <sub>Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.<br>
 AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
 
@@ -19,7 +19,6 @@ AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
 </p>
 <p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze. <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d">Watch the video</a> for playback controls.</sub></p>
 
-**Publisher is the open-source AI Analytics Engine: the modern data stack in a box, built AI-first.**
 Modeling, a query engine, materialization, access control, and an API — the pieces you used to assemble
 from five vendors — ship as one server, and the first consumer of everything it serves is an agent.
 
