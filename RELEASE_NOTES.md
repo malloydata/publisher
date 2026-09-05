@@ -53,9 +53,11 @@ Two ways forward, and the first is the one to prefer:
   restores the old behaviour and logs a warning on every unpinned connect. Only
   the exact value `true` opts in.
 
-You do not have to wait for a failing query to find out which connections are
-affected: on config load the server now logs a warning naming each SSH connection
-that pins no host key while the opt-in is off, so the list is in the startup log.
+To find the affected connections before upgrading, look for a connection with a
+`proxy.ssh` block and no `ssh.hostKey`. After upgrading, you do not have to wait
+for a failing query either: the tunnel is dialed lazily, and on config load this
+release logs a warning naming each SSH connection that pins no host key while the
+opt-in is off, so the list is in the startup log before anyone runs a query.
 
 ## [Unreleased] — compile and sqlSource now count against the concurrency cap
 
