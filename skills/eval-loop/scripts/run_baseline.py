@@ -74,9 +74,15 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+# get_skill is granted because get_context's response tells the answerer to
+# call it, and because `--package-skills=tool` is defined as "the answerer
+# fetches the package's guides itself". Without the grant that arm cannot run
+# at all, and the `install` arm is polluted too: the answerer spends its turns
+# asking for a permission it will never get instead of answering.
 ANSWER_TOOLS = ("mcp__publisher__get_context",
                 "mcp__publisher__execute_query",
-                "mcp__publisher__compile_model")
+                "mcp__publisher__compile_model",
+                "mcp__publisher__get_skill")
 # The platform target: a hosted MCP server exposing the same two operations
 # under its own names. The CLI addresses a tool as `mcp__<server>__<tool>`, so
 # both halves are configuration -- `--hosted-mcp-server` names the server (which
@@ -653,7 +659,17 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         # recorded as a breach.
                         if name == "Skill":
                             sk = (c.get("input") or {}).get("skill")
-                            if sk and sk not in (a.answerer_skills or []):
+                            # A skill the package ships and this run installed
+                            # is the thing under test, not a stray: it came
+                            # from the package, and run.json pins which tree it
+                            # came from (packageSkillsSha). Only the CLI's own
+                            # skills are foreign. Without this every answerer
+                            # that read a package guide was marked contaminated,
+                            # its verdict nulled, and the case dropped before
+                            # diagnosis -- so the arm could never be scored.
+                            in_scope = (list(a.answerer_skills or [])
+                                        + list(a.package_skill_names or []))
+                            if sk and sk not in in_scope:
                                 foreign_skills.append(sk)
         elif e.get("type") == "user":
             for c in e["message"].get("content") or []:
@@ -980,6 +996,10 @@ def resolve_package_skills(a: argparse.Namespace) -> None:
     """
     a.package_skills_dir = None
     a.package_skills_sha = None
+    # Directory names of the package skills this run INSTALLS. The answerer
+    # addresses a skill by that name, and the provenance check below needs to
+    # tell one this run put there deliberately from one of the CLI's own.
+    a.package_skill_names: list[str] = []
 
     # The SERVED copy, not the working tree. The `tool` arm fetches what the
     # server holds, so installing those same bytes is what makes the two arms
@@ -1009,6 +1029,9 @@ def resolve_package_skills(a: argparse.Namespace) -> None:
                 "under the 'install' label. Pass --package-skills-dir, or pick "
                 "another mode.")
         a.package_skills_dir = local
+        a.package_skill_names = sorted(
+            c.name for c in local.iterdir()
+            if c.is_dir() and not c.name.startswith("."))
     elif a.package_skills == "tool":
         if not served:
             raise SystemExit(

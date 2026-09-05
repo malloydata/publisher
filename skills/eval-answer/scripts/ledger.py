@@ -143,7 +143,11 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "skillsRoot", "harnessVersion",
                 "judgeSkills", "diagnoserManifest",
                 "improverManifest", "doubtedGoldens",
-                "packageSha", "servedRevision", "datasetSha"} | RUN_RECOMMENDED
+                "packageSha", "servedRevision", "datasetSha",
+                # How the package's own skills reached the answerer, and a hash
+                # of the tree they came from. Two runs can differ ONLY in
+                # guidance, and without these the ledger cannot tell them apart.
+                "packageSkillsMode", "packageSkillsSha"} | RUN_RECOMMENDED
 
 
 def dataset_sha(set_dir: pathlib.Path) -> str | None:

@@ -1843,7 +1843,7 @@ async function runContextQuery(
          ? {
               skills,
               skills_note:
-                 "This package ships its own guidance. Read the relevant guide with get_skill(skill_name, scopes) before relying on names or conventions from this package. A guide whose name matches a built-in one replaces it here.",
+                 "This package ships its own guidance, listed above. Read the relevant one before relying on names or conventions from this package. If it is already loaded as a skill, use that; otherwise fetch it with get_skill(skill_name, scopes), and if that tool is not available to you, proceed and say which guidance you could not read. A guide whose name matches a built-in one replaces it here.",
            }
          : {};
    };

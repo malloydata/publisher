@@ -118,6 +118,7 @@ describe("Package serving identity", () => {
                   hasEmptyDiscoverySurface: () => false,
                   getDeclaredQueryMetadata: () => [],
                   getDeclaredSourceQueryMetadata: () => [],
+                  preaggregateViolations: () => [],
                } as unknown as Model,
             ],
          ]),

@@ -156,7 +156,13 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
         if cand and (cand / f"{a.package}.malloy").exists():
             model = cand / f"{a.package}.malloy"
             break
-    cmd = [sys.executable, str(script.resolve())]
+    # --set is REQUIRED by verify_goldens.py and was never passed. Running with
+    # cwd=set_dir looks like it should stand in for it, and does not: argparse
+    # exits 2 with a usage error, which this function then reports as "golden
+    # verification FAILED against the edited model". Every acceptance check was
+    # therefore blocked by a harness bug that reads exactly like a real golden
+    # invalidation, on every set.
+    cmd = [sys.executable, str(script.resolve()), "--set", str(a.set_dir)]
     if model:
         cmd += ["--model", str(model)]
     try:
