@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Working with Malloy Publisher
 
-Publisher is the open-source semantic model server for [Malloy](https://malloydata.dev), created and maintained by [Credible](https://www.credibledata.com). It serves one or more Malloy model packages over a REST API and a single MCP endpoint. If you are an AI agent working in this repo, here is what you can do with it and how to start.
+Publisher is the analytics engine for [Malloy](https://malloydata.dev), created and maintained by [Credible](https://www.credibledata.com). It serves one or more Malloy model packages over a REST API and a single MCP endpoint. If you are an AI agent working in this repo, here is what you can do with it and how to start.
 
 ## What you can do
 
@@ -21,14 +21,20 @@ All of it runs against a local server you start in step 1 and reach over MCP in 
 
 The MCP tools talk to a running server, so nothing works until it is up.
 
-From a clone:
+The fastest way, with nothing cloned and no Bun installed:
+
+```bash
+npx @malloy-publisher/server@latest --port 4000        # REST on :4000, MCP on :4040
+```
+
+From a clone of this repo:
 
 ```bash
 bun install
-bun run build && bun run start        # REST on :4000, MCP on :4040
+bun run build && bun run start
 ```
 
-To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Without cloning, `npx @malloy-publisher/server@latest --port 4000` runs the published build. Start one npx server at a time: concurrent first runs can race in the shared npx cache and corrupt the install ([docs/deployment.md](docs/deployment.md#run-with-npx) has the recovery step).
+To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Start one npx server at a time: concurrent first runs can race in the shared npx cache and corrupt the install ([docs/deployment.md](docs/deployment.md#run-with-npx) has the recovery step).
 
 Keep the `@latest`. `npx` resolves through a shared cache and will happily re-run a build it downloaded weeks ago, so a bare `npx @malloy-publisher/server` can serve an old version while looking like a fresh start. The server does not report its own version, so a stale build is invisible until it behaves like one — a fixed bug that appears to still be there is the usual first sign.
 

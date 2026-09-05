@@ -33,8 +33,8 @@ a `<malloy-render>` web component.
 
 ## Publisher
 
-An open-source semantic model server for Malloy. Publisher makes Malloy models accessible over the
-network and provides a professional UI for data exploration.
+The analytics engine for Malloy. Publisher serves Malloy models over the network — to
+agents, applications, and BI tools — and provides a professional UI for data exploration.
 
 - **Server:** REST API for listing content, managing database connections, compiling models, and
   executing queries. Also provides an MCP API for AI-agent integration, including the
@@ -55,7 +55,7 @@ notes. To surface analytics, prefer the [Publisher Console](console.md), an
 ## Credible (hosted)
 
 [Credible](https://www.credibledata.com) creates and maintains Publisher, and runs it as the core of
-the **AI Analytics Engine** — the hosted, governed service built around the server. Everything
+the **AI Analytics Engine** — the hosted, governed service built around Publisher. Everything
 described above is the same there: the same Malloy, the same package format, the same REST and MCP
 surfaces. What Credible adds is the engine around them: managed materialization and indexing in
 storage it brings along, one gateway that enforces access on every query, a concept index that gives
