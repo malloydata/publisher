@@ -6,7 +6,8 @@ SPDX-License-Identifier: MIT
 <h1 align="center">Malloy Publisher</h1>
 
 <p align="center"><b>The open-source semantic model server for <a href="https://malloydata.dev">Malloy</a></b><br>
-Serve governed data models to applications, BI tools, and AI agents — over REST and MCP.</p>
+Serve governed data models to applications, BI tools, and AI agents — over REST and MCP.<br>
+<sub>Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.</sub></p>
 
 <p align="center">
   <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml"><img src="https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg" alt="build"></a>
@@ -19,8 +20,8 @@ Serve governed data models to applications, BI tools, and AI agents — over RES
 
 When an AI queries your database directly, it writes its own SQL — and gets it subtly wrong: the wrong
 join, an invented column, a fan-out that double-counts but still looks plausible. Publisher puts a
-Malloy semantic layer in front of your data, where measures, dimensions, and joins are defined once,
-correctly. Applications, BI tools, and **AI agents** compose queries against that model instead of
+Malloy model — what the industry calls a semantic layer — in front of your data, where measures,
+dimensions, and joins are defined once, correctly. Applications, BI tools, and **AI agents** compose queries against that model instead of
 writing raw SQL, so the numbers come back **right by construction**. Agents work through the sources
 the model defines — not your raw tables — and you decide exactly what each caller can see.
 
@@ -281,6 +282,25 @@ The [`docs/`](docs/) folder is the reference hub — see its [index](docs/README
 
 The complete user guide also lives at
 **[docs.malloydata.dev](https://docs.malloydata.dev/documentation/user_guides/publishing/publishing)**.
+
+## Publisher and Credible
+
+Publisher is created and maintained by [Credible](https://www.credibledata.com), the company behind
+the **AI Analytics Engine**. The two fit together like this:
+
+- **Publisher is the open-source server.** It serves Malloy models over REST and MCP, and everything
+  an agent needs from the language and the server — the modeling and analysis skills, the MCP tools —
+  ships here in the open. Run it on a laptop, in Docker, or wherever you like.
+- **Credible is the hosted, governed engine built around it.** You write down what your data means
+  once, in Malloy; the engine owns the how — it materializes and indexes the model in storage it
+  brings along, enforces access at one gateway on every query, compresses each model into a concept
+  index so an agent gets just the slice a question needs, and serves every surface — agents over MCP,
+  dashboards and workspaces, the data apps and APIs in your product — from one model.
+
+Run Publisher yourself, or let Credible run it: the model is the same Malloy either way, and moving
+between them is a publish, not a rewrite. Where the server ends and the engine begins:
+[credibledata.com/malloy](https://www.credibledata.com/malloy) ·
+[Inside the AI Analytics Engine](https://www.credibledata.com/blog/posts/inside-the-ai-analytics-engine).
 
 ## Contributing
 

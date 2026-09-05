@@ -8,6 +8,10 @@ SPDX-License-Identifier: MIT
 > Start at the [project README](../README.md) for the 60-second quick start. This folder holds the
 > deeper reference. If you're an AI agent, read [AGENTS.md](../AGENTS.md) first — it's the canonical
 > guide to running Publisher and connecting over MCP.
+>
+> Publisher is created and maintained by [Credible](https://www.credibledata.com), the company
+> behind the AI Analytics Engine. For where the open-source server ends and Credible's hosted engine
+> begins, see [credibledata.com/malloy](https://www.credibledata.com/malloy).
 
 ## Examples
 

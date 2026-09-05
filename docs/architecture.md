@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 > What this is: the mental model for Publisher and the Malloy stack it sits on. Read it when you
 > want to know which repo owns what, or how a query flows from a `.malloy` file to a rendered chart.
 
-Publisher is one layer in the Malloy stack. From the bottom up:
+Publisher is one component of the Malloy stack. From the bottom up:
 
 ## Malloy
 
@@ -51,6 +51,21 @@ entirely from it**, so it's best understood as the Console's internal toolkit ra
 external integration path. See [embedded-data-apps.md](embedded-data-apps.md) for the advanced/internal
 notes. To surface analytics, prefer the [Publisher Console](console.md), an
 [HTML data app](html-data-apps.md), or the [REST/MCP APIs](api-overview.md).
+
+## Credible (hosted)
+
+[Credible](https://www.credibledata.com) creates and maintains Publisher, and runs it as the core of
+the **AI Analytics Engine** — the hosted, governed service built around the server. Everything
+described above is the same there: the same Malloy, the same package format, the same REST and MCP
+surfaces. What Credible adds is the engine around them: managed materialization and indexing in
+storage it brings along, one gateway that enforces access on every query, a concept index that gives
+an agent just the slice of a model its question needs, and every surface — agents, dashboards and
+workspaces, data apps and APIs — served from one model. A package published to a local Publisher and
+one published to Credible are the same artifact; the [`publisher` connection type](connections.md#publisher-proxy-connections-type-publisher)
+is how a local authoring loop talks to a hosted environment.
+
+**Read more:** [credibledata.com/malloy](https://www.credibledata.com/malloy) ·
+[Inside the AI Analytics Engine](https://www.credibledata.com/blog/posts/inside-the-ai-analytics-engine)
 
 ## Packages in this repo
 

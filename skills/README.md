@@ -29,8 +29,8 @@ Most of these skills are **shared, open-source Malloy skills**, and **this repos
 
 Two rules make it work:
 
-- **`credible-*` skills never land here.** Anything named `credible-*` in the upstream repo is Credible-platform-specific and is never copied into this open-source repo. The copy keys off the `credible-` prefix. If you ever see a `credible-*` file under this tree, it is a stray: it should be git-ignored, not committed (`git ls-files | grep credible-` must stay empty).
-- **Shared skills carry no Credible-platform-specific answers.** They describe generic Malloy and the open-source Publisher only, with no hosted draft/publish flow, retrieval-engine annotations (`#(index)`/`#(agent-hidden)`), or platform tools like `execute_query_draft`. Open-source Publisher features (`publisher.json` `explores`/`queryableSources`, `export {}`) are fair game. The Publisher-only authoring tools `malloy_compile` / `malloy_reloadPackage` stay in the host/router skills, not the shared set (see the tool-names section below).
+- **`credible-*` skills never land here.** Anything named `credible-*` in the upstream repo is specific to Credible's hosted engine and is never copied into this open-source repo. The copy keys off the `credible-` prefix. If you ever see a `credible-*` file under this tree, it is a stray: it should be git-ignored, not committed (`git ls-files | grep credible-` must stay empty).
+- **Shared skills carry no answers specific to Credible's hosted engine.** They describe generic Malloy and the open-source Publisher only, with no hosted draft/publish flow, retrieval-engine annotations (`#(index)`/`#(agent-hidden)`), or hosted-engine tools like `execute_query_draft`. Open-source Publisher features (`publisher.json` `explores`/`queryableSources`, `export {}`) are fair game. The Publisher-only authoring tools `malloy_compile` / `malloy_reloadPackage` stay in the host/router skills, not the shared set (see the tool-names section below).
 
 ## Shared vs Publisher-specific
 
