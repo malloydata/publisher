@@ -3,13 +3,14 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
+<!-- AI AGENTS: READ AGENTS.MD FIRST!!! It covers starting the server, connecting over MCP, and the bundled skills. -->
+
 <h1 align="center">Malloy Publisher</h1>
 
 <p align="center"><b>The Analytics Engine for <a href="https://malloydata.dev">Malloy</a></b><br>
-A more modern data stack in a single engine — built for the AI era.<br>
+A post modern data stack — built for the AI era.<br>
 One data model, served over MCP and REST to AI agents, applications, and BI tools.<br>
-<sub>Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.<br>
-AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
+<sub>Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.</sub></p>
 
 <p align="center">
   <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml"><img src="https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg" alt="build"></a>
@@ -57,7 +58,7 @@ also needs [Bun](https://bun.sh/) 1.3.13+. The Docker image carries its own runt
 ### Run the examples
 
 ```bash
-npx @malloy-publisher/server --port 4000
+npx @malloy-publisher/server@latest --port 4000
 ```
 
 Open **http://localhost:4000**. Three example packages are bundled — [`storefront`](examples/storefront)
@@ -180,7 +181,7 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 
 ### Surface
 
-- **Dashboards declared in Malloy.** A `dashboards/*.malloy` file *is* the dashboard: filterable,
+- **Dashboards declared in Malloy.** A `dashboards/*.malloy` file _is_ the dashboard: filterable,
   clickable, grid-laid-out, no code and no build step — [docs/dashboards.md](docs/dashboards.md).
 - **No-build HTML data apps.** Ship HTML, CSS, and JavaScript inside a package and Publisher hosts it
   against the model — [docs/html-data-apps.md](docs/html-data-apps.md).
@@ -220,30 +221,30 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 - **Alongside dbt.** Where Malloy and dbt fit together, and the plan to close the gaps —
   [docs/dbt-roadmap.md](docs/dbt-roadmap.md).
 
+## Examples
+
+The fastest way to see all of the above is the [`examples/`](examples/) directory. Three are packages
+Publisher serves out of the box, and a fourth shows the SDK:
+
+- **[storefront](examples/storefront)** — the flagship ecommerce model: sources, joins, dashboards, a
+  notebook, and givens-driven filters. It is the package Quick start serves, and the one the SDK
+  example reads from.
+- **[governed-analytics](examples/governed-analytics)** — the whole governance story in one small
+  package: givens, row-level access, and `#(authorize)` source gates.
+- **[html-data-app](examples/html-data-app)** — a no-build SaaS subscriptions dashboard served from
+  a package's `public/` directory, driven by `Publisher.query()`.
+- **[data-app](examples/data-app)** — a standalone Vite + React app on
+  [`@malloy-publisher/sdk`](packages/sdk), embedding live results in your own UI. Not a served
+  package.
+
 ## Documentation
 
-The [`docs/`](docs/) folder is the reference hub — see its [index](docs/README.md). Highlights:
-
-| Topic                                               | Doc                                                                                                                                                                                      |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runnable example packages                           | [examples/](examples/) ([storefront](examples/storefront) · [governed-analytics](examples/governed-analytics) · [html-data-app](examples/html-data-app) · [data-app](examples/data-app)) |
-| Architecture & how it fits together                 | [docs/architecture.md](docs/architecture.md)                                                                                                                                             |
-| REST & MCP API overview                             | [docs/api-overview.md](docs/api-overview.md)                                                                                                                                             |
-| The package format (`publisher.json`, models, data) | [docs/packages.md](docs/packages.md)                                                                                                                                                     |
-| The Publisher Console (navigation & features)       | [docs/console.md](docs/console.md)                                                                                                                                                       |
-| No-code visual query builder                        | [docs/explorer.md](docs/explorer.md)                                                                                                                                                     |
-| Connect an AI agent (MCP, or REST when unattended)  | [docs/ai-agents.md](docs/ai-agents.md)                                                                                                                                                   |
-| Build a custom UI (no build step)                   | [docs/html-data-apps.md](docs/html-data-apps.md)                                                                                                                                         |
-| Runtime parameters & access control                 | [givens](docs/givens.md) (base) · [row-level](docs/row-level-access.md) · [authorize](docs/authorize.md) · [discovery](docs/discovery-and-access.md)                                     |
-| Deploy (npx / Docker / Compose)                     | [docs/deployment.md](docs/deployment.md)                                                                                                                                                 |
-| Database connections                                | [docs/connections.md](docs/connections.md)                                                                                                                                               |
-| Materialization & scheduling                        | [docs/materialization.md](docs/materialization.md)                                                                                                                                       |
-| Docker runtime deep-dive (layout, env, tuning)      | [packages/server/README.docker.md](packages/server/README.docker.md)                                                                                                                     |
-| Theming (light/dark, palette)                       | [docs/theming.md](docs/theming.md)                                                                                                                                                       |
-| Configuration & tuning reference                    | [docs/configuration.md](docs/configuration.md)                                                                                                                                           |
-| Build & develop from a clone                        | [docs/development.md](docs/development.md)                                                                                                                                               |
-
-The complete user guide also lives at
+The [`docs/`](docs/) folder is the reference hub; start at its [index](docs/README.md). Beyond the
+guides linked above: [architecture](docs/architecture.md) for how the pieces fit together,
+[api-overview](docs/api-overview.md) for the REST and MCP surface, [packages](docs/packages.md) for
+the package format (`publisher.json`, models, data), and the
+[Docker runtime deep-dive](packages/server/README.docker.md) for image layout, environment, and
+tuning. The complete user guide also lives at
 **[docs.malloydata.dev](https://docs.malloydata.dev/documentation/user_guides/publishing/publishing)**.
 
 ## Publisher and Credible
