@@ -3,9 +3,9 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-<h1 align="center">Malloy Publisher</h1>
-
 <p align="center"><sub>AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
+
+<h1 align="center">Malloy Publisher</h1>
 
 <p align="center"><b>The Analytics Engine for <a href="https://malloydata.dev">Malloy</a></b><br>
 A post modern data stack — built for the AI era.<br>
