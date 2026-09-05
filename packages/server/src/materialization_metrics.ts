@@ -158,6 +158,32 @@ const manifestBindDegradedCounter = lazyCounter(
       "(build-side seed). A misconfiguration that breaks the source on a " +
       "case-folding engine (Snowflake); alertable.",
 );
+const duplicateTargetSkipCounter = lazyCounter(
+   "publisher_materialization_duplicate_target_skipped_total",
+   "Sources skipped because the physical table they name was already built in " +
+      "this run. Ordinary for a package that extends a persisted source; a " +
+      "rising count against a package with no extension means the plan is " +
+      "enumerating one table under more names than expected.",
+);
+const sharedAddressInstructionCounter = lazyCounter(
+   "publisher_materialization_shared_address_instructions_total",
+   "Content addresses that arrived with more than one instruction naming a " +
+      "DIFFERENT physical table. The host minted a table per source where " +
+      "several sources share one artifact. With a sourceID on each instruction " +
+      "every table is built and only one is recorded, so the rest are orphaned; " +
+      "without one the last instruction wins and the earlier names are never " +
+      "built. Wasteful, not wrong — the table's CONTENT is the same either way.",
+);
+const tableCollisionCounter = lazyCounter(
+   "publisher_materialization_table_collision_total",
+   "Two definitions with DIFFERENT content addresses materializing into ONE " +
+      "physical table. Each build overwrites the other's rows while both " +
+      "addresses resolve to the table at serve time, so a query is answered " +
+      "from another source's data. A wrong answer, not wasted work — page on " +
+      "this one. Refused instead of counted-and-continued when " +
+      "PERSIST_COLLISION_ENFORCE is set, so a non-zero rate here is also the " +
+      "measure of what flipping that flag would start refusing.",
+);
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
    "Wall-clock duration of building a single persist source.",
@@ -175,7 +201,11 @@ const scheduledFireCounter = lazyCounter(
 const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
    "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|" +
-      "'runtime_live_fallback'|'blocked_by_row_level_gate').",
+      "'runtime_live_fallback'|'blocked_by_row_level_gate'). Covers the storage= " +
+      "tier only; a colocated #@ persist hit is in neither the numerator nor the " +
+      "denominator. NOTE 'live_fallback' here means the transform was INELIGIBLE, " +
+      "which QueryResult.servedFrom reports as null - that field's " +
+      "'live_fallback' is this counter's 'runtime_live_fallback'.",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -329,6 +359,34 @@ export function recordConnectionDigestSkipped(): void {
 }
 
 /**
+ * Record a source skipped because its physical table was already built in this
+ * run. Expected whenever several sources map onto one artifact — a base and its
+ * `extend` share a content address — so this is a volume signal, not a fault.
+ */
+export function recordDuplicateTargetSkipped(): void {
+   duplicateTargetSkipCounter().add(1);
+}
+
+/**
+ * Record a content address that arrived with instructions naming more than one
+ * physical table. The publisher cannot resolve this — the host asked for both
+ * tables — so it builds each and records one, leaving the others unreferenced.
+ */
+export function recordSharedAddressInstructions(): void {
+   sharedAddressInstructionCounter().add(1);
+}
+
+/**
+ * Record two definitions materializing into one physical table. Distinct from
+ * {@link recordSharedAddressInstructions}: that one is a host minting more tables
+ * than an artifact needs (wasteful), this one is two different relations sharing a
+ * table (serve-time wrong data).
+ */
+export function recordTableCollision(): void {
+   tableCollisionCounter().add(1);
+}
+
+/**
  * Record a manifest-bind attempt (publisher binding a configured manifest to a
  * package at load). `timeout` is distinguished from `failure` so operators can
  * tell an unreachable/slow manifest store from a malformed manifest.
@@ -450,8 +508,27 @@ export function recordServeShapeTypeFallback(
  * BOTH the storage and pre-aggregation tiers before either was attempted — the
  * one outcome with no compile attempt behind it, so without this label a
  * blocked query recorded nothing at all rather than reading as a fallback.
- * This hit rate is the headline KPI of the storage tier — otherwise the
- * fallback side is only a DEBUG log.
+ * This hit rate is the headline KPI of the storage tier; the fallback side also
+ * logs its reason per query at INFO — the compile error, plus the sources the
+ * shape offered and the ones the freshness gate withheld, which is what
+ * separates "never materialized" from "materialized but stale". That is the only
+ * per-query account of a miss there is.
+ *
+ * ⚠️ `live_fallback` here is NOT `QueryResult.servedFrom`'s `live_fallback`, and
+ * joining a dashboard across the two on that token is wrong in both directions.
+ * This label means the transform was ineligible, which that field reports as
+ * `null`; the run-time store failure that field calls `live_fallback` is
+ * `runtime_live_fallback` here. (`manifestBindingStatus` spends the same token on
+ * a third thing again — a configured `manifestLocation` whose fetch or bind
+ * failed.) Each surface is internally consistent and none means what the others
+ * do.
+ *
+ * Scope worth knowing before reading the hit rate as "did materialization work":
+ * this counter covers the `storage=` tier only. A COLOCATED `#@ persist` hit
+ * never reaches the routing decision, so it is absent from the numerator AND the
+ * denominator rather than counted as a miss — the rate is silent about that tier
+ * rather than pessimistic about it, which the "headline KPI" framing otherwise
+ * invites you to assume.
  */
 export function recordStorageServeRouting(
    outcome:

@@ -65,8 +65,8 @@ export default function Sidebar({
          <Box sx={{ flex: 1, overflowY: "auto", overflowX: "hidden", py: 1 }}>
             <PrimaryNav isCollapsed={isCollapsed} />
             <EnvironmentsSection isCollapsed={isCollapsed} />
-            <SettingsSection isCollapsed={isCollapsed} />
          </Box>
+         <SettingsSection isCollapsed={isCollapsed} />
          <DocsFooter isCollapsed={isCollapsed} />
       </Box>
    );
@@ -240,39 +240,27 @@ function EnvironmentsSection({ isCollapsed }: { isCollapsed: boolean }) {
    );
 }
 
+/**
+ * Pinned to the bottom with the docs links rather than sitting under
+ * Environments, and with no section heading of its own. Visualization theme is
+ * the only setting there is (`/settings` is a redirect to it), so a headed
+ * SETTINGS section directly beneath the environment list gave one operator
+ * preference the same weight as the data the sidebar exists to navigate.
+ */
 function SettingsSection({ isCollapsed }: { isCollapsed: boolean }) {
    const location = useLocation();
    const isThemeRoute = location.pathname.startsWith("/settings/theme");
 
    return (
-      <Box sx={{ mt: 1 }}>
-         {!isCollapsed && (
-            <Typography
-               variant="caption"
-               sx={{
-                  display: "block",
-                  px: 3,
-                  py: 1,
-                  color: "text.secondary",
-                  fontWeight: 500,
-                  textTransform: "uppercase",
-                  fontSize: "0.6875rem",
-                  letterSpacing: "0.5px",
-               }}
-            >
-               Settings
-            </Typography>
-         )}
-         <List sx={{ py: 0 }}>
-            <SidebarItem
-               icon={<PaletteOutlinedIcon fontSize="small" />}
-               label="Visualization theme"
-               to="/settings/theme"
-               selected={isThemeRoute}
-               isCollapsed={isCollapsed}
-            />
-         </List>
-      </Box>
+      <List sx={{ pt: 1, pb: 0 }}>
+         <SidebarItem
+            icon={<PaletteOutlinedIcon fontSize="small" />}
+            label="Visualization theme"
+            to="/settings/theme"
+            selected={isThemeRoute}
+            isCollapsed={isCollapsed}
+         />
+      </List>
    );
 }
 

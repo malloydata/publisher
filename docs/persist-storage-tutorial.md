@@ -730,14 +730,25 @@ Everything you need is on the package status and the logs:
     live). Empty when everything routes.
 - `GET …/materializations/{id}` → run status and, on success, the manifest entry
   with `storageDestinationName` and the captured `schema`.
-- Server logs → `info` when a query serves from storage; `debug` when a query
-  falls back to live.
+- Server logs → `info` when a query serves from storage, and `info` when it
+  falls back to live, carrying the compile error that made the shape ineligible.
+  That fallback line is the only per-query account of a storage-tier miss, since
+  the response reports it as a bare `null` (see the caveat below).
 - Metrics (OpenTelemetry, under the `publisher` meter):
   - `publisher_storage_serve_routing_total{outcome=storage|live_fallback|runtime_live_fallback}`
     — the serve hit rate; the headline signal for "is the tier actually serving?"
     `runtime_live_fallback` is the one to watch: the query **routed** and then the
     store failed under it, so the caller still got a correct answer from the
     warehouse while the tier is broken. The hit rate alone will not show that.
+
+    Two things to get right before building a dashboard on this. **It covers the
+    `storage=` tier only** — a colocated `#@ persist` hit never reaches the
+    routing decision, so it is in neither the numerator nor the denominator; the
+    rate is silent about that tier, not pessimistic about it. And **`live_fallback`
+    here is not `QueryResult.servedFrom`'s `live_fallback`.** This label means the
+    transform was *ineligible*, which the field reports as `null`; the run-time
+    store failure the field calls `live_fallback` is `runtime_live_fallback` here.
+    Correlating the two on the token is wrong in both directions.
   - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_refused|infra_failure}`
     — for a chained source, whether it built by reading its parent's stored table
     (`parent_reuse`) or fell back to recompute-from-raw. `infra_failure` is a
@@ -746,6 +757,10 @@ Everything you need is on the package status and the logs:
   - `malloy_model_query_duration` tags a routed query with
     `served_from=storage`, or `served_from=live_fallback` when a run-time store
     failure degraded it to live (so a fallback never counts as a storage hit).
+    Note this attribute follows `QueryResult.servedFrom`'s vocabulary, not the
+    counter's directly above it — so `served_from=live_fallback` and
+    `outcome=live_fallback` are different events despite sitting two bullets
+    apart.
     The attribute is absent for a query that never routed, so an `off`
     deployment's histogram is unchanged.
 

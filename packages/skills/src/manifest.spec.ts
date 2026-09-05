@@ -123,18 +123,19 @@ describe("publisher-local manifest", () => {
     * `malloy-analysis-report` -> `malloy-model`), which is why both now name
     * those skills in prose instead.
     *
-    * `malloy` is the documented exception: it is the index of every Malloy
-    * skill, so its table necessarily has a row per skill, and 10+ skills point
-    * at it in turn, so it cannot be dropped from a group either. A catalogue
-    * row is not an instruction to go read something, which is what this test
-    * is really about.
+    * The `malloy` index is the case that forces the distinction: it is the
+    * catalogue of every skill, so it names skills outside whatever group it
+    * ships in. It states them as plain names rather than `skill:` references,
+    * which is the same thing `malloy-getting-started` does for
+    * `malloy-gotchas-modeling`. A catalogue row is not an instruction to go
+    * read something, and now it does not look like one either, so the index
+    * needs no exemption from this test.
     */
-   it("keeps each group's references inside it, the malloy index aside", () => {
+   it("keeps each group's references inside it", () => {
       const escapes: string[] = [];
       for (const [group, members] of Object.entries(manifest.groups ?? {})) {
          const inGroup = new Set(members);
          for (const member of members) {
-            if (member === "malloy") continue;
             for (const file of markdownFiles(member)) {
                const body = fs.readFileSync(file, "utf8");
                for (const [, target] of body.matchAll(SKILL_REF)) {
