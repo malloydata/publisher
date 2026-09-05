@@ -202,8 +202,12 @@ export class WatchModeController {
          assertSafePackageName(watchName);
       } catch (error) {
          logger.error(error);
-         const { status } = internalErrorToHttpError(error as Error);
-         res.status(status).json({ error: (error as Error).message });
+         // Take the mapper's message, not error.message: an unclassified
+         // failure here (a watch-path EACCES/ENOSPC) carries an internal
+         // filesystem path, and taking only the status would return verbatim
+         // what the mapper exists to withhold.
+         const { status, json } = internalErrorToHttpError(error as Error);
+         res.status(status).json({ error: json.message });
          return;
       }
       const environmentManifest =
@@ -227,8 +231,12 @@ export class WatchModeController {
          await this.ensureWatching(watchName);
       } catch (error) {
          logger.error(error);
-         const { status } = internalErrorToHttpError(error as Error);
-         res.status(status).json({ error: (error as Error).message });
+         // Take the mapper's message, not error.message: an unclassified
+         // failure here (a watch-path EACCES/ENOSPC) carries an internal
+         // filesystem path, and taking only the status would return verbatim
+         // what the mapper exists to withhold.
+         const { status, json } = internalErrorToHttpError(error as Error);
+         res.status(status).json({ error: json.message });
          return;
       }
       res.json();
