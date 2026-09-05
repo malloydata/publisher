@@ -64,21 +64,9 @@ Open **http://localhost:4000**. Three example packages are bundled — [`storefr
 [`html-data-app`](examples/html-data-app) (a no-build dashboard) — all DuckDB-backed, no credentials
 required. The first run fetches them from GitHub.
 
-### Know when it's ready
-
-The server prints one line to stderr when it is serving, which scripts can wait for instead of polling:
-
-```
-PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=1 packages=3 load_errors=0
-```
-
-`load_errors` counts packages and environments that failed to load; `/api/v0/status` names them. The
-failure lines, and what each means, are in
-[docs/configuration.md](docs/configuration.md#startup-signals).
-
 ## Start from your own data
 
-### Scaffold a package
+### Create a package
 
 ```bash
 mkdir my-data && cd my-data
@@ -89,9 +77,9 @@ npm start
 This writes a package to `./sales` — plus, in the current directory, a small workspace: start and
 reset scripts, an MCP config, agent instructions, and the Malloy skills as files your agent can read.
 `npm start` serves the package in watch mode, so edits take effect as you save. Keep the `@latest`:
-without it npm may reuse a cached, older scaffolder.
+without it npm may reuse a cached, older version.
 
-### Bring a file
+### Bring local data files
 
 ```bash
 npm create @malloy-publisher/malloy-package@latest sales -- --data ./orders.csv
@@ -103,7 +91,7 @@ small: a row count and an overview, which is the moment to point an agent at it.
 
 A package is just Malloy, so it is not limited to a file: point its model at a
 [database connection](docs/connections.md) and the same workspace serves a warehouse. The finer points
-of the scaffolder — caching, workspace layout, the bare `npx` form — are in
+of `npm create` — caching, workspace layout, the bare `npx` form — are in
 [docs/scaffolding.md](docs/scaffolding.md).
 
 ## Point your agent at it
