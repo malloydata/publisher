@@ -51,6 +51,30 @@ runtime yourself, switch it and then start the server as a separate command: `mi
 npm start` chained in one shell still runs the old Node, because PATH is not re-evaluated mid-chain,
 and the second failure looks identical to the first.
 
+The full startup-signal contract is in [docs/configuration.md](docs/configuration.md#startup-signals).
+
+### Starting from your own data
+
+To serve the user's data rather than the bundled examples, scaffold a package — in a fresh directory,
+because the scaffolder writes a workspace (start/reset scripts, an MCP config, agent instructions, the
+skills) into the current directory as well as the package:
+
+```bash
+mkdir my-data && cd my-data
+npm create @malloy-publisher/malloy-package@latest sales -- --data ./orders.csv
+npm start
+```
+
+- Keep the `@latest`; without it npm may reuse a cached, older scaffolder.
+- The `--` before `--data` is required, or `npm create` swallows the flag and the scaffolder stops.
+- `--data` takes CSV, Parquet, JSON, newline-delimited JSON, or Excel `.xlsx`, by a path relative to
+  the current directory; the file is copied into the package. Omit it for a small sample dataset.
+- A seeded package starts as a row count and an overview — the modelling is yours to do next.
+- With the workspace in place, `npm start` (and a bare `npx @malloy-publisher/server` from that
+  directory) serves this package, not the examples.
+
+Details — caching, workspace layout, the bare `npx` form — are in [docs/scaffolding.md](docs/scaffolding.md).
+
 `serving` does not mean everything loaded. A package that fails to load is skipped, not fatal, so the
 server serves whatever did load and the package is simply absent. If data you expect is missing, check
 `curl -s http://localhost:4000/api/v0/status | jq .loadErrors`, which is absent when everything loaded
@@ -125,6 +149,14 @@ stdio-only clients (older Claude Desktop) bridge through mcp-remote:
   }
 }
 ```
+
+### The trust gate
+
+Claude Code asks, once per directory, whether to trust the folder — and this is a second gate,
+separate from connecting the server. In a workspace nobody has trusted yet it lists the `malloy_*`
+tools and then refuses every call, and a `.claude/settings.json` allowlist is discarded rather than
+merged. Start Claude Code interactively in the directory once and answer the prompt; a headless run
+is never asked, so it cannot clear the gate. You know it cleared when a query returns data.
 
 ## 3. The MCP tools
 
