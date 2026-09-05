@@ -98,14 +98,10 @@ of `npm create` — caching, workspace layout, the bare `npx` form — are in
 
 ### Connect Claude Code
 
-In one terminal:
-
-```bash
-npx @malloy-publisher/server --port 4000 --host 127.0.0.1
-```
-
-On startup the server writes a `.mcp.json` into the directory you ran it in, pointing at the MCP port
-it bound. In a second terminal, **in that same directory**:
+Keep the server from [Quick start](#quick-start) running — or `npm start` from
+[Create a package](#create-a-package). On startup it wrote a `.mcp.json` into the directory you ran it
+in, pointing at the MCP port it bound. Open a second terminal, **in that same directory**, and start
+the agent:
 
 ```bash
 claude
