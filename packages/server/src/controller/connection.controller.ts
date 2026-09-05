@@ -239,7 +239,9 @@ export class ConnectionController {
          if (packages.length === 1) {
             const onlyPackage = packages[0].name;
             if (!onlyPackage) {
-               throw new ConnectionError("Package name is undefined");
+               throw new ConnectionError("Package name is undefined", {
+                  callerSafe: true,
+               });
             }
             const pkg = await environment.getPackage(onlyPackage);
             return await pkg.getMalloyConnection(connectionName);
@@ -277,7 +279,9 @@ export class ConnectionController {
             }
          ).fetchTableSchema(tableKey, tablePath);
          if (!source) {
-            throw new ConnectionError(`Table ${tablePath} not found`);
+            throw new ConnectionError(`Table ${tablePath} not found`, {
+               callerSafe: true,
+            });
          }
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof source === "string") {
