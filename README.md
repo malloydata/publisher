@@ -26,27 +26,26 @@ agent.
 
 Write down what your data means, in [Malloy](https://malloydata.dev): the sources, the joins, the
 measures, who may see what. The open-source Malloy [skills](skills/) ship alongside, so an agent can do
-the writing — build the model, then the dashboards, notebooks, and data apps on top of it. Publisher
-serves that model to every surface — over MCP to Claude, Cursor, Codex, or an agent you build; over
-REST to applications and BI tools. Agents compose queries against the model instead of writing SQL
-from scratch, so there is no wrong join, no invented column, no fan-out that double-counts but looks
-plausible — and the same question returns the same numbers tomorrow.
+the writing — build the model, then the dashboards, notebooks, and data apps on top of it.
 
-- **Any AI, one endpoint** — Claude, Cursor, Codex, VS Code, or an agent you build connect over MCP;
-  an agent running unattended uses REST.
-- **Tight control** — agents work through the sources the model defines, never your raw tables.
-  [Givens](docs/givens.md), [row-level access](docs/row-level-access.md), and
-  [`#(authorize)`](docs/authorize.md) decide who sees what; [discovery curation](docs/discovery-and-access.md)
+Publisher serves that model to every surface — over MCP to Claude, Cursor, Codex, or an agent you
+build; over REST to applications and BI tools. Agents compose queries against the model instead of
+writing SQL from scratch, so there is no wrong join, no invented column, no fan-out that double-counts
+but looks plausible — and the same question returns the same numbers tomorrow.
+
+- **Model** — an agent builds the model with the bundled open-source [skills](skills/), from a
+  warehouse or a file, and validates each edit without a restart.
+- **Analyze** — Claude, Cursor, Codex, or an agent you build asks over MCP; unattended agents and
+  applications use REST. Queries are Malloy, legible enough to review at a glance, and run against
+  the model, never your raw tables.
+- **Surface** — dashboards declared in Malloy, notebooks, and no-build HTML data apps, all shipped
+  inside the package, plus the Console for browsing it all.
+- **Govern** — givens, row-level access, and `#(authorize)` decide who sees what; discovery curation
   decides what is even visible.
-- **Readable, full-featured queries** — Malloy joins, nests, aggregates, and filters, and stays legible
-  enough to review at a glance. Agents already write it as fluently as Python.
-- **DuckDB built in** — serve CSV, Parquet, JSON, or Excel files with no warehouse required, or connect
-  BigQuery, Snowflake, Postgres, Databricks, MotherDuck, and more.
-- **Fast where it counts** — one `#@ persist` annotation materializes an expensive source into a table,
-  rebuilt on demand or on a schedule.
-- **Ships with the skills** — the open-source Malloy modeling and analysis [skills](skills/) agents use
-  to build and query models, auto-discovered by most AI coding hosts.
-- **Runs anywhere** — `npx`, Docker, or Compose, in minutes.
+- **Optimize** — one `#@ persist` annotation materializes an expensive source into a table and
+  `#@ preaggregate` rolls it up, rebuilt on demand or on a schedule.
+- **Run anywhere** — DuckDB built in for CSV, Parquet, JSON, and Excel; BigQuery, Snowflake, Postgres,
+  Databricks, MotherDuck, and more by connection; `npx`, Docker, or Compose, in minutes.
 
 ## Requirements
 
@@ -200,7 +199,7 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 - **Know the boundary.** [docs/security-posture.md](docs/security-posture.md) lists what Publisher
   defends against and what it leaves to the gateway in front of it.
 
-### Perform
+### Optimize
 
 - **Materialize.** One `#@ persist` annotation turns an expensive source into a table, rebuilt on
   demand, from the `malloy-pub` CLI, or on a cron with the opt-in scheduler —
