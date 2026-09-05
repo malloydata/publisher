@@ -203,7 +203,7 @@ The complete user guide also lives at
 Publisher is created and maintained by [Credible](https://www.credibledata.com), the company behind
 the **AI Analytics Engine**. The two fit together like this:
 
-- **Publisher is the open-source server.** It serves Malloy models over REST and MCP, and everything
+- **Publisher is the open-source analytics engine.** It serves Malloy models over REST and MCP, and everything
   an agent needs from the language and the server — the modeling and analysis skills, the MCP tools —
   ships here in the open. Run it on a laptop, in Docker, or wherever you like.
 - **Credible is the hosted, governed engine built around it.** You write down what your data means
@@ -213,7 +213,7 @@ the **AI Analytics Engine**. The two fit together like this:
   dashboards and workspaces, the data apps and APIs in your product — from one model.
 
 Run Publisher yourself, or let Credible run it: the model is the same Malloy either way, and moving
-between them is a publish, not a rewrite. Where the server ends and the engine begins:
+between them is a publish, not a rewrite. Where the open-source engine ends and the hosted one begins:
 [credibledata.com/malloy](https://www.credibledata.com/malloy) ·
 [Inside the AI Analytics Engine](https://www.credibledata.com/blog/posts/inside-the-ai-analytics-engine).
 
