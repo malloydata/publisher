@@ -33,8 +33,8 @@ a `<malloy-render>` web component.
 
 ## Publisher
 
-An open-source semantic model server for Malloy. Publisher makes Malloy models accessible over the
-network and provides a professional UI for data exploration.
+The open-source AI Analytics Engine for Malloy. Publisher serves Malloy models over the network — to
+agents, applications, and BI tools — and provides a professional UI for data exploration.
 
 - **Server:** REST API for listing content, managing database connections, compiling models, and
   executing queries. Also provides an MCP API for AI-agent integration, including the
