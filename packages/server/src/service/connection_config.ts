@@ -11,7 +11,11 @@ import {
    resolveCloudStorageCredentials,
    validateS3ProviderShape,
 } from "./gcs_s3_utils";
-import { parseHostKeys } from "./proxy";
+import {
+   ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV,
+   allowUnverifiedHostKey,
+   parseHostKeys,
+} from "./proxy";
 import {
    queryMetadataAdvisoryWarnings,
    queryMetadataBudgetWarning,
@@ -390,19 +394,35 @@ function validateConnectionShape(connection: ApiConnection): void {
          );
       }
 
-      // hostKey is optional (omitted or empty string => connect unpinned), but a
-      // non-empty hostKey that parses to zero keys — only blank lines, whitespace,
-      // or `#` comments, e.g. a paste that grabbed just ssh-keyscan's
-      // `# host:port ...` header — is a misconfigured pin, not a licence to
-      // connect unverified. Reject it here so the operator gets a config error
-      // instead of a silently unpinned tunnel. (Truthiness, not trim(): "" is the
-      // unpinned signal; "   " is a non-empty value that must yield a key.)
+      // hostKey is optional at config time, but a non-empty hostKey that parses to
+      // zero keys -- only blank lines, whitespace, or `#` comments, e.g. a paste
+      // that grabbed just ssh-keyscan's `# host:port ...` header -- is a
+      // misconfigured pin and is rejected here so the operator gets a config error.
+      // (Truthiness, not trim(): "" is the unpinned signal; "   " is a non-empty
+      // value that must yield a key.) An omitted/empty hostKey is unpinned, which
+      // the tunnel refuses at connect time unless the deployment sets
+      // PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see openProxy's host-key policy).
       const hostKey = connection.proxy.ssh?.hostKey;
+      // Warn at config load rather than leaving the refusal to be discovered by a
+      // failing query. The tunnel is dialed lazily, so an upgrading deployment with
+      // unpinned connections is silent through startup and first learns of the new
+      // policy when a user runs a query. Naming them here lets an operator pin the
+      // keys before anyone hits one. Not an error: refusing to start over a
+      // connection nobody may use today would be worse than the problem.
+      if (!hostKey && !allowUnverifiedHostKey()) {
+         logger.warn(
+            `Connection proxy on '${connection.name}' pins no SSH host key, so the tunnel will ` +
+               `be refused when a query first uses it. Set ssh.hostKey to the bastion's host ` +
+               `key, or set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
+               `key for this deployment.`,
+         );
+      }
       if (hostKey && parseHostKeys(hostKey).size === 0) {
          throw new Error(
             `Connection proxy on '${connection.name}' has a hostKey with no usable host-key line ` +
                `(only blanks/comments). Provide an OpenSSH known_hosts line or base64 blob, or omit ` +
-               `hostKey to connect unpinned.`,
+               `hostKey to connect unpinned (which the tunnel refuses unless ` +
+               `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY is set).`,
          );
       }
 

@@ -19,11 +19,12 @@
  * `ssh.hostKey` is optional. When set, it pins the bastion's host key(s) and the
  * tunnel is fail-closed on mismatch; it may list multiple known_hosts lines (a
  * load-balanced/HA bastion presents a different key per backend), and any listed
- * key is accepted. When absent, the tunnel connects without host-key
- * verification — the self-service default, matching mainstream BI tools' SSH
- * tunnels. The SSH transport is still encrypted; unpinned, a MITM on the
- * publisher→bastion hop is possible, mitigated by the customer allowlisting our
- * egress on the bastion.
+ * key is accepted. When absent, the tunnel is fail-closed by default: an
+ * unverified host key means a MITM on the publisher->bastion hop is undetectable,
+ * so the connection is refused. An operator who accepts that risk (typically
+ * because egress is allowlisted on the bastion) opts in for the deployment via
+ * PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true, which restores the unpinned
+ * connect with a warning. The SSH transport is encrypted regardless.
  */
 
 import net from "net";
@@ -33,6 +34,20 @@ import { components } from "../api";
 import { logger } from "../logger";
 
 type ConnectionProxy = components["schemas"]["ConnectionProxy"];
+
+// Deployment opt-in to connect an SSH tunnel whose bastion host key is not pinned.
+// Off by default (fail closed): whether to accept an unverified host key is an
+// operator posture, so it is an env flag rather than a per-connection spec field.
+export const ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV =
+   "PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY";
+
+export function allowUnverifiedHostKey(): boolean {
+   return (
+      (process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] ?? "")
+         .trim()
+         .toLowerCase() === "true"
+   );
+}
 
 export interface ProxyEndpoint {
    host: string;
@@ -149,12 +164,28 @@ function openSshProxy(
                );
                return false;
             }
-            // Unpinned (no hostKey): connect without host-key verification — the
-            // self-service default (see file header).
-            logger.warn(
-               `Connecting to SSH bastion ${ssh.host} without host-key verification (no hostKey pinned).`,
+            // Unpinned (no hostKey). Fail closed by default: an unverified host
+            // key means a MITM on the publisher->bastion hop is undetectable.
+            // An operator who accepts that risk (e.g. egress is allowlisted on the
+            // bastion) opts in explicitly via the deployment env flag; this is an
+            // operator posture, not a per-connection author choice, so it is an
+            // env flag rather than a spec field.
+            if (allowUnverifiedHostKey()) {
+               logger.warn(
+                  `Connecting to SSH bastion ${ssh.host} without host-key verification ` +
+                     `(no hostKey pinned; ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true).`,
+               );
+               return true;
+            }
+            fail(
+               new Error(
+                  `SSH host-key verification is required for ${ssh.host}: no hostKey is ` +
+                     `pinned. Pin the bastion host key on the connection's ssh.hostKey, or ` +
+                     `set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
+                     `key (a MITM on the publisher-to-bastion hop is then undetectable).`,
+               ),
             );
-            return true;
+            return false;
          }) as SyncHostVerifier,
       };
 
