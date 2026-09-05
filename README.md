@@ -20,7 +20,7 @@ AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
 <p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze. <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d">Watch the video</a> for playback controls.</sub></p>
 
 Modeling, a query engine, materialization, access control, and an API — the pieces you used to assemble
-from five tools and projects — ship as one server, built assuming the first builder or consumer is an
+from five projects — ship as one server, built assuming the first builder or consumer is an
 agent.
 
 Write down what your data means, in [Malloy](https://malloydata.dev): the sources, the joins, the
