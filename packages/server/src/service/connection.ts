@@ -37,6 +37,7 @@ import { components } from "../api";
 import {
    getDuckDBMemoryLimit,
    getDuckLakeRowGroupSizeBytes,
+   getDuckLakeTargetFileSizeBytes,
    getDuckDBTempDirectory,
    getExtensionFetchPolicy,
 } from "../config";
@@ -105,13 +106,6 @@ export type InternalConnection = ApiConnection & {
 const extensionSessionPinned = new WeakSet<Connection>();
 
 /**
- * Sessions that already carry their resource limits, mapped to the spill
- * directory they were given, so the funnel can be reached twice for one
- * connection without re-issuing the SETs — while a caller that owns a directory
- * can still re-point one that was set from the global default.
- */
-
-/**
  * Bound the Parquet row group DuckLake buffers before flushing, when configured.
  *
  * Applied after the ATTACH rather than as a session `SET`, because DuckLake carries
@@ -135,8 +129,12 @@ export async function applyDuckLakeRowGroupBound(
    }
    try {
       // ROW_GROUP_SIZE_BYTES is refused outright while insertion order is being
-      // preserved. Set on the session, not the catalog, so it binds this
-      // connection's writes and nothing else.
+      // preserved -- a Binder Error, not a silent ignore. Unlike the CALL below
+      // this is a SET rather than a catalog option, so it does not persist in
+      // `ducklake_metadata`; but its scope is GLOBAL, so it binds the whole DuckDB
+      // instance rather than this connection. What keeps it contained is the
+      // caller: a build gets its own instance from `createIsolatedBuildSession`,
+      // and a read-only attach never reaches here.
       await connection.runSQL("SET preserve_insertion_order=false");
       await connection.runSQL(
          `CALL ${dbName}.set_option('parquet_row_group_size_bytes', '${escapeSQL(bytes)}')`,
@@ -150,6 +148,49 @@ export async function applyDuckLakeRowGroupBound(
    }
 }
 
+/**
+ * Bound how large a Parquet file DuckLake writes before rotating, when configured.
+ *
+ * Same catalog-option mechanics, and the same reason for being skipped on a
+ * read-only attach, as {@link applyDuckLakeRowGroupBound} above -- and the same
+ * swallowed failure, for the same reason. NOT shared: that one must also clear
+ * `preserve_insertion_order`, which DuckDB refuses the byte-based row group
+ * without. This option carries no such requirement, and the order the two are
+ * applied in does not matter.
+ *
+ * Separate from the row group because it bounds a separate term. Writing to object
+ * storage, DuckDB copies each multipart part into its own buffer and holds it until
+ * the file completes, so a file's bytes stay resident however they are grouped
+ * inside it: the row group bounds the per-column buffer, this bounds the file. A
+ * write that sets only one of the two keeps paying the other.
+ */
+export async function applyDuckLakeTargetFileSize(
+   connection: DuckDBConnection,
+   dbName: string,
+): Promise<void> {
+   const bytes = getDuckLakeTargetFileSizeBytes();
+   if (bytes === undefined) {
+      return;
+   }
+   try {
+      await connection.runSQL(
+         `CALL ${dbName}.set_option('target_file_size', '${escapeSQL(bytes)}')`,
+      );
+      logger.info(`DuckLake target file size applied to ${dbName}: ${bytes}`);
+   } catch (error) {
+      logger.warn(
+         `Could not set the DuckLake target file size on ${dbName}; the lake keeps ` +
+            `its existing value: ${error instanceof Error ? error.message : String(error)}`,
+      );
+   }
+}
+
+/**
+ * Sessions that already carry their resource limits, mapped to the spill
+ * directory they were given, so the funnel can be reached twice for one
+ * connection without re-issuing the SETs — while a caller that owns a directory
+ * can still re-point one that was set from the global default.
+ */
 const sessionLimitsApplied = new WeakMap<
    DuckDBConnection,
    string | undefined
@@ -854,6 +895,7 @@ async function attachDuckLakeWithMode(
       );
       if (!options.readOnly) {
          await applyDuckLakeRowGroupBound(connection, dbName);
+         await applyDuckLakeTargetFileSize(connection, dbName);
       }
    } catch (error) {
       // Handle case where DuckLake database is already attached

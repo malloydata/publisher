@@ -344,6 +344,37 @@ export const getDuckLakeRowGroupSizeBytes = (): string | undefined => {
 };
 
 /**
+ * Bound on how large a Parquet file DuckLake writes before rotating to the next
+ * one (`PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES`, e.g. `256MB`). Unset leaves
+ * DuckLake's own default and issues nothing at all on attach.
+ *
+ * Writing to object storage, DuckDB copies each multipart part into a buffer it
+ * allocates itself, so a file's bytes stay resident until that file completes:
+ * peak memory tracks the FILE size, not the row group. Measured on a 72-column,
+ * 20M-row DuckLake write to GCS, one batch: 650 MiB at DuckLake's own default
+ * (~512MB files), 550 at 512MB, 373 at 256MB, 262 at 128MB, 255 at 64MB.
+ * `memory_limit` does not bound it; the allocation is tagged for the extension
+ * and the limit is not enforced against it. The effect is far larger without
+ * DuckLake's rotation -- a plain single-file COPY of the same data measured
+ * 2979 MiB against 149 MiB writing to local disk -- but DuckLake always rotates,
+ * so ~650 MiB is the baseline this option actually improves on.
+ *
+ * This is a DIFFERENT term from {@link getDuckLakeRowGroupSizeBytes}, not a
+ * replacement: the row group bounds the per-column buffer WITHIN a file, this
+ * bounds how much of the file is resident. Measured separately on one write, each
+ * alone gives 18% and 34%, and together 65%.
+ *
+ * Larger is better on every axis except memory -- full scans, write throughput and
+ * catalog rows all improve with file size and plateau around 512MB, while file-level
+ * pruning is already effective at every size. So the value to want is the LARGEST
+ * that clears the deployment's memory ceiling, not the smallest.
+ */
+export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
+/**
  * Directory DuckDB spills to. A materialization build overrides this with its
  * own disposable working directory; every other session and instance uses this.
  *
@@ -374,17 +405,28 @@ export const getDuckDBTempDirectory = (): string | undefined => {
  * that set it. Creating it here turns both that and an unwritable path into a
  * startup failure naming the variable.
  */
+/**
+ * The byte sizes DuckDB itself accepts, for every size-valued setting Publisher
+ * validates at boot. Probed against v1.5.5 rather than assumed: it takes the
+ * 1000^i units (KB MB GB TB) and the 1024^i units (KiB MiB GiB TiB), refuses
+ * anything larger (`1PB`), and refuses a bare byte count -- its own error names
+ * exactly this set. Anchored to those units rather than any letters, so trailing
+ * garbage like `1GBB` fails here instead of at the first session that opens.
+ *
+ * One constant rather than three literals: a validator NARROWER than the engine
+ * fails the pod on a value DuckDB would have taken, with a message that reads as
+ * if the operator wrote something malformed. The two DuckLake settings were
+ * narrower than this -- no `TB`/`TIB` -- until they were pointed here.
+ *
+ * Zero is rejected: DuckDB accepts `0MB` and stores it, and none of these
+ * settings has a sensible zero.
+ */
+const DUCKDB_BYTE_SIZE =
+   /^(?!0+(\.0+)?\s*[A-Za-z])\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i;
+
 export function assertDuckDBResourceConfig(): void {
    const memoryLimit = getDuckDBMemoryLimit();
-   if (
-      memoryLimit !== undefined &&
-      // Anchored to the units DuckDB actually accepts rather than any letters:
-      // trailing garbage like `1GBB` passes a `[a-zA-Z]+` shape and is then
-      // rejected by DuckDB, which is the late failure this check exists to pull
-      // forward. A bare byte count is correctly rejected too — DuckDB refuses
-      // `1073741824` with "Unknown unit for memory" — so a unit is required.
-      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i.test(memoryLimit)
-   ) {
+   if (memoryLimit !== undefined && !DUCKDB_BYTE_SIZE.test(memoryLimit)) {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKDB_MEMORY_LIMIT: expected a size like ` +
             `"1GB" or "512MB" (or "off" to disable), got "${memoryLimit}"`,
@@ -393,11 +435,21 @@ export function assertDuckDBResourceConfig(): void {
    const rowGroupSizeBytes = getDuckLakeRowGroupSizeBytes();
    if (
       rowGroupSizeBytes !== undefined &&
-      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB)$/i.test(rowGroupSizeBytes)
+      !DUCKDB_BYTE_SIZE.test(rowGroupSizeBytes)
    ) {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: expected a ` +
             `size like "16MB", got "${rowGroupSizeBytes}"`,
+      );
+   }
+   const targetFileSizeBytes = getDuckLakeTargetFileSizeBytes();
+   if (
+      targetFileSizeBytes !== undefined &&
+      !DUCKDB_BYTE_SIZE.test(targetFileSizeBytes)
+   ) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: expected a ` +
+            `size like "256MB", got "${targetFileSizeBytes}"`,
       );
    }
    const tempDirectory = getDuckDBTempDirectory();
