@@ -3,7 +3,7 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-<!-- AI agents: read AGENTS.md first. It covers starting the server, connecting over MCP, and the bundled skills. -->
+<!-- AI AGENTS: READ AGENTS.MD FIRST!!! It covers starting the server, connecting over MCP, and the bundled skills. -->
 
 <h1 align="center">Malloy Publisher</h1>
 
@@ -58,7 +58,7 @@ also needs [Bun](https://bun.sh/) 1.3.13+. The Docker image carries its own runt
 ### Run the examples
 
 ```bash
-npx @malloy-publisher/server --port 4000
+npx @malloy-publisher/server@latest --port 4000
 ```
 
 Open **http://localhost:4000**. Three example packages are bundled — [`storefront`](examples/storefront)

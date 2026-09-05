@@ -7,6 +7,13 @@ SPDX-License-Identifier: MIT
 
 Publisher is the analytics engine for [Malloy](https://malloydata.dev), created and maintained by [Credible](https://www.credibledata.com). It serves one or more Malloy model packages over a REST API and a single MCP endpoint. If you are an AI agent working in this repo, here is what you can do with it and how to start.
 
+**The fast path.** Everything below is detail on these four steps:
+
+1. Start a server (section 1) and poll `GET http://localhost:4000/api/v0/status` until `operationalState` is `"serving"`.
+2. Make sure your MCP client is connected to `http://localhost:4040/mcp` (section 2). If you started the server yourself in this session, your `malloy_*` tools will not appear until the user reconnects the client; unattended, use REST (section 7).
+3. Call `malloy_getContext` with no arguments, then narrow: environment, package, question (section 4).
+4. Run `malloy_executeQuery` with the names it returned, verbatim.
+
 ## What you can do
 
 - Discover what data exists: environments, packages, models, sources, and fields, without knowing any names in advance.
@@ -14,12 +21,20 @@ Publisher is the analytics engine for [Malloy](https://malloydata.dev), created 
 - Build and change Malloy models: validate an edit with `malloy_compile`, save it, then `malloy_reloadPackage` to run it by name. The `malloy-modeling` skill covers the workflow.
 - Build a data app: a hand-authored HTML page in a package's `public/` directory, backed by that package's models and served by Publisher with no build step. The `malloy-html-data-apps` skill covers it.
 - Review Malloy for correctness with the `malloy-review` skill.
+- Build a dashboard: a tagged `dashboards/*.malloy` file in a package is the dashboard, with filter controls, a grid layout, and drill click-through, no code and no build step. The `malloy-dashboards` skill covers it; [docs/dashboards.md](docs/dashboards.md) is the reference.
+- Write a notebook: a `.malloynb` file in a package mixes prose and queries and runs on the same governed endpoints. The `malloy-notebooks` skill covers it; [docs/choosing-a-surface.md](docs/choosing-a-surface.md) says when to pick a notebook, a dashboard, or a data app.
+- Govern access: [givens](docs/givens.md) declare runtime parameters that drive filter widgets, [row-level access](docs/row-level-access.md) decides which rows a caller sees, [`#(authorize)`](docs/authorize.md) decides whether a caller may query a source at all, and [discovery curation](docs/discovery-and-access.md) decides what is visible in the first place. The bundled `governed-analytics` package shows all four together.
+- Materialize for cost and speed: one `#@ persist` annotation turns an expensive source into a table, rebuilt on demand, from the `malloy-pub` CLI, or on a cron with the opt-in scheduler; `#@ preaggregate` rolls a measure up to a coarse grain. The `malloy-materialization` skill covers it; [docs/materialization.md](docs/materialization.md) and [docs/preaggregation.md](docs/preaggregation.md) are the references.
+- Model a warehouse from scratch: add a [connection](docs/connections.md) (BigQuery, Snowflake, Postgres, MySQL, Trino, Databricks, MotherDuck, DuckLake, and more), then `malloy_searchDatabaseSchema` ranks its tables against a plain-English description and hands back the `source:` line for each. DuckDB is built in for CSV, Parquet, JSON, and Excel files.
+- Browse it all in the Publisher Console, the built-in web UI on the REST port ([docs/console.md](docs/console.md)), where charts and dashboards defined in the model render.
 
 All of it runs against a local server you start in step 1 and reach over MCP in step 2, or over REST when you work unattended (section 7).
 
 ## 1. Start the server first
 
 The MCP tools talk to a running server, so nothing works until it is up.
+
+**Requirements.** Node.js 20 or newer for `npx` and for a clone. Building from a clone also needs [Bun](https://bun.sh/) 1.3.13 or newer. The Docker image carries its own runtime and needs neither. The bundled example packages are all DuckDB-backed, so no database credentials are needed for anything in this file.
 
 The fastest way, with nothing cloned and no Bun installed:
 
@@ -31,8 +46,18 @@ From a clone of this repo:
 
 ```bash
 bun install
-bun run build && bun run start
+bun run build && bun run start                          # same ports
 ```
+
+In Docker, with a `publisher.config.json` in the current directory (copy [`packages/server/publisher.config.example.duckdb.json`](packages/server/publisher.config.example.duckdb.json) to serve the same three example packages):
+
+```bash
+docker run -d -p 4000:4000 -p 4040:4040 \
+  -v $(pwd)/publisher.config.json:/publisher/publisher.config.json:ro \
+  ms2data/malloy-publisher
+```
+
+Once it is serving, the Publisher Console is at **http://localhost:4000** and the MCP endpoint is at `http://localhost:4040/mcp`. The REST port is `--port` (env `PUBLISHER_PORT`, default 4000) and the MCP port is `--mcp_port` (env `MCP_PORT`, default 4040). Both bind `0.0.0.0` by default; pass `--host 127.0.0.1` to keep them loopback-only. The server is stateless and unauthenticated on both ports and can read any data the models connect to, so keep it on localhost, or put an authenticating gateway in front before exposing it further ([docs/security-posture.md](docs/security-posture.md) lists what it defends against and what it leaves to the gateway). [docs/deployment.md](docs/deployment.md) covers npx, Docker, and Compose in full.
 
 To re-initialize the sample storage on a later run, build first and then start with `--init`: `bun run build && bun run start:init`. Start one npx server at a time: concurrent first runs can race in the shared npx cache and corrupt the install ([docs/deployment.md](docs/deployment.md#run-with-npx) has the recovery step).
 
@@ -59,6 +84,18 @@ and the second failure looks identical to the first.
 
 The full startup-signal contract is in [docs/configuration.md](docs/configuration.md#startup-signals).
 
+`serving` does not mean everything loaded. A package that fails to load is skipped, not fatal, so the
+server serves whatever did load and the package is simply absent. If data you expect is missing, check
+`curl -s http://localhost:4000/api/v0/status | jq .loadErrors`, which is absent when everything loaded
+and otherwise names each environment or package that did not load, and why.
+
+The same array reports the other failure, the one you cannot see by looking at what is present: an
+entry with `stale: true` is a package that IS listed and IS answering queries, but whose most recent
+reload failed to compile, so it answers from the model compiled before that save rather than from the
+files on disk. Nothing else says so. The package's entry under `environments`, and its own package
+resource, both read as serving, so join on the package name to tell a current package from a stale
+one. Fix the model and reload to clear it.
+
 ### Starting from your own data
 
 To serve the user's data rather than the bundled examples, scaffold a package — in a fresh directory,
@@ -77,21 +114,19 @@ npm start
   the current directory; the file is copied into the package. Omit it for a small sample dataset.
 - A seeded package starts as a row count and an overview — the modelling is yours to do next.
 - With the workspace in place, `npm start` (and a bare `npx @malloy-publisher/server` from that
-  directory) serves this package, not the examples.
+  directory) serves this package, not the examples. `npm start` serves it in watch mode, so a saved
+  edit to the model recompiles without a reload (section 6 explains watch mode and its limits).
+- The workspace also writes a `.mcp.json`, so an agent session started in that directory finds the
+  `malloy_*` tools with no registration step (section 2).
 
 Details — caching, workspace layout, the bare `npx` form — are in [docs/scaffolding.md](docs/scaffolding.md).
 
-`serving` does not mean everything loaded. A package that fails to load is skipped, not fatal, so the
-server serves whatever did load and the package is simply absent. If data you expect is missing, check
-`curl -s http://localhost:4000/api/v0/status | jq .loadErrors`, which is absent when everything loaded
-and otherwise names each environment or package that did not load, and why.
-
-The same array reports the other failure, the one you cannot see by looking at what is present: an
-entry with `stale: true` is a package that IS listed and IS answering queries, but whose most recent
-reload failed to compile, so it answers from the model compiled before that save rather than from the
-files on disk. Nothing else says so. The package's entry under `environments`, and its own package
-resource, both read as serving, so join on the package name to tell a current package from a stale
-one. Fix the model and reload to clear it.
+**Connecting a database.** A package is just Malloy, so it is not limited to local files. Add a
+[connection](docs/connections.md) to the package, point the model at it, and the same workspace serves a
+warehouse. If the warehouse exists but no model does yet, `malloy_searchDatabaseSchema` ranks its
+tables against a plain-English description and returns the `source:` line to start each one from.
+Ranking works with no API key; the optional embedding-backed mode is in
+[docs/configuration.md](docs/configuration.md#semantic-ranking-for-malloy_searchdatabaseschema).
 
 ## 2. Connect your agent
 
@@ -101,18 +136,18 @@ Connect the client after the server is up. An MCP client discovers a server's to
 
 If you are the agent and you started the server during this session, your `malloy_*` tools will not show up however long you wait: your tool list was fixed when you connected. You cannot reconnect yourself. When a user is present, say so and ask them to run `/mcp`, select `malloy`, and choose Reconnect (the panel offers `Authenticate` first, which is not it), or to restart Claude. Do not quietly fall back to calling the REST API with curl instead: it hides a fixable problem the user can clear in seconds, and it gives up the grounded discovery, compile checks, and reload that the tools exist to provide. Running unattended, with nobody to reconnect you, is the other case: there the REST API is the supported interface, not a workaround. See section 7.
 
-There is a third case, and it is the one that costs the most time because it looks exactly like the first: **a project's `.mcp.json` is only discovered from the directory the agent session *started* in.** A session launched from a parent directory, or from anywhere else, never sees the server, however long it waits and however many times it reconnects. Reconnecting cannot fix it, because the server was never in the client's list to reconnect to.
+There is a third case, and it is the one that costs the most time because it looks exactly like the first: **a project's `.mcp.json` is only discovered from the directory the agent session _started_ in.** A session launched from a parent directory, or from anywhere else, never sees the server, however long it waits and however many times it reconnects. Reconnecting cannot fix it, because the server was never in the client's list to reconnect to.
 
 Skills are the near miss here, and they behave differently: `.claude/skills/` is rescanned as the working directory changes, so a session started further up picks them up on its own once work moves into this directory. That asymmetry is worth knowing precisely because the two symptoms look identical from the outside: same "the agent has nothing", different cause, different fix.
 
 Tell them apart by what is missing:
 
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| `malloy` is listed in `/mcp` but disconnected | client connected before the server existed | Reconnect (or relaunch the agent) |
-| `malloy` is not listed in `/mcp` at all, and `.mcp.json` is here | session started outside this directory | relaunch the agent from here. A session that starts here reads this file, so a user-scoped entry would be shadowed by it; user scope is for sessions started elsewhere |
+| Symptom                                                                   | Cause                                                                           | Fix                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `malloy` is listed in `/mcp` but disconnected                             | client connected before the server existed                                      | Reconnect (or relaunch the agent)                                                                                                                                                                                              |
+| `malloy` is not listed in `/mcp` at all, and `.mcp.json` is here          | session started outside this directory                                          | relaunch the agent from here. A session that starts here reads this file, so a user-scoped entry would be shadowed by it; user scope is for sessions started elsewhere                                                         |
 | `malloy` is not listed in `/mcp` at all, and there is no `.mcp.json` here | the server skipped writing one, or the write failed; its startup log says which | run the `claude mcp add` line the server printed, from the directory you start the agent in. Relaunching alone cannot help when there is no config to find, and note a config may exist at the repository root instead of here |
-| tools present, no skills auto-invoked | session started outside this directory, the same cause as the second row | relaunch the agent from here; skills are rescanned as the working directory changes |
+| tools present, no skills auto-invoked                                     | session started outside this directory, the same cause as the second row        | relaunch the agent from here; skills are rescanned as the working directory changes                                                                                                                                            |
 
 The registration that stops the directory mattering, because it is stored per user rather than per project. Use the port this server actually bound, which its startup log prints; `4040` below is only the default:
 
@@ -193,7 +228,7 @@ For your own fast checks while authoring, use `malloy_compile`; it validates a c
 
 A reload that fails to compile is safe: your files are left alone, the previously compiled model keeps serving, and the compile errors come back in the response.
 
-Reach for `malloy_compile` on the part you are unsure of, not the whole file. Both tools return the same diagnostics, and a failed reload is non-destructive, so once you are editing a saved file, write-then-reload is as safe as compiling first and one call cheaper. What `malloy_compile` uniquely buys you is checking something that is *not* on disk yet — an unfamiliar bit of syntax, a view body you are drafting — so send that fragment on its own. Pasting a whole redefined source into it is the expensive way to learn what a reload would have told you, and a source the model already declares reports "Cannot redefine" rather than checking anything.
+Reach for `malloy_compile` on the part you are unsure of, not the whole file. Both tools return the same diagnostics, and a failed reload is non-destructive, so once you are editing a saved file, write-then-reload is as safe as compiling first and one call cheaper. What `malloy_compile` uniquely buys you is checking something that is _not_ on disk yet — an unfamiliar bit of syntax, a view body you are drafting — so send that fragment on its own. Pasting a whole redefined source into it is the expensive way to learn what a reload would have told you, and a source the model already declares reports "Cannot redefine" rather than checking anything.
 
 If a reload appears to succeed but your edit never takes effect, check that the package name is in the path: `…/packages/<pkg>?reload=true` reloads, `…/packages?reload=true` is the collection and cannot (it now answers 400; older servers answered 200 with the package list, which reads as success).
 
@@ -211,7 +246,18 @@ A save that fails to compile is skipped: the package keeps serving the model it 
 
 ## 7. Working unattended: the REST API
 
-If you started the server yourself and there is no user to reconnect your MCP client (a one-shot task, a cloud sandbox), MCP is out of reach for the whole session. Use the REST API on port 4000 instead; discovery, query, compile, reload and schema discovery are all there. For schema discovery the endpoints are `GET /api/v0/environments/{env}/connections`, then `.../connections/{conn}/schemas`, then `.../schemas/{schema}/tables`, with a `.../packages/{pkg}/connections/...` form for the per-package `duckdb` sandbox; you rank the table list yourself, since that ranking is MCP-only. (`malloy_searchDocs` and `malloy_getContext`'s plain-English ranking stay MCP-only; for syntax, read the bundled [`skills/`](skills/) markdown). Like MCP it is unauthenticated, so keep it on localhost. The playbook with worked examples is [docs/ai-agents.md](docs/ai-agents.md), and the running server serves its complete OpenAPI spec at http://localhost:4000/api-doc.yaml. The map:
+If you started the server yourself and there is no user to reconnect your MCP client (a one-shot task, a cloud sandbox), MCP is out of reach for the whole session. Use the REST API on port 4000 instead; discovery, query, compile, reload and schema discovery are all there. For schema discovery the endpoints are `GET /api/v0/environments/{env}/connections`, then `.../connections/{conn}/schemas`, then `.../schemas/{schema}/tables`, with a `.../packages/{pkg}/connections/...` form for the per-package `duckdb` sandbox; you rank the table list yourself, since that ranking is MCP-only. (`malloy_searchDocs` and `malloy_getContext`'s plain-English ranking stay MCP-only; for syntax, read the bundled [`skills/`](skills/) markdown). Like MCP it is unauthenticated, so keep it on localhost. The playbook with worked examples is [docs/ai-agents.md](docs/ai-agents.md), and the running server serves its complete OpenAPI spec at http://localhost:4000/api-doc.yaml.
+
+A complete query against the bundled `storefront` package, to copy from:
+
+```bash
+curl -s -X POST \
+  http://localhost:4000/api/v0/environments/examples/packages/storefront/models/storefront.malloy/query \
+  -H 'content-type: application/json' \
+  -d '{"query":"run: order_items -> by_category","compactJson":true}' | jq -r .result
+```
+
+The map:
 
 - `GET /api/v0/status`: poll until `operationalState` is `"serving"`, then check `loadErrors` (absent when everything loaded, and the REST equivalent of `malloy_getStatus`). Re-check it after every edit-and-reload: an entry with `stale: true` names a package that is still answering, from the model it compiled before your last save.
 - `GET /api/v0/environments`: the environment names every other path needs (the bundled one is `examples`).
@@ -227,5 +273,5 @@ Reading this file without a clone? Every doc referenced here resolves at `https:
 
 ## 8. Going deeper
 
-- [`docs/`](docs/) is the reference hub, see its [index](docs/README.md). Start with [docs/ai-agents.md](docs/ai-agents.md) for per-client MCP config and the MCP tool reference.
+- [`docs/`](docs/) is the reference hub, see its [index](docs/README.md). Start with [docs/ai-agents.md](docs/ai-agents.md) for per-client MCP config and the MCP tool reference. Then, by task: [docs/packages.md](docs/packages.md) for the package format (`publisher.json`, models, data); [docs/connections.md](docs/connections.md) for databases; [docs/dashboards.md](docs/dashboards.md), [docs/html-data-apps.md](docs/html-data-apps.md), and [docs/choosing-a-surface.md](docs/choosing-a-surface.md) for surfaces; [docs/givens.md](docs/givens.md), [docs/row-level-access.md](docs/row-level-access.md), [docs/authorize.md](docs/authorize.md), and [docs/discovery-and-access.md](docs/discovery-and-access.md) for governance; [docs/materialization.md](docs/materialization.md) and [docs/preaggregation.md](docs/preaggregation.md) for cost and speed; [docs/configuration.md](docs/configuration.md) for every flag and env var; [docs/deployment.md](docs/deployment.md) for Docker and Compose; [docs/architecture.md](docs/architecture.md) and [docs/api-overview.md](docs/api-overview.md) for how it fits together.
 - [`examples/`](examples/) holds the three served packages: [`storefront`](examples/storefront) (ecommerce model + dashboards), [`governed-analytics`](examples/governed-analytics) (givens, authorize, row-level access), and [`html-data-app`](examples/html-data-app) (a no-build HTML dashboard). [`data-app`](examples/data-app) is a standalone React SDK app, not a served package.
