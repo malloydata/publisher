@@ -532,7 +532,8 @@ describe("get_context discovery tiers", () => {
       });
       expect(result.isError).toBe(true);
       const parsed = parse(result);
-      expect(parsed.results).toEqual([]);
+      expect(parsed.sources).toEqual([]);
+      expect(parsed).not.toHaveProperty("results");
       expect(parsed.error).toContain("Resource not found");
       expect(parsed.error).toContain("nope");
       expect(textBlock(result)).toContain("Resource not found");
@@ -2303,6 +2304,76 @@ describe("get_context semantic retrieval", () => {
       expect(payload.total_entities).toBe(4);
    });
 
+   it("fills a measure target's window with measures, not with nearer dimensions", async () => {
+      // Three dimensions sit exactly on the query text and the one measure a
+      // little off it. limit 1 over-fetches three rows, so a window cut
+      // BEFORE the kind claim holds only dimensions, and the claim then
+      // empties it: sources [] beside below_cutoff_count 0, the pair the
+      // contract rules out, with a description telling the agent to rephrase
+      // when the measure it wanted cleared the floor.
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            orders: [0, 1],
+            "orders: Every order.": [0, 1],
+            "dim a": [1, 0],
+            "dim b": [1, 0],
+            "dim c": [1, 0],
+            revenue: [0.9, 0.436],
+            "total revenue": [1, 0],
+         }),
+      );
+      const handler = captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "w.malloy" }],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  {
+                     name: "orders",
+                     annotations: ["#(doc) Every order."],
+                     schema: {
+                        fields: [
+                           {
+                              kind: "dimension",
+                              name: "dim_a",
+                              annotations: [],
+                           },
+                           {
+                              kind: "dimension",
+                              name: "dim_b",
+                              annotations: [],
+                           },
+                           {
+                              kind: "dimension",
+                              name: "dim_c",
+                              annotations: [],
+                           },
+                           {
+                              kind: "measure",
+                              name: "revenue",
+                              annotations: [],
+                           },
+                        ],
+                     },
+                  },
+               ],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: [
+            { target_type: "measure", search_text: "total revenue" },
+         ],
+         scopes: [{ environment: "specs", package: "kind-window" }],
+         limit: 1,
+      });
+      expect(rankedEntities(payload).map((e) => e.name)).toEqual(["revenue"]);
+      // The counts are scoped the same way: a dimension is never weighed for
+      // a measure target, so it is in neither number.
+      expect(payload.total_entities).toBe(1);
+      expect(payload.below_cutoff_count).toBe(0);
+   });
+
    it("reports the true negative as below_cutoff_count === total_entities, not 0", async () => {
       // The contract this replaces said "0 with no results means nothing is
       // related". That state is unreachable: every entity in scope is either
@@ -3284,18 +3355,109 @@ describe("get_context converged request shape", () => {
    it("a target only claims the kinds it selects", async () => {
       const payload = parse(
          await handler()({
+            search_targets: [{ target_type: "measure", search_text: "order" }],
+            scopes: scope,
+         }),
+      );
+      // "order" matches the measure `revenue` ("Total order revenue.") AND
+      // the dimension `category` ("Product category of the order.") by text,
+      // but a measure target must surface only the measure: that filter is
+      // what target_type buys over a single untyped query string. And it
+      // must still return SOMETHING: `.every()` is vacuously true on an empty
+      // list, so without the length check a filter that drops everything
+      // would pass here. (The earlier text, "category", matched no measure
+      // at all, so this test was passing on exactly that vacuity.)
+      expect(rankedEntities(payload).length).toBeGreaterThan(0);
+      expect(
+         rankedEntities(payload).every((e) => e.entity_type === "measure"),
+      ).toBe(true);
+   });
+
+   it("excludes a named query over an inline source, which has no card to live in", async () => {
+      // `query: q is orders extend {...} -> ...` compiles with no source
+      // name. The response nests every entity under a source card, so such a
+      // query could match a view target, spend a slot in the per-source
+      // window and count in total_available while never appearing in
+      // `returned`. It is excluded before it can be counted anywhere.
+      const payload = parse(
+         await captureConverged({
+            getEnvironment: async () =>
+               envWith(async () => ({
+                  listModels: async () => [{ path: "m.malloy" }],
+                  getModel: () => ({
+                     ...convergedModel,
+                     getQueries: () => [
+                        {
+                           name: "revenue_by_category",
+                           sourceName: undefined,
+                           annotations: ["#(doc) Revenue by category."],
+                        },
+                        {
+                           name: "revenue_rollup",
+                           sourceName: "orders",
+                           annotations: ["#(doc) Revenue rolled up."],
+                        },
+                     ],
+                  }),
+               })),
+         })({
+            search_targets: [{ target_type: "view", search_text: "revenue" }],
+            scopes: scope,
+         }),
+      );
+      const names = rankedEntities(payload).map((e) => e.name);
+      expect(names).toContain("revenue_rollup");
+      expect(names).not.toContain("revenue_by_category");
+      expect(payload.total_available).toBe(payload.returned);
+   });
+
+   it("budgets the lexical window per target, so one target cannot crowd another out of a source", async () => {
+      // Eleven measures all match the measure target and one dimension
+      // matches the dimension target, in ONE source. The per-source cap is
+      // 10 per target (MAX_ENTITIES_PER_SOURCE_TARGET). Under a single shared
+      // cap the measures fill it and the dimension, the answer to the
+      // caller's other concept, is dropped from the response entirely.
+      const measures = Array.from({ length: 11 }, (_, i) => ({
+         kind: "measure",
+         name: `revenue_${i}`,
+         annotations: ["#(doc) Order revenue."],
+      }));
+      const payload = parse(
+         await captureConverged({
+            getEnvironment: async () =>
+               envWith(async () => ({
+                  listModels: async () => [{ path: "m.malloy" }],
+                  getModel: () => ({
+                     getSourceInfos: () => [
+                        {
+                           name: "orders",
+                           annotations: ["#(doc) One row per order."],
+                           schema: {
+                              fields: [
+                                 ...measures,
+                                 {
+                                    kind: "dimension",
+                                    name: "category",
+                                    annotations: ["#(doc) Product category."],
+                                 },
+                              ],
+                           },
+                        },
+                     ],
+                     getQueries: () => [],
+                  }),
+               })),
+         })({
             search_targets: [
-               { target_type: "measure", search_text: "category" },
+               { target_type: "measure", search_text: "revenue" },
+               { target_type: "dimension", search_text: "category" },
             ],
             scopes: scope,
          }),
       );
-      // "category" matches two DIMENSIONS by text, but a measure target must
-      // not surface them: that filter is what target_type buys over a single
-      // untyped query string.
-      expect(
-         rankedEntities(payload).every((e) => e.entity_type === "measure"),
-      ).toBe(true);
+      const names = rankedEntities(payload).map((e) => e.name);
+      expect(names).toContain("category");
+      expect(names.filter((n) => n.startsWith("revenue_"))).toHaveLength(10);
    });
 
    it("withholds matched_targets on the lexical path", async () => {
@@ -3726,5 +3888,13 @@ describe("list_packages", () => {
       expect(parsed.error).toContain("storage is unavailable");
       expect(parsed.suggestions.length).toBeGreaterThan(0);
       expect(textBlock(result)).toContain("storage is unavailable");
+      // The envelope is this tool's, not get_context's: the same empty
+      // `environments` the success path answers with, and an error that
+      // names the operation that failed.
+      expect(parsed.environments).toEqual([]);
+      expect(parsed).not.toHaveProperty("sources");
+      expect(parsed).not.toHaveProperty("results");
+      expect(parsed.error).toContain("listPackages");
+      expect(parsed.error).not.toContain("getContext");
    });
 });

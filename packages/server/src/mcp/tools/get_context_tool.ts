@@ -140,8 +140,20 @@ interface ResultEntity {
    dataType?: string;
    /** The join traversal reaching this field; absent on a source's own. */
    joinPath?: string;
-   /** Score per search target index that matched this row, for matched_targets. */
+   /**
+    * Score per search target index that matched this row, for
+    * matched_targets. Semantic only: a lunr score is relative to its own
+    * query, so the lexical path never sets this and nothing it could set
+    * would be safe to publish as a relevance.
+    */
    targetScores?: Map<number, number>;
+   /**
+    * The target this row is budgeted under in windowBySource: the one that
+    * claimed it best. Set on BOTH ranked paths, because the per-target window
+    * is a budgeting rule, not a scoring one -- the lexical path knows which
+    * target found a row even though it withholds how well.
+    */
+   bestTarget?: number;
 }
 
 /**
@@ -381,6 +393,8 @@ function toSourceResults(
       name: string | undefined,
       modelPathFallback: string,
    ): SourceCard | undefined => {
+      // Type narrowing only: collectEntities excludes the one entity kind
+      // that can lack a source, so no ranked row reaches here nameless.
       if (!name) return undefined;
       let entry = bySource.get(name);
       if (!entry) {
@@ -529,12 +543,10 @@ function windowBySource(
             kept.push(r);
             continue;
          }
-         const best = [...(r.targetScores ?? [])].sort(
-            (a, b) => b[1] - a[1],
-         )[0];
-         // -1 buckets the rows no target claims (the lexical path carries no
-         // per-target scores), so they share one cap rather than none.
-         const target = best ? best[0] : -1;
+         // -1 buckets a row no target claims, so it shares one cap rather
+         // than none. Both ranked paths set bestTarget, so on them this is
+         // only a guard.
+         const target = r.bestTarget ?? -1;
          const taken = perTarget.get(target) ?? 0;
          if (taken >= MAX_ENTITIES_PER_SOURCE_TARGET) {
             entitiesDropped += 1;
@@ -552,7 +564,15 @@ function windowBySource(
    };
 }
 
-/** Cut over-long context text on a word boundary, marking that it was cut. */
+/** The target index with the highest score, or undefined when there is none. */
+function bestTargetOf(scores: Map<number, number>): number | undefined {
+   let best: [number, number] | undefined;
+   for (const entry of scores) {
+      if (!best || entry[1] > best[1]) best = entry;
+   }
+   return best?.[0];
+}
+
 /**
  * The fields every retrieval path carries from an indexed entity onto a ranked
  * one.
@@ -1308,6 +1328,14 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
       for (const query of queries) {
          if (!query.name) continue;
+         // A model-level query over an inline source (`query: q is orders
+         // extend {...} -> ...`) has no source name. The response nests every
+         // entity under a source card, so such a query has nowhere to be
+         // returned; indexing it would let it match a `view` target, spend a
+         // slot in the per-source window, and count in total_available while
+         // never appearing in `returned`. Exclude it here, before it can be
+         // counted anywhere, rather than at serialization.
+         if (!query.sourceName) continue;
          entities.push({
             id: String(n++),
             kind: "query",
@@ -1630,14 +1658,12 @@ Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_c
 {"search_targets":[{"target_type":"measure","search_text":"total revenue"}],"scopes":[{"environment":"examples","package":"storefront"}]}`;
 
 /**
- * An error keeps the empty collection its tier would have answered with, so a
+ * An error keeps the empty collection the tool would have answered with, so a
  * caller can read the payload unconditionally instead of branching on success
- * first. BOTH keys, because the two tiers no longer answer alike: the
- * environment and package listings still return `results`, while everything
- * that returns sources returns `sources`, and an error is raised before the
- * tier is known. One extra empty array is cheaper than an agent reading
+ * first: `sources: []` here, `environments: []` from listPackagesError. Each
+ * tool has one success shape, so each error matches it -- an agent reading
  * `sources.length === 0` on an error payload and concluding the package models
- * nothing.
+ * nothing is the failure this prevents.
  *
  * Routed through classifyToolError for the same reason its three sibling tools
  * are: it homes each error class to real remediation, so an unknown package
@@ -1650,10 +1676,16 @@ function contextError(uri: string, identifier: string, error: unknown) {
    return jsonToolError(
       uri,
       classifyToolError("getContext", identifier, error),
-      {
-         results: [],
-         sources: [],
-      },
+      { sources: [] },
+   );
+}
+
+/** list_packages' counterpart: the error envelope matches its success shape. */
+function listPackagesError(uri: string, error: unknown) {
+   return jsonToolError(
+      uri,
+      classifyToolError("listPackages", "environments", error),
+      { environments: [] },
    );
 }
 
@@ -1681,9 +1713,6 @@ async function runContextQuery(
    // matched_targets can name a target without re-walking the request.
    const searchTextsByIndex = new Map(
       request.searches.map((search) => [search.targetIndex, search.text]),
-   );
-   const byTargetIndex = new Map(
-      request.searches.map((search) => [search.targetIndex, search]),
    );
    logger.info("[MCP Tool getContext] Retrieving context", {
       environmentName,
@@ -1983,7 +2012,6 @@ async function runContextQuery(
             // own query.) The next commit collapses these passes into one
             // batched embed and one scan; the merge rule does not change.
             const merged = new Map<string, ResultEntity>();
-            const matchedTargets = new Map<string, Map<number, number>>();
             let searchFailure: RetrievalReason | undefined;
             let unionTotalEntities: number | undefined;
             let unionBelowCutoff: number | undefined;
@@ -2000,9 +2028,14 @@ async function runContextQuery(
                   environmentName,
                   packageName,
                   entities: Array.from(byId.values()),
+                  // Each target carries the kinds it may claim, and the scan
+                  // applies that BEFORE cutting the target's window. Applied
+                  // here afterwards, a `measure` target whose nearest rows were
+                  // dimensions came back empty with below_cutoff_count 0.
                   queries: request.searches.map((search) => ({
                      targetIndex: search.targetIndex,
                      text: search.text,
+                     kinds: search.kinds,
                   })),
                   // Over-fetch, because `max` counts SOURCE CARDS while
                   // this limit counts entity ROWS, and windowBySource admits
@@ -2040,32 +2073,19 @@ async function runContextQuery(
                      ];
                   });
                   for (const row of ranked) {
-                     // A target only claims the kinds it selects, so drop the
-                     // targets that cannot own this row and, with them, any
-                     // row no surviving target claims. That is what stops a
-                     // `measure` target surfacing a dimension which happened
-                     // to embed near its text.
-                     const claimed = new Map<number, number>();
-                     for (const [targetIndex, score] of row.targetScores ??
-                        []) {
-                        const search = byTargetIndex.get(targetIndex);
-                        if (search && search.kinds.includes(row.kind)) {
-                           claimed.set(targetIndex, score);
-                        }
-                     }
-                     if (claimed.size === 0) continue;
+                     // The scan scored this row only against targets that may
+                     // claim its kind, so every score it carries is from a
+                     // target that can return it, and its `score` is already
+                     // the best of those.
                      const key = entityRowKey(
                         row.kind,
                         row.source ?? "",
                         row.name,
                      );
-                     // Rank on the best target that may actually claim it,
-                     // not on the scan's max across every target.
                      merged.set(key, {
                         ...row,
-                        score: Math.max(...claimed.values()),
+                        bestTarget: bestTargetOf(row.targetScores ?? new Map()),
                      });
-                     matchedTargets.set(key, claimed);
                   }
                   // The denominator counts the package's entities, not the
                   // query's hits, so it is the same whichever target asked.
@@ -2076,25 +2096,21 @@ async function runContextQuery(
                }
             }
             if (merged.size > 0 || searchFailure === undefined) {
-               const ranked = [...merged.entries()]
-                  .sort((a, b) => (b[1].score ?? 0) - (a[1].score ?? 0))
-                  .map(([key, row]) => ({
-                     ...row,
-                     targetScores: matchedTargets.get(key),
-                  }));
+               const ranked = [...merged.values()].sort(
+                  (a, b) => (b.score ?? 0) - (a.score ?? 0),
+               );
                // Collapse, windowing and serialization are finishRanked's,
                // shared with the lexical path so the two cannot drift.
                semanticRanked = ranked;
                totalEntities = unionTotalEntities;
-               // An entity that cleared NO target's floor is below the
-               // cutoff. Derived from the union rather than taken from one
-
                // Straight from the scan, which counts entities whose BEST
-               // score across every target fell under the floor. Deriving it
-               // from the returned rows would fold the page limit into it and
-               // report a crowded-out entity -- one that cleared the floor and
-               // simply did not fit -- as rejected, which is the opposite of
-               // what this number tells a caller.
+               // score across the targets that may claim them fell under the
+               // floor. Deriving it from the returned rows would fold the page
+               // limit into it and report a crowded-out entity -- one that
+               // cleared the floor and simply did not fit -- as rejected,
+               // which is the opposite of what this number tells a caller.
+               // Nothing is filtered between the scan and here, so the count
+               // and the rows describe the same set.
                belowCutoffCount = unionBelowCutoff ?? 0;
             } else {
                retrievalReason = searchFailure;
@@ -2204,21 +2220,19 @@ async function runContextQuery(
       })
       .sort((a, b) => b.score - a.score);
 
-   const scored: ResultEntity[] = ranking.map(({ e }) => ({
+   const scored: ResultEntity[] = ranking.map(({ e, targetScores }) => ({
       ...projectEntity(e, environmentName, packageName),
-      // targetScores is deliberately NOT carried on this path. It would reach
-      // the wire as matched_targets[].relevance, whose relevance is required
-      // and would therefore publish a lexical score -- the exact number this
-      // path withholds from the entity's own `relevance`, because a lunr score
-      // is relative to its own query and comparing two of them means nothing.
-      // Naming the matched target is not worth contradicting that; a semantic
-      // response answers both. The normalized lexical score itself is not
-      // carried either: the only thing that ever read it was the sibling
-      // grouping this no longer does.
+      // WHICH target found the row is carried, for the per-target window;
+      // HOW WELL is not. targetScores would reach the wire as
+      // matched_targets[].relevance, whose relevance is required and would
+      // therefore publish a lexical score -- the exact number this path
+      // withholds from the entity's own `relevance`, because a lunr score is
+      // relative to its own query and comparing two of them means nothing.
+      // Budgeting needs only the index, so the two concerns separate cleanly.
+      bestTarget: bestTargetOf(targetScores),
    }));
-   // This path carries no per-target scores, so its rows share one cap per
-   // source rather than one each; everything else about the tail is the
-   // semantic path's, which is why it is the same function.
+   // The tail is the semantic path's, which is why it is the same function:
+   // each target gets its own share of every source here too.
    const { sources, totalSources, entitiesDropped } = finishRanked({
       rows: scored,
       max,
@@ -2362,7 +2376,7 @@ export function registerListPackagesTool(
             logger.warn("[MCP Tool listPackages] listing failed", {
                error: error instanceof Error ? error.message : String(error),
             });
-            return contextError(uri, "environments", error);
+            return listPackagesError(uri, error);
          }
       },
    );

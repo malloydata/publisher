@@ -1226,7 +1226,7 @@ export const isPublisherConfigFrozen = (serverRoot: string) => {
    } catch (error) {
       logger.error(
          `Error checking if ${PUBLISHER_CONFIG_NAME} is frozen. Defaulting to false.`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return false;
    }
@@ -1250,7 +1250,7 @@ export const getConnectionsFromPublisherConfig = (
    } catch (error) {
       logger.error(
          `Error getting connections for environment "${environmentName}" from ${PUBLISHER_CONFIG_NAME}`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return [];
    }
@@ -1404,7 +1404,7 @@ export const getInstanceTheme = (serverRoot: string): Theme | undefined => {
    } catch (error) {
       logger.error(
          `Error reading instance theme from ${PUBLISHER_CONFIG_NAME}`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return undefined;
    }

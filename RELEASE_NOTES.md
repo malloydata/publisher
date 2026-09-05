@@ -56,8 +56,9 @@ this repo already use the new names.
 **`get_context` also answers in a new response shape.** It used to return a flat ranked
 `results[]` of entities; it now returns `sources[]`, where each source carries the
 entities that matched inside it. A client that reads `results[0].name` finds nothing —
-`results` is gone from success payloads. Error payloads carry both `results: []` and
-`sources: []`, because an error is raised before the tier is known. Alongside the shape,
+`results` is gone from every payload. An error payload keeps the empty collection of the
+tool it came from: `sources: []` from `get_context`, `environments: []` from
+`list_packages`, so a client can read either without branching on success first. Alongside the shape,
 the response gained `below_cutoff_count`, `retrieval_reason`, `aliases`,
 `givens`, `authorize`, `data_type`, `one_line_summary`, and `warnings[]` (which replaces
 the single `note` string). The tool's own description is the contract and is pinned by a

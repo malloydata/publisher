@@ -74,9 +74,9 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-ANSWER_TOOLS = ("mcp__publisher__malloy_getContext",
-                "mcp__publisher__malloy_executeQuery",
-                "mcp__publisher__malloy_compile")
+ANSWER_TOOLS = ("mcp__publisher__get_context",
+                "mcp__publisher__execute_query",
+                "mcp__publisher__compile_model")
 # The platform target: a hosted MCP server exposing the same two operations
 # under its own names. The CLI addresses a tool as `mcp__<server>__<tool>`, so
 # both halves are configuration -- `--hosted-mcp-server` names the server (which
@@ -416,8 +416,8 @@ Package: {package}
 
 Question: {question}
 
-Use malloy_getContext to find the entities you need, then malloy_executeQuery to
-run a Malloy query against the model. Base the answer only on what the model
+Use get_context to find the entities you need, then execute_query to run a
+Malloy query against the model. Base the answer only on what the model
 returns. If the model genuinely cannot answer the question, say so plainly and
 name the specific data that is missing rather than substituting a proxy.
 
@@ -606,9 +606,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     answer.append(c["text"])
                 elif c.get("type") == "tool_use":
                     name = c["name"]
-                    # Both surfaces: Publisher's malloy_getContext/
-                    # malloy_executeQuery and a hosted server's get_context/
-                    # execute_query.
+                    # Both surfaces answer to the bare names now. The old
+                    # malloy_-prefixed names stay matched so a run recorded
+                    # against an older Publisher still parses.
                     if (name.endswith("malloy_getContext")
                             or name.endswith("__get_context")):
                         n_get += 1

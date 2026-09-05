@@ -102,7 +102,9 @@ export type SemanticSearchResult =
         hits: SemanticHit[];
         /**
          * Entities whose best facet scored below the floor, under the same
-         * scope as `hits`. Always read against {@link totalEntities}: every
+         * scope as `hits`: the source scope, AND the kinds some target may
+         * claim. An entity no target can return is not weighed, so it is in
+         * neither count. Always read against {@link totalEntities}: every
          * entity in scope is either at-or-above the floor (and so eligible to
          * be a hit) or below it (and so counted here), so the two partition
          * the package and the count means nothing on its own.
@@ -120,8 +122,9 @@ export type SemanticSearchResult =
          */
         belowCutoffCount: number;
         /**
-         * Entities weighed for this query, under the same scope as `hits`:
-         * the denominator that makes `belowCutoffCount` interpretable.
+         * Entities weighed for this query, under the same scope as `hits`
+         * (source scope and claimable kinds): the denominator that makes
+         * `belowCutoffCount` interpretable.
          */
         totalEntities: number;
      }
@@ -817,8 +820,16 @@ export async function trySemanticSearch(args: {
     * One entry per search target that carries text, in the caller's order.
     * All of them are embedded in ONE provider request and scored in ONE pass
     * over the vector cache; see the scan below.
+    *
+    * `kinds` is the entity kinds the target may claim. It is applied INSIDE
+    * the scan, not to its output: a target's window is cut per target, so a
+    * kind filter run afterwards would empty a `measure` target whose nearest
+    * neighbours happened to be dimensions -- the measures that cleared the
+    * floor were simply outside the window. Filtering first fills each
+    * window with rows the target can actually return. Never empty: a target
+    * with no claimable kind is dropped before the scan.
     */
-   queries: Array<{ targetIndex: number; text: string }>;
+   queries: Array<{ targetIndex: number; text: string; kinds: string[] }>;
    limit: number;
    sourceName?: string;
 }): Promise<SemanticSearchResult> {
@@ -985,6 +996,12 @@ export async function trySemanticSearch(args: {
       const vectorValues = queryVectors
          .map((_, k) => `(${k}, CAST(? AS FLOAT[]))`)
          .join(", ");
+      // One row per (target, claimable kind), so the join below is plain
+      // equality on two columns rather than a list-typed parameter.
+      const targetKinds = queries.flatMap((q, k) =>
+         q.kinds.map((kind) => ({ k, kind })),
+      );
+      const kindValues = targetKinds.map(({ k }) => `(${k}, ?)`).join(", ");
       const scan = await db.all<{
          total: number;
          below: number;
@@ -996,11 +1013,21 @@ export async function trySemanticSearch(args: {
          score: number | null;
       }>(
          `WITH q(target_idx, vec) AS (VALUES ${vectorValues}),
+         qk(target_idx, kind) AS (VALUES ${kindValues}),
+         -- An entity is scored against a target only if that target may
+         -- claim its kind. This is where the claim lives, not downstream:
+         -- ranked_per_target cuts each target's window from these rows, so a
+         -- kind filter applied after it would leave a window full of rows the
+         -- target cannot return and nothing else. It also scopes the counts:
+         -- an entity no target can claim is neither a hit nor below the
+         -- floor, which is what keeps "no hits" and "below == total" the same
+         -- fact.
          scored AS MATERIALIZED (
             SELECT entity_kind, entity_source, entity_name, q.target_idx,
                    MAX(list_cosine_similarity(embedding, q.vec)) AS score
-            FROM entity_embeddings, q
-            WHERE environment_name = ? AND package_name = ?
+            FROM entity_embeddings, q, qk
+            WHERE qk.target_idx = q.target_idx AND qk.kind = entity_kind
+              AND environment_name = ? AND package_name = ?
               AND embedding_model = ? AND dims = ?
               ${sourceName !== undefined ? "AND entity_source = ?" : ""}
             GROUP BY entity_kind, entity_source, entity_name, q.target_idx
@@ -1054,6 +1081,7 @@ export async function trySemanticSearch(args: {
          ORDER BY h.best DESC, h.entity_name, s.target_idx`,
          [
             ...queryVectors.map((v) => JSON.stringify(v)),
+            ...targetKinds.map(({ kind }) => kind),
             environmentName,
             packageName,
             provider.model,
