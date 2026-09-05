@@ -33,7 +33,6 @@ so the numbers come back **right by construction**, the same way every time.
 
 Publisher is the open-source server that serves that model, over a REST API and a single MCP endpoint.
 
-- **Thin by design** — it sits between your tools and your data, nothing more.
 - **Any AI, one endpoint** — Claude, Cursor, Codex, VS Code, or an agent you build connect over MCP;
   an agent running unattended uses REST.
 - **Tight control** — agents work through the sources the model defines, never your raw tables.
