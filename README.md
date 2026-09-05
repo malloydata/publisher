@@ -3,7 +3,7 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-<p align="center"><sub>AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
+<!-- AI agents: read AGENTS.md first. It covers starting the server, connecting over MCP, and the bundled skills. -->
 
 <h1 align="center">Malloy Publisher</h1>
 
