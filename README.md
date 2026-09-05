@@ -26,11 +26,12 @@ agent.
 
 Write down what your data means, in [Malloy](https://malloydata.dev): the sources, the joins, the
 measures, who may see what. The open-source Malloy [skills](skills/) ship alongside, so an agent can do
-the writing — build the model, then the dashboards, notebooks, and data apps on top of it. Publisher
-serves that model to every surface — over MCP to Claude, Cursor, Codex, or an agent you build; over
-REST to applications and BI tools. Agents compose queries against the model instead of writing SQL
-from scratch, so there is no wrong join, no invented column, no fan-out that double-counts but looks
-plausible — and the same question returns the same numbers tomorrow.
+the writing — build the model, then the dashboards, notebooks, and data apps on top of it.
+
+Publisher serves that model to every surface — over MCP to Claude, Cursor, Codex, or an agent you
+build; over REST to applications and BI tools. Agents compose queries against the model instead of
+writing SQL from scratch, so there is no wrong join, no invented column, no fan-out that double-counts
+but looks plausible — and the same question returns the same numbers tomorrow.
 
 - **Any AI, one endpoint** — Claude, Cursor, Codex, VS Code, or an agent you build connect over MCP;
   an agent running unattended uses REST.
