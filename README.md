@@ -42,7 +42,7 @@ but looks plausible — and the same question returns the same numbers tomorrow.
   inside the package, plus the Console for browsing it all.
 - **Govern** — givens, row-level access, and `#(authorize)` decide who sees what; discovery curation
   decides what is even visible.
-- **Perform** — one `#@ persist` annotation materializes an expensive source into a table and
+- **Optimize** — one `#@ persist` annotation materializes an expensive source into a table and
   `#@ preaggregate` rolls it up, rebuilt on demand or on a schedule.
 - **Run anywhere** — DuckDB built in for CSV, Parquet, JSON, and Excel; BigQuery, Snowflake, Postgres,
   Databricks, MotherDuck, and more by connection; `npx`, Docker, or Compose, in minutes.
@@ -199,7 +199,7 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 - **Know the boundary.** [docs/security-posture.md](docs/security-posture.md) lists what Publisher
   defends against and what it leaves to the gateway in front of it.
 
-### Perform
+### Optimize
 
 - **Materialize.** One `#@ persist` annotation turns an expensive source into a table, rebuilt on
   demand, from the `malloy-pub` CLI, or on a cron with the opt-in scheduler —
