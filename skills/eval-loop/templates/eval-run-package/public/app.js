@@ -189,8 +189,18 @@ function md(text) {
   return `<div class="md">${out.join('')}</div>`;
 }
 
+// A flag that survives the CSV round trip either way it is typed. The build
+// writes booleans as lowercase `true`/`false`, DuckDB sniffs a populated column
+// as BOOLEAN and a header-only one as VARCHAR, so the same field arrives as a
+// JSON boolean on one run and as a string on another. `=== 'true'` alone
+// silently stopped rendering the contamination chip the moment the column
+// sniffed boolean, which is the one flag that must never fail quietly.
+function truthy(v) {
+  return v === true || v === 'true';
+}
+
 function stepHtml(s) {
-  const k = s.kind, err = s.is_error === 'true' || s.is_error === true;
+  const k = s.kind, err = truthy(s.is_error);
   if (k === 'text') return `<div class="step text"><div class="prose">${md(s.label)}</div></div>`;
   if (k === 'skill') return `<div class="step"><span class="k">skill</span><span class="mono">${esc(s.label)}</span></div>`;
   if (k === 'get_context') {
@@ -283,7 +293,7 @@ async function loadCase(qid) {
       <div class="armhead"><span class="name">${esc(d.arm)}</span>${pill(d.verdict)}
         ${d.confidence != null ? `<span class="chip">confidence ${d.confidence}/10</span>` : ''}
         ${d.gold_status && d.gold_status !== 'verified' ? `<span class="chip warn">golden ${esc(d.gold_status)}</span>` : ''}
-        ${d.contaminated === 'true' ? '<span class="chip fail">contaminated</span>' : ''}
+        ${truthy(d.contaminated) ? '<span class="chip fail">contaminated</span>' : ''}
         ${dots(req)}</div>
       <div class="meta" title="Totals for this one attempt, not averages across the run. Per-arm averages are in the notebook's effort table.">
         <span><b>${num(d.num_turns)}</b> turns</span>

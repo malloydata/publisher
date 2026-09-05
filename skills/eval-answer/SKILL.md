@@ -35,7 +35,10 @@ The checklist. An attempt is contaminated when its log shows any of:
    `modelPath` argument on an MCP `execute_query` is NOT contamination; the
    server resolves it, the answerer never reads the file);
 3. `reported_calls` greater than `host_tool_uses` (the detectable
-   under-report floor is reported at most total tool uses).
+   under-report floor is reported at most total tool uses). `host_tool_uses`
+   is EVERY tool use the host logged, MCP calls included; while it counted only
+   the non-MCP ones this comparison was true of almost every clean attempt, so
+   a run whose attempts predate the split cannot be checked this way.
 
 `skills/eval-answer/scripts/check_contamination.py` is a reference aid that
 mechanizes the same checklist over a JSON log; your reading of the transcript
@@ -53,10 +56,20 @@ Never score the agent's reported rows. Take its final query, execute it with
 `execute_query`, and write a prediction CSV under the run's
 `artifacts/` directory.
 
-`submitted: false` when there is no final query. That is not a wrong answer.
-No verdict can be issued (`verdict: null`, with the reason) when the attempt
-is not submitted, when the golden is missing, provisional, invalid, or
-ambiguous, or when a verified golden has no local artifact to compare.
+A named view is a submitted query. `execute_query` takes either ad-hoc Malloy
+or a `queryName` plus `sourceName`, and its own tool description steers an
+answerer to the named form; record it as the Malloy it stands for,
+`run: <source> -> <view>`, which re-executes and reads the same as any other.
+Capturing only the ad-hoc form recorded an attempt that did query as
+`submitted: false` with no query to re-execute, and the judge then graded prose.
+
+`submitted: false` when there is no final query. That is not a wrong answer, and
+it is not by itself a reason to withhold a verdict. No verdict can be issued
+(`verdict: null`, with the reason) when the attempt produced neither a query nor
+any answer text, when the golden is missing, provisional, invalid, or ambiguous,
+or when a verified golden has no local artifact to compare. An attempt that
+wrote prose and ran nothing IS judged: against a golden holding a value, an
+answer containing none of it is `no_match` however well it reasons.
 
 ## Step 3: Judge the answer
 
@@ -82,6 +95,15 @@ relevant source and field definitions from the model. It returns
 - Large row sets are still the judge's job. There is no scripted row oracle:
   a script that can pass a wrong answer is worse than none, and the rubric's
   containment and column-pairing rules are what the comparison needs.
+- `golden.mustNotUse` is the exception, and it is not the judge's. It names the
+  similar-but-wrong field, and using one is a failure however good the number
+  looks, which is a question about query TEXT. Run
+  `scripts/check_must_not_use.py` over the final query: a named field found
+  there forces `no_match` and records `must_not_use_hits`, keeping the judge's
+  own verdict beside it as `judge_verdict`. Prose entries ("an average of
+  per-SKU prices") and a path's bare leaf are never vetoed mechanically; they
+  go into the judge's prompt instead, because a veto that fires on a correct
+  answer is worse than one that misses.
 
 ## Step 4: Score what retrieval delivered
 

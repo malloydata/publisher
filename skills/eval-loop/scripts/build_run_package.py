@@ -360,6 +360,10 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
                     "n_returned": len(eids),
                     "entity_ids": eids[:40],
                     "error": t.get("error"),
+                    # Which retriever answered this call. Absent on a server
+                    # with no embedding provider, and on any run written before
+                    # the harness recorded it.
+                    "retrieval_mode": t.get("retrieval_mode"),
                 })
 
             # The one scoring implementation, shared with eval-answer.
@@ -447,7 +451,8 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     write_csv(data / "attempts.csv", attempts, [
         "attempt_key", "run_id", "qid", "sample", "phase", "submitted", "final_query",
         "answer_text", "n_get_context", "n_execute", "n_execute_errors",
-        "host_tool_uses", "reported_calls", "contaminated", "servedRevision",
+        "host_tool_uses", "mcp_tool_uses", "reported_calls", "contaminated",
+        "final_query_source", "servedRevision",
         "input_tokens", "output_tokens", "cache_read_tokens", "cost_usd",
         "num_turns", "wall_seconds", "run_error", "transcriptPath",
         "n_steps", "prediction"])
@@ -460,14 +465,14 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "attempt_key", "run_id", "qid", "sample", "phase", "verdict", "outcome",
         "reason", "confidence",
         "judge_version", "rubric_sha", "golden_revision", "gold_status",
-        "contaminated", "artifactPath"])
+        "contaminated", "judge_verdict", "must_not_use_hits", "artifactPath"])
     write_csv(data / "retrieval.csv", retr, [
         "attempt_key", "run_id", "qid", "sample", "phase", "coverage", "verdict", "failed",
         "recall", "precision", "n_required", "n_returned", "n_get_context",
         "missing", "noise", "component", "owner", "where_to_fix", "why"])
     write_csv(data / "calls.csv", calls, [
         "attempt_key", "run_id", "qid", "sample", "call_index", "tool", "targets",
-        "n_returned", "entity_ids", "error"])
+        "n_returned", "entity_ids", "error", "retrieval_mode"])
     write_csv(data / "entities.csv", ents, [
         "run_id", "qid", "sample", "entity_id", "entity_kind", "entity_source",
         "entity_name", "role"])

@@ -286,6 +286,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--only", default=None, help="comma-separated qids")
+    ap.add_argument("--verdicts", default="no_match",
+                    help="comma-separated verdicts to diagnose. A near_match "
+                         "that is STABLE across two arms is a coverage "
+                         "finding, not judge noise, and repairing the rubric "
+                         "will not close it -- take the stable list from "
+                         "flip_table.py and pass --verdicts near_match. Never "
+                         "diagnose a one-armed near_match; that is noise.")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--no-cluster", action="store_true")
     ap.add_argument("--target", choices=("local", "platform"), default="local",
@@ -330,9 +337,15 @@ def main(argv: list[str] | None = None) -> int:
 
     # Dev failures only. A holdout case the improve step never saw is the only
     # thing that makes the acceptance check mean anything, and a diagnosis describes the fix.
+    want_verdicts = {v.strip() for v in a.verdicts.split(",") if v.strip()}
+    unknown = want_verdicts - {"no_match", "near_match", "needs_human"}
+    if unknown:
+        raise SystemExit(f"--verdicts: {', '.join(sorted(unknown))} is not a "
+                         f"diagnosable verdict (no_match, near_match, "
+                         f"needs_human)")
     failed = []
     for e in events:
-        if e.get("kind") != "score" or e.get("verdict") != "no_match":
+        if e.get("kind") != "score" or e.get("verdict") not in want_verdicts:
             continue
         case = cases.get(e["qid"])
         if case is None or case.get("split") == "holdout":

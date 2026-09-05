@@ -72,7 +72,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Iterable
 
 ANSWER_TOOLS = ("mcp__publisher__malloy_getContext",
                 "mcp__publisher__malloy_executeQuery",
@@ -127,6 +127,8 @@ from mcp_payload import doc_tokens, entity_ids, search_terms  # noqa: E402
 from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
 from score_retrieval import score_case, summarise  # noqa: E402
 from check_contamination import check as path_check  # noqa: E402
+from check_must_not_use import check as must_not_use_check  # noqa: E402
+from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
 import verify_goldens  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -531,6 +533,102 @@ def named_query(inp: dict[str, Any]) -> str | None:
     return f"run: {source} -> {name}" if source else f"run: {name}"
 
 
+# Malloy in a fenced block, which is how an answerer presents the query it
+# says it ran. Language tag optional, because answerers write both.
+_FENCE = re.compile(r"```(?:malloy)?\s*\n(.*?)```", re.S | re.I)
+
+
+def _norm(q: str) -> str:
+    return " ".join((q or "").split())
+
+
+def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
+                     answer_text: str) -> tuple[str | None, str | None]:
+    """The query the answer rests on, and how that was decided.
+
+    The last query run is the obvious choice and the wrong one: an answerer
+    that computes its result and then runs a small probe to sanity-check a date
+    range ends on the probe, and re-executing THAT produces rows the answer
+    never claimed. The judge is shown every query, so it recovers; the
+    re-executed prediction and `final_query` do not.
+
+    In order of how much the answerer told us:
+
+    `declared`  the query it printed at the end of its answer, when that is one
+                it actually ran (the prompt asks for exactly this)
+    `last_ok`   the last one the server answered without an error
+    `last`      the last one it ran, when nothing else narrows it
+    """
+    if not queries:
+        return None, None
+    ran = {_norm(q): q for q in queries}
+    for block in reversed(_FENCE.findall(answer_text or "")):
+        hit = ran.get(_norm(block))
+        if hit is not None:
+            return hit, "declared"
+    for c in reversed(calls):
+        if c.get("tool") == "execute_query" and not c.get("error") and c.get("query"):
+            return c["query"], "last_ok"
+    return queries[-1], "last"
+
+
+def retrieval_summary(attempts: Iterable[dict[str, Any]]
+                      ) -> tuple[str, dict[str, int]]:
+    """Which retriever answered this run's get_context calls, and the tally.
+
+    `semantic` or `lexical` when every call agreed, `mixed` when they did not
+    (the embedding path fell over partway, which is exactly the case a reader
+    must not average across), and `unreported` when the server named no
+    retriever at all -- no embedding provider configured, which is the silent
+    degradation eval-mvp's standing gate exists to catch.
+    """
+    tally = {"semantic": 0, "lexical": 0, "unreported": 0}
+    for att in attempts:
+        for c in att.get("calls") or []:
+            if c.get("tool") != "get_context":
+                continue
+            mode = c.get("retrieval_mode")
+            tally[mode if mode in ("semantic", "lexical") else "unreported"] += 1
+    seen = [k for k in ("semantic", "lexical") if tally[k]]
+    if not seen:
+        return "unreported", tally
+    if len(seen) == 1 and not tally["unreported"]:
+        return seen[0], tally
+    return "mixed", tally
+
+
+def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
+                        ) -> dict[str, int]:
+    """How many predictions were actually re-executed, from the cached files.
+
+    `predictionsReExecuted` is one bool for the whole run meaning "the server
+    was serving the bytes this run is pinned to", which reads far stronger than
+    it is: it says nothing about whether any given query ran, or returned rows.
+    These four counts do.
+    """
+    out = {"attempted": 0, "ok": 0, "failed": 0, "noQuery": 0}
+    for qid in qids:
+        f = art / qid / "prediction.json"
+        if not f.exists():
+            continue
+        try:
+            c = json.loads(f.read_text())
+        except json.JSONDecodeError:
+            continue
+        rendered = c.get("rendered") or ""
+        if not c.get("query"):
+            out["noQuery"] += 1
+        elif rendered.startswith("(re-execution failed"):
+            out["attempted"] += 1
+            out["failed"] += 1
+        elif rendered.startswith("(not re-executed"):
+            continue
+        else:
+            out["attempted"] += 1
+            out["ok"] += 1
+    return out
+
+
 def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                  art: pathlib.Path) -> dict[str, Any]:
     qid = case["qid"]
@@ -601,6 +699,14 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                     answer.append(c["text"])
                 elif c.get("type") == "tool_use":
                     name = c["name"]
+                    # EVERY tool use, MCP included. skill:eval-answer's
+                    # contamination checklist compares the answerer's claimed
+                    # call count against this, and while it counted only the
+                    # non-MCP tools the comparison was arithmetically true of
+                    # almost every clean attempt -- a signal that fires on
+                    # everything is not a signal. `mcp_tool_uses` carries the
+                    # narrow count for anyone who wanted that instead.
+                    host_tools += 1
                     # Both surfaces: Publisher's malloy_getContext/
                     # malloy_executeQuery and a hosted server's get_context/
                     # execute_query.
@@ -633,10 +739,17 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                             # model failure rather than a harness one.
                             model_paths.append(c["input"].get("modelPath")
                                                or c["input"].get("model_path"))
+                        # The query goes onto the call, not just into
+                        # `queries`: picking the final query needs to know
+                        # which of them the server actually answered, and only
+                        # the RESULT says that.
                         pending[c["id"]] = {"tool": "execute_query",
-                                            "targets": None}
+                                            "targets": None,
+                                            "query": q,
+                                            "modelPath": (
+                                                c["input"].get("modelPath")
+                                                or c["input"].get("model_path"))}
                     else:
-                        host_tools += 1
                         # The CLI ships ~17 skills of its own (batch, loop,
                         # code-review, dataviz ...) that no flag removes from
                         # the answerer's list -- verified 2026-09-02 against a
@@ -665,7 +778,15 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                                   "rankedSummary": None})
                 else:
                     ids = entity_ids(payload or {})
+                    # Which retriever answered, from the response that answered
+                    # it: "semantic", "lexical" when the embedding path is down,
+                    # and absent on a server with no provider at all. Local
+                    # retrieval degrades to lexical SILENTLY without an
+                    # embedding key, which reads as a model regression when two
+                    # runs are compared across it, so a run that cannot say
+                    # which retriever it used cannot anchor a comparison.
                     calls.append({**info, "error": text[:300] if failed else None,
+                                  "retrieval_mode": (payload or {}).get("retrieval"),
                                   "rankedSummary": {
                                       "entityIds": ids,
                                       "ranks": list(range(1, len(ids) + 1)),
@@ -681,6 +802,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
     text = "\n\n".join(answer).strip()
     (d / "answer.md").write_text(text)
 
+    final_query, final_source = pick_final_query(queries, calls, text)
+
     return {
         "qid": qid,
         "submitted": bool(queries),
@@ -689,13 +812,15 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         # follow-up probe to sanity-check the date range, and the judge -- told
         # the answer must be supported by the final query -- graded the probe.
         "queries": queries,
-        "final_query": queries[-1] if queries else None,
+        "final_query": final_query,
+        "final_query_source": final_source,
         "final_model_path": next((p for p in reversed(model_paths) if p), None),
         "answer_text": text,
         "n_get_context": n_get,
         "n_execute": n_exec,
         "n_execute_errors": n_err,
         "host_tool_uses": host_tools,
+        "mcp_tool_uses": n_get + n_exec,
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
         "cache_read_tokens": usage.get("cache_read_input_tokens"),
@@ -745,6 +870,10 @@ QUESTION: {question}
 GOLDEN ({kind}): {golden}
 
 CASE RUBRIC: {rubric_note}
+
+MUST NOT USE (the readings this golden rejects; a script has already vetoed the
+field names it can check by itself, so these are the ones only you can apply):
+{must_not_use}
 
 THE ANSWER UNDER JUDGEMENT:
 {answer}
@@ -887,7 +1016,14 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
               art: pathlib.Path, rubric: str, model_src: str,
               reexec: bool) -> dict[str, Any]:
     g = case.get("golden") or {}
-    if not att["answer_text"]:
+    # `not_submitted` means the attempt produced NOTHING to judge: no prose and
+    # no query. An attempt with prose and no query is judged, and against a
+    # golden that holds a value an answer containing none of it is `no_match`
+    # (skill:eval-judge, reference/refusal.md rule 10). Gating on prose alone
+    # excused a confident refusal on an answerable case by dropping it out of
+    # the pass rate, which is the one thing the answerable-sounds-unanswerable
+    # cases exist to measure.
+    if not att["answer_text"] and not att.get("submitted"):
         return {"verdict": None, "reason": "not_submitted", "confidence": None}
 
     if a.rebuild and not a.rejudge:
@@ -907,7 +1043,11 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
         golden=json.dumps(value) if value is not None
         else "(unanswerable: the model cannot answer this)",
         rubric_note=(g.get("rubric") or "none"),
-        answer=att["answer_text"],
+        must_not_use=(must_not_use_note(
+            must_not_use_check(g.get("mustNotUse"), att.get("final_query")))
+            or "(nothing beyond the rubric)"),
+        answer=(att["answer_text"] or "(the answerer returned no prose; judge "
+                "from the queries and the re-executed rows)"),
         query="\n\n".join(f"[{i}] {q}" for i, q in
                           enumerate(att.get("queries") or [], 1)) or "(none)",
         prediction=prediction_for(case, att, a, art, reexec),
@@ -995,6 +1135,12 @@ def main(argv: list[str] | None = None) -> int:
                          "final query so the judge sees rows rather than prose")
     ap.add_argument("--model-path", default=None,
                     help="model within the package; defaults to set.json targetModelPath")
+    ap.add_argument("--model-repo", default=None, type=pathlib.Path,
+                    help="the git checkout the MODEL is versioned in, recorded "
+                         "as modelGitSha (dirty-marked over this path). The "
+                         "Publisher serves a copy under publisher_data/, so "
+                         "there is no way to infer it; without this the run "
+                         "carries modelSha, the content pin, and no git pin")
     ap.add_argument("--skills-root", default=None,
                     help="a checkout holding skills/ and manifests/ to load the "
                          "answerer's and judge's doctrine from -- a Publisher "
@@ -1281,11 +1427,17 @@ def main(argv: list[str] | None = None) -> int:
         servedRevision=served_identity.get("servedRevision"),
         environment=a.environment, package=a.package,
         modelPath=a.model_path, modelSha=pinned_sha,
-        # Pinned to the served package's tree when there is one: the dirty
-        # marker then answers "do the model bytes match HEAD", not "is anything
-        # in the repo uncommitted". A platform target has no local tree.
-        modelGitSha=(git_sha(served.parent, scope=served.parent)
-                     if a.target != "platform" and served else None),
+        # The model repo, when the caller names one. It used to be the tree
+        # containing the SERVED copy, which is inside the Publisher's
+        # `publisher_data/` and is a different repo, usually not one at all --
+        # so the field read as a pin on the model while naming whatever
+        # happened to hold the server's storage. `modelSha` is the pin that
+        # always works (the bytes themselves); this one is the pointer to where
+        # those bytes are versioned, and it is absent rather than wrong when
+        # nobody said where that is.
+        modelRepo=str(a.model_repo) if a.model_repo else None,
+        modelGitSha=(git_sha(a.model_repo, scope=a.model_repo)
+                     if a.model_repo else None),
         skillsVersion=ledger.skills_git_sha(a.roots[0]),
         skillsRoot=str(a.roots[0]),
         harnessVersion=ledger.skills_git_sha(),
@@ -1359,6 +1511,7 @@ def main(argv: list[str] | None = None) -> int:
                       f"{verdicts[c['qid']].get('verdict')}", flush=True)
 
     events: list[dict[str, Any]] = []
+    vetoed: list[tuple[str, list[str]]] = []
     for c in cases:
         qid = c["qid"]
         att = attempts[qid]
@@ -1367,6 +1520,7 @@ def main(argv: list[str] | None = None) -> int:
                       question_sha=c.get("questionSha"),
                       submitted=att["submitted"],
                       final_query=att["final_query"],
+                      final_query_source=att.get("final_query_source"),
                       # The revision that actually answered. Documented
                       # as "package revision actually queried" and left
                       # None until now, so nothing could tell an attempt
@@ -1376,6 +1530,7 @@ def main(argv: list[str] | None = None) -> int:
                       n_execute=att["n_execute"],
                       n_execute_errors=att["n_execute_errors"],
                       host_tool_uses=att["host_tool_uses"],
+                      mcp_tool_uses=att.get("mcp_tool_uses"),
                       reported_calls=att["n_get_context"] + att["n_execute"],
                       contaminated=bool(att.get("breaches")),
                       contamination_reasons=att.get("breaches") or [],
@@ -1393,6 +1548,25 @@ def main(argv: list[str] | None = None) -> int:
                                        traceId=None))
         v = verdicts.get(qid)
         if v is not None:
+            # `golden.mustNotUse` names the similar-but-wrong field, and using
+            # one is a failure however good the number looks. That is a
+            # question about query TEXT, so a script decides it and the judge
+            # is never asked (eval-program.md: "a script checks this, not the
+            # judge"). Applied to the verdict itself, not only to the ledger
+            # row, so the run summary and the retrieval attribution see the
+            # same outcome a reader of events.jsonl does. The judge's own
+            # verdict is kept beside the override, which keeps a veto auditable
+            # and the judge's agreement rate measurable.
+            mnu = must_not_use_check((c.get("golden") or {}).get("mustNotUse"),
+                                     att.get("final_query"))
+            if mnu["hits"] and v.get("verdict") not in (None, "no_match"):
+                v["judge_verdict"] = v["verdict"]
+                v["reason"] = (f"[must not use: {'; '.join(mnu['hits'])}] "
+                               + (v.get("reason") or ""))[:500]
+                v["verdict"] = "no_match"
+            if mnu["hits"]:
+                vetoed.append((qid, mnu["hits"]))
+
             sc = {k: x for k, x in v.items() if k != "judge_cost_usd"}
             # The judge's read when it has one, the case's standing status
             # when it does not.
@@ -1409,6 +1583,7 @@ def main(argv: list[str] | None = None) -> int:
                           rubric_sha=RUBRIC_SHA,
                           golden_revision=c.get("goldenRevision"),
                           contaminated=bool(tainted),
+                          must_not_use_hits=mnu["hits"] or None,
                           artifactPath=f"artifacts/{qid}/judge.md"))
 
     ledger.write_events(a.out / "events.jsonl", events)
@@ -1477,8 +1652,27 @@ def main(argv: list[str] | None = None) -> int:
     # the most expensive wrong turn this loop can take. A warning that exists
     # only as console text is one scrollback away from being missed, so the run
     # itself carries the list and the conductor can read it from run.json.
+    if vetoed:
+        print(f"\n{len(vetoed)} answer(s) used a field the golden forbids "
+              f"(golden.mustNotUse), scored no_match by the script, not the judge:")
+        for qid, hits in vetoed:
+            print(f"    {qid}: {'; '.join(hits)}")
+
+    mode, tally = retrieval_summary(attempts.values())
+    print(f"\nretrieval: {mode} "
+          f"(semantic {tally['semantic']}, lexical {tally['lexical']}, "
+          f"unreported {tally['unreported']})")
+    if mode != "semantic":
+        print("  ! not a semantic run. Local retrieval degrades to lexical "
+              "without an embedding key, and comparing across that reads as a "
+              "model change. flip_table.py refuses the pair unless both sides "
+              "match.")
+
     ledger.update_run(a.out, answererCostUsd=round(cost, 4),
                       judgeCostUsd=round(judge_cost, 4),
+                      retrievalMode=mode, retrievalCalls=tally,
+                      reExecution=reexecution_summary(
+                          art, [c["qid"] for c in cases]),
                       doubtedGoldens=[{"qid": q, "gold_status": st,
                                        "gold_note": note}
                                       for q, st, note in doubted],
