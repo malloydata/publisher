@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { ConnectionError, logInternalFailure } from "../errors";
+
 export interface ErrorDetails {
    message: string;
    suggestions: string[];
@@ -26,6 +28,20 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
 
 /**
  * Generates generic error details for internal server errors.
+ *
+ * A `ConnectionError` is withheld from the caller here for the same reason
+ * `internalErrorToHttpError` withholds it on the HTTP side: it wraps a driver
+ * message that can name an internal host and port, echo the caller's SQL, or
+ * distinguish refused from timed-out from auth-failed. Withholding it on only
+ * one of the two transports would leave the same text retrievable over the
+ * other. The detail is logged server-side instead, and a server-authored
+ * `callerSafe` message stays as it is.
+ *
+ * Every other error keeps its message. Most of what reaches here is operational
+ * rather than sensitive -- a store failure, an unresolved environment, a thrown
+ * string -- and blanking those returns callers to the unhelpful generic text
+ * that `classifyToolError` exists to avoid.
+ *
  * @param operation The operation that failed (e.g., 'executeQuery').
  * @param error Optional: The underlying error object or message.
  * @returns ErrorDetails object.
@@ -35,13 +51,18 @@ export function getInternalError(
    error?: unknown,
 ): ErrorDetails {
    const baseMessage = `An unexpected internal error occurred during ${operation}.`;
+   const suggestions = [
+      "Try the request again later.",
+      "If the problem persists, check server logs or contact support.",
+   ];
+   if (error instanceof ConnectionError && !error.callerSafe) {
+      logInternalFailure(`Upstream connection error during ${operation}`, error);
+      return { message: `${baseMessage}: Upstream connection error.`, suggestions };
+   }
    const errorMessage = error instanceof Error ? error.message : String(error);
    return {
       message: error ? `${baseMessage}: ${errorMessage}` : baseMessage,
-      suggestions: [
-         "Try the request again later.",
-         "If the problem persists, check server logs or contact support.",
-      ],
+      suggestions,
    };
 }
 

@@ -22,6 +22,7 @@ import {
    ConnectionError,
    internalErrorToHttpError,
 } from "./errors";
+import { getInternalError } from "./mcp/error_messages";
 
 describe("internalErrorToHttpError does not leak internal detail (F-12 Part A)", () => {
    // A message carrying an internal marker a client must never receive: an
@@ -82,5 +83,41 @@ describe("internalErrorToHttpError does not leak internal detail (F-12 Part A)",
       );
       expect(status).toBe(400);
       expect(json.message).toContain("environmentName must match");
+   });
+});
+
+// The same contract on the MCP transport. `classifyToolError` routes an
+// unclassified error to `getInternalError`, and a ConnectionError matches none
+// of its branches, so the driver text the HTTP mapper withholds would otherwise
+// stay retrievable over /mcp -- the same finding on a second surface.
+describe("getInternalError does not leak driver detail over MCP (F-12 Part A)", () => {
+   it("withholds a driver message wrapped in a ConnectionError", () => {
+      const { message } = getInternalError(
+         "executeQuery",
+         new ConnectionError("connect ECONNREFUSED 10.0.0.1:5432"),
+      );
+      expect(message).not.toContain("ECONNREFUSED");
+      expect(message).not.toContain("10.0.0.1");
+   });
+
+   it("keeps a server-authored caller-safe message", () => {
+      const { message } = getInternalError(
+         "executeQuery",
+         new ConnectionError("Table analytics.orders not found", {
+            callerSafe: true,
+         }),
+      );
+      expect(message).toContain("Table analytics.orders not found");
+   });
+
+   it("keeps the message of an operational error that is not a ConnectionError", () => {
+      // Only the driver-wrapping class is withheld. Blanking everything here
+      // returns callers to the unhelpful generic text classifyToolError exists
+      // to avoid, so a store failure must still say what failed.
+      const { message } = getInternalError(
+         "getContext",
+         new Error("the store exploded"),
+      );
+      expect(message).toContain("the store exploded");
    });
 });

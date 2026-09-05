@@ -44,6 +44,13 @@ Both now answer with a fixed message (`Internal server error.`,
 `Upstream connection error.`) and the real error is logged server-side instead.
 The status codes are unchanged.
 
+The MCP endpoint gets the same treatment for the same reason. An unclassified
+tool error is answered by `getInternalError`, and a connection failure matches
+none of the classifier's branches, so the driver text withheld over HTTP would
+otherwise have stayed readable over `/mcp`. It is now withheld there too. Only
+that class is withheld: an operational failure keeps its message, because a tool
+error that says nothing is what the classifier exists to avoid.
+
 Two things are deliberately *not* generalised, because the point is to drop what
 a caller cannot use rather than everything:
 
