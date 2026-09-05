@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Working with Malloy Publisher
 
-Publisher is the open-source AI Analytics Engine for [Malloy](https://malloydata.dev), created and maintained by [Credible](https://www.credibledata.com). It serves one or more Malloy model packages over a REST API and a single MCP endpoint. If you are an AI agent working in this repo, here is what you can do with it and how to start.
+Publisher is the Analytics Engine for [Malloy](https://malloydata.dev), created and maintained by [Credible](https://www.credibledata.com). It serves one or more Malloy model packages over a REST API and a single MCP endpoint. If you are an AI agent working in this repo, here is what you can do with it and how to start.
 
 ## What you can do
 
