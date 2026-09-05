@@ -7,7 +7,8 @@ SPDX-License-Identifier: MIT
 
 <p align="center"><b>The open-source semantic model server for <a href="https://malloydata.dev">Malloy</a></b><br>
 Serve governed data models to applications, BI tools, and AI agents — over REST and MCP.<br>
-<sub>Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.</sub></p>
+<sub>Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.<br>
+AI agents: read <a href="AGENTS.md">AGENTS.md</a> first.</sub></p>
 
 <p align="center">
   <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml"><img src="https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg" alt="build"></a>
@@ -17,8 +18,6 @@ Serve governed data models to applications, BI tools, and AI agents — over RES
   <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d"><img src="docs/malloy-publisher-demo.gif" alt="Malloy Publisher serving the bundled storefront dashboard" width="800"></a>
 </p>
 <p align="center"><sub>A 60-second walkthrough — model in your IDE with the Malloy skills, serve with Publisher, build a data app, materialize on a schedule, and analyze. <a href="https://github.com/user-attachments/assets/376a809d-8016-41a7-9464-a5634ea0589d">Watch the video</a> for playback controls.</sub></p>
-
-> **AI agents:** read [AGENTS.md](AGENTS.md) first.
 
 **Problem:** pointed at a raw database, an AI writes SQL from scratch — the wrong join, an invented
 column, a fan-out that double-counts but still looks plausible — and the same question tomorrow
