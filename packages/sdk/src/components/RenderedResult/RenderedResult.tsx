@@ -40,6 +40,15 @@ type MalloyRenderElement = HTMLElement & Record<string, unknown>;
  * `@malloydata/render` if more methods are needed.
  */
 interface MalloyVizHandle extends DrillMetadataSource {
+   // Narrowed from `DrillMetadataSource`, which only declares the part the
+   // drill affordance reads. `getRootField().renderAs()` is what decides
+   // whether one measurement is enough; see `sizesToContent`.
+   getMetadata: () =>
+      | (NonNullable<ReturnType<DrillMetadataSource["getMetadata"]>> & {
+           getRootField: () => { renderAs: () => string };
+        })
+      | null
+      | undefined;
    setResult: (result: unknown) => void;
    render: (element: HTMLElement) => void;
    remove: () => void;
@@ -319,6 +328,43 @@ function injectRendererOverrides(): void {
    document.head.appendChild(style);
 }
 
+/**
+ * Whether the renderer's top-level output sizes itself to its CONTENT rather
+ * than to the box it was handed, which decides whether measuring it once is
+ * enough.
+ *
+ * It is not, for a table. The renderer signals `onReady` as soon as it knows it
+ * can paint, and for a table that is immediately — a chart waits for a non-zero
+ * parent size, a table does not — so the single measurement taken there lands
+ * before the table's virtualized grid has laid out, and reads a height the
+ * table never keeps.
+ *
+ * Re-measuring a table TERMINATES: `.malloy-table.root` is
+ * `height: fit-content; max-height: 100%` in the renderer's own CSS and the
+ * wrappers between it and the container add no padding, so shrinking the
+ * container to the table's content height is the exact point at which the cap
+ * stops binding and the next measurement reports the same number.
+ *
+ * A root that FILLS its container stays on the one-shot path deliberately: a
+ * chart draws itself inset from the box it is given, so feeding its height back
+ * as the new container height would ratchet the container down by that inset
+ * every pass and never converge.
+ *
+ * A table is the only root that needs this, and the reason is the virtualized
+ * grid rather than the sizing strategy it shares with a `# size=` chart: that
+ * chart takes its dimensions from a lookup synchronously, so its first
+ * measurement is already right. Measured, for every size value and spelling.
+ */
+function sizesToContent(viz: MalloyVizHandle): boolean {
+   try {
+      return viz.getMetadata()?.getRootField().renderAs() === "table";
+   } catch {
+      // Metadata unavailable: measure once, which is the behavior every
+      // non-table root gets anyway.
+      return false;
+   }
+}
+
 function RenderedResultInner({
    result,
    height: inputHeight,
@@ -411,6 +457,11 @@ function RenderedResultInner({
       let drillFocusIn: ((event: FocusEvent) => void) | null = null;
       let observer: MutationObserver | null = null;
       let measureTimeout: NodeJS.Timeout | null = null;
+      // Keeps a table's height honest after `onReady` has lied about it; see
+      // `sizesToContent` above.
+      let sizeObserver: ResizeObserver | null = null;
+      let observedNode: HTMLElement | null = null;
+      let lastReportedHeight = 0;
       // Safety net so a render that never signals ready (an async renderer
       // error that only reaches onError) can't leave a previous chart showing
       // stale data forever; see the setTimeout below.
@@ -422,12 +473,21 @@ function RenderedResultInner({
       // wraps the renderer output) and report it up. Same grandchild/dashboard
       // HACK as before, just anchored on the stage wrapper.
       const measureRenderedSize = (root: HTMLElement) => {
-         if (hasMeasuredRef.current || cancelled || !root.firstElementChild)
-            return;
+         if (cancelled || !root.firstElementChild) return;
          const child = root.firstElementChild as HTMLElement;
          const grandchild = child.firstElementChild as HTMLElement;
          if (!grandchild) return;
+         // A table reports a height of its own, so it keeps being measured
+         // even after the first one lands. Everything else measures once.
+         const contentSized = viz !== undefined && sizesToContent(viz);
+         if (hasMeasuredRef.current && !contentSized) return;
          const greatgrandchild = grandchild.firstElementChild as HTMLElement;
+         // `scrollHeight` is the CONTENT height, so this assumes the box adds
+         // no chrome of its own. True today: `.malloy-table.root` has no
+         // border, and a horizontal scrollbar costs no layout where scrollbars
+         // overlay. A wide table clipped by a few pixels on a platform that
+         // draws classic scrollbars would be this assumption breaking, and the
+         // fix is `+ (offsetHeight - clientHeight)`.
          let renderedHeight =
             grandchild.scrollHeight || grandchild.offsetHeight || 0;
 
@@ -444,9 +504,19 @@ function RenderedResultInner({
 
          if (renderedHeight > 0) {
             hasMeasuredRef.current = true;
-            if (onSizeChange) {
+            if (onSizeChange && renderedHeight !== lastReportedHeight) {
+               lastReportedHeight = renderedHeight;
                onSizeChange(renderedHeight);
             }
+         }
+         // Watch the table from here on. Attached after the first measurement
+         // rather than at render time because the node does not exist until
+         // the renderer builds it, and this is the callback that first sees it.
+         if (contentSized && observedNode !== grandchild) {
+            observedNode = grandchild;
+            sizeObserver?.disconnect();
+            sizeObserver = new ResizeObserver(() => measureRenderedSize(root));
+            sizeObserver.observe(grandchild);
          }
       };
 
@@ -508,7 +578,18 @@ function RenderedResultInner({
             if (measureTimeout) clearTimeout(measureTimeout);
             measureTimeout = setTimeout(() => {
                measureRenderedSize(stageNode);
-               observer?.disconnect();
+               // Only once a measurement actually landed. Disconnecting
+               // unconditionally gave up on a stage whose renderer output was
+               // still empty at the first settle, leaving nothing to measure it
+               // later.
+               //
+               // Staying connected cannot loop the way the version this
+               // disconnect was first added to guard (#531) could: THAT
+               // observer watched the container, with `attributes: true`, so
+               // reporting a height re-triggered it through the container's own
+               // style. This one watches `stage`, a descendant, which that
+               // style write is outside of.
+               if (hasMeasuredRef.current) observer?.disconnect();
             }, 100);
          });
          observer.observe(stage, {
@@ -736,6 +817,7 @@ function RenderedResultInner({
          } catch (error) {
             console.error("Error rendering visualization:", error);
             observer?.disconnect();
+            sizeObserver?.disconnect();
             drillObserver?.disconnect();
             viz.remove();
             viz = undefined;
@@ -748,6 +830,7 @@ function RenderedResultInner({
       return () => {
          cancelled = true;
          observer?.disconnect();
+         sizeObserver?.disconnect();
          if (measureTimeout) clearTimeout(measureTimeout);
          if (readyFallback) clearTimeout(readyFallback);
          // If this render built a stage but never swapped it into `liveRef`
