@@ -38,13 +38,17 @@ const MAX_LOGGED_DETAIL_CHARS = 2000;
  * Newlines and other control characters are stripped because the default format
  * (colorize + simple, whenever OTEL_EXPORTER_OTLP_ENDPOINT is unset) is
  * newline-delimited plain text, so a message carrying `\n` -- and caller SQL can
- * -- could otherwise forge log entries. `format.json()` escapes them, so this
- * matters only on the non-telemetry path.
+ * -- could otherwise forge log entries. The range also covers the separators
+ * JSON.stringify does NOT escape (NEL, and the U+2028/U+2029 line and paragraph
+ * separators): those reach the rendered line verbatim under both formats, so
+ * `format.json()` is not a backstop for them the way it is for `\n`.
  */
-function logInternalFailure(summary: string, error: Error): void {
+export function logInternalFailure(summary: string, error: Error): void {
    const sanitize = (value: string): string =>
       // eslint-disable-next-line no-control-regex
-      value.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, MAX_LOGGED_DETAIL_CHARS);
+      value
+         .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+         .slice(0, MAX_LOGGED_DETAIL_CHARS);
    logger.error(summary, {
       name: error.name,
       message: sanitize(error.message ?? ""),
