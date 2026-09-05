@@ -76,7 +76,8 @@ npm start
 This writes a package to `./sales` — plus, in the current directory, a small workspace: start and
 reset scripts, an MCP config, agent instructions, and the Malloy skills as files your agent can read.
 `npm start` serves the package in watch mode, so edits take effect as you save. Keep the `@latest`:
-without it npm may reuse a cached, older version.
+without it npm may reuse a cached, older version. The finer points of `npm create` — caching, workspace
+layout, the bare `npx` form — are in [docs/scaffolding.md](docs/scaffolding.md).
 
 ### Bring local data files
 
@@ -88,10 +89,15 @@ CSV, Parquet, JSON, newline-delimited JSON, or Excel `.xlsx` — DuckDB reads al
 `--` is required, and the path is relative to where you run the command. A seeded package starts
 small: a row count and an overview, which is the moment to point an agent at it.
 
-A package is just Malloy, so it is not limited to a file: point its model at a
-[database connection](docs/connections.md) and the same workspace serves a warehouse. The finer points
-of `npm create` — caching, workspace layout, the bare `npx` form — are in
-[docs/scaffolding.md](docs/scaffolding.md).
+### Connect a database
+
+A package is just Malloy, so it is not limited to local files. Add a
+[connection](docs/connections.md) — BigQuery, Snowflake, Postgres, Databricks, MotherDuck, and more —
+and point the model at it; the same workspace serves a warehouse. Have the warehouse but no model yet?
+Ask the agent what is in it: `malloy_searchDatabaseSchema` ranks a connection's tables against a
+plain-English description and hands back the `source:` line for each. Ranking needs no API key; the
+optional embedding-backed mode is in
+[docs/configuration.md](docs/configuration.md#semantic-ranking-for-malloy_searchdatabaseschema).
 
 ## Point your agent at it
 
@@ -142,13 +148,6 @@ curl -s -X POST \
 ```
 
 The running server serves its full OpenAPI spec at `http://localhost:4000/api-doc.yaml`.
-
-### Starting from a database instead of a model
-
-Have a warehouse but no model yet? Add a [connection](docs/connections.md) and ask the agent what is
-in it: `malloy_searchDatabaseSchema` ranks a connection's tables against a plain-English description
-and hands back the `source:` line for each. Ranking needs no API key; the optional embedding-backed
-mode is in [docs/configuration.md](docs/configuration.md#semantic-ranking-for-malloy_searchdatabaseschema).
 
 > **Security.** The server — MCP and REST alike — is stateless and unauthenticated, and it can read any
 > data your models connect to. Bind it to loopback (`--host 127.0.0.1`) for local use, and put an
