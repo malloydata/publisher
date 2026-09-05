@@ -50,6 +50,30 @@ describe("internalErrorToHttpError does not leak internal detail (F-12 Part A)",
       expect(json.message).not.toContain("internal_accounts");
    });
 
+   it("preserves a server-authored 502 message (caller-safe)", () => {
+      // Not every 502 is a leak. "Table x.y not found" is written by this server,
+      // names nothing internal, and tells the caller what to fix -- genericizing
+      // the whole 502 class to suppress driver messages would destroy it.
+      const { status, json } = internalErrorToHttpError(
+         new ConnectionError("Table analytics.orders not found", {
+            callerSafe: true,
+         }),
+      );
+      expect(status).toBe(502);
+      expect(json.message).toContain("Table analytics.orders not found");
+   });
+
+   it("generalizes a 502 that wraps a driver message (not caller-safe)", () => {
+      // The default. A driver message can name an internal host/port, echo the
+      // caller's SQL, or distinguish refused from timed-out from auth-failed.
+      const { status, json } = internalErrorToHttpError(
+         new ConnectionError("connect ECONNREFUSED 10.0.0.1:5432"),
+      );
+      expect(status).toBe(502);
+      expect(json.message).not.toContain("ECONNREFUSED");
+      expect(json.message).not.toContain("10.0.0.1");
+   });
+
    it("preserves the actionable message on a client (4xx) error", () => {
       // Only internal 500/502 bodies are genericized; a client-actionable 4xx
       // message (e.g. a bad-request explanation) must still reach the caller.

@@ -31,6 +31,37 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] -- 500 and 502 responses no longer echo the internal error
+
+A 500 or a 502 returned `error.message` verbatim. That message is not always
+something a caller should see: an unrecognised internal failure carries a stack
+fragment or a filesystem path, and a connection failure wraps the driver's own
+text, which can name an internal host and port, echo the SQL the caller sent, or
+distinguish "refused" from "timed out" from "auth failed" -- a reachability
+oracle for anything the server can reach.
+
+Both now answer with a fixed message (`Internal server error.`,
+`Upstream connection error.`) and the real error is logged server-side instead.
+The status codes are unchanged.
+
+Two things are deliberately *not* generalised, because the point is to drop what
+a caller cannot use rather than everything:
+
+- Every 4xx keeps its message. A 400 compile error, a 404 naming the package it
+  could not find, and the 424 that quotes an offending annotation are all
+  actionable, and a caller needs them to fix the request.
+- A 502 the server wrote itself keeps its message too. `Table x.y not found`
+  names nothing internal and tells the caller which table to correct, so it is
+  marked caller-safe at the point it is raised; only the driver passthrough is
+  generalised. A new throw site that does not mark itself is generalised by
+  default.
+
+If you parse the body of a 5xx rather than reading its status, that text is now
+fixed. The detail moved to the logs, which is where it was always meant to be:
+before this change it reached them only incidentally, via response-body logging.
+
+---
+
 ## [Unreleased] — a boolean query param you misspell now fails instead of doing nothing
 
 `reload`, `dropTables` and `bypass_filters` were each read as `=== "true"`, so
