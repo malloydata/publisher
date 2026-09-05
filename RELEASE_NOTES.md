@@ -31,6 +31,23 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — compile and sqlSource now count against the concurrency cap
+
+`PUBLISHER_MAX_CONCURRENT_QUERIES` bounds how much work a pod runs at once so a
+flood cannot saturate it. It covered `query`, `sqlQuery` and `sqlTemporaryTable`,
+but not `compile` or `sqlSource` -- and both of those reach the database too:
+compile resolves a source's schema against the connection, and sqlSource runs a
+live introspection. A burst of either bypassed the cap its sibling routes
+enforce. The legacy `/projects/...` routes and the `malloy_compile` MCP tool had
+the same gap, so all three surfaces are gated together; leaving one open would
+just move the bypass.
+
+What changes for an operator: the cap now has to be sized for authoring traffic
+as well as query traffic. An agent loop or a notebook that compiles on every edit
+draws on the same pool a query does, so a deployment that sits near its cap may
+start seeing 503s on compile and sqlSource that it did not see before. The cap
+defaults to 32 and `0` still disables it entirely.
+
 ## [Unreleased] — 500 and 502 responses no longer echo the internal error
 
 A 500 or a 502 returned `error.message` verbatim. That message is not always
