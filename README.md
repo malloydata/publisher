@@ -10,8 +10,6 @@ SPDX-License-Identifier: MIT
 <p align="center">A post modern data stack — built for the AI era.<br>
 One data model, served over MCP and REST to AI agents, applications, and BI tools.</p>
 
-<br>
-
 <p align="center">Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.</p>
 
 <p align="center"><sub><strong>AI agents:</strong> read <a href="AGENTS.md">AGENTS.md</a> first (raw: <code>https://raw.githubusercontent.com/malloydata/publisher/main/AGENTS.md</code>).<br>
