@@ -8,7 +8,7 @@
 // a 400 rather than being logged somewhere, that the message names the file, and
 // that a valid declaration does not disturb a package that loads fine today.
 //
-// Why the load and not just publish (see Package.preaggregatePolicyWarnings): a
+// Why the load and not just publish (see Package.formatInvalidPreaggregatePolicy): a
 // package can arrive without ever passing through POST/PATCH — uploaded to a
 // control plane's storage and loaded by a worker — and pre-aggregation is
 // invisible when it works, so a warning would leave the author reading a clean
@@ -75,8 +75,8 @@ describe("a valid declaration does not disturb the load", () => {
             model(`  #@ preaggregate grain="category"
   measure: total is amount.sum()`),
          );
-         expect(pkg.preaggregatePolicyWarnings()).toEqual([]);
          expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         expect(pkg.preaggregateAccessWarnings()).toEqual([]);
       },
       { timeout: 30000 },
    );
@@ -87,7 +87,7 @@ describe("a valid declaration does not disturb the load", () => {
          const pkg = await loadPackage(
             model(`  measure: total is amount.sum()`),
          );
-         expect(pkg.preaggregatePolicyWarnings()).toEqual([]);
+         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
       },
       { timeout: 30000 },
    );
@@ -176,6 +176,68 @@ describe("an unusable declaration FAILS the load as a 400", () => {
          const lines = (error as Error).message.split("\n");
          expect(lines).toHaveLength(2);
          expect(lines.every((l) => l.startsWith("model.malloy: "))).toBe(true);
+      },
+      { timeout: 30000 },
+   );
+});
+
+describe("a hidden field warns at BOTH gates rather than refusing", () => {
+   // Fails on the pre-fix behaviour, which is the reason it exists: these two
+   // codes rejected a publish, so `formatInvalidPreaggregatePolicy()` returned
+   // their text and the package could neither be published nor loaded.
+   //
+   // The refusal was never the enforcement — the planner skips a hidden field, so
+   // nothing is built and nothing can be served — and it was unfollowable in the
+   // inherited case below, which is the shape that decided it.
+   it(
+      "a measure hidden on the source that annotates it",
+      async () => {
+         const pkg = await loadPackage(
+            `##! experimental { persistence composite_sources access_modifiers }
+source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+} include {
+  public: category, amount
+  private: total
+}
+`,
+         );
+         // Neither gate refuses.
+         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         // But it is SAID, on the surface an operator reads.
+         const warned = pkg.preaggregateAccessWarnings();
+         expect(warned).toHaveLength(1);
+         expect(warned[0].subject).toBe("total");
+         expect(warned[0].message).toContain("does not publicly expose");
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "an INHERITED annotation onto a source that then hides the measure",
+      async () => {
+         // The case that made refusing wrong rather than merely strict. The
+         // extending source produces no plan at all, so nothing is exposed and the
+         // base's own rollup is unaffected — yet the old refusal blocked the
+         // publish and told the author to make the field public or remove an
+         // annotation that is not on that source.
+         const pkg = await loadPackage(
+            `##! experimental { persistence composite_sources access_modifiers }
+source: orders is duckdb.sql("""SELECT 10 AS amount, 'A' AS category""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+source: orders_pub is orders extend {} include {
+  public: category, amount
+  private: total
+}
+`,
+         );
+         expect(pkg.formatInvalidPreaggregatePolicy()).toBe("");
+         expect(pkg.preaggregateAccessWarnings().map((w) => w.subject)).toEqual(
+            ["total"],
+         );
       },
       { timeout: 30000 },
    );
