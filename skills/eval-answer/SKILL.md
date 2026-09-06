@@ -127,6 +127,22 @@ this number worth having. It uses the search terms the answerer chose, so it
 attributes a failure *within* an arm and does not compare retrieval across arms
 -- that is the engine-side `eval-retrieval` skill, which does not ship here.
 
+`scripts/check_coverage.py` measures the other half, and it is worth knowing
+which question each answers. Recall asks whether search surfaced the entities a
+case names. Coverage asks whether the model holds the concepts at all, decided
+by READING the model: no answerer, no judge, no goldens, no warehouse. A version
+can score full recall on a case the model could never have answered, and then
+recall is scoring search against an expectation that was never satisfiable.
+
+Because it runs from the model text alone it is cheap enough to point at every
+published version and read as a trend, which is what it is for. Its verdicts are
+`eval-diagnose`'s codes verbatim, validated against that table at startup, so
+`COVERAGE`, `AMBIGUOUS`, `NO-DISAMBIG` and `CONVENTION` mean there exactly what
+they mean here. It writes nothing: not a golden, not the case-level `coverage`
+field, not a run directory. Where its verdict and that field disagree is where a
+version regressed, and the field is the standing judgement about the question
+while this is a measurement against one build.
+
 ## Step 5: Distrust the golden
 
 A reference answer can be wrong (parent-column fanout, a join on a shared
