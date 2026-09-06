@@ -448,6 +448,22 @@ execute_query call. Do not query any other package, even if get_context
 suggests one.
 """
 
+# The same instruction with the version carried on both calls. Omitting it does
+# not mean "no version": both tools document the omitted case as the PINNED
+# version, so an unversioned call answers from whatever the workspace serves
+# right now, and a run that publishes mid-flight measures two builds under one
+# label.
+SCOPE_LINE_VERSIONED = """
+This run is about one package at one version only: environment "{env}",
+package "{pkg}", version "{version}".
+Pass scopes=[{{"environment": "{env}", "package": "{pkg}", "version": "{version}"}}]
+on every get_context call, and environment="{env}", package="{pkg}",
+version="{version}" on every execute_query call. The version is not optional
+here: omitting it answers from whatever version the workspace serves now, which
+is not necessarily the one this run is about. Do not query any other package or
+version, even if get_context suggests one.
+"""
+
 
 def server_alive(a: argparse.Namespace) -> bool:
     """Is the thing the answerer is about to talk to actually up?
@@ -629,6 +645,48 @@ def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
     return out
 
 
+def parse_scope(scope: str, target_version: str | None
+                ) -> tuple[str, str, str | None, list[str]]:
+    """`environment/package[@version]` -> (env, pkg, version, notes).
+
+    The version matters more than it looks. Both hosted tools take one and both
+    document the same default: omitted means the PINNED version, which is
+    whatever the workspace serves at the moment of the call. A run that records
+    `targetVersion: 0.0.58` while its calls omit the version is not measuring
+    0.0.58, it is measuring whatever was current, and the two differ the moment
+    anyone publishes. So the version reaches every call rather than only
+    `run.json`.
+
+    `--target-version` is already required for a platform target, so it supplies
+    the version when the scope does not carry one and every platform run is
+    pinned without anyone opting in. A scope that names a DIFFERENT version is a
+    contradiction rather than an override: two pins in one run, and no way to
+    tell which the answers came from.
+    """
+    notes: list[str] = []
+    if "/" not in scope:
+        raise SystemExit("--scope must be environment/package[@version]")
+    env, rest = scope.split("/", 1)
+    pkg, _, version = rest.partition("@")
+    version = version.strip() or None
+    if version and version.startswith("v") and version[1:2].isdigit():
+        # The tools say not to prefix, and a `v` reaches the API as part of the
+        # name. Normalised rather than refused: it is a typing habit, not an
+        # ambiguity.
+        notes.append(f"--scope version {version!r} has a leading 'v'; using "
+                     f"{version[1:]!r}, which is what the API expects")
+        version = version[1:]
+    if version and target_version and version != target_version:
+        raise SystemExit(
+            f"--scope pins @{version} and --target-version says "
+            f"{target_version}; they must agree, or the run cannot say which "
+            f"version its answers came from")
+    version = version or target_version
+    if not env.strip() or not pkg.strip():
+        raise SystemExit("--scope must be environment/package[@version]")
+    return env.strip(), pkg.strip(), version, notes
+
+
 def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                  art: pathlib.Path) -> dict[str, Any]:
     qid = case["qid"]
@@ -670,8 +728,10 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                                                "url": a.mcp_url}}}, fh)
         scope_line = ""
         if platform and a.scope:
-            env, pkg = a.scope.split("/", 1)
-            scope_line = SCOPE_LINE.format(env=env, pkg=pkg)
+            env, pkg, version, _ = parse_scope(a.scope, a.target_version)
+            scope_line = (SCOPE_LINE_VERSIONED.format(env=env, pkg=pkg,
+                                                      version=version)
+                          if version else SCOPE_LINE.format(env=env, pkg=pkg))
         prompt = (PLATFORM_PROMPT if platform else ANSWER_PROMPT).format(
             environment=a.environment, package=a.package,
             question=case["question"], scope_line=scope_line)
@@ -1117,12 +1177,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="platform only: the published package version the "
                          "workspace serves. Required, because a platform run "
                          "pins the version it queried, not a local snapshot")
-    ap.add_argument("--scope", default=None, metavar="ENV/PACKAGE",
+    ap.add_argument("--scope", default=None, metavar="ENV/PACKAGE[@VERSION]",
                     help="platform only: the one package the answerer is told "
-                         "to scope every call to, as environment/package. A "
-                         "workspace can serve many packages (a personal one "
-                         "serves every package the user can read); unscoped, "
-                         "the run also measures package selection")
+                         "to scope every call to, as environment/package, and "
+                         "with @version the one build too. A workspace can "
+                         "serve many packages (a personal one serves every "
+                         "package the user can read); unscoped, the run also "
+                         "measures package selection. Without a version, every "
+                         "call answers from whatever the workspace serves at "
+                         "the time, whatever run.json says it measured; "
+                         "--target-version fills it in when @version is absent")
     ap.add_argument("--environment", default="samples",
                     help="local: the Publisher environment. "
                          "platform: the hosted ORGANIZATION")
@@ -1354,11 +1418,21 @@ def main(argv: list[str] | None = None) -> int:
     # or model source -- a weaker verdict, stamped on the run so nobody reads a
     # platform score as if it had the local judge's evidence.
     if a.target == "platform":
-        if a.scope and "/" not in a.scope:
-            raise SystemExit("--scope must be environment/package")
-        if not a.target_version:
-            raise SystemExit("--target platform requires --target-version "
-                             "(the published version the workspace serves)")
+        if not a.target_version and not (a.scope and "@" in a.scope):
+            raise SystemExit("--target platform requires --target-version, or "
+                             "a --scope of environment/package@version (the "
+                             "published version the workspace serves)")
+        if a.scope:
+            _, _, resolved, notes = parse_scope(a.scope, a.target_version)
+            for n in notes:
+                print(f"  ! {n}")
+            # One pin, wherever it came from, so run.json and the calls cannot
+            # disagree about which build answered.
+            a.target_version = resolved
+        else:
+            print("  ! no --scope, so the version reaches run.json but not the "
+                  "calls: the answerer will get whatever version the workspace "
+                  "serves. Pass --scope ENV/PACKAGE@VERSION to pin them.")
         model_src, pinned_sha, reexec, served = "", None, False, None
         print("  ! platform target: predictions are not re-executed and the "
               "judge does not see the model source; verdicts rest on the "

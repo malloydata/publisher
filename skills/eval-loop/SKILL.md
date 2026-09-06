@@ -216,6 +216,17 @@ the run measure something other than what it names:
   the token is cached per name, and a spawned headless answerer cannot complete
   an OAuth flow.
 
+- **Pin the VERSION in the scope, not just the package.** Write
+  `--scope <env>/<package>@<version>`. Both hosted tools take a version and both
+  document the same default for an omitted one: the PINNED version, which is
+  whatever the workspace serves at the moment of the call. So an unversioned run
+  records `targetVersion` in `run.json` and then answers from whatever is
+  current, and the two part company the moment anyone publishes -- including
+  mid-run, which measures two builds under one label. `--target-version` fills
+  the version in when the scope omits it, so a platform run is pinned without
+  opting in; a scope naming a different version is refused rather than taken as
+  an override.
+
 ## Before you start
 
 1. The model package under evaluation must live in a git repository, with

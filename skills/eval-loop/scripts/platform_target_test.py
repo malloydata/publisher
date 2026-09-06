@@ -14,6 +14,7 @@ Stdlib only: python3 platform_target_test.py
 import argparse
 import os
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -53,7 +54,6 @@ class PromptSelection(unittest.TestCase):
     def test_both_prompts_take_the_same_fields(self):
         # run_answerer formats one or the other with the same kwargs; a field in
         # one and not the other is a KeyError on the arm that uses it.
-        import re
         f = lambda s: set(re.findall(r"\{(\w+)\}", s))
         self.assertEqual(f(rb.ANSWER_PROMPT) - {"scope_line"},
                          f(rb.PLATFORM_PROMPT) - {"scope_line"})
@@ -62,6 +62,58 @@ class PromptSelection(unittest.TestCase):
         line = rb.SCOPE_LINE.format(env="e", pkg="p")
         self.assertIn('"environment": "e"', line)
         self.assertIn("Do not query any other package", line)
+
+    def test_versioned_scope_line_pins_both_call_types(self):
+        # Both hosted tools take a version and both default to the PINNED one
+        # when it is omitted, so an unversioned call answers from whatever the
+        # workspace serves now. The instruction has to reach get_context and
+        # execute_query, not one of them.
+        line = rb.SCOPE_LINE_VERSIONED.format(env="e", pkg="p", version="0.0.58")
+        self.assertIn('"version": "0.0.58"', line)      # get_context scopes
+        self.assertIn('version="0.0.58"', line)          # execute_query
+        self.assertIn("omitting it answers from whatever version", line)
+
+    def test_both_scope_lines_take_the_same_placeholders_plus_version(self):
+        f = lambda s: set(re.findall(r"\{(\w+)\}", s))
+        self.assertEqual(f(rb.SCOPE_LINE_VERSIONED) - f(rb.SCOPE_LINE),
+                         {"version"})
+
+
+class ScopeParsing(unittest.TestCase):
+    """One pin per run, wherever it came from."""
+
+    def test_version_from_the_scope(self):
+        self.assertEqual(rb.parse_scope("org/pkg@0.0.58", None)[:3],
+                         ("org", "pkg", "0.0.58"))
+
+    def test_target_version_fills_in_when_the_scope_omits_it(self):
+        # --target-version is already required for a platform target, so every
+        # platform run gets a pinned call without opting in.
+        self.assertEqual(rb.parse_scope("org/pkg", "0.0.58")[2], "0.0.58")
+
+    def test_a_leading_v_is_normalised_and_reported(self):
+        env, pkg, version, notes = rb.parse_scope("org/pkg@v0.0.58", None)
+        self.assertEqual(version, "0.0.58")
+        self.assertEqual(len(notes), 1)
+
+    def test_a_version_that_merely_starts_with_v_is_left_alone(self):
+        self.assertEqual(rb.parse_scope("org/pkg@vnext", None)[2], "vnext")
+
+    def test_agreeing_pins_are_fine(self):
+        self.assertEqual(rb.parse_scope("org/pkg@0.0.58", "0.0.58")[2], "0.0.58")
+
+    def test_two_different_pins_are_refused(self):
+        # Not an override: the run could not say which version answered.
+        with self.assertRaises(SystemExit):
+            rb.parse_scope("org/pkg@0.0.58", "0.0.38")
+
+    def test_no_version_anywhere_is_allowed_but_unpinned(self):
+        self.assertIsNone(rb.parse_scope("org/pkg", None)[2])
+
+    def test_a_scope_without_a_package_is_refused(self):
+        for bad in ("noslash", "org/", "/pkg", "org/@0.0.1"):
+            with self.assertRaises(SystemExit, msg=bad):
+                rb.parse_scope(bad, None)
 
 
 class SkillsWrittenForAnotherHost(unittest.TestCase):
