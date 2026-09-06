@@ -65,6 +65,7 @@ import re
 import sys
 from typing import Any
 
+from check_must_not_use import candidate as must_not_use_candidate
 from publisher_rest import try_query    # the one direct path to a Publisher
 
 _TABLE_REF = re.compile(r"""duckdb\.table\(\s*['"](?:\.\./)?data/(\w+)\.\w+['"]\s*\)""")
@@ -267,6 +268,83 @@ def stale_rubric_claims(cases: list[dict[str, Any]], defs: dict[str, str]) -> li
     return bad
 
 
+# ------------------------------------------------- 5. names the model does not have
+
+def model_text(model_path: pathlib.Path | None) -> str:
+    """Every .malloy byte under `--model`, for a name-presence check.
+
+    More text means fewer false alarms, so a directory is walked recursively:
+    a package keeps models in subdirectories and an id may name a field defined
+    in one of them.
+    """
+    if not model_path or not model_path.exists():
+        return ""
+    files = [model_path] if model_path.is_file() else sorted(model_path.rglob("*.malloy"))
+    return "\n".join(f.read_text() for f in files)
+
+
+def _named(name: str, text: str) -> bool:
+    return bool(name) and re.search(r"(?<![A-Za-z0-9_])" + re.escape(name)
+                                    + r"(?![A-Za-z0-9_])", text) is not None
+
+
+def _id_named(entity_id: str, text: str) -> bool:
+    """Both halves of `kind:source:name` must be in the model, or it is not this
+    model's entity. The source half is what catches an id copied from a sibling
+    package: a field name often survives a rename that the source name does
+    not."""
+    parts = (entity_id or "").split(":")
+    return all(_named(p, text) for p in parts[1:])
+
+
+def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
+    """Set names that do not exist in the model under test.
+
+    A `required` id naming a field this package does not have cannot be
+    delivered, so it scores as a retrieval miss on every run and reads as a
+    model failure. Five such ids, copied from a sibling package, quietly cost a
+    real set two days and five false misses. It is a SET error, and the only
+    moment it is cheap to see is before the arm starts.
+
+    `requiredAnyOf` is the exception and the repair for exactly this: a group
+    naming one id per package version is satisfied when ANY of them resolves,
+    so only a group where none does is a finding.
+
+    `acceptable` and `mustNotUse` are reported for review rather than failed.
+    Neither moves a number: an unknown `acceptable` id simply never matches, and
+    an unknown `mustNotUse` name is a veto that can never fire. A model that
+    passes a raw column straight through without naming it in its text would
+    also fail this, and blocking a run on that would be wrong.
+    """
+    if not text:
+        return []
+    out: list[str] = []
+    for case in cases:
+        qid = case["qid"]
+        exp = case.get("expectedEntities") or {}
+        for e in exp.get("required") or []:
+            if not _id_named(e, text):
+                out.append(f"{qid}: required entity {e} names nothing in the "
+                           f"model under test, so it can only ever score as a "
+                           f"retrieval miss. Fix the id, or make it a "
+                           f"requiredAnyOf group naming both packages' ids")
+        for g in exp.get("requiredAnyOf") or []:
+            if isinstance(g, list) and g and not any(_id_named(e, text) for e in g):
+                out.append(f"{qid}: no id in requiredAnyOf group "
+                           f"[{', '.join(g)}] names anything in the model under "
+                           f"test")
+        for e in exp.get("acceptable") or []:
+            if not _id_named(e, text):
+                out.append(f"review {qid}: acceptable entity {e} names nothing "
+                           f"in the model under test, so it never matches")
+        for m in (case.get("golden") or {}).get("mustNotUse") or []:
+            name = must_not_use_candidate(m)
+            if name and not _named(name.rsplit(".", 1)[-1], text):
+                out.append(f"review {qid}: mustNotUse {name!r} names nothing in "
+                           f"the model under test, so the veto can never fire")
+    return out
+
+
 # ---------------------------------------------------------------- driver
 
 def verify(set_dir: pathlib.Path, publisher: str, environment: str,
@@ -317,6 +395,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         findings += rubric_number_findings(c)
         findings += axis_findings(c, set_dir)
     findings += stale_rubric_claims(chosen, model_definitions(model))
+    findings += unknown_name_findings(chosen, model_text(model))
 
     if refreshed:
         by_qid = {c["qid"]: c for c in cases}

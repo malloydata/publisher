@@ -731,6 +731,7 @@ query: case_drawer is scores -> {
             must_state is cases.must_state,
             coverage is cases.coverage,
             verdict, confidence, gold_status,
+            must_not_use_hits, judge_verdict,
             judge_reasoning is reason,
             answer is attempts.answer_text,
             final_query is attempts.final_query,

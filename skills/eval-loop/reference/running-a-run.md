@@ -19,6 +19,15 @@ python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/s
 python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/server \
   --server-root <truthroot> --port 4881 --mcp-port 4882 [--allow-proxy]
 
+# 2a. audit the set against the package it is about to be scored on. Free, and
+#     it catches the failure that reads as a model regression: an entity id
+#     naming a field this package does not have scores as a retrieval miss on
+#     every run. Pass --model on a platform target too, from a checkout of the
+#     served version, since the harness cannot see the model text there.
+python3 skills/eval-answer/scripts/verify_goldens.py \
+  --set <repo>/evals/ecommerce --publisher http://localhost:4881 \
+  --model <repo>/ecommerce
+
 # 2. smoke one case first ($0.13), then the arm. Goldens are re-derived from
 #    the truth server before either starts; a drifted set refuses to run.
 python3 skills/eval-loop/scripts/run_baseline.py \

@@ -9,17 +9,29 @@ question about query TEXT, not about meaning, so a script decides it and the
 judge is never asked. Design record: eval-program.md, "a script checks this,
 not the judge".
 
-Entries come in three shapes, and only two of them are decidable here:
+Only a BARE name is decidable here:
 
-    shipped_at                                 an identifier -- checked, vetoes
-    products.retail_price.avg() through ...    a field path  -- checked, vetoes
-    an average of per-SKU prices               prose         -- the judge's
+    shipped_at                       an identifier -- checked, vetoes
+    products.retail_price            a field path  -- checked, vetoes
+    weekly_active_users as a series     prose         -- the judge's
+    an average of per-SKU prices     prose         -- the judge's
 
 so `check` returns all three lists and the caller hands the prose to the judge
 rather than guessing at it. A leaf found without its path (`retail_price` with
 no `products.` in front) is reported separately and does NOT veto: the same
 short name is often a legitimate field on another source, and a veto that fires
 on a correct answer is worse than one that misses.
+
+**A connective makes an entry prose, however it starts.** `X as <reading>` and
+`X through <join>` name a WAY of using X, not a ban on X, and reading them as
+"veto X anywhere" fails correct answers: `weekly_active_users as a cumulative
+series` vetoed an answer whose cumulative series was exact and that merely
+showed the per-period field as an extra column. The same trap sits in the
+ecommerce set, where `total_sales as the answer` and `sale_price.avg() as spend
+per customer` name the two fields nearly every correct answer to those cases
+must use. So the split is mechanical and the authoring rule is simple: write the
+bare name when the field must not appear at all, and write prose when the
+objection is to a use of it.
 
     from check_must_not_use import check
     r = check(["shipped_at", "an average of per-SKU prices"], "run: x -> ...")
@@ -44,18 +56,22 @@ from typing import Any
 # whole test -- prose has spaces and this does not.
 _PATH = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
 
-# Authors write "<expression> as <the wrong reading>" and "<field> through <the
-# wrong join>". Everything after the connective is prose about WHY it is wrong,
-# so the expression in front of it is what a text check can look for.
-_SPLIT = re.compile(r"\s+(?:as|through)\s+")
+# "<field> as <the wrong reading>" and "<field> through <the wrong join>" object
+# to a USE of the field, not to the field. The head used to be vetoed anyway,
+# which turned every such entry into a ban on a field that correct answers use.
+_CONNECTIVE = re.compile(r"\s+(?:as|through)\s+")
 
 
 def candidate(entry: str) -> str | None:
     """The field path an entry names, or None when it is prose.
 
-    `products.retail_price.avg() through the product join` -> products.retail_price
+    `products.retail_price` -> products.retail_price
+    `products.retail_price.avg()` -> products.retail_price
+    `weekly_active_users as a cumulative series` -> None, the judge's to apply
     """
-    head = _SPLIT.split(entry.strip(), 1)[0].strip()
+    head = entry.strip()
+    if _CONNECTIVE.search(head):
+        return None
     # A trailing call is the aggregate applied to the field, not part of its
     # name: `x.y.avg()` forbids `x.y`.
     if head.endswith("()"):

@@ -58,3 +58,29 @@ Rules that follow from this:
   `--only <qids> --verdicts near_match`. Stability across two arms is the whole
   qualification. A `near_match` in one arm is noise, and diagnosing it sends an
   agent to fix a model that is already right.
+
+## Writing `mustNotUse`
+
+Two shapes, and the difference decides whether a script or the judge applies it.
+
+- **A bare name is a hard veto.** `shipped_at`, `total_sales_2021`,
+  `products.retail_price`: a script looks for it in the final query and forces
+  `no_match` on a hit, without asking the judge. Write it this way only when the
+  field must not appear in the query **at all**, which is the case when the
+  field itself is the mistake: the wrong date column, last year's measure.
+- **Anything else is prose, and goes to the judge.** `weekly_active_users as a
+  cumulative series` objects to a USE of a field, not to the field, and the
+  connective is what says so. So does `product.cost through the order_items
+  join`. These reach the judge as a `MUST NOT USE` line and it applies them
+  against the answer, where a reading can be weighed.
+
+Getting this backwards is expensive in one direction only. A veto that fires on
+a correct answer turns a pass into a `no_match` that nobody can see without
+reading the reason string, and it happened: a cumulative-reach answer whose
+series was exact showed the per-period field as an extra column and was failed
+for it. So `X as ...` and `X through ...` are prose by construction, however
+they start. If you want the hard veto, write the bare name and nothing else.
+
+`verify_goldens.py --model` reports a bare name that appears nowhere in the
+model under test, because a veto on a field the model does not have is one that
+can never fire.

@@ -14,13 +14,24 @@ class Candidate(unittest.TestCase):
         self.assertEqual(candidate("shipped_at"), "shipped_at")
 
     def test_call_suffix_names_the_field_not_the_aggregate(self):
-        self.assertEqual(
-            candidate("products.retail_price.avg() through the product join"),
-            "products.retail_price")
+        self.assertEqual(candidate("products.retail_price.avg()"),
+                         "products.retail_price")
 
-    def test_path_before_through(self):
-        self.assertEqual(candidate("product.cost through the order_items join"),
-                         "product.cost")
+    def test_a_dotted_path_is_a_candidate(self):
+        self.assertEqual(candidate("product.cost"), "product.cost")
+
+    def test_a_connective_makes_it_prose_however_it_starts(self):
+        # These name a WAY of using the field, not a ban on the field. Vetoing
+        # the head fails correct answers: the first cost a real run a false
+        # no_match, and the next two name fields nearly every correct answer to
+        # their ecommerce case must use.
+        for entry in ("weekly_active_users as a cumulative series",
+                      "total_sales as the answer",
+                      "sale_price.avg() as spend per customer",
+                      "product.cost through the order_items join",
+                      "products.retail_price.avg() through the product join",
+                      "inventory_items.sold_at as a count of units actually sold"):
+            self.assertIsNone(candidate(entry), entry)
 
     def test_prose_is_not_a_candidate(self):
         for entry in ("an average of per-SKU prices",
@@ -48,16 +59,26 @@ class Check(unittest.TestCase):
         self.assertEqual(r["hits"], ["total_sales_2021"])
 
     def test_full_path_is_a_hit(self):
-        r = check(["product.cost through the order_items join"],
+        r = check(["product.cost"],
                   "run: order_items -> { aggregate: c is product.cost.sum() }")
         self.assertEqual(len(r["hits"]), 1)
         self.assertEqual(r["leaf_hits"], [])
 
     def test_bare_leaf_is_reported_but_never_vetoes(self):
-        r = check(["product.cost through the order_items join"],
+        r = check(["product.cost"],
                   "run: inventory_items -> { aggregate: c is cost.sum() }")
         self.assertEqual(r["hits"], [])
         self.assertEqual(len(r["leaf_hits"]), 1)
+
+    def test_a_use_objection_never_vetoes_the_field_it_names(self):
+        # The regression this file exists to hold: the answer showed the field
+        # as an extra column and its series was correct.
+        r = check(["weekly_active_users as a cumulative series"],
+                  "run: reach -> { group_by: week; aggregate: weekly_active_users, "
+                  "cumulative is weekly_active_users.sum() }")
+        self.assertEqual(r["hits"], [])
+        self.assertEqual(r["unchecked"],
+                         ["weekly_active_users as a cumulative series"])
 
     def test_prose_goes_to_the_judge(self):
         r = check(["an average of per-SKU prices"], "run: x -> { aggregate: y }")
@@ -94,7 +115,7 @@ class Noise(unittest.TestCase):
 class JudgeNote(unittest.TestCase):
     def test_note_carries_prose_and_leaf_suspicions_only(self):
         r = check(["an average of per-SKU prices",
-                   "product.cost through the order_items join",
+                   "product.cost",
                    "shipped_at"],
                   "run: x -> { where: year(shipped_at) = 2022, "
                   "aggregate: c is cost.sum() }")

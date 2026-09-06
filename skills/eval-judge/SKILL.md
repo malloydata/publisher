@@ -132,8 +132,9 @@ Output, exactly this shape:
    script checks the final query for the field names `golden.mustNotUse`
    lists and forces `no_match` on a hit before you are asked, so a case that
    reaches you with a `MUST NOT USE` line is carrying only what a text check
-   could not decide: a reading described in words, or a bare field name that
-   may or may not be the forbidden one. Apply those as the rubric's own
+   could not decide: a reading described in words, an objection to a USE of a
+   field rather than to the field (`X as ...`, `X through ...`), or a bare field
+   name that may or may not be the forbidden one. Apply those as the rubric's own
    clauses. Do not soften a verdict because a veto might have caught it, and do
    not invent a veto the rubric did not ask for.
 10. **Score the data, not the insight.** A question that asks for a figure or

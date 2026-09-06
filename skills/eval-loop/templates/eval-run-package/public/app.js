@@ -294,6 +294,7 @@ async function loadCase(qid) {
         ${d.confidence != null ? `<span class="chip">confidence ${d.confidence}/10</span>` : ''}
         ${d.gold_status && d.gold_status !== 'verified' ? `<span class="chip warn">golden ${esc(d.gold_status)}</span>` : ''}
         ${truthy(d.contaminated) ? '<span class="chip fail">contaminated</span>' : ''}
+        ${d.must_not_use_hits ? `<span class="chip fail" title="A script forced no_match: the final query used a field golden.mustNotUse forbids. The judge said ${esc(d.judge_verdict || 'nothing recorded')}.">vetoed: ${esc(d.must_not_use_hits)}</span>` : ''}
         ${dots(req)}</div>
       <div class="meta" title="Totals for this one attempt, not averages across the run. Per-arm averages are in the notebook's effort table.">
         <span><b>${num(d.num_turns)}</b> turns</span>
@@ -302,6 +303,13 @@ async function loadCase(qid) {
         <span><b>${num(d.wall_seconds)}</b> s</span>
         <span><b>$${num(d.cost_usd, 2)}</b></span>
       </div>
+      ${d.must_not_use_hits && d.judge_verdict ? `<div class="judge"><b>Vetoed.</b>
+        A script scored this <b>no_match</b> because the final query used
+        <span class="mono">${esc(d.must_not_use_hits)}</span>, which this
+        golden forbids. The judge itself said
+        <b>${esc(d.judge_verdict)}</b>. If the field is not the mistake and the
+        <em>use</em> of it is, the mustNotUse entry should be prose instead, and
+        this case is a false failure.</div>` : ''}
       <div class="judge"><b>Judge.</b> ${esc(d.judge_reasoning)}${
         d.where_to_fix ? ` <span class="mute">· where to fix: ${esc(d.where_to_fix)}</span>` : ''}</div>
       ${d.prediction ? `<h3>Re-executed rows</h3><p class="cap">The harness ran the

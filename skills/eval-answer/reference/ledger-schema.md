@@ -223,7 +223,7 @@ The answer judge's verdict for one attempt (protocol in
 | `judge_version` / `rubric_sha` | string | Pins which rubric produced this verdict. |
 | `golden_revision` | int | From the case at score time. |
 | `contaminated` | bool or `"unknown"` | Copied from the attempt; true or unknown means `verdict: null`. |
-| `must_not_use_hits` | list or null | Entries of `golden.mustNotUse` a script found in the final query. A hit forces `verdict: no_match`. Decided by `check_must_not_use.py`, never by the judge: it is a question about query text. Prose entries and a path's bare leaf are not vetoed; they go to the judge instead. |
+| `must_not_use_hits` | list or null | Entries of `golden.mustNotUse` a script found in the final query. A hit forces `verdict: no_match`. Decided by `check_must_not_use.py`, never by the judge: it is a question about query text. Only a BARE name vetoes; an entry with a connective (`X as ...`, `X through ...`) objects to a use of X rather than to X, and goes to the judge with the prose entries and a path's bare leaf. |
 | `judge_verdict` | string or null | What the judge said when a `must_not_use_hits` veto overrode it. Null otherwise, so the judge's own agreement rate stays measurable across vetoes. |
 | `artifactPath` | string | The full judge output under `artifacts/`. |
 | `gold_status` | string | `verified` / `verified_benign` / `suspect` / `verified_wrong`. **From the judge**, which scored against the golden as written and reports separately whether it believes it; falls back to the case's standing `golden.status` when the judge does not say. `verified_wrong` excludes the case from run aggregates. `suspect` and `verified_wrong` route to the golden side door as `dataset` issues, never to improve. |

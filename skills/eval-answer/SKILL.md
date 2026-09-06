@@ -100,10 +100,13 @@ relevant source and field definitions from the model. It returns
   looks, which is a question about query TEXT. Run
   `scripts/check_must_not_use.py` over the final query: a named field found
   there forces `no_match` and records `must_not_use_hits`, keeping the judge's
-  own verdict beside it as `judge_verdict`. Prose entries ("an average of
-  per-SKU prices") and a path's bare leaf are never vetoed mechanically; they
-  go into the judge's prompt instead, because a veto that fires on a correct
-  answer is worse than one that misses.
+  own verdict beside it as `judge_verdict`. Only a BARE name vetoes. An entry
+  with a connective (`weekly_active_users as a cumulative series`, `product.cost
+  through the order_items join`) objects to a use of the field rather than to
+  the field, so it goes to the judge as prose, as does an entry that names no
+  field at all and a path's bare leaf. A veto that fires on a correct answer is
+  worse than one that misses, and reading the head of `X as ...` as "ban X"
+  failed an answer whose only sin was showing X as an extra column.
 
 ## Step 4: Score what retrieval delivered
 

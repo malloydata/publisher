@@ -72,6 +72,19 @@ entity you touched.** `verify_goldens.py` audits the mechanical part -- it parse
 definition -- but only for definitions it can parse. Prose claims about grain,
 population, or convention are still yours to check.
 
+It audits the set's NAMES against the same model, which is the half that goes
+wrong silently. A `required` entity id naming a field the package under test
+does not have can never be delivered, so it scores as a retrieval miss on every
+run and reads as a model failure: five such ids, copied from a sibling package,
+cost a real set two days and five false misses before anyone checked whether the
+names existed. That is now a hard finding, so the set refuses the arm instead.
+A set scored against two package versions writes a `requiredAnyOf` group naming
+both ids, which passes as long as one of them resolves. An unknown `acceptable`
+id and a `mustNotUse` veto on a field the model lacks are reported for review
+rather than failed: neither moves a number.
+
+This needs `--model` pointing at the model tree, so pass it on every run.
+
 When one turns up it is `BAD-REFERENCE`, and it goes through this side door.
 Never let it reach improve: the model is right, and an edit would be damage.
 
