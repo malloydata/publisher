@@ -151,15 +151,40 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
         if cand and (cand / f"{a.package}.malloy").exists():
             model = cand / f"{a.package}.malloy"
             break
-    cmd = [sys.executable, str(script.resolve())]
+    # `--set` is required by the verifier and was never passed, so argparse
+    # exited 2 on every call: `clean` was false whenever there was a diff, and
+    # the acceptance check below reported BLOCKED for every cluster that made an
+    # edit. The gate this step is built around had therefore never once passed,
+    # and its failure was indistinguishable from a golden the edit really did
+    # invalidate. `--environment` too: the verifier's own default is `samples`,
+    # which silently verified against the wrong environment on any other set.
+    cmd = [sys.executable, str(script.resolve()),
+           "--set", str(a.set_dir.resolve()),
+           "--publisher", a.truth_publisher,
+           "--environment", a.environment]
     if model:
         cmd += ["--model", str(model)]
     try:
-        p = subprocess.run(cmd, cwd=a.set_dir, capture_output=True, text=True,
-                           timeout=600)
+        # No cwd: `--set` is absolute and the verifier resolves `--cases` and
+        # the gold artifacts under it, so nothing here is relative any more.
+        # Running in the set dir also crashed outright when the path did not
+        # exist, and it crashed AFTER the model edit, losing the receipts.
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
         return {"ran": False, "why": "verify_goldens timed out"}
+    except OSError as exc:
+        return {"ran": False, "why": f"could not run verify_goldens: {exc}"}
     (d / "verify_goldens.txt").write_text(p.stdout + p.stderr)
+    # 0 clean, 1 a golden the edit may have invalidated, anything else the
+    # verifier failing to run at all. The third is not evidence about the
+    # goldens, and reporting it as one sends someone to settle a golden that is
+    # fine. It is a harness failure and says so.
+    if p.returncode not in (0, 1):
+        return {"ran": False,
+                "why": f"verify_goldens could not run (exit {p.returncode}); "
+                       f"see artifacts/clusters/*/verify_goldens.txt",
+                "model": str(model) if model else None,
+                "tail": (p.stderr or p.stdout or "").strip().splitlines()[-25:]}
     return {"ran": True, "clean": p.returncode == 0,
             "model": str(model) if model else None,
             "tail": (p.stdout or p.stderr or "").strip().splitlines()[-25:]}
@@ -253,6 +278,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--environment", default="samples")
     ap.add_argument("--package", default="ecommerce")
     ap.add_argument("--mcp-url", default="http://localhost:4040/mcp")
+    ap.add_argument("--truth-publisher", default="http://localhost:4811",
+                    help="the Publisher serving the TRUTH package, for the "
+                         "golden re-derivation after an edit. The model under "
+                         "test cannot verify its own goldens, which is the "
+                         "whole point of the second server")
     ap.add_argument("--max-turns", type=int, default=60)
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--retries", type=int, default=1)

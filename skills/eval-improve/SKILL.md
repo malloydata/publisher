@@ -134,7 +134,13 @@ every entity you touched; a doc reword changes no meaning:
    the stored golden. Different means the golden is stale, not that you are
    wrong.
 3. Run the set's golden verification if it has one, which catches the mechanical
-   subset (drift, and rubric sentences that contradict the model).
+   subset (drift, and rubric sentences that contradict the model). `improve.py`
+   runs it for you after an edit and needs `--truth-publisher` to do it: the
+   goldens are re-derived against the TRUTH package, never against the model you
+   just changed, which would let an edit certify its own answer key. A verifier
+   that could not run at all is reported as a harness failure and never as a
+   suspect golden, because sending someone to settle a key that is fine is the
+   most expensive wrong turn this step can cause.
 
 Report every hit as `golden_suspect` in the handoff, with the entity, the case,
 and the old and new values. **Do not repair them yourself.** Goldens are the
