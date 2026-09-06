@@ -3,15 +3,19 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-<!-- AI AGENTS: READ AGENTS.MD FIRST!!! It covers starting the server, connecting over MCP, and the bundled skills. -->
-
 <h1 align="center">Malloy Publisher</h1>
 
 <h3 align="center">The Analytics Engine for <a href="https://malloydata.dev">Malloy</a></h3>
 
 <p align="center">A post modern data stack — built for the AI era.<br>
-One data model, served over MCP and REST to AI agents, applications, and BI tools.<br>
-<sub>Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.</sub></p>
+One data model, served over MCP and REST to AI agents, applications, and BI tools.</p>
+
+<br>
+
+<p align="center">Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.</p>
+
+<p align="center"><sub><strong>AI agents:</strong> read <a href="AGENTS.md">AGENTS.md</a> first (raw: <code>https://raw.githubusercontent.com/malloydata/publisher/main/AGENTS.md</code>).<br>
+It covers starting the server, connecting over MCP, the bundled skills, and the package format. Fetch the raw file, not a summary of this page.</sub></p>
 
 <p align="center">
   <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml"><img src="https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg" alt="build"></a>
@@ -82,6 +86,8 @@ reset scripts, an MCP config, agent instructions, and the Malloy skills as files
 `npm start` serves the package in watch mode, so edits take effect as you save. Keep the `@latest`:
 without it npm may reuse a cached, older version. The finer points of `npm create` — caching, workspace
 layout, the bare `npx` form — are in [docs/scaffolding.md](docs/scaffolding.md).
+Agents: [AGENTS.md](AGENTS.md) sections 1 and 2 have the same steps plus the pitfalls around `@latest`,
+the `--` before `--data`, and reconnecting the MCP client after the server starts.
 
 ### Bring local data files
 
