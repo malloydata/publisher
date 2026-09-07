@@ -1003,7 +1003,7 @@ export function computeGivenDeclaredTypes(
  * other query-source hop): that additive OR-group handling is specific to
  * authorize's boolean-gate semantics and has no partition analogue. A
  * composite source that itself carries a `#(partition)` marker is refused
- * outright at publish instead — see {@link assertNoPartitionedComposite} for
+ * outright at publish instead — see {@link assertPartitionAnnotationsValid} for
  * why grafting through a composite's resolved member branch can't be made
  * to work the way it does for a boolean gate.
  *
@@ -1039,19 +1039,21 @@ export function resolveEntryPointPartitions(
       if (pairs.length > 0) return pairs;
       inherited = inherited.inherits;
    }
-   // Only fall to the registry link once the inherits chain ran to its end —
-   // an exhausted depth cap means the chain was not fully read, and the
-   // registry link is a DIFFERENT struct entirely, not a continuation of it.
-   if (!inherited) {
-      const declared = resolveDeclaredSource(struct, modelDef);
-      if (declared.kind === "resolved") {
-         const pairs = resolveEntryPointPartitions(
-            declared.source,
-            modelDef,
-            seen,
-         );
-         if (pairs.length > 0) return pairs;
-      }
+   // An exhausted depth cap means the chain was not read to its end, so a
+   // marker further up is unknown rather than absent — deny, exactly as
+   // `ancestorGateExprs` returns `["false"]` for the same shape.
+   if (inherited) throw unresolvableAncestry(label);
+   const declared = resolveDeclaredSource(struct, modelDef);
+   // A registry entry found but unreadable is not "this struct has no base":
+   // the link exists and the walk failed to follow it. Same deny.
+   if (declared.kind === "unresolvable") throw unresolvableAncestry(label);
+   if (declared.kind === "resolved") {
+      const pairs = resolveEntryPointPartitions(
+         declared.source,
+         modelDef,
+         seen,
+      );
+      if (pairs.length > 0) return pairs;
    }
 
    const queryBase = resolveQuerySourceBase(struct, modelDef);
@@ -1060,11 +1062,26 @@ export function resolveEntryPointPartitions(
    return [];
 }
 
+/** The deny raised when the marker walk cannot read the IR chain it would
+ *  have to follow. Callers on the read path turn any throw from partition
+ *  resolution into an `AccessDeniedError` (`Model.rowLevelGraftEntries`), so
+ *  an unreadable chain denies the query instead of serving it unfiltered. */
+function unresolvableAncestry(label: string): PartitionAnnotationError {
+   return new PartitionAnnotationError(
+      "ancestry_unresolvable",
+      `Could not resolve whether source "${label}" carries a ` +
+         `\`#(partition)\` marker: the derivation chain it inherits from ` +
+         `could not be read. Denying rather than serving unfiltered.`,
+   );
+}
+
 /**
- * Refuse a composite source (`compose(a, b)`) that itself declares a
- * `#(partition)` marker — on its own annotations, or inherited the same
+ * Refuse a composite source (`compose(a, b)`) that reaches a `#(partition)`
+ * marker either way it can: on its own annotations (or inherited the same
  * own-wins-else-ancestor way {@link resolveEntryPointPartitions} resolves any
- * other entry point.
+ * other entry point), or on one of its `compose(...)` members — see
+ * {@link partitionedMemberLabel} for why the member case is the more
+ * dangerous of the two.
  *
  * This is a publish-time refusal, not a graft-time one, because the failure
  * mode it prevents is silent rather than loud. A composite RUN TARGET
@@ -1089,16 +1106,42 @@ export function resolveEntryPointPartitions(
  * as a `query_source`'s base is not itself a queryable entry point (the
  * query-source is), so grafting there already lands on the query-source's own
  * struct, not the composite — the failure mode above does not arise.
+ *
+ * Non-composite sources are swept too, for their body grammar alone: the
+ * read path denies a malformed marker but cannot say which annotation was
+ * wrong, so an author who never publishes through malloy-code-server's own
+ * publish-time refusal would otherwise learn about it as an opaque access
+ * denial. See the loop body for which cause is deliberately not raised here.
  */
-export function assertNoPartitionedComposite(
+export function assertPartitionAnnotationsValid(
    modelDef: ModelDef | undefined,
 ): void {
    if (!modelDef) return;
    for (const [key, obj] of Object.entries(modelDef.contents)) {
-      if (!isSourceDef(obj) || (obj as { type: string }).type !== "composite") {
+      if (!isSourceDef(obj)) continue;
+      const label = (obj as { as?: string }).as ?? obj.name ?? key;
+      if ((obj as { type: string }).type !== "composite") {
+         // Resolved for its THROW, not its value: a body that fails the
+         // grammar (`comparison_operator`, `duplicate_given`, ...) would
+         // otherwise publish clean and then deny every read opaquely, since
+         // the read path turns any resolution throw into an
+         // `AccessDeniedError` carrying no pointer back at the annotation.
+         // `ancestry_unresolvable` is swallowed here: it is not an authoring
+         // mistake, the read path's own deny is the enforcement, and
+         // refusing the whole model over one unreadable IR link would take
+         // down every source in the package including the unmarked ones.
+         try {
+            resolveEntryPointPartitions(obj, modelDef);
+         } catch (err) {
+            if (
+               !(err instanceof PartitionAnnotationError) ||
+               err.rejectionCause !== "ancestry_unresolvable"
+            ) {
+               throw err;
+            }
+         }
          continue;
       }
-      const label = (obj as { as?: string }).as ?? obj.name ?? key;
       if (resolveEntryPointPartitions(obj, modelDef).length > 0) {
          throw new PartitionAnnotationError(
             "partitioned_composite",
@@ -1110,7 +1153,53 @@ export function assertNoPartitionedComposite(
                `source instead.`,
          );
       }
+      const marked = partitionedMemberLabel(obj, modelDef);
+      if (marked !== undefined) {
+         throw new PartitionAnnotationError(
+            "partitioned_composite",
+            `Source "${label}" is a composite source (\`compose(...)\`) with ` +
+               `member "${marked}", which declares \`#(partition)\`. MEASURED: ` +
+               `querying the composite reads EVERY partition of that member — ` +
+               `the graft lands on the composite's own struct, not the ` +
+               `resolved member branch, so no filter reaches the executed ` +
+               `query. Remove the composite, or drop \`#(partition)\` from ` +
+               `"${marked}" and expose it as its own source.`,
+         );
+      }
    }
+}
+
+/**
+ * The label of the first `compose(...)` member that resolves to a
+ * `#(partition)` marker, or `undefined` if none does. Recurses through a
+ * member that is itself a composite.
+ *
+ * Separate from the composite's OWN resolution above because the two fail
+ * differently, and only one of them is loud: a marker on the composite denies
+ * every read (the landing proof fails), whereas a marker on a MEMBER is
+ * silently dropped — the composite serves that member's rows unfiltered
+ * across every partition, which is a cross-tenant read rather than an opaque
+ * error.
+ */
+function partitionedMemberLabel(
+   composite: SourceDef,
+   modelDef: ModelDef,
+   seen: Set<SourceDef> = new Set(),
+): string | undefined {
+   if (seen.has(composite)) return undefined;
+   seen.add(composite);
+   for (const member of (composite as { sources?: SourceDef[] }).sources ??
+      []) {
+      const label = (member as { as?: string }).as ?? member.name;
+      if (resolveEntryPointPartitions(member, modelDef).length > 0) {
+         return label;
+      }
+      if ((member as { type: string }).type === "composite") {
+         const nested = partitionedMemberLabel(member, modelDef, seen);
+         if (nested !== undefined) return nested;
+      }
+   }
+   return undefined;
 }
 
 /** One resolved `#(partition)` row filter, in the same shape

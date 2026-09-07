@@ -56,9 +56,10 @@ function notePayload(text: string): string {
  * caller (and a test) can tell which rule fired rather than pattern-matching
  * a message string. Most of these are {@link parsePartitionAnnotation}'s
  * grammar rules; `partitioned_composite` is a structural placement refusal
- * (see `gate_classification.ts`'s `assertNoPartitionedComposite`), not a
+ * (see `gate_classification.ts`'s `assertPartitionAnnotationsValid`), not a
  * body-grammar one, but shares this error shape rather than inventing a
- * second one.
+ * second one; so is `ancestry_unresolvable`, raised when the walk looking for
+ * a marker cannot read the IR chain it would have to follow.
  */
 export type PartitionAnnotationRejectionCause =
    | "empty_body"
@@ -70,7 +71,8 @@ export type PartitionAnnotationRejectionCause =
    | "missing_given_reference"
    | "malformed_body"
    | "duplicate_given"
-   | "partitioned_composite";
+   | "partitioned_composite"
+   | "ancestry_unresolvable";
 
 /**
  * A `#(partition)` annotation that fails this module's grammar. Extends

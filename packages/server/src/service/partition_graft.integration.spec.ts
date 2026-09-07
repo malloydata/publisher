@@ -360,8 +360,42 @@ source: combo is compose(a, b)
       }
    });
 
+   it("CRITICAL — a composite source whose MEMBER declares #(partition) refuses to load", async () => {
+      // Measured before the refusal existed: `run: combo` returned all three
+      // rows under `TENANT: 'acme'` while `run: marked` correctly returned
+      // two, and forcing the marked branch with `group_by: marked_flag` still
+      // returned three. A member's marker is silently dropped, so the
+      // composite reads every partition — unlike a marker on the composite
+      // itself, which denies loudly.
+      const { model, duckdb, dir } = await createModel(
+         `##! experimental { composite_sources givens }
+
+given:
+  TENANT :: string
+
+#(partition) tenant = $TENANT
+source: marked is duckdb.table('tenant_rows') extend {
+   measure: n is count()
+   dimension: marked_flag is 1
+}
+
+source: openm is duckdb.table('tenant_rows') extend { measure: n is count() }
+
+source: combo is compose(marked, openm)
+`,
+      );
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(PartitionAnnotationError);
+         expect(err?.message).toMatch(/member "marked"/);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
    it("does NOT refuse a non-composite query-source derived from a composite base with no partition marker of its own", async () => {
-      // Guards against a false positive: `assertNoPartitionedComposite` only
+      // Guards against a false positive: `assertPartitionAnnotationsValid` only
       // inspects TOP-LEVEL composite `modelDef.contents` entries, so a
       // query-source over an unmarked composite must load cleanly.
       const { model, duckdb, dir } = await createModel(

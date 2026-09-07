@@ -161,7 +161,7 @@ import { containsPartitionAnnotationTag } from "./partition_annotation";
 // than leaving a trap where converting one of those methods to an
 // arrow-function class property would recurse instead of delegating.
 import {
-   assertNoPartitionedComposite,
+   assertPartitionAnnotationsValid,
    collectEntryPointGates as collectEntryPointGatesImpl,
    createGateClassificationDeps,
    resolveEntryPointPartitions,
@@ -1751,7 +1751,7 @@ export class Model {
          // hazard as an authorize gate (see `getQueryResults`'s
          // `routingBlockedByRowLevelGate` doc) — no composite branch to walk
          // here, since a partitioned composite is refused outright at publish
-         // (`assertNoPartitionedComposite`).
+         // (`assertPartitionAnnotationsValid`).
          return (
             gates.length > 0 ||
             resolveEntryPointPartitions(struct, modelDef).length > 0
@@ -2931,11 +2931,11 @@ export class Model {
             queries = queryResult.queries;
 
             // A composite source that itself declares `#(partition)` cannot
-            // graft — see `assertNoPartitionedComposite`'s doc. Checked
+            // graft — see `assertPartitionAnnotationsValid`'s doc. Checked
             // first: it is a load-time authoring mistake, not an authorize
             // shape, so it should not read as a stranger error from the
             // authorize checks below.
-            assertNoPartitionedComposite(modelDef);
+            assertPartitionAnnotationsValid(modelDef);
 
             // A `#(authorize)` annotation in a position nothing enforces (a
             // top-level `query:` statement, or a field inside a `source:`

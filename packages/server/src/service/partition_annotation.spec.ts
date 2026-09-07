@@ -55,7 +55,7 @@ describe("parsePartitionAnnotation — accept shapes", () => {
       ).toEqual({ column: "tenant", given: "TENANT" });
    });
 
-   it("recognizes the ##(partition) file-level spelling and block form the same way authorize does", () => {
+   it("recognizes the ##(partition) file-level spelling the same way authorize does", () => {
       expect(
          parsePartitionAnnotation("orders", "##(partition) tenant = $TENANT"),
       ).toEqual({ column: "tenant", given: "TENANT" });
