@@ -26,9 +26,9 @@ function expectRejection(
 
 describe("parsePartitionAnnotation — accept shapes", () => {
    it("returns null for a non-partition-routed note", () => {
-      expect(parsePartitionAnnotation("orders", "#(authorize) $ROLE = 'a'")).toBe(
-         null,
-      );
+      expect(
+         parsePartitionAnnotation("orders", "#(authorize) $ROLE = 'a'"),
+      ).toBe(null);
       expect(parsePartitionAnnotation("orders", "# bar_chart")).toBe(null);
    });
 
@@ -65,7 +65,11 @@ describe("parsePartitionAnnotation — accept shapes", () => {
 describe("parsePartitionAnnotation — reject shapes", () => {
    it("rejects a negated operator (!=)", () => {
       expectRejection(
-         () => parsePartitionAnnotation("orders", "#(partition) tenant != $TENANT"),
+         () =>
+            parsePartitionAnnotation(
+               "orders",
+               "#(partition) tenant != $TENANT",
+            ),
          "negated_operator",
       );
    });
@@ -86,7 +90,10 @@ describe("parsePartitionAnnotation — reject shapes", () => {
    it("rejects `in`", () => {
       expectRejection(
          () =>
-            parsePartitionAnnotation("orders", "#(partition) tenant in $TENANTS"),
+            parsePartitionAnnotation(
+               "orders",
+               "#(partition) tenant in $TENANTS",
+            ),
          "in_operator",
       );
    });
@@ -129,7 +136,10 @@ describe("parsePartitionAnnotation — reject shapes", () => {
    it("rejects an expression on the left rather than a field path", () => {
       expectRejection(
          () =>
-            parsePartitionAnnotation("orders", "#(partition) upper(tenant) = $A"),
+            parsePartitionAnnotation(
+               "orders",
+               "#(partition) upper(tenant) = $A",
+            ),
          "left_not_field_path",
       );
       expectRejection(
@@ -141,7 +151,8 @@ describe("parsePartitionAnnotation — reject shapes", () => {
 
    it("rejects a missing `$` on the right", () => {
       expectRejection(
-         () => parsePartitionAnnotation("orders", "#(partition) tenant = TENANT"),
+         () =>
+            parsePartitionAnnotation("orders", "#(partition) tenant = TENANT"),
          "missing_given_reference",
       );
       expectRejection(

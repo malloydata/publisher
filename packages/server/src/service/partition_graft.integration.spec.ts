@@ -96,9 +96,9 @@ describe("#(partition) graft — read paths", () => {
             true,
             { TENANT: "acme" },
          );
-         expect(
-            (acme.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(2);
+         expect((acme.compactResult as unknown as { n: number }[])[0].n).toBe(
+            2,
+         );
          const globex = await model.getQueryResults(
             undefined,
             undefined,
@@ -107,9 +107,9 @@ describe("#(partition) graft — read paths", () => {
             true,
             { TENANT: "globex" },
          );
-         expect(
-            (globex.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(1);
+         expect((globex.compactResult as unknown as { n: number }[])[0].n).toBe(
+            1,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -128,9 +128,9 @@ describe("#(partition) graft — read paths", () => {
             true,
             { TENANT: "acme" },
          );
-         expect(
-            (result.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(2);
+         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
+            2,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -149,9 +149,9 @@ describe("#(partition) graft — read paths", () => {
             true,
             { TENANT: "acme" },
          );
-         expect(
-            (result.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(2);
+         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
+            2,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -213,9 +213,9 @@ run: X -> { aggregate: n is count() }
             /* bypassAuthorize */ true,
          );
          // All 3 seed rows, across both tenants — unfiltered.
-         expect(
-            (result.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(3);
+         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
+            3,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -274,9 +274,9 @@ source: Y is duckdb.table('tenant_rows') extend {
          );
          // Same narrowed count as the partition-only source above — the
          // authorize gate did not widen or replace the partition filter.
-         expect(
-            (result.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(2);
+         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
+            2,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -302,9 +302,9 @@ source: Y is duckdb.table('tenant_rows') extend {
             true,
             { TENANT: "acme", ROLE: "guest" },
          );
-         expect(
-            (result.compactResult as unknown as { n: number }[])[0].n,
-         ).toBe(0);
+         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
+            0,
+         );
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });
@@ -410,10 +410,9 @@ describe("#(partition) — storage/pre-aggregation routing veto (HALF 2c)", () =
             }),
          };
          const internals = model as unknown as ModelInternals;
-         const blocksRouting =
-            await internals.queryEntryPointHasRowLevelGate(
-               runnable as unknown as QueryMaterializer,
-            );
+         const blocksRouting = await internals.queryEntryPointHasRowLevelGate(
+            runnable as unknown as QueryMaterializer,
+         );
          expect(blocksRouting).toBe(true);
       } finally {
          await duckdb.close();

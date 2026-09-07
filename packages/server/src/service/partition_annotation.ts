@@ -171,12 +171,7 @@ export function parsePartitionAnnotation(
       );
    }
    if (NEGATED_OPERATOR_RE.test(body)) {
-      reject(
-         sourceName,
-         body,
-         "negated_operator",
-         "`!=` is not allowed.",
-      );
+      reject(sourceName, body, "negated_operator", "`!=` is not allowed.");
    }
    if (COMPARISON_OPERATOR_RE.test(body)) {
       reject(
@@ -188,12 +183,7 @@ export function parsePartitionAnnotation(
    }
    const eq = body.indexOf("=");
    if (eq === -1) {
-      reject(
-         sourceName,
-         body,
-         "malformed_body",
-         "no `=` was found.",
-      );
+      reject(sourceName, body, "malformed_body", "no `=` was found.");
    }
    const left = body.slice(0, eq).trim();
    const right = body.slice(eq + 1).trim();
