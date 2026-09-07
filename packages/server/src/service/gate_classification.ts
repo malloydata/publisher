@@ -17,6 +17,13 @@
  * half of this walk) already live in `./gate_registry_walk`, shared with
  * `source_extraction.ts` — this module builds on those rather than
  * duplicating them.
+ *
+ * {@link resolveEntryPointPartitions} answers a DIFFERENT question over the
+ * same own-wins-else-ancestor shape: not "is this entry point gated" but
+ * "what `#(partition)` (column, given) pairs does it declare", for the
+ * dimensional-indexing partition step. It shares the extend/registry
+ * ancestor walk with the authorize gate but not `collectEntryPointGates`
+ * itself — see that function's own doc for why.
  */
 
 import {
@@ -27,7 +34,11 @@ import {
    type SourceDef,
 } from "@malloydata/malloy";
 import { logger } from "../logger";
-import { ownLevelNotes, type AnnotationNote } from "./annotations";
+import {
+   ownLevelNotes,
+   ownLevelNoteTexts,
+   type AnnotationNote,
+} from "./annotations";
 import {
    buildRowLevelProbe,
    collectAuthorizeExprs,
@@ -44,6 +55,12 @@ import {
    resolveDeclaredSource,
    resolveQuerySourceBase,
 } from "./gate_registry_walk";
+import {
+   collectPartitionPairs,
+   type PartitionPair,
+} from "./partition_annotation";
+
+export type { PartitionPair };
 
 /** One reachable authorize gate found by {@link collectEntryPointGates}. */
 export type GateEntry = {
@@ -953,4 +970,88 @@ export function computeGivenDeclaredTypes(
          )
          .map((g) => [g.name, g.type] as [string, string]),
    );
+}
+
+/**
+ * The `#(partition)` (column, given) pairs that apply to `struct` AS AN
+ * ENTRY POINT: its own annotations if it declares any, else the nearest
+ * ancestor's — the same "own wins over ancestor" rule
+ * {@link gateExprsForOwnAnnotations} uses for `#(authorize)`, and for the
+ * same two structural reasons (see `./gate_registry_walk`'s module doc):
+ * an `extend {}`/rename with an annotation of its own demotes the base's
+ * onto `annotations.inherits`, and a base whose own note object Malloy did
+ * NOT copy by reference onto the deriving struct is only reachable through
+ * `ModelDef.sourceRegistry` — see `authorize_gate_walk.spec.ts`'s doc and
+ * `partition_resolution.spec.ts`'s synthetic-IR test for why real compiled
+ * input for a plain rename never actually needs this fallback (Malloy copies
+ * the base's notes by reference for that shape, so the "own" check above
+ * already finds them) and it is kept for structural parity and for any IR
+ * shape that doesn't do that copy. Both links are walked here exactly
+ * as {@link ancestorGateExprs} walks them — deliberately NOT by delegating to
+ * that function, since its return shape (`string[]`, with a `["false"]`
+ * fail-closed sentinel) is specific to a boolean access gate and has no
+ * partition equivalent: there is no security invariant in losing a
+ * partition axis on unreadable IR, only a worse index, so this returns `[]`
+ * ("no partition marker found") in every case `ancestorGateExprs` would deny.
+ *
+ * Also follows a `query_source`'s own base
+ * ({@link resolveQuerySourceBase}) the way `collectEntryPointGates` does for
+ * authorize — a `Z is X -> {...}` derivation carries no `.annotations` at
+ * all, so `X`'s markers would otherwise be unreachable from `Z`. Does NOT
+ * follow a composite's resolved member branch (`collectEntryPointGates`'s
+ * other query-source hop): that additive OR-group handling is specific to
+ * authorize's boolean-gate semantics and has no partition analogue to design
+ * yet, and no test in this codebase exercises a partitioned composite.
+ *
+ * Joined sources are deliberately NOT walked — same Q16 posture as
+ * authorize: a `#(partition)` is a statement about the entry point's own
+ * declared source, not about everything reachable through a join.
+ *
+ * `seen` (struct-identity keyed) guards cycles, matching
+ * {@link ancestorGateExprs}.
+ */
+export function resolveEntryPointPartitions(
+   struct: SourceDef | undefined,
+   modelDef: ModelDef | undefined,
+   seen: Set<SourceDef> = new Set(),
+): PartitionPair[] {
+   if (!struct || !modelDef || seen.has(struct)) return [];
+   seen.add(struct);
+   const label = (struct as { as?: string }).as ?? struct.name;
+
+   const own = collectPartitionPairs(
+      label,
+      ownLevelNotes(struct.annotations).map((note) => note.text),
+   );
+   if (own.length > 0) return own;
+
+   // The `extend`-chain link: covers a deriving statement that carries any
+   // annotation of its own (demoting the base's), which the copy-by-reference
+   // path just above already resolved for the far more common annotation-free
+   // `extend {}` case.
+   let inherited = struct.annotations?.inherits;
+   for (let depth = 0; inherited && depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
+      const pairs = collectPartitionPairs(label, ownLevelNoteTexts(inherited));
+      if (pairs.length > 0) return pairs;
+      inherited = inherited.inherits;
+   }
+   // Only fall to the registry link once the inherits chain ran to its end —
+   // an exhausted depth cap means the chain was not fully read, and the
+   // registry link is a DIFFERENT struct entirely, not a continuation of it.
+   if (!inherited) {
+      const declared = resolveDeclaredSource(struct, modelDef);
+      if (declared.kind === "resolved") {
+         const pairs = resolveEntryPointPartitions(
+            declared.source,
+            modelDef,
+            seen,
+         );
+         if (pairs.length > 0) return pairs;
+      }
+   }
+
+   const queryBase = resolveQuerySourceBase(struct, modelDef);
+   if (queryBase) return resolveEntryPointPartitions(queryBase, modelDef, seen);
+
+   return [];
 }
