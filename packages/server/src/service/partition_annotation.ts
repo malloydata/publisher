@@ -32,6 +32,16 @@ function noteRoute(text: string): string | undefined {
    return routeOf({ value: text.trimStart() } as Parameters<typeof routeOf>[0]);
 }
 
+/**
+ * Whether any of `texts` is a `#(partition)`-routed note, by Malloy's own
+ * routing — same convention as `authorize.ts`'s `containsAuthorizeAnnotationTag`.
+ * Presence-only (does not validate the body grammar), for a caller that just
+ * needs to know a marker exists somewhere.
+ */
+export function containsPartitionAnnotationTag(texts: string[]): boolean {
+   return texts.some((text) => noteRoute(text) === PARTITION_ROUTE);
+}
+
 /** The note's payload — the part after the prefix, dedented for a block note. */
 function notePayload(text: string): string {
    return (
@@ -42,9 +52,13 @@ function notePayload(text: string): string {
 }
 
 /**
- * Every way {@link parsePartitionAnnotation} refuses a `#(partition)` body,
- * named distinctly so a caller (and a test) can tell which grammar rule
- * fired rather than pattern-matching a message string.
+ * Every way a `#(partition)` annotation is refused, named distinctly so a
+ * caller (and a test) can tell which rule fired rather than pattern-matching
+ * a message string. Most of these are {@link parsePartitionAnnotation}'s
+ * grammar rules; `partitioned_composite` is a structural placement refusal
+ * (see `gate_classification.ts`'s `assertNoPartitionedComposite`), not a
+ * body-grammar one, but shares this error shape rather than inventing a
+ * second one.
  */
 export type PartitionAnnotationRejectionCause =
    | "empty_body"
@@ -55,7 +69,8 @@ export type PartitionAnnotationRejectionCause =
    | "left_not_field_path"
    | "missing_given_reference"
    | "malformed_body"
-   | "duplicate_given";
+   | "duplicate_given"
+   | "partitioned_composite";
 
 /**
  * A `#(partition)` annotation that fails this module's grammar. Extends

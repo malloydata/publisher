@@ -57,6 +57,7 @@ import {
 } from "./gate_registry_walk";
 import {
    collectPartitionPairs,
+   PartitionAnnotationError,
    type PartitionPair,
 } from "./partition_annotation";
 
@@ -1000,8 +1001,11 @@ export function computeGivenDeclaredTypes(
  * all, so `X`'s markers would otherwise be unreachable from `Z`. Does NOT
  * follow a composite's resolved member branch (`collectEntryPointGates`'s
  * other query-source hop): that additive OR-group handling is specific to
- * authorize's boolean-gate semantics and has no partition analogue to design
- * yet, and no test in this codebase exercises a partitioned composite.
+ * authorize's boolean-gate semantics and has no partition analogue. A
+ * composite source that itself carries a `#(partition)` marker is refused
+ * outright at publish instead — see {@link assertNoPartitionedComposite} for
+ * why grafting through a composite's resolved member branch can't be made
+ * to work the way it does for a boolean gate.
  *
  * Joined sources are deliberately NOT walked — same Q16 posture as
  * authorize: a `#(partition)` is a statement about the entry point's own
@@ -1054,4 +1058,157 @@ export function resolveEntryPointPartitions(
    if (queryBase) return resolveEntryPointPartitions(queryBase, modelDef, seen);
 
    return [];
+}
+
+/**
+ * Refuse a composite source (`compose(a, b)`) that itself declares a
+ * `#(partition)` marker — on its own annotations, or inherited the same
+ * own-wins-else-ancestor way {@link resolveEntryPointPartitions} resolves any
+ * other entry point.
+ *
+ * This is a publish-time refusal, not a graft-time one, because the failure
+ * mode it prevents is silent rather than loud. A composite RUN TARGET
+ * compiles each query against exactly one concrete member branch
+ * (`Query.compositeResolvedSourceDef`), a struct distinct from the composite
+ * itself — but a partition filter grafts onto whatever {@link
+ * resolveGraftTarget} resolves the ENTRY POINT struct to, which for a
+ * composite run target is the composite's own `modelDef.contents` entry.
+ * The condition lands on an object the compiled query never reads `structRef`
+ * from, so it can never appear in the executed query's `filterList` — every
+ * subsequent query against that source then fails the landing proof and
+ * denies, opaquely, with nothing in the error pointing back at the
+ * mis-declared annotation. `#(authorize)`'s composite handling avoids this by
+ * walking `compositeResolvedSourceDef` as its own entry point
+ * (`collectEntryPointGates`'s composite-member recursion); partition has no
+ * such walk to reuse (see `resolveEntryPointPartitions`'s doc), so refusing
+ * the declaration outright is the failure mode that gives the author an
+ * actionable error instead of a source that publishes clean and then denies
+ * every read.
+ *
+ * Only checks TOP-LEVEL `modelDef.contents` entries: a composite reached only
+ * as a `query_source`'s base is not itself a queryable entry point (the
+ * query-source is), so grafting there already lands on the query-source's own
+ * struct, not the composite — the failure mode above does not arise.
+ */
+export function assertNoPartitionedComposite(
+   modelDef: ModelDef | undefined,
+): void {
+   if (!modelDef) return;
+   for (const [key, obj] of Object.entries(modelDef.contents)) {
+      if (!isSourceDef(obj) || (obj as { type: string }).type !== "composite") {
+         continue;
+      }
+      const label = (obj as { as?: string }).as ?? obj.name ?? key;
+      if (resolveEntryPointPartitions(obj, modelDef).length > 0) {
+         throw new PartitionAnnotationError(
+            "partitioned_composite",
+            `Source "${label}" is a composite source (\`compose(...)\`) and ` +
+               `also declares \`#(partition)\` (on itself or an ancestor it ` +
+               `derives from). A composite run target compiles each query ` +
+               `against one resolved member branch, which a partition filter ` +
+               `cannot attach to — declare \`#(partition)\` on a non-composite ` +
+               `source instead.`,
+         );
+      }
+   }
+}
+
+/** One resolved `#(partition)` row filter, in the same shape
+ *  {@link GateEntry}'s row-level classification produces, so the two compose
+ *  in the same graft list. */
+export type PartitionGraftEntry = {
+   label: string;
+   graftTarget: string;
+   filterText: string;
+   condition: FilterCondition;
+   givenNames: readonly string[];
+};
+
+/**
+ * The row filter(s) to graft for every `#(partition)` pair `struct` (the run
+ * target) declares — see {@link resolveEntryPointPartitions}. Deliberately
+ * reuses `#(authorize)`'s own graft-target resolution and condition lift
+ * ({@link resolveGraftTarget}, {@link liftGateCondition}) rather than a
+ * second mechanism: a `<column> = $GIVEN` predicate is exactly the shape
+ * `buildRowLevelProbe` already compiles and lifts, and going through the SAME
+ * proven path is what lets a partition filter reach a named query invoked by
+ * `queryName` alone or a notebook cell, where the legacy `#(filter)` text
+ * injection cannot (see `authorize.ts`'s module doc and `filter.ts`).
+ *
+ * Returns `[]` for a struct with no partition marker — the common case, and
+ * byte-identical to not calling this at all. A struct that DOES declare one
+ * but has nowhere to graft it (no `graftScope`, or an unresolvable graft
+ * target) THROWS rather than returning `[]`: a declared partition axis this
+ * function cannot attach is not the same as no partition at all, and the
+ * caller (`Model.probeEntryPointGates`) turns any throw here into the same
+ * opaque `AccessDeniedError` a rejected `#(authorize)` gate gets.
+ *
+ * Given names are read directly off the parsed pair, never derived from the
+ * lifted condition's `refSummary` the way a source-line authorize gate's are
+ * — the predicate is one this module authored itself (`<column> = $GIVEN`),
+ * so there is nothing to discover: the given IS `pair.given`, by
+ * construction.
+ */
+export async function resolvePartitionGraftEntries(
+   struct: SourceDef | undefined,
+   originModelDef: ModelDef | undefined,
+   graftScope: GraftScope | undefined,
+   deps: GateClassificationDeps,
+): Promise<PartitionGraftEntry[]> {
+   if (!struct || !originModelDef) return [];
+   const pairs = resolveEntryPointPartitions(struct, originModelDef);
+   if (pairs.length === 0) return [];
+
+   const label = (struct as { as?: string }).as ?? struct.name;
+   if (!graftScope) {
+      logger.debug(
+         "Partition filter has no graft scope to attach to; denying",
+         { modelPath: deps.modelPath, label },
+      );
+      throw new Error(`partition on "${label}" has no graft scope`);
+   }
+   const graftTarget = resolveGraftTarget(
+      struct,
+      originModelDef,
+      graftScope.modelDef,
+   );
+   if (!graftTarget) {
+      logger.debug("Partition filter resolved to no graft target; denying", {
+         modelPath: deps.modelPath,
+         label,
+      });
+      throw new Error(`partition on "${label}" resolved to no graft target`);
+   }
+
+   const entries: PartitionGraftEntry[] = [];
+   for (const pair of pairs) {
+      // Same re-check `resolveGateShape` runs on an authorize gate's given
+      // names — `filterGivensToModelSurface` drops a caller-supplied given
+      // that is off this model's surface, so a partition given absent from it
+      // could never bind at request time; refusing here is the fail-closed
+      // answer rather than a confusing unbound-given compile failure.
+      if (!deps.givenDeclaredTypes.has(pair.given)) {
+         logger.warn(
+            "Partition references a given off the model surface; denying",
+            { modelPath: deps.modelPath, graftTarget, givenName: pair.given },
+         );
+         throw new Error(
+            `partition on "${label}" references \`$${pair.given}\`, which is not on this model's given surface`,
+         );
+      }
+      const filterText = `${pair.column} = $${pair.given}`;
+      const condition = await liftGateCondition(
+         graftTarget,
+         filterText,
+         graftScope.materializer,
+      );
+      entries.push({
+         label,
+         graftTarget,
+         filterText,
+         condition,
+         givenNames: [pair.given],
+      });
+   }
+   return entries;
 }
