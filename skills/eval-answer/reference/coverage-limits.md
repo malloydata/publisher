@@ -1,85 +1,75 @@
-<!-- What a coverage number does and does not measure. Read before quoting one. Two independent limits: per-case accuracy, measured against a labelled set, and scale, measured against model size. -->
+<!-- What a coverage number does and does not measure. Read before quoting one. Measured against a labelled set and across model sizes; none of it is visible in the output the script prints. -->
 
 # Coverage limits
 
 `check_coverage.py` was measured against a real labelled set and at a range of
-model sizes. Both limits below are measured, and the method is named beside each
-number so it can be re-measured when the harness changes. Neither is visible in
-the output the script prints today.
+model sizes. Every number below is measured, and the method is named beside it
+so it can be re-measured when the harness changes. None of it is visible in the
+output the script prints today.
 
-The short version. **The per-case verdict agrees with an authored label 65% of
-the time, and the headline percentage agrees far better than the verdicts do,
-because its two error directions cancel.** Read the number as a rough signal
-over many cases, never as a verdict on one, and never as a small movement
-between versions.
+The short version. **Read it as a rough signal over many cases, never as a
+verdict on one, and never as a small movement between versions.** Where it
+disagrees with a set's authored `coverage` label, either side can be the stale
+one, and on the one set measured the LABEL was wrong more often than the verdict
+was. Separately, the whole model goes into one prompt per case, which caps the
+package size it can run on at all and destabilises the verdict well before that
+cap.
 
-## Measured against a labelled set
+## Measured against a labelled set: the label drifts too
 
 The `evals/ecommerce` set in `credibledata/malloy-samples` labels every case
 `covered`, `derivable` or `absent` by hand, and names the entity that would
-close each one. That makes it a ground truth to score the script against. All 49
-cases, `--repeat 1` (the set default), model text 19,258 chars:
+close each one. Running all 49 cases against that package's model, `--repeat 1`,
+19,258 chars of model text over three files:
 
 | | |
 |---|---|
 | script | coverage 45%, 22 of 49 |
 | set, counting `covered` | 43%, 21 of 49 |
-| **per-case agreement** | **32 of 49, 65%** |
+| cases where the two disagree | 17 |
 
-The two headline numbers land two points apart and that is a coincidence. There
-are 8 cases the script calls a gap and the set calls covered, and 9 the script
-calls `ok` and the set does not. They very nearly cancel, so the aggregate looks
-trustworthy while a third of the individual verdicts are not. A number built
-that way can move without the model changing and hold still when it does, which
-is the one thing a per-version trend must not do.
+**Read the disagreements, not the two-point gap.** The headlines land close
+because the two directions of disagreement nearly cancel, 8 cases the script
+calls a gap that the label calls covered against 9 the other way. A number that
+agrees for that reason can move without the model changing and hold still when
+it does.
 
-The full matrix, authored label down the side and verdict across:
+**And do not assume the checker is the wrong side.** Every disagreement was
+checked against the model by hand. On the majority the LABEL was stale or
+wrong, because the model gained measures and the standing judgement was not
+revisited:
 
-| | `ok` | `CONVENTION` | `NO-DISAMBIG` | `COVERAGE` |
-|---|---|---|---|---|
-| `covered` (21) | 13 | 3 | 3 | 2 |
-| `derivable` (24) | 9 | 9 | 4 | 2 |
-| `absent` (4) | 0 | 0 | 0 | 4 |
-
-Two things to read off it.
-
-**`absent` is the one class it gets right, 4 for 4.** Where the model holds
-nothing at all, `COVERAGE` is reliable. That is also the easiest judgement in
-the set, so it is weak evidence for the rest.
-
-**`derivable` splits four ways.** One authored class, 9 `ok`, 9 `CONVENTION`, 4
-`NO-DISAMBIG`, 2 `COVERAGE`. This is the class the metric exists to separate
-from `covered`, and the verdict on it is close to unreproducible.
-
-## Two named defects behind those errors
-
-**A named measure plus a filter reads as a gap.** Three of the eight false gaps
-are exactly that shape, and the set's own note says so:
-
-| case | verdict | the entity that covers it |
+| case | label says | the model actually declares |
 |---|---|---|
-| `ecom_unsold_inventory` | `COVERAGE` | `inventory_item_count`, filtered to unsold |
-| `ecom_unsold_stock_value` | `COVERAGE` | `total_cost`, filtered to unsold |
-| `ecom_levis_sales` | `NO-DISAMBIG` | `total_sales`, filtered to brand |
+| `ecom_time_to_ship` | "no measure; shipped_at - created_at" | `avg_days_to_ship is avg(days_to_ship)`, documented |
+| `ecom_gross_margin_pct` | "average_gross_margin is per item, not margin / sales" | `margin_rate is total_gross_margin / nullif(total_sales, 0)` |
+| `ecom_top_margin_pct_categories` | "no margin-pct measure to group by category" | the same `margin_rate`, groupable |
+| `ecom_return_rate` | "no return_rate measure, the model has no rate measure at all" | `percent_purchases_returned`, a returned-over-all ratio |
 
-Verified against the model, not taken from the label: `inventory_item_count is
-count(id)` and `total_sales is sale_price.sum()` are both declared, and
-`sold_at` is public and documented, so the filter has something to bind to. Two
-of these came back `COVERAGE`, which asserts no entity represents the concept
-ANYWHERE. That is the strongest claim the script makes and it is false, and
-because `COVERAGE` is a cause code it sends diagnosis at a modelling gap that
-does not exist. The prompt has no rule telling the judge that filtering a named
-measure is still expressing it.
+The reverse direction is the same story with the sides swapped.
+`ecom_unsold_inventory` is labelled `covered` with the note
+"`inventory_item_count`, filtered to unsold", and the checker returns a gap. The
+checker is right: the model's doc on `sold_at` says "Despite the name it is not
+evidence of a sale: it is a copy of order_items.created_at and is set even when
+that order was cancelled", and `inventory_items` declares no join back to
+`order_items`, so the anti-join the question needs cannot be expressed at all.
+The note prescribes exactly the filter the model warns against.
 
-**The prompt's own rule 2 is not applied, in the other direction.** It says
-finding the numerator is not coverage, and that a denominator which must be
-assembled or chosen is `CONVENTION` or `NO-DISAMBIG`, "never `ok`". Nine cases
-break it, each one a ratio the set records as having no measure:
-`ecom_shipped_item_share` (note: no measure, shipped over all lines),
-`ecom_return_rate` (no `return_rate` measure), `ecom_avg_spend_per_customer` (no
-measure, `total_sales / user_count`), and six more. So the two error directions
-are not noise in opposite directions; they are one rule missing and one rule
-ignored.
+So the honest reading of this run is that it audited the SET as much as the
+model, and that a coverage judgement is only as good as the docs it reads.
+`--compare-labels` exists for this: it joins the verdicts against the authored
+field and prints the disagreements with their notes, taking no position on which
+side is wrong. Check the label first, against the model, before treating a
+disagreement as a coverage regression.
+
+One number does hold up on its own. `absent` came back `COVERAGE` 4 times out
+of 4, so where the model holds nothing at all the verdict is dependable. That is
+also the easiest call in the set.
+
+Do NOT read agreement with these labels as a score for the checker. The two
+answer different questions on purpose, which the script's own docstring says,
+and this run is the evidence that either side can be the one that has gone
+stale.
 
 ## It stops RUNNING at about 3,500 lines, on Linux only
 
@@ -172,27 +162,29 @@ measurement of a fragment.
 
 Ordered by what each fixes.
 
-**The two prompt defects first, because they are what makes the number wrong at
-every model size.** Give the judge a rule that filtering or grouping a named
-measure is still expressing it, so a measure plus a filter stops reading as
-`COVERAGE`. Then make rule 2 bite: nine ratio cases reached `ok` against an
-explicit "never `ok`", which suggests the rule needs to be a checked step in the
-output rather than a line of prose, for example an assembled-denominator field
-the parser can refuse an `ok` against, the way `parse_reply` already refuses an
-`ok` with several unresolved candidates.
+**Run `--compare-labels` whenever a set carries authored `coverage` labels, and
+triage what it prints.** It is the cheapest audit available on both the set and
+the model, and it needs no extra model calls beyond the run itself. Resolve each
+disagreement by reading the model, and expect to fix labels as often as
+verdicts. What it must NOT become is a score for the checker: agreement is not
+the goal, since the two answer different questions on purpose.
 
-**Score the script against the authored labels as a fixture.** The set already
-carries 49 hand-labelled cases and a `coverageNote` naming the closing entity.
-Agreement against those labels is a cheap regression test on the prompt, and it
-is the test that would have caught both defects above.
+**Do not add a prompt rule on this evidence.** The first reading of that run
+was that the checker had two defects, a named measure plus a filter reading as
+a gap and the prompt's ratio rule going unapplied. Checking each case against
+the model dissolved both: the model documents `sold_at` as NOT evidence of a
+sale and declares no join for the anti-join, and the measures the labels called
+missing exist. A prompt rule written from that first reading would have taught
+the judge to ignore a caveat the model states plainly.
 
 **Pass the prompt on stdin.** `claude -p` reads it there (verified), which
 removes the `argv` ceiling outright. Then `MAX_PROMPT` should bound bytes
 against the agent model's context window rather than characters against a Linux
 limit it does not match.
 
-**Exit 1 when `decided` is 0.** A run that decided nothing did not run, and the
-docstring already promises exit 1 for that case.
+**Exit 1 when `decided` is 0.** Done: a run that decided nothing now exits 1
+and says so, instead of reporting `n/a` and a success. This is the whole-set
+shape of the `argv` failure above, where every case fails identically.
 
 **Note that the two cheap fixes pull against each other.**
 `--append-system-prompt` is what buys the caching above, and it is also `argv`,

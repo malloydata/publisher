@@ -165,18 +165,22 @@ Undecided cases are excluded from the percentage and reported on their own line.
 Read that line: a coverage number over a handful of decided cases is not a
 measurement, it is a sample size.
 
-**Read `reference/coverage-limits.md` before quoting a coverage number.**
-Scored against the 49 hand-labelled cases in the `evals/ecommerce` set, the
-per-case verdict agrees 65% of the time, and the headline percentage agrees much
-better than the verdicts do only because its two error directions cancel. So
-read it as a rough signal over many cases, never as a verdict on one and never
-as a small movement between versions. Two defects behind that are named there: a
-named measure plus a filter reads as a gap, twice as `COVERAGE`, and nine ratio
-cases reached `ok` against the prompt's own "never `ok`" rule. Separately, it
-hands the whole model to one judge call per case, so past a few thousand lines
-it stops running on Linux and above about 100 KB the verdict stops being stable.
-Do not take the over-size message's advice to narrow `--model` to one file,
-which drops every imported source and manufactures `COVERAGE` verdicts.
+**Read `reference/coverage-limits.md` before quoting a coverage number.** Run
+against all 49 hand-labelled cases of the `evals/ecommerce` set it disagreed
+with the authored label on 17, while the two headline percentages landed two
+points apart because the disagreements cancel. Checking each one against the
+model found the LABEL was the stale side more often than the verdict was: four
+notes call a measure missing that the model declares, and one prescribes a
+filter on a field the model documents as "not evidence of a sale". So read a
+coverage number as a rough signal over many cases, never as a verdict on one and
+never as a small movement between versions, and use `--compare-labels` to print
+the disagreements and triage them by reading the model. Agreement with the
+labels is not a score for the checker; the two answer different questions on
+purpose. Separately, the whole model goes into one prompt per case, so past a
+few thousand lines it stops running on Linux and above about 100 KB the verdict
+stops being stable. Do not take the over-size message's advice to narrow
+`--model` to one file, which drops every imported source and manufactures
+`COVERAGE` verdicts.
 
 ## Step 5: Distrust the golden
 

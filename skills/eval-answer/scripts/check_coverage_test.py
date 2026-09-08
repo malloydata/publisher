@@ -283,5 +283,82 @@ class Majority(unittest.TestCase):
             cc.majority(self.rows("COVERAGE", "ok"))["verdict"], "COVERAGE")
 
 
+class CompareLabels(unittest.TestCase):
+    """The join against the set's authored `coverage` field.
+
+    Written because the disagreement was found by hand, once, and the finding
+    that came out of it was the opposite of the first reading: the label was
+    the stale side more often than the verdict was. So the join has to report
+    disagreements without taking a side, and it must not be read as a score.
+    """
+
+    def cases(self):
+        return [
+            {"qid": "a", "coverage": "covered", "coverageNote": "total_sales"},
+            {"qid": "b", "coverage": "derivable",
+             "coverageNote": "no rate measure"},
+            {"qid": "c", "coverage": "absent", "coverageNote": "no source"},
+            {"qid": "d", "coverage": "covered", "coverageNote": "order_count"},
+        ]
+
+    def rows(self, *verdicts):
+        return [{"qid": q, "verdict": v, "why": "w"}
+                for q, v in zip("abcd", verdicts)]
+
+    def test_covered_matches_ok_and_gaps_match_gaps(self):
+        c = cc.compare_labels(self.rows("ok", "CONVENTION", "COVERAGE", "ok"),
+                              self.cases())
+        self.assertEqual((c["compared"], c["agree"]), (4, 4))
+        self.assertEqual(c["disagree"], [])
+
+    def test_a_label_claiming_a_gap_the_model_can_express_is_flagged(self):
+        # The shape that turned out to be the common one: the model gained a
+        # measure and the standing label was never revisited.
+        c = cc.compare_labels(self.rows("ok", "ok", "COVERAGE", "ok"),
+                              self.cases())
+        self.assertEqual(c["agree"], 3)
+        (d,) = c["disagree"]
+        self.assertEqual(d["qid"], "b")
+        self.assertIn("label says gap", d["shape"])
+        # The note travels with it, because triage starts by reading the note
+        # against the model.
+        self.assertEqual(d["coverageNote"], "no rate measure")
+
+    def test_a_label_claiming_covered_where_the_model_has_a_gap_is_flagged(self):
+        c = cc.compare_labels(self.rows("CONVENTION", "CONVENTION", "COVERAGE",
+                                        "ok"), self.cases())
+        (d,) = c["disagree"]
+        self.assertEqual(d["qid"], "a")
+        self.assertIn("label says covered", d["shape"])
+
+    def test_undecided_is_not_a_disagreement(self):
+        # An undecided case is not evidence about the label either way, the
+        # same reason `summarise` keeps it out of the denominator.
+        c = cc.compare_labels(self.rows(None, "CONVENTION", "COVERAGE", "ok"),
+                              self.cases())
+        self.assertEqual((c["compared"], c["agree"], c["disagree"]), (3, 3, []))
+
+    def test_an_unlabelled_set_compares_nothing_rather_than_scoring_zero(self):
+        # A set with no `coverage` field must not read as total disagreement.
+        c = cc.compare_labels(self.rows("ok", "ok", "ok", "ok"),
+                              [{"qid": q} for q in "abcd"])
+        self.assertEqual((c["compared"], c["agree"]), (0, 0))
+        self.assertIn("nothing to compare", cc.label_report(c))
+
+    def test_the_report_never_calls_a_disagreement_a_checker_error(self):
+        c = cc.compare_labels(self.rows("ok", "ok", "COVERAGE", "ok"),
+                              self.cases())
+        text = cc.label_report(c)
+        self.assertIn("EITHER side can be the wrong one", text)
+        self.assertNotIn("accuracy", text.lower())
+
+
+class NothingDecided(unittest.TestCase):
+    def test_no_decided_case_is_not_zero_percent_coverage(self):
+        s = cc.summarise([{"qid": "a", "verdict": None, "why": "too large"}])
+        self.assertIsNone(s["coverage"])
+        self.assertEqual(s["decided"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

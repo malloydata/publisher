@@ -403,6 +403,83 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "by_verdict": by}
 
 
+# The authored `coverage` field says an entity expresses the answer; the
+# verdicts that say the same thing. Everything else is a gap of some kind.
+LABEL_EXPECTS_OK = ("covered",)
+
+
+def compare_labels(rows: list[dict[str, Any]],
+                   cases: list[dict[str, Any]]) -> dict[str, Any]:
+    """Join the verdicts against the set's own authored `coverage` field.
+
+    NOT a score of this checker. A disagreement means the label and the model
+    no longer agree, and EITHER can be the wrong one: the label is a standing
+    judgement written at some point against some version of the model, and it
+    goes stale when the model gains a measure. Measured on the ecommerce set,
+    the label was the wrong side more often than the verdict was, so this
+    reports the disagreements for a human to triage and takes no position on
+    which way each one resolves.
+
+    That is the whole value of the join. Without it the two numbers are read
+    side by side, the headlines agree to within a couple of points because the
+    two error directions cancel, and nobody looks at the cases.
+    """
+    by_qid = {c["qid"]: c for c in cases}
+    matrix: dict[tuple[str, str], int] = {}
+    disagree: list[dict[str, Any]] = []
+    decided = 0
+    for r in rows:
+        c = by_qid.get(r["qid"]) or {}
+        label = c.get("coverage") or "unlabelled"
+        verdict = r["verdict"] or "undecided"
+        matrix[(label, verdict)] = matrix.get((label, verdict), 0) + 1
+        if verdict == "undecided" or label == "unlabelled":
+            continue
+        decided += 1
+        if (label in LABEL_EXPECTS_OK) != (verdict == OK):
+            disagree.append({
+                "qid": r["qid"], "label": label, "verdict": verdict,
+                "coverageNote": c.get("coverageNote"),
+                "why": r.get("why"),
+                # Which way it reads BEFORE anyone looks: a label claiming a
+                # gap the model can express is the stale-label shape, and it is
+                # the one worth checking first.
+                "shape": ("label says gap, model says expressible"
+                          if verdict == OK else
+                          "label says covered, model says gap"),
+            })
+    return {"compared": decided, "agree": decided - len(disagree),
+            "disagree": disagree, "matrix": matrix,
+            "labels": sorted({(c.get("coverage") or "unlabelled")
+                              for c in cases})}
+
+
+def label_report(cmp: dict[str, Any]) -> str:
+    n, agree = cmp["compared"], cmp["agree"]
+    out = ["", f"against the set's authored `coverage` field: {agree}/{n} agree"
+                + (f" ({100 * agree / n:.0f}%)" if n else "")]
+    if not n:
+        out.append("  no case carries a `coverage` field; nothing to compare")
+        return "\n".join(out)
+    verds = [OK, *FAIL_VERDICTS, "undecided"]
+    out.append(f"  {'label':>12} " + " ".join(f"{v:>12}" for v in verds))
+    for lab in cmp["labels"]:
+        out.append(f"  {lab:>12} "
+                   + " ".join(f"{cmp['matrix'].get((lab, v), 0):>12}"
+                              for v in verds))
+    if cmp["disagree"]:
+        out.append("")
+        out.append("  disagreements, for triage. EITHER side can be the wrong "
+                   "one; check the label first")
+        for d in cmp["disagree"]:
+            out.append(f"    {d['qid']:36s} label={d['label']:10s} "
+                       f"verdict={d['verdict']}")
+            out.append(f"      {d['shape']}")
+            if d.get("coverageNote"):
+                out.append(f"      note: {str(d['coverageNote'])[:88]}")
+    return "\n".join(out)
+
+
 def report(rows: list[dict[str, Any]], s: dict[str, Any],
            version: str | None) -> str:
     out = [f"{'qid':38s} {'verdict':12s} why"]
@@ -527,6 +604,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default=None, help="comma-separated qids")
     ap.add_argument("--out", type=pathlib.Path, default=None,
                     help="write the report as JSON here")
+    ap.add_argument("--compare-labels", dest="compare_labels",
+                    action="store_true",
+                    help="join the verdicts against the set's authored "
+                         "`coverage` field and print the disagreements. This "
+                         "does NOT score the checker: a label is a standing "
+                         "judgement that goes stale when the model gains a "
+                         "measure, so either side can be the wrong one. Use it "
+                         "to find the cases worth a human look, and check the "
+                         "label first")
     ap.add_argument("--self-check", action="store_true",
                     help="measure the built-in fixture instead of a set, and "
                          "fail if it reads as `ok`. One model call")
@@ -586,12 +672,26 @@ def main(argv: list[str] | None = None) -> int:
 
     s = summarise(rows)
     print("\n" + report(rows, s, a.version))
+    cmp = compare_labels(rows, cases) if a.compare_labels else None
+    if cmp:
+        print(label_report(cmp))
     if a.out:
         a.out.write_text(json.dumps(
             {"version": a.version, "set": str(a.set_dir),
-             "agentModel": a.agent_model, **s, "cases_detail": rows},
+             "agentModel": a.agent_model, **s, "cases_detail": rows,
+             **({"labelComparison": cmp} if cmp else {})},
             indent=2))
         print(f"\n{a.out}")
+    # Nothing decided is not a 0% coverage, it is a measurement that did not
+    # happen, and the docstring already promises exit 1 when it could not run.
+    # The whole-set version of this is the failure mode worth catching: an
+    # over-long prompt fails identically on every case, so the run reports
+    # `n/a` on every line and used to exit 0 like a success.
+    if s["decided"] == 0:
+        print("\nno case was decided, so there is no measurement here. The "
+              "per-case `why` says which; a prompt over the size cap, or over "
+              "the OS argv limit, fails this way on every case at once.")
+        return 1
     return 0
 
 
