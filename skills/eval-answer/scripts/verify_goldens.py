@@ -303,13 +303,28 @@ def _named(name: str, text: str) -> bool:
                                     + r"(?![A-Za-z0-9_])", text) is not None
 
 
+def _id_malformed(entity_id: str) -> bool:
+    """An id carrying no `kind:` prefix at all.
+
+    Scoring compares whole ids against the ones `get_context` returned, so an id
+    without its prefix can never match however real the field is. It has to be a
+    finding on its own: `all(parts[1:])` is vacuously True on a one-part id, so
+    `ecommerce.no_such_field`, `no_such_field` and `""` all used to pass the
+    check that exists to catch exactly this, while the well-formed
+    `measure:x:no_such_field` was correctly caught."""
+    return len((entity_id or "").split(":")) < 2
+
+
 def _id_named(entity_id: str, text: str) -> bool:
     """Both halves of `kind:source:name` must be in the model, or it is not this
     model's entity. The source half is what catches an id copied from a sibling
     package: a field name often survives a rename that the source name does
-    not."""
+    not.
+
+    A malformed id is never `named`: there is nothing after the prefix to check,
+    and an empty `all()` is True."""
     parts = (entity_id or "").split(":")
-    return all(_named(p, text) for p in parts[1:])
+    return len(parts) > 1 and all(_named(p, text) for p in parts[1:])
 
 
 def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
@@ -338,7 +353,12 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
         qid = case["qid"]
         exp = case.get("expectedEntities") or {}
         for e in exp.get("required") or []:
-            if not _id_named(e, text):
+            if _id_malformed(e):
+                out.append(f"{qid}: required entity {e!r} has no `kind:` "
+                           f"prefix, so it can never match a returned id "
+                           f"whatever the model holds. Fix: "
+                           f"measure:<source>:<name>, or dimension:/view:")
+            elif not _id_named(e, text):
                 out.append(f"{qid}: required entity {e} names nothing in the "
                            f"model under test, so it can only ever score as a "
                            f"retrieval miss. Fix the id, or make it a "
@@ -349,7 +369,11 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
                            f"[{', '.join(g)}] names anything in the model under "
                            f"test")
         for e in exp.get("acceptable") or []:
-            if not _id_named(e, text):
+            if _id_malformed(e):
+                out.append(f"review {qid}: acceptable entity {e!r} has no "
+                           f"`kind:` prefix, so it never matches. Fix: "
+                           f"measure:<source>:<name>")
+            elif not _id_named(e, text):
                 out.append(f"review {qid}: acceptable entity {e} names nothing "
                            f"in the model under test, so it never matches")
         for m in (case.get("golden") or {}).get("mustNotUse") or []:

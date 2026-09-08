@@ -58,6 +58,26 @@ class RequiredIds(unittest.TestCase):
         self.assertEqual(len(unknown_name_findings(
             [case(required=["measure:no_such_measure"])], MODEL)), 1)
 
+    def test_an_id_with_no_kind_prefix_is_a_finding(self):
+        # `all(parts[1:])` is True on an empty slice, so a one-part id passed
+        # the check written to catch exactly this shape, while the well-formed
+        # `measure:x:no_such_field` was caught. Scoring compares whole ids, so a
+        # prefix-less one can never match however real the field is.
+        for bad in ("ecommerce.no_such_field", "no_such_field", ""):
+            with self.subTest(bad=bad):
+                f = unknown_name_findings([case(required=[bad])], MODEL)
+                self.assertEqual(len(f), 1)
+                self.assertFalse(f[0].startswith("review "))
+                self.assertIn("kind:", f[0])
+
+    def test_a_bare_name_the_model_does_have_is_still_a_finding(self):
+        # `total_sales` IS in the model, and the id is still unusable: it is
+        # the prefix that is missing, not the field. Checking the name alone
+        # would let this one through and it would score as a miss every run.
+        f = unknown_name_findings([case(required=["total_sales"])], MODEL)
+        self.assertEqual(len(f), 1)
+        self.assertIn("kind:", f[0])
+
 
 class RequiredAnyOf(unittest.TestCase):
     def test_a_group_passes_when_one_id_resolves(self):
@@ -71,6 +91,15 @@ class RequiredAnyOf(unittest.TestCase):
     def test_a_group_where_none_resolves_fails(self):
         f = unknown_name_findings([case(any_of=[[
             "measure:gone:one", "measure:gone:two"]])], MODEL)
+        self.assertEqual(len(f), 1)
+        self.assertFalse(f[0].startswith("review "))
+
+    def test_a_malformed_entry_does_not_rescue_a_dead_group(self):
+        # Worse here than in `required`: a group passes when ANY member
+        # resolves, so one prefix-less id used to pass a group whose every
+        # well-formed id names nothing.
+        f = unknown_name_findings([case(any_of=[[
+            "measure:gone:one", "no_such_field"]])], MODEL)
         self.assertEqual(len(f), 1)
         self.assertFalse(f[0].startswith("review "))
 
