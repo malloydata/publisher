@@ -165,6 +165,15 @@ Undecided cases are excluded from the percentage and reported on their own line.
 Read that line: a coverage number over a handful of decided cases is not a
 measurement, it is a sample size.
 
+It hands the whole model to one judge call per case, which is what makes it
+cheap on a small package and what breaks on a large one. Past a few thousand
+lines it stops running on Linux, and before that it stops being true: measured,
+the shipped fixture reads `ok` at 103 KB of model text, the field-name matching
+it exists to detect. **Read `reference/coverage-at-scale.md` before pointing
+this at anything bigger than a few thousand lines**, and do not take the
+over-size message's advice to narrow `--model` to one file, which drops every
+imported source and manufactures `COVERAGE` verdicts.
+
 ## Step 5: Distrust the golden
 
 A reference answer can be wrong (parent-column fanout, a join on a shared
