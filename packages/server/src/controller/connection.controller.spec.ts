@@ -971,6 +971,43 @@ describe("ConnectionController getTable not-found mapping", () => {
       }
    });
 
+   it("classifies a missing file-backed table, which reports an IO error", async () => {
+      // The Azure branch hands fetchTable a blob URL, and DuckDB answers an
+      // absent file with an IO error rather than a catalog one -- so the catalog
+      // patterns never see it, and the wrappers' own "Azure file not found"
+      // throw is unreachable. Verbatim from the installed driver.
+      const { controller } = buildTableController(
+         sinon
+            .stub()
+            .rejects(
+               new Error(
+                  'IO Error: No files found that match the pattern "/tmp/gone.parquet"',
+               ),
+            ),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("leaves a missing DuckDB extension a fault, not a missing table", async () => {
+      // DuckDB words a missing EXTENSION exactly like a missing table, and
+      // httpfs/azure/iceberg are what the DuckLake and Azure connections run on.
+      // A 404 here would report a broken deployment as a mistyped table. Strings
+      // verbatim from the installed driver.
+      for (const message of [
+         "Catalog Error: Table Function with name no_such_fn does not exist!",
+         "Catalog Error: Scalar Function with name no_such_scalar does not exist!",
+      ]) {
+         const { controller } = buildTableController(
+            sinon.stub().rejects(new Error(message)),
+         );
+         await expect(getTable(controller)).rejects.toBeInstanceOf(
+            ConnectionError,
+         );
+      }
+   });
+
    it("still reports an unrecognized driver failure as a 502-class fault", async () => {
       // The floor: anything the classifier does not recognize stays a server
       // error. Guessing wider would hide real outages behind a 404.

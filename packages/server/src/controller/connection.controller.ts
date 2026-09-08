@@ -173,13 +173,37 @@ const BIGQUERY_IMPROPER_PATH = /^Improper table path\b/;
 /**
  * DuckDB -- the sandbox, and the Azure and DuckLake connections built on it --
  * rejects rather than resolving empty, so a missing table arrives as a thrown
- * catalog error. Covers all three shapes the driver produces: a missing table,
- * a missing schema, and a missing catalog on a three-part path.
+ * catalog error. These two cover the three shapes it produces for an absent
+ * object: a missing table, a missing schema behind a table lookup, and a missing
+ * catalog on a three-part path.
+ *
+ * Deliberately not `Catalog Error: .* does not exist`. DuckDB words a missing
+ * EXTENSION the same way -- "Catalog Error: Table Function with name read_csv
+ * does not exist!" -- and that is a misconfigured deployment, not an absent
+ * table. Answering it 404 would hide a broken Azure or DuckLake connection
+ * behind the one status nobody investigates.
  */
-const DUCKDB_NOT_FOUND = /^(Catalog|Binder) Error: .*does not exist/;
+const DUCKDB_TABLE_NOT_FOUND =
+   /^Catalog Error: Table with name .+ does not exist/;
+const DUCKDB_CATALOG_NOT_FOUND = /^Binder Error: Catalog .+ does not exist/;
+
+/**
+ * A file-backed DuckDB table -- the Azure blob branch of getTable, and any
+ * parquet/csv path -- reports an absent file as an IO error rather than a
+ * catalog one, so the patterns above never see it. Without this the wrappers'
+ * own "Azure file not found" throw is unreachable and a missing blob answers
+ * 502.
+ */
+const DUCKDB_FILE_NOT_FOUND =
+   /^IO Error: No files found that match the pattern/;
 
 function driverErrorToPublisherError(message: string): Error {
-   if (BIGQUERY_NOT_FOUND.test(message) || DUCKDB_NOT_FOUND.test(message)) {
+   if (
+      BIGQUERY_NOT_FOUND.test(message) ||
+      DUCKDB_TABLE_NOT_FOUND.test(message) ||
+      DUCKDB_CATALOG_NOT_FOUND.test(message) ||
+      DUCKDB_FILE_NOT_FOUND.test(message)
+   ) {
       return new TableNotFoundError(message);
    }
    if (BIGQUERY_IMPROPER_PATH.test(message)) {
