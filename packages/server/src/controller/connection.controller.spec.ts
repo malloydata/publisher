@@ -10,7 +10,13 @@ import type {
 import { afterEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 
-import { BadRequestError, PayloadTooLargeError } from "../errors";
+import {
+   BadRequestError,
+   ConnectionError,
+   InvalidArgumentError,
+   PayloadTooLargeError,
+   TableNotFoundError,
+} from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
 import { ConnectionController } from "./connection.controller";
 
@@ -848,5 +854,129 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
       await expect(
          controller.getConnectionTemporaryTable("env", "conn", "SELECT 1"),
       ).rejects.toBeInstanceOf(QueryTimeoutError);
+   });
+});
+
+/**
+ * A table that is not in the database must answer 404, not 502.
+ *
+ * The router counts 5xx against its server-error budget and pages on-call, so
+ * mapping a caller's bad reference to 502 turns a typo in someone's model into
+ * a production page -- which is what happened on 2026-09-08, when a Malloy
+ * compiler refetched one unresolved table on every recompile and drove the
+ * router to a 21.6% error rate.
+ */
+describe("ConnectionController getTable not-found mapping", () => {
+   afterEach(() => sinon.restore());
+
+   function buildTableController(fetchTableSchema: sinon.SinonStub): {
+      controller: ConnectionController;
+   } {
+      const fakeConnection = { fetchTableSchema } as unknown as Connection;
+      const fakeEnv = {
+         getApiConnection: sinon
+            .stub()
+            .returns({ name: "warehouse", type: "postgres" }),
+      };
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves(fakeEnv),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection);
+      return { controller };
+   }
+
+   const getTable = (controller: ConnectionController) =>
+      controller.getTable("env", "warehouse", "ds", "ds.missing");
+
+   it("classifies BigQuery's returned not-found string as TableNotFoundError", async () => {
+      // BigQuery's driver RETURNS the message instead of throwing, discarding
+      // the structured 404 it was handed.
+      const { controller } = buildTableController(
+         sinon.stub().resolves("Not found: Table proj:ds.missing"),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("leaves a BigQuery auth failure as a 502-class ConnectionError", async () => {
+      // The guard against over-reading the string: only absence is a 404.
+      const { controller } = buildTableController(
+         sinon.stub().resolves("Permission denied while getting table proj:ds"),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         ConnectionError,
+      );
+   });
+
+   it("classifies a path BigQuery cannot parse as a bad argument, not a fault", async () => {
+      // Every prefix typed before the first dot has one segment, so this arrives
+      // constantly while a path is being written. Verbatim from prod 2026-09-08.
+      const { controller } = buildTableController(
+         sinon
+            .stub()
+            .resolves(
+               "Improper table path: sal. A table path requires 2 or 3 segments",
+            ),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         InvalidArgumentError,
+      );
+   });
+
+   it("treats an empty schema result as not found", async () => {
+      const { controller } = buildTableController(
+         sinon.stub().resolves(undefined),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("classifies a driver that THREW its not-found instead of returning it", async () => {
+      // BigQuery returns the message; every other dialect throws. Both have to
+      // reach the same classification, or the fix covers one dialect only.
+      const { controller } = buildTableController(
+         sinon.stub().rejects(new Error("Not found: Table proj:ds.missing")),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("still reports an unrecognized driver failure as a 502-class fault", async () => {
+      // The floor: anything the classifier does not recognize stays a server
+      // error. Guessing wider would hide real outages behind a 404.
+      const { controller } = buildTableController(
+         sinon.stub().rejects(new Error("ECONNREFUSED 10.0.0.1:443")),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         ConnectionError,
+      );
+   });
+
+   it("preserves a TableNotFoundError thrown by the connection wrapper", async () => {
+      // Regression guard for the trap this fix exists to close: fetchTable's
+      // catch used to rewrap EVERYTHING as ConnectionError, so the Azure and
+      // DuckLake wrappers -- which throw not-found directly rather than
+      // returning a string -- would still have surfaced as 502. Asserting the
+      // CLASS rather than a status is deliberate: only the class proves the
+      // rethrow branch ran instead of the rewrap.
+      const { controller } = buildTableController(
+         sinon
+            .stub()
+            .rejects(new TableNotFoundError("Table ds.missing not found")),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
    });
 });

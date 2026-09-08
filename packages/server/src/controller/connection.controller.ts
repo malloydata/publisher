@@ -12,7 +12,9 @@ import {
 import {
    BadRequestError,
    ConnectionError,
+   InvalidArgumentError,
    PayloadTooLargeError,
+   TableNotFoundError,
 } from "../errors";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
@@ -140,6 +142,42 @@ function validateAdminAuthoredConnection(
          );
       }
    }
+}
+
+/**
+ * BigQuery's driver signals failure by RETURNING `error.message` instead of
+ * throwing, discarding the structured `code: 404` the Google client gave it
+ * (`@malloydata/db-bigquery` fetchTableSchema). That text is the only surviving
+ * signal, so a missing table is told apart from a broken connection by matching
+ * BigQuery's own API wording.
+ *
+ * Deliberately not generalized to other dialects. Postgres reports a missing
+ * table as the generic "Unable to read schema.", indistinguishable from any
+ * other failure, and Snowflake's DESCRIBE TABLE answers "does not exist or not
+ * authorized", conflating absence with denial by design. Guessing on either
+ * would be worse than leaving them 502.
+ */
+const BIGQUERY_NOT_FOUND = /^Not found: (Table|Dataset)\b/;
+
+/**
+ * A path that cannot name a table in this dialect at all -- BigQuery needs
+ * `dataset.table`, so a bare `sales` is rejected before any lookup happens. The
+ * caller's argument is malformed, which is a 400, not a 404: the answer is "that
+ * is not a table path", not "no such table".
+ *
+ * Reached constantly while a path is being typed, since every prefix before the
+ * first dot has one segment.
+ */
+const BIGQUERY_IMPROPER_PATH = /^Improper table path\b/;
+
+function driverErrorToPublisherError(message: string): Error {
+   if (BIGQUERY_NOT_FOUND.test(message)) {
+      return new TableNotFoundError(message);
+   }
+   if (BIGQUERY_IMPROPER_PATH.test(message)) {
+      return new InvalidArgumentError(message);
+   }
+   return new ConnectionError(message);
 }
 
 export class ConnectionController {
@@ -277,11 +315,11 @@ export class ConnectionController {
             }
          ).fetchTableSchema(tableKey, tablePath);
          if (!source) {
-            throw new ConnectionError(`Table ${tablePath} not found`);
+            throw new TableNotFoundError(`Table ${tablePath} not found`);
          }
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof source === "string") {
-            throw new ConnectionError(source);
+            throw driverErrorToPublisherError(source);
          }
 
          return {
@@ -299,12 +337,31 @@ export class ConnectionController {
                : typeof error === "string"
                  ? error
                  : JSON.stringify(error);
+         // Two ways in. The wrappers above throw an already-classified error and
+         // must survive unchanged -- the blanket rewrap this replaces turned them
+         // back into 502s. A driver that throws its message rather than returning
+         // it (every dialect except BigQuery) is classified here instead.
+         const classified =
+            error instanceof TableNotFoundError ||
+            error instanceof InvalidArgumentError
+               ? error
+               : driverErrorToPublisherError(errorMessage);
+         if (!(classified instanceof ConnectionError)) {
+            // A caller's bad reference, not a fault: warn, so a mistyped path
+            // cannot fill the error log while it is being typed.
+            logger.warn("table not resolvable", {
+               tableKey,
+               tablePath,
+               reason: classified.constructor.name,
+            });
+            throw classified;
+         }
          logger.error("fetchTableSchema error", {
             error,
             tableKey,
             tablePath,
          });
-         throw new ConnectionError(errorMessage);
+         throw classified;
       }
    }
 
@@ -417,13 +474,19 @@ export class ConnectionController {
 
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof schema === "string") {
-            throw new ConnectionError(schema);
+            throw driverErrorToPublisherError(schema);
          }
 
          return {
             source: JSON.stringify(schema),
          };
       } catch (error) {
+         if (
+            error instanceof TableNotFoundError ||
+            error instanceof InvalidArgumentError
+         ) {
+            throw error;
+         }
          throw new ConnectionError((error as Error).message);
       }
    }
