@@ -56,8 +56,14 @@ export function getInternalError(
       "If the problem persists, check server logs or contact support.",
    ];
    if (error instanceof ConnectionError && !error.callerSafe) {
-      logInternalFailure(`Upstream connection error during ${operation}`, error);
-      return { message: `${baseMessage}: Upstream connection error.`, suggestions };
+      logInternalFailure(
+         `Upstream connection error during ${operation}`,
+         error,
+      );
+      return {
+         message: `${baseMessage}: Upstream connection error.`,
+         suggestions,
+      };
    }
    const errorMessage = error instanceof Error ? error.message : String(error);
    return {
