@@ -186,6 +186,41 @@ Probe the claim before writing the issue.
 
 Mine the agent's prose, not only its calls. It often names the gap.
 
+Every signature above is about reading the ANSWER. They apply just as much to
+your own probes, which is the next section, and the fanout rows apply hardest:
+a probe is a query you wrote in a hurry against a model you have just met.
+
+## Your own probes are evidence, and get the same scrutiny
+
+Evidence you generate yourself is not privileged over evidence you are handed.
+A real finding reported that a model's own documented recipe produced an
+impossible cumulative percentage, over 100% partway through the series, and
+cited a direct probe as proof. Re-running the recipe against the source the
+documentation actually routes to gave a textbook result: correct row count,
+monotonic, exactly 100% at the final point. The probe had been run against the
+PARENT source, and a measure summed across the dimensions the derived source
+exists to pin fans out. The tell was already in the diagnoser's own numbers:
+absolute counts orders of magnitude beyond any possible population. The ratio
+still looked well behaved, because fanout cancels top and bottom.
+
+Three requirements, before a probe becomes a finding:
+
+- **Probe the entity the documentation routes to, not an ancestor of it.** In a
+  well-built model a derived source often exists precisely to pin scope its
+  parent leaves open. Probing the parent measures a different thing and reads
+  as a defect in the child.
+- **State the absolute magnitudes and say whether they are possible.** Not the
+  ratio: a ratio survives fanout intact, so it is the one number that cannot
+  detect it. If a count exceeds any plausible population, stop and find the
+  fanout before writing anything down.
+- **Reproduce the failure before naming its cause.** If a probe contradicts a
+  documented recipe, run the recipe exactly as documented first. Documentation
+  being wrong is a real finding; so is a probe that did not follow it, and the
+  two are indistinguishable until you have run the documented version.
+
+A diagnose pass at this precision is a lead generator, not a verdict. Every
+model-owned finding deserves a probe of its own before it justifies an edit.
+
 ## Step 4: Append issue events, then stop
 
 Append to `evals/<set>/runs/<runId>/events.jsonl` with `kind: issue`

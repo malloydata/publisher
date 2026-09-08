@@ -168,9 +168,15 @@ EVIDENCE FROM THE RUN
 In `getContextCalls`, `targets` is what the agent searched for and
 `returnedInRankOrder` is what came back, in rank order.
 
-Emit the object defined in `reference/output-contract.md` of the
-eval-diagnose skill as the LAST thing in your reply. Read that file; it
+Emit the object defined under `## Per case` in `reference/output-contract.md`
+of the eval-diagnose skill as the LAST thing in your reply. Read that file; it
 is the contract a script parses, and a shape invented here is dropped.
+
+That file defines TWO objects. Yours is the per-case one, with `probes`,
+`component`, `owner`, `sufficiency` and `primary_code` at the top level. The
+clustering object under `## Per run` has a `clusters` array and belongs to a
+different job and a different agent; emitting it here is dropped, however good
+the analysis inside it is.
 """
 
 
@@ -212,10 +218,67 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
     if r.json is None:
         return {"qid": qid, "error": r.error or "unparseable",
                 "cost_usd": r.cost_usd}
-    obj = {**r.json, "qid": qid, "cost_usd": r.cost_usd,
+    body = r.json
+    lifted = salvage_cluster_shape(body)
+    if lifted is not None:
+        body = {**body, **lifted}
+    obj = {**body, "qid": qid, "cost_usd": r.cost_usd,
            "wall_seconds": r.wall_seconds, "attempts": r.attempts}
     out.write_text(json.dumps(obj, indent=2))
     return obj
+
+
+def salvage_cluster_shape(obj: dict[str, Any]) -> dict[str, Any] | None:
+    """Lift a per-case diagnosis out of a reply written in the CLUSTER shape.
+
+    The two prompts used to end with the same sentence pointing at the same
+    reference file, and that file defines two objects. 11 of 28 per-case
+    replies in one run came back as the clustering object: real analysis, with
+    owner, component, codes and a root cause, in the wrong envelope. `validate`
+    looks for the per-case keys, finds none, and the whole reply is discarded.
+    At roughly $0.70 a case that was about $12 of the run's $20 thrown away.
+
+    So when the violation is systematic rather than random, salvage beats
+    discard. Only the fields ACTUALLY PRESENT are lifted; nothing is invented
+    to satisfy the validator, because a fabricated field turns a shape error
+    into a false claim. `probes` is the field that must never be fabricated:
+    it is the record that something was checked, the clustering shape has no
+    structured probe records, and a diagnosis nobody probed must not become
+    the evidence for an edit. So it stays empty, `sufficiency` reads
+    `unknown`, and `validate` still reports "no probes recorded" -- which is
+    the honest state, and keeps the case needing a re-probe.
+
+    Returns None when the reply is not cluster-shaped, so a genuinely
+    unparseable or empty reply is left exactly as it was.
+    """
+    clusters = obj.get("clusters")
+    if not isinstance(clusters, list) or not clusters:
+        return None
+    first = next((c for c in clusters if isinstance(c, dict)), None)
+    if first is None:
+        return None
+    codes = [c for c in (first.get("codes") or []) if isinstance(c, str)]
+    out: dict[str, Any] = {
+        "probes": [],
+        "sufficiency": "unknown",
+        "reasoning": obj.get("reasoning") or first.get("evidence") or "",
+        "diagnosis": first.get("rootCause") or "",
+        "_salvaged": "reply used the clustering shape; per-case fields lifted, "
+                     "probes not synthesised",
+    }
+    for src, dst in (("owner", "owner"), ("component", "component"),
+                     ("confidence", "confidence"), ("severity", "severity")):
+        if first.get(src) is not None:
+            out[dst] = first[src]
+    if codes:
+        out["primary_code"] = codes[0]
+        out["contributing_codes"] = codes[1:]
+    # More than one cluster means the agent answered about the whole run from
+    # one case's evidence. Keep the count so that is visible rather than
+    # reading as a clean single-cause diagnosis.
+    if len(clusters) > 1:
+        out["_salvagedFrom"] = f"{len(clusters)} clusters; first used"
+    return out
 
 
 def validate(obj: dict[str, Any], codes: set[str]) -> list[str]:
@@ -241,9 +304,21 @@ These are the per-case diagnoses from one run. Cluster them.
 DIAGNOSED ISSUES
 {issues}
 
-Emit the object defined in `reference/output-contract.md` of the
-eval-diagnose skill as the LAST thing in your reply. Read that file; it
-is the contract a script parses, and a shape invented here is dropped.
+Emit the object defined under `## Per run, clustering` in
+`reference/output-contract.md` of the eval-diagnose skill as the LAST thing in
+your reply. Read that file; it is the contract a script parses, and a shape
+invented here is dropped.
+
+That file defines TWO objects. Yours is the clustering one, a `clusters` array
+with a `reasoning` string beside it. The per-case object under `## Per case`
+belongs to the agent that diagnosed each case individually; that work is
+already done and is your input, not your output.
+
+Each `cluster_id` names the DEFECT, never a remedy. `index-values-not-whole`
+names what is wrong; `index-measures-missing-rounding` names a fix, and picks
+it before anyone has weighed the alternatives. An id containing `missing`,
+`should`, `add`, `fix` or `use` is a prescription, and choosing the remedy is
+the improve step's job, not yours.
 """
 
 
@@ -276,6 +351,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
     ap.add_argument("--model-dir", type=pathlib.Path, default=None,
                     help="the Malloy package under test; the agent's cwd")
+    # The split is cheap-on-per-case, expensive-on-clustering, and one measured
+    # run says it is the wrong way round: every failure in it came from per-case
+    # work (wrong output shape, a probe at the wrong grain) while the clustering
+    # output was sound even when downgraded to the cheaper model. Left as it is
+    # on purpose. Three of the four causes were wording, now fixed, so the
+    # controlled test is to re-run the same cases with the same models and see
+    # what remains; only a probe that still goes wrong with the rule in front of
+    # it justifies paying more on every future run.
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--cluster-model", default="opus")
     ap.add_argument("--environment", default="samples")
