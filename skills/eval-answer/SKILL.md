@@ -159,7 +159,10 @@ measurement. A case that flips between samples is arguable rather than covered,
 so a tie goes to the gap, and two DIFFERENT gaps tying leaves the case undecided
 and out of the denominator. `--self-check` runs the shipped fixture instead of a
 set, which is how to confirm the checker still detects a gap it is known to
-detect; run it after editing the prompt or the verdict vocabulary.
+detect; run it after editing the prompt, the verdict vocabulary **or the fixture
+itself**. The tests pin the fixture's shape and cannot pin its verdict, because
+the judge needs a live model, so a fixture swap that goes unmeasured leaves the
+whole metric unguarded.
 
 Undecided cases are excluded from the percentage and reported on their own line.
 Read that line: a coverage number over a handful of decided cases is not a

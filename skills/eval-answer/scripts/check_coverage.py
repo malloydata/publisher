@@ -310,10 +310,13 @@ def majority(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """The verdict most samples agreed on, with the spread kept beside it.
 
     A case near the line between `ok` and a gap flips between samples, and that
-    is a property of the case rather than noise to average away: the fixture
-    below reads CONVENTION twice and `ok` once. One sample cannot tell a stable
-    judgement from a marginal one, so a repeated run records both the verdict
-    and what the samples actually were.
+    is a property of the case rather than noise to average away. One sample
+    cannot tell a stable judgement from a marginal one, so a repeated run
+    records both the verdict and what the samples actually were. (The fixture
+    below is not such a case: measured 2026-09-08 it read CONVENTION three times
+    out of three. An EARLIER fixture, replaced when a customer model excerpt was
+    scrubbed from this file, read CONVENTION twice and `ok` once, which is where
+    the tie rule came from.)
     """
     counts: dict[str, int] = {}
     for r in rows:
@@ -548,6 +551,13 @@ FIXTURE_CASE = {
     "requiresConcepts": ["first contact resolution", "ticket population"],
 }
 FIXTURE_EXPECTED = ("CONVENTION", "NO-DISAMBIG")
+# Measured against THIS fixture on 2026-09-08, agent model sonnet, --repeat 3:
+#   fixture_first_contact_resolution_rate: CONVENTION
+#     (samples: CONVENTION, CONVENTION, CONVENTION)
+# Re-measure when the fixture, the prompt or the verdict vocabulary changes.
+# The tests below pin the fixture's SHAPE and cannot pin its verdict: the judge
+# needs a live `claude -p`, so `--self-check` is the only thing that measures
+# whether this metric works.
 
 
 
@@ -621,7 +631,8 @@ def main(argv: list[str] | None = None) -> int:
                          "label first")
     ap.add_argument("--self-check", action="store_true",
                     help="measure the built-in fixture instead of a set, and "
-                         "fail if it reads as `ok`. One model call")
+                         "fail if it reads as `ok`. Three model calls, since "
+                         "--repeat defaults to 3 here")
     a = ap.parse_args(argv)
     # Refused at the CLI, not just clamped downstream by `max(1, repeat)`. Zero
     # samples is not a cheaper measurement, it is no measurement, and the same

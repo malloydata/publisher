@@ -104,9 +104,17 @@ haystack around it, needle and prompt untouched:
 
 | model text | verdict | |
 |---|---|---|
-| 2.8 KB, as shipped | `CONVENTION` | correct |
+| 2.8 KB, the fixture of the day | `CONVENTION` | correct |
 | 103 KB | `ok` | WRONG, reproduced at `--repeat 5` |
 | 373 KB | `CONVENTION` | correct |
+
+**These three rows predate the current fixture and have not been re-measured.**
+They were taken against a 2.8 KB excerpt that was replaced, when a customer
+model was scrubbed out of `check_coverage.py`, by the 1.4 KB `support_desk`
+fixture that ships today. What survives the swap is the SHAPE of the curve --
+the needle was untouched in all three rows and only the haystack grew -- so read
+the 100 KB cliff as the finding and the specific verdicts as history. The
+shipped fixture on its own reads `CONVENTION` 3 of 3 (2026-09-08, sonnet).
 
 At 103 KB the fixture reads `ok`, precisely the field-name matching it was
 written to detect, and the majority of five samples did not rescue it. The
