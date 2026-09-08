@@ -101,13 +101,16 @@ class Invocation(unittest.TestCase):
         r = improve.verify_goldens(self.a, self.art, "   ")
         self.assertFalse(r.get("couldNotRun"))
 
-    def test_a_set_with_no_truth_package_reads_as_clean(self):
-        # Documented, not endorsed: the verifier exits 0 with "nothing to
-        # re-derive" when it cannot find a truth package, so the audit passes
-        # without having checked anything. Improve cannot tell that from a real
-        # pass. Worth closing in the verifier, where the contract lives.
+    def test_a_set_with_no_truth_package_is_unverified_not_clean(self):
+        # The false green this closed. The verifier exited 0 with "nothing to
+        # re-derive" on a set naming no truthPackage, so an acceptance gate
+        # passed on a check that never happened -- and improve could not tell
+        # that from a real pass. It exits 3 now: the server-free audits ran, no
+        # golden was re-derived, and the reason has to reach the artifact
+        # because improve's own `why` is generic.
         r = improve.verify_goldens(self.a, self.art, "a diff")
-        self.assertTrue(r.get("clean"))
+        self.assertTrue(r.get("couldNotRun"))
+        self.assertNotIn("clean", r)
         self.assertIn("nothing to re-derive",
                       (self.art / "verify_goldens.txt").read_text())
 

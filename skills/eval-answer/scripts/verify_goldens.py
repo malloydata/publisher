@@ -45,6 +45,18 @@ WHAT IT CHECKS, AND WHAT EACH CATCHES
                  is compared with the model's own definition of X. Catches the
                  rubric that goes stale when the model is fixed.
 
+5. set names  -- every `required` / `requiredAnyOf` entity id, and every
+                 `mustNotUse` name, exists in the model under test (`--model`).
+                 An id naming a field this package does not have can never be
+                 delivered, so it scores as a retrieval miss on every run and
+                 reads as a model failure; five such ids, copied from a sibling
+                 package, cost a real set two days. Hard for `required`; review
+                 for `acceptable` and for a veto on a field the model lacks.
+
+Only check 1 needs the truth server. 2 to 5 read the cases, the gold artifacts
+and the model text, so they run whether or not the set names a truthPackage --
+and a set that names none is exactly the one whose names nobody has verified.
+
 What it deliberately does NOT do: score an answer. The oracle for an answer is
 the judge (`skill:eval-judge`); scripted row comparison fails correct answers
 over an extra column and passes wrong ones whose numbers coincide.
@@ -61,7 +73,8 @@ EXIT CODES
   0  every golden re-derived, no findings
   1  a golden drifted, or a hard finding -- evidence ABOUT the goldens
   2  usage error (argparse)
-  3  this could not run at all -- says nothing about the goldens
+  3  the value check did not happen -- says nothing about whether the goldens
+     still hold. Either this crashed, or set.json names no truthPackage.
 
 3 is load-bearing and it is why the codes are enumerated here. `improve.py`'s
 acceptance gate has to tell "your edit may have invalidated a golden" from "the
@@ -69,6 +82,13 @@ check never happened", and Python exits 1 on an uncaught traceback -- which
 landed a missing `cases.jsonl` on the golden-finding code and sent someone to
 settle a golden that was fine. A caller must treat anything outside {0, 1} as
 "did not run", and must not read it as a pass.
+
+A set with no truthPackage exits 3, not 0. Checks 2 to 5 still run and still
+report -- on such a set they are the whole of what there is to say -- but no
+golden was re-derived, and 0 told a caller it had been: `improve.py` recorded
+`clean: True` for an audit that never looked. When one of those checks DOES
+find something, 1 wins over 3: a finding is evidence, and 3 says there is none
+to read, so a caller obeying that would discard it.
 """
 from __future__ import annotations
 
@@ -398,9 +418,13 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         truth_package=meta.get("truthPackage"),
         truth_model=meta.get("truthModel", "truth.malloy"),
         rewrite=bool(meta.get("truthTableRewrite", False)))
-    if not a.truth_package:
-        return {"skipped": "set.json names no truthPackage; nothing to re-derive against",
-                "drifted": 0, "findings": []}
+    # Only the value check needs a truth server. Without one it does not happen,
+    # and `skipped` carries that all the way out to the exit code -- but every
+    # audit below still runs. Returning here skipped four checks that need no
+    # server at all, including the set-name lint, on precisely the set whose
+    # names and rubrics nobody has verified either.
+    skipped = None if a.truth_package else (
+        "set.json names no truthPackage; nothing to re-derive against")
 
     path = set_dir / cases_file
     lines = path.read_text().splitlines()
@@ -410,7 +434,20 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     tally: dict[str, int] = {}
     findings: list[str] = []
     refreshed: list[str] = []
+    # Everything down to the value loop reads the cases, the gold artifacts and
+    # the model text. No server is involved, so none of it is gated.
     for c in chosen:
+        findings += rubric_number_findings(c)
+        findings += axis_findings(c, set_dir)
+    findings += stale_rubric_claims(chosen, model_definitions(model))
+    findings += unknown_name_findings(chosen, model_text(model))
+
+    if skipped and not quiet:
+        print(f"  ! {skipped}; running only the checks that need no server")
+    # `[] if skipped else chosen` rather than an `if` block: the guard belongs
+    # next to the one call that needs it, and wrapping would reindent the
+    # --refresh write for nothing.
+    for c in [] if skipped else chosen:
         status, detail, rows = check_value(c, a)
         tally[status] = tally.get(status, 0) + 1
         if not quiet:
@@ -431,10 +468,6 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                 g["verifiedBy"] = "verify_goldens.py --refresh"
                 c["goldenRevision"] = int(c.get("goldenRevision") or 1) + 1
                 refreshed.append(c["qid"])
-        findings += rubric_number_findings(c)
-        findings += axis_findings(c, set_dir)
-    findings += stale_rubric_claims(chosen, model_definitions(model))
-    findings += unknown_name_findings(chosen, model_text(model))
 
     if refreshed:
         by_qid = {c["qid"]: c for c in cases}
@@ -452,7 +485,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
 
     drifted = tally.get("diff", 0) + tally.get("error", 0)
     if not quiet:
-        print("\n" + "  ".join(f"{k}={v}" for k, v in sorted(tally.items())))
+        print("\n" + ("  ".join(f"{k}={v}" for k, v in sorted(tally.items()))
+                      or "no golden re-derived"))
         other = [f for f in findings if not any(f.startswith(x + ": ") and
                  (" golden " in f or "query returned" in f) for x in (c["qid"] for c in chosen))]
         hard = [f for f in other if not f.startswith("review ")]
@@ -467,8 +501,20 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                 print(f"  {f[len('review '):]}")
             if len(soft) > 20:
                 print(f"  ... and {len(soft) - 20} more")
-    return {"tally": tally, "drifted": drifted, "findings": findings,
-            "refreshed": refreshed}
+    # ONE shape, both paths. Two shapes is what produced the bug: a caller had
+    # to branch on `skipped` before it could safely read `tally`, and that
+    # branch is where the findings were dropped. `skipped` stays a truthy
+    # string so both existing predicates still read; `tally` is {} rather than
+    # {"skipped": N}, because check_value already returns a per-case status
+    # spelled "skipped" and one word may not mean two things in one dict.
+    return {"skipped": skipped, "tally": tally, "drifted": drifted,
+            "findings": findings, "refreshed": refreshed}
+
+
+# "The check you asked for did not happen." Two ways in: an unanticipated
+# exception (bottom of this file), and a set with no truthPackage to re-derive
+# against. Never 1 -- see EXIT CODES.
+CANNOT_RUN = 3
 
 
 def main() -> int:
@@ -494,17 +540,24 @@ def main() -> int:
                qids=set(args.qid) if args.qid else None, model=args.model,
                refresh=args.refresh, cases_file=args.cases)
     if r.get("skipped"):
-        print(r["skipped"])
-        return 0
+        print(f"\n{r['skipped']}")
     # Drift and findings both fail: a golden that cannot be re-derived is a
     # broken set, and a rubric quoting a number its rows do not hold fails the
     # same way -- as wrong verdicts, silently.
     hard = [f for f in r["findings"] if not f.startswith("review ")]
-    return 1 if r["drifted"] or hard else 0
+    # A finding outranks a skip. 3 tells the caller there is nothing here to
+    # read; once an audit HAS found something that is false, and a caller
+    # obeying the contract would throw away the one fact this run produced.
+    if r["drifted"] or hard:
+        return 1
+    if r.get("skipped"):
+        print("The audits above ran without a truth server. No golden was "
+              "re-derived, so this says NOTHING about whether the goldens still "
+              "hold; do not read it as a pass. Name a truthPackage in set.json "
+              "(init_truth_package.py scaffolds one).", file=sys.stderr)
+        return CANNOT_RUN
+    return 0
 
-
-# Anything this script did not anticipate exits here, not on 1. See EXIT CODES.
-CANNOT_RUN = 3
 
 if __name__ == "__main__":
     try:

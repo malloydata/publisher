@@ -1630,22 +1630,26 @@ def main(argv: list[str] | None = None) -> int:
         r = verify_goldens.verify(a.set_dir, truth,
                                   a.truth_environment or a.environment,
                                   quiet=True)
+        # The audits run with or without a truth package, so their findings are
+        # read on BOTH paths. Taking the skip branch and dropping `findings`
+        # put the set-name lint -- the check a truthPackage-less set most needs
+        # -- behind the one thing that set cannot do.
+        hard = [f for f in r["findings"] if not f.startswith("review ")]
         if r.get("skipped"):
-            golden_check = r["skipped"]
-            print(f"  {golden_check}")
+            golden_check = f"{r['skipped']} ({len(hard)} other finding(s))"
+            print(f"  ! {golden_check}")
         else:
-            hard = [f for f in r["findings"] if not f.startswith("review ")]
             golden_check = (f"{r['tally'].get('ok', 0)} ok, {r['drifted']} drifted, "
                             f"{len(hard)} other finding(s)")
             print(f"  {golden_check}")
-            if r["drifted"] or hard:
-                for f in r["findings"]:
-                    if not f.startswith("review "):
-                        print(f"    {f}")
-                raise SystemExit(
-                    "goldens do not re-derive; fix or refresh them "
-                    "(verify_goldens.py --refresh) or pass --skip-golden-check "
-                    "to run anyway and have run.json say so")
+        if r["drifted"] or hard:
+            for f in r["findings"]:
+                if not f.startswith("review "):
+                    print(f"    {f}")
+            raise SystemExit(
+                "the golden check found problems; fix or refresh the goldens "
+                "(verify_goldens.py --refresh) or pass --skip-golden-check to "
+                "run anyway and have run.json say so")
     elif a.skip_golden_check:
         golden_check = "skipped by --skip-golden-check"
     else:

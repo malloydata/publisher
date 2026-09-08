@@ -77,7 +77,13 @@ wrong silently. A `required` entity id naming a field the package under test
 does not have can never be delivered, so it scores as a retrieval miss on every
 run and reads as a model failure: five such ids, copied from a sibling package,
 cost a real set two days and five false misses before anyone checked whether the
-names existed. That is now a hard finding, so the set refuses the arm instead.
+names existed. That is now a hard finding.
+
+Where it fires matters, because the lint reads the model text and needs
+`--model`. Step 2a passes it, and `improve.py` passes it when it can locate the
+package, so those two refuse. `run_baseline.py` does not pass one, so during an
+arm the lint is silent rather than refusing -- run step 2a before the arm, which
+is what it is for.
 A set scored against two package versions writes a `requiredAnyOf` group naming
 both ids, which passes as long as one of them resolves. An unknown `acceptable`
 id and a `mustNotUse` veto on a field the model lacks are reported for review

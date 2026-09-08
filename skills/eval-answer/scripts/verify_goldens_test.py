@@ -2,6 +2,7 @@
 """Tests for the set-name lint: ids and vetoes that name nothing in the model
 under test. The rest of verify_goldens needs a live Publisher and is exercised
 by running it."""
+import json
 import pathlib
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from verify_goldens import (  # noqa: E402
-    model_text, unknown_name_findings)
+    model_text, unknown_name_findings, verify)
 
 MODEL = """
 source: order_items is duckdb.table('data/order_items.parquet') extend {
@@ -188,6 +189,78 @@ class ExitCodes(unittest.TestCase):
 
     def test_a_usage_error_still_exits_2(self):
         self.assertEqual(self.run_it().returncode, 2)
+
+    def audit_set(self, required: str) -> pathlib.Path:
+        """A set with no truthPackage and one entity id to audit."""
+        (self.tmp / "set.json").write_text('{"name": "probe"}')
+        (self.tmp / "cases.jsonl").write_text(json.dumps(
+            {"qid": "q1", "expectedEntities": {"required": [required]}}) + "\n")
+        model = self.tmp / "m.malloy"
+        model.write_text(MODEL)
+        return model
+
+    def test_a_set_with_no_truth_package_exits_3_not_0(self):
+        # 0 claimed "every golden re-derived, no findings" about a run that
+        # re-derived nothing, and improve.py recorded it as `clean`. No
+        # --publisher here on purpose: nothing is contacted.
+        model = self.audit_set("measure:order_items:total_sales")
+        p = self.run_it("--set", str(self.tmp), "--model", str(model))
+        self.assertEqual(p.returncode, 3, p.stdout[-400:])
+        self.assertIn("truthPackage", p.stdout)
+        self.assertIn("do not read it as a pass", p.stderr)
+
+    def test_the_audits_still_run_without_a_truth_package(self):
+        # The whole point. Four checks need no server, including the set-name
+        # lint, and the early return skipped all of them on exactly the set
+        # whose names nobody had verified.
+        model = self.audit_set("measure:other_package:creative_name")
+        p = self.run_it("--set", str(self.tmp), "--model", str(model))
+        self.assertIn("creative_name", p.stdout)
+
+    def test_a_finding_without_a_truth_package_exits_1_not_3(self):
+        # A finding outranks a skip: 3 tells the caller there is nothing here
+        # to read, and a caller obeying that would discard the one fact this
+        # run produced.
+        model = self.audit_set("measure:other_package:creative_name")
+        p = self.run_it("--set", str(self.tmp), "--model", str(model))
+        self.assertEqual(p.returncode, 1, p.stdout[-400:])
+
+
+class SkipShape(unittest.TestCase):
+    """run_baseline.py calls verify() in process and never sees an exit code.
+
+    It reads `tally` and `findings` on both paths, so one return shape has to
+    carry both -- two shapes is what let the skip branch drop the findings.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_the_skip_shape_carries_a_tally_and_the_audit_findings(self):
+        (self.tmp / "set.json").write_text('{"name": "probe"}')
+        (self.tmp / "cases.jsonl").write_text(json.dumps(
+            {"qid": "q1",
+             "expectedEntities": {"required": ["measure:other_package:x"]}}) + "\n")
+        model = self.tmp / "m.malloy"
+        model.write_text(MODEL)
+        # An unroutable publisher: an empty tally is also the proof that no
+        # request went out, since a contacted-and-failed one tallies `error`.
+        r = verify(self.tmp, "http://127.0.0.1:9", "samples",
+                   model=model, quiet=True)
+        self.assertTrue(r["skipped"])
+        self.assertEqual(r["tally"], {})
+        self.assertEqual(r["drifted"], 0)
+        self.assertTrue([f for f in r["findings"]
+                         if not f.startswith("review ")])
+
+    def test_a_normal_run_reports_skipped_as_none(self):
+        (self.tmp / "set.json").write_text('{"truthPackage": "truth"}')
+        (self.tmp / "cases.jsonl").write_text("")
+        r = verify(self.tmp, "http://127.0.0.1:9", "samples", quiet=True)
+        self.assertIsNone(r["skipped"])
 
 
 if __name__ == "__main__":

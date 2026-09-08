@@ -24,6 +24,8 @@ python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/s
 #     naming a field this package does not have scores as a retrieval miss on
 #     every run. Pass --model on a platform target too, from a checkout of the
 #     served version, since the harness cannot see the model text there.
+#     Exits 3 when set.json names no truthPackage: the audits ran, no
+#     golden was re-derived, and 0 would have claimed otherwise.
 python3 skills/eval-answer/scripts/verify_goldens.py \
   --set <repo>/evals/ecommerce --publisher http://localhost:4881 \
   --model <repo>/ecommerce
