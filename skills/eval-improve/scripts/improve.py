@@ -113,6 +113,17 @@ probe you run afterwards is testing the old model.
 
 One edit for the cluster's shared root cause, not one per case.
 
+READ THE CLUSTER'S `sufficiency` BEFORE YOU EDIT
+
+It reports whether the diagnosis was PROBED, worst case across the cluster's
+cases. `sufficient` means someone checked. `insufficient` and `unknown` mean
+the diagnosis is a lead and not a finding: `unknown` in particular is what a
+diagnosis carries when it was recovered from a malformed reply and holds no
+probe records at all. On either of those, probe the claim yourself before you
+change anything, and if your probe does not reproduce what the diagnosis
+asserts, say so and make no edit. An edit resting on a claim nobody verified is
+the failure this field exists to prevent.
+
 WHEN YOU ARE DONE
 
 Give the report block, then emit the JSON object as the LAST thing in your
@@ -231,10 +242,17 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         IMPROVE_PROMPT.format(
             environment=a.environment, package=a.package,
             model_dir=a.model_dir.resolve(),
+            # `sufficiency` travels with the cluster because it says whether
+            # the diagnosis was PROBED. It used to stop at the diagnose step,
+            # so an unprobed diagnosis arrived here indistinguishable from one
+            # backed by evidence. This skill already requires a probe receipt
+            # for every factual claim, so the honest fix is to tell the agent
+            # what it is holding rather than to silently drop the cluster.
             cluster=json.dumps({k: issue.get(k) for k in
                                 ("issue_id", "component", "primary_code",
                                  "contributing_codes", "owner", "severity",
-                                 "diagnosis", "evidence")}, indent=2),
+                                 "sufficiency", "diagnosis", "evidence")},
+                               indent=2),
             cases=json.dumps(members, indent=2)[:8000],
             cases_file=(a.set_dir / "cases.jsonl").resolve()),
         skills=["eval-improve", *a.role_skills], skills_root=a.roots,

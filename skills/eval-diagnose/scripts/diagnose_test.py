@@ -49,7 +49,10 @@ class SalvageClusterShape(unittest.TestCase):
         out = diagnose.salvage_cluster_shape(CLUSTER_REPLY)
         self.assertEqual(out["probes"], [])
 
-    def test_marks_sufficiency_unknown_so_it_stays_ineligible(self):
+    def test_marks_sufficiency_unknown(self):
+        # A warning carried forward, not a gate. Nothing refuses to act on it;
+        # it reaches the improve step, whose prompt tells the agent to probe
+        # the claim before editing on it.
         out = diagnose.salvage_cluster_shape(CLUSTER_REPLY)
         self.assertEqual(out["sufficiency"], "unknown")
 
@@ -116,6 +119,42 @@ class ClusterIdNamesTheDefect(unittest.TestCase):
         self.assertIn("## Per run", diagnose.DIAGNOSE_PROMPT)
         self.assertIn("## Per run, clustering", diagnose.CLUSTER_PROMPT)
         self.assertIn("## Per case", diagnose.CLUSTER_PROMPT)
+
+
+class SufficiencyReachesImprove(unittest.TestCase):
+    """The cluster's `sufficiency` is worst case, and improve.py reads it.
+
+    It used to be `members[0]`, and it stopped at the diagnose step. Both were
+    fine while nothing consumed it; now the improve prompt does, so a cluster
+    whose first member happened to be probed must not read as probed when a
+    later one was not."""
+
+    @staticmethod
+    def worst(*values):
+        # The expression used in cluster assembly, kept in one place so the
+        # test fails if the ordering changes rather than silently agreeing.
+        return max(values, key=["sufficient", "insufficient", "unknown"].index)
+
+    def test_one_unprobed_member_makes_the_cluster_unprobed(self):
+        self.assertEqual(self.worst("sufficient", "unknown"), "unknown")
+        self.assertEqual(self.worst("sufficient", "insufficient"),
+                         "insufficient")
+
+    def test_all_probed_stays_sufficient(self):
+        self.assertEqual(self.worst("sufficient", "sufficient"), "sufficient")
+
+    def test_cluster_assembly_uses_that_ordering_not_the_first_member(self):
+        src = (pathlib.Path(diagnose.__file__)).read_text()
+        self.assertIn('key=["sufficient", "insufficient",', src)
+        self.assertNotIn('sufficiency=members[0]', src)
+
+    def test_improve_passes_sufficiency_to_the_editing_agent(self):
+        # The whole point: the value has to reach the step that acts on it.
+        improve_py = (pathlib.Path(diagnose.__file__).parent.parent.parent
+                      / "eval-improve" / "scripts" / "improve.py").read_text()
+        self.assertIn('"sufficiency"', improve_py)
+        self.assertIn("READ THE CLUSTER'S `sufficiency` BEFORE YOU EDIT",
+                      improve_py)
 
 
 if __name__ == "__main__":

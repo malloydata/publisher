@@ -242,11 +242,19 @@ def salvage_cluster_shape(obj: dict[str, Any]) -> dict[str, Any] | None:
     discard. Only the fields ACTUALLY PRESENT are lifted; nothing is invented
     to satisfy the validator, because a fabricated field turns a shape error
     into a false claim. `probes` is the field that must never be fabricated:
-    it is the record that something was checked, the clustering shape has no
-    structured probe records, and a diagnosis nobody probed must not become
-    the evidence for an edit. So it stays empty, `sufficiency` reads
-    `unknown`, and `validate` still reports "no probes recorded" -- which is
-    the honest state, and keeps the case needing a re-probe.
+    it is the record that something was checked, and the clustering shape has
+    no structured probe records. So it stays empty, `sufficiency` reads
+    `unknown`, and `validate` still reports "no probes recorded".
+
+    Be precise about what that buys, because it is easy to overstate.
+    `sufficiency: unknown` is a WARNING carried forward, not a gate: nothing
+    refuses to act on it. `good` in main() filters on `error`, not on
+    `_invalid`, so a salvaged diagnosis still reaches clustering -- which is
+    the point, since without salvage it reached clustering with no owner, no
+    component and no code, and grouped on nothing. From there the cluster's
+    `sufficiency` is aggregated worst-case and travels to the improve step,
+    whose prompt tells the agent to probe a claim itself before editing on it.
+    Enforcement lives there, in an instruction, not in this function.
 
     Returns None when the reply is not cluster-shaped, so a genuinely
     unparseable or empty reply is left exactly as it was.
@@ -508,7 +516,15 @@ def main(argv: list[str] | None = None) -> int:
             severity=max((m.get("severity") or "low" for m in members),
                          key=["low", "medium", "high"].index),
             confidence=c.get("confidence") or "medium",
-            sufficiency=members[0].get("sufficiency") or "unknown",
+            # Worst case across the members, the way `severity` above already
+            # aggregates, not `members[0]`. This value now travels to the
+            # improve step, so a cluster whose first member happened to be
+            # probed must not read as probed when a later one was not: a
+            # cluster is `sufficient` only when every member is.
+            sufficiency=max((m.get("sufficiency") or "unknown"
+                             for m in members),
+                            key=["sufficient", "insufficient",
+                                 "unknown"].index),
             traceIds=[], diagnosis=c.get("rootCause"),
             evidence=c.get("evidence"),
             diagnosedBy=a.model, clusteredBy=a.cluster_model,
