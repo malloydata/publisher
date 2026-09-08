@@ -952,6 +952,25 @@ describe("ConnectionController getTable not-found mapping", () => {
       );
    });
 
+   it("classifies DuckDB's rejected catalog errors, which never resolve falsy", async () => {
+      // DuckDBCommon.fetchTableSchema returns a structDef or throws -- it never
+      // resolves empty -- so the falsy check above cannot see a DuckDB miss and
+      // the sandbox, Azure and DuckLake connections all arrive here instead.
+      // Strings verbatim from the installed driver.
+      for (const message of [
+         "Catalog Error: Table with name no_such_table does not exist!",
+         'Catalog Error: Table with name "s.t" does not exist because schema "s" does not exist.',
+         'Binder Error: Catalog "a" does not exist!',
+      ]) {
+         const { controller } = buildTableController(
+            sinon.stub().rejects(new Error(message)),
+         );
+         await expect(getTable(controller)).rejects.toBeInstanceOf(
+            TableNotFoundError,
+         );
+      }
+   });
+
    it("still reports an unrecognized driver failure as a 502-class fault", async () => {
       // The floor: anything the classifier does not recognize stays a server
       // error. Guessing wider would hide real outages behind a 404.
@@ -977,6 +996,82 @@ describe("ConnectionController getTable not-found mapping", () => {
       );
       await expect(getTable(controller)).rejects.toBeInstanceOf(
          TableNotFoundError,
+      );
+   });
+});
+
+/**
+ * getConnectionSqlSource runs the same classification as getTable. It had no
+ * tests before, so the behavior below was unverified in either direction.
+ */
+describe("ConnectionController getConnectionSqlSource error mapping", () => {
+   afterEach(() => sinon.restore());
+
+   function buildSqlController(fetchSelectSchema: sinon.SinonStub): {
+      controller: ConnectionController;
+   } {
+      const fakeConnection = { fetchSelectSchema } as unknown as Connection;
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            getApiConnection: sinon
+               .stub()
+               .returns({ name: "warehouse", type: "postgres" }),
+         }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection);
+      return { controller };
+   }
+
+   const getSqlSource = (controller: ConnectionController) =>
+      controller.getConnectionSqlSource("env", "warehouse", "SELECT 1");
+
+   it("classifies a returned not-found string as TableNotFoundError", async () => {
+      const { controller } = buildSqlController(
+         sinon.stub().resolves("Not found: Table proj:ds.missing"),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("classifies a THROWN not-found the same way", async () => {
+      // The gap this round closed: the catch rethrew only already-typed errors,
+      // so every driver that rejects kept answering 502 here.
+      const { controller } = buildSqlController(
+         sinon.stub().rejects(new Error("Not found: Table proj:ds.missing")),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("keeps an unrecognized failure a 502-class fault", async () => {
+      const { controller } = buildSqlController(
+         sinon.stub().rejects(new Error("ECONNREFUSED 10.0.0.1:443")),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         ConnectionError,
+      );
+   });
+
+   it("preserves the message of a thrown string", async () => {
+      // `(error as Error).message` on a thrown string is undefined, which lost
+      // the only diagnostic the caller had.
+      // Not sinon's .rejects("..."), which sets the Error NAME and leaves the
+      // message empty -- this has to be a genuinely thrown string.
+      const { controller } = buildSqlController(
+         sinon.stub().callsFake(() => Promise.reject("plain string failure")),
+      );
+      await expect(getSqlSource(controller)).rejects.toThrow(
+         "plain string failure",
       );
    });
 });

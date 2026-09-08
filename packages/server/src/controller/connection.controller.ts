@@ -170,14 +170,43 @@ const BIGQUERY_NOT_FOUND = /^Not found: (Table|Dataset)\b/;
  */
 const BIGQUERY_IMPROPER_PATH = /^Improper table path\b/;
 
+/**
+ * DuckDB -- the sandbox, and the Azure and DuckLake connections built on it --
+ * rejects rather than resolving empty, so a missing table arrives as a thrown
+ * catalog error. Covers all three shapes the driver produces: a missing table,
+ * a missing schema, and a missing catalog on a three-part path.
+ */
+const DUCKDB_NOT_FOUND = /^(Catalog|Binder) Error: .*does not exist/;
+
 function driverErrorToPublisherError(message: string): Error {
-   if (BIGQUERY_NOT_FOUND.test(message)) {
+   if (BIGQUERY_NOT_FOUND.test(message) || DUCKDB_NOT_FOUND.test(message)) {
       return new TableNotFoundError(message);
    }
    if (BIGQUERY_IMPROPER_PATH.test(message)) {
       return new InvalidArgumentError(message);
    }
    return new ConnectionError(message);
+}
+
+/**
+ * Shared by the two schema-introspection catches. Both take a driver failure
+ * that may be a thrown Error, a thrown string, or an already-classified error,
+ * and answer with the narrowest error the message supports.
+ */
+function classifyDriverFailure(error: unknown): Error {
+   if (
+      error instanceof TableNotFoundError ||
+      error instanceof InvalidArgumentError
+   ) {
+      return error;
+   }
+   const message =
+      error instanceof Error
+         ? error.message
+         : typeof error === "string"
+           ? error
+           : JSON.stringify(error);
+   return driverErrorToPublisherError(message);
 }
 
 export class ConnectionController {
@@ -331,21 +360,11 @@ export class ConnectionController {
             })),
          };
       } catch (error) {
-         const errorMessage =
-            error instanceof Error
-               ? error.message
-               : typeof error === "string"
-                 ? error
-                 : JSON.stringify(error);
-         // Two ways in. The wrappers above throw an already-classified error and
-         // must survive unchanged -- the blanket rewrap this replaces turned them
-         // back into 502s. A driver that throws its message rather than returning
-         // it (every dialect except BigQuery) is classified here instead.
-         const classified =
-            error instanceof TableNotFoundError ||
-            error instanceof InvalidArgumentError
-               ? error
-               : driverErrorToPublisherError(errorMessage);
+         // Where most not-founds actually land. BigQuery returns its message, but
+         // every other driver -- DuckDB included -- rejects, so the falsy checks
+         // above never see them and the blanket rewrap this replaces turned them
+         // all into 502s.
+         const classified = classifyDriverFailure(error);
          if (!(classified instanceof ConnectionError)) {
             // A caller's bad reference, not a fault: warn, so a mistyped path
             // cannot fill the error log while it is being typed.
@@ -481,13 +500,11 @@ export class ConnectionController {
             source: JSON.stringify(schema),
          };
       } catch (error) {
-         if (
-            error instanceof TableNotFoundError ||
-            error instanceof InvalidArgumentError
-         ) {
-            throw error;
-         }
-         throw new ConnectionError((error as Error).message);
+         // Same classification as fetchTable: a driver that rejects has to reach
+         // it too, or this route keeps answering 502 for a reference that is
+         // merely absent. `(error as Error).message` also dropped the message
+         // entirely for a thrown string.
+         throw classifyDriverFailure(error);
       }
    }
 
