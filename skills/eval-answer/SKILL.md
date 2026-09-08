@@ -143,6 +143,28 @@ field, not a run directory. Where its verdict and that field disagree is where a
 version regressed, and the field is the standing judgement about the question
 while this is a measurement against one build.
 
+How to invoke it. Either `--model <file-or-dir>` for a local package or
+`--publisher <url> --package <pkg>` for a served one, plus `--set <dir>`, and
+`--version <label>` to stamp the report so a trend has an x-axis:
+
+```
+python3 check_coverage.py --set evals/ecommerce --model model.malloy --version 0.0.58
+```
+
+Two flags change what the number means, so choose them rather than inheriting
+them. `--repeat N` samples each case N times and takes the majority; it defaults
+to **1 for a set**, because the score is a trend over many cases rather than a
+verdict on one, and to 3 for `--self-check`, where a single fixture is the whole
+measurement. A case that flips between samples is arguable rather than covered,
+so a tie goes to the gap, and two DIFFERENT gaps tying leaves the case undecided
+and out of the denominator. `--self-check` runs the shipped fixture instead of a
+set, which is how to confirm the checker still detects a gap it is known to
+detect; run it after editing the prompt or the verdict vocabulary.
+
+Undecided cases are excluded from the percentage and reported on their own line.
+Read that line: a coverage number over a handful of decided cases is not a
+measurement, it is a sample size.
+
 ## Step 5: Distrust the golden
 
 A reference answer can be wrong (parent-column fanout, a join on a shared
