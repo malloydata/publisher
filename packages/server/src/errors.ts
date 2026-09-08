@@ -45,8 +45,8 @@ const MAX_LOGGED_DETAIL_CHARS = 2000;
  */
 export function logInternalFailure(summary: string, error: Error): void {
    const sanitize = (value: string): string =>
-      // eslint-disable-next-line no-control-regex
       value
+         // eslint-disable-next-line no-control-regex
          .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
          .slice(0, MAX_LOGGED_DETAIL_CHARS);
    logger.error(summary, {
