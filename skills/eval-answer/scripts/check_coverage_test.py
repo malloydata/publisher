@@ -89,6 +89,24 @@ class ParseReply(unittest.TestCase):
         self.assertEqual(r["verdict"], "COVERAGE")
         self.assertEqual(r["entities"], [])
 
+    def test_quoted_model_text_does_not_swallow_the_verdict(self):
+        # The regression this replaced `\{.*\}` for: the prompt hands the agent
+        # the model source, so a reply that quotes one `extend { ... }` block
+        # used to match from THAT brace to the last one and read as unparseable.
+        r = cc.parse_reply(
+            'The model says `source: x is t extend { measure: c is count() }`, '
+            'so:\n{"why": "w", "verdict": "COVERAGE", "entities": []}',
+            self.allowed)
+        self.assertEqual(r["verdict"], "COVERAGE")
+
+    def test_the_object_carrying_a_verdict_wins_over_earlier_json(self):
+        r = cc.parse_reply(
+            'Shape I will use: {"why": "...", "entities": []}\n'
+            '{"why": "real", "verdict": "AMBIGUOUS", "entities": []}',
+            self.allowed)
+        self.assertEqual(r["verdict"], "AMBIGUOUS")
+        self.assertEqual(r["why"], "real")
+
 
 class Summary(unittest.TestCase):
     def rows(self, *verdicts):
@@ -249,6 +267,20 @@ class Majority(unittest.TestCase):
 
     def test_all_undecided_stays_undecided(self):
         self.assertIsNone(cc.majority(self.rows(None, None))["verdict"])
+
+    def test_two_different_gaps_tied_is_undecided_not_alphabetical(self):
+        # `sorted()` used to hand this to CONVENTION purely because it sorts
+        # before COVERAGE. Which gap it is was never decided, so the case is
+        # undecided and leaves the denominator rather than reporting a coin flip.
+        r = cc.majority(self.rows("CONVENTION", "COVERAGE", "ok"))
+        self.assertIsNone(r["verdict"])
+        self.assertIn("disagreed on which gap", r["why"])
+        self.assertFalse(r["stable"])
+
+    def test_one_gap_still_beats_a_tied_ok(self):
+        # The tie-to-the-gap rule above must survive the disagreement rule.
+        self.assertEqual(
+            cc.majority(self.rows("COVERAGE", "ok"))["verdict"], "COVERAGE")
 
 
 if __name__ == "__main__":

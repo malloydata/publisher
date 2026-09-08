@@ -65,7 +65,7 @@ from verify_goldens import model_text as local_model_text  # noqa: E402
 # stream-json parsing would drift from the one the runs use.
 sys.path.insert(0, str(SKILLS_ROOT / "eval-loop" / "scripts"))
 try:
-    from agent_harness import no_events, run_cli  # noqa: E402
+    from agent_harness import no_text, run_cli  # noqa: E402
     from run_baseline import BLOCKED_TOOLS        # noqa: E402
 except ImportError as exc:                        # pragma: no cover
     raise SystemExit(
@@ -233,7 +233,26 @@ The enumeration comes first because the verdict follows from it. Before you emit
 one candidate and its `ruled_out` entry is null, the verdict is not `ok`.
 """
 
-JSON_OBJ = re.compile(r"\{.*\}", re.S)
+
+def json_objects(text: str) -> list[dict[str, Any]]:
+    """Every JSON object in `text`, in the order they appear.
+
+    Decoded from each `{` rather than matched with `\\{.*\\}`, which is greedy
+    and spans the FIRST brace to the LAST. The prompt hands the agent the model
+    text, so one `extend { ... }` quoted back in the narration would swallow the
+    verdict and a good reply would read as unparseable.
+    """
+    dec, out, i = json.JSONDecoder(), [], 0
+    while (i := text.find("{", i)) >= 0:
+        try:
+            v, end = dec.raw_decode(text, i)
+        except json.JSONDecodeError:
+            i += 1
+            continue
+        if isinstance(v, dict):
+            out.append(v)
+        i = max(end, i + 1)
+    return out
 
 
 def parse_reply(text: str, allowed: tuple[str, ...]) -> dict[str, Any]:
@@ -243,15 +262,14 @@ def parse_reply(text: str, allowed: tuple[str, ...]) -> dict[str, Any]:
     invented sixth value would otherwise land in the report and be counted as
     though it meant something.
     """
-    m = JSON_OBJ.search(text or "")
-    if not m:
+    found = json_objects(text or "")
+    # The object that carries a verdict, and the last of them, so quoted model
+    # text and a rehearsed answer above the real one both lose to it.
+    carrying = [v for v in found if "verdict" in v]
+    if not (carrying or found):
         return {"verdict": None, "why": "no JSON object in the reply",
                 "entities": [], "quantities": {}, "resolved_by": None}
-    try:
-        v = json.loads(m.group(0))
-    except json.JSONDecodeError as exc:
-        return {"verdict": None, "why": f"unparseable JSON: {exc}",
-                "entities": [], "quantities": {}, "resolved_by": None}
+    v = (carrying or found)[-1]
     got = v.get("verdict")
     if got not in allowed:
         return {"verdict": None,
@@ -306,7 +324,16 @@ def majority(rows: list[dict[str, Any]]) -> dict[str, Any]:
     # optimistic direction this measurement must not drift in.
     top = max(counts.values())
     tied = sorted(k for k, n in counts.items() if n == top)
-    best = next((k for k in tied if k != OK), tied[0])
+    gaps = [k for k in tied if k not in (OK, "undecided")]
+    if len(gaps) > 1:
+        # Two different gaps tied. WHICH gap it is has not been decided, and
+        # taking the alphabetically-first would dress a coin flip as a finding,
+        # so the case is undecided and drops out of the denominator instead.
+        return {**rows[0], "verdict": None,
+                "why": "samples disagreed on which gap: "
+                       + ", ".join(f"{k} x{counts[k]}" for k in tied),
+                "samples": [r["verdict"] for r in rows], "stable": False}
+    best = gaps[0] if gaps else next((k for k in tied if k != OK), tied[0])
     winner = next((r for r in rows if (r["verdict"] or "undecided") == best),
                   rows[0])
     return {**winner,
@@ -321,20 +348,29 @@ def judge_case(case: dict[str, Any], model: str, a: argparse.Namespace,
     prompt = PROMPT.format(model=model, question=case.get("question", ""),
                            concepts=", ".join(concepts) or "(none named)")
     if len(prompt) > MAX_PROMPT:
+        # The way out depends on the mode: `--model-path` narrows a `--publisher`
+        # read to one file and does nothing to a local one, where the fix is to
+        # point `--model` at a single file instead of a tree.
+        narrow = ("pass --model-path to measure one model file" if a.publisher
+                  else "point --model at a single .malloy file, not a directory")
         return {"qid": case["qid"], "verdict": None,
                 "why": f"model text too large for one prompt "
-                       f"({len(prompt)} chars > {MAX_PROMPT}); pass "
-                       f"--model-path to measure one model file",
+                       f"({len(prompt)} chars > {MAX_PROMPT}); {narrow}",
                 "entities": []}
-    cmd = ["claude", "-p", prompt, "--model", a.model,
+    cmd = ["claude", "-p", prompt, "--model", a.agent_model,
            "--output-format", "stream-json", "--verbose",
            # Two turns, not one: with no tools granted a single turn is enough,
            # and the second exists so that one stray tool attempt costs a turn
            # rather than the whole verdict.
            "--max-turns", "2", "--restricted",
            "--disallowedTools", *JUDGE_BLOCKED]
+    # `no_text`, not `no_events`: this judge is instrumentation, not the subject
+    # of the measurement, so a call that emitted events but no usable text has
+    # nothing to salvage and is worth re-running. `no_events` is the answerer's
+    # predicate -- see the docstrings in agent_harness.py -- and it would leave
+    # the `error_max_turns`-with-no-text case above unretried.
     _, text, stderr, _, _ = run_cli(cmd, cwd=str(a.set_dir), timeout=a.timeout,
-                                    retry_when=no_events, retries=a.retries)
+                                    retry_when=no_text, retries=a.retries)
     out = parse_reply(text, allowed)
     if out["verdict"] is None and not text.strip():
         out["why"] = f"no reply from the model ({(stderr or '').strip()[:120]})"
@@ -475,7 +511,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--version", default=None,
                     help="the version label to stamp the report with, for a "
                          "trend across published versions")
-    ap.add_argument("--agent-model", dest="model", default="sonnet",
+    # `dest="agent_model"`, not `dest="model"`: `--model` is the package under
+    # measurement, so a bare `a.model` would read as that and be the other one.
+    ap.add_argument("--agent-model", dest="agent_model", default="sonnet",
                     help="the model that reads the semantic model")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--repeat", type=int, default=None,
@@ -493,6 +531,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="measure the built-in fixture instead of a set, and "
                          "fail if it reads as `ok`. One model call")
     a = ap.parse_args(argv)
+    # Refused at the CLI, not just clamped downstream by `max(1, repeat)`. Zero
+    # samples is not a cheaper measurement, it is no measurement, and the same
+    # flag on check_judge.py used to report every fixture green without calling
+    # the judge once.
+    if a.repeat is not None and a.repeat < 1:
+        ap.error(f"--repeat must be at least 1, got {a.repeat}. It is how many "
+                 f"times each case is sampled; 0 would measure nothing. "
+                 f"Fix: --repeat 3")
 
     diagnose_codes()
     allowed = verdicts()
@@ -543,7 +589,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.out:
         a.out.write_text(json.dumps(
             {"version": a.version, "set": str(a.set_dir),
-             "agentModel": a.model, **s, "cases_detail": rows}, indent=2))
+             "agentModel": a.agent_model, **s, "cases_detail": rows},
+            indent=2))
         print(f"\n{a.out}")
     return 0
 
