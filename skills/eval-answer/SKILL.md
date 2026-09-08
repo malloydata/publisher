@@ -165,14 +165,18 @@ Undecided cases are excluded from the percentage and reported on their own line.
 Read that line: a coverage number over a handful of decided cases is not a
 measurement, it is a sample size.
 
-It hands the whole model to one judge call per case, which is what makes it
-cheap on a small package and what breaks on a large one. Past a few thousand
-lines it stops running on Linux, and before that it stops being true: measured,
-the shipped fixture reads `ok` at 103 KB of model text, the field-name matching
-it exists to detect. **Read `reference/coverage-at-scale.md` before pointing
-this at anything bigger than a few thousand lines**, and do not take the
-over-size message's advice to narrow `--model` to one file, which drops every
-imported source and manufactures `COVERAGE` verdicts.
+**Read `reference/coverage-limits.md` before quoting a coverage number.**
+Scored against the 49 hand-labelled cases in the `evals/ecommerce` set, the
+per-case verdict agrees 65% of the time, and the headline percentage agrees much
+better than the verdicts do only because its two error directions cancel. So
+read it as a rough signal over many cases, never as a verdict on one and never
+as a small movement between versions. Two defects behind that are named there: a
+named measure plus a filter reads as a gap, twice as `COVERAGE`, and nine ratio
+cases reached `ok` against the prompt's own "never `ok`" rule. Separately, it
+hands the whole model to one judge call per case, so past a few thousand lines
+it stops running on Linux and above about 100 KB the verdict stops being stable.
+Do not take the over-size message's advice to narrow `--model` to one file,
+which drops every imported source and manufactures `COVERAGE` verdicts.
 
 ## Step 5: Distrust the golden
 
