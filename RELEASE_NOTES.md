@@ -244,7 +244,6 @@ is offered whether or not it has been built yet, so adding a coarse grain to a p
 that already has a built finer rollup costs acceleration until the new one builds —
 answers are unaffected, and it lasts one build.
 
----
 
 ## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
 
