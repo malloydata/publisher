@@ -239,6 +239,72 @@ class BreachesSeparateGrantFromUse(unittest.TestCase):
                          {"Read", "mcp__publisher__get_context"})
 
 
+class RetrievalGate(unittest.TestCase):
+    """A restart leaves the semantic index cold even when its rows survived:
+    the sync memo is per-process, so the first `get_context` after a boot kicks
+    a sync it never awaits and answers lexically. An arm started immediately
+    measures two retrievers and reports one number."""
+
+    def gate(self, replies, **kw):
+        a = argparse.Namespace(mcp_url="http://x/mcp", environment="e",
+                               package="p")
+        it = iter(replies)
+
+        def probe(_a):
+            r = next(it)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        with mock.patch.object(rb, "retrieval_probe", probe), \
+             mock.patch.object(rb.time, "sleep", lambda _s: None):
+            return rb.wait_retrieval_ready(a, **kw)
+
+    def test_a_cold_index_is_waited_out(self):
+        ready, said = self.gate([("lexical", "indexing"),
+                                 ("lexical", "indexing"),
+                                 ("semantic", None), ("semantic", None)])
+        self.assertTrue(ready)
+        self.assertIn("semantic retrieval ready", said)
+
+    def test_one_semantic_read_is_not_enough(self):
+        # A sync completing can bump the generation, and the call that
+        # straddles it is marked lexical. One read says a call WAS semantic;
+        # two in a row say the next one will be.
+        ready, _ = self.gate([("semantic", None)], tries=1)
+        self.assertFalse(ready)
+
+    def test_a_lexical_read_resets_the_confirmations(self):
+        ready, said = self.gate([("semantic", None), ("lexical", "indexing"),
+                                 ("semantic", None), ("semantic", None)])
+        self.assertTrue(ready)
+
+    def test_no_embedding_provider_is_ready_not_a_wait(self):
+        # `retrieval` is absent, never defaulted, when nothing can embed. That
+        # is a permanently lexical server: consistent, and a legitimate thing
+        # to measure. Waiting for semantic there would hang the run forever.
+        ready, said = self.gate([(None, None)])
+        self.assertTrue(ready)
+        self.assertIn("no embedding provider", said)
+
+    def test_a_settled_lexical_reason_is_refused_not_retried(self):
+        # The server's own rule: only `indexing` is worth a retry. A cool-down
+        # or an over-cap package will not become semantic by waiting.
+        for reason in ("cooldown", "too-many-entities", "error"):
+            with self.subTest(reason=reason):
+                ready, said = self.gate([("lexical", reason)])
+                self.assertFalse(ready)
+                self.assertIn(reason, said)
+
+    def test_a_probe_that_never_succeeds_fails_the_gate(self):
+        ready, said = self.gate([ValueError("boom")] * 3, tries=3)
+        self.assertFalse(ready)
+        self.assertIn("boom", said)
+
+    def test_a_probe_error_resets_the_confirmations(self):
+        ready, _ = self.gate([("semantic", None), ValueError("blip")], tries=2)
+        self.assertFalse(ready)
+
+
 class ReadOnlyRoles(unittest.TestCase):
     def test_diagnose_and_cluster_block_the_shell_too(self):
         # Blocking Edit/Write while leaving Bash granted only looks like a

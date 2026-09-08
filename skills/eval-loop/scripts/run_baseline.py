@@ -586,6 +586,130 @@ def wait_alive(a: argparse.Namespace, tries: int = 3, pause: float = 10.0) -> bo
     return False
 
 
+# Only `indexing` is worth a retry. The other lexical reasons are settled
+# states -- a provider cool-down, a package over the entity cap, a hard error
+# -- and waiting on them burns the clock to arrive at the same answer. That
+# rule is the server's own, stated in `get_context`'s tool description.
+RETRY_REASON = "indexing"
+
+
+def mcp_call(url: str, tool: str, arguments: dict[str, Any],
+             timeout: int = 60) -> Any:
+    """One MCP `tools/call`, returning the tool's parsed JSON payload.
+
+    Stateless streamable HTTP, so the reply is either a JSON body or one SSE
+    `data:` frame; both are accepted because which one arrives is the
+    transport's business, not this caller's.
+
+    The payload arrives one of three ways and all three are handled, because
+    which one a build uses is not this caller's business either: as an EMBEDDED
+    RESOURCE (`content[].resource.text`, which is what this server actually
+    does -- verified 2026-09-08), as plain `content[].text`, or as text
+    carrying the `[Resource from publisher at ...]` prefix that `RESOURCE`
+    already matches for the transcript parser. Reading only `text` returned
+    "no text content" against a live server whose reply was perfectly good.
+    """
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": tool, "arguments": arguments}})
+    req = urllib.request.Request(
+        url, data=body.encode(), method="POST",
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read().decode()
+    if raw.lstrip().startswith("event:") or "\ndata: " in raw:
+        frames = [l[6:] for l in raw.splitlines() if l.startswith("data: ")]
+        if not frames:
+            raise ValueError("SSE reply carried no data frame")
+        raw = frames[-1]
+    envelope = json.loads(raw)
+    if "error" in envelope:
+        raise ValueError(str(envelope["error"])[:200])
+    for chunk in (envelope.get("result") or {}).get("content") or []:
+        text = chunk.get("text") or (chunk.get("resource") or {}).get("text")
+        if not text:
+            continue
+        m = RESOURCE.search(text)
+        return json.loads(m.group(1) if m else text)
+    raise ValueError("tools/call returned no readable content")
+
+
+def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
+    """One cheap `get_context`, reduced to (mode, reason).
+
+    `retrieval` ABSENT means no embedding provider is configured, which the
+    tool pins deliberately: absent, never defaulted, so a caller cannot read a
+    value invented for it. That is a permanent lexical server, not a warming
+    one, and it is reported as mode None so the gate below stops rather than
+    waiting for something that cannot arrive.
+    """
+    payload = mcp_call(
+        a.mcp_url, "get_context",
+        {"search_targets": [{"target_type": "source", "search_text": "data"}],
+         "scopes": [{"environment": a.environment, "package": a.package}]})
+    if not isinstance(payload, dict):
+        return None, "get_context returned no object"
+    return payload.get("retrieval"), payload.get("retrieval_reason")
+
+
+def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
+                         pause: float = 10.0,
+                         confirmations: int = 2) -> tuple[bool, str]:
+    """Hold the arm until retrieval answers the way it will for the whole run.
+
+    A restart leaves the semantic index COLD even when its rows survived. The
+    sync memo is per-process and in memory, so the first `get_context` after a
+    boot kicks a sync it deliberately never awaits and answers lexically --
+    `embedding_index.ts` says so: "cold starts answer lexically". A call that
+    lands while a sync moves the generation is marked lexical for the same
+    reason. So the first few calls of a run are lexical whatever the database
+    holds, and nothing in the transcript says the arm was measured across the
+    changeover: it reads as a run that mixed two retrievers, with the mixture
+    depending on how fast the answerer got going.
+
+    That is a measurement defect rather than a slow start, which is why it is
+    a gate and not a warning. Four runs came back inconclusive to it.
+
+    `confirmations` consecutive semantic reads, not one, because a sync
+    completing can bump the generation and the call that straddles it is marked
+    lexical (`embedding_index.ts`, the generation re-check). One semantic read
+    says a call WAS semantic; two in a row say the next one will be. The run is
+    the expensive thing here, so a second probe is cheap insurance.
+
+    Returns (ready, what it found). Ready is also TRUE for a server with no
+    embedding provider: lexical for every call is a consistent run and a
+    legitimate thing to measure -- what must not happen is half of each.
+    """
+    last, seen = "no probe completed", 0
+    for i in range(tries):
+        try:
+            mode, reason = retrieval_probe(a)
+        except Exception as exc:  # noqa: BLE001
+            seen = 0
+            last = f"probe failed: {exc}"
+        else:
+            if mode is None:
+                return True, ("no embedding provider configured, so every call "
+                              "is lexical; the run is consistent")
+            if mode == "semantic":
+                seen += 1
+                if seen >= confirmations:
+                    return True, (f"semantic retrieval ready "
+                                  f"({seen} consecutive probes"
+                                  + (f", {i + 1} total)" if i + 1 != seen
+                                     else ")"))
+                last = f"semantic {seen}/{confirmations}"
+                continue          # no pause between confirmations
+            seen = 0
+            if reason and reason != RETRY_REASON:
+                return False, (f"retrieval is lexical for {reason!r}, which "
+                               f"waiting does not change")
+            last = f"lexical ({reason or 'no reason given'})"
+        if i < tries - 1:
+            time.sleep(pause)
+    return False, f"still not ready after {tries} probes: {last}"
+
+
 def hosted_tools_reachable(a: argparse.Namespace) -> tuple[bool, str]:
     """Spawn ONE cheap agent to prove the hosted tools are actually granted.
 
@@ -1351,6 +1475,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="start even if goldens do not re-derive. The run is "
                          "then measuring against numbers nobody can reproduce, "
                          "and run.json records that you said so")
+    ap.add_argument("--no-retrieval-gate", action="store_true",
+                    help="answer cases without waiting for the semantic index "
+                         "to warm. The gate exists because a restart leaves it "
+                         "cold and the first calls answer lexically by design, "
+                         "so an arm started immediately measures two "
+                         "retrievers and reports one number")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
