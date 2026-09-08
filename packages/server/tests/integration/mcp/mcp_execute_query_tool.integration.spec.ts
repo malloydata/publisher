@@ -40,7 +40,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
       env = null;
    });
 
-   describe("malloy_executeQuery Tool", () => {
+   describe("execute_query Tool", () => {
       // Constants for test parameters
 
       it(
@@ -48,7 +48,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          async () => {
             if (!env) throw new Error("Test environment not initialized");
             const result = await mcpClient.callTool({
-               name: "malloy_executeQuery",
+               name: "execute_query",
                arguments: {
                   environmentName: ENVIRONMENT_NAME,
                   packageName: PACKAGE_NAME,
@@ -120,7 +120,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             // Expect RESOLUTION with success
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const result: any = await mcpClient.callTool({
-               name: "malloy_executeQuery",
+               name: "execute_query",
                arguments: params,
             });
 
@@ -164,7 +164,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
             // Application Error (Malloy Compilation): Expect RESOLUTION with isError: true
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const result: any = await mcpClient.callTool({
-               name: "malloy_executeQuery",
+               name: "execute_query",
                arguments: params,
             });
 
@@ -215,7 +215,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          // Expect RESOLUTION because the error is thrown *inside* the handler
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy_executeQuery",
+            name: "execute_query",
             arguments: params,
          });
 
@@ -242,7 +242,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          // Expect RESOLUTION because the error is thrown *inside* the handler
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy_executeQuery",
+            name: "execute_query",
             arguments: params,
          });
 
@@ -269,7 +269,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          // Protocol Error (Caught by Zod/MCP): Expect REJECTION
          await expect(
             mcpClient.callTool({
-               name: "malloy_executeQuery",
+               name: "execute_query",
                arguments: params,
             }),
          ).rejects.toMatchObject({
@@ -293,7 +293,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          // Cast to any
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy_executeQuery",
+            name: "execute_query",
             arguments: params,
          });
 
@@ -339,7 +339,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          // Cast to any
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy_executeQuery",
+            name: "execute_query",
             arguments: params,
          });
 
@@ -373,7 +373,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
       // Stateless HTTP + fast queries make true in-flight cancellation flaky
       // (the response often completes before close wins the race). Assert the
       // transport contract instead: a closed client cannot issue further tools.
-      it("should reject malloy_executeQuery after the MCP client is closed", async () => {
+      it("should reject execute_query after the MCP client is closed", async () => {
          if (!env) throw new Error("Test environment not initialized");
 
          const closedClient = new Client<Request, Notification, Result>({
@@ -388,7 +388,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
 
          await expect(
             closedClient.callTool({
-               name: "malloy_executeQuery",
+               name: "execute_query",
                arguments: {
                   environmentName: ENVIRONMENT_NAME,
                   packageName: PACKAGE_NAME,
@@ -412,7 +412,7 @@ describe.serial("MCP Tool Handlers (E2E Integration)", () => {
          // Expect RESOLUTION with error because it's invalid usage processed by the handler
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          const result: any = await mcpClient.callTool({
-            name: "malloy_executeQuery",
+            name: "execute_query",
             arguments: params,
          });
 

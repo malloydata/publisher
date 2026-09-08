@@ -31,7 +31,7 @@ material, by naming the account to impersonate:
 ```
 
 Every BigQuery call the connection makes — query execution **and** schema discovery
-(`/schemas`, `/tables`, `malloy_searchDatabaseSchema`) — then runs as that account, using
+(`/schemas`, `/tables`, `search_database_schema`) — then runs as that account, using
 short-lived tokens minted through the IAM Service Account Credentials API. Publisher's own
 credential (ambient ADC) is only the token minter, so in a multi-environment deployment each
 environment can be pinned to an identity that can read only its own data: cross-environment

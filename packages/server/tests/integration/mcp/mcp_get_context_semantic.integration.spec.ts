@@ -24,7 +24,7 @@ import {
 } from "../../harness/mcp_test_setup";
 
 /**
- * End-to-end coverage of semantic malloy_getContext retrieval: the real
+ * End-to-end coverage of semantic get_context retrieval: the real
  * server, the real DuckDB vector cache, and a deterministic in-test
  * embedding endpoint (letter-bigram bag-of-words vectors, so related
  * phrases genuinely land near each other, no network, no key).
@@ -61,26 +61,58 @@ const ENV_KEYS = [
 
 interface GetContextPayload {
    retrieval?: string;
-   results?: Array<{
-      kind: string;
-      name: string;
-      source?: string;
-      score?: number;
+   sources?: Array<{
+      source_info: { resource_id: { source: string } };
+      relevance?: number;
+      entities?: Array<{
+         entity_type: string;
+         name: string;
+         relevance?: number;
+      }>;
    }>;
    error?: string;
 }
 
-async function callGetContext(
-   args: Record<string, unknown>,
-): Promise<GetContextPayload> {
+/** The response's entities as one flat list, each tagged with its source. */
+function rankedEntities(payload: GetContextPayload) {
+   return (payload.sources ?? []).flatMap((card) =>
+      (card.entities ?? []).map((entity) => ({
+         ...entity,
+         source: card.source_info.resource_id.source,
+      })),
+   );
+}
+
+/**
+ * One ranked search target against the storefront package, optionally narrowed
+ * to a single source. The target type is not optional: the kinds in play come
+ * only from the targets a caller writes, so there is no "search everything"
+ * request to inherit and each case names the type its answer should be.
+ */
+async function callGetContext(target: {
+   targetType: string;
+   searchText: string;
+   source?: string;
+}): Promise<GetContextPayload> {
    const result = (await mcpClient.callTool({
-      name: "malloy_getContext",
-      arguments: args,
+      name: "get_context",
+      arguments: {
+         search_targets: [
+            { target_type: target.targetType, search_text: target.searchText },
+         ],
+         scopes: [
+            {
+               environment: ENVIRONMENT_NAME,
+               package: PACKAGE_NAME,
+               ...(target.source ? { source: target.source } : {}),
+            },
+         ],
+      },
    })) as {
       content: Array<{ type: string; resource?: { text?: string } }>;
    };
    const text = result.content?.[0]?.resource?.text;
-   if (!text) throw new Error("malloy_getContext returned no resource text");
+   if (!text) throw new Error("get_context returned no resource text");
    return JSON.parse(text) as GetContextPayload;
 }
 
@@ -158,9 +190,8 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
       "answers lexically while indexing, then flips to semantic with scores",
       async () => {
          const first = await callGetContext({
-            environmentName: ENVIRONMENT_NAME,
-            packageName: PACKAGE_NAME,
-            query: "total sales revenue",
+            targetType: "measure",
+            searchText: "total sales revenue",
          });
          // Configured server: the marker is always present on tier 4.
          expect(["lexical", "semantic"]).toContain(first.retrieval);
@@ -169,22 +200,21 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
          for (let i = 0; i < 60 && payload.retrieval !== "semantic"; i++) {
             await new Promise((resolve) => setTimeout(resolve, 500));
             payload = await callGetContext({
-               environmentName: ENVIRONMENT_NAME,
-               packageName: PACKAGE_NAME,
-               query: "total sales revenue",
+               targetType: "measure",
+               searchText: "total sales revenue",
             });
          }
          expect(payload.retrieval).toBe("semantic");
          expect(stubRequests).toBeGreaterThan(0);
 
-         const results = payload.results ?? [];
-         expect(results.length).toBeGreaterThan(0);
-         for (const r of results) {
-            expect(typeof r.score).toBe("number");
+         const entities = rankedEntities(payload);
+         expect(entities.length).toBeGreaterThan(0);
+         for (const entity of entities) {
+            expect(typeof entity.relevance).toBe("number");
          }
          // The bigram embedding puts "total sales revenue" on top of the
          // total_sales measure ("total sales" once humanized).
-         expect(results.some((r) => r.name === "total_sales")).toBe(true);
+         expect(entities.some((e) => e.name === "total_sales")).toBe(true);
       },
       { timeout: 60000 },
    );
@@ -194,9 +224,8 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
       async () => {
          const before = stubRequests;
          const payload = await callGetContext({
-            environmentName: ENVIRONMENT_NAME,
-            packageName: PACKAGE_NAME,
-            query: "orders by month",
+            targetType: "view",
+            searchText: "orders by month",
          });
          expect(payload.retrieval).toBe("semantic");
          // Exactly one stub call: the query embedding. No bulk re-sync.
@@ -206,20 +235,24 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
    );
 
    it(
-      "narrows semantic retrieval with sourceName",
+      "narrows semantic retrieval with a source scope",
       async () => {
          const payload = await callGetContext({
-            environmentName: ENVIRONMENT_NAME,
-            packageName: PACKAGE_NAME,
-            query: "total sales revenue",
-            sourceName: "order_items",
+            targetType: "measure",
+            searchText: "total sales revenue",
+            source: "order_items",
          });
          expect(payload.retrieval).toBe("semantic");
-         const results = payload.results ?? [];
-         // Non-empty, or the per-result loop below pins nothing.
-         expect(results.length).toBeGreaterThan(0);
-         for (const r of results) {
-            expect(r.source).toBe("order_items");
+         // One card, for the source the drill-down named.
+         expect(payload.sources).toHaveLength(1);
+         expect(payload.sources?.[0].source_info.resource_id.source).toBe(
+            "order_items",
+         );
+         const entities = rankedEntities(payload);
+         // Non-empty, or the per-entity loop below pins nothing.
+         expect(entities.length).toBeGreaterThan(0);
+         for (const entity of entities) {
+            expect(entity.source).toBe("order_items");
          }
       },
       { timeout: 30000 },
@@ -233,15 +266,14 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
          stubFailing = true;
          try {
             const payload = await callGetContext({
-               environmentName: ENVIRONMENT_NAME,
-               packageName: PACKAGE_NAME,
-               query: "top selling products",
+               targetType: "view",
+               searchText: "top selling products",
             });
             expect(payload.retrieval).toBe("lexical");
-            const results = payload.results ?? [];
-            expect(results.length).toBeGreaterThan(0);
-            for (const r of results) {
-               expect(r.score).toBeUndefined();
+            const entities = rankedEntities(payload);
+            expect(entities.length).toBeGreaterThan(0);
+            for (const entity of entities) {
+               expect(entity.relevance).toBeUndefined();
             }
          } finally {
             stubFailing = false;
