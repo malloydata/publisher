@@ -754,7 +754,7 @@ export function formatSuccess(result: ScaffoldResult): string {
       );
    } else {
       // "Wired" was printed either way, over the one case where the agent ends
-      // up with no malloy_* tools at all. The paste block is further down.
+      // up with no Malloy tools at all. The paste block is further down.
       lines.push(
          `${log.yellow("!")} Set up the agent workspace (${result.host}) in ${
             result.cwd
@@ -1059,7 +1059,7 @@ export function formatSuccess(result: ScaffoldResult): string {
       );
    } else {
       // The claim used to be printed either way, so an unwritable MCP config
-      // meant an agent with no malloy_* tools and no sign anything was wrong.
+      // meant an agent with no Malloy tools and no sign anything was wrong.
       const problem = result.mcpConfigProblem ?? "not usable";
       const paste = (result.mcpPasteBlock ?? "").trimEnd();
       if (paste === "") {

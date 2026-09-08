@@ -3,7 +3,7 @@
 
 /**
  * Put this server in the host's MCP config, so an agent opened here finds the
- * `malloy_*` tools without being told how.
+ * Malloy tools without being told how.
  *
  * An MCP client only knows a server exists if something registered it: a
  * `.mcp.json` in the directory the session starts in, or a manual
@@ -447,7 +447,7 @@ export function logMcpConfigOutcome(outcome: McpConfigOutcome): void {
             return;
          }
          logger.info(
-            `Left the existing ${outcome.file} alone. This server is at ${outcome.endpoint}. If an agent started here reaches a different Publisher than you expect, ask it to run malloy_getContext, which names the environment and packages it is actually talking to. To point it here: ${addCommand(outcome.endpoint)}`,
+            `Left the existing ${outcome.file} alone. This server is at ${outcome.endpoint}. If an agent started here reaches a different Publisher than you expect, ask it to run get_context, which names the environment and packages it is actually talking to. To point it here: ${addCommand(outcome.endpoint)}`,
          );
          return;
       case "failed":

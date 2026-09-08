@@ -31,6 +31,191 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] (BREAKING) — every MCP tool loses its `malloy_` prefix, and get_context answers in one shape
+
+**Every MCP tool is renamed.** The `malloy_` prefix is gone and the names are bare
+snake_case. There is no alias and no deprecation window: the old names are removed,
+so an agent or client that calls them gets an unknown-tool error until it is updated.
+
+| Before | Now |
+|---|---|
+| `malloy_getContext` | `get_context` |
+| `malloy_executeQuery` | `execute_query` |
+| `malloy_compile` | `compile_model` |
+| `malloy_reloadPackage` | `reload_package` |
+| `malloy_getStatus` | `get_status` |
+| `malloy_searchDatabaseSchema` | `search_database_schema` |
+| `malloy_searchDocs` | `search_malloy_docs` |
+
+**What to do.** Hosts that discover tools at connect time (Claude Code, Cursor, Codex)
+pick the new names up on reconnect with no config change — the names appear in the
+tool list, not in `.mcp.json`. Anything that hardcodes a tool name in a prompt, a
+script, or a saved agent config has to be edited. The bundled skills and every doc in
+this repo already use the new names.
+
+**`get_context` also answers in a new response shape.** It used to return a flat ranked
+`results[]` of entities; it now returns `sources[]`, where each source carries the
+entities that matched inside it. A client that reads `results[0].name` finds nothing —
+`results` is gone from every payload. An error payload keeps the empty collection of the
+tool it came from: `sources: []` from `get_context`, `environments: []` from
+`list_packages`, so a client can read either without branching on success first. Alongside the shape,
+the response gained `below_cutoff_count`, `retrieval_reason`, `aliases`,
+`givens`, `authorize`, `data_type`, `one_line_summary`, and `warnings[]` (which replaces
+the single `note` string). The tool's own description is the contract and is pinned by a
+test; re-read it rather than working from a cached copy.
+
+**Duplicate rows are decided by the compiled model, not by names.** A field whose
+whole definition is a reference to a sibling of the same source (`dimension: site is
+SITE`) folds into it, reported in `aliases`. That used to be a guess from
+name-humanization, which could not tell a rename from a derivation that happened to
+look like one. And nothing folds ACROSS sources any more: two sources exposing a
+same-named field are two different numbers, so each is returned under its own card
+with its own `docs`, which is where the `where:` or grain rule that makes them differ
+is written. Pass `include_code` to see a field's Malloy expression as `code`; off by
+default.
+
+**Listing the catalog is now its own tool, `list_packages`.** `malloy_getContext` with
+no arguments used to list the environments; `get_context` requires its `search_targets`
+and a `scopes` naming a package, so the catalog moved to a sibling tool that supplies
+those names. Call `list_packages` first when you do not already know an environment and
+package name.
+
+Why now rather than behind an alias: no SDK surface exposes these names, and the
+consumers that do use them (agents) re-read the tool list and the tool description on
+every session, so a clean cut costs one reconnect where an alias would have left two
+spellings in the docs indefinitely.
+
+---
+
+## [Unreleased] — bound the memory a LARGE DuckLake write spends holding Parquet
+
+`PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` caps how large a Parquet file DuckLake writes
+before rotating to the next one. Unset, nothing changes: no option is set and the attach
+issues exactly the SQL it issued before.
+
+This is a **second, separate** term from the row group bound in 0.2.3 below, not a
+replacement. The row group bounds the per-column buffer *within* a file; this bounds how much
+of the file is resident. Writing to object storage, DuckDB copies each multipart part into a
+buffer it allocates itself and holds it until the file completes, so a file's bytes stay
+resident however they are grouped inside it. Peak memory therefore tracks the FILE size —
+and, like the row group buffers, is not bounded by `PUBLISHER_DUCKDB_MEMORY_LIMIT` at any
+value.
+
+Writing the same data to a local path does not do this; it streams. A deployment that
+materializes to `s3://` or `gs://` pays a cost its local-disk testing will not show.
+
+Measured on a 72-column, 20,000,000-row DuckLake write to GCS, sampling cgroup
+`memory.stat` `anon` — all six cells in one batch, since this number moves with link speed
+and with catalog state left by earlier runs:
+
+| `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` | files | peak anon |
+|---|---|---|
+| unset — DuckLake's own default, ~512MB files | 6 | 650 MiB |
+| `1024MB` | 3 | 892 MiB |
+| `512MB` | 6 | 550 MiB |
+| `256MB` | 12 | 373 MiB |
+| `128MB` | 23 | 262 MiB |
+| `64MB` | 45 | 255 MiB |
+
+So the realistic gain is **650 → 373 MiB, about 1.74×** — DuckLake already rotates files, and
+this option moves where it rotates. The underlying effect is much larger than that ratio
+suggests: a plain single-file `COPY` of the same data measured 2979 MiB, against 149 MiB
+writing to local disk, and S3 and GCS agreed within 0.1% (2976 vs 2979). But DuckLake never
+writes the single file, so ~650 MiB is the baseline this option actually improves on.
+
+Each bound alone leaves the other term unpaid. On one 5M-row write: row group only −18%,
+file size only −34%, both −65%.
+
+**Pick the LARGEST value that clears your memory ceiling, not the smallest.** Memory is the
+only axis where smaller wins, and it stops improving below ~`128MB`. Everything else gets
+worse: a full scan of the same data took 21.6s at `64MB` against 13.0s at `512MB`, the write
+itself ran 70s against 42s, and the catalog carries one row per file per column — 3,240 rows
+at `64MB` against 216 at `1024MB` for one 2.7 GiB table, in a catalog database every writer
+of that lake shares. File-level pruning was already effective at every size tested, so the
+small end buys nothing back on reads.
+
+Same catalog mechanics as the row group bound: it persists in `ducklake_metadata`, is seen by
+every writer of that lake, is skipped on a read-only attach, and a catalog that refuses it is
+logged and attached anyway. It does **not** require `preserve_insertion_order=false`, and the
+order the two options are applied in does not matter.
+
+One consequence of persistence worth knowing before you tune: **unsetting the variable does not
+revert the lake.** The last value written stays in `ducklake_metadata` for every writer of that
+catalog. To go back, write the old value explicitly — `CALL <lake>.set_option('target_file_size',
+'<value>')` — rather than removing the environment variable.
+
+This is expected to be temporary. DuckDB's object-storage upload was reworked in
+[duckdb-httpfs#389](https://github.com/duckdb/duckdb-httpfs/pull/389) to stream from buffers
+the engine already owns rather than copying each part, which should remove the term this
+option exists to bound. That work landed after the DuckDB version Publisher currently pins,
+so until it ships in a release, this is the lever available.
+
+---
+
+## [Unreleased] — a pre-aggregation rollup can be built into and served from a storage destination
+
+`storage=` now works on a `#@ preaggregate` line: the rollup is built into that
+destination and served from it, and a query that names the base source is unchanged — it
+still knows no rollup exists.
+
+```malloy
+source: orders is orders_pg.table('public.orders') extend {
+  measure:
+    #@ preaggregate grain="category" storage=lake
+    total is amount.sum()
+}
+```
+
+Before this the key parsed, passed validation, and did nothing: the reader took only
+`grain` and `namespace`, nothing rejected the unknown key, and the rollup was built
+alongside its base. No documented path reached it, which is why support arrives together
+with refusals for the parts that are still not supported, rather than as two changes.
+
+What is refused, and why each is a refusal rather than a silent choice:
+
+- **`namespace=` with `storage=` on one line.** Placement inside a destination is
+  derived, not authored — a freshly provisioned catalog has no schema to create the
+  table in.
+- **Two measures at one grain naming different destinations.** One grain is one table.
+
+Two things that are NOT refusals, both of which read like they should be.
+
+**A hidden field warns**, at publish and at load alike. A rollup stores its grain and each
+measure's partial and is served under the base's name with none of the source's field
+visibility applying, so the planner refuses to plan one at all — nothing is built and
+nothing can be served. It warns rather than refusing because a package of that shape
+published before the rule existed, and because the refusal was unfollowable: an annotation
+inherited onto a source that then hides the measure raises it, while that source produces
+no rollup and exposes nothing.
+
+**Two grains on one base naming different destinations is dropped at serve, not refused at
+publish.** Two grains are two tables, so nothing at publish has grounds to refuse what it
+allows for `namespace=`. But a base's rollups are offered through ONE composite and every
+member of a composite must live on one connection, so such a base serves from its rollups
+not at all and its queries are answered from the base.
+
+A destination is written on the `#@ preaggregate` line and is **not** inherited from the
+base's `#@ persist storage=`, which stays as it was: a `storage=` base lends its rollups
+nothing. Inheriting it would not work — a base that can carry that annotation builds a
+stored table of its own, and a rollup over a stored base is built by reading that table,
+along a path that recovers the rollup's definition from a model file it does not have. So
+the build fails. Even had it succeeded, the base's own table already claims the name its
+rollups would be served under.
+
+With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is not built — and not built
+alongside its base either, which would put a table in your warehouse under a generated
+name you never wrote. Queries are answered from the base and the package reports the
+degraded state as a warning.
+
+**Also changed for rollups that are not in a store.** Where several rollups cover one
+query, the **coarsest** is now used. Members were previously ordered by generated name,
+so with `grain="b"` and `grain="a, b"` a query grouping by `b` alone read the `a, b`
+table because `a_b` sorts first. Grain dimensions are counted rather than measured, so
+this is a proxy for size and not a reading of it. One consequence worth knowing: a rollup
+is offered whether or not it has been built yet, so adding a coarse grain to a package
+that already has a built finer rollup costs acceleration until the new one builds —
+answers are unaffected, and it lasts one build.
+
 ## [Unreleased] — a persist name must now be a plain identifier path
 
 `#@ persist name=` accepts the table name a source materializes into, and that

@@ -189,14 +189,26 @@ function parseIntEnv(name: string): number | undefined {
    return value;
 }
 
-function parseFloatEnv(name: string): number | undefined {
+function parseFloatEnv(name: string, example: string): number | undefined {
    const raw = process.env[name];
    if (raw === undefined || raw.trim() === "") return undefined;
-   const value = Number.parseFloat(raw);
-   if (!Number.isFinite(value)) {
-      throw new Error(
-         `Invalid value for ${name}: expected a finite number, got "${raw}"`,
+   const trimmed = raw.trim();
+   // Number.parseFloat stops at the first character it cannot read, so
+   // "0.5abc" parses as 0.5 and would drive behaviour as though the operator
+   // had written a valid setting. Match the whole string first. A round-trip
+   // check like parseIntEnv's cannot serve here: it would reject "0.50",
+   // ".5" and "1e-3", all of which are meant.
+   const invalid = () =>
+      new Error(
+         `Invalid value for ${name}: expected a finite number, got "${raw}". ` +
+            `Fix: ${name}=${example}`,
       );
+   if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
+      throw invalid();
+   }
+   const value = Number.parseFloat(trimmed);
+   if (!Number.isFinite(value)) {
+      throw invalid();
    }
    return value;
 }
@@ -233,10 +245,10 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
    }
 
    const highWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION") ??
+      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION", "0.8") ??
       DEFAULT_HIGH_WATER_FRACTION;
    const lowWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION") ??
+      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION", "0.7") ??
       DEFAULT_LOW_WATER_FRACTION;
    const checkIntervalMs =
       parseIntEnv("PUBLISHER_MEMORY_CHECK_INTERVAL_MS") ??
@@ -344,6 +356,37 @@ export const getDuckLakeRowGroupSizeBytes = (): string | undefined => {
 };
 
 /**
+ * Bound on how large a Parquet file DuckLake writes before rotating to the next
+ * one (`PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES`, e.g. `256MB`). Unset leaves
+ * DuckLake's own default and issues nothing at all on attach.
+ *
+ * Writing to object storage, DuckDB copies each multipart part into a buffer it
+ * allocates itself, so a file's bytes stay resident until that file completes:
+ * peak memory tracks the FILE size, not the row group. Measured on a 72-column,
+ * 20M-row DuckLake write to GCS, one batch: 650 MiB at DuckLake's own default
+ * (~512MB files), 550 at 512MB, 373 at 256MB, 262 at 128MB, 255 at 64MB.
+ * `memory_limit` does not bound it; the allocation is tagged for the extension
+ * and the limit is not enforced against it. The effect is far larger without
+ * DuckLake's rotation -- a plain single-file COPY of the same data measured
+ * 2979 MiB against 149 MiB writing to local disk -- but DuckLake always rotates,
+ * so ~650 MiB is the baseline this option actually improves on.
+ *
+ * This is a DIFFERENT term from {@link getDuckLakeRowGroupSizeBytes}, not a
+ * replacement: the row group bounds the per-column buffer WITHIN a file, this
+ * bounds how much of the file is resident. Measured separately on one write, each
+ * alone gives 18% and 34%, and together 65%.
+ *
+ * Larger is better on every axis except memory -- full scans, write throughput and
+ * catalog rows all improve with file size and plateau around 512MB, while file-level
+ * pruning is already effective at every size. So the value to want is the LARGEST
+ * that clears the deployment's memory ceiling, not the smallest.
+ */
+export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
+/**
  * Directory DuckDB spills to. A materialization build overrides this with its
  * own disposable working directory; every other session and instance uses this.
  *
@@ -374,17 +417,28 @@ export const getDuckDBTempDirectory = (): string | undefined => {
  * that set it. Creating it here turns both that and an unwritable path into a
  * startup failure naming the variable.
  */
+/**
+ * The byte sizes DuckDB itself accepts, for every size-valued setting Publisher
+ * validates at boot. Probed against v1.5.5 rather than assumed: it takes the
+ * 1000^i units (KB MB GB TB) and the 1024^i units (KiB MiB GiB TiB), refuses
+ * anything larger (`1PB`), and refuses a bare byte count -- its own error names
+ * exactly this set. Anchored to those units rather than any letters, so trailing
+ * garbage like `1GBB` fails here instead of at the first session that opens.
+ *
+ * One constant rather than three literals: a validator NARROWER than the engine
+ * fails the pod on a value DuckDB would have taken, with a message that reads as
+ * if the operator wrote something malformed. The two DuckLake settings were
+ * narrower than this -- no `TB`/`TIB` -- until they were pointed here.
+ *
+ * Zero is rejected: DuckDB accepts `0MB` and stores it, and none of these
+ * settings has a sensible zero.
+ */
+const DUCKDB_BYTE_SIZE =
+   /^(?!0+(\.0+)?\s*[A-Za-z])\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i;
+
 export function assertDuckDBResourceConfig(): void {
    const memoryLimit = getDuckDBMemoryLimit();
-   if (
-      memoryLimit !== undefined &&
-      // Anchored to the units DuckDB actually accepts rather than any letters:
-      // trailing garbage like `1GBB` passes a `[a-zA-Z]+` shape and is then
-      // rejected by DuckDB, which is the late failure this check exists to pull
-      // forward. A bare byte count is correctly rejected too — DuckDB refuses
-      // `1073741824` with "Unknown unit for memory" — so a unit is required.
-      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i.test(memoryLimit)
-   ) {
+   if (memoryLimit !== undefined && !DUCKDB_BYTE_SIZE.test(memoryLimit)) {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKDB_MEMORY_LIMIT: expected a size like ` +
             `"1GB" or "512MB" (or "off" to disable), got "${memoryLimit}"`,
@@ -393,11 +447,21 @@ export function assertDuckDBResourceConfig(): void {
    const rowGroupSizeBytes = getDuckLakeRowGroupSizeBytes();
    if (
       rowGroupSizeBytes !== undefined &&
-      !/^\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB)$/i.test(rowGroupSizeBytes)
+      !DUCKDB_BYTE_SIZE.test(rowGroupSizeBytes)
    ) {
       throw new Error(
          `Invalid value for PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: expected a ` +
             `size like "16MB", got "${rowGroupSizeBytes}"`,
+      );
+   }
+   const targetFileSizeBytes = getDuckLakeTargetFileSizeBytes();
+   if (
+      targetFileSizeBytes !== undefined &&
+      !DUCKDB_BYTE_SIZE.test(targetFileSizeBytes)
+   ) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: expected a ` +
+            `size like "256MB", got "${targetFileSizeBytes}"`,
       );
    }
    const tempDirectory = getDuckDBTempDirectory();
@@ -422,7 +486,7 @@ export function assertDuckDBResourceConfig(): void {
 
 /**
  * Settings for the optional embedding provider behind semantic
- * `malloy_getContext` retrieval. See {@link getEmbeddingConfig}.
+ * `get_context` retrieval. See {@link getEmbeddingConfig}.
  */
 export interface EmbeddingConfig {
    /** Bearer token sent to the embedding endpoint. */
@@ -436,13 +500,31 @@ export interface EmbeddingConfig {
     * unset; the vector length then comes from the provider's response.
     */
    dimensions?: number;
+   /**
+    * Cosine-similarity floor a match must clear to be returned at all.
+    * See {@link DEFAULT_EMBEDDING_MIN_SIMILARITY}.
+    */
+   minSimilarity: number;
 }
 
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
 
 /**
- * Embedding-provider settings for semantic `malloy_getContext` retrieval,
+ * Default cosine-similarity floor for semantic retrieval.
+ *
+ * Tunable because the right value is a property of the embedding model, not
+ * of Publisher: cosine similarity is not calibrated across models, so a floor
+ * that separates signal from noise for one endpoint does not for another.
+ * Deliberately permissive, letting a few weak matches through rather than
+ * discarding a real one; operators who would rather see nothing than noise
+ * should raise it. `belowCutoffCount` against `totalEntities` in each
+ * response is the measurement to tune with. See docs/configuration.md.
+ */
+export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
+
+/**
+ * Embedding-provider settings for semantic `get_context` retrieval,
  * or `null` when the feature is disabled. The feature is enabled iff
  * `EMBEDDING_API_KEY` is set and non-empty; without it the tool keeps its
  * lexical (lunr) ranking unchanged.
@@ -484,11 +566,25 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
       );
    }
 
-   return { apiKey, model, baseUrl, dimensions };
+   const minSimilarity =
+      parseFloatEnv("EMBEDDING_MIN_SIMILARITY", "0.35") ??
+      DEFAULT_EMBEDDING_MIN_SIMILARITY;
+   // Rejected rather than clamped: a floor of 1 returns nothing and a
+   // negative one returns everything, and both look like a broken index
+   // rather than a bad setting. An invalid value must never go on to drive
+   // retrieval.
+   if (minSimilarity < 0 || minSimilarity >= 1) {
+      throw new Error(
+         `Invalid EMBEDDING_MIN_SIMILARITY: expected a number in [0, 1), got ${minSimilarity}. ` +
+            `Fix: EMBEDDING_MIN_SIMILARITY=0.35 (default ${DEFAULT_EMBEDDING_MIN_SIMILARITY})`,
+      );
+   }
+
+   return { apiKey, model, baseUrl, dimensions, minSimilarity };
 };
 
 /**
- * Whether `malloy_searchDatabaseSchema` may send a connection's table and
+ * Whether `search_database_schema` may send a connection's table and
  * column names to the configured embedding provider. Off unless set.
  *
  * Deliberately a SECOND switch on top of `EMBEDDING_API_KEY` rather than
@@ -496,7 +592,7 @@ export const getEmbeddingConfig = (): EmbeddingConfig | null => {
  * `OPENAI_API_KEY`: the two authorise different disclosures. `EMBEDDING_API_KEY`
  * covers the operator's own model text (entity names and `#(doc)`), which is
  * already on their disk; a warehouse's table and column names are the
- * customer's, and turning on semantic `malloy_getContext` must not silently
+ * customer's, and turning on semantic `get_context` must not silently
  * start shipping them to a third party.
  *
  * With this off (the default) schema search still works: it ranks lexically,
@@ -972,18 +1068,14 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       rawConfig = JSON.parse(fileContent);
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error(
-         `Failed to parse ${publisherConfigPath}: ${message}. Using default empty config.`,
-         {
-            path: publisherConfigPath,
-            error: message,
-            stack: error instanceof Error ? error.stack : undefined,
-         },
-      );
-      return {
-         frozenConfig: false,
-         environments: [],
-      };
+      // Raised, not absorbed into an empty config. A file that exists and does
+      // not parse is an operator's typo, and returning `environments: []` for
+      // it produced a server that booted, reported "serving" with an empty
+      // loadErrors, and served nothing -- with the reason only in the log.
+      // Callers that can carry on without a config already catch this
+      // (isPublisherConfigFrozen defaults to false, getConnectionsFrom...
+      // returns none); the manifest read turns it into a refusal to start.
+      throw new Error(`Failed to parse ${publisherConfigPath}: ${message}`);
    }
 
    // Process environment variables in config values
@@ -1186,7 +1278,7 @@ export const isPublisherConfigFrozen = (serverRoot: string) => {
    } catch (error) {
       logger.error(
          `Error checking if ${PUBLISHER_CONFIG_NAME} is frozen. Defaulting to false.`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return false;
    }
@@ -1210,7 +1302,7 @@ export const getConnectionsFromPublisherConfig = (
    } catch (error) {
       logger.error(
          `Error getting connections for environment "${environmentName}" from ${PUBLISHER_CONFIG_NAME}`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return [];
    }
@@ -1364,7 +1456,7 @@ export const getInstanceTheme = (serverRoot: string): Theme | undefined => {
    } catch (error) {
       logger.error(
          `Error reading instance theme from ${PUBLISHER_CONFIG_NAME}`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return undefined;
    }

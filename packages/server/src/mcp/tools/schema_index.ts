@@ -11,10 +11,10 @@ import {
 } from "../../service/embedding_provider";
 // humanizeName and the similarity floor are shared with the package index on
 // purpose: a query is humanized the same way whichever index answers it.
-import { MIN_SIMILARITY, humanizeName } from "./embedding_index";
+import { humanizeName } from "./embedding_index";
 
 /**
- * Ranking layer for `malloy_searchDatabaseSchema`.
+ * Ranking layer for `search_database_schema`.
  *
  * Publisher already introspects ten dialects (db_utils.getSchemasForConnection /
  * listTablesForSchema) and already serves that over REST. What was missing is the
@@ -169,7 +169,7 @@ export function schemaFingerprint(tables: SchemaTableEntity[]): string {
 /**
  * lunr treats several characters as query operators; strip them so a
  * plain-English query never throws and is matched as an OR of its terms.
- * Same treatment malloy_searchDocs applies for the same reason.
+ * Same treatment search_malloy_docs applies for the same reason.
  */
 export function sanitizeQuery(query: string): string {
    return query.replace(/[~^:*+\-"]/g, " ").trim();
@@ -432,7 +432,7 @@ async function tryRankSemantically(args: {
          const score = cosineSimilarity(queryVector, vector);
          // Below the floor is dropped rather than returned as a weak hit, so
          // "nothing here matches" stays a distinguishable answer.
-         if (score >= MIN_SIMILARITY) scored.push({ ...table, score });
+         if (score >= provider.minSimilarity) scored.push({ ...table, score });
       }
       scored.sort((a, b) => b.score - a.score);
       return { hits: scored.slice(0, limit), matched: scored.length };
