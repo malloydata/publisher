@@ -101,12 +101,27 @@ def strip_noise(malloy: str) -> str:
 
 
 def _present(name: str, text: str) -> bool:
-    """`name` as a whole identifier path, not as part of a longer one.
+    r"""`name` as a whole identifier path, or as the tail of a longer one.
 
-    `total_sales_2021` must not match `total_sales_2021_adj`, and the dot in a
-    path is literal: `products.retail_price` does not match `retail_price`.
+    Three things have to hold at once, and the `.` in the old negative
+    lookbehind only bought the middle one:
+
+    - `total_sales_2021` must not match `total_sales_2021_adj` -- a longer NAME
+      is a different field (the trailing lookahead).
+    - `products.retail_price` must not match a bare `retail_price` -- the dot is
+      literal, and a leaf on its own is somebody else's field (the `products.`
+      is still required).
+    - `products.retail_price` MUST match `order_items.products.retail_price` --
+      a longer PATH to the same field is the same field. Reaching a joined field
+      from the fact source is the ordinary shape in Malloy, and excluding `.`
+      from the lookbehind made one join hop enough to walk out of the veto.
+
+    So the leading segments are matched rather than forbidden, and the boundary
+    is only in front of the whole path. `x_products.retail_price` still does not
+    match: `\w+\.` can consume `x_products.` but then `products.` has to follow
+    and does not.
     """
-    return re.search(r"(?<![A-Za-z0-9_.])" + re.escape(name)
+    return re.search(r"(?:^|[^A-Za-z0-9_.])(?:\w+\.)*" + re.escape(name)
                      + r"(?![A-Za-z0-9_])", text) is not None
 
 
@@ -130,8 +145,8 @@ def check(must_not_use: list[str] | None, final_query: str | None
         if path is None:
             unchecked.append(entry)
             continue
-        checked.append(path)
         if _present(path, text):
+            checked.append(path)
             hits.append(entry)
             continue
         leaf = path.rsplit(".", 1)[-1]
@@ -139,8 +154,11 @@ def check(must_not_use: list[str] | None, final_query: str | None
         # it came from -- `cost` on its own is a legitimate field on plenty of
         # sources that are not the one the golden forbids.
         if leaf != path and _present(leaf, text):
+            checked.append(path)
             leaf_hits.append(entry)
         else:
+            # Not `checked`: the entry is going to the judge as prose, and
+            # listing it as checked as well said the script had decided it.
             unchecked.append(entry)
     return {"hits": hits, "leaf_hits": leaf_hits, "unchecked": unchecked,
             "checked": checked}

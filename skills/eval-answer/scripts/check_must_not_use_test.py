@@ -70,6 +70,46 @@ class Check(unittest.TestCase):
         self.assertEqual(r["hits"], [])
         self.assertEqual(len(r["leaf_hits"]), 1)
 
+    def test_a_path_reached_through_a_join_is_still_a_hit(self):
+        # Reaching a joined field from the fact source is the ordinary shape in
+        # Malloy, and one hop used to walk out of the veto entirely: no hit, no
+        # leaf_hit, and a judge line indistinguishable from prose -- on the case
+        # that is MOST certainly a violation. `test_full_path_is_a_hit` passes
+        # only because its fixture puts the path at the root of the expression.
+        r = check(["products.retail_price"],
+                  "run: order_items -> { aggregate: p is "
+                  "order_items.products.retail_price.sum() }")
+        self.assertEqual(r["hits"], ["products.retail_price"])
+        self.assertEqual(r["unchecked"], [])
+
+    def test_a_bare_name_veto_fires_on_a_qualified_use(self):
+        # The commoner half of the same hole: the ecommerce set's live vetoes
+        # are bare names (`shipped_at`, `delivered_at`, `total_sales_2021`) and
+        # a query almost always writes them qualified. writing-rubrics.md says
+        # a bare name means the field must not appear "at all".
+        r = check(["shipped_at"],
+                  "run: order_items -> { group_by: order_items.shipped_at }")
+        self.assertEqual(r["hits"], ["shipped_at"])
+
+    def test_a_longer_source_name_is_not_the_forbidden_path(self):
+        # The regression the old lookbehind was protecting, kept.
+        r = check(["products.retail_price"],
+                  "run: x -> { group_by: x_products.retail_price }")
+        self.assertEqual(r["hits"], [])
+
+    def test_a_longer_field_name_is_not_the_forbidden_path(self):
+        r = check(["products.retail_price"],
+                  "run: x -> { group_by: products.retail_price_adj }")
+        self.assertEqual(r["hits"], [])
+
+    def test_an_entry_the_script_could_not_decide_is_not_listed_as_checked(self):
+        # It goes to the judge as prose; saying it was checked as well claimed
+        # a decision the script did not make.
+        r = check(["products.retail_price"],
+                  "run: x -> { group_by: other.cost }")
+        self.assertEqual(r["unchecked"], ["products.retail_price"])
+        self.assertEqual(r["checked"], [])
+
     def test_a_use_objection_never_vetoes_the_field_it_names(self):
         # The regression this file exists to hold: the answer showed the field
         # as an extra column and its series was correct.
