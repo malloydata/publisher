@@ -3056,9 +3056,10 @@ components:
             when there are such findings.
 
 
-            **Pre-aggregation contributes nothing to this array. A
-            `#@ preaggregate` that cannot be honored is an ERROR, never a
-            warning** — a 400 at publish or PATCH, and a load failure thereafter.
+            **Almost every `#@ preaggregate` that cannot be honored REJECTS A
+            PUBLISH — a 400 at publish or PATCH — and fails a load thereafter.**
+            The two access-modifier violations are the exception: they warn at
+            BOTH gates and appear in this array. See the split below.
             Rejected are a `#@ preaggregate` anywhere but on a measure;
             a `#@ preaggregate` with no `grain=`;
             a grain naming anything but a dimension the base source itself
@@ -3075,8 +3076,15 @@ components:
             is served normally; a base source that already fails persist eligibility (unbound
             parameters, `given` references, `#(authorize)` gates); `sharing=` or
             `schedule=` at the resource level; and a synthesized rollup name that
-            collides with an existing model object. Each names the measure and the
-            fix.
+            collides with an existing model object.
+
+
+            WARNED rather than rejected, at publish and at load alike, is a
+            `#@ preaggregate` on a measure the source does not publicly expose, or
+            a grain naming a hidden dimension — a rollup STORES its grain and each
+            measure's partial, and the stored table is served under the base's name without
+            the source's field visibility applying to it. Each names the measure
+            and the fix.
 
 
             Refusing rather than silently dropping the measure is the deliberate
@@ -3088,16 +3096,37 @@ components:
             belongs.
 
 
-            The same verdict is enforced at LOAD, not only at publish, so a
-            package whose declarations stopped being honorable does not load at
-            all: it is absent from its environment and reported in
-            `ServerStatus.loadErrors`. Worth knowing because whether a measure can
-            be re-aggregated is derived from the compiled model, so a Malloy
-            version change can in principle reclassify a measure that published
-            cleanly long before. That surfaces as a package that stops loading
-            rather than as a package quietly serving without its rollups — louder,
-            and deliberately so, since the alternative is paying for rollups that
-            answer nothing.
+            The same verdict is enforced at LOAD for every violation EXCEPT the
+            two access-modifier ones, so a package whose declarations stopped
+            being honorable does not load at all: it is absent from its
+            environment and reported in `ServerStatus.loadErrors`. Worth knowing
+            because whether a measure can be re-aggregated is derived from the
+            compiled model, so a Malloy version change can in principle reclassify
+            a measure that published cleanly long before. That surfaces as a
+            package that stops loading rather than as a package quietly serving
+            without its rollups — louder, and deliberately so, since the
+            alternative is paying for rollups that answer nothing.
+
+
+            The two access-modifier violations are the deliberate exception, and
+            for two reasons rather than a lesser severity. They WARN at publish and
+            at load alike and appear in this array. First, a package annotating a
+            hidden field published and loaded before this rule existed — refusing
+            it would stop an already-published package from doing either because a
+            new validation was
+            added, which is not a thing a server upgrade may do. Second, the
+            refusal was unfollowable: an annotation INHERITED onto a source that
+            then hides the measure raises it, while that source produces no plan at
+            all and nothing is exposed, so the advice to make the field public or
+            drop the annotation asks an author to give up either the hiding or the
+            rollup over a model that was already safe.
+
+
+            Warning is safe here and would not be for the others: what keeps a
+            hidden field out of a rollup is that the planner refuses to plan one at
+            all, so no table is built and nothing can be served whether or not
+            anyone reads the message. For the other violations the refusal IS the
+            enforcement, which is why they stay fatal.
           items:
             type: object
             properties:
@@ -3325,12 +3354,37 @@ components:
             rather than the configured manifest: after a failed rebind it goes on
             listing the previously bound manifest's sources, which are still
             serving.
+
+
+            "Bound" is not the same as "serving", and an entry with
+            `origin: preaggregate` is where the two most often part: a rollup is
+            listed here once its table exists, but it is only offered to a query
+            through a composite re-exposing its base's name, so it does not serve
+            when something else already claims that name. Read `origin` before
+            treating a row as evidence that queries are being accelerated.
           items:
             type: object
             properties:
               sourceName:
                 type: string
-                description: The materialized source served from storage.
+                description: >-
+                  The materialized source served from storage.
+
+
+                  **It may name no source in any model file**, exactly as
+                  `ManifestEntry.sourceName` may: a pre-aggregation rollup is a
+                  persist source the publisher synthesized, so its name is
+                  generated. Check `origin` rather than resolving this against a
+                  package's models and reading a miss as corruption.
+              origin:
+                type: string
+                enum: [persist, preaggregate]
+                default: persist
+                description: >-
+                  What the bound source IS: `persist` for one a modeler annotated,
+                  which is the meaning of an absent value, and `preaggregate` for
+                  a rollup the publisher synthesized from `#@ preaggregate`
+                  measures. Mirrors `ManifestEntry.origin`.
               storageDestinationName:
                 type: string
                 description: >-

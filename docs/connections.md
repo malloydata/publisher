@@ -188,8 +188,8 @@ Connection names must be unique within a single environment. Duplicate names aft
 ## Publisher proxy connections (`type: "publisher"`)
 
 A `publisher` connection does not talk to a warehouse directly. Instead it
-**proxies SQL to a remote Publisher dataplane** (e.g. a hosted Credible
-environment), which runs the query against its own connection and returns the
+**proxies SQL to a remote Publisher dataplane** (e.g. an environment on
+Credible, the hosted engine built on Publisher), which runs the query against its own connection and returns the
 rows. This is the local-dev authoring loop: run a local Publisher with
 `--watch-env` to serve a package's `public/` app with live-reload, while queries
 proxy to your real remote connection — no need to replicate warehouse
