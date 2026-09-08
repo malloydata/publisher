@@ -971,23 +971,22 @@ describe("ConnectionController getTable not-found mapping", () => {
       }
    });
 
-   it("classifies a missing file-backed table, which reports an IO error", async () => {
-      // The Azure branch hands fetchTable a blob URL, and DuckDB answers an
-      // absent file with an IO error rather than a catalog one -- so the catalog
-      // patterns never see it, and the wrappers' own "Azure file not found"
-      // throw is unreachable. Verbatim from the installed driver.
-      const { controller } = buildTableController(
-         sinon
-            .stub()
-            .rejects(
-               new Error(
-                  'IO Error: No files found that match the pattern "/tmp/gone.parquet"',
-               ),
-            ),
-      );
-      await expect(getTable(controller)).rejects.toBeInstanceOf(
-         TableNotFoundError,
-      );
+   it("leaves an absent file-backed table a fault, not a missing table", async () => {
+      // A file-backed table is DuckLake or an Azure blob: an absent parquet is
+      // corruption or a bad mount, not a mistyped name, so it stays 502. The
+      // second string is a bad hostname, which shares the `IO Error:` prefix --
+      // both verbatim from the installed driver.
+      for (const message of [
+         'IO Error: No files found that match the pattern "/tmp/gone.parquet"',
+         "IO Error: Could not resolve hostname error for HTTP HEAD to 'https://nope.example.com/a.parquet'",
+      ]) {
+         const { controller } = buildTableController(
+            sinon.stub().rejects(new Error(message)),
+         );
+         await expect(getTable(controller)).rejects.toBeInstanceOf(
+            ConnectionError,
+         );
+      }
    });
 
    it("leaves a missing DuckDB extension a fault, not a missing table", async () => {

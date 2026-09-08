@@ -188,21 +188,17 @@ const DUCKDB_TABLE_NOT_FOUND =
 const DUCKDB_CATALOG_NOT_FOUND = /^Binder Error: Catalog .+ does not exist/;
 
 /**
- * A file-backed DuckDB table -- the Azure blob branch of getTable, and any
- * parquet/csv path -- reports an absent file as an IO error rather than a
- * catalog one, so the patterns above never see it. Without this the wrappers'
- * own "Azure file not found" throw is unreachable and a missing blob answers
- * 502.
+ * Deliberately no pattern for `IO Error: No files found that match the
+ * pattern`. A file-backed table is DuckLake or an Azure blob, where an absent
+ * parquet means corruption or a misconfigured mount rather than a name the
+ * caller mistyped -- the same reason the extension errors above stay 502.
  */
-const DUCKDB_FILE_NOT_FOUND =
-   /^IO Error: No files found that match the pattern/;
 
 function driverErrorToPublisherError(message: string): Error {
    if (
       BIGQUERY_NOT_FOUND.test(message) ||
       DUCKDB_TABLE_NOT_FOUND.test(message) ||
-      DUCKDB_CATALOG_NOT_FOUND.test(message) ||
-      DUCKDB_FILE_NOT_FOUND.test(message)
+      DUCKDB_CATALOG_NOT_FOUND.test(message)
    ) {
       return new TableNotFoundError(message);
    }
