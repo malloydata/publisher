@@ -5376,8 +5376,13 @@ components:
             an environment or connection this server does not host. The former
             says nothing about whether the caller reached the right server; the
             latter is a routing problem worth retrying elsewhere.
-          enum:
-            - TABLE_NOT_FOUND
+
+            Deliberately an open string rather than an enum. Generators render
+            an enum closed, so adding a second value here would break every
+            client generated before it -- on the one field whose purpose is to
+            grow. Callers must treat an unrecognized value as absent.
+
+            Known values: TABLE_NOT_FOUND.
       required:
         - message
 
