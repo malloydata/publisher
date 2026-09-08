@@ -143,9 +143,34 @@ class TheAnswerersMcpSurface(unittest.TestCase):
         cmd = claude_cmd(mcp="/tmp/m.json", skills=True,
                          tools=rb.ANSWER_TOOLS, denied=rb.ANSWER_DENIED)
         denied = cmd[cmd.index("--disallowedTools") + 1:]
-        for tool in ("search_database_schema", "reload_package"):
+        for tool in ("search_database_schema", "reload_package",
+                     "compile_model"):
             with self.subTest(tool=tool):
                 self.assertIn(f"mcp__publisher__{tool}", denied)
+
+    def test_the_answerer_holds_no_authoring_tool(self):
+        # It reads a fixed, published model and never edits one.
+        for tool in ("compile_model", "reload_package"):
+            with self.subTest(tool=tool):
+                self.assertNotIn(f"mcp__publisher__{tool}", rb.ANSWER_TOOLS)
+
+    def test_the_two_arms_hold_the_same_capabilities(self):
+        # A local-vs-platform comparison is only a comparison if both agents
+        # could do the same things.
+        self.assertEqual(
+            tuple(t.split("__")[-1] for t in rb.ANSWER_TOOLS),
+            rb.HOSTED_TOOLS_DEFAULT)
+
+    def test_the_lists_partition_the_publisher_surface(self):
+        # The alarm for the one weakness of an enumerated deny-list: a tool
+        # Publisher gains later is offered to the answerer unless it is placed
+        # on one side or the other, and this is what says so out loud.
+        placed = {t.split("__")[-1] for t in
+                  (*rb.ANSWER_TOOLS, *rb.ANSWER_DENIED)}
+        self.assertEqual(placed, set(rb.PUBLISHER_MCP_TOOLS),
+                         "every Publisher MCP tool must be either allowed to "
+                         "the answerer or explicitly denied; an unplaced one "
+                         "is granted by default")
 
     def test_allow_and_deny_partition_the_surface_with_no_overlap(self):
         # A tool in both lists is denied, because deny beats allow -- so an

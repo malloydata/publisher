@@ -74,14 +74,20 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable
 
-# What the answerer may call. `search_malloy_docs` joins the list because the
-# platform arm has always had it (HOSTED_TOOLS_DEFAULT) and the two arms of one
-# measurement should not differ in what they can look up; syntax help is not
-# data. `compile_model` has no hosted equivalent, which is a capability
-# difference rather than a choice.
+# What the answerer may call: discover, run, and look up syntax. Nothing else.
+# The answerer reads a FIXED, PUBLISHED model and never edits one, so the
+# authoring surface has no place in it -- `compile_model` compiles submitted
+# Malloy against the package, which is a tool for changing a model, not for
+# querying one, and `execute_query` already returns a compile error when a
+# query is malformed. None of the eleven skills the analysis manifest loads
+# mentions it, so removing it strands the answerer against nothing.
+#
+# These are now `HOSTED_TOOLS_DEFAULT` under Publisher's prefix, so the local
+# and platform arms of one measurement hold the same three capabilities and a
+# local-vs-platform comparison is between agents that could do the same things.
+# `test_the_two_arms_hold_the_same_capabilities` pins that.
 ANSWER_TOOLS = ("mcp__publisher__get_context",
                 "mcp__publisher__execute_query",
-                "mcp__publisher__compile_model",
                 "mcp__publisher__search_malloy_docs")
 
 # Publisher tools the answerer must NOT hold. `--allowedTools` grants
@@ -96,17 +102,31 @@ ANSWER_TOOLS = ("mcp__publisher__get_context",
 #   reload_package          recompiles the package mid-attempt, so the model
 #                           under measurement is not the one the run pinned.
 #
+#   compile_model           authoring surface, per ANSWER_TOOLS above.
+#
 # `get_status` and `list_packages` reveal the other packages on the server and
 # are no use to an answerer given its scope in the prompt.
 #
 # Enumerated, because deny beats allow: naming the server (`mcp__publisher`,
-# or `mcp__publisher__*`) removes ALL of its tools including the four wanted,
-# verified 2026-09-08. A tool this server gains later is therefore offered by
-# default -- which is what the MCP half of `isolation_breaches` is for.
-ANSWER_DENIED = ("mcp__publisher__search_database_schema",
+# or `mcp__publisher__*`) removes ALL of its tools including the ones wanted,
+# verified 2026-09-08.
+ANSWER_DENIED = ("mcp__publisher__compile_model",
+                 "mcp__publisher__search_database_schema",
                  "mcp__publisher__reload_package",
                  "mcp__publisher__get_status",
                  "mcp__publisher__list_packages")
+
+# Every tool this server exposes, so the two lists above can be checked to
+# PARTITION it rather than merely not overlap. That is the answer to the one
+# weakness of enumerating a deny-list: a tool Publisher gains later would
+# otherwise be offered to the answerer silently, and instead it fails
+# `test_the_lists_partition_the_publisher_surface` until someone decides which
+# side it belongs on. Read from `get_status`/`tools/list` on a running server
+# when this needs re-checking; the authority is the server's registration, and
+# a mismatch here is a decision, not a lint.
+PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_context",
+                       "get_status", "list_packages", "reload_package",
+                       "search_database_schema", "search_malloy_docs")
 # The platform target: a hosted MCP server exposing the same two operations
 # under its own names. The CLI addresses a tool as `mcp__<server>__<tool>`, so
 # both halves are configuration -- `--hosted-mcp-server` names the server (which
