@@ -140,8 +140,14 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
     if not script.exists():
         script = (pathlib.Path(__file__).resolve().parent.parent.parent
                   / "eval-answer" / "scripts" / "verify_goldens.py")
+    # `ran: False` covers two opposite situations, so `couldNotRun` separates
+    # them: a legitimate skip (no edit, so there is nothing to invalidate) may
+    # proceed, while a check that SHOULD have happened and did not must block.
+    # Without the split, a missing verifier or a dead truth Publisher read as
+    # "not applicable" and the cluster sailed through the acceptance gate.
     if not script.exists():
-        return {"ran": False, "why": f"no verify_goldens.py at {script}"}
+        return {"ran": False, "couldNotRun": True,
+                "why": f"no verify_goldens.py at {script}"}
     if not diff.strip():
         return {"ran": False, "why": "no edit to invalidate anything"}
 
@@ -171,16 +177,20 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
         # exist, and it crashed AFTER the model edit, losing the receipts.
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
-        return {"ran": False, "why": "verify_goldens timed out"}
+        return {"ran": False, "couldNotRun": True,
+                "why": "verify_goldens timed out"}
     except OSError as exc:
-        return {"ran": False, "why": f"could not run verify_goldens: {exc}"}
+        return {"ran": False, "couldNotRun": True,
+                "why": f"could not run verify_goldens: {exc}"}
     (d / "verify_goldens.txt").write_text(p.stdout + p.stderr)
     # 0 clean, 1 a golden the edit may have invalidated, anything else the
-    # verifier failing to run at all. The third is not evidence about the
-    # goldens, and reporting it as one sends someone to settle a golden that is
-    # fine. It is a harness failure and says so.
+    # verifier failing to run at all (3 is its own "could not run"; see its
+    # EXIT CODES block). The third is not evidence about the goldens, and
+    # reporting it as one sends someone to settle a golden that is fine. It is a
+    # harness failure, says so, and still blocks: a check that did not happen is
+    # not a check that passed.
     if p.returncode not in (0, 1):
-        return {"ran": False,
+        return {"ran": False, "couldNotRun": True,
                 "why": f"verify_goldens could not run (exit {p.returncode}); "
                        f"see artifacts/clusters/*/verify_goldens.txt",
                 "model": str(model) if model else None,
@@ -380,6 +390,14 @@ def main(argv: list[str] | None = None) -> int:
                 print("  ! golden verification FAILED against the edited model:")
                 for line in (aud.get("tail") or [])[-6:]:
                     print(f"      {line}")
+            elif aud.get("couldNotRun"):
+                # Said out loud rather than left in the ledger. This used to
+                # print nothing at all, so a verifier that never ran looked
+                # exactly like one that passed.
+                print(f"  ! golden verification DID NOT RUN, so nothing checked "
+                      f"this edit: {aud.get('why')}")
+                for line in (aud.get("tail") or [])[-6:]:
+                    print(f"      {line}")
             for g in (r.get("goldenSuspect") or []):
                 print(f"  ! golden_suspect {g.get('qid')} via {g.get('entity')}: "
                       f"{g.get('stored')} -> {g.get('rederived')}")
@@ -418,20 +436,30 @@ def main(argv: list[str] | None = None) -> int:
     # acceptance check does not get to start until a human settles each one. Reported, not
     # repaired: an improver editing its own answer key removes the only
     # independent check on the edit.
+    # `couldNotRun` blocks alongside a real finding. The two are different facts
+    # -- one is evidence about a golden, the other is the absence of evidence --
+    # and the report below keeps them apart, but neither is a pass. Letting an
+    # unrun check through was the same false-green the exit-code split fixed one
+    # layer down.
     blocked = [(r, r.get("goldenSuspect") or [],
                 (r.get("goldenAudit") or {}))
                for r in results]
     blocked = [(r, g, aud) for r, g, aud in blocked
-               if g or (aud.get("ran") and not aud.get("clean"))]
+               if g or (aud.get("ran") and not aud.get("clean"))
+               or aud.get("couldNotRun")]
     if blocked:
-        print(f"\nACCEPTANCE CHECK BLOCKED: {len(blocked)} cluster(s) may have invalidated a "
-              f"golden. Settle each through the golden side door in "
-              f"skill:eval-loop before re-answering.")
+        print(f"\nACCEPTANCE CHECK BLOCKED: {len(blocked)} cluster(s) either may "
+              f"have invalidated a golden or were never checked. Settle each "
+              f"through the golden side door in skill:eval-loop, and re-run any "
+              f"verification that failed to start, before re-answering.")
         for r, g, aud in blocked:
             print(f"  {r['issue_id']}")
             if aud.get("ran") and not aud.get("clean"):
                 print(f"    verify_goldens failed; see "
                       f"artifacts/clusters/*/verify_goldens.txt")
+            elif aud.get("couldNotRun"):
+                print(f"    verify_goldens DID NOT RUN ({aud.get('why')}); this "
+                      f"cluster is unverified, not clean")
             for x in g:
                 print(f"    {x.get('qid')}: {x.get('entity')} "
                       f"{x.get('stored')} -> {x.get('rederived')}")

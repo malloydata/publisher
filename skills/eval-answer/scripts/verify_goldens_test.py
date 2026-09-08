@@ -4,6 +4,7 @@ under test. The rest of verify_goldens needs a live Publisher and is exercised
 by running it."""
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -123,6 +124,41 @@ class ModelText(unittest.TestCase):
     def test_a_missing_path_is_empty_not_an_error(self):
         self.assertEqual(model_text(self.tmp / "nope"), "")
         self.assertEqual(model_text(None), "")
+
+
+class ExitCodes(unittest.TestCase):
+    """The three-way signal improve.py's acceptance gate reads.
+
+    An uncaught traceback exits 1 by default, and 1 is the code meaning "a
+    golden drifted" -- so a missing cases.jsonl used to send someone to settle a
+    golden that was fine. Anything unanticipated must land outside {0, 1}.
+    """
+
+    SCRIPT = pathlib.Path(__file__).resolve().parent / "verify_goldens.py"
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_it(self, *args):
+        return subprocess.run(
+            [sys.executable, str(self.SCRIPT), *args],
+            capture_output=True, text=True, timeout=120)
+
+    def test_a_crash_exits_3_not_1(self):
+        # set.json present, cases.jsonl absent: the read that used to raise
+        # FileNotFoundError straight through Python's default exit status.
+        (self.tmp / "set.json").write_text('{"truthPackage": "x"}')
+        p = self.run_it("--set", str(self.tmp),
+                        "--publisher", "http://127.0.0.1:9")
+        self.assertEqual(p.returncode, 3, p.stderr[-400:])
+        self.assertIn("could not run", p.stderr)
+        self.assertIn("says NOTHING about the goldens", p.stderr)
+
+    def test_a_usage_error_still_exits_2(self):
+        self.assertEqual(self.run_it().returncode, 2)
 
 
 if __name__ == "__main__":

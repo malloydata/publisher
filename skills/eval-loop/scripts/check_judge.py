@@ -94,6 +94,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default=None, help="comma-separated qids")
     ap.add_argument("--out", type=pathlib.Path, default=None)
     a = ap.parse_args(argv)
+    # Refused, not clamped. `--repeat 0` judged nothing and still reported every
+    # fixture green: `all(x == want for x in [])` is vacuously True, so `fails`
+    # came back empty and this exited 0 having never called the judge once. A
+    # gate that passes without running is worse than one that errors.
+    if a.repeat < 1:
+        ap.error(f"--repeat must be at least 1, got {a.repeat}. Each fixture is "
+                 f"judged N times; 0 would assert nothing. Fix: --repeat 3")
     # run_baseline.run_judge reads two attributes off this namespace that the
     # CLI never defined, so the checker died on its first fixture with an
     # AttributeError -- which is how the only thing that checks the judge came

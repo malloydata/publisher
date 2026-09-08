@@ -72,6 +72,35 @@ class Invocation(unittest.TestCase):
         r = improve.verify_goldens(a, self.art, "a diff")
         self.assertIn("ran", r)
 
+    def stub_verifier(self, body: str) -> None:
+        """A per-set verifier override, which verify_goldens() prefers."""
+        p = self.set_dir / "verify_goldens.py"
+        p.write_text("import sys\n" + body)
+
+    def test_a_verifier_exiting_3_is_marked_could_not_run_not_unclean(self):
+        # The discriminator the acceptance gate reads. A skip and a failure both
+        # carry `ran: False`, and only one of them may proceed. 3 is the
+        # verifier's own "did not run"; it must never read as a golden finding.
+        self.stub_verifier("print('boom', file=sys.stderr)\nsys.exit(3)\n")
+        r = improve.verify_goldens(self.a, self.art, "a diff")
+        self.assertTrue(r.get("couldNotRun"))
+        self.assertNotIn("clean", r)
+        self.assertIn("exit 3", r["why"])
+
+    def test_a_verifier_exiting_1_is_a_golden_finding_not_a_harness_failure(self):
+        # The other side of the split: 1 IS evidence about the goldens.
+        self.stub_verifier("print('drifted')\nsys.exit(1)\n")
+        r = improve.verify_goldens(self.a, self.art, "a diff")
+        self.assertTrue(r["ran"])
+        self.assertFalse(r["clean"])
+        self.assertFalse(r.get("couldNotRun"))
+
+    def test_a_legitimate_skip_is_not_marked_could_not_run(self):
+        # No edit means there is genuinely nothing to invalidate, so this one
+        # must NOT block -- otherwise every no-op cluster fails the gate.
+        r = improve.verify_goldens(self.a, self.art, "   ")
+        self.assertFalse(r.get("couldNotRun"))
+
     def test_a_set_with_no_truth_package_reads_as_clean(self):
         # Documented, not endorsed: the verifier exits 0 with "nothing to
         # re-derive" when it cannot find a truth package, so the audit passes

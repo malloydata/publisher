@@ -55,6 +55,20 @@ A canonical query may be written as `duckdb.table('data/x.parquet')` so it
 reads as raw-data provenance; Publisher's query endpoint rejects that form. If
 `set.json` has `"truthTableRewrite": true`, such references are rewritten to the
 bare table stem, which the truth model is expected to bind to the same file.
+
+EXIT CODES
+
+  0  every golden re-derived, no findings
+  1  a golden drifted, or a hard finding -- evidence ABOUT the goldens
+  2  usage error (argparse)
+  3  this could not run at all -- says nothing about the goldens
+
+3 is load-bearing and it is why the codes are enumerated here. `improve.py`'s
+acceptance gate has to tell "your edit may have invalidated a golden" from "the
+check never happened", and Python exits 1 on an uncaught traceback -- which
+landed a missing `cases.jsonl` on the golden-finding code and sent someone to
+settle a golden that was fine. A caller must treat anything outside {0, 1} as
+"did not run", and must not read it as a pass.
 """
 from __future__ import annotations
 
@@ -63,6 +77,7 @@ import json
 import pathlib
 import re
 import sys
+import traceback
 from typing import Any
 
 from check_must_not_use import candidate as must_not_use_candidate
@@ -464,5 +479,17 @@ def main() -> int:
     return 1 if r["drifted"] or hard else 0
 
 
+# Anything this script did not anticipate exits here, not on 1. See EXIT CODES.
+CANNOT_RUN = 3
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception:
+        traceback.print_exc()
+        print("\nverify_goldens could not run, so this says NOTHING about the "
+              "goldens. Fix the error above and re-run; do not read it as a "
+              "pass or as a drifted golden.", file=sys.stderr)
+        sys.exit(CANNOT_RUN)
