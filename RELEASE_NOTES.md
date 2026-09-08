@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] (BREAKING) — every MCP tool loses its `malloy_` prefix, and get_context answers in one shape
+## [0.2.4] (BREAKING) — every MCP tool loses its `malloy_` prefix, and get_context answers in one shape
 
 **Every MCP tool is renamed.** The `malloy_` prefix is gone and the names are bare
 snake_case. There is no alias and no deprecation window: the old names are removed,
@@ -87,7 +87,7 @@ spellings in the docs indefinitely.
 
 ---
 
-## [Unreleased] — bound the memory a LARGE DuckLake write spends holding Parquet
+## [0.2.4] — bound the memory a LARGE DuckLake write spends holding Parquet
 
 `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` caps how large a Parquet file DuckLake writes
 before rotating to the next one. Unset, nothing changes: no option is set and the attach
@@ -152,7 +152,7 @@ so until it ships in a release, this is the lever available.
 
 ---
 
-## [Unreleased] — a pre-aggregation rollup can be built into and served from a storage destination
+## [0.2.4] — a pre-aggregation rollup can be built into and served from a storage destination
 
 `storage=` now works on a `#@ preaggregate` line: the rollup is built into that
 destination and served from it, and a query that names the base source is unchanged — it
