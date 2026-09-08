@@ -363,6 +363,12 @@ def judge_case(case: dict[str, Any], model: str, a: argparse.Namespace,
            # and the second exists so that one stray tool attempt costs a turn
            # rather than the whole verdict.
            "--max-turns", "2", "--restricted",
+           # This judge names no MCP server, and without the flag that is read
+           # as "do not restrict MCP" rather than "grant none": measured
+           # 2026-09-08, it was handed 72 of the operator's account connectors,
+           # among them a live `execute_query`. The prompt above promises the
+           # agent has no data access, so the flag is what makes that true.
+           "--strict-mcp-config",
            "--disallowedTools", *JUDGE_BLOCKED]
     # `no_text`, not `no_events`: this judge is instrumentation, not the subject
     # of the measurement, so a call that emitted events but no usable text has

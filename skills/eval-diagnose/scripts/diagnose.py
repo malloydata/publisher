@@ -56,7 +56,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-loop" / "scripts"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
-from agent_harness import default_manifest, manifest_skills, skills_roots, spawn_agent  # noqa: E402
+from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
+                           manifest_skills, skills_roots, spawn_agent)
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
@@ -74,7 +75,10 @@ HOSTED_DIAGNOSE_TOOLS = ("get_context", "execute_query", "search_malloy_docs")
 def hosted_diagnose_tools(server: str) -> tuple[str, ...]:
     return tuple(f"mcp__{server}__{t}" for t in HOSTED_DIAGNOSE_TOOLS) + (
         "Read", "Grep", "Glob")
-NO_EDITS = ("Edit", "Write", "NotebookEdit")
+# `NO_EDITS` and `NO_SHELL` come from agent_harness; neither agent here
+# writes or runs anything, and blocking the edit tools while leaving
+# `Bash` granted only looks like a fence.
+READ_ONLY = (*NO_EDITS, *NO_SHELL)
 
 # Codes are written in the skill's tables as a backticked SHOUTY-KEBAB token in
 # the first column. Parsed, never copied: a hardcoded list silently stops
@@ -208,7 +212,7 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
         mcp_url=a.mcp_url,
         tools=hosted_diagnose_tools(a.hosted_mcp_server) if platform
         else DIAGNOSE_TOOLS,
-        blocked=NO_EDITS,
+        blocked=READ_ONLY,
         cwd=a.model_dir, turns=a.max_turns, timeout=a.timeout,
         retries=a.retries, save_transcript=d / "diagnosis.jsonl",
         mcp_server=a.hosted_mcp_server if platform else "publisher")
@@ -345,7 +349,7 @@ def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
         # output contract now." -- text, so no retry fired, and the run
         # recorded zero clusters. A turn budget tuned for a pasted prompt is
         # too tight the moment the prompt stops carrying everything.
-        mcp_url=None, blocked=NO_EDITS, turns=14, timeout=a.timeout,
+        mcp_url=None, blocked=READ_ONLY, turns=14, timeout=a.timeout,
         retries=a.retries, save_transcript=out / "clustering.jsonl")
     (out / "clustering.md").write_text(r.text)
     res = r.json or {"clusters": [], "reasoning": r.error or "unparseable"}

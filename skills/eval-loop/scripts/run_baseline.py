@@ -95,25 +95,7 @@ HOSTED_TOOLS_DEFAULT = ("get_context", "execute_query", "search_malloy_docs")
 
 def hosted_tools(server: str, bare: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(f"mcp__{server}__{t}" for t in bare)
-# `--restricted` used to do two jobs at once: hide the settings that load
-# skills, AND strip the host toolset down to nothing. Turning it off to get
-# skills restored the FULL default toolset -- Bash, Task, ToolSearch and the
-# rest -- which was verified on 2026-09-01 by reading an answerer transcript's
-# init event. So the deny-list now has to name them: an answerer holding Bash
-# can reach the eval set on disk no matter what its cwd is, and one holding
-# Task can spawn a sub-agent that is confined by nothing at all.
-BLOCKED_TOOLS = ("Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch",
-                 "Bash", "Task", "ToolSearch", "Monitor", "SendMessage",
-                 "ListAgents", "CronCreate", "CronDelete", "CronList",
-                 "RemoteTrigger", "PushNotification", "ScheduleWakeup",
-                 "Workflow", "DesignSync", "EnterWorktree", "ExitWorktree",
-                 "TaskOutput", "TaskStop", "ShareOnboardingGuide",
-                 "ReportFindings",
-                 # Granted whenever the MCP server advertises resources (the
-                 # hosted server does); seen 2026-09-01 on the first platform
-                 # smoke, where they alone flagged the attempt contaminated.
-                 "ListMcpResourcesTool", "ReadMcpResourceDirTool",
-                 "ReadMcpResourceTool")
+
 
 # get_context and executeQuery results arrive as "[Resource from publisher at
 # <uri>] {json}". Nothing else in the payload is machine-readable.
@@ -132,9 +114,26 @@ from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
 import verify_goldens  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from agent_harness import (build_workspace, default_manifest,  # noqa: E402
+from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
+                           build_workspace, default_manifest,
                            manifest_skills, no_events, no_text,
                            run_cli, skills_roots)
+
+# `--restricted` used to do two jobs at once: hide the settings that load
+# skills, AND strip the host toolset down to nothing. Turning it off to get
+# skills restored the FULL default toolset -- Bash, Task, ToolSearch and the
+# rest -- which was verified on 2026-09-01 by reading an answerer transcript's
+# init event. So the deny-list has to name them: an answerer holding Bash can
+# reach the eval set on disk no matter what its cwd is, and one holding Task
+# can spawn a sub-agent that is confined by nothing at all.
+#
+# The answerer writes nothing and runs nothing, so its fence is the whole of
+# the role-independent core plus both role-dependent groups. Composed rather
+# than retyped: this list and the one in `agent_harness` were two hand-kept
+# enumerations, 28 names and 2, and every agent spawned through the sibling
+# helper got the short one. Defined here after the import rather than above it
+# because that is where the groups become available.
+BLOCKED_TOOLS = (*ALWAYS_BLOCKED, *NO_EDITS, *NO_SHELL)
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 REPO_ROOT = SKILLS_ROOT.parent
@@ -392,8 +391,13 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
     cmd += ["--disallowedTools", *blocked]
     if effort:
         cmd += ["--effort", effort]
+    # Unconditional, for the reason spelled out in `agent_harness.spawn_agent`:
+    # the judge below is called with `mcp=None`, and without this flag that
+    # granted it the operator's account connectors -- including a live
+    # `execute_query` it could have settled a verdict with.
+    cmd += ["--strict-mcp-config"]
     if mcp:
-        cmd += ["--strict-mcp-config", "--mcp-config", mcp]
+        cmd += ["--mcp-config", mcp]
     if tools:
         cmd += ["--allowedTools", *tools]
     # The subprocess, the stream-json parse and the retry are shared with
