@@ -104,9 +104,14 @@ def config(run: Path) -> dict[str, Any]:
 # The pins two runs must share to be one measurement. A difference in any of
 # them is a difference in what was measured, so a flip count across it is not a
 # noise band and not an A/B -- it is two numbers about two different things.
+# `modelGitSha` and `targetVersion` belong here for the same reason the rest do:
+# they are WHICH BUILD answered. Two arms measured across a model edit or a
+# republish are two numbers about two different models, and leaving them out let
+# that pair read as a noise band. Both are null on runs that predate them, and
+# two nulls compare equal, so an older pair is unaffected.
 COMPARABLE = ("datasetVersion", "datasetSha", "judgeVersion", "rubricSha",
               "answererModel", "judgeModel", "answererManifest",
-              "retrievalMode")
+              "retrievalMode", "modelGitSha", "targetVersion")
 
 
 def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,

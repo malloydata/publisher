@@ -664,11 +664,30 @@ def parse_scope(scope: str, target_version: str | None
     tell which the answers came from.
     """
     notes: list[str] = []
+    fix = ("Fix: --scope samples/ecommerce@0.0.58 (the @version may be omitted "
+           "when --target-version carries it)")
     if "/" not in scope:
-        raise SystemExit("--scope must be environment/package[@version]")
+        raise SystemExit(f"Invalid --scope {scope!r}: expected "
+                         f"environment/package[@version], found no '/'. {fix}")
     env, rest = scope.split("/", 1)
-    pkg, _, version = rest.partition("@")
-    version = version.strip() or None
+    pkg, at, version = rest.partition("@")
+    if not env.strip() or not pkg.strip():
+        raise SystemExit(f"Invalid --scope {scope!r}: expected "
+                         f"environment/package[@version], and neither part may "
+                         f"be empty. {fix}")
+    version = version.strip()
+    # Refused, not shrugged off. A trailing `@`, or a second one, is a typo, and
+    # both used to sail through: the platform guard only asked whether the string
+    # CONTAINED an '@', so `env/pkg@` satisfied it and then resolved to no
+    # version at all -- an unpinned run wearing a pinned run's guard.
+    if at and not version:
+        raise SystemExit(f"Invalid --scope {scope!r}: a trailing '@' with no "
+                         f"version after it. Drop the '@', or name the "
+                         f"version. {fix}")
+    if "@" in version:
+        raise SystemExit(f"Invalid --scope {scope!r}: more than one '@', so "
+                         f"{version!r} is not a version. {fix}")
+    version = version or None
     if version and version.startswith("v") and version[1:2].isdigit():
         # The tools say not to prefix, and a `v` reaches the API as part of the
         # name. Normalised rather than refused: it is a typing habit, not an
@@ -682,8 +701,6 @@ def parse_scope(scope: str, target_version: str | None
             f"{target_version}; they must agree, or the run cannot say which "
             f"version its answers came from")
     version = version or target_version
-    if not env.strip() or not pkg.strip():
-        raise SystemExit("--scope must be environment/package[@version]")
     return env.strip(), pkg.strip(), version, notes
 
 
@@ -1418,10 +1435,11 @@ def main(argv: list[str] | None = None) -> int:
     # or model source -- a weaker verdict, stamped on the run so nobody reads a
     # platform score as if it had the local judge's evidence.
     if a.target == "platform":
-        if not a.target_version and not (a.scope and "@" in a.scope):
-            raise SystemExit("--target platform requires --target-version, or "
-                             "a --scope of environment/package@version (the "
-                             "published version the workspace serves)")
+        # Parse FIRST, then gate on the version that actually resolved. Asking
+        # whether the raw string contained an '@' let `env/pkg@` pass a guard it
+        # could not satisfy, and the else-branch warning below was skipped too
+        # because a.scope was truthy -- so the run went out unpinned and silent,
+        # which is the one thing this pin exists to prevent.
         if a.scope:
             _, _, resolved, notes = parse_scope(a.scope, a.target_version)
             for n in notes:
@@ -1429,7 +1447,13 @@ def main(argv: list[str] | None = None) -> int:
             # One pin, wherever it came from, so run.json and the calls cannot
             # disagree about which build answered.
             a.target_version = resolved
-        else:
+        if not a.target_version:
+            raise SystemExit(
+                "Invalid pins for --target platform: expected a published "
+                "version, got none. Pass --target-version, or a --scope of "
+                "environment/package@version (the version the workspace "
+                "serves). Fix: --scope samples/ecommerce@0.0.58")
+        if not a.scope:
             print("  ! no --scope, so the version reaches run.json but not the "
                   "calls: the answerer will get whatever version the workspace "
                   "serves. Pass --scope ENV/PACKAGE@VERSION to pin them.")

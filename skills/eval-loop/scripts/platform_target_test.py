@@ -115,6 +115,29 @@ class ScopeParsing(unittest.TestCase):
             with self.assertRaises(SystemExit, msg=bad):
                 rb.parse_scope(bad, None)
 
+    def test_a_trailing_at_with_no_version_is_refused(self):
+        # It used to parse to version None while still satisfying the platform
+        # guard's `"@" in a.scope` test, so the run went out unpinned and the
+        # no-scope warning was skipped as well. Refused at the source now.
+        with self.assertRaises(SystemExit) as e:
+            rb.parse_scope("org/pkg@", None)
+        self.assertIn("trailing '@'", str(e.exception))
+
+    def test_a_second_at_is_refused_rather_than_taken_as_the_version(self):
+        with self.assertRaises(SystemExit) as e:
+            rb.parse_scope("org/pkg@1.0@2.0", None)
+        self.assertIn("more than one '@'", str(e.exception))
+
+    def test_every_refusal_says_what_was_expected_and_how_to_fix_it(self):
+        # These messages are read by an agent conducting the loop, so "invalid"
+        # on its own is not enough.
+        for bad in ("noslash", "org/", "org/pkg@", "org/pkg@1@2"):
+            with self.assertRaises(SystemExit) as e:
+                rb.parse_scope(bad, None)
+            msg = str(e.exception)
+            self.assertIn("Invalid --scope", msg, msg)
+            self.assertIn("Fix: --scope", msg, msg)
+
 
 class SkillsWrittenForAnotherHost(unittest.TestCase):
     """The guard that says so before a platform run measures the wrong thing.
