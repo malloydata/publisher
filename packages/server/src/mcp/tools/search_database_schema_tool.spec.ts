@@ -174,7 +174,7 @@ describe("bareTableName", () => {
    });
 });
 
-describe("malloy_searchDatabaseSchema tiers", () => {
+describe("search_database_schema tiers", () => {
    it("lists environments with their connections when given no arguments", async () => {
       const handler = captureHandler(storeWithConnections());
       const payload = parse(await handler({}));

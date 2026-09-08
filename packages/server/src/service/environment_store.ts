@@ -29,6 +29,7 @@ import {
    EnvironmentNotFoundError,
    FrozenConfigError,
    PackageNotFoundError,
+   PublisherConfigError,
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
@@ -1780,11 +1781,23 @@ export class EnvironmentStore {
          return getProcessedPublisherConfig(serverRootPath);
       } catch (error) {
          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-            logger.error(
-               `Error reading ${PUBLISHER_CONFIG_NAME}. Generating from directory`,
-               { error },
-            );
-            return { frozenConfig: false, environments: [] };
+            // A file the operator wrote that Publisher cannot honour: malformed
+            // JSON, a rejected shape, or a `${VAR}` naming an unset variable.
+            // Raised, not absorbed. This used to log and return an EMPTY
+            // manifest, which meant a single typo produced a server that
+            // printed PUBLISHER_READY, reported operationalState "serving" and
+            // an empty loadErrors, and served no environment at all -- with the
+            // cause reduced to `{"error":{}}`, since an Error has no enumerable
+            // fields to serialize. loadErrors is the field operators and agents
+            // are told to check, and it cannot carry this: it is keyed by
+            // environment and there are no environments to key by.
+            //
+            // Boot turns this into PUBLISHER_INIT_FAILED via initialize()'s
+            // handler, which is the documented terminal signal. A server
+            // already serving keeps serving: getEnvironment returns a loaded
+            // environment before reaching here, so only an explicit reload
+            // pays, and it answers with the reason rather than with silence.
+            throw new PublisherConfigError(PUBLISHER_CONFIG_NAME, error);
          } else {
             // If publisher.config.json is missing, generate the manifest from directories
             try {
@@ -1809,8 +1822,13 @@ export class EnvironmentStore {
                }
                return { frozenConfig: false, environments };
             } catch (lsError) {
+               // `{ error }` alone serializes an Error to {}, since its fields
+               // are not enumerable, so the message has to be lifted out.
                logger.error(`Error listing directories in ${serverRootPath}`, {
-                  error: lsError,
+                  error:
+                     lsError instanceof Error
+                        ? lsError.message
+                        : String(lsError),
                });
                return { frozenConfig: false, environments: [] };
             }

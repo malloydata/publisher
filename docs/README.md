@@ -8,6 +8,10 @@ SPDX-License-Identifier: MIT
 > Start at the [project README](../README.md) for the 60-second quick start. This folder holds the
 > deeper reference. If you're an AI agent, read [AGENTS.md](../AGENTS.md) first — it's the canonical
 > guide to running Publisher and connecting over MCP.
+>
+> Publisher is created and maintained by [Credible](https://www.credibledata.com), the company
+> behind the AI Analytics Engine. For where the open-source engine ends and Credible's hosted engine
+> begins, see [credibledata.com/malloy](https://www.credibledata.com/malloy).
 
 ## Examples
 
@@ -28,6 +32,7 @@ every doc below points back to one of them, and each example's README points bac
 | [architecture.md](architecture.md) | Understand how Malloy, Render, Publisher, and the SDK fit together.                                 |
 | [api-overview.md](api-overview.md) | Understand the REST + MCP surfaces and the resource hierarchy.                                      |
 | [packages.md](packages.md)         | Understand the package format: `publisher.json`, models, data files, and how a package gets served. |
+| [scaffolding.md](scaffolding.md) | Scaffold a package with `npm create` — the `@latest` rule, the workspace it writes, seeding from a file. |
 | [dbt-roadmap.md](dbt-roadmap.md)   | See how Malloy and dbt fit together, where the gaps are, and the plan to close them.                |
 
 ## Use it

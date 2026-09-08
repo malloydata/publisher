@@ -50,6 +50,41 @@ async function validate(body: string) {
    );
 }
 
+/** Validate source `s` from a model with an `include {}` access block. */
+async function validateWithAccess(body: string, include: string) {
+   const text = `##! experimental { persistence composite_sources access_modifiers }
+source: s is duckdb.sql("""${COLUMNS}""") extend {
+${body}
+} include {
+${include}
+}
+`;
+   const compiled = await loadTestModel(connections, text).getModel();
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   const contents = (compiled as any)._modelDef.contents;
+   return validateSourcePreaggregation(
+      "s",
+      contents["s"] as Parameters<typeof validateSourcePreaggregation>[1],
+   );
+}
+
+/** Validate source `s` when `s` itself carries `annotation`. */
+async function validateAnnotated(annotation: string, body: string) {
+   const text = `##! experimental { persistence composite_sources }
+${annotation}
+source: s is duckdb.sql("""${COLUMNS}""") extend {
+${body}
+}
+`;
+   const compiled = await loadTestModel(connections, text).getModel();
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   const contents = (compiled as any)._modelDef.contents;
+   return validateSourcePreaggregation(
+      "s",
+      contents["s"] as Parameters<typeof validateSourcePreaggregation>[1],
+   );
+}
+
 /** The codes reported for a body, in order. */
 async function codesFor(body: string): Promise<PreaggregateViolationCode[]> {
    return (await validate(body)).map((v) => v.code);
@@ -480,5 +515,146 @@ describe("every message names its target and offers a fix", () => {
             expect(violation.sourceName).toBe("s");
          }
       }
+   });
+});
+
+describe("placing a rollup in a storage destination", () => {
+   it("two destinations at one grain is refused, naming both and who asked", async () => {
+      // A grain is one table, so it can be built in one store. Same
+      // unsatisfiability as two namespaces, and refused rather than resolved by
+      // field order, which would place a rollup somewhere nobody chose.
+      const violations =
+         await validate(`  #@ preaggregate grain="category" storage=store_a
+  measure: revenue is amount.sum()
+  #@ preaggregate grain="category" storage=store_b
+  measure: order_count is count()`);
+      expect(violations.map((v) => v.code)).toEqual(["conflicting_storage"]);
+      for (const fragment of [
+         "`store_a`",
+         "`revenue`",
+         "`store_b`",
+         "`order_count`",
+      ]) {
+         expect(violations[0].message).toContain(fragment);
+      }
+   });
+
+   it("the same destination at one grain is not a conflict", async () => {
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" storage=store_a
+  measure: revenue is amount.sum()
+  #@ preaggregate grain="category" storage=store_a
+  measure: order_count is count()`),
+      ).toEqual([]);
+   });
+
+   it("different destinations at DIFFERENT grains are not a conflict", async () => {
+      // Two grains are two tables, and they can genuinely be placed differently.
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" storage=store_a
+  measure: revenue is amount.sum()
+  #@ preaggregate grain="order_date" storage=store_b
+  measure: order_count is count()`),
+      ).toEqual([]);
+   });
+
+   it("namespace= and storage= written together is refused", async () => {
+      const violations =
+         await validate(`  #@ preaggregate grain="category" namespace="ns_a" storage=store_a
+  measure: revenue is amount.sum()`);
+      expect(violations.map((v) => v.code)).toEqual(["namespace_with_storage"]);
+      expect(violations[0].message).toContain('namespace="ns_a"');
+      expect(violations[0].message).toContain("storage=store_a");
+   });
+
+   it("a namespace= beside a storage= BASE is untouched, because nothing is inherited", async () => {
+      // The configuration the shipped docs describe: a `storage=` base lends
+      // nothing, so its rollups are colocated and a `namespace=` on the grain
+      // means exactly what it always did. No destination is in play for the
+      // refusal to fire against.
+      expect(
+         (
+            await validateAnnotated(
+               "#@ persist storage=lake",
+               `  #@ preaggregate grain="category" namespace="ns_a"
+  measure: revenue is amount.sum()`,
+            )
+         ).map((v) => v.code),
+      ).toEqual([]);
+   });
+
+   it("a namespace= with no storage anywhere is still fine", async () => {
+      // The colocated path must not acquire a refusal it never had.
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" namespace="ns_a"
+  measure: revenue is amount.sum()`),
+      ).toEqual([]);
+   });
+
+   it("an inherited storage= with no namespace= is fine — that is the feature", async () => {
+      expect(
+         (
+            await validateAnnotated(
+               "#@ persist storage=lake",
+               `  #@ preaggregate grain="category"
+  measure: revenue is amount.sum()`,
+            )
+         ).map((v) => v.code),
+      ).toEqual([]);
+   });
+
+   it("an empty storage= is refused rather than ignored", async () => {
+      expect(
+         await codesFor(`  #@ preaggregate grain="category" storage=""
+  measure: revenue is amount.sum()`),
+      ).toEqual(["empty_storage"]);
+   });
+});
+
+describe("a rollup may not store what the source hides", () => {
+   // A rollup is a table of its own: its grain and each measure's partial are
+   // STORED, and the serve path rebinds that table under the base's name with the
+   // stored columns declared. Nothing on that path consults the author's model, so
+   // a field hidden on the source is not hidden on the rollup — a query the live
+   // path refuses is answered from the table.
+   //
+   // The colocated tier does not have the hole, but only by accident: its
+   // companion imports the author's model, so a private reference fails to compile
+   // across the file boundary and no table is built. The storage tier plans from
+   // the compiled contents directly, which removed the only thing enforcing access
+   // modifiers — so the rule belongs here, where it is a message rather than a
+   // silent difference between two tiers.
+
+   it("refuses #@ preaggregate on a private measure", async () => {
+      const violations = await validateWithAccess(
+         `  #@ preaggregate grain="category"
+  measure: revenue is amount.sum()`,
+         "  public: category, amount, order_id, order_time, order_date\n  private: revenue",
+      );
+      expect(violations.map((v) => v.code)).toEqual(["non_public_measure"]);
+      expect(violations[0].fieldName).toBe("revenue");
+   });
+
+   it("refuses a grain naming a private dimension", async () => {
+      const violations = await validateWithAccess(
+         `  #@ preaggregate grain="category"
+  measure: revenue is amount.sum()`,
+         "  public: revenue, amount, order_id, order_time, order_date\n  private: category",
+      );
+      expect(violations.map((v) => v.code)).toEqual([
+         "grain_dimension_not_public",
+      ]);
+   });
+
+   it("a public measure at a public grain is unaffected", async () => {
+      expect(
+         (
+            await validateWithAccess(
+               `  #@ preaggregate grain="category"
+  measure: revenue is amount.sum()`,
+               "  public: *",
+            )
+         ).map((v) => v.code),
+      ).toEqual([]);
    });
 });

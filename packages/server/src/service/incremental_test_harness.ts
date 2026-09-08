@@ -35,18 +35,36 @@ export function duckdbTestConnections(): {
    };
 }
 
+/**
+ * Load a single-file model, keeping the Runtime that loaded it.
+ *
+ * {@link loadTestModel} discards the Runtime, which is right for anything
+ * model-level. Runtime-level APIs need it back — `getBuildTargets` lives on
+ * Runtime rather than on Model because it resolves a connection digest per
+ * source, which only the connection map can answer.
+ */
+export function loadTestRuntime(
+   connections: FixedConnectionMap,
+   model: string,
+): { runtime: Runtime; materializer: ModelMaterializer } {
+   const urlReader = new InMemoryURLReader(
+      new Map([[`${ROOT}m.malloy`, model]]),
+   );
+   const runtime = new Runtime({ urlReader, connections });
+   return {
+      runtime,
+      materializer: runtime.loadModel(new URL(`${ROOT}m.malloy`), {
+         importBaseURL: new URL(ROOT),
+      }),
+   };
+}
+
 /** Load a single-file model; the materializer compiles on demand. */
 export function loadTestModel(
    connections: FixedConnectionMap,
    model: string,
 ): ModelMaterializer {
-   const urlReader = new InMemoryURLReader(
-      new Map([[`${ROOT}m.malloy`, model]]),
-   );
-   const runtime = new Runtime({ urlReader, connections });
-   return runtime.loadModel(new URL(`${ROOT}m.malloy`), {
-      importBaseURL: new URL(ROOT),
-   });
+   return loadTestRuntime(connections, model).materializer;
 }
 
 /**
