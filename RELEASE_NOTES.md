@@ -216,6 +216,8 @@ is offered whether or not it has been built yet, so adding a coarse grain to a p
 that already has a built finer rollup costs acceleration until the new one builds —
 answers are unaffected, and it lasts one build.
 
+---
+
 ## [Unreleased] — a persist name must now be a plain identifier path
 
 `#@ persist name=` accepts the table name a source materializes into, and that
@@ -241,6 +243,8 @@ packages, 152 distinct names -- found none that this refuses, so no package that
 loads today stops loading. The check exists because the value is author-supplied
 input on a server that loads packages it did not write, not because a name in the
 wild was doing this.
+
+---
 
 ## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
 
