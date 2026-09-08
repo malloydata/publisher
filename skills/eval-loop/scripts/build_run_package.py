@@ -281,12 +281,27 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     for rd in run_dirs:
         cfg = read_json(rd / "run.json")
         run_id = cfg.get("runId") or rd.name
+        # WHICH BUILD AND WHICH RETRIEVER ANSWERED, carried through to the
+        # browsable package and not just to run.json and flip_table's console.
+        # `judge_version` and `set_version` above are pins of exactly the same
+        # kind, so leaving these four in the ledger meant the data app could
+        # show two arms side by side with no way to see they measured different
+        # models. Null on runs written before each field existed.
+        reexec = cfg.get("reExecution") or {}
         runs.append({
             "run_id": run_id, "label": cfg.get("label") or rd.name,
             "target": cfg.get("target"), "model": cfg.get("answererModel"),
             "effort": cfg.get("effort"), "started": cfg.get("started"),
             "judge_version": cfg.get("judgeVersion"),
             "set_version": cfg.get("datasetVersion"),
+            "retrieval_mode": cfg.get("retrievalMode"),
+            "target_version": cfg.get("targetVersion"),
+            "model_git_sha": cfg.get("modelGitSha"),
+            "model_repo": cfg.get("modelRepo"),
+            "reexec_attempted": reexec.get("attempted"),
+            "reexec_ok": reexec.get("ok"),
+            "reexec_failed": reexec.get("failed"),
+            "reexec_no_query": reexec.get("noQuery"),
         })
         events = read_jsonl(rd / "events.jsonl")
         verdicts = {key(e): e for e in events if e.get("kind") == "score"}
@@ -447,7 +462,9 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
 
     write_csv(data / "runs.csv", runs, [
         "run_id", "label", "target", "model", "effort", "started",
-        "judge_version", "set_version"])
+        "judge_version", "set_version",
+        "retrieval_mode", "target_version", "model_git_sha", "model_repo",
+        "reexec_attempted", "reexec_ok", "reexec_failed", "reexec_no_query"])
     write_csv(data / "attempts.csv", attempts, [
         "attempt_key", "run_id", "qid", "sample", "phase", "submitted", "final_query",
         "answer_text", "n_get_context", "n_execute", "n_execute_errors",

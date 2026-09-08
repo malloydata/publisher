@@ -30,6 +30,22 @@ include {
   public: judge_version
   #(doc) datasetVersion of the set at run time.
   public: set_version
+  #(doc) Which retriever answered: semantic or lexical. Comparing across it is invalid.
+  public: retrieval_mode
+  #(doc) The published package version the answerer queried. Null on an unpinned run.
+  public: target_version
+  #(doc) The model commit the answers were given against. Null when no --model-repo was passed.
+  public: model_git_sha
+  #(doc) The repo model_git_sha names.
+  public: model_repo
+  #(doc) Predictions re-execution was attempted on.
+  public: reexec_attempted
+  #(doc) Predictions that re-executed cleanly.
+  public: reexec_ok
+  #(doc) Predictions whose query ran and errored. Not the same as having no query.
+  public: reexec_failed
+  #(doc) Attempts with no query to re-execute at all.
+  public: reexec_no_query
 }
 extend {
   primary_key: run_id
@@ -128,6 +144,8 @@ include {
   public: host_tool_uses
   #(doc) get_context and execute_query calls, the MCP subset of host_tool_uses.
   public: mcp_tool_uses
+  #(doc) MCP calls the answerer CLAIMED. Above mcp_tool_uses it under-reported: it cannot have made more calls than the host logged.
+  public: reported_calls
   #(doc) Whether the attempt saw gold or eval paths. Anything but false voids the verdict.
   public: contaminated
   #(doc) Package revision actually queried.
@@ -149,29 +167,33 @@ extend {
     #(doc) Number of attempts.
     attempt_count is count()
     #(doc) Attempts that produced a final query.
-    submitted_count is count() { where: submitted }
+    -- EVERY boolean column in this package is compared as a STRING, here and
+    -- below, and it is not a leftover from when the ledger wrote "true"/"false".
+    -- build_run_package's `flatten()` writes a bool as lowercase `true`/`false`,
+    -- and DuckDB then sniffs a populated column as BOOLEAN but a header-only one
+    -- as VARCHAR. Verified against the compiler: `= 'true'` compiles and
+    -- evaluates correctly under BOTH typings, while a bare `where: submitted`
+    -- fails as `non-boolean-filter` on the VARCHAR one -- which takes the whole
+    -- package down, not just this view, on the empty run that write_csv's
+    -- docstring exists to keep readable.
+    submitted_count is count() { where: submitted = 'true' }
     #(doc) Total get_context calls. The retrieval half of the effort cost.
-    get_context_calls is n_get_context.sum()
+    get_context_calls is sum(n_get_context::number)
     #(doc) Total execute_query calls.
-    execute_calls is n_execute.sum()
+    execute_calls is sum(n_execute::number)
     #(doc) execute_query calls that errored.
-    execute_errors is n_execute_errors.sum()
+    execute_errors is sum(n_execute_errors::number)
     #(doc) Mean get_context calls per attempt. The turn-cost number the product claim rests on.
-    avg_get_context_per_attempt is n_get_context.avg()
+    avg_get_context_per_attempt is avg(n_get_context::number)
     #(doc) Mean execute_query calls per attempt.
-    avg_execute_per_attempt is n_execute.avg()
+    avg_execute_per_attempt is avg(n_execute::number)
     #(doc) Attempts flagged contaminated. Any value above zero voids the run.
-    -- Compared as a STRING on purpose, and it is not a leftover from when the
-    -- ledger wrote "true"/"false". build_run_package writes a bool as lowercase
-    -- `true`/`false`, and DuckDB then sniffs a populated column as BOOLEAN but
-    -- a header-only one as VARCHAR. Verified against the compiler: `= 'true'`
-    -- compiles and evaluates correctly under BOTH typings, while a bare
-    -- `where: contaminated` fails as `non-boolean-filter` on the VARCHAR one.
+    -- Compared as a STRING for the reason given on submitted_count above.
     contaminated_count is count() { where: contaminated = 'true' }
     #(doc) What the arm cost to run. Half of the product claim; correctness is the other half.
-    total_cost_usd is cost_usd.sum()
+    total_cost_usd is sum(cost_usd::number)
     #(doc) Mean cost per attempt. Compare across arms only at equal case counts.
-    avg_cost_usd is cost_usd.avg()
+    avg_cost_usd is avg(cost_usd::number)
     #(doc) Total tokens the answerer consumed.
     -- Cast, like cases_covered below and for the same reason: a column that is
     -- empty in every row types as VARCHAR, and a platform run reports no token
@@ -179,9 +201,9 @@ extend {
     -- package with it, so the run that most needs reading shows nothing.
     total_tokens is sum(input_tokens::number) + sum(output_tokens::number)
     #(doc) Mean turns per attempt. Rises when the agent is groping rather than reading.
-    avg_turns is num_turns.avg()
+    avg_turns is avg(num_turns::number)
     #(doc) Mean wall-clock seconds per attempt.
-    avg_wall_seconds is wall_seconds.avg()
+    avg_wall_seconds is avg(wall_seconds::number)
     #(doc) Attempts the harness failed to complete. Excluded from a pass rate, not counted as failures.
     harness_errors is count() { where: run_error is not null }
 }
@@ -239,17 +261,18 @@ extend {
     scored_count is count() { where: recall is not null }
     #(doc) Mean recall over required entities. Unscored rows are excluded, not counted as zero.
     # percent
-    mean_recall is recall.avg()
+    mean_recall is avg(recall::number)
     #(doc) Mean precision, forgiving anything the case marks acceptable.
     # percent
-    mean_precision is precision.avg()
+    mean_precision is avg(precision::number)
     #(doc) Attempts that received every entity they needed.
     complete_retrievals is count() { where: recall >= 1.0 }
     #(doc) Share of scored attempts that received everything. Retrieval's own headline.
     # percent
     complete_rate is complete_retrievals / scored_count
     #(doc) Scored failures. Every one of these carries a where_to_fix.
-    failure_count is count() { where: failed }
+    -- String comparison for the reason given on submitted_count.
+    failure_count is count() { where: failed = 'true' }
     #(doc) Failures where retrieval delivered everything, so the fix is skills, not search.
     construction_failures is count() { where: where_to_fix = 'query construction' }
     #(doc) Failures where the entity existed and search missed it.
@@ -593,7 +616,8 @@ query: pass_by_coverage is scores -> {
 #(doc) Where the failures need fixing. The most actionable cut in the package.
 #(doc) These counts sum to the run's failure count: every failure is placed.
 query: failures_by_where_to_fix is retrieval -> {
-  where: failed
+  -- String comparison for the reason given on submitted_count.
+  where: failed = 'true'
   group_by: arm is runs.label, where_to_fix
   aggregate: attempts is count()
   order_by: attempts desc
