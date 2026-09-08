@@ -79,16 +79,25 @@ def candidate(entry: str) -> str | None:
     return head if _PATH.match(head) else None
 
 
+_NOISE = re.compile(r"/\*.*?\*/|--[^\n]*|//[^\n]*|'[^'\n]*'|\"[^\"\n]*\"", re.S)
+
+
 def strip_noise(malloy: str) -> str:
     """Query text with comments and string literals blanked out.
 
     A forbidden name inside `-- we deliberately avoided shipped_at` is the
     answerer explaining itself, and vetoing on it would punish the explanation
     rather than the query.
+
+    ONE left-to-right pass, not a comment pass followed by a string pass:
+    whichever token opens first wins. Stripping comments first let a `--` or
+    `//` inside a string literal (`'https://x'`, a `'2024-01--2024-06'` range)
+    blank the rest of the line, and the veto then went silently dark for every
+    forbidden name after it on that line. Stripping strings first has the mirror
+    bug, on a quote inside a comment.
     """
-    out = re.sub(r"/\*.*?\*/", " ", malloy, flags=re.S)
-    out = re.sub(r"(--|//)[^\n]*", " ", out)
-    return re.sub(r"'[^'\n]*'|\"[^\"\n]*\"", " '' ", out)
+    return _NOISE.sub(lambda m: " '' " if m.group(0)[0] in "'\"" else " ",
+                      malloy)
 
 
 def _present(name: str, text: str) -> bool:

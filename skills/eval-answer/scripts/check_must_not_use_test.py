@@ -111,6 +111,27 @@ class Noise(unittest.TestCase):
         self.assertNotIn("shipped_at",
                          strip_noise("/* shipped_at */ where: x = 'shipped_at'"))
 
+    def test_a_comment_marker_inside_a_string_does_not_eat_the_line(self):
+        # The regression: stripping comments before strings read the `//` in a
+        # URL literal as a comment start and blanked the rest of the line, so
+        # every forbidden name after it silently escaped the veto.
+        q = ("run: x -> { where: link = 'https://example.com', "
+             "aggregate: c is shipped_at.sum() }")
+        self.assertIn("shipped_at", strip_noise(q))
+        self.assertEqual(check(["shipped_at"], q)["hits"], ["shipped_at"])
+
+    def test_a_double_hyphen_inside_a_string_does_not_eat_the_line(self):
+        q = ("run: x -> { where: r = '2024-01--2024-06', "
+             "aggregate: c is total_sales }")
+        self.assertEqual(check(["total_sales"], q)["hits"], ["total_sales"])
+
+    def test_a_quote_inside_a_comment_still_blanks_the_comment(self):
+        # The mirror bug the one-pass scan also has to avoid: fixing the above
+        # by stripping strings first would leave this comment's text live.
+        q = "run: x -> { -- avoided 'shipped_at' per the note\n  c is count() }"
+        self.assertNotIn("shipped_at", strip_noise(q))
+        self.assertEqual(check(["shipped_at"], q)["hits"], [])
+
 
 class JudgeNote(unittest.TestCase):
     def test_note_carries_prose_and_leaf_suspicions_only(self):
