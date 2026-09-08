@@ -1129,7 +1129,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ! {len(mismatched)} answerer skill(s) name Publisher-only "
                   f"tools on a PLATFORM run: {', '.join(mismatched)}")
             print(f"    The answerer holds mcp__{a.hosted_mcp_server}__* tools "
-                  f"and will be told to call malloy_* ones. Point "
+                  f"and will be told to call Publisher-only ones. Point "
                   f"--answerer-manifest at a manifest written for this host, or "
                   f"--skills-root at the checkout that ships it.")
     print(f"answerer skills: "

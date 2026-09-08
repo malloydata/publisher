@@ -1783,7 +1783,7 @@ function writeWorkspacePackageJson(
 /**
  * Put the `malloy` server in the host's MCP config, merging into an existing file
  * rather than skipping it. An existing .mcp.json is the common case in a project
- * an agent already works in, and skipping it left the agent with no `malloy_*`
+ * an agent already works in, and skipping it left the agent with no Malloy
  * tools while the CLI reported the endpoint wired.
  */
 function writeMcpConfig(
@@ -1932,12 +1932,12 @@ function renderAgentsFile(
          : [
               "",
               "One gate can void the reconnect fix below, and you cannot clear it yourself: if the",
-              "`malloy_*` tools are listed but every call is refused, the usual cause is that this",
+              "Malloy tools are listed but every call is refused, the usual cause is that this",
               "workspace has not been trusted, which also discards a `.claude/settings.json` allowlist.",
               "A human has to start Claude Code interactively in this directory once and answer the",
               "trust prompt; a non-interactive run is never asked, so it cannot clear the gate either.",
               "Tell the user and leave the choice to them. You will know the prompt was answered when a",
-              "`malloy_*` call returns data instead of being refused. If that does not change it, the",
+              "Malloy tool call returns data instead of being refused. If that does not change it, the",
               "other cause is a `malloy` server whose own approval was never given, which the user",
               "clears in the same `/mcp` panel named below. If the tools are not listed at all, this",
               "gate is not the cause, so read on.",

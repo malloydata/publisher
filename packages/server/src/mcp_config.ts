@@ -3,7 +3,7 @@
 
 /**
  * Put this server in the host's MCP config, so an agent opened here finds the
- * `malloy_*` tools without being told how.
+ * Malloy tools without being told how.
  *
  * An MCP client only knows a server exists if something registered it: a
  * `.mcp.json` in the directory the session starts in, or a manual

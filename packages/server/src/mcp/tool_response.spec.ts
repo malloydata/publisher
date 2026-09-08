@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { formatErrorText, jsonResource, jsonToolError } from "./tool_response";
 
-// Pins the wire shape every malloy_* tool returns. Two properties here are
+// Pins the wire shape every Malloy tool returns. Two properties here are
 // regressions waiting to happen, so they are asserted explicitly rather than
 // left to the tools' own specs:
 //

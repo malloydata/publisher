@@ -4,7 +4,7 @@
 import type { ErrorDetails } from "./error_messages";
 
 /**
- * Shared construction of the MCP content blocks every malloy_* tool returns.
+ * Shared construction of the MCP content blocks every Malloy tool returns.
  *
  * Two things here are load-bearing and were previously wrong at every call site:
  *
