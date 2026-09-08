@@ -859,6 +859,19 @@ def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
     return out
 
 
+def _strip_v(version: str | None, label: str) -> tuple[str | None, list[str]]:
+    """`v0.0.58` -> `0.0.58`, with a note saying so.
+
+    The tools say not to prefix, and a `v` reaches the API as part of the name.
+    Normalised rather than refused: it is a typing habit, not an ambiguity.
+    `vnext` is left alone -- only a `v` in front of a digit is the habit.
+    """
+    if version and version.startswith("v") and version[1:2].isdigit():
+        return version[1:], [f"{label} {version!r} has a leading 'v'; using "
+                             f"{version[1:]!r}, which is what the API expects"]
+    return version, []
+
+
 def parse_scope(scope: str, target_version: str | None
                 ) -> tuple[str, str, str | None, list[str]]:
     """`environment/package[@version]` -> (env, pkg, version, notes).
@@ -902,17 +915,25 @@ def parse_scope(scope: str, target_version: str | None
         raise SystemExit(f"Invalid --scope {scope!r}: more than one '@', so "
                          f"{version!r} is not a version. {fix}")
     version = version or None
-    if version and version.startswith("v") and version[1:2].isdigit():
-        # The tools say not to prefix, and a `v` reaches the API as part of the
-        # name. Normalised rather than refused: it is a typing habit, not an
-        # ambiguity.
-        notes.append(f"--scope version {version!r} has a leading 'v'; using "
-                     f"{version[1:]!r}, which is what the API expects")
-        version = version[1:]
+    # BOTH spellings, and before the comparison below. Normalising only the
+    # scope's copy broke the two shapes at once: `@v0.0.58` with
+    # `--target-version v0.0.58` compared '0.0.58' against 'v0.0.58' and refused
+    # a run over two spellings of one version, and `--target-version v0.0.58`
+    # with no @version in the scope reached the tools with the 'v' still on --
+    # a run that looks pinned resolving against a version name the API does not
+    # carry, which is the one thing this normalisation exists to prevent.
+    raw_version, raw_target = version, target_version
+    version, note = _strip_v(version, "--scope version")
+    notes += note
+    target_version, note = _strip_v(target_version, "--target-version")
+    notes += note
     if version and target_version and version != target_version:
+        # Quote what was TYPED. Reporting the normalised scope version told a
+        # user who wrote `@v0.0.58` that their scope said `@0.0.58`, so the
+        # message named two strings neither of which was theirs.
         raise SystemExit(
-            f"--scope pins @{version} and --target-version says "
-            f"{target_version}; they must agree, or the run cannot say which "
+            f"--scope pins @{raw_version} and --target-version says "
+            f"{raw_target}; they must agree, or the run cannot say which "
             f"version its answers came from")
     version = version or target_version
     return env.strip(), pkg.strip(), version, notes

@@ -107,6 +107,39 @@ class ScopeParsing(unittest.TestCase):
         with self.assertRaises(SystemExit):
             rb.parse_scope("org/pkg@0.0.58", "0.0.38")
 
+    def test_a_leading_v_on_both_sides_is_one_pin_not_a_contradiction(self):
+        # The crossing the other tests miss: every leading-`v` test passed
+        # target_version=None and every agreement test used clean versions.
+        # Normalising only the scope's copy compared '0.0.58' against
+        # 'v0.0.58' and refused a run over two spellings of one version.
+        env, pkg, version, notes = rb.parse_scope("org/pkg@v0.0.58", "v0.0.58")
+        self.assertEqual(version, "0.0.58")
+        self.assertEqual(len(notes), 2)
+
+    def test_a_leading_v_on_target_version_alone_is_normalised(self):
+        # The quieter half. The scope carries no @version, so target_version
+        # became the pin verbatim and the 'v' reached get_context and
+        # execute_query -- a run that looks pinned resolving against a version
+        # name the API does not carry.
+        version, notes = rb.parse_scope("org/pkg", "v0.0.58")[2:]
+        self.assertEqual(version, "0.0.58")
+        self.assertEqual(len(notes), 1)
+
+    def test_a_mixed_spelling_of_one_version_agrees_either_way_round(self):
+        self.assertEqual(rb.parse_scope("org/pkg@v0.0.58", "0.0.58")[2], "0.0.58")
+        self.assertEqual(rb.parse_scope("org/pkg@0.0.58", "v0.0.58")[2], "0.0.58")
+
+    def test_a_target_version_that_merely_starts_with_v_is_left_alone(self):
+        self.assertEqual(rb.parse_scope("org/pkg", "vnext")[2], "vnext")
+
+    def test_the_refusal_quotes_what_was_typed(self):
+        # It reported the NORMALISED scope version, so a user who typed
+        # `@v0.0.58` was told their scope said `@0.0.58` -- two strings,
+        # neither of them theirs.
+        with self.assertRaises(SystemExit) as cm:
+            rb.parse_scope("org/pkg@v0.0.58", "0.0.38")
+        self.assertIn("v0.0.58", str(cm.exception))
+
     def test_no_version_anywhere_is_allowed_but_unpinned(self):
         self.assertIsNone(rb.parse_scope("org/pkg", None)[2])
 
