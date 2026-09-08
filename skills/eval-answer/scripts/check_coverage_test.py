@@ -161,18 +161,44 @@ class Fixture(unittest.TestCase):
         for v in cc.FIXTURE_EXPECTED:
             self.assertIn(v, cc.FAIL_VERDICTS)
 
-    def test_the_model_names_the_numerator_but_no_reach_total(self):
+    def test_the_model_names_the_numerator(self):
         # This is what makes it a test: a checker that matches field names
         # against the question finds the numerator and says `ok`.
         self.assertIn("first_contact_resolutions", cc.FIXTURE_MODEL)
-        self.assertIn("is_actionable", cc.FIXTURE_MODEL)
-        self.assertIn("answered_ticket_count", cc.FIXTURE_MODEL)
-        self.assertNotIn("first_contact_resolution_rate", cc.FIXTURE_MODEL)
-        self.assertNotIn("first_contact_resolution_rate", cc.FIXTURE_MODEL)
 
-    def test_the_question_asks_for_a_share(self):
-        self.assertTrue(any(w in cc.FIXTURE_CASE["question"].lower()
-                            for w in ("rate", "share")))
+    def test_the_model_names_no_denominator_for_the_question(self):
+        # Three candidate populations, none of them named as THE denominator
+        # of first-contact resolution, and nothing saying which is meant.
+        for candidate in ("ticket_count", "answered_ticket_count",
+                          "is_actionable"):
+            with self.subTest(candidate=candidate):
+                self.assertIn(candidate, cc.FIXTURE_MODEL)
+        for named_rate in ("first_contact_resolution_rate", "fcr_rate",
+                           "first_contact_rate"):
+            with self.subTest(named_rate=named_rate):
+                self.assertNotIn(named_rate, cc.FIXTURE_MODEL)
+
+    def test_a_label_resembles_the_question_while_measuring_something_else(self):
+        # Rule 1 of the prompt: a question's words resembling a field's label
+        # is not the model resolving anything. `resolution_rate` is the trap a
+        # name-matching checker grabs, and its own doc says it is not this.
+        self.assertIn("resolution_rate", cc.FIXTURE_MODEL)
+        self.assertIn("NOT first-contact resolution", cc.FIXTURE_MODEL)
+
+    def test_the_question_asks_for_a_ratio(self):
+        q = cc.FIXTURE_CASE["question"].lower()
+        self.assertTrue(any(w in q for w in ("rate", "share", "percentage")),
+                        f"the fixture question must ask for a ratio: {q!r}")
+
+    def test_the_fixture_carries_no_customer_model(self):
+        # It ships in a public repo. The shape is what is under test, so there
+        # is never a reason for the excerpt to be someone's real model.
+        blob = cc.FIXTURE_MODEL + repr(cc.FIXTURE_CASE)
+        import re as _re
+        self.assertIsNone(
+            _re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                       r"[0-9a-f]{4}-[0-9a-f]{12}", blob),
+            "the fixture must not carry a real report or resource id")
 
 
 class Prompt(unittest.TestCase):
