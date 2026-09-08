@@ -145,15 +145,21 @@ class SkillsWrittenForAnotherHost(unittest.TestCase):
     Over a skills tree this test writes, not the repo's. Naming real skills
     asserted the repo's contents rather than the function's contract: it read
     as a pass while `malloy-getting-started` happened to exist and happened to
-    name a `malloy_*` tool, and the same test fails outright in the
+    name a Publisher-only tool, and the same test fails outright in the
     `agent-skills` checkout these skills also ship to, where that
     Publisher-only skill is absent.
+
+    The fixture is keyed on tools Publisher HAS and a hosted target does not,
+    which is what PUBLISHER_ONLY_TOOLS means now. It used to be keyed on the
+    `malloy_` prefix; Publisher's tools are bare names, so `get_context` and
+    `execute_query` are what BOTH surfaces call them and neither can mark a
+    skill as host-only.
     """
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.roots = [self.tmp]
-        self.write("host-skill", "Call `malloy_getContext`, then `malloy_executeQuery`.")
+        self.write("host-skill", "Call `compile_model`, then `reload_package`.")
         self.write("shared-skill", "Call `get_context`, then `execute_query`.")
 
     def tearDown(self):

@@ -476,7 +476,7 @@ export function normalizeTileExpression(tile: string): string {
    // process, not the compile worker, and there is no yield point in here, so
    // the cost is one uninterrupted block of the shared event loop: on a
    // multi-tenant pod that is every other tenant's requests, /health included.
-   // Reload is reachable by any caller (`?reload=true`, `malloy_reloadPackage`),
+   // Reload is reachable by any caller (`?reload=true`, `reload_package`),
    // so it was repeatable rather than a one-off boot cost.
    //
    // Measured on `"orders" + " ".repeat(n) + "bymonth"`: 41ms at n=10k, 595ms at
