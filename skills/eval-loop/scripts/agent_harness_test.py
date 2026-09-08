@@ -123,6 +123,97 @@ class TheFence(unittest.TestCase):
             self.assertIn(tool, denied)
 
 
+def init_event(tools):
+    return {"type": "system", "subtype": "init", "tools": list(tools)}
+
+
+def tool_use(name):
+    return {"type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": name}]}}
+
+
+class TheAnswerersMcpSurface(unittest.TestCase):
+    """`--allowedTools` grants permission; it does not restrict availability.
+    So naming four tools left all eight this server exposes on offer, and two
+    of the extras undo the measurement: `search_database_schema` finds the raw
+    table behind a gap the answerer is told to report, and `reload_package`
+    recompiles the model mid-attempt."""
+
+    def test_the_answerer_is_denied_the_off_list_publisher_tools(self):
+        cmd = claude_cmd(mcp="/tmp/m.json", skills=True,
+                         tools=rb.ANSWER_TOOLS, denied=rb.ANSWER_DENIED)
+        denied = cmd[cmd.index("--disallowedTools") + 1:]
+        for tool in ("search_database_schema", "reload_package"):
+            with self.subTest(tool=tool):
+                self.assertIn(f"mcp__publisher__{tool}", denied)
+
+    def test_allow_and_deny_partition_the_surface_with_no_overlap(self):
+        # A tool in both lists is denied, because deny beats allow -- so an
+        # overlap silently removes something the answerer is meant to have.
+        self.assertEqual(set(rb.ANSWER_TOOLS) & set(rb.ANSWER_DENIED), set())
+
+    def test_denied_can_only_add_to_the_fence(self):
+        cmd = claude_cmd(mcp=None, skills=True, denied=("mcp__x__y",))
+        denied = cmd[cmd.index("--disallowedTools") + 1:]
+        self.assertIn("mcp__x__y", denied)
+        for tool in rb.BLOCKED_TOOLS:
+            self.assertIn(tool, denied)
+
+    def test_the_platform_arm_is_not_handed_publisher_deny_names(self):
+        # The hosted server has its own tool names; denying Publisher's would
+        # be noise there, and its surface is not ours to enumerate.
+        self.assertTrue(all(t.startswith("mcp__publisher__")
+                            for t in rb.ANSWER_DENIED))
+
+
+class BreachesSeparateGrantFromUse(unittest.TestCase):
+    """`breaches` is not a soft signal: downstream, a non-empty list sets
+    `verdict = None`. So a tool merely offered must not land here, or every
+    platform attempt would be voided by the hosted server's own surface."""
+
+    def test_an_off_list_tool_merely_granted_is_not_a_breach(self):
+        ev = [init_event([*rb.ANSWER_TOOLS,
+                          "mcp__publisher__search_database_schema"])]
+        self.assertEqual(rb.isolation_breaches(ev, rb.ANSWER_TOOLS), [])
+
+    def test_calling_an_off_list_mcp_tool_is_a_breach(self):
+        ev = [init_event([*rb.ANSWER_TOOLS,
+                          "mcp__publisher__search_database_schema"]),
+              tool_use("mcp__publisher__search_database_schema")]
+        b = rb.isolation_breaches(ev, rb.ANSWER_TOOLS)
+        self.assertEqual(len(b), 1)
+        self.assertIn("search_database_schema", b[0])
+
+    def test_calling_an_allowed_tool_is_not_a_breach(self):
+        ev = [init_event(rb.ANSWER_TOOLS),
+              tool_use("mcp__publisher__execute_query"),
+              tool_use("mcp__publisher__get_context")]
+        self.assertEqual(rb.isolation_breaches(ev, rb.ANSWER_TOOLS), [])
+
+    def test_an_account_connector_that_gets_called_is_caught(self):
+        # The leak this PR closes. If one ever returns, using it is a breach
+        # rather than something the mcp__ prefix exempts.
+        ev = [init_event([*rb.ANSWER_TOOLS,
+                          "mcp__claude_ai_Credible__execute_query"]),
+              tool_use("mcp__claude_ai_Credible__execute_query")]
+        b = rb.isolation_breaches(ev, rb.ANSWER_TOOLS)
+        self.assertEqual(len(b), 1)
+        self.assertIn("Credible", b[0])
+
+    def test_a_granted_host_tool_is_still_a_breach_on_grant_alone(self):
+        # Unchanged: the host surface is fully enumerable, so a grant there is
+        # a fact about the fence rather than a guess about someone's server.
+        ev = [init_event([*rb.ANSWER_TOOLS, "Bash"])]
+        b = rb.isolation_breaches(ev, rb.ANSWER_TOOLS)
+        self.assertEqual(len(b), 1)
+        self.assertIn("Bash", b[0])
+
+    def test_used_tools_reads_every_invocation(self):
+        ev = [tool_use("Read"), tool_use("mcp__publisher__get_context")]
+        self.assertEqual(rb.used_tools(ev),
+                         {"Read", "mcp__publisher__get_context"})
+
+
 class ReadOnlyRoles(unittest.TestCase):
     def test_diagnose_and_cluster_block_the_shell_too(self):
         # Blocking Edit/Write while leaving Bash granted only looks like a

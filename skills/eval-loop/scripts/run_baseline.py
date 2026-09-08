@@ -74,9 +74,39 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable
 
+# What the answerer may call. `search_malloy_docs` joins the list because the
+# platform arm has always had it (HOSTED_TOOLS_DEFAULT) and the two arms of one
+# measurement should not differ in what they can look up; syntax help is not
+# data. `compile_model` has no hosted equivalent, which is a capability
+# difference rather than a choice.
 ANSWER_TOOLS = ("mcp__publisher__get_context",
                 "mcp__publisher__execute_query",
-                "mcp__publisher__compile_model")
+                "mcp__publisher__compile_model",
+                "mcp__publisher__search_malloy_docs")
+
+# Publisher tools the answerer must NOT hold. `--allowedTools` grants
+# permission, it does not restrict availability, so the four above were the
+# allow list while all EIGHT of this server's tools were offered. Two of the
+# extras undo the measurement:
+#
+#   search_database_schema  finds the raw table behind a gap in the model,
+#                           which is the proxy ANSWER_PROMPT tells the answerer
+#                           not to substitute. An answer routed through it is
+#                           not an answer about the model.
+#   reload_package          recompiles the package mid-attempt, so the model
+#                           under measurement is not the one the run pinned.
+#
+# `get_status` and `list_packages` reveal the other packages on the server and
+# are no use to an answerer given its scope in the prompt.
+#
+# Enumerated, because deny beats allow: naming the server (`mcp__publisher`,
+# or `mcp__publisher__*`) removes ALL of its tools including the four wanted,
+# verified 2026-09-08. A tool this server gains later is therefore offered by
+# default -- which is what the MCP half of `isolation_breaches` is for.
+ANSWER_DENIED = ("mcp__publisher__search_database_schema",
+                 "mcp__publisher__reload_package",
+                 "mcp__publisher__get_status",
+                 "mcp__publisher__list_packages")
 # The platform target: a hosted MCP server exposing the same two operations
 # under its own names. The CLI addresses a tool as `mcp__<server>__<tool>`, so
 # both halves are configuration -- `--hosted-mcp-server` names the server (which
@@ -312,12 +342,36 @@ ANSWERER_ALLOWED = {"Read", "Skill", "Glob", "Grep", "TodoWrite",
                     "AskUserQuestion", "ExitPlanMode", "EnterPlanMode"}
 
 
+def used_tools(events: list[dict[str, Any]]) -> set[str]:
+    """Every tool the answerer actually invoked, by the name the CLI used."""
+    return {c["name"] for e in events if e.get("type") == "assistant"
+            for c in (e["message"].get("content") or [])
+            if c.get("type") == "tool_use" and c.get("name")}
+
+
 def isolation_breaches(events: list[dict[str, Any]],
                        mcp_tools: tuple[str, ...]) -> list[str]:
-    """Host tools the answerer held that it should not have, plus any MCP
-    server that failed. Both make an attempt unusable as evidence: the first
-    because the answer may not have come through the model, the second because
-    a refusal caused by a dead server is not a fact about the model."""
+    """Tools the answerer held that it should not have, plus any MCP server
+    that failed. Both make an attempt unusable as evidence: the first because
+    the answer may not have come through the model, the second because a
+    refusal caused by a dead server is not a fact about the model.
+
+    On the MCP surface this reports what the answerer CALLED, not what it was
+    offered, and the difference is deliberate. A tool merely granted and never
+    touched did not contaminate an answer, and `breaches` is not a soft signal:
+    a non-empty list voids the verdict downstream. The grant side is closed
+    where it can be -- `ANSWER_DENIED` removes the off-list Publisher tools
+    from the local arm outright -- and on the platform arm the hosted server's
+    surface is not ours to enumerate, so a call to something off-list is the
+    honest place to catch it.
+
+    It used to end in `and not t.startswith("mcp__")`, exempting the whole MCP
+    category from even the call check, on the assumption that
+    `--strict-mcp-config` confined MCP to the configured server. That
+    assumption was false twice over: the flag was passed only when a config
+    accompanied it, so an account's own connectors arrived as `mcp__*` and were
+    exempted by name; and this server offers eight tools where the answerer is
+    allowed four."""
     init = next((e for e in events
                  if e.get("type") == "system" and e.get("subtype") == "init"),
                 None)
@@ -329,6 +383,9 @@ def isolation_breaches(events: list[dict[str, Any]],
     unexpected = sorted(t for t in granted
                         if t not in allowed and not t.startswith("mcp__"))
     out = [f"host tool available to the answerer: {t}" for t in unexpected]
+    out += [f"answerer called an MCP tool outside its allow list: {t}"
+            for t in sorted(used_tools(events))
+            if t.startswith("mcp__") and t not in allowed]
     out += [f"mcp server {s.get('name')!r} {s.get('status')}"
             for s in (init.get("mcp_servers") or [])
             if s.get("status") != "connected"]
@@ -368,7 +425,8 @@ def result_text(block: dict[str, Any]) -> str:
 
 
 def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
-           tools: tuple[str, ...] = (), turns: int = 30,
+           tools: tuple[str, ...] = (), denied: tuple[str, ...] = (),
+           turns: int = 30,
            effort: str | None = None, timeout: int = 900,
            skills: bool = True, retry: int = 2,
            backoff: float = 20.0,
@@ -388,6 +446,9 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
     # points at a reference file is a dead end without it. It reaches the
     # workspace and nothing else: the eval set is never passed as an --add-dir.
     blocked = BLOCKED_TOOLS if skills else (*BLOCKED_TOOLS, "Read")
+    # `denied` is how a caller names MCP tools its role must not hold. It can
+    # only add: there is no path here that widens the fence.
+    blocked = tuple(dict.fromkeys((*blocked, *denied)))
     cmd += ["--disallowedTools", *blocked]
     if effort:
         cmd += ["--effort", effort]
@@ -765,6 +826,11 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         events = claude(
             prompt, work, a.model, mcp=mcp,
             tools=a.hosted_tools if platform else ANSWER_TOOLS,
+            # Only the local arm: the hosted server's tool surface belongs to
+            # the platform, so there is no complement here to enumerate. That
+            # arm is covered by `isolation_breaches`, which RECORDS whatever it
+            # was granted rather than pretending to have denied it.
+            denied=() if platform else ANSWER_DENIED,
             turns=a.max_turns, effort=a.effort, timeout=a.timeout,
             skills=bool(a.answerer_skills))
         elapsed = round(time.time() - t0, 1)
