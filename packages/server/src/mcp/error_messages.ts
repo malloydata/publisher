@@ -56,9 +56,13 @@ export function getInternalError(
       "If the problem persists, check server logs or contact support.",
    ];
    if (error instanceof ConnectionError && !error.callerSafe) {
+      // warn, not error: the same reasoning as the HTTP 502 branch -- this is
+      // the caller's or the warehouse's failure and a caller can drive it in a
+      // loop, so it must not fill the error log or move an error-rate dashboard.
       logInternalFailure(
          `Upstream connection error during ${operation}`,
          error,
+         "warn",
       );
       return {
          message: `${baseMessage}: Upstream connection error.`,

@@ -16,13 +16,14 @@
 // paired PUBLISHER_FRAME_ANCESTORS override (or a router-side injection) would
 // break the embed. That change ships with the deployment coordination, not here.
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import {
    BadRequestError,
    ConnectionError,
    internalErrorToHttpError,
 } from "./errors";
 import { getInternalError } from "./mcp/error_messages";
+import { logger } from "./logger";
 
 describe("internalErrorToHttpError does not leak internal detail (F-12 Part A)", () => {
    // A message carrying an internal marker a client must never receive: an
@@ -121,5 +122,39 @@ describe("getInternalError does not leak driver detail over MCP (F-12 Part A)", 
          new Error("the store exploded"),
       );
       expect(message).toContain("the store exploded");
+   });
+});
+
+// The two internal-failure classes are logged at different levels on purpose.
+// An unrecognized error is our bug; an upstream connection failure is one a
+// caller can drive in a loop, so it must not fill the error log or move an
+// error-rate dashboard that tracks our own faults.
+describe("internal-failure logging level (F-12 Part A)", () => {
+   it("logs an unrecognized internal error at error", () => {
+      const err = spyOn(logger, "error").mockImplementation(() => logger);
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         internalErrorToHttpError(new Error("boom"));
+         expect(err).toHaveBeenCalledTimes(1);
+         expect(warn).toHaveBeenCalledTimes(0);
+      } finally {
+         err.mockRestore();
+         warn.mockRestore();
+      }
+   });
+
+   it("logs a driver-wrapped upstream failure at warn", () => {
+      const err = spyOn(logger, "error").mockImplementation(() => logger);
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         internalErrorToHttpError(
+            new ConnectionError("connect ECONNREFUSED 10.0.0.1:5432"),
+         );
+         expect(warn).toHaveBeenCalledTimes(1);
+         expect(err).toHaveBeenCalledTimes(0);
+      } finally {
+         err.mockRestore();
+         warn.mockRestore();
+      }
    });
 });

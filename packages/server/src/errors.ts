@@ -56,14 +56,25 @@ const MAX_LOGGED_DETAIL_CHARS = 2000;
  * JSON.stringify does NOT escape (NEL, and the U+2028/U+2029 line and paragraph
  * separators): those reach the rendered line verbatim under both formats, so
  * `format.json()` is not a backstop for them the way it is for `\n`.
+ *
+ * `level` separates the two cases that reach here, because they mean different
+ * things to whoever is watching. An unrecognized error is a bug in this server
+ * and belongs at `error`. An upstream connection failure is usually the
+ * caller's or the warehouse's, and a caller can drive it in a loop with bad
+ * SQL, so logging it at `error` lets one client fill the error log and move an
+ * error-rate dashboard meant to track our own faults. It goes to `warn`.
  */
-export function logInternalFailure(summary: string, error: Error): void {
+export function logInternalFailure(
+   summary: string,
+   error: Error,
+   level: "error" | "warn" = "error",
+): void {
    const sanitize = (value: string): string =>
       value
          // eslint-disable-next-line no-control-regex
          .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
          .slice(0, MAX_LOGGED_DETAIL_CHARS);
-   logger.error(summary, {
+   logger[level](summary, {
       name: error.name,
       message: sanitize(error.message ?? ""),
       stack: sanitize(error.stack ?? ""),
@@ -138,7 +149,7 @@ export function internalErrorToHttpError(error: Error) {
       if (error.callerSafe) {
          return httpError(502, error.message);
       }
-      logInternalFailure("Upstream connection error", error);
+      logInternalFailure("Upstream connection error", error, "warn");
       return httpError(502, GENERIC_UPSTREAM_MESSAGE);
    } else if (error instanceof MaterializationNotFoundError) {
       return httpError(404, error.message);
