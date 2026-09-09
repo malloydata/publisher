@@ -583,6 +583,55 @@ describe("trySemanticSearch", () => {
       expect(warm.lastSyncedAt).toBeDefined();
    });
 
+   it("counts the rows a provider that ignored EMBEDDING_DIMENSIONS wrote", async () => {
+      // `dims` holds the length the provider actually returned, not the one
+      // requested, and some providers (Ollama) ignore the request parameter.
+      // The counts used to filter on the CONFIGURED value, which such rows
+      // never match. Once readiness moved to the recorded sync -- which does
+      // not consider dims, exactly as the sync diff does not -- that left the
+      // two halves of one response contradicting each other: `ready` beside
+      // `embeddedRows: 0`, for a package whose vectors the search path was
+      // reading happily. Both halves now describe the same rows.
+      const { provider } = mapProvider(
+         {
+            ...ENTITY_VECTORS,
+            ...QUERY_VECTORS,
+            "alpha: documented": [0, 1, 0],
+         },
+         // Requested 1536, stub answers with the 3-length vectors above.
+         { dimensions: 1536 },
+      );
+      const entities = [
+         entity("alpha", "src", "documented"),
+         entity("beta", "src"),
+      ];
+      const result = await searchReady({
+         db,
+         provider,
+         pkg: instance(),
+         environmentName: "env",
+         packageName: "dims-ignored",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+         entities,
+      });
+      // The rows are usable: retrieval reads them by the observed length.
+      expect("unavailable" in result).toBe(false);
+
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "dims-ignored",
+         entities,
+      );
+      expect(status.status).toBe("ready");
+      expect(status.embeddedRows).toBe(3);
+      expect(status.totalEntities).toBe(2);
+      expect(status.embeddedEntities).toBe(2);
+      expect(status.lastSyncedAt).toBeDefined();
+   });
+
    it("is not ready when the rows are complete but no sync ran in this process", async () => {
       // A restart, and the false-ready this fixes. The rows are persisted, so
       // coverage by entity name is complete the instant the process starts --

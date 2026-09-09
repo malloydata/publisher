@@ -1531,21 +1531,21 @@ export async function getEmbeddingIndexStatus(
    entities: EmbeddableEntity[],
 ): Promise<EmbeddingIndexStatus> {
    const entityCount = entities.length;
-   // Scoped to the provider's current model, because the search path is
-   // (see trySemanticSearch) and the stale-row heal purges anything else.
-   // Counting rows this query would reject is what let an index report ready
-   // while retrieval had nothing to serve.
+   // Scoped to the provider's current model but NOT to its configured
+   // `dimensions`: `dims` holds the ACTUAL response vector length, and a
+   // provider that ignores the `dimensions` request parameter (e.g. Ollama)
+   // writes rows the configured value never matches. These counts use the
+   // same currency rule as the sync diff and isSynced, which is what keeps
+   // them describing the rows readiness is decided over: `ready` beside
+   // `embeddedRows: 0` is not a state this can report.
    const scope = [environmentName, packageName, provider.model];
-   const dimsClause = provider.dimensions !== undefined ? " AND dims = ?" : "";
-   const dimsParam =
-      provider.dimensions !== undefined ? [provider.dimensions] : [];
 
    const row = await db.get<{ n: number; last: string | null }>(
       `SELECT CAST(COUNT(*) AS INTEGER) AS n,
               CAST(MAX(updated_at) AS VARCHAR) AS last
        FROM entity_embeddings
-       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?${dimsClause}`,
-      [...scope, ...dimsParam],
+       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?`,
+      scope,
    );
    const embeddedRows = row?.n ?? 0;
    const lastSyncedAt = row?.last ?? undefined;
@@ -1560,8 +1560,8 @@ export async function getEmbeddingIndexStatus(
    }>(
       `SELECT DISTINCT entity_kind, entity_source, entity_name
        FROM entity_embeddings
-       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?${dimsClause}`,
-      [...scope, ...dimsParam],
+       WHERE environment_name = ? AND package_name = ? AND embedding_model = ?`,
+      scope,
    );
    const coveredKeys = new Set(
       covered.map((r) =>
