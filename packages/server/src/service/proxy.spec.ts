@@ -20,7 +20,12 @@ import {
    utils as sshUtils,
    type Connection as SshServerConnection,
 } from "ssh2";
-import { openProxy, type ProxyEndpoint } from "./proxy";
+import {
+   ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV,
+   allowUnverifiedHostKey,
+   openProxy,
+   type ProxyEndpoint,
+} from "./proxy";
 
 // ── Key material generated once for the test suite ────────────────────────────
 
@@ -447,5 +452,50 @@ describe("openProxy — SSH tunnel", () => {
             { host: "127.0.0.1", port: echoServer.port },
          ),
       ).rejects.toThrow(/not supported/i);
+   });
+});
+
+// The opt-in accepts the spellings every other boolean flag in this server
+// accepts, and falls back to the secure default on anything else. It cannot
+// throw: one caller is ssh2's hostVerifier, a synchronous callback inside a
+// Promise constructor, where a throw escapes past fail() and settles the
+// connection through a path this module does not control. The loud rejection of
+// a misspelling lives at config load instead.
+describe("allowUnverifiedHostKey env parsing", () => {
+   const withEnv = (value: string | undefined, run: () => void) => {
+      const prev = process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV];
+      if (value === undefined)
+         delete process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV];
+      else process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] = value;
+      try {
+         run();
+      } finally {
+         if (prev === undefined)
+            delete process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV];
+         else process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] = prev;
+      }
+   };
+
+   for (const value of ["true", "TRUE", " true ", "1", "yes", "on"]) {
+      it(`opts in on ${JSON.stringify(value)}`, () => {
+         withEnv(value, () => expect(allowUnverifiedHostKey()).toBe(true));
+      });
+   }
+
+   for (const value of ["false", "0", "no", "off", "", "ture", "maybe"]) {
+      it(`stays fail-closed on ${JSON.stringify(value)}`, () => {
+         withEnv(value, () => expect(allowUnverifiedHostKey()).toBe(false));
+      });
+   }
+
+   it("stays fail-closed when unset", () => {
+      withEnv(undefined, () => expect(allowUnverifiedHostKey()).toBe(false));
+   });
+
+   it("does not throw on an unrecognised value", () => {
+      // The property the hostVerifier depends on.
+      withEnv("ture", () =>
+         expect(() => allowUnverifiedHostKey()).not.toThrow(),
+      );
    });
 });

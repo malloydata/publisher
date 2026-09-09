@@ -11,6 +11,7 @@ import {
    resolveCloudStorageCredentials,
    validateS3ProviderShape,
 } from "./gcs_s3_utils";
+import { parseBoolEnv } from "../config";
 import {
    ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV,
    allowUnverifiedHostKey,
@@ -409,6 +410,13 @@ function validateConnectionShape(connection: ApiConnection): void {
       // policy when a user runs a query. Naming them here lets an operator pin the
       // keys before anyone hits one. Not an error: refusing to start over a
       // connection nobody may use today would be worse than the problem.
+      // Config load is a context that can throw, so this is where a
+      // misspelled opt-in is caught: parseBoolEnv rejects anything that is
+      // neither a boolean spelling nor empty, which stops `=ture` from reading
+      // as "off" and silently refusing every tunnel through this connection.
+      // The connect-time check in proxy.ts cannot do this -- see
+      // allowUnverifiedHostKey for why it falls back instead of throwing.
+      parseBoolEnv(ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV);
       if (!hostKey && !allowUnverifiedHostKey()) {
          logger.warn(
             `Connection proxy on '${connection.name}' pins no SSH host key, so the tunnel will ` +

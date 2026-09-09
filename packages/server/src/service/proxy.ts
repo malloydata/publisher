@@ -41,13 +41,30 @@ type ConnectionProxy = components["schemas"]["ConnectionProxy"];
 export const ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV =
    "PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY";
 
+/**
+ * Whether this deployment accepts an unverified bastion host key.
+ *
+ * Accepts the same spellings as every other boolean flag in this server (`1`,
+ * `true`, `yes`, `on`, and their negatives) so an operator who writes `=1` here
+ * gets what they get everywhere else. It does NOT use `parseBoolEnv`, whose
+ * contract is to throw on an unrecognised value: one of the two callers is
+ * ssh2's `hostVerifier`, a synchronous callback inside a Promise constructor,
+ * and a throw there escapes past `fail()` -- losing the descriptive refusal and
+ * settling the connection through a path this module does not control. An
+ * unrecognised value therefore falls back to the secure default here, and the
+ * loud version of that check lives at config load, which is a context that can
+ * throw (see validateConnectionShape).
+ */
 export function allowUnverifiedHostKey(): boolean {
-   return (
+   return TRUTHY_ENV_VALUES.has(
       (process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] ?? "")
          .trim()
-         .toLowerCase() === "true"
+         .toLowerCase(),
    );
 }
+
+// Mirrors the accepted set in config.ts's parseBoolEnv.
+const TRUTHY_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 
 export interface ProxyEndpoint {
    host: string;
