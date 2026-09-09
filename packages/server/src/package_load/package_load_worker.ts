@@ -96,6 +96,7 @@ import {
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
+import { assertPartitionAnnotationsValid } from "../service/gate_classification";
 import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
@@ -730,6 +731,8 @@ async function compileMalloyModel(
    } = extractSources(modelDef, givens);
    const queryResult = extractQueries(modelDef);
    const queries = queryResult.queries;
+   // See the identical check in `Model.create`.
+   assertPartitionAnnotationsValid(modelDef);
    // A `#(authorize)` annotation in a position nothing enforces (a top-level
    // `query:` statement, or a field inside a `source:` rather than the
    // `source:` line itself) fails OPEN — see
@@ -978,6 +981,8 @@ async function compileNotebookModel(
       finalFilterMap = extracted.filterMap;
       const finalQueryResult = extractQueries(finalModelDef);
       finalQueries = finalQueryResult.queries;
+      // See the identical check in `compileMalloyModel` above.
+      assertPartitionAnnotationsValid(finalModelDef);
       // See the identical check in `compileMalloyModel` above.
       assertNoMisplacedAuthorizeAnnotations([
          ...extracted.misplacedAuthorize,
