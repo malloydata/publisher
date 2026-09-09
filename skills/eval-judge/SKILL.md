@@ -50,6 +50,13 @@ containment when `golden.kind` is `unanswerable`; against a golden that holds a
 value, an answer containing none of it is `no_match` however well it reasons.
 `reference/refusal.md` is the whole rule.
 
+A third kind holds no value: `criteria`, where the case's rubric IS the key
+and there is no number to contain. Grade the clauses and nothing else. Do not
+manufacture a figure to check the answer against, and do not read the absence
+of a value as a missing golden: a `criteria` golden is complete. Report
+`gold_status` on it the same way, on the criteria rather than on a number, so
+a clause that contradicts the model still surfaces.
+
 ## Answer judge
 
 Input, all of it (a judge with only two row sets grades formatting, not

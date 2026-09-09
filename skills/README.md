@@ -41,7 +41,9 @@ Two rules make it work:
 
 `eval-loop`, `eval-answer`, `eval-diagnose` and `eval-improve` are the model-evaluation loop: a set
 of questions with goldens computed from raw tables, a blind answerer over the model, a judge, a
-diagnosis of each failure, and one smallest model edit gated by a re-run. They are shared skills
+diagnosis of each failure, and one smallest model edit gated by a re-run. `eval-import` comes
+before all of it: it turns a question list, in whatever shape it arrived, into a set, and decides
+what each arriving key is actually worth. They are shared skills
 (upstream: `ms2data/agent-skills`) and ship in the `eval` group. Their Python scripts import each
 other by path from `skills/eval-answer/scripts`, so they run in place from a checkout, not from the
 pack. `manifests/publisher-local.json`'s groups are what the loop installs for the
@@ -52,7 +54,7 @@ contract probes) is deliberately **not** here: it is Credible's question about i
 lives in an unlisted skill upstream. `credibledata/malloy-samples#23` is a set anyone can run the
 loop on.
 
-The five eval skills are mirrored FROM here to `ms2data/agent-skills`, like every other shared
+The six eval skills are mirrored FROM here to `ms2data/agent-skills`, like every other shared
 skill. The upstream copy has drifted before and it matters more here than elsewhere, because the
 scripts are the harness: a run made with a stale copy produces a ledger that reads as current and
 is not. Three files exist only upstream and are not part of the set: `eval-loop/scripts/run_all.py`

@@ -53,7 +53,16 @@ WHAT IT CHECKS, AND WHAT EACH CATCHES
                  package, cost a real set two days. Hard for `required`; review
                  for `acceptable` and for a veto on a field the model lacks.
 
-Only check 1 needs the truth server. 2 to 5 read the cases, the gold artifacts
+6. question drift -- every `questionSha` stamped at import still matches the
+                 case's question. The question is the stimulus and is never
+                 editable; a narrowed question deletes what its case tested and
+                 reads as a pass. Four questions on one 69-case set were
+                 narrowed to match what the answerer kept doing, three with the
+                 key untouched, and no run said anything. Hard. A case with no
+                 stamp is skipped, not failed: `import_cases.py --stamp` in
+                 `skill:eval-import` is what writes one.
+
+Only check 1 needs the truth server. 2 to 6 read the cases, the gold artifacts
 and the model text, so they run whether or not the set names a truthPackage --
 and a set that names none is exactly the one whose names nobody has verified.
 
@@ -83,7 +92,7 @@ landed a missing `cases.jsonl` on the golden-finding code and sent someone to
 settle a golden that was fine. A caller must treat anything outside {0, 1} as
 "did not run", and must not read it as a pass.
 
-A set with no truthPackage exits 3, not 0. Checks 2 to 5 still run and still
+A set with no truthPackage exits 3, not 0. Checks 2 to 6 still run and still
 report -- on such a set they are the whole of what there is to say -- but no
 golden was re-derived, and 0 told a caller it had been: `improve.py` recorded
 `clean: True` for an audit that never looked. When one of those checks DOES
@@ -93,6 +102,7 @@ to read, so a caller obeying that would discard it.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -347,6 +357,33 @@ def _id_named(entity_id: str, text: str) -> bool:
     return len(parts) > 1 and all(_named(p, text) for p in parts[1:])
 
 
+def question_drift_findings(cases: list[dict[str, Any]]) -> list[str]:
+    """Cases whose question no longer matches the seal stamped at import.
+
+    The one edit an eval set must never absorb silently. Narrowing a question
+    to match what an answerer keeps doing deletes what the case tested and
+    reads as a pass: it happened to four questions on one 69-case set, three
+    of them with the answer key untouched, and nothing in the run said so.
+
+    A case with no `questionSha` is not a finding. Sets predate the seal, and
+    `skill:eval-import`'s `import_cases.py --stamp` is what adds it; an
+    unsealed set is unguarded, which is different from broken.
+    """
+    out = []
+    for c in cases:
+        stamp, question = c.get("questionSha"), c.get("question")
+        if not stamp or not isinstance(question, str):
+            continue
+        if stamp != hashlib.sha256(question.encode()).hexdigest():
+            out.append(
+                f"{c['qid']}: question does not match its questionSha. It was "
+                "edited after import, or the stamp is wrong. Fix: restore the "
+                "question, or give the new wording a new qid -- a changed "
+                "question is a different stimulus and its old scores are not "
+                "comparable")
+    return out
+
+
 def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
     """Set names that do not exist in the model under test.
 
@@ -441,6 +478,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         findings += axis_findings(c, set_dir)
     findings += stale_rubric_claims(chosen, model_definitions(model))
     findings += unknown_name_findings(chosen, model_text(model))
+    findings += question_drift_findings(chosen)
 
     if skipped and not quiet:
         print(f"  ! {skipped}; running only the checks that need no server")

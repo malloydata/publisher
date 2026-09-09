@@ -67,7 +67,10 @@ Capturing only the ad-hoc form recorded an attempt that did query as
 it is not by itself a reason to withhold a verdict. No verdict can be issued
 (`verdict: null`, with the reason) when the attempt produced neither a query nor
 any answer text, when the golden is missing, provisional, invalid, or ambiguous,
-or when a verified golden has no local artifact to compare. An attempt that
+or when a verified golden that holds a value has no local artifact to compare.
+A `criteria` golden holds no value and needs no artifact: its clauses are the
+whole comparison, and withholding a verdict for a missing artifact there drops
+a scorable case out of the pass rate. An attempt that
 wrote prose and ran nothing IS judged: against a golden holding a value, an
 answer containing none of it is `no_match` however well it reasons.
 

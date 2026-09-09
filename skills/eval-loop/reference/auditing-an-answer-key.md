@@ -32,13 +32,17 @@ An ambiguous question is a finding, not an editing job. Report it, or mark the
 case `BAD-QUESTION` per `skill:eval-diagnose` and hold it. Do not resolve the
 ambiguity by rewriting the question.
 
-Nothing mechanical guards this yet, so read the authored file. An attempt's
-`question_sha` hashes the text the answerer saw, which tells you two runs asked
-the same thing but follows any edit to the case, so a drifted question and a
-faithful one hash alike. A case may carry `questionSha` from the file it was
-converted from, and `run_baseline.py` prefers it when present, which is the
-hook the guard needs: nothing stamps that field today, and nothing refuses to
-start on a mismatch.
+This is guarded, on any set imported through `skill:eval-import`. That skill
+stamps `questionSha` at conversion, and `verify_goldens.py` compares it against
+the case's question on every audit and before every arm, as a hard finding. A
+set with no stamp is unguarded rather than broken, so on an older set the check
+is you, reading the file it arrived as.
+
+Note what the seal is and is not. It records the decision made at conversion
+about what the question is, so any later edit shows up. It is not derived from
+the arriving file, which is what lets it work for an email thread as well as a
+CSV, and it cannot tell you the original transcription was faithful. That is
+what the copy kept beside the set is for.
 
 ## The order to read in
 
@@ -180,10 +184,11 @@ both have burned an audit.
 
 ## If the set came from someone else
 
-- Keep the authored file unmodified beside the converted one.
+- Keep the file exactly as it arrived beside the converted one, in
+  `evals/<set>/as-received/`. `skill:eval-import` step 1.
 - Verify every question and every clause byte for byte **at conversion time,
   before any repair**, so a later disagreement is about the key and not about
-  the transcription.
+  the transcription. `skill:eval-import` is that conversion.
 - Report the honest headline: **N of M keys changed**, and which.
 - Send the disagreements back with the original text quoted, grouped by kind,
   and separate the settled defects from the open questions. Some of what looks
@@ -193,7 +198,7 @@ both have burned an audit.
 ## Checklist
 
 ```
-[ ] Question byte-identical to the authored source?          (if not: revert, always)
+[ ] Question matches its questionSha, and the file it arrived as   (if not: revert, always)
 [ ] Read the judge's full reason, not the verdict
 [ ] Read the answer itself
 [ ] Read every query in order

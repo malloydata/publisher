@@ -2,6 +2,7 @@
 """Tests for the set-name lint: ids and vetoes that name nothing in the model
 under test. The rest of verify_goldens needs a live Publisher and is exercised
 by running it."""
+import hashlib
 import json
 import pathlib
 import shutil
@@ -12,7 +13,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from verify_goldens import (  # noqa: E402
-    model_text, unknown_name_findings, verify)
+    model_text, question_drift_findings, unknown_name_findings, verify)
 
 MODEL = """
 source: order_items is duckdb.table('data/order_items.parquet') extend {
@@ -261,6 +262,30 @@ class SkipShape(unittest.TestCase):
         (self.tmp / "cases.jsonl").write_text("")
         r = verify(self.tmp, "http://127.0.0.1:9", "samples", quiet=True)
         self.assertIsNone(r["skipped"])
+
+
+class QuestionDrift(unittest.TestCase):
+    def sealed(self, question, asked=None):
+        return {"qid": "q1", "question": asked or question,
+                "questionSha": hashlib.sha256(question.encode()).hexdigest()}
+
+    def test_an_intact_question_is_silent(self):
+        self.assertEqual(
+            question_drift_findings([self.sealed("how many orders?")]), [])
+
+    def test_a_narrowed_question_is_a_hard_finding(self):
+        got = question_drift_findings([self.sealed(
+            "the frequency distribution",
+            asked="the reach frequency distribution")])
+        self.assertEqual(len(got), 1)
+        self.assertIn("questionSha", got[0])
+        self.assertIn("new qid", got[0])
+
+    def test_an_unsealed_case_is_skipped_not_failed(self):
+        # Sets predate the seal. Unguarded is not the same as broken, and
+        # failing them would block every arm on every existing set.
+        self.assertEqual(
+            question_drift_findings([{"qid": "q1", "question": "x"}]), [])
 
 
 if __name__ == "__main__":
