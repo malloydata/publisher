@@ -98,7 +98,8 @@ export interface ExtractedQuery {
    annotations: string[] | undefined;
 }
 
-/** * Whether a `join_one:`/`join_many:` field names a declaration (its own
+/**
+ * Whether a `join_one:`/`join_many:` field names a declaration (its own
  * `referenceID`/`sourceID`) that THIS model cannot resolve to a real source —
  * no `modelDef.sourceRegistry` entry for either id, or an entry that names
  * something absent from `modelDef.contents`.
@@ -301,6 +302,15 @@ function ownModelNoteObjects(modelDef: ModelDef): AnnotationNote[] {
  *    a shared include cannot hide every file that imports it. An importer
  *    therefore sees a `##`-hidden source as visible, which is what the
  *    reference implementation pins as expected.
+ *
+ * Accepted consequence: a source now gets a card under EVERY file that
+ * resolves it, so a single importer is enough to put a `##`-hidden source
+ * back in front of an agent. File-level hiding is only as strong as the
+ * package's import graph, and it is the spelling an author reaches for first.
+ * `#(agent-hidden)` on the source is the one that holds. Not tightened here
+ * because folding the file tag across imports is the worse failure — one
+ * shared include would blank every importing file — and because the tag is
+ * provisional (see below).
  *
  * "Declared" cannot be read off `struct.annotations` directly: Malloy copies a
  * base's whole annotations object BY REFERENCE onto a derivation that adds no

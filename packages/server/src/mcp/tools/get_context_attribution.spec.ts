@@ -84,6 +84,25 @@ function twoFilePackage(agentHidden: Record<string, string[]> = {}) {
    };
 }
 
+/** The whole payload, for the tests that read the paging envelope. */
+const payloadFor = async (
+   pkg: unknown,
+   params: Record<string, unknown> = {},
+) => {
+   const handler = captureHandler({
+      getEnvironment: async () => envWith(async () => pkg),
+   });
+   return parse(
+      await handler({
+         environmentName: "e",
+         packageName: "p",
+         search_targets: [{ target_type: "source" }],
+         scopes: [{ environment: "e", package: "p" }],
+         ...params,
+      }),
+   );
+};
+
 const cardsFor = async (pkg: unknown) => {
    const handler = captureHandler({
       getEnvironment: async () => envWith(async () => pkg),
@@ -148,6 +167,33 @@ describe("get_context source attribution", () => {
          { source: "shared", model_path: "defs.malloy" },
          { source: "shared", model_path: "uses.malloy" },
       ]);
+   });
+
+   /**
+    * `limit` and the paging envelope count CARDS, which is what the response
+    * returns. A source resolvable from two files is two cards, so windowing
+    * that buckets on the bare source name spends one slot on both and then
+    * lets `toSourceResults` fan them out past the limit -- and reports
+    * `returned` (cards) against a `total_available` counted in names.
+    */
+   it("counts a repeated source once per card in limit and the envelope", async () => {
+      const all = await payloadFor(twoFilePackage(), {
+         search_targets: [{ target_type: "source", search_text: "shared" }],
+      });
+      // Two cards match: shared under defs.malloy and under uses.malloy.
+      // Keyed on the bare name this was 1, while `sources` still held 2.
+      expect(all.total_available).toBe(2);
+      expect(all.sources).toHaveLength(2);
+      expect(all.returned).toBe(all.sources.length);
+
+      const capped = await payloadFor(twoFilePackage(), {
+         search_targets: [{ target_type: "source", search_text: "shared" }],
+         limit: 1,
+      });
+      // The cut is real, not silently exceeded by the fan-out downstream.
+      expect(capped.sources).toHaveLength(1);
+      expect(capped.returned).toBe(1);
+      expect(capped.total_available).toBe(2);
    });
 
    it("hides nothing when a model exposes no agent-hidden accessor", async () => {

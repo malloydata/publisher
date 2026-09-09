@@ -519,6 +519,13 @@ const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
  * Source order is the order sources first appear in the ranked list, which is
  * already best-first; re-sorting here could disagree with the ranking that
  * produced it.
+ *
+ * A bucket is one (model path, source) pairing, not one source name: that is
+ * what `toSourceResults` turns into a card, so it is the unit `limit` has to
+ * count and the unit `returned`/`total_available` have to report. Keying on
+ * the name alone let one bucket fan out into several cards downstream, which
+ * both overran `limit` and made the two counters disagree — `returned`
+ * counting cards while `total_available` counted names.
  */
 function windowBySource(
    rows: ResultEntity[],
@@ -532,7 +539,7 @@ function windowBySource(
    const order: string[] = [];
    const bySource = new Map<string, ResultEntity[]>();
    for (const r of rows) {
-      const key = r.source ?? "";
+      const key = sourceContextKey(r.modelPath, r.source ?? "");
       let bucket = bySource.get(key);
       if (!bucket) {
          bucket = [];
@@ -1256,10 +1263,12 @@ function collectJoinedFields(args: {
  */
 async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // listModels() already returns only .malloy model files (notebooks are listed separately).
-   // Sorted by path because a package can expose one source from several models
-   // and only the first is kept: filesystem order would otherwise decide which
-   // model_path a source reports, and which model's givens ride along with it,
-   // differently on two machines serving the same package.
+   // Sorted by path so the walk is deterministic. Which paths a source reports
+   // no longer depends on it — every resolving path is its own card, see the
+   // dedupe below — but the order sources are first seen in still decides the
+   // order equally-ranked cards come back in, and `first wins` still settles
+   // the odd genuine within-a-file duplicate. Filesystem order would make both
+   // differ between two machines serving the same package.
    const models = [...(await pkg.listModels())].sort((a, b) =>
       (a.path ?? "").localeCompare(b.path ?? ""),
    );
@@ -1541,14 +1550,22 @@ function collapseAliases(entities: Entity[]): Entity[] {
    // exactly the fold that must not happen.
    const foldable = (e: Entity) =>
       (e.kind === "dimension" || e.kind === "measure") && !e.joinPath;
-   const key = (e: Entity) => `${e.source ?? ""}\x00${e.name}`;
+   // Scoped to the model path as well as the source: one source resolvable
+   // from several files is several cards, each with its own copy of the same
+   // fields, and a fold is a statement about ONE card. Keyed on the name
+   // alone, the last file walked became every card's representative and a
+   // fold computed against it dropped the folded name from all of them.
+   const key = (e: Entity) =>
+      `${e.modelPath}\x00${e.source ?? ""}\x00${e.name}`;
    const byName = new Map<string, Entity>();
    for (const e of entities) if (foldable(e)) byName.set(key(e), e);
 
    /** The field this one is defined as, when the index holds it. */
    const referentOf = (e: Entity): Entity | undefined => {
       if (!e.aliasOf || !foldable(e)) return undefined;
-      const target = byName.get(`${e.source ?? ""}\x00${e.aliasOf}`);
+      const target = byName.get(
+         `${e.modelPath}\x00${e.source ?? ""}\x00${e.aliasOf}`,
+      );
       // The referent has to be a field this index actually holds, and it may
       // not be: `include { internal: SITE }` hides the raw column from the
       // public schema while `site` still references it. That is the model
@@ -1584,6 +1601,10 @@ function collapseAliases(entities: Entity[]): Entity[] {
       else groups.set(node, [e]);
    }
 
+   // Model-path scoped for the same reason `key` is: the row being removed is
+   // one card's row, not the name everywhere it appears.
+   const droppedKey = (e: Entity) =>
+      `${e.modelPath}|${entityRowKey(e.kind, e.source ?? "", e.name)}`;
    const dropped = new Map<string, Entity>();
    for (const [root, refs] of groups) {
       const members = [root, ...refs];
@@ -1616,13 +1637,11 @@ function collapseAliases(entities: Entity[]): Entity[] {
       const folded = members.filter((e) => e !== keep);
       keep.aliases = folded.map((e) => e.name);
       for (const e of folded) {
-         dropped.set(entityRowKey(e.kind, e.source ?? "", e.name), e);
+         dropped.set(droppedKey(e), e);
       }
    }
    if (dropped.size === 0) return entities;
-   return entities.filter(
-      (e) => !dropped.has(entityRowKey(e.kind, e.source ?? "", e.name)),
-   );
+   return entities.filter((e) => !dropped.has(droppedKey(e)));
 }
 
 interface PackageIndex {
@@ -1776,10 +1795,10 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - authorize means gated: supply the givens it names or the query is denied.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question asked. include_code or a pinned entity_name returns code.
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150, counted as cards). offset pages a listing. user_prompt: the question asked. include_code or a pinned entity_name returns code.
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, matched_targets, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
+sources[], best first; a source repeats once per model_path resolving it, query any. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type, description, data_type, relationship (fan-out), join_path, aliases, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
 ranking, returned of total_available sources, next_offset on a listing, warnings[].
 Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
 
