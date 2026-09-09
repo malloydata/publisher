@@ -394,6 +394,60 @@ source: combo is compose(marked, openm)
       }
    });
 
+   it("CRITICAL — a #(partition) marker on a DIMENSION instead of the source refuses to load", async () => {
+      // The silent shape: resolution reads the source's own notes, finds
+      // nothing, grafts nothing, and refuses nothing -- so the source reads as
+      // partitioned and serves every partition. One line of indentation is the
+      // whole difference.
+      const { model, duckdb, dir } = await createModel(
+         `##! experimental.givens
+
+given:
+  TENANT :: string
+
+source: shifted is duckdb.table('tenant_rows') extend {
+   #(partition) tenant = $TENANT
+   dimension: tenant_copy is tenant
+   measure: n is count()
+}
+`,
+      );
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(PartitionAnnotationError);
+         expect((err as PartitionAnnotationError)?.rejectionCause).toBe(
+            "marker_unreachable",
+         );
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("does NOT refuse a source whose marker IS on the source declaration", async () => {
+      // The false positive the walk above could produce: a correctly placed
+      // marker must not also be seen "below the struct level".
+      const { model, duckdb, dir } = await createModel(
+         `##! experimental.givens
+
+given:
+  TENANT :: string
+
+#(partition) tenant = $TENANT
+source: proper is duckdb.table('tenant_rows') extend {
+   dimension: tenant_copy is tenant
+   measure: n is count()
+}
+`,
+      );
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
    it("does NOT refuse a non-composite query-source derived from a composite base with no partition marker of its own", async () => {
       // Guards against a false positive: `assertPartitionAnnotationsValid` only
       // inspects TOP-LEVEL composite `modelDef.contents` entries, so a

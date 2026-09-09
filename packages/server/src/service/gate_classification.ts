@@ -59,6 +59,7 @@ import {
    collectPartitionPairs,
    PartitionAnnotationError,
    type PartitionPair,
+   reachesPartitionTagBelow,
 } from "./partition_annotation";
 
 export type { PartitionPair };
@@ -991,9 +992,13 @@ export function computeGivenDeclaredTypes(
  * as {@link ancestorGateExprs} walks them — deliberately NOT by delegating to
  * that function, since its return shape (`string[]`, with a `["false"]`
  * fail-closed sentinel) is specific to a boolean access gate and has no
- * partition equivalent: there is no security invariant in losing a
- * partition axis on unreadable IR, only a worse index, so this returns `[]`
- * ("no partition marker found") in every case `ancestorGateExprs` would deny.
+ * partition equivalent. It matches that function's POSTURE, though: an
+ * unreadable chain is "a marker up there is unknown", not "there is no
+ * marker", and losing a partition axis serves every slice rather than
+ * merely producing a worse index — so every case `ancestorGateExprs` would
+ * deny with `["false"]`, this throws {@link unresolvableAncestry}, which the
+ * read path turns into an `AccessDeniedError`. Only a chain read to its end
+ * with nothing found returns `[]`.
  *
  * Also follows a `query_source`'s own base
  * ({@link resolveQuerySourceBase}) the way `collectEntryPointGates` does for
@@ -1130,8 +1135,9 @@ export function assertPartitionAnnotationsValid(
          // mistake, the read path's own deny is the enforcement, and
          // refusing the whole model over one unreadable IR link would take
          // down every source in the package including the unmarked ones.
+         let resolved: PartitionPair[] = [];
          try {
-            resolveEntryPointPartitions(obj, modelDef);
+            resolved = resolveEntryPointPartitions(obj, modelDef);
          } catch (err) {
             if (
                !(err instanceof PartitionAnnotationError) ||
@@ -1139,7 +1145,9 @@ export function assertPartitionAnnotationsValid(
             ) {
                throw err;
             }
+            continue;
          }
+         assertNoUnreachableMarker(obj, label, resolved);
          continue;
       }
       if (resolveEntryPointPartitions(obj, modelDef).length > 0) {
@@ -1167,6 +1175,45 @@ export function assertPartitionAnnotationsValid(
          );
       }
    }
+}
+
+/**
+ * Refuse a source whose IR carries a `#(partition)` marker somewhere
+ * {@link resolveEntryPointPartitions} does not look — on a field or view
+ * instead of the source, or inside an inline `compose(...)`.
+ *
+ * A misplaced marker is the worst of the failure modes, because it is
+ * completely silent: resolution finds nothing, so nothing is grafted and
+ * nothing is refused, and the source serves every partition while its text
+ * reads as partitioned. Both halves have to agree, and only an unrestricted
+ * walk can see the half the targeted resolver misses — so a marker the walk
+ * finds and the resolver did not is a refusal, with the walk's own failure
+ * treated the same way (unknown, not absent).
+ *
+ * Silent when resolution DID find markers: the walk cannot tell the marker it
+ * found from the one already resolved, and a resolved marker is grafted.
+ */
+function assertNoUnreachableMarker(
+   struct: SourceDef,
+   label: string,
+   resolved: PartitionPair[],
+): void {
+   if (resolved.length > 0) return;
+   let reachesBelow: boolean;
+   try {
+      reachesBelow = reachesPartitionTagBelow(struct);
+   } catch {
+      reachesBelow = true;
+   }
+   if (!reachesBelow) return;
+   throw new PartitionAnnotationError(
+      "marker_unreachable",
+      `Source "${label}" carries a \`#(partition)\` marker that is not ` +
+         `declared on the source itself — it sits on a field, a view, or an ` +
+         `inline \`compose(...)\` inside it. Nothing would filter this ` +
+         `source: every caller would read every partition. Move the marker ` +
+         `onto the \`source:\` declaration.`,
+   );
 }
 
 /**

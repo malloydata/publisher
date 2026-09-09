@@ -42,6 +42,80 @@ export function containsPartitionAnnotationTag(texts: string[]): boolean {
    return texts.some((text) => noteRoute(text) === PARTITION_ROUTE);
 }
 
+/** Depth cap for {@link reachesPartitionTagBelow}, matching the other IR walks. */
+const MAX_PARTITION_IR_WALK_DEPTH = 200;
+
+/**
+ * Whether a `#(partition)` marker sits ANYWHERE inside `struct`'s own IR
+ * below the struct level — on a field, a nested pipeline, an inline
+ * `compose(...)`, or any other node a targeted resolver does not visit.
+ *
+ * This is the counterpart to a resolver that only reads the places a marker
+ * is MEANT to be declared: a marker one level too low is not a no-op, it is a
+ * source that publishes clean and then serves every partition, because
+ * nothing rejected the declaration and nothing grafted a filter. So the check
+ * that a marker is reachable has to be an unrestricted walk, not the same
+ * targeted read it is validating.
+ *
+ * Joined sources are skipped (a node carrying `join`): a join's own marker is
+ * a statement about querying that source directly — the same Q16 posture
+ * `resolveEntryPointPartitions` takes — and descending would refuse a source
+ * merely for joining a legitimately partitioned one.
+ *
+ * Throws past the depth cap rather than returning false: an unread chain is
+ * "unknown", and every caller treats a throw as "assume a marker is there".
+ */
+export function reachesPartitionTagBelow(
+   node: unknown,
+   seen: WeakSet<object> = new WeakSet(),
+   depth = 0,
+): boolean {
+   if (depth > MAX_PARTITION_IR_WALK_DEPTH) {
+      throw new Error("partition-marker IR walk exceeded max depth");
+   }
+   if (node === null || typeof node !== "object") return false;
+   if (seen.has(node as object)) return false;
+   seen.add(node as object);
+
+   if (Array.isArray(node)) {
+      return node.some((item) =>
+         reachesPartitionTagBelow(item, seen, depth + 1),
+      );
+   }
+
+   const record = node as Record<string, unknown>;
+   if (depth > 0 && record.join !== undefined) return false;
+
+   if (depth > 0) {
+      for (const key of ["blockNotes", "notes"]) {
+         const arr = record[key];
+         if (!Array.isArray(arr)) continue;
+         const texts = arr
+            .map((n) =>
+               typeof n === "string"
+                  ? n
+                  : n &&
+                      typeof n === "object" &&
+                      typeof (n as { text?: unknown }).text === "string"
+                    ? (n as { text: string }).text
+                    : undefined,
+            )
+            .filter((text): text is string => text !== undefined);
+         if (containsPartitionAnnotationTag(texts)) return true;
+      }
+   }
+
+   return Object.entries(record).some(([key, value]) =>
+      // The root's OWN `annotations` (and the `inherits` chain under it) is
+      // exactly what the resolver reads, so skipping it is what makes this
+      // "below the struct level". Deeper `annotations` are field/view notes,
+      // which is the case being hunted.
+      depth === 0 && key === "annotations"
+         ? false
+         : reachesPartitionTagBelow(value, seen, depth + 1),
+   );
+}
+
 /** The note's payload — the part after the prefix, dedented for a block note. */
 function notePayload(text: string): string {
    return (
@@ -72,7 +146,8 @@ export type PartitionAnnotationRejectionCause =
    | "malformed_body"
    | "duplicate_given"
    | "partitioned_composite"
-   | "ancestry_unresolvable";
+   | "ancestry_unresolvable"
+   | "marker_unreachable";
 
 /**
  * A `#(partition)` annotation that fails this module's grammar. Extends
