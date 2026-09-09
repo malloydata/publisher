@@ -59,6 +59,48 @@ wild was doing this.
 
 ---
 
+## [Unreleased] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
+
+**Reloading a package no longer costs you a lexically-ranked answer.** A reload
+never dropped a package's vectors — they are keyed by package name in
+`publisher.db` — but it did throw away the server's record that they were
+current, because that record was tied to the in-memory package object a reload
+replaces. So the first `get_context` after every `reload_package`, every REST
+`?reload=true`, and every watch-mode save was ranked lexically while the server
+re-checked hashes that all still matched. If you author models with watch mode
+on, that was one degraded answer per save, including saves that changed nothing
+relevant. Now a reload whose files hash the same keeps the warm index and is
+ranked semantically on its first call; an edit still re-embeds, and still only
+the parts whose text changed.
+
+**`embeddingIndex.status` keeps its name and changes its basis, so read this if
+you poll it.** On the package resource
+(`GET /api/v0/environments/{env}/packages/{pkg}`), `ready` used to be derived
+from whether cached rows covered the package's current entity *names*. Vectors
+outlive a restart and a reload, so that reported `ready` immediately — while the
+next question was still answered lexically. Anything following the documented
+"poll until `ready` before measuring retrieval quality" could therefore measure a
+lexical run and record it as a semantic one, which is a wrong number rather than
+a slow start. `ready` now means one thing: the next `get_context` question about
+this package will be ranked semantically. It is decided by the same completed
+sync the search path itself gates on.
+
+**What to do.** If you poll for readiness, keep polling `status` — it is now
+accurate, and it is the field to trust. If you instead inferred readiness from
+`embeddedEntities == totalEntities`, stop: those count coverage by entity name,
+so they can be equal while `status` is `indexing` (an edit that rewrote every
+doc without renaming anything leaves each entity holding its stale name vector).
+Expect `status` to read `indexing` in two places it previously read `ready`:
+just after a server restart, until the first question re-establishes the sync,
+and after a doc-only edit. Both clear on the next `get_context` question. The
+unchanged caveat still applies — a package nothing has ever queried does not warm
+on its own, so poll a package you are about to query rather than one you have not
+touched.
+
+Unrelated to the above, and unchanged: `--init` still drops the vector cache
+along with the rest of persisted storage. It resets the server root, and it
+remains the reclaim path for rows orphaned by a configuration change.
+
 ## [0.2.4] (BREAKING) — every MCP tool loses its `malloy_` prefix, and get_context answers in one shape
 
 **Every MCP tool is renamed.** The `malloy_` prefix is gone and the names are bare

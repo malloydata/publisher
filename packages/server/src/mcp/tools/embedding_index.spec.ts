@@ -122,6 +122,15 @@ function entityOfKind(kind: string, name: string): EmbeddableEntity {
    return { kind, name, source: "src", modelPath: "m.malloy", embedDoc: "" };
 }
 
+/**
+ * A stand-in Package instance. Identity is all the index uses it for, so a
+ * fresh one models exactly what a reload does: replace the instance while the
+ * cached rows, and the package's name, stay put.
+ */
+function instance(): Package {
+   return {} as unknown as Package;
+}
+
 /** Poll through the cold-start "indexing" response until the sync lands. */
 async function searchReady(
    args: Parameters<typeof trySemanticSearch>[0],
@@ -384,9 +393,86 @@ describe("trySemanticSearch", () => {
       await searchReady({ ...base, pkg: {} as unknown as Package });
       expect(counts.get("alpha")).toBe(1);
 
-      // A "reload": same package name, new instance. The sync re-runs but
-      // the content hashes match, so nothing re-embeds.
-      await searchReady({ ...base, pkg: {} as unknown as Package });
+      // A "reload": same package name, new instance. The recorded sync
+      // covers this exact content, so no sync runs at all and nothing
+      // re-embeds. (It used to re-run and find every hash unchanged.)
+      await searchReady({ ...base, pkg: instance() });
+      expect(counts.get("alpha")).toBe(1);
+      expect(counts.get("beta")).toBe(1);
+   });
+
+   it("ranks a reloaded package semantically on its first call", async () => {
+      // The reload cost this removes. The rows always survived a reload --
+      // the test above is what proves nothing re-embeds -- but the record
+      // that they were current was memoized per Package instance, and every
+      // reload allocates a new one. So the first question after any reload
+      // was answered lexically while the diff re-discovered that every hash
+      // still matched. reload_package, REST ?reload=true and every
+      // watch-mode save paid it, including saves that changed nothing.
+      const { provider, counts } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+      });
+      const entities = [entity("alpha", "src"), entity("beta", "src")];
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "reload-warm",
+         entities,
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+      };
+
+      await searchReady({ ...base, pkg: instance() });
+
+      // Deliberately NOT searchReady: one single call on a fresh instance,
+      // which is exactly what the next question after a reload gets. Polling
+      // here would hide the regression this pins.
+      const reloaded = await trySemanticSearch({ ...base, pkg: instance() });
+      if (!("hits" in reloaded)) {
+         throw new Error(`expected semantic hits, got ${reloaded.unavailable}`);
+      }
+      expect(reloaded.hits[0]?.name).toBe("alpha");
+      expect(counts.get("alpha")).toBe(1);
+   });
+
+   it("re-syncs a reloaded package whose content did change", async () => {
+      // The other half: the fingerprint must not be so forgiving that an
+      // edit rides through on the previous instance's record.
+      const { provider, counts } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: second draft": [0, 1, 0],
+      });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "reload-edited",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+      };
+
+      await searchReady({
+         ...base,
+         pkg: instance(),
+         entities: [entity("alpha", "src"), entity("beta", "src")],
+      });
+      expect(counts.get("alpha")).toBe(1);
+
+      // A reload that added documentation to alpha: a new doc facet, so the
+      // fingerprint moves and the package re-syncs.
+      await searchReady({
+         ...base,
+         pkg: instance(),
+         entities: [
+            entity("alpha", "src", "second draft"),
+            entity("beta", "src"),
+         ],
+      });
+      expect(counts.get("alpha: second draft")).toBe(1);
+      // Only the new facet was embedded: the name rows were already current.
       expect(counts.get("alpha")).toBe(1);
       expect(counts.get("beta")).toBe(1);
    });
@@ -495,6 +581,96 @@ describe("trySemanticSearch", () => {
       expect(warm.totalEntities).toBe(2);
       expect(warm.embeddedEntities).toBe(2);
       expect(warm.lastSyncedAt).toBeDefined();
+   });
+
+   it("is not ready when the rows are complete but no sync ran in this process", async () => {
+      // A restart, and the false-ready this fixes. The rows are persisted, so
+      // coverage by entity name is complete the instant the process starts --
+      // and reporting `ready` off that told a caller the index was warm while
+      // the very next question was still ranked lexically. That is worse than
+      // a slow start: a harness told to "poll until ready before measuring"
+      // measured a lexical run and recorded it as a semantic one.
+      const { provider } = mapProvider({ ...ENTITY_VECTORS, ...QUERY_VECTORS });
+      const entities = [entity("alpha", "src"), entity("beta", "src")];
+      await searchReady({
+         db,
+         provider,
+         pkg: instance(),
+         environmentName: "env",
+         packageName: "restart",
+         entities,
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+      });
+
+      // Drops every process-memory record of the sync while leaving the rows
+      // on disk: what a restart leaves behind.
+      _resetEmbeddingIndexStateForTests();
+
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "restart",
+         entities,
+      );
+      expect(status.status).toBe("indexing");
+      // The rows really are all there. Coverage cannot tell this case from a
+      // warm index, which is why `status` no longer derives from it.
+      expect(status.embeddedEntities).toBe(2);
+      expect(status.totalEntities).toBe(2);
+   });
+
+   it("is not ready when a doc changed and nothing was renamed", async () => {
+      // The hole in coverage-by-name: every entity still holds a name vector,
+      // so `embeddedEntities` is complete, while the doc text the rows embed
+      // is the previous draft.
+      const { provider } = mapProvider({
+         ...ENTITY_VECTORS,
+         ...QUERY_VECTORS,
+         "alpha: first draft": [0, 1, 0],
+         "alpha: second draft": [0, 0, 1],
+      });
+      const base = {
+         db,
+         provider,
+         environmentName: "env",
+         packageName: "doc-edit",
+         queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
+         limit: 10,
+      };
+      const before = [
+         entity("alpha", "src", "first draft"),
+         entity("beta", "src"),
+      ];
+      await searchReady({ ...base, pkg: instance(), entities: before });
+      expect(
+         (
+            await getEmbeddingIndexStatus(
+               db,
+               provider,
+               "env",
+               "doc-edit",
+               before,
+            )
+         ).status,
+      ).toBe("ready");
+
+      const after = [
+         entity("alpha", "src", "second draft"),
+         entity("beta", "src"),
+      ];
+      const status = await getEmbeddingIndexStatus(
+         db,
+         provider,
+         "env",
+         "doc-edit",
+         after,
+      );
+      expect(status.status).toBe("indexing");
+      // Both entities are still "covered", which is exactly the confusion.
+      expect(status.embeddedEntities).toBe(2);
+      expect(status.totalEntities).toBe(2);
    });
 
    it("is not ready when the rows belong to a different embedding model", async () => {

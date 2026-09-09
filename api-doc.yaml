@@ -3430,7 +3430,11 @@ components:
         State of a package's semantic discovery index. Poll `status` until
         `ready` to know retrieval is warm - before this, that state existed
         only as a server log line, so anything waiting on a warm index had to
-        scrape logs. Every count is scoped to the embedding model currently
+        scrape logs. One caveat on the poll: a package nothing has ever
+        queried stays `indexing` until a `get_context` question triggers the
+        sync that builds its index, so poll a package you are about to query,
+        not one you have not touched. Every count is scoped to the embedding
+        model currently
         configured, matching what the search path reads, so a server pointed
         at a new model reports the index as not yet ready rather than
         reporting rows retrieval would reject. Reading it takes no locks, so
@@ -3446,12 +3450,22 @@ components:
             - cooldown
             - too-many-entities
           description: >-
-            `indexing` = at least one current entity has no usable vector yet.
-            Retrieval answers lexically meanwhile. This clears once a
-            `get_context` question triggers a sync, which is what builds
-            the index; it does not clear on its own for a package nothing has
-            queried. `ready` = every entity the package exposes has a vector
-            under the current model and the cache is serving semantic ranking.
+            `ready` = the next `get_context` question about this package will
+            be ranked semantically. That is the whole meaning, and it is what
+            makes the field answerable: it is decided by the same completed
+            sync the search path gates on, not by whether cached rows happen
+            to cover the current entity names. Those two differ exactly where
+            it matters - the rows outlive a restart and a reload, so a
+            coverage test called an index warm while the next question was
+            still answered lexically.
+            `indexing` = no completed sync covers the package's current
+            content under the current model, so retrieval answers lexically
+            meanwhile. A reload whose files did not change stays `ready`,
+            because the vectors still describe that content; an edit, a new
+            package, or a changed `EMBEDDING_MODEL` moves it to `indexing`. It
+            clears when a `get_context` question triggers a sync, which is
+            what builds the index; a package nothing has ever queried does not
+            warm on its own.
             `cooldown` = the provider failed recently, so the semantic path is
             short-circuited for a window. `too-many-entities` = the package has
             more entities than the embedding cap, so it stays lexical
@@ -3470,11 +3484,14 @@ components:
         embeddedEntities:
           type: integer
           description: >-
-            Of `totalEntities`, how many have at least one usable vector. The
-            two are equal exactly when `status` is `ready`. Reported because a
-            row count cannot show a model edit that removes two entities and
-            adds two others: the row total is unchanged while the new entities
-            have no vector at all.
+            Of `totalEntities`, how many have at least one usable vector.
+            Reported because a row count cannot show a model edit that removes
+            two entities and adds two others: the row total is unchanged while
+            the new entities have no vector at all. Coverage by identity, so
+            equality does NOT imply `ready`: an edit that rewrote every doc
+            without renaming anything leaves each entity holding its stale
+            name vector. Read `status` for readiness and this pair for how
+            much of the package is covered.
         lastSyncedAt:
           type: string
           format: date-time

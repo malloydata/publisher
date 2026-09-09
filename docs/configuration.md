@@ -245,24 +245,31 @@ What to know before turning it on:
   cache along with the rest of persisted storage; the only cost of a wipe is re-embedding. A server
   upgrading from a release that embedded one vector per entity discards its cache once, on the
   first boot after the upgrade, and re-embeds each package on its next question.
-- First query per package: the first question kicks off the embedding sync in the background and
-  answers lexically; once the sync lands, later questions are ranked semantically. Responses carry
-  a `retrieval` field (`"semantic"` or `"lexical"`) whenever the provider is configured, and a
-  lexical one adds `retrieval_reason` saying why: `indexing` (still building — clears on its own,
-  worth one retry), `cooldown` (a recent provider failure is being short-circuited),
-  `too-many-entities`, `provider-error`, or `unavailable`. Only `indexing` is worth retrying.
+- First query per package: the first question about content nothing has embedded yet kicks off the
+  embedding sync in the background and answers lexically; once the sync lands, later questions are
+  ranked semantically. A reload does not repeat that: `reload_package`, `?reload=true` and a
+  watch-mode save all keep the warm index as long as the saved files hash the same, so the next
+  question is ranked semantically on its first call. An edit re-syncs, and re-embeds only the parts
+  whose text changed. Responses carry a `retrieval` field (`"semantic"` or `"lexical"`) whenever the
+  provider is configured, and a lexical one adds `retrieval_reason` saying why: `indexing` (still
+  building — clears on its own, worth one retry), `cooldown` (a recent provider failure is being
+  short-circuited), `too-many-entities`, `provider-error`, or `unavailable`. Only `indexing` is
+  worth retrying.
 - Checking readiness without watching the log: `GET /api/v0/environments/{env}/packages/{pkg}`
   carries an `embeddingIndex` object with `status` (`indexing` / `ready` / `cooldown` /
   `too-many-entities`, the same words `retrieval_reason` uses), `embeddedRows`, `totalEntities`,
   `embeddedEntities`, and `lastSyncedAt`. Poll it until `ready` before measuring retrieval quality,
-  so you are not measuring a half-built index. `ready` means every entity the package exposes has a
-  vector under the model you have configured now, so a server pointed at a new `EMBEDDING_MODEL`
-  reports `indexing` until it has re-embedded rather than reporting rows retrieval would reject.
-  Two things worth knowing: the sync runs on a `get_context` question, so a package nothing
-  has queried stays at `indexing` rather than warming on its own; and the first read after a
-  package loads or reloads builds that package's entity index, which is work a plain metadata read
-  would not otherwise do. It is absent when no provider is configured, and reading it takes no
-  locks, so polling cannot slow an indexing run.
+  so you are not measuring a half-built index. `ready` means the next question about the package
+  will be ranked semantically, and nothing weaker: it is decided by the same completed sync the
+  search path gates on, so a server pointed at a new `EMBEDDING_MODEL` reports `indexing` until it
+  has re-embedded, and a restart reports `indexing` until the first question re-establishes the
+  sync, even though the vectors are still on disk. Do not read readiness off `embeddedEntities ==
+  totalEntities`: those count coverage by entity name, so they can be equal while a doc edit is
+  still unembedded. Two things worth knowing: the sync runs on a `get_context` question, so a
+  package nothing has queried stays at `indexing` rather than warming on its own; and the first
+  read after a package loads or reloads builds that package's entity index, which is work a plain
+  metadata read would not otherwise do. It is absent when no provider is configured, and reading it
+  takes no locks, so polling cannot slow an indexing run.
 - Failure behavior: if the endpoint is down, times out, or rejects the key, retrieval falls back
   to lexical (with a warning in the server log) and retries after a cool-down. A package with more
   than 5,000 entities stays lexical.
