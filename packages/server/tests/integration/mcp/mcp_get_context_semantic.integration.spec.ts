@@ -62,7 +62,7 @@ const ENV_KEYS = [
 interface GetContextPayload {
    retrieval?: string;
    sources?: Array<{
-      source_info: { resource_id: { source: string } };
+      source_info: { resource_id: { source: string; model_path: string } };
       relevance?: number;
       entities?: Array<{
          entity_type: string;
@@ -243,11 +243,19 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
             source: "order_items",
          });
          expect(payload.retrieval).toBe("semantic");
-         // One card, for the source the drill-down named.
-         expect(payload.sources).toHaveLength(1);
-         expect(payload.sources?.[0].source_info.resource_id.source).toBe(
-            "order_items",
-         );
+         // A scope names a SOURCE, not a file, and order_items resolves in
+         // storefront.malloy and in the files importing it -- so the scope
+         // narrows to that source and returns one card per resolving path,
+         // the same set the lexical path returns for the same question.
+         // Pinned as "every card is order_items, paths distinct" rather than
+         // as a count, so adding an importing file does not break this.
+         const cards = payload.sources ?? [];
+         expect(cards.length).toBeGreaterThan(0);
+         const paths = cards.map((c) => c.source_info.resource_id.model_path);
+         expect(new Set(paths).size).toBe(paths.length);
+         for (const card of cards) {
+            expect(card.source_info.resource_id.source).toBe("order_items");
+         }
          const entities = rankedEntities(payload);
          // Non-empty, or the per-entity loop below pins nothing.
          expect(entities.length).toBeGreaterThan(0);
