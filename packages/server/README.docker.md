@@ -22,6 +22,14 @@ docker run -d \
 
 Once `/api/v0/status` reports `operationalState: "serving"`, the REST API is at `http://localhost:4000` and MCP at `http://localhost:4040/mcp`.
 
+`serving` says the server is up, not that it loaded anything. If the config never reached `/publisher/publisher.config.json`, the server still starts and serves an empty catalog, which is a supported way to run because environments can be created over the API afterwards. Read the counts rather than the state: the server prints one `PUBLISHER_READY` line to stderr on boot, and a server that was given no config also prints a line naming the path it checked.
+
+```
+PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=0 packages=0 load_errors=0
+```
+
+`environments=0` when you expected packages means the config did not arrive. `load_errors=N` means it did and N entries failed to load, with the reasons in `/api/v0/status` under `loadErrors`.
+
 If you don't have a config of your own yet, copy [`packages/server/publisher.config.example.duckdb.json`](./publisher.config.example.duckdb.json) (DuckDB-only samples, no credentials required) and mount that. There's also a [`publisher.config.example.bigquery.json`](./publisher.config.example.bigquery.json) sibling for the BigQuery samples.
 
 ## Pre-built image
