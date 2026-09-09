@@ -207,5 +207,34 @@ class JudgeGate(unittest.TestCase):
         self.assertEqual(v["reason"], "no_saved_verdict")
 
 
+class PlatformMcpUrl(unittest.TestCase):
+    """The three ways to run differ only in --mcp-url, so it must be set.
+
+    A platform run left on the local default measures a local Publisher --
+    a different model over different data than the run records. The
+    reachability probe catches it, but reports it as "tools unreachable",
+    which reads as an OAuth problem.
+    """
+
+    def test_a_platform_run_on_the_local_default_is_refused(self):
+        err = rb.platform_url_error("platform", rb.LOCAL_MCP_URL, "hosted")
+        self.assertIsNotNone(err)
+        # Names the cause and both hosted routes, not just "wrong url".
+        self.assertIn("LOCAL Publisher", err)
+        self.assertIn("bridge", err)
+        self.assertIn("OAuth", err)
+
+    def test_a_platform_run_with_a_hosted_url_is_fine(self):
+        for url in ("http://localhost:7777/mcp",      # extension bridge
+                    "https://example.invalid/global"):  # hosted directly
+            with self.subTest(url=url):
+                self.assertIsNone(
+                    rb.platform_url_error("platform", url, "hosted"))
+
+    def test_a_local_run_keeps_the_default(self):
+        self.assertIsNone(
+            rb.platform_url_error("local", rb.LOCAL_MCP_URL, "hosted"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -135,6 +135,43 @@ The middle row is the one worth knowing about: it decouples the two axes, so you
 can evaluate a model you are still editing against the customer's real data. It
 is a connection configuration, not a feature.
 
+### Three ways to reach the tools
+
+That table is about which MODEL answers. A second, independent choice is where
+the answerer's MCP tools come from, and `--mcp-url` is the whole of it:
+
+| | `--target` | `--mcp-url` | Auth |
+|---|---|---|---|
+| **1. Local Publisher** | `local` | `http://localhost:4040/mcp` (default) | none |
+| **2. Hosted, through an editor extension's local bridge** | `platform` | the localhost URL the extension prints | none: the extension holds the credential |
+| **3. Hosted, directly** | `platform` | the host's `https` endpoint, scoped if it offers one | a cached OAuth login, once, interactively |
+
+```bash
+# 1. local
+--target local            # --mcp-url defaults to the local Publisher
+
+# 2. hosted via the extension's bridge -- no OAuth, but check what it exposes:
+#    the same proxy may front a local Publisher instead
+--target platform --mcp-url http://localhost:<port-the-extension-prints>/mcp \
+  --hosted-mcp-server <name> --target-version <v> --scope <env>/<pkg>@<v>
+
+# 3. hosted directly -- authenticate first, under the SAME server name
+claude mcp add --transport http <name> <scoped-url>
+claude   # /mcp -> <name> -> Authenticate
+--target platform --mcp-url <scoped-url> \
+  --hosted-mcp-server <name> --target-version <v> --scope <env>/<pkg>@<v>
+```
+
+All three hand the answerer the same three capabilities (`get_context`,
+`execute_query`, and the docs search), so a comparison between them is between
+agents that could do the same things; `test_the_two_arms_hold_the_same_capabilities`
+pins it. Modes 2 and 3 take those names from `--hosted-tools`, which defaults to
+the bare trio; pass it only if this host names them differently.
+
+A platform run left on the local default `--mcp-url` is refused rather than
+probed, because pointing every answerer at a local Publisher measures a
+different model over different data than the run claims.
+
 Two rules follow, and both are the kind of mistake that produces confident
 nonsense rather than an error:
 

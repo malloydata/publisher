@@ -86,6 +86,30 @@ from typing import Any, Iterable
 # and platform arms of one measurement hold the same three capabilities and a
 # local-vs-platform comparison is between agents that could do the same things.
 # `test_the_two_arms_hold_the_same_capabilities` pins that.
+# The local Publisher's default MCP endpoint, and the value a platform run must
+# NOT be left holding.
+LOCAL_MCP_URL = "http://localhost:4040/mcp"
+
+def platform_url_error(target: str, mcp_url: str, server: str) -> str | None:
+    """Why a platform run must not keep the local default URL, or None.
+
+    `--mcp-url` is the whole of the three-way choice: a local Publisher, the
+    hosted engine through an editor extension's local bridge, or the hosted
+    engine directly. Only the first has a sensible default, so a platform run
+    that never set it points every answerer at a LOCAL Publisher -- a different
+    model over different data than the run says it measured. The reachability
+    probe would fail on it, but as "tools unreachable", which reads as an OAuth
+    problem and sends the reader somewhere else entirely.
+    """
+    if target != "platform" or mcp_url != LOCAL_MCP_URL:
+        return None
+    return (f"--target platform with --mcp-url still {LOCAL_MCP_URL}, which is "
+            f"a LOCAL Publisher. Pass the hosted URL: the editor extension's "
+            f"local bridge (a localhost URL it prints, no OAuth), or the "
+            f"hosted endpoint itself (https, needs a cached OAuth login under "
+            f"--hosted-mcp-server {server}).")
+
+
 ANSWER_TOOLS = ("mcp__publisher__get_context",
                 "mcp__publisher__execute_query",
                 "mcp__publisher__search_malloy_docs")
@@ -1447,6 +1471,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--judge-model", default="sonnet")
     ap.add_argument("--label", default=None)
     ap.add_argument("--effort", default=None)
+    # The local Publisher's default MCP port. Named so a platform run can be
+    # refused when it was left pointing here -- see the guard below.
     ap.add_argument("--target", choices=("local", "platform"), default="local",
                     help="local: a local Publisher serving working files. "
                          "platform: a hosted MCP server over a PUBLISHED "
@@ -1483,7 +1509,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--package", default="ecommerce",
                     help="local: the served package. "
                          "platform: the hosted WORKSPACE")
-    ap.add_argument("--mcp-url", default="http://localhost:4040/mcp")
+    ap.add_argument("--mcp-url", default=LOCAL_MCP_URL,
+                    help="where the answerer's MCP tools live, which is what "
+                         "separates the three ways to run: a LOCAL Publisher "
+                         f"({LOCAL_MCP_URL}); the hosted engine through an "
+                         "editor extension's local MCP bridge (a localhost URL "
+                         "the extension prints, no OAuth because it holds the "
+                         "credential); or the hosted engine directly (its "
+                         "https endpoint, needing a cached OAuth login). The "
+                         "last two are both --target platform")
     ap.add_argument("--publisher", default="http://localhost:4811",
                     help="Publisher REST base, used to re-execute the answerer's "
                          "final query so the judge sees rows rather than prose")
@@ -1614,6 +1648,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"(the prefix is added). A local proxy fronting a hosted engine "
                 f"may expose either surface depending on how it is configured.")
         print(f"  hosted tools reachable via {a.hosted_mcp_server}")
+    url_error = platform_url_error(a.target, a.mcp_url, a.hosted_mcp_server)
+    if url_error:
+        raise SystemExit(url_error)
     if a.target == "platform" and not a.scope and "/workspace/" not in a.mcp_url:
         # A hosted MCP is reachable as a global endpoint (scope passed per call)
         # or as a scoped one (the URL is the scope). For an answerer being
