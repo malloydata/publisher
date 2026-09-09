@@ -1689,6 +1689,59 @@ describe("get_context semantic retrieval", () => {
          }),
       );
 
+   it("returns every resolving model path, like the lexical path does", async () => {
+      // The vector cache holds ONE row per (kind, source, name) -- the text is
+      // identical whichever file resolves the source -- and the scan fans that
+      // hit back out to every live entity sharing the key. The merge that
+      // follows has to keep those apart: keyed on the bare name it collapsed
+      // them straight back to one and kept whichever landed last, so the same
+      // question answered with one model_path on semantic and all of them on
+      // lexical. lunr never had the bug because its ref is the per-path id.
+      const provider = stubProviderFor({
+         shared: [1, 0],
+         "shared: A source two files resolve.": [1, 0],
+         amount: [1, 0],
+         "the shared source": [1, 0],
+      });
+      _setEmbeddingProviderForTests(provider);
+
+      const sharedSource = {
+         name: "shared",
+         annotations: ["#(doc) A source two files resolve."],
+         schema: {
+            fields: [{ kind: "dimension", name: "amount", annotations: [] }],
+         },
+      };
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [
+               { path: "defs.malloy" },
+               { path: "uses.malloy" },
+            ],
+            // Both files resolve `shared`, so it is queryable under both.
+            getModel: () => ({
+               getSourceInfos: () => [sharedSource],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const params = {
+         search_targets: [
+            { target_type: "source", search_text: "the shared source" },
+         ],
+         scopes: [{ environment: "specs", package: "multipath" }],
+      };
+      const payload = await callUntilSemantic(handler, params);
+
+      const paths = payload.sources.map(
+         (c: { source_info: { resource_id: { model_path: string } } }) =>
+            c.source_info.resource_id.model_path,
+      );
+      expect([...paths].sort()).toEqual(["defs.malloy", "uses.malloy"]);
+      expect(payload.returned).toBe(2);
+      expect(payload.total_available).toBe(2);
+   });
+
    it("embeds every target in ONE provider request and scans once", async () => {
       // The claim the multi-target design rests on: N targets cost one round
       // trip, not N. embedBatch already batches and the scan cross-joins the

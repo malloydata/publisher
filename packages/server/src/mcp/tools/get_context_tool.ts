@@ -2239,11 +2239,20 @@ async function runContextQuery(
                      // claim its kind, so every score it carries is from a
                      // target that can return it, and its `score` is already
                      // the best of those.
-                     const key = entityRowKey(
+                     // Keyed per CARD, like the fan-out just above produced:
+                     // one embedded row legitimately becomes several live
+                     // entities, one per model path. Keying this on the bare
+                     // (kind, source, name) collapsed them straight back into
+                     // one and kept whichever landed last -- undoing the
+                     // fan-out, and making the semantic path answer with one
+                     // model_path where the lexical path answers with every
+                     // resolving one. lunr has no such problem because its
+                     // ref IS the per-path entity id.
+                     const key = `${row.modelPath}|${entityRowKey(
                         row.kind,
                         row.source ?? "",
                         row.name,
-                     );
+                     )}`;
                      merged.set(key, {
                         ...row,
                         bestTarget: bestTargetOf(row.targetScores ?? new Map()),
