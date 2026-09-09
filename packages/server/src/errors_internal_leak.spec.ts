@@ -158,3 +158,34 @@ describe("internal-failure logging level (F-12 Part A)", () => {
       }
    });
 });
+
+// The mapper is only a choke point for handlers that return its `json`. A
+// handler that takes just the `status` and builds its own body from
+// `error.message` re-opens the leak in a different response shape, which is how
+// the watch-mode routes were echoing an internal filesystem path. This pins the
+// shape those handlers must use: the body's text comes from the mapper.
+describe("a handler with its own body shape still uses the mapper's text", () => {
+   it("carries no internal detail when built from the mapper's json", () => {
+      const internal =
+         "ENOSPC: System limit for number of file watchers reached, watch '/var/lib/publisher/environments/acme'";
+      const { status, json } = internalErrorToHttpError(new Error(internal));
+
+      // What the watch-mode handlers now send: `{ error: json.message }`.
+      const body = { error: json.message };
+
+      expect(status).toBe(500);
+      expect(body.error).not.toContain("/var/lib/publisher");
+      expect(body.error).not.toContain("ENOSPC");
+      // And it is still the mapper's actionable generic text, not empty.
+      expect(body.error).toBe("Internal server error.");
+   });
+
+   it("keeps a 4xx message, so the shape does not blank client errors", () => {
+      const { status, json } = internalErrorToHttpError(
+         new BadRequestError("environmentName must match ^[a-z0-9-]+$"),
+      );
+      const body = { error: json.message };
+      expect(status).toBe(400);
+      expect(body.error).toContain("environmentName must match");
+   });
+});
