@@ -93,8 +93,13 @@ ways. Compared across that, the flips read as a model change.
 
 So every run records `retrievalMode` (`semantic`, `lexical`, `mixed` or
 `unreported`) and `retrievalCalls` from the `retrieval` field of the responses
-that answered it. `flip_table.py` refuses a pair whose arms disagree, or where
-either is `mixed`, unless `--allow-retrieval-mismatch` says to report anyway.
+that answered it. Only a ranking call carries that field: an enumeration or a
+targeted lookup comes back without one on a fully semantic server, so those
+land in `unreported`, the mode is decided on the ranking calls alone, and a
+run is `unreported` only when nothing ranked at all.
+
+`flip_table.py` refuses a pair whose arms disagree, or where either is
+`mixed`, unless `--allow-retrieval-mismatch` says to report anyway.
 Two lexical arms are a valid pair; the band they produce is a band for lexical
 retrieval and for nothing else, and the block records that.
 

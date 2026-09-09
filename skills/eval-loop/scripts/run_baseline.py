@@ -832,11 +832,22 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
                       ) -> tuple[str, dict[str, int]]:
     """Which retriever answered this run's get_context calls, and the tally.
 
-    `semantic` or `lexical` when every call agreed, `mixed` when they did not
-    (the embedding path fell over partway, which is exactly the case a reader
-    must not average across), and `unreported` when the server named no
-    retriever at all -- no embedding provider configured, which is the silent
-    degradation eval-mvp's standing gate exists to catch.
+    Only a RANKING call names a retriever: the marker is written where the
+    ranking happens, so a call that enumerates a type or looks a name up comes
+    back without one on a fully semantic server. `unreported` counts calls that
+    did not rank; it is not evidence that anything fell back.
+
+    `semantic` or `lexical` when every ranking call agreed, `mixed` when they
+    did not (the embedding path fell over partway, which is exactly the case a
+    reader must not average across), and `unreported` when nothing in the run
+    ranked at all: usually no embedding provider configured, which is the
+    silent degradation eval-mvp's standing gate exists to catch, and which
+    `retrieval_probe` settles before the arm starts by always passing a
+    search_text.
+
+    Counting an unranked call as a partial fall-back read a run of
+    semantic 100 / lexical 0 / unreported 43 as `mixed`, and told it not to
+    report the discoverability findings it had just paid for.
     """
     tally = {"semantic": 0, "lexical": 0, "unreported": 0}
     for att in attempts:
@@ -848,7 +859,7 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
     seen = [k for k in ("semantic", "lexical") if tally[k]]
     if not seen:
         return "unreported", tally
-    if len(seen) == 1 and not tally["unreported"]:
+    if len(seen) == 1:
         return seen[0], tally
     return "mixed", tally
 

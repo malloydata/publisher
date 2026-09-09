@@ -129,9 +129,17 @@ class Retrieval(unittest.TestCase):
         self.assertEqual(rb.retrieval_summary([self.att(None)])[0],
                          "unreported")
 
-    def test_some_calls_unreported_is_mixed_not_semantic(self):
+    def test_a_call_that_did_not_rank_does_not_dilute_semantic(self):
+        # Only a ranking call names a retriever. An enumeration or a targeted
+        # lookup comes back without one on a fully semantic server, and reading
+        # that as a partial fall-back tripped the gate on runs where nothing
+        # fell back -- suppressing the discoverability findings they paid for.
         self.assertEqual(
-            rb.retrieval_summary([self.att("semantic", None)])[0], "mixed")
+            rb.retrieval_summary([self.att("semantic", None)])[0], "semantic")
+
+    def test_an_unranked_call_does_not_dilute_lexical_either(self):
+        self.assertEqual(
+            rb.retrieval_summary([self.att("lexical", None)])[0], "lexical")
 
     def test_execute_query_is_not_retrieval(self):
         att = {"calls": [{"tool": "execute_query", "retrieval_mode": None}]}
