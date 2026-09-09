@@ -5782,18 +5782,20 @@ components:
               free_parameter,
               given,
               authorize,
+              partition,
               not_duckdb_portable,
               public_surface_unknown,
             ]
           description: >-
-            The bounded refusal reason. Only `free_parameter`, `given` and
-            `authorize` can appear here — those are the only reasons the two
-            compile-time eligibility asserts this collection is computed from
-            produce. `not_duckdb_portable` is decided against the post-build
-            captured schema, which does not exist at compile time, and
-            `public_surface_unknown` is raised by the build-time narrowing of a
-            stored table to the source's public columns; both are listed only
-            because they share the enum the runtime eligibility metric uses.
+            The bounded refusal reason. Only `free_parameter`, `given`,
+            `authorize` and `partition` can appear here — those are the only
+            reasons the two compile-time eligibility asserts this collection is
+            computed from produce. `not_duckdb_portable` is decided against the
+            post-build captured schema, which does not exist at compile time,
+            and `public_surface_unknown` is raised by the build-time narrowing
+            of a stored table to the source's public columns; both are listed
+            only because they share the enum the runtime eligibility metric
+            uses.
         message:
           type: string
           description: >-

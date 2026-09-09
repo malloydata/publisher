@@ -152,6 +152,7 @@ import {
    type PreaggregateViolation,
 } from "./preaggregation_validation";
 import { derivedStructsReachable } from "./gate_registry_walk";
+import { containsPartitionAnnotationTag } from "./partition_annotation";
 // Aliased with an `Impl` suffix: `Model` declares its own private methods of
 // these same names (thin per-instance wrappers, see each one's doc) — an
 // unaliased import would only work today because a method body's unqualified
@@ -160,13 +161,17 @@ import { derivedStructsReachable } from "./gate_registry_walk";
 // than leaving a trap where converting one of those methods to an
 // arrow-function class property would recurse instead of delegating.
 import {
+   assertPartitionAnnotationsValid,
    collectEntryPointGates as collectEntryPointGatesImpl,
    createGateClassificationDeps,
+   resolveEntryPointPartitions,
    resolveGateShape as resolveGateShapeImpl,
    resolveGraftTarget as resolveGraftTargetImpl,
+   resolvePartitionGraftEntries,
    type GateClassificationDeps,
    type GateEntry,
    type GraftScope,
+   type PartitionGraftEntry,
 } from "./gate_classification";
 import {
    extractQueriesFromModelDef,
@@ -1083,17 +1088,7 @@ export class Model {
          const modelDef = this.modelDef;
          if (!modelDef) return false;
          try {
-            const structs: SourceDef[] = [];
-            for (const obj of Object.values(modelDef.contents)) {
-               if (isSourceDef(obj)) structs.push(obj);
-            }
-            for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
-               const entry = value.entry;
-               if (entry.type === "source_registry_reference") continue;
-               if (isSourceDef(entry)) structs.push(entry);
-            }
-            structs.push(...derivedStructsReachable(structs, modelDef));
-            for (const struct of structs) {
+            for (const struct of this.reachableStructsForNoteSweep(modelDef)) {
                // `annotationTexts` (whole chain), not `ownLevelNoteTexts`: this
                // has to see a gate demoted to `annotations.inherits` by a stray
                // annotation on the deriving statement, which is the shape the
@@ -1121,6 +1116,66 @@ export class Model {
          }
       })();
       return this.anyAuthorizeNote;
+   }
+
+   /**
+    * Every struct {@link hasAnyAuthorizeNote} and {@link hasAnyPartitionNote}
+    * sweep for an annotation tag: every top-level `modelDef.contents` source,
+    * every non-reference `sourceRegistry` entry, plus everything reachable
+    * from those through a derivation hop ({@link derivedStructsReachable}).
+    * Extracted so the two sweeps — otherwise identical except for which tag
+    * they look for — can't drift apart on WHICH structs get walked, only on
+    * what they walk them for. See {@link hasAnyAuthorizeNote}'s doc for why
+    * this has to be a superset of what `collectEntryPointGates` can reach.
+    */
+   private reachableStructsForNoteSweep(modelDef: ModelDef): SourceDef[] {
+      const structs: SourceDef[] = [];
+      for (const obj of Object.values(modelDef.contents)) {
+         if (isSourceDef(obj)) structs.push(obj);
+      }
+      for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
+         const entry = value.entry;
+         if (entry.type === "source_registry_reference") continue;
+         if (isSourceDef(entry)) structs.push(entry);
+      }
+      structs.push(...derivedStructsReachable(structs, modelDef));
+      return structs;
+   }
+
+   /** Memoized {@link hasAnyPartitionNote}; `undefined` until first asked. */
+   private anyPartitionNote: boolean | undefined;
+
+   /**
+    * Whether this model carries a `#(partition)` annotation ANYWHERE — the
+    * `#(partition)` counterpart of {@link hasAnyAuthorizeNote}, sharing its
+    * struct sweep ({@link reachableStructsForNoteSweep}) and its reasoning
+    * for why that sweep must be a superset of what a per-query walk
+    * (`resolveEntryPointPartitions`) can reach. Own annotations only — unlike
+    * the authorize sweep, this does not also check `struct.fields`, since
+    * `#(partition)` is a source-level-only annotation (see
+    * `partition_annotation.ts`'s module doc); a field can never carry one.
+    */
+   private hasAnyPartitionNote(): boolean {
+      if (this.anyPartitionNote !== undefined) return this.anyPartitionNote;
+      this.anyPartitionNote = ((): boolean => {
+         const modelDef = this.modelDef;
+         if (!modelDef) return false;
+         try {
+            for (const struct of this.reachableStructsForNoteSweep(modelDef)) {
+               if (
+                  containsPartitionAnnotationTag(
+                     annotationTexts(struct.annotations) ?? [],
+                  )
+               ) {
+                  return true;
+               }
+            }
+            return false;
+         } catch {
+            return true;
+         }
+      })();
+      return this.anyPartitionNote;
    }
 
    /**
@@ -1346,6 +1401,11 @@ export class Model {
    ): Promise<{
       entryPointGates: GateEntry[];
       modelDef: ModelDef | undefined;
+      /** The run target's own compiled struct — see `resolveRunTargetStruct`.
+       *  Returned alongside the authorize walk's result so a caller
+       *  (`probeEntryPointGates`) can resolve `#(partition)` pairs for the
+       *  SAME entry point without a second `getPreparedQuery()` compile. */
+      struct: SourceDef | undefined;
    }> {
       const ownSourceName =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
@@ -1469,7 +1529,7 @@ export class Model {
             entryPointGates = Array.from(byKey.values());
          }
       }
-      return { entryPointGates, modelDef };
+      return { entryPointGates, modelDef, struct };
    }
 
    /**
@@ -1536,16 +1596,8 @@ export class Model {
       givens: Record<string, GivenValue>,
       graftScope: GraftScope | undefined,
       skipOwnSourceGate = false,
-   ): Promise<
-      Array<{
-         label: string;
-         graftTarget: string;
-         filterText: string;
-         condition: FilterCondition;
-         givenNames: readonly string[];
-      }>
-   > {
-      const { entryPointGates, modelDef } =
+   ): Promise<PartitionGraftEntry[]> {
+      const { entryPointGates, modelDef, struct } =
          await this.collectAuthorizeEntryPointGates(
             runnable,
             givens,
@@ -1560,13 +1612,11 @@ export class Model {
       // ~microsecond one-row DuckDB queries, so there is nothing worth deduping.
       // (Cycles/repeat structs are already pruned in collectEntryPointGates
       // by struct identity, so the list holds no literal duplicates.)
-      const rowLevel: Array<{
-         label: string;
-         graftTarget: string;
-         filterText: string;
-         condition: FilterCondition;
-         givenNames: readonly string[];
-      }> = [];
+      // Shared with `#(partition)` below — `PartitionGraftEntry` is the same
+      // {label, graftTarget, filterText, condition, givenNames} shape an
+      // authorize row-level classification produces, so both feed the one
+      // graft list `buildGraftedMaterializer` grafts as a unit.
+      const rowLevel: PartitionGraftEntry[] = [];
       for (const entry of entryPointGates) {
          const resolution = modelDef
             ? await this.resolveGateShape(entry, modelDef, graftScope)
@@ -1589,6 +1639,34 @@ export class Model {
          if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
          throw new AccessDeniedError(
             `Access denied for source "${entry.label}".`,
+         );
+      }
+
+      // `#(partition)` composes with `#(authorize)` in the SAME `rowLevel`
+      // list — both graft onto the same target's `filterList`
+      // (`buildGraftedMaterializer`), so a partitioned AND authorize-gated
+      // source is filtered by both conjunctively, never one replacing the
+      // other. A partition pair with nowhere to graft denies (see
+      // `resolvePartitionGraftEntries`'s doc) rather than admitting the query
+      // unfiltered — the same fail-closed posture as a rejected authorize
+      // gate above.
+      try {
+         rowLevel.push(
+            ...(await resolvePartitionGraftEntries(
+               struct,
+               modelDef,
+               graftScope,
+               this.gateClassificationDeps(),
+            )),
+         );
+      } catch (err) {
+         recordRowLevelGateDecision("denied_by_gate");
+         logger.debug("Partition filter could not be resolved; denying", {
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+         throw new AccessDeniedError(
+            `Access denied for source "${(struct as { as?: string } | undefined)?.as ?? struct?.name ?? "unknown"}".`,
          );
       }
       return rowLevel;
@@ -1669,7 +1747,15 @@ export class Model {
                ),
             );
          }
-         return gates.length > 0;
+         // `#(partition)` is the SAME "serve-shape carries no row filter"
+         // hazard as an authorize gate (see `getQueryResults`'s
+         // `routingBlockedByRowLevelGate` doc) — no composite branch to walk
+         // here, since a partitioned composite is refused outright at publish
+         // (`assertPartitionAnnotationsValid`).
+         return (
+            gates.length > 0 ||
+            resolveEntryPointPartitions(struct, modelDef).length > 0
+         );
       } catch {
          // Cannot tell whether the entry point carries a row-level gate — and,
          // once this returns false, nothing downstream can catch a wrong
@@ -2843,6 +2929,13 @@ export class Model {
             filterMap = sourceResult.filterMap;
             const queryResult = Model.getQueries(modelDef);
             queries = queryResult.queries;
+
+            // A composite source that itself declares `#(partition)` cannot
+            // graft — see `assertPartitionAnnotationsValid`'s doc. Checked
+            // first: it is a load-time authoring mistake, not an authorize
+            // shape, so it should not read as a stranger error from the
+            // authorize checks below.
+            assertPartitionAnnotationsValid(modelDef);
 
             // A `#(authorize)` annotation in a position nothing enforces (a
             // top-level `query:` statement, or a field inside a `source:`
@@ -4796,7 +4889,11 @@ export class Model {
             // cannot hit. This is NOT the `hasAuthorize()` trap warned about
             // further down — see `hasAnyAuthorizeNote`'s doc for why the two
             // predicates differ and why only this one is safe to skip on.
-            this.hasAnyAuthorizeNote() &&
+            // `#(partition)` gets the identical veto — it too grafts a row
+            // filter the serve-shape model carries no bytes for (see
+            // `hasAnyPartitionNote`'s doc) — so both note kinds have to be
+            // checked before the walk can be skipped.
+            (this.hasAnyAuthorizeNote() || this.hasAnyPartitionNote()) &&
             (await this.queryEntryPointHasRowLevelGate(runnable));
          // Recorded HERE, once, rather than in each tier's block below: the
          // pre-aggregation guard runs no compile attempt of its own and calls
@@ -5123,6 +5220,12 @@ export class Model {
       // supplied name with "unknown given" — a spurious 400, past the routing
       // fallback, on a query that should just serve from storage. Nothing in the
       // shape can read them; the authorize gate above already saw the full set.
+      // Safe for `#(partition)` too, and for the identical reason: the
+      // materialization eligibility gate refuses a partition-referencing
+      // source the same way it refuses a given-referencing one (see
+      // `materialization_eligibility.ts`'s `referencesPartition`), and
+      // `routingBlockedByRowLevelGate` above vetoes routing outright whenever
+      // the QUERY's own entry point carries either annotation.
       const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
       try {
          // The prepared result is also where the executing connection's name
