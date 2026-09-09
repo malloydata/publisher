@@ -2065,17 +2065,26 @@ async function runContextQuery(
       // Publisher has no query-usage signal to fill the hosted API's
       // `prominence` with, so it names the ordering and omits the
       // score rather than inventing a number nobody should rank on.
-      // Both counts are in SOURCES, the unit the payload is made of. A
-      // drill-down is one source's card, so it is 1-of-1 however many
-      // entities nest inside it; the entity cap is reported separately.
+      // Both counts are in CARDS, the unit the payload is made of, so the
+      // drill-down counts its source ROWS rather than the whole scope (which
+      // also holds the entities nesting inside them; the entity cap is
+      // reported separately). One row per model path resolving the source, so
+      // a drill-down is N-of-N, not the 1-of-1 it was when a source could only
+      // report one path.
       // next_offset is present only while sources remain past this page, and
       // only on the browse, matching where `offset` is honoured.
       const consumed = request.offset + sources.length;
+      // Counted as distinct pairings rather than as source rows, so it stays
+      // right if a drill-down ever reaches an entity whose own source row was
+      // filtered out: toSourceResults would still raise a card for it.
+      const cardsInScope = sourceName
+         ? new Set(
+              inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
+           ).size
+         : inScope.length;
       const listingEnvelope = {
          ranking: "prominence" as const,
-         total_available: sourceName
-            ? Math.min(inScope.length, 1)
-            : inScope.length,
+         total_available: cardsInScope,
          returned: sources.length,
          ...(request.pureSourceListing && consumed < inScope.length
             ? { next_offset: consumed }
