@@ -1175,7 +1175,7 @@ function parseOrchestratedBody(body: string[]): {
    const sources: {
       src: string;
       name: string;
-      dest: string;
+      dest?: string;
       failed: boolean;
    }[] = [];
    const references: { src: string; from?: string }[] = [];
@@ -1184,7 +1184,12 @@ function parseOrchestratedBody(body: string[]): {
       const line = raw.trim();
       const withAttrs = line.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
       const head = withAttrs ? withAttrs[1] : line;
-      const s = head.match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
+      // `@ <destination>` is OPTIONAL. A host may issue an instruction carrying no
+      // destination — because it could not resolve one, or chose not to — and what
+      // the publisher does with such an instruction for a source that DECLARES
+      // `storage=` is a rule worth being able to state in a scenario rather than
+      // only in a unit test.
+      const s = head.match(/^-\s*(\S+)\s*->\s*(\S+)\s*(?:@\s*(\S+)\s*)?$/);
       if (s) {
          const attrs = withAttrs
             ? withAttrs[2]
@@ -1542,7 +1547,7 @@ async function buildOrchestratedBody(
    step: {
       pkg: string;
       strict: boolean;
-      sources: { src: string; name: string; dest: string; failed: boolean }[];
+      sources: { src: string; name: string; dest?: string; failed: boolean }[];
       references: { src: string; from?: string }[];
    },
 ): Promise<{ body: OrchestratedBody; failedEids: Set<string> }> {
@@ -1561,7 +1566,9 @@ async function buildOrchestratedBody(
          materializedTableId: `mt-${s.name}`,
          physicalTableName: s.name,
          realization: "COPY",
-         destination: s.dest,
+         // Omitted entirely when the line named none, so the wire instruction is
+         // shaped the way a host that resolved no destination would send it.
+         ...(s.dest ? { destination: s.dest } : {}),
       };
    });
    const referenceManifest: {

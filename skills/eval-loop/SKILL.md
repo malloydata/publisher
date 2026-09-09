@@ -201,7 +201,7 @@ the run measure something other than what it names:
      default. Where that exists, point `--mcp-url` at the proxy on localhost
      and no OAuth step is needed, because the extension holds it. Check what
      the proxy actually exposes before relying on it: the same proxy may serve
-     a local Publisher's `malloy_*` tools instead, and then `--hosted-tools` is
+     a local Publisher's tools instead, and then `--hosted-tools` is
      naming tools that are not there. This route is not available to someone
      running the CLI alone.
 

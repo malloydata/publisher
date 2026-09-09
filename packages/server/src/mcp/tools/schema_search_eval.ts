@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Retrieval eval for malloy_searchDatabaseSchema: the lexical baseline vs the
+ * Retrieval eval for search_database_schema: the lexical baseline vs the
  * optional embedding-backed semantic mode.
  *
  * This exists because the last retrieval feature shipped without one. Semantic
- * malloy_getContext (#923) merged having only ever been measured against a stub
+ * get_context (#923) merged having only ever been measured against a stub
  * model, so "semantic retrieval works here" was never actually evidence. Nothing
  * in this feature should be promoted on the same basis, and the semantic path
  * ships off by default partly for that reason.
@@ -118,7 +118,7 @@ async function search(query: string): Promise<SearchPayload> {
          id: 1,
          method: "tools/call",
          params: {
-            name: "malloy_searchDatabaseSchema",
+            name: "search_database_schema",
             arguments: {
                environmentName: ENVIRONMENT,
                connectionName: CONNECTION,

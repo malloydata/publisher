@@ -98,6 +98,21 @@ export type SourceRefinement =
 export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
    sourceName: string;
+   /**
+    * What the source this table was built for IS: `persist` for one the modeler
+    * annotated, `preaggregate` for a rollup the publisher synthesized from
+    * `#@ preaggregate` measures. Absent means `persist`, which is what an entry
+    * written before the field existed means.
+    *
+    * Load-bearing rather than decorative, because the two are shaped differently
+    * and a rollup handled as an ordinary binding fails in both directions. Its
+    * `sourceName` names no source in any model file, so the author-model lookups
+    * that give an ordinary binding its refinements and its public column set find
+    * nothing; and its stored columns are partial aggregates that no source
+    * publicly exposes, so narrowing them against an author source would strip
+    * exactly the columns its measures read. See {@link rollupServeBindings}.
+    */
+   origin?: "persist" | "preaggregate";
    /** The storage destination the physical table lives in. */
    destinationName: string;
    /** The virtualMap handle for this source (its build-posture identity). */
@@ -259,6 +274,11 @@ export function deriveServeBindings(
       for (const sourceName of names) {
          bindings.push({
             sourceName,
+            // Carried rather than inferred: a manifest travels without its build
+            // plan, so this is the only thing that says a table belongs to a
+            // source that appears in no model file.
+            origin:
+               entry.origin === "preaggregate" ? "preaggregate" : "persist",
             destinationName: entry.storageDestinationName,
             virtualHandle: entry.sourceEntityId,
             // Qualify the table with the destination catalog (the attach alias) so
@@ -486,15 +506,70 @@ export function serveShapeDiagnostics(
    };
 }
 
-export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
+export function buildServeShapeModelForBindings(
+   bindings: ServeBinding[],
+   /**
+    * Pre-aggregation groups, each re-exposing one base source name over its
+    * rollup members. Their members are NOT in `bindings`: a rollup is bound under
+    * a synthesized name nothing queries, and it reaches the shape only through
+    * its group.
+    */
+   rollupGroups: RollupShapeGroup[] = [],
+): {
    modelText: string;
 } {
    const fragments = orderBindingsByJoinDeps(bindings)
       .map(serveShapeFragment)
       .join("\n");
+   // Rollup groups last. Nothing above can reference a group's base name — a join
+   // is emitted only when its target is itself a bound source, and a rollup's base
+   // is not one — so no ordering constraint reaches across this boundary.
+   //
+   // That exclusion is correct rather than merely convenient: joining TO a
+   // rollup-backed source would join to pre-aggregated rows, which is not what the
+   // author's join means. A query using such a join does not compile against this
+   // shape and is served live, which is the right answer.
+   const groups = rollupGroups.map(rollupServeShapeFragment).join("\n");
+   // `composite_sources` only when a composite is actually emitted, so a package
+   // with no rollups produces byte-identical text to before this existed — an
+   // unused experimental flag should not be a difference anyone has to reason
+   // about when reading a shape that has no composites in it.
+   const flags = rollupGroups.length
+      ? "##! experimental { virtual_source composite_sources }"
+      : "##! experimental.virtual_source";
    return {
-      modelText: `##! experimental.virtual_source\n${fragments}\n`,
+      modelText: groups
+         ? `${flags}\n${fragments}\n${groups}\n`
+         : `${flags}\n${fragments}\n`,
    };
+}
+
+/** One base source re-exposed over its rollup members. */
+export interface RollupShapeGroup {
+   baseSourceName: string;
+   members: ServeBinding[];
+}
+
+/**
+ * The fragment that re-exposes ONE base source name over its rollups: each member
+ * as its own virtual source, then a `compose()` binding the author's name to them.
+ *
+ * `compose()` even for a single member, deliberately. A one-member composite
+ * compiles and routes identically to a direct rebind (pinned in
+ * preaggregation_virtual_compose_spike.spec.ts), so treating one grain and several
+ * as one code path removes a branch that would otherwise be the only difference
+ * between the common case and the general one — and a branch there is exactly
+ * where a "works with one grain, silently stops with two" bug would live.
+ *
+ * The composite is NOT total: there is no base member, because the base lives on
+ * the source warehouse and every member of a composite must share a connection.
+ * So a query no rollup covers fails to compile against this model and falls back
+ * to live, which is the fallback the serve path relies on.
+ */
+function rollupServeShapeFragment(group: RollupShapeGroup): string {
+   const members = group.members.map(serveShapeFragment).join("\n");
+   const names = group.members.map((m) => m.sourceName).join(", ");
+   return `${members}\nsource: ${group.baseSourceName} is compose(${names})`;
 }
 
 /**
@@ -527,6 +602,25 @@ export function buildChainedStorageBuildModel(params: {
    downstreamDefText: string;
    destinationName: string;
 }): string {
+   // A rollup is never an upstream — nothing can reference one, its name being
+   // synthesized and absent from every model file — so one arriving here means a
+   // caller widened its set without deciding to.
+   //
+   // Asserted rather than filtered, and the distinction matters. Filtering would
+   // make a rollup here harmless, which it already is: `deriveServeBindings`
+   // attaches no refinements, so the fragments are bare virtual sources nothing
+   // references. But that is the SAME assumption that expired on the serve path,
+   // where these bindings later acquired refinements — at which point a rollup's
+   // merged measures would start entering BUILD models. An assertion fails loudly
+   // when the assumption stops holding; a filter would keep the damage silent.
+   const rollup = params.upstreams.find((b) => b.origin === "preaggregate");
+   if (rollup) {
+      throw new Error(
+         `buildChainedStorageBuildModel received a pre-aggregation rollup as an ` +
+            `upstream (${rollup.sourceName}). Rollups are not referenceable, so a ` +
+            `caller has widened its binding set without filtering by origin.`,
+      );
+   }
    const upstreamFragments = orderBindingsByJoinDeps(params.upstreams)
       .map(serveShapeFragment)
       .join("\n");

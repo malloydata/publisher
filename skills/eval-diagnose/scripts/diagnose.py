@@ -61,9 +61,9 @@ import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-DIAGNOSE_TOOLS = ("mcp__publisher__malloy_getContext",
-                  "mcp__publisher__malloy_executeQuery",
-                  "mcp__publisher__malloy_compile",
+DIAGNOSE_TOOLS = ("mcp__publisher__get_context",
+                  "mcp__publisher__execute_query",
+                  "mcp__publisher__compile_model",
                   "Read", "Grep", "Glob")
 # The platform target: a hosted MCP server. Its NAME has to match the one
 # run_baseline.py's answerer used, because that name is the OAuth cache key --

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pull search terms and entity ids out of a get_context exchange. Stdlib only.
 
-`malloy_getContext` has more than one request shape and more than one response
+`get_context` has more than one request shape and more than one response
 shape, and an extractor written against the one you happen to see first will
 silently return nothing for the others -- scoring every attempt at zero recall
 while the agent was in fact handed exactly what it needed.

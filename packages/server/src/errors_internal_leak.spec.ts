@@ -16,13 +16,14 @@
 // paired PUBLISHER_FRAME_ANCESTORS override (or a router-side injection) would
 // break the embed. That change ships with the deployment coordination, not here.
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import {
    BadRequestError,
    ConnectionError,
    internalErrorToHttpError,
 } from "./errors";
 import { getInternalError } from "./mcp/error_messages";
+import { logger } from "./logger";
 
 describe("internalErrorToHttpError does not leak internal detail (F-12 Part A)", () => {
    // A message carrying an internal marker a client must never receive: an
@@ -52,16 +53,18 @@ describe("internalErrorToHttpError does not leak internal detail (F-12 Part A)",
    });
 
    it("preserves a server-authored 502 message (caller-safe)", () => {
-      // Not every 502 is a leak. "Table x.y not found" is written by this server,
-      // names nothing internal, and tells the caller what to fix -- genericizing
-      // the whole 502 class to suppress driver messages would destroy it.
+      // Not every 502 is a leak. A message this server composed names nothing
+      // internal and tells the caller what to fix, so genericizing the whole
+      // 502 class to suppress driver messages would destroy it. (A missing
+      // table is a 404 via TableNotFoundError and never reaches this branch;
+      // the opt-in is what keeps any remaining server-authored 502 readable.)
       const { status, json } = internalErrorToHttpError(
-         new ConnectionError("Table analytics.orders not found", {
+         new ConnectionError("Package name is undefined", {
             callerSafe: true,
          }),
       );
       expect(status).toBe(502);
-      expect(json.message).toContain("Table analytics.orders not found");
+      expect(json.message).toContain("Package name is undefined");
    });
 
    it("generalizes a 502 that wraps a driver message (not caller-safe)", () => {
@@ -103,11 +106,11 @@ describe("getInternalError does not leak driver detail over MCP (F-12 Part A)", 
    it("keeps a server-authored caller-safe message", () => {
       const { message } = getInternalError(
          "executeQuery",
-         new ConnectionError("Table analytics.orders not found", {
+         new ConnectionError("Package name is undefined", {
             callerSafe: true,
          }),
       );
-      expect(message).toContain("Table analytics.orders not found");
+      expect(message).toContain("Package name is undefined");
    });
 
    it("keeps the message of an operational error that is not a ConnectionError", () => {
@@ -119,5 +122,85 @@ describe("getInternalError does not leak driver detail over MCP (F-12 Part A)", 
          new Error("the store exploded"),
       );
       expect(message).toContain("the store exploded");
+   });
+});
+
+// The two internal-failure classes are logged at different levels on purpose.
+// An unrecognized error is our bug; an upstream connection failure is one a
+// caller can drive in a loop, so it must not fill the error log or move an
+// error-rate dashboard that tracks our own faults.
+describe("internal-failure logging level (F-12 Part A)", () => {
+   // Assert on the arguments of THIS call, found by a marker unique to the test,
+   // rather than on a call count. Bun runs every spec file in one process under
+   // --serial, so any other file that maps an internal error increments the same
+   // spy and a count assertion fails for a reason that has nothing to do with
+   // the contract.
+   const callsWith = (spy: ReturnType<typeof spyOn>, marker: string) =>
+      spy.mock.calls.filter(
+         (args: unknown[]) =>
+            typeof args[1] === "object" &&
+            args[1] !== null &&
+            String((args[1] as { message?: unknown }).message ?? "").includes(
+               marker,
+            ),
+      );
+
+   it("logs an unrecognized internal error at error, not warn", () => {
+      const marker = "unrecognized-marker-9f2a";
+      const err = spyOn(logger, "error").mockImplementation(() => logger);
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         internalErrorToHttpError(new Error(marker));
+         expect(callsWith(err, marker)).toHaveLength(1);
+         expect(callsWith(warn, marker)).toHaveLength(0);
+      } finally {
+         err.mockRestore();
+         warn.mockRestore();
+      }
+   });
+
+   it("logs a driver-wrapped upstream failure at warn, not error", () => {
+      const marker = "upstream-marker-4c7b";
+      const err = spyOn(logger, "error").mockImplementation(() => logger);
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         internalErrorToHttpError(new ConnectionError(marker));
+         expect(callsWith(warn, marker)).toHaveLength(1);
+         expect(callsWith(err, marker)).toHaveLength(0);
+      } finally {
+         err.mockRestore();
+         warn.mockRestore();
+      }
+   });
+});
+
+// The mapper is only a choke point for handlers that return its `json`. A
+// handler that takes just the `status` and builds its own body from
+// `error.message` re-opens the leak in a different response shape, which is how
+// the watch-mode routes were echoing an internal filesystem path. This pins the
+// shape those handlers must use: the body's text comes from the mapper.
+describe("a handler with its own body shape still uses the mapper's text", () => {
+   it("carries no internal detail when built from the mapper's json", () => {
+      const internal =
+         "ENOSPC: System limit for number of file watchers reached, watch '/var/lib/publisher/environments/acme'";
+      const { status, json } = internalErrorToHttpError(new Error(internal));
+
+      // What the watch-mode handlers now send: `{ error: json.message }`.
+      const body = { error: json.message };
+
+      expect(status).toBe(500);
+      expect(body.error).not.toContain("/var/lib/publisher");
+      expect(body.error).not.toContain("ENOSPC");
+      // And it is still the mapper's actionable generic text, not empty.
+      expect(body.error).toBe("Internal server error.");
+   });
+
+   it("keeps a 4xx message, so the shape does not blank client errors", () => {
+      const { status, json } = internalErrorToHttpError(
+         new BadRequestError("environmentName must match ^[a-z0-9-]+$"),
+      );
+      const body = { error: json.message };
+      expect(status).toBe(400);
+      expect(body.error).toContain("environmentName must match");
    });
 });

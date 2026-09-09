@@ -14,10 +14,10 @@ SPDX-License-Identifier: MIT
 ## Pre-Flight Checklist
 
 1. **Discover first**: ground yourself before writing ANY code, with the tool that matches what you are modelling.
-   - Modelling data **already in a package**: `malloy_getContext` returns that package's sources, views, and fields (with their docs).
-   - Modelling **a database with no package yet**: `malloy_getContext` has nothing to return, so use `malloy_searchDatabaseSchema` instead. It walks the connection's schemas and tables, ranks them against a plain-English description, and gives you each table's columns plus the `source:` line to start from. Take those names verbatim into step 5.
+   - Modelling data **already in a package**: `get_context` returns that package's sources, views, and fields (with their docs).
+   - Modelling **a database with no package yet**: `get_context` has nothing to return, so use `search_database_schema` instead. It walks the connection's schemas and tables, ranks them against a plain-English description, and gives you each table's columns plus the `source:` line to start from. Take those names verbatim into step 5.
    Never guess field names either way.
-2. **Search docs proactively**: call `malloy_searchDocs` BEFORE writing unfamiliar patterns (window functions, query-based sources, pipelines). Don't guess. Malloy syntax is specific and SQL intuition is often wrong.
+2. **Search docs proactively**: call `search_malloy_docs` BEFORE writing unfamiliar patterns (window functions, query-based sources, pipelines). Don't guess. Malloy syntax is specific and SQL intuition is often wrong.
 3. **Use `skill:malloy-patterns`** to discover available doc topics (YoY, cohorts, rendering, window functions).
 4. **Check diagnostics** after writing: fix the FIRST error first, errors cascade.
 5. **Read the gotcha skills**: `skill:malloy-gotchas-modeling`, `skill:malloy-gotchas-queries`, and `skill:malloy-gotchas-rendering` prevent the most common mistakes.
@@ -65,7 +65,7 @@ DISCOVER → SCOPE → SOURCES → DEFINITIONS → BUILD BASE → BUILD JOINED �
 
 | Step | Skill | What Happens |
 |------|-------|-------------|
-| 1. Discover | `skill:malloy-discover` | Read the model and data; scan sources, fields, distributions; detect prior art. With no package yet, start from `malloy_searchDatabaseSchema` to find the tables in the connection |
+| 1. Discover | `skill:malloy-discover` | Read the model and data; scan sources, fields, distributions; detect prior art. With no package yet, start from `search_database_schema` to find the tables in the connection |
 | 2. Propose Scope | `skill:malloy-scope` | Present findings, user selects focus |
 | 3. Propose Sources | `skill:malloy-define` | Propose source plan, user confirms architecture |
 | 4. Propose Definitions | `skill:malloy-define` | Propose fields per base source, user confirms logic |
@@ -135,28 +135,28 @@ Ensure the Publisher MCP tools are configured before modeling. No server yet? `s
 
 | Tool | Purpose |
 |------|---------|
-| `malloy_getContext` | Ground yourself in a package: its sources, views, and fields |
-| `malloy_executeQuery` | Run ad-hoc queries for validation |
-| `malloy_compile` | Compile-check a change and get diagnostics back without running a query |
-| `malloy_reloadPackage` | Recompile a package from disk so a saved edit becomes queryable by name |
-| `malloy_searchDocs` | Search Malloy docs (call BEFORE unfamiliar patterns) |
-| `malloy_searchDatabaseSchema` | Find the tables in a database connection by plain-English description, when modelling data that is not in a package yet. Returns each table's columns and the `source:` line to start from. Names and types only: no row value is returned |
+| `get_context` | Ground yourself in a package: its sources, views, and fields |
+| `execute_query` | Run ad-hoc queries for validation |
+| `compile_model` | Compile-check a change and get diagnostics back without running a query |
+| `reload_package` | Recompile a package from disk so a saved edit becomes queryable by name |
+| `search_malloy_docs` | Search Malloy docs (call BEFORE unfamiliar patterns) |
+| `search_database_schema` | Find the tables in a database connection by plain-English description, when modelling data that is not in a package yet. Returns each table's columns and the `source:` line to start from. Names and types only: no row value is returned |
 
-Never guess field names. Ground yourself with `malloy_getContext` to see the sources and fields a package defines.
+Never guess field names. Ground yourself with `get_context` to see the sources and fields a package defines.
 
 ### The edit-and-run loop
 
 Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until you reload the package. The loop is:
 
-1. **Validate** the change with `malloy_compile`, picking the scope that matches what you are doing:
+1. **Validate** the change with `compile_model`, picking the scope that matches what you are doing:
    - Adding a new definition or query: the default (`scope: "append"`) compiles your text in the model's namespace. Note its diagnostic positions land in the model-plus-your-text concatenation.
    - **Editing an existing definition: `scope: "file"`**, with the whole edited file as `source`. It compiles your text AS the file (append would collide with "Cannot redefine"), and diagnostics land at the true line numbers of your text.
    - Before saving a change other files import: `scope: "package"` with the edited file as `source` runs reload's worker compiler over every `.malloy` and `.malloynb` file against your edit, so a rename that breaks an importer surfaces now instead of at reload. Each diagnostic carries `model`, the file it points at; files hidden from discovery can appear. If `modelPath` does not exactly match an existing file, a warning says the source was treated as new.
 2. **Save** it to the package's model file.
-3. **Reload** with `malloy_reloadPackage`.
-4. **Run** the new view with `malloy_executeQuery`.
+3. **Reload** with `reload_package`.
+4. **Run** the new view with `execute_query`.
 
-A reload that fails to compile is safe: your files are left alone and the previously compiled model keeps serving, with the compile errors returned to you. Compile first anyway for faster feedback, and a `scope: "package"` dry-run with no `source` uses reload's compiler and file selection (imports across files, every `.malloy` and `.malloynb` file as saved) without touching the served model. Keep the source of truth outside `publisher_data/`, which is not version-controlled and is wiped by a `--init` restart. If these tools are missing, the Publisher you are connected to predates them; fall back to validating with a throwaway `malloy_executeQuery`. An older Publisher that has `malloy_compile` but rejects `scope` supports only the append behavior.
+A reload that fails to compile is safe: your files are left alone and the previously compiled model keeps serving, with the compile errors returned to you. Compile first anyway for faster feedback, and a `scope: "package"` dry-run with no `source` uses reload's compiler and file selection (imports across files, every `.malloy` and `.malloynb` file as saved) without touching the served model. Keep the source of truth outside `publisher_data/`, which is not version-controlled and is wiped by a `--init` restart. If these tools are missing, the Publisher you are connected to predates them; fall back to validating with a throwaway `execute_query`. An older Publisher that has `compile_model` but rejects `scope` supports only the append behavior.
 
 ## SQL-to-Malloy Quick Reference
 
