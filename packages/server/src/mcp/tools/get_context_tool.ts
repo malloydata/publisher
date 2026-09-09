@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
 import { z } from "zod";
 import lunr from "lunr";
 import type { Relationship } from "@malloydata/malloy-interfaces";
@@ -133,7 +135,11 @@ interface ResultEntity {
    relationship?: Relationship;
    /** Other spellings of this field in its own source, collapsed into it. */
    aliases?: string[];
-   /** The field's Malloy expression; serialized only on `include_code`. */
+   /**
+    * The entity's definition: a dimension's or measure's Malloy expression, or
+    * a view's definition sliced from the model file. Serialized only when the
+    * request asks for code.
+    */
    code?: string;
    score?: number;
    /** Malloy type of a dimension or measure. */
@@ -346,9 +352,11 @@ interface SourceCardEntity {
    /** Publisher extension. Stable `kind:source:name`; see {@link entityId}. */
    entity_id: string;
    /**
-    * Publisher extension. The field's Malloy expression, present only when the
-    * caller passed `include_code`. A physical column has none, so absence
-    * under that flag means the field is raw rather than derived.
+    * The entity's definition, present when the caller passed `include_code` or
+    * pinned `scopes[].entity_name`. A dimension or measure carries its Malloy
+    * expression; a view carries its definition as written in the model file. A
+    * physical column has neither, so absence under that flag means the field
+    * is raw rather than derived.
     */
    code?: string;
    relationship?: Relationship;
@@ -771,7 +779,7 @@ const convergedContextShape = {
       .boolean()
       .nullish()
       .describe(
-         "Return each field's Malloy expression as `code`. Off by default: a source's #(doc) should say what a field means, and expressions are long. Turn it on to inspect what a measure actually computes -- typically once you have narrowed to the few fields you care about.",
+         "Return each entity's definition as `code`: a dimension's or measure's Malloy expression, or a view's definition as written. Off by default -- a source's #(doc) should say what a field means, and definitions are long. Turn it on to inspect what a measure actually computes. Pinning `scopes[].entity_name` turns it on by itself.",
       ),
    limit: z
       .number()
@@ -876,7 +884,13 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       kinds,
       searches,
       listingOnly,
-      includeCode: params.include_code ?? false,
+      // Pinning an entity by name turns code on, matching the hosted
+      // retrieval API: a caller who has narrowed to one entity is asking what
+      // it IS, and the definition is the answer. Deliberately overrides an
+      // explicit `include_code: false` rather than deferring to it, because
+      // parity is the point -- the same request must mean the same thing on
+      // both surfaces. The flag still decides every unpinned call.
+      includeCode: (params.include_code ?? false) || Boolean(scope.entity_name),
       unsupported,
       limit: params.limit ?? (listingOnly ? MAX_LIMIT : DEFAULT_RANKED_LIMIT),
       offset: params.offset ?? 0,
@@ -993,6 +1007,58 @@ function activeName(v: { name?: string; as?: string }): string | undefined {
    return v.as ?? v.name;
 }
 
+/**
+ * The text a `DocumentLocation` range covers, or undefined if the range does
+ * not fit the file. Ranges are zero-based, end-exclusive on the character.
+ */
+export function sliceRange(
+   text: string,
+   range: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+   },
+): string | undefined {
+   const lines = text.split("\n");
+   const { start, end } = range;
+   if (start.line < 0 || end.line >= lines.length || end.line < start.line) {
+      return undefined;
+   }
+   if (start.line === end.line) {
+      return lines[start.line].slice(start.character, end.character);
+   }
+   return [
+      lines[start.line].slice(start.character),
+      ...lines.slice(start.line + 1, end.line),
+      lines[end.line].slice(0, end.character),
+   ].join("\n");
+}
+
+/**
+ * Reads a model file once and remembers it, for the life of one index build.
+ *
+ * A view's definition is not in the IR (see readFieldProvenance), so it has to
+ * come off disk. The index is built once per Package and cached, so this is
+ * one read per model file per package load -- not per request.
+ */
+function makeSourceTextReader(): (url: string) => string | undefined {
+   const cache = new Map<string, string | undefined>();
+   return (url: string) => {
+      if (cache.has(url)) return cache.get(url);
+      let text: string | undefined;
+      try {
+         text = url.startsWith("file:")
+            ? readFileSync(fileURLToPath(url), "utf8")
+            : undefined;
+      } catch {
+         // A model served from a store with no local file, or one moved since
+         // it compiled. Views lose their code; nothing else changes.
+         text = undefined;
+      }
+      cache.set(url, text);
+      return text;
+   };
+}
+
 /** One source's compiled definition, found by the name SourceInfo reports. */
 function findSourceDef(
    modelDef: ModelDef | undefined,
@@ -1046,6 +1112,7 @@ function readSourceOwnDoc(
 function readFieldProvenance(
    modelDef: ModelDef | undefined,
    sourceName: string,
+   sourceTextFor?: (url: string) => string | undefined,
 ): Map<string, FieldProvenance> {
    const provenance = new Map<string, FieldProvenance>();
    const entry = findSourceDef(modelDef, sourceName);
@@ -1055,6 +1122,14 @@ function readFieldProvenance(
          name?: string;
          as?: string;
          code?: string;
+         type?: string;
+         location?: {
+            url?: string;
+            range?: {
+               start: { line: number; character: number };
+               end: { line: number; character: number };
+            };
+         };
          e?: { node?: string; path?: string[] };
       };
       const fieldName = activeName(field);
@@ -1063,8 +1138,25 @@ function readFieldProvenance(
          field.e?.node === "field" && field.e.path?.length === 1
             ? field.e.path[0]
             : undefined;
+      // Malloy fills `code` for a scalar expression only, so a view -- whose
+      // definition is a query pipeline -- arrives with none, exactly like a
+      // physical column. Its `location` does cover the definition though, so
+      // the text comes off the file instead. Restricted to turtles because a
+      // physical column's location points at the source's table() expression,
+      // which would slice to something that is not the field at all.
+      const viewCode =
+         field.type === "turtle" && field.location?.url && field.location.range
+            ? sliceRange(
+                 sourceTextFor?.(field.location.url) ?? "",
+                 field.location.range,
+              )
+            : undefined;
       provenance.set(fieldName, {
-         ...(field.code ? { code: field.code } : {}),
+         ...(field.code
+            ? { code: field.code }
+            : viewCode
+              ? { code: viewCode }
+              : {}),
          // A self-reference cannot occur in valid Malloy; guarded anyway,
          // because recording one would make a field its own alias and drop it.
          ...(referent && referent !== fieldName ? { aliasOf: referent } : {}),
@@ -1174,6 +1266,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
    const entities: Entity[] = [];
    const governance = new Map<string, SourceGovernance>();
+   // One reader for the whole walk: several sources share a model file.
+   const sourceTextFor = makeSourceTextReader();
    let n = 0;
    for (const apiModel of models) {
       // path is optional in the generated API types; skip models without one.
@@ -1212,7 +1306,11 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
          if (agentHidden.has(sourceName)) continue;
-         const provenance = readFieldProvenance(modelDef, sourceName);
+         const provenance = readFieldProvenance(
+            modelDef,
+            sourceName,
+            sourceTextFor,
+         );
          // Keyed per (model path, source) like the card it decorates, so a
          // card can never show one file's givens/gates beside another file's
          // model_path.
@@ -1318,11 +1416,11 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
             ) {
                continue;
             }
-            // A view's definition is a query pipeline rather than a scalar
-            // expression, and nothing folds or displays it, so provenance is
-            // read for dimensions and measures only.
-            const fieldProvenance =
-               field.kind === "view" ? undefined : provenance.get(field.name);
+            // A view carries `code` (sliced from the model file) but neither
+            // an `aliasOf` -- a view is not a respelling of another field --
+            // nor a scalar `dataType`.
+            const fieldProvenance = provenance.get(field.name);
+            const isView = field.kind === "view";
             entities.push({
                id: String(n++),
                kind: field.kind,
@@ -1335,7 +1433,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                   ? {}
                   : { dataType: malloyType(field) }),
                ...(fieldProvenance?.code ? { code: fieldProvenance.code } : {}),
-               ...(fieldProvenance?.aliasOf
+               ...(!isView && fieldProvenance?.aliasOf
                   ? { aliasOf: fieldProvenance.aliasOf }
                   : {}),
             });
@@ -1678,7 +1776,7 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - authorize means gated: supply the givens it names or the query is denied.
 
 ## Parameters
-search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question asked. include_code adds each field's expression as code.
+search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question asked. include_code or a pinned entity_name returns code.
 
 ## Response
 sources[], best first. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, matched_targets, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
