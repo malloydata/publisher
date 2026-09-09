@@ -7,6 +7,8 @@ import {
    BadRequestError,
    ConnectionAuthError,
    ConnectionError,
+   InvalidArgumentError,
+   TableNotFoundError,
    internalErrorToHttpError,
    ModelCompilationError,
    NotImplementedError,
@@ -65,6 +67,33 @@ describe("internalErrorToHttpError", () => {
       );
       expect(status).toBe(424);
       expect(json).toEqual({ code: 424, message: "compile failed" });
+   });
+
+   it("maps TableNotFoundError to 404 with a machine-readable reason", () => {
+      const { status, json } = internalErrorToHttpError(
+         new TableNotFoundError("Not found: Table proj:ds.missing"),
+      );
+      expect(status).toBe(404);
+      expect(json).toEqual({
+         code: 404,
+         message: "Not found: Table proj:ds.missing",
+         reason: "TABLE_NOT_FOUND",
+      });
+   });
+
+   it("maps InvalidArgumentError to 400", () => {
+      const { status, json } = internalErrorToHttpError(
+         new InvalidArgumentError("Improper table path: sal"),
+      );
+      expect(status).toBe(400);
+      expect(json).toEqual({ code: 400, message: "Improper table path: sal" });
+   });
+
+   it("omits reason entirely on errors that carry none", () => {
+      const { json } = internalErrorToHttpError(
+         new ConnectionError("upstream broken"),
+      );
+      expect(json).not.toHaveProperty("reason");
    });
 
    it("maps ConnectionError to 502 (distinct from auth, still retryable)", () => {
