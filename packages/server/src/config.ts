@@ -1323,7 +1323,7 @@ export const convertConnectionsToApiConnections = (
          if (!conn.name || typeof conn.name !== "string") {
             logger.warn(
                `Invalid connection: missing or invalid "name" field. Skipping.`,
-               { connection: conn },
+               { type: typeof conn.type === "string" ? conn.type : undefined },
             );
             return false;
          }

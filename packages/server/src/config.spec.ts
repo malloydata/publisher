@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import {
+   convertConnectionsToApiConnections,
    DEFAULT_EMBEDDING_MIN_SIMILARITY,
    getEmbeddingConfig,
    getPersistCollisionEnforce,
@@ -1050,6 +1051,50 @@ describe("getProcessedPublisherConfig credential logging", () => {
          // Asserts on the whole payload rather than on the absence of one key,
          // so re-introducing the config under a different key still fails here.
          expect(JSON.stringify(skipWarning)).not.toContain(secret);
+      } finally {
+         logger.warn = originalWarn;
+      }
+   });
+
+   it("keeps connection credentials out of the log when a connection is missing its name", async () => {
+      // Sibling of the environment case above: a connection skipped for a
+      // missing `name` reaches the warning with its `${VAR}` references already
+      // substituted, so logging the entry logs the credential.
+      const secret = "conn-password-that-must-not-be-logged";
+
+      const { logger } = await import("./logger");
+      const originalWarn = logger.warn;
+      const calls: unknown[][] = [];
+      logger.warn = ((...args: unknown[]) => {
+         calls.push(args);
+         return logger;
+      }) as typeof logger.warn;
+
+      try {
+         const result = convertConnectionsToApiConnections([
+            {
+               // `name` deliberately absent: this is the path under test.
+               type: "postgres",
+               postgresConnection: { password: secret },
+            },
+         ] as unknown as Parameters<
+            typeof convertConnectionsToApiConnections
+         >[0]);
+
+         expect(result.length).toBe(0);
+
+         const skipWarning = calls.find(
+            (args) =>
+               typeof args[0] === "string" &&
+               args[0].includes('missing or invalid "name" field'),
+         );
+         expect(skipWarning).toBeDefined();
+
+         // Whole-payload assertion, for the same reason as the environment case.
+         expect(JSON.stringify(skipWarning)).not.toContain(secret);
+         // The type still identifies the offending entry, since the name is
+         // exactly what is missing.
+         expect(JSON.stringify(skipWarning)).toContain("postgres");
       } finally {
          logger.warn = originalWarn;
       }
