@@ -26,6 +26,14 @@ The judge scored against the golden as written even where it said `suspect`, so
 its verdict is still the verdict. Do not re-open a case merely because the flag
 is set; open it because you looked and agreed.
 
+Looking is a procedure, and doing it from the rubric's text is how an audit
+records the wrong cause for a change that was otherwise right: read the judge's
+full reason, the answer, every query in order, and then re-run the data against
+the pinned version and the source the attempt used.
+`reference/auditing-an-answer-key.md` has it, with the bar a relaxation has to
+clear. Read it before repairing more than one key, and before touching a set
+you did not author.
+
 1. **Replay, yourself.** Take the stored `final_query` (or a query you can
    justify from the model) and run it with `execute_query`. Write the
    rows to a gold artifact under `evals/<set>/` (never under the served

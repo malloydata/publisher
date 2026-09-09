@@ -203,7 +203,7 @@ event unchanged, and where it says nothing, fall back to the case's standing
 Do not encode a rewrite of a bad golden into the model. A `suspect` or
 `verified_wrong`, or a no_match whose why indicts the golden rather than the
 prediction, routes to the golden side door in `skill:eval-loop` as a **dataset**
-issue. It is never a model failure, and it must be settled before improve runs --
+issue, which is where the audit procedure for settling it lives. It is never a model failure, and it must be settled before improve runs --
 otherwise a modelling agent is dispatched to fix a model that is already right.
 
 ## Step 6: Append events, then stop

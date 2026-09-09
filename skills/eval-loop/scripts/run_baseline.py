@@ -227,6 +227,20 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def question_sha(case: dict[str, Any]) -> str:
+    """Hash of the question this case asked, for comparing two runs.
+
+    A case MAY carry `questionSha`, a hash of the authored source it was
+    converted from; none does today, and reading only that field left
+    `question_sha` null on every attempt ever recorded. The fallback hashes
+    the text the answerer saw, which makes two runs comparable on whether
+    they asked the same thing. It does NOT catch a question edited between
+    runs: that needs the authored file's hash, which nothing stamps yet
+    (`reference/auditing-an-answer-key.md`).
+    """
+    return case.get("questionSha") or sha256(case["question"].encode())
+
+
 def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None:
     """HEAD of the repo containing `path`, with a dirty marker. None if not a repo.
 
@@ -2039,7 +2053,7 @@ def main(argv: list[str] | None = None) -> int:
         att = attempts[qid]
         base = {"qid": qid, "sample": None, "phase": a.phase}
         events.append(ledger.event("attempt", **base,
-                      question_sha=c.get("questionSha"),
+                      question_sha=question_sha(c),
                       submitted=att["submitted"],
                       final_query=att["final_query"],
                       final_query_source=att.get("final_query_source"),

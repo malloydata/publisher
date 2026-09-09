@@ -38,6 +38,7 @@ all of them for every run is how a skill stops being read.
 |---|---|
 | about to run one | `reference/running-a-run.md` |
 | a golden is wrong, doubted, or out of step with the model | `reference/golden-side-door.md` |
+| auditing a key you doubt, or a set you did not author | `reference/auditing-an-answer-key.md` |
 | deciding whether an edit stays | `reference/acceptance-check.md` |
 | about to quote a number, or set the noise band | `reference/measurement.md` |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |

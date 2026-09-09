@@ -334,5 +334,24 @@ class RunSummary(unittest.TestCase):
         self.assertFalse([l for l in lines if "entity recall" in l])
 
 
+class QuestionSha(unittest.TestCase):
+    def test_the_case_text_is_hashed_when_nothing_stamped_one(self):
+        # It read `questionSha` alone, which no case writes, so the field was
+        # null on every attempt and two runs could not be compared at all.
+        got = rb.question_sha({"question": "How many orders shipped late?"})
+        self.assertEqual(got, rb.sha256(b"How many orders shipped late?"))
+
+    def test_an_authored_hash_wins_over_the_case_text(self):
+        # The point of `questionSha` is that it comes from the authored file,
+        # so a question edited in cases.jsonl must NOT re-hash to a match.
+        got = rb.question_sha({"question": "edited", "questionSha": "abc123"})
+        self.assertEqual(got, "abc123")
+
+    def test_two_spellings_of_one_question_do_not_collide(self):
+        a = rb.question_sha({"question": "the frequency distribution"})
+        b = rb.question_sha({"question": "the reach frequency distribution"})
+        self.assertNotEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()
