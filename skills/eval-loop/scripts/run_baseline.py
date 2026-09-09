@@ -891,7 +891,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   attempted: int, decided: int, passed: int, near: int,
                   human: int, doubted: list, vetoed: list, alt_path: int,
                   retrieval_mode: str, tally: dict, rs: dict,
-                  answerer_cost: float, judge_cost: float) -> list[str]:
+                  answerer_cost: float, judge_cost: float,
+                  publisher: str, environment: str) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -962,14 +963,31 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
               f"                python3 skills/eval-answer/scripts/"
               f"check_coverage.py --set {set_dir} --model <package-dir>"]
 
+    pkg_name = f"eval-{out.name}"
+    pkg_dir = f"/tmp/{pkg_name}"
     lines += ["", "DEEP DIVE",
-              f"  events        {out}/events.jsonl ({events_n} events)",
-              "  case matrix   build the run package, then serve it and open "
-              "the app for the",
-              "                per-case drawer:",
-              f"                python3 skills/eval-loop/scripts/"
-              f"build_run_package.py \\",
-              f"                  --run {out} --set {set_dir} --out /tmp/evalpkg",
+              "  A run directory is JSONL, which is a record, not a report.",
+              "  build_run_package.py turns it into a servable Malloy package:",
+              "  a model over the run's CSVs, eval_run.malloynb for the",
+              "  aggregate tables, and an in-package HTML app for the case",
+              "  matrix and its per-case drawer. Register it and open it:",
+              "",
+              f"    python3 skills/eval-loop/scripts/build_run_package.py \\",
+              f"      --run {out} --set {set_dir} --out {pkg_dir}",
+              "",
+              f"    curl -sS -X POST {publisher}/api/v0/environments/"
+              f"{environment}/packages \\",
+              "      -H 'content-type: application/json' \\",
+              f"      -d '{{\"name\":\"{pkg_name}\","
+              f"\"location\":\"{pkg_dir}\"}}'",
+              "",
+              f"    {publisher}/environments/{environment}/packages/"
+              f"{pkg_name}/",
+              "",
+              "  The POST needs no restart, and lands the package in the",
+              f"  environment this run used ({environment}); move it to another",
+              "  if you would rather the package listing stay untouched.",
+              f"  Raw events: {out}/events.jsonl ({events_n} events)",
               "=" * 64]
     return lines
 
@@ -2137,7 +2155,8 @@ def main(argv: list[str] | None = None) -> int:
             attempted=len(cases), decided=conf, passed=ok, near=near,
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
             retrieval_mode=mode, tally=tally, rs=rs,
-            answerer_cost=cost, judge_cost=judge_cost):
+            answerer_cost=cost, judge_cost=judge_cost,
+            publisher=a.publisher, environment=a.environment):
         print(line)
 
     # Recorded, not only printed. The next command is usually diagnose, and a

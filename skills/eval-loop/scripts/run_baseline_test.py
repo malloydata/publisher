@@ -255,7 +255,8 @@ class RunSummary(unittest.TestCase):
             rs={"retrieval_scored": 49, "mean_recall": 0.842,
                 "complete_retrievals": 41,
                 "failures_by_where_to_fix": {"model": 8}},
-            answerer_cost=4.0, judge_cost=0.5)
+            answerer_cost=4.0, judge_cost=0.5,
+            publisher="http://localhost:4811", environment="samples")
         args.update(over)
         return rb.summary_lines(**args)
 
@@ -294,11 +295,29 @@ class RunSummary(unittest.TestCase):
         self.assertIn("check_coverage.py", block)
         self.assertIn("--set evals/e", block)
 
-    def test_the_deep_dive_links_the_case_matrix(self):
+    def test_the_deep_dive_ends_in_a_url_a_human_can_open(self):
+        # The point of the layer: a run directory is JSONL, and the reader
+        # needs the served app, not the record it was built from.
         block = "\n".join(self.lines())
         self.assertIn("build_run_package.py", block)
         self.assertIn("--run results/r1", block)
-        self.assertIn("events.jsonl", block)
+        self.assertIn(
+            "http://localhost:4811/environments/samples/packages/eval-r1/",
+            block)
+
+    def test_the_deep_dive_registers_the_package_it_just_built(self):
+        # The URL only resolves after the POST, and the two have to name the
+        # same package and the same directory or the link 404s.
+        block = "\n".join(self.lines())
+        self.assertIn("--out /tmp/eval-r1", block)
+        self.assertIn('"name":"eval-r1"', block)
+        self.assertIn('"location":"/tmp/eval-r1"', block)
+        self.assertIn(
+            "POST http://localhost:4811/api/v0/environments/samples/packages",
+            block.replace("-sS -X ", ""))
+
+    def test_the_deep_dive_still_names_the_raw_events(self):
+        self.assertIn("events.jsonl", "\n".join(self.lines()))
 
     def test_a_lexical_run_says_so_where_the_number_is(self):
         lines = self.lines(retrieval_mode="lexical",

@@ -95,9 +95,16 @@ Three layers, in this order, and the order is what makes it readable:
    it reads the MODEL rather than the answers, asking whether a correct answer
    is expressible at all, so it is the first question a low score raises and
    the summary prints the command for it.
-4. **DEEP DIVE.** The events file, and the `build_run_package.py` line that
-   turns the run into the servable package whose HTML app has the per-case
-   drawer (step 5 above).
+4. **DEEP DIVE.** A run directory is JSONL, which is a record and not a
+   report, so this layer is the two commands that turn it into something you
+   read: `build_run_package.py` (a Malloy model over the run's CSVs,
+   `eval_run.malloynb` for the aggregate tables, and an in-package HTML app for
+   the case matrix and its per-case drawer), then a `POST .../packages` that
+   registers it on the Publisher already running, with no restart. It prints
+   the resulting URL with the run's own paths filled in.
+
+   The POST lands the package in the environment the run used. Point it at
+   another if you would rather that package listing stay untouched.
 
 Order of magnitude for planning, **calibrated on ecommerce over local duckdb**:
 a Sonnet arm over a few dozen cases costs single-digit dollars and finishes in
