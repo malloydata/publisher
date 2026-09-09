@@ -41,7 +41,7 @@ Reference table for translating LookML constructs to Malloy. Referenced by multi
 | `+view:` (refinement) | User decides: consolidate or `extend` | Malloy `extend` serves the same purpose |
 | `derived_table: { sql: ... }` (perf-only) | Use base table directly | PDT optimization is Looker-specific |
 | `derived_table: { sql: ... }` (transformation) | Flag for user | Recommend base table + dims or upstream dbt |
-| `derived_table: { explore_source: ... }` (NDT) | `from(source -> { group_by:, aggregate: }) extend { }` | Computed source pattern |
+| `derived_table: { explore_source: ... }` (NDT) | `(source -> { group_by:, aggregate: }) extend { }` | Computed source pattern |
 | `value_format: "$#,##0.00"` | `# currency` | Map to Malloy render tags |
 | `value_format: "0.00%"` | `# percent` | Map to Malloy render tags |
 | `value_format_name: decimal_2` | `# number="0.00"` | Map to Malloy render tags |

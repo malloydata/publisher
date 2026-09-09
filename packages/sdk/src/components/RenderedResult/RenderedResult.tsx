@@ -1,16 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box } from "@mui/material";
+import { Box, useTheme } from "@mui/material";
 import React, {
    Suspense,
    useCallback,
    useEffect,
    useLayoutEffect,
+   useMemo,
    useRef,
 } from "react";
 import { buildMalloyExplicitTheme } from "../../theme/buildMalloyExplicitTheme";
-import { buildTableCssVars } from "../../theme/buildTableCssVars";
+import {
+   buildTableCssVars,
+   DASHBOARD_CARD_PADDING_PX,
+   type DashboardCardGeometry,
+} from "../../theme/buildTableCssVars";
 import { buildVegaThemeOverride } from "../../theme/buildVegaThemeOverride";
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
@@ -35,6 +40,15 @@ type MalloyRenderElement = HTMLElement & Record<string, unknown>;
  * `@malloydata/render` if more methods are needed.
  */
 interface MalloyVizHandle extends DrillMetadataSource {
+   // Narrowed from `DrillMetadataSource`, which only declares the part the
+   // drill affordance reads. `getRootField().renderAs()` is what decides
+   // whether one measurement is enough; see `sizesToContent`.
+   getMetadata: () =>
+      | (NonNullable<ReturnType<DrillMetadataSource["getMetadata"]>> & {
+           getRootField: () => { renderAs: () => string };
+        })
+      | null
+      | undefined;
    setResult: (result: unknown) => void;
    render: (element: HTMLElement) => void;
    remove: () => void;
@@ -153,8 +167,12 @@ async function extractChartThemeOverride(parsed: unknown) {
    }
 }
 
-function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
-   const vars = buildTableCssVars(theme);
+function applyTableCssVars(
+   element: HTMLElement,
+   theme: ResolvedTheme,
+   card: DashboardCardGeometry,
+): void {
+   const vars = buildTableCssVars(theme, card);
    for (const [key, value] of Object.entries(vars)) {
       element.style.setProperty(key, value);
    }
@@ -174,6 +192,18 @@ function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
  * than the renderer's own so they win regardless of stylesheet order.
  */
 const PUBLISHER_RENDERER_OVERRIDES_CSS = `
+/* Card geometry, through the renderer's OWN theme vars rather than over the top
+   of them. It declares --malloy-theme--dashboard-* on .malloy-render itself and
+   passes each through to the --malloy-render--* the card CSS reads, so a value
+   inherited from our wrapper loses to that declaration however early it is set:
+   this has to be a rule on the same element, at higher specificity. Doubling the
+   class does that, and then no !important is needed — which matters, because
+   !important here also lands on .dashboard-item-borderless and repaints a card
+   the author asked to have no card. */
+.malloy-render.malloy-render {
+   --malloy-theme--dashboard-card-radius: var(--publisher-dashboard-card-radius);
+   --malloy-theme--dashboard-card-padding: var(--publisher-dashboard-card-padding);
+}
 /* dashboard.css hardcodes background: #f7f9fc on .malloy-dashboard
    and .dashboard-row-header, which would paint light grey in dark
    mode and also bleed an operator-picked palette.background across
@@ -208,11 +238,16 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    background: var(--publisher-dashboard-root) !important;
    background-color: var(--publisher-dashboard-root) !important;
 }
-.malloy-render .malloy-dashboard .dashboard-item {
+.malloy-render .malloy-dashboard .dashboard-item:not(.dashboard-item-borderless) {
    /* Tile padding around each chart / table. Uses our custom
       --malloy-render--tile-background so the operator can theme the
       tile separately from the table header row (which paints from
-      --malloy-render--table-pinned-background below). */
+      --malloy-render--table-pinned-background below).
+
+      A flat bordered card rather than the renderer's shadow ring, which is what
+      makes it match the composite tile's Paper. :not(borderless) because
+      # borderless asks for no card at all, and an !important background and
+      border drew one anyway. */
    background: var(--malloy-render--tile-background) !important;
    color: var(--malloy-render--table-body-color) !important;
    box-shadow: none !important;
@@ -293,6 +328,43 @@ function injectRendererOverrides(): void {
    document.head.appendChild(style);
 }
 
+/**
+ * Whether the renderer's top-level output sizes itself to its CONTENT rather
+ * than to the box it was handed, which decides whether measuring it once is
+ * enough.
+ *
+ * It is not, for a table. The renderer signals `onReady` as soon as it knows it
+ * can paint, and for a table that is immediately — a chart waits for a non-zero
+ * parent size, a table does not — so the single measurement taken there lands
+ * before the table's virtualized grid has laid out, and reads a height the
+ * table never keeps.
+ *
+ * Re-measuring a table TERMINATES: `.malloy-table.root` is
+ * `height: fit-content; max-height: 100%` in the renderer's own CSS and the
+ * wrappers between it and the container add no padding, so shrinking the
+ * container to the table's content height is the exact point at which the cap
+ * stops binding and the next measurement reports the same number.
+ *
+ * A root that FILLS its container stays on the one-shot path deliberately: a
+ * chart draws itself inset from the box it is given, so feeding its height back
+ * as the new container height would ratchet the container down by that inset
+ * every pass and never converge.
+ *
+ * A table is the only root that needs this, and the reason is the virtualized
+ * grid rather than the sizing strategy it shares with a `# size=` chart: that
+ * chart takes its dimensions from a lookup synchronously, so its first
+ * measurement is already right. Measured, for every size value and spelling.
+ */
+function sizesToContent(viz: MalloyVizHandle): boolean {
+   try {
+      return viz.getMetadata()?.getRootField().renderAs() === "table";
+   } catch {
+      // Metadata unavailable: measure once, which is the behavior every
+      // non-table root gets anyway.
+      return false;
+   }
+}
+
 function RenderedResultInner({
    result,
    height: inputHeight,
@@ -340,6 +412,19 @@ function RenderedResultInner({
    // bails, so overlapping renders can't leave two charts or leak a viz.
    const renderGenRef = useRef(0);
    const { theme: baseTheme, layers, mode } = usePublisherTheme();
+   // The host app's card radius, so a dashboard card reads as a card of the app
+   // it is embedded in rather than as the renderer's 8px on a 4px page. Both
+   // cards take it from here; see DashboardTile, which is the other one.
+   const cardRadius = useTheme().shape.borderRadius;
+   // Memoized because it is a dependency of the render effect below, and a fresh
+   // object each render would re-render the chart on every render.
+   const cardGeometry = useMemo<DashboardCardGeometry>(
+      () => ({
+         radius: `${cardRadius}px`,
+         padding: `${DASHBOARD_CARD_PADDING_PX}px`,
+      }),
+      [cardRadius],
+   );
 
    // Dispose the last live viz on unmount only. Deliberately NOT done in the
    // render effect's cleanup: a re-run must keep the old chart until the new
@@ -372,6 +457,11 @@ function RenderedResultInner({
       let drillFocusIn: ((event: FocusEvent) => void) | null = null;
       let observer: MutationObserver | null = null;
       let measureTimeout: NodeJS.Timeout | null = null;
+      // Keeps a table's height honest after `onReady` has lied about it; see
+      // `sizesToContent` above.
+      let sizeObserver: ResizeObserver | null = null;
+      let observedNode: HTMLElement | null = null;
+      let lastReportedHeight = 0;
       // Safety net so a render that never signals ready (an async renderer
       // error that only reaches onError) can't leave a previous chart showing
       // stale data forever; see the setTimeout below.
@@ -383,12 +473,21 @@ function RenderedResultInner({
       // wraps the renderer output) and report it up. Same grandchild/dashboard
       // HACK as before, just anchored on the stage wrapper.
       const measureRenderedSize = (root: HTMLElement) => {
-         if (hasMeasuredRef.current || cancelled || !root.firstElementChild)
-            return;
+         if (cancelled || !root.firstElementChild) return;
          const child = root.firstElementChild as HTMLElement;
          const grandchild = child.firstElementChild as HTMLElement;
          if (!grandchild) return;
+         // A table reports a height of its own, so it keeps being measured
+         // even after the first one lands. Everything else measures once.
+         const contentSized = viz !== undefined && sizesToContent(viz);
+         if (hasMeasuredRef.current && !contentSized) return;
          const greatgrandchild = grandchild.firstElementChild as HTMLElement;
+         // `scrollHeight` is the CONTENT height, so this assumes the box adds
+         // no chrome of its own. True today: `.malloy-table.root` has no
+         // border, and a horizontal scrollbar costs no layout where scrollbars
+         // overlay. A wide table clipped by a few pixels on a platform that
+         // draws classic scrollbars would be this assumption breaking, and the
+         // fix is `+ (offsetHeight - clientHeight)`.
          let renderedHeight =
             grandchild.scrollHeight || grandchild.offsetHeight || 0;
 
@@ -405,9 +504,19 @@ function RenderedResultInner({
 
          if (renderedHeight > 0) {
             hasMeasuredRef.current = true;
-            if (onSizeChange) {
+            if (onSizeChange && renderedHeight !== lastReportedHeight) {
+               lastReportedHeight = renderedHeight;
                onSizeChange(renderedHeight);
             }
+         }
+         // Watch the table from here on. Attached after the first measurement
+         // rather than at render time because the node does not exist until
+         // the renderer builds it, and this is the callback that first sees it.
+         if (contentSized && observedNode !== grandchild) {
+            observedNode = grandchild;
+            sizeObserver?.disconnect();
+            sizeObserver = new ResizeObserver(() => measureRenderedSize(root));
+            sizeObserver.observe(grandchild);
          }
       };
 
@@ -453,7 +562,7 @@ function RenderedResultInner({
          // child of the container, so writing the new per-chart CSS vars there
          // would repaint the old chart's chrome to the new theme before it is
          // swapped out. Scoping the vars to this stage keeps each chart stable.
-         applyTableCssVars(stage, effectiveTheme);
+         applyTableCssVars(stage, effectiveTheme, cardGeometry);
          if (previous) {
             element.style.position = "relative";
             stage.style.position = "absolute";
@@ -469,7 +578,18 @@ function RenderedResultInner({
             if (measureTimeout) clearTimeout(measureTimeout);
             measureTimeout = setTimeout(() => {
                measureRenderedSize(stageNode);
-               observer?.disconnect();
+               // Only once a measurement actually landed. Disconnecting
+               // unconditionally gave up on a stage whose renderer output was
+               // still empty at the first settle, leaving nothing to measure it
+               // later.
+               //
+               // Staying connected cannot loop the way the version this
+               // disconnect was first added to guard (#531) could: THAT
+               // observer watched the container, with `attributes: true`, so
+               // reporting a height re-triggered it through the container's own
+               // style. This one watches `stage`, a descendant, which that
+               // style write is outside of.
+               if (hasMeasuredRef.current) observer?.disconnect();
             }, 100);
          });
          observer.observe(stage, {
@@ -697,6 +817,7 @@ function RenderedResultInner({
          } catch (error) {
             console.error("Error rendering visualization:", error);
             observer?.disconnect();
+            sizeObserver?.disconnect();
             drillObserver?.disconnect();
             viz.remove();
             viz = undefined;
@@ -709,6 +830,7 @@ function RenderedResultInner({
       return () => {
          cancelled = true;
          observer?.disconnect();
+         sizeObserver?.disconnect();
          if (measureTimeout) clearTimeout(measureTimeout);
          if (readyFallback) clearTimeout(readyFallback);
          // If this render built a stage but never swapped it into `liveRef`
@@ -757,6 +879,7 @@ function RenderedResultInner({
       baseTheme,
       layers,
       mode,
+      cardGeometry,
    ]);
 
    // Malloy renderer requires explicit pixel height to render visualizations

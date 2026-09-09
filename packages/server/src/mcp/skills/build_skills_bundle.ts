@@ -130,6 +130,35 @@ export function referencePointer(skillName: string, files: string[]): string {
    ].join("\n");
 }
 
+/**
+ * The skills the deployment manifest ships, as a set.
+ *
+ * The manifest is the single answer to "what ships"; this channel used to take
+ * everything under `skills/` minus `credible-*`, so a skill added to the tree
+ * reached every agent connected to a server whether or not anyone meant it to.
+ *
+ * Read here rather than imported: the server does not depend on
+ * `@malloy-publisher/skills`, for the same reason `isCredible` is duplicated
+ * above. `manifests/publisher-local.json` is resolved relative to the skills
+ * directory it was handed, so a caller pointing at a different tree (the specs
+ * do) gets that tree's manifest rather than the repo's.
+ */
+function manifestSkillNames(skillsDir: string): Set<string> {
+   const manifestFile = path.join(
+      path.dirname(skillsDir),
+      "manifests",
+      "publisher-local.json",
+   );
+   const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8")) as {
+      auto_discovered?: string[];
+      supporting?: string[];
+   };
+   return new Set([
+      ...(manifest.auto_discovered ?? []),
+      ...(manifest.supporting ?? []),
+   ]);
+}
+
 /** Reference files for one skill, sorted, or [] when it has none. */
 function referenceFiles(skillDir: string): string[] {
    const dir = path.join(skillDir, REFERENCE_DIR);
@@ -150,9 +179,11 @@ function referenceFiles(skillDir: string): string[] {
  * malloy-review rubrics in front of an agent that wanted the workflow.
  */
 export function buildSkills(skillsDir: string): SkillEntry[] {
+   const shipping = manifestSkillNames(skillsDir);
    const skills: SkillEntry[] = [];
    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || isCredible(entry.name)) continue;
+      if (!shipping.has(entry.name)) continue;
       const skillDir = path.join(skillsDir, entry.name);
       const skillFile = path.join(skillDir, "SKILL.md");
       if (!fs.existsSync(skillFile)) continue;

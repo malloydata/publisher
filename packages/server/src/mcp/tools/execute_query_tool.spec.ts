@@ -144,7 +144,7 @@ const args = {
    query: "run: a -> { aggregate: c is count() }",
 };
 
-describe("malloy_executeQuery error classification", () => {
+describe("execute_query error classification", () => {
    it("tells an at-capacity caller to retry, not to check its Malloy", async () => {
       // The reported bug. tryAcquireQuerySlot runs inside the tool's try, so at
       // the concurrency cap its ServiceUnavailableError landed in a catch that
@@ -198,9 +198,7 @@ describe("malloy_executeQuery error classification", () => {
       expect(parsed.error).toContain("cannot be used in a restricted query");
       expect(parsed.error).not.toContain("'x' is not defined");
       expect(JSON.stringify(parsed.suggestions)).toContain("model file");
-      expect(JSON.stringify(parsed.suggestions)).toContain(
-         "malloy_reloadPackage",
-      );
+      expect(JSON.stringify(parsed.suggestions)).toContain("reload_package");
       expect(JSON.stringify(parsed.suggestions)).not.toContain(
          "Verify the structure and syntax",
       );
@@ -213,9 +211,7 @@ describe("malloy_executeQuery error classification", () => {
          ),
       );
       const parsed = parse(await handler(args));
-      expect(JSON.stringify(parsed.suggestions)).toContain(
-         "malloy_reloadPackage",
-      );
+      expect(JSON.stringify(parsed.suggestions)).toContain("reload_package");
    });
 
    it("does not tell a timed-out query to try again later", async () => {
@@ -268,7 +264,7 @@ describe("malloy_executeQuery error classification", () => {
    });
 });
 
-describe("malloy_executeQuery per-query metadata", () => {
+describe("execute_query per-query metadata", () => {
    it("resolves the connection's enforced layer, which an agent must not be able to shed", async () => {
       // The reason this path matters: `queryMetadataEnforced` is the property a
       // host is billed or audited by, and MCP is this server's primary agent

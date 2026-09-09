@@ -372,6 +372,11 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          expect(patched.storageServeBindings).toEqual([
             {
                sourceName: "order_summary",
+               // An entry with no `origin` describes a source the modeler
+               // annotated, which is what the wire default means. Asserted rather
+               // than omitted because a caller reads this field to know whether
+               // `sourceName` resolves against the package's models at all.
+               origin: "persist",
                storageDestinationName: "lake",
                tablePath: "lake.order_summary",
             },

@@ -21,14 +21,13 @@ skills/
   malloy-gotchas-modeling/
     SKILL.md
 manifests/
-  modeling-ide.json
-  modeling_and_analysis-ide.json
-  ...
+  publisher-local.json
 ```
 
 `skills/` is a flat collection of self-contained skills. A skill has no knowledge of which use
 case it belongs to. `manifests/` defines skill compositions for each use case and tells the
-host how to deploy them.
+host how to deploy them. This repository ships one manifest today, and a deployment that wants a
+narrower set names a `groups` entry in it rather than adding a second file.
 
 ## A skill
 
@@ -76,25 +75,51 @@ host-specific path.
 
 A manifest groups skills into a use case and tells the host how to deploy them.
 
+This repository ships one, [`manifests/publisher-local.json`](../../manifests/publisher-local.json):
+
 ```json
 {
-  "name": "modeling-ide",
-  "description": "Skills for the Malloy semantic-modeling workflow in external IDEs and CLIs.",
-  "trigger_hint": "when the user asks about modeling data, building a semantic model, creating Malloy sources, or mentions Malloy",
-  "auto_discovered": ["malloy-modeling"],
-  "supporting": ["malloy-model", "malloy-define", "gotchas-modeling"]
+  "name": "publisher-local",
+  "description": "Every skill a local Malloy Publisher ships: ...",
+  "trigger_hint": "when the user asks about modeling data, building a semantic model, ...",
+  "auto_discovered": [
+    "malloy-modeling",
+    "malloy-model",
+    "malloy-gotchas-modeling"
+  ],
+  "supporting": [],
+  "groups": { "analysis": ["malloy-analysis", "malloy-queries"] }
 }
 ```
 
-The skill names above are illustrative. In a real manifest, use the actual directory names under
-`skills/`.
+The skill list above is abridged; the real file names every directory under `skills/`.
 
 - `auto_discovered`: skills the host places where it discovers them automatically (the primary
   workflow skills to load when relevant).
 - `supporting`: skills the host keeps on-demand, read when an auto-discovered skill directs the
-  agent to them.
+  agent to them. **Empty here on purpose**: agents discover a second skills directory poorly, and
+  an SDK `Skill` tool cannot invoke from one at all, so Publisher ships one flat set.
 - `trigger_hint` (optional): text the host uses to generate rule files for IDEs that drive
   skill loading from rules; falls back to `description` if omitted.
+- `groups` (optional): a role a consumer can take on its own, so someone who wants fewer
+  skills gets a filter rather than a second directory. This repo names two, `analysis` and
+  `modeling`, being what an answering agent and a modeling agent each load. Every member must
+  also appear in `auto_discovered` or `supporting`. Groups may overlap.
+- **A group is installable on its own.** A member never `skill:`-references a skill outside
+  its group, so installing the group leaves nothing telling the agent to read what it does
+  not have. Where a skill needs to mention another role's doctrine, it names it in prose
+  instead of as a `skill:` reference. `manifest.spec.ts` holds groups to this, with one
+  documented exception: the `malloy` index has a table row per skill by definition, and is
+  itself referenced too widely to drop from a group.
+
+**Every channel resolves the manifest; none globs `skills/`.** The npm pack, the MCP prompt
+bundle, the `.claude/skills` symlinks, and the scaffolder all read the same list. The pack and
+the bundle agree with it by construction, because filtering on it is how they choose what to
+copy, and the scaffolder inherits that through the packed directory;
+`packages/skills/src/manifest.spec.ts` asserts the two that could still drift -- the manifest
+against `skills/`, and against the `.claude/skills` symlinks. A manifest is only worth
+having if it is the single answer to "what ships"; before it existed each channel answered that
+question independently, and a skill added to the tree shipped everywhere by default.
 
 How a host maps `auto_discovered` versus `supporting` onto disk (which directory, which rule
 file) is the host's concern, not this repository's. The repository serves content and manifest

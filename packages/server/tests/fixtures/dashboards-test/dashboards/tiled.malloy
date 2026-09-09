@@ -1,0 +1,42 @@
+// The same layout as grid.malloy, as tiles. Two rows of two at colspan 6, one of
+// them a chart, so the browser suite can measure the two forms against each other
+// and prove one view lays out the same whichever way it is consumed.
+//
+// The colspans live on the views, which is the whole point: a tile entry is a
+// string in an annotation and could not carry layout without a second grammar.
+// Declared on a local extension of `orders` rather than on the model's own
+// `by_brand` / `by_region`, whose `where:` clauses would add controls this page
+// is not about, which is the same reason grid.malloy inlines its nests.
+##! experimental.givens
+## artifact { title="Tiled" tiles=["tiles -> order_tile", "tiles -> revenue_tile", "tiles -> brand_tile", "tiles -> region_tile"] } dashboard { columns=12 }
+import { orders } from '../orders.malloy'
+import { BRAND } from '../givens.malloy'
+
+source: tiles is orders extend {
+   where: brand_name ~ $BRAND
+
+   # colspan=6
+   # label="Orders"
+   view: order_tile is {
+      aggregate: order_count
+   }
+   # colspan=6
+   # label="Revenue"
+   view: revenue_tile is {
+      aggregate: total_amount
+   }
+   # break
+   # colspan=6
+   # label="By brand"
+   view: brand_tile is {
+      group_by: brand_name
+      aggregate: total_amount
+   }
+   # bar_chart
+   # colspan=6
+   # label="By region"
+   view: region_tile is {
+      group_by: region_name
+      aggregate: order_count
+   }
+}

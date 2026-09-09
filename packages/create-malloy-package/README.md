@@ -77,7 +77,7 @@ this workspace. That briefing is `AGENTS.md`, or `AGENTS.malloy.md` in a directo
 that already had an `AGENTS.md` of its own; see "Running it again" below.
 
 A directory nobody has trusted yet is a second gate, separate from connecting the MCP
-server: Claude Code lists the `malloy_*` tools and then refuses every call, and a
+server: Claude Code lists the Malloy tools and then refuses every call, and a
 `.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
 interactively in the directory once and answer the trust prompt, which is asked once per
 directory. A headless run is never asked, so it cannot clear the gate either. You will

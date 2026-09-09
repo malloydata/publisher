@@ -19,8 +19,11 @@ import {
    recordAutoLoadOutcome,
    recordChainedStorageBuild,
    recordDropTables,
+   recordDuplicateTargetSkipped,
    recordManifestBindDegraded,
    recordMaterializationRun,
+   recordSharedAddressInstructions,
+   recordTableCollision,
    recordSourceBuildDuration,
    recordStorageTableRetained,
    recordSourcesOutcome,
@@ -77,7 +80,7 @@ import {
    type QueryMetadata,
 } from "./query_metadata";
 import type { components } from "../api";
-import { getPersistStorageMode } from "../config";
+import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
 import {
    assertColocatedPersistNotAuthorizeGated,
@@ -578,6 +581,35 @@ export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
  * {@link MaterializationRepository}). Cancellation is cooperative via
  * AbortController.
  */
+/**
+ * The physical table an instruction writes, as a comparable key.
+ *
+ * The counterpart to `sourceEntityId`: the address says what a table CONTAINS,
+ * this says which table it IS, and only this answers "have I written that
+ * already". Encoded rather than concatenated because a physical name can contain
+ * a space (see the `quoted-persist-name` scenarios), so a plain separator could
+ * make two different coordinates read as one.
+ *
+ * Exact-match, and so blind in the same place its load-time sibling is: `Foo`,
+ * `foo` and `"foo"` land in different slots here but in ONE table on a
+ * case-folding engine. See the note on Package.persistenceCollisionWarnings —
+ * neither guard is stricter than the other.
+ */
+function physicalTargetKey(
+   instruction: BuildInstruction,
+   connectionName: string,
+): string {
+   return JSON.stringify(
+      instruction.destination
+         ? [
+              "destination",
+              instruction.destination,
+              instruction.physicalTableName,
+           ]
+         : ["connection", connectionName, instruction.physicalTableName],
+   );
+}
+
 export class MaterializationService {
    /** In-flight runs, so they can be cancelled. In-process only. */
    private runningAbortControllers = new Map<string, AbortController>();
@@ -1132,7 +1164,36 @@ export class MaterializationService {
                // given makes getSQL() (called inside computeSourceEntityId)
                // throw opaquely, so the eligibility refusal must fire first to
                // give a clean, actionable 422.
-               assertMaterializationEligible(persistSource);
+               //
+               // A ROLLUP is SKIPPED rather than thrown for, and only a rollup.
+               // The throw is right for an authored source: the author asked for
+               // this table and a 422 naming their annotation is the answer. A
+               // rollup asked for nothing an author can see, its refusal is already
+               // reported in the build plan's `refusedSources`, and throwing here
+               // aborts the auto-run — so one ineligible rollup would stop every
+               // other source in the package building, on every tick, forever.
+               //
+               // Reachable only since rollups gained destinations: before that
+               // `resolveStorageDestination` returned undefined for one and this
+               // branch was never entered.
+               if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
+                  try {
+                     assertMaterializationEligible(persistSource);
+                  } catch (err) {
+                     if (!(err instanceof MaterializationEligibilityError))
+                        throw err;
+                     logger.warn(
+                        "Skipping a pre-aggregation rollup the storage tier refuses",
+                        {
+                           sourceName: persistSource.name,
+                           reason: errMessage(err),
+                        },
+                     );
+                     continue;
+                  }
+               } else {
+                  assertMaterializationEligible(persistSource);
+               }
             } else {
                // No storage destination: this is the colocated `#@ persist`
                // path (a CTAS into the source's own warehouse). It is not
@@ -1752,6 +1813,45 @@ export class MaterializationService {
          if (instruction.sourceID) {
             bySourceID.set(instruction.sourceID, instruction);
          }
+         // One address, several instructions naming DIFFERENT tables. A host that
+         // mints a physical name per source produces this for an ordinary package:
+         // several sources share one artifact (`#@ persist` is inherited and
+         // `extend` does not change materialization SQL), so a per-source name is a
+         // second table for content that already has one.
+         //
+         // What happens next depends on whether the instructions carry a
+         // `sourceID`, which is optional on the wire:
+         //  - WITH one, each source finds its own instruction, so every named table
+         //    is built, the last to finish is the one `entries` records, and the
+         //    rest are left unreferenced — a manifest-driven reclaim never names
+         //    them.
+         //  - WITHOUT one, this index is the only way back to an instruction and it
+         //    holds one per address, so the LAST instruction wins and the earlier
+         //    names are never built at all. Nothing can attribute them: an address
+         //    is all the publisher has, and it maps to every one of them equally.
+         //
+         // Reported, not resolved, in both shapes. Picking one would leave the host
+         // with an anchor for a table the build declined to write, which is a worse
+         // failure than the wasted one and is invisible from the host's side. The
+         // fix belongs where the names are minted; this makes the condition visible
+         // until then.
+         const clash = bySourceEntityId.get(instruction.sourceEntityId);
+         if (
+            clash &&
+            clash.physicalTableName !== instruction.physicalTableName
+         ) {
+            recordSharedAddressInstructions();
+            logger.warn(
+               "One content address was instructed to build more than one table",
+               {
+                  sourceEntityId: instruction.sourceEntityId,
+                  physicalTableNames: [
+                     clash.physicalTableName,
+                     instruction.physicalTableName,
+                  ],
+               },
+            );
+         }
          bySourceEntityId.set(instruction.sourceEntityId, instruction);
       }
 
@@ -1796,6 +1896,97 @@ export class MaterializationService {
       const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
       const builtSources: string[] = [];
+      // What this run has already written, keyed by the physical table rather than
+      // by the content address: the address says what a table CONTAINS, the
+      // coordinate says which table it IS, and only the second answers "have I
+      // written this already". Both halves of the guard below need that
+      // distinction, in opposite directions.
+      const writtenTargets = new Map<
+         string,
+         { sourceEntityId: string; sourceName: string }
+      >();
+      // Two definitions on one physical table is refused BEFORE anything is
+      // written, rather than when the loop reaches the second one.
+      //
+      // A mid-loop throw leaves the pair's FIRST table already replaced, and
+      // nothing puts it back: the failure path reclaims storage tables only, so a
+      // colocated collision strands a half-written table in the customer's own
+      // warehouse, and even a reclaimed one cannot restore the rows it
+      // overwrote. The publish gate refuses this before any CTAS runs; a rebuild
+      // has to match it.
+      //
+      // It cannot be reasoned away as host-only, either. Collisions are ALWAYS
+      // warn-only at load, whatever PERSIST_COLLISION_ENFORCE says (see the note
+      // in loadPackage), so a package that was published before the flag went on
+      // stays loaded and reaches this build with a MODEL-declared collision
+      // intact.
+      const claimedBy = new Map<
+         string,
+         { sourceName: string; sourceEntityId: string }
+      >();
+      const collisions: { first: string; second: string; table: string }[] = [];
+      for (const graph of graphs) {
+         for (const persistSource of iterGraphSources(graph, sources)) {
+            let address: string;
+            try {
+               address = computeSourceEntityId(
+                  persistSource,
+                  connectionDigests,
+               );
+            } catch {
+               // getSQL() throws for a source the eligibility gate is about to
+               // refuse with a clean 422. That refusal is the build loop's to
+               // give; a source with no readable address claims no table here.
+               continue;
+            }
+            const instruction =
+               bySourceID.get(persistSource.sourceID) ??
+               bySourceEntityId.get(address);
+            if (!instruction) continue;
+            // Same key as the write guard below, and it has to be: a pre-pass that
+            // grouped by a different coordinate would report a collision the guard does
+            // not dedupe, or miss one it does.
+            const target = physicalTargetKey(instruction, graph.connectionName);
+            const claim = claimedBy.get(target);
+            if (!claim) {
+               claimedBy.set(target, {
+                  sourceName: persistSource.name,
+                  sourceEntityId: address,
+               });
+            } else if (claim.sourceEntityId !== address) {
+               collisions.push({
+                  first: claim.sourceName,
+                  second: persistSource.name,
+                  table: instruction.physicalTableName,
+               });
+            }
+         }
+      }
+      for (const c of collisions) {
+         recordTableCollision();
+         logger.warn("Two definitions are materializing into one table", {
+            physicalTableName: c.table,
+            sourceNames: [c.first, c.second],
+         });
+      }
+      if (collisions.length > 0 && getPersistCollisionEnforce()) {
+         const detail = collisions
+            .map(
+               (c) =>
+                  `'${c.first}' and '${c.second}' compile to different SQL but ` +
+                  `both materialize into table '${c.table}'`,
+            )
+            .join("; ");
+         throw new MaterializationEligibilityError({
+            message:
+               `${detail}, so each would overwrite the other's rows while both ` +
+               `resolve to it at serve time. Give them distinct definitions, or ` +
+               `distinct physical names: a model-declared collision is fixed ` +
+               `with '#@ persist name=', a host-assigned one by the caller that ` +
+               `minted the names.`,
+         });
+      }
+
       try {
          for (const graph of graphs) {
             const connection = connections.get(graph.connectionName);
@@ -1911,18 +2102,6 @@ export class MaterializationService {
                // write is safe, redirecting one is not. Auto-run cannot reach this:
                // resolveStorageDestination returns undefined while off, so an
                // instruction still carrying a destination here is caller-supplied.
-               if (
-                  instruction.destination &&
-                  getPersistStorageMode() === "off"
-               ) {
-                  throw new BadRequestError(
-                     `Source '${persistSource.name}' was instructed to build into ` +
-                        `storage destination '${instruction.destination}', but ` +
-                        `PERSIST_STORAGE_MODE is off, so no destination can be ` +
-                        `written. Refusing rather than building the table into the ` +
-                        `source warehouse instead.`,
-                  );
-               }
 
                // Auto-run already gated pre-getSQL in deriveSelfInstructions;
                // re-assert (idempotent) so no path into a storage build is ungated.
@@ -1934,8 +2113,126 @@ export class MaterializationService {
                   assertMaterializationEligible(persistSource);
                }
 
+               // One physical table, written once. Several sources routinely map
+               // onto one artifact: `#@ persist` is inherited and `extend` does not
+               // change a source's materialization SQL, so a base and its extension
+               // compile to the same address and resolve to the same instruction.
+               // Iterating per SOURCE wrote the table once per name that reached it
+               // — and once per graph that reached it, since a source declared in one
+               // model and consumed in another appears in both models' graphs.
+               //
+               // Only the same-content case is decided here. Two DIFFERENT
+               // definitions on one table was already reported, and refused under
+               // PERSIST_COLLISION_ENFORCE, by the pre-pass above — before anything
+               // was written. Reaching it here means the deployment chose to warn
+               // and carry on, so the write proceeds as it did before.
+               const target = physicalTargetKey(
+                  instruction,
+                  graph.connectionName,
+               );
+               const written = writtenTargets.get(target);
+               if (written && written.sourceEntityId === sourceEntityId) {
+                  // The extra name is another route to one artifact. Its address
+                  // already names the table it was built under, so there is nothing
+                  // to build and nothing to record.
+                  recordDuplicateTargetSkipped();
+                  logger.debug("Skipping a source whose table this run built", {
+                     sourceName: persistSource.name,
+                     builtAs: written.sourceName,
+                     physicalTableName: instruction.physicalTableName,
+                  });
+                  continue;
+               }
+
                let entry;
                try {
+                  if (
+                     instruction.destination &&
+                     getPersistStorageMode() === "off"
+                  ) {
+                     throw new BadRequestError(
+                        `Source '${persistSource.name}' was instructed to build into ` +
+                           `storage destination '${instruction.destination}', but ` +
+                           `PERSIST_STORAGE_MODE is off, so no destination can be ` +
+                           `written. Refusing rather than building the table into the ` +
+                           `source warehouse instead.`,
+                     );
+                  }
+
+                  // Inside the per-source try, deliberately: a host that resolved
+                  // no destination for ONE source has partly-resolved its
+                  // instruction list, and the reasons named below — the org not
+                  // enabled, the field omitted — are exactly the ones that hit some
+                  // sources and not others. Failing the whole run would take down
+                  // the package's colocated persist sources too, which have no
+                  // destination to resolve and nothing to do with the refusal. The
+                  // catch below records it as this source's own build failure, per
+                  // "one source failing does not end the build".
+                  //
+                  // The mirror case, and the one that actually reaches a warehouse
+                  // write: the SOURCE declares `storage=` and the instruction carries
+                  // NO destination.
+                  //
+                  // Every guard above tests `instruction.destination`, which is what
+                  // the caller asked for. None tests what the source DECLARED, so a
+                  // host that resolved no destination — because the org is not
+                  // enabled for one, because resolution failed, because it simply
+                  // omitted the field — leaves `isStorageBuild` false in
+                  // buildOneSource and the source is CTAS'd into its own warehouse.
+                  //
+                  // Declaring `storage=` is a statement about where this data may be
+                  // written, and it is the only one the author made. It is not
+                  // consent to a warehouse write, and in production the read-only
+                  // credential this server is given usually cannot perform one
+                  // anyway, so the observable outcome is a permission error whose
+                  // cause names neither the destination nor the annotation. Refusing
+                  // is both the author's instruction and the better diagnosis.
+                  //
+                  // Deliberately independent of the mode: "no destination could be
+                  // resolved" is the same fact whether the tier is off, the org is
+                  // not enabled, or the host had some other reason. There is no
+                  // reading of `storage=` under which the source warehouse is the
+                  // right answer.
+                  const declared = declaredStorage(persistSource);
+                  if (declared && !instruction.destination) {
+                     // The grain renders as a SET rather than quoted text: the wire
+                     // plan carries only canonically sorted, de-duplicated dimensions,
+                     // so quoting would misrepresent any grain the author did not
+                     // write alphabetically.
+                     //
+                     // A ROLLUP names neither of the things this message otherwise
+                     // reaches for: its source name is synthesized and its
+                     // `#@ persist storage=` line was written by the publisher, so
+                     // quoting both would send an author looking for a line nobody
+                     // typed. Named by the base and grain instead, which are what
+                     // they wrote.
+                     //
+                     // Worth branching even though a host that always resolves a
+                     // destination makes this unreachable. This message is only ever
+                     // READ when that invariant does not hold, so writing it as
+                     // though the invariant were reliable is writing it for the one
+                     // case it cannot occur in. This branch has twice been the shape
+                     // of a real defect here — an enforcement held by an accident of
+                     // an import boundary, and an eligibility filter held by an
+                     // accident of what a walk collected.
+                     const rollup =
+                        compiled.preaggregatePlans?.[persistSource.sourceID];
+                     throw new BadRequestError(
+                        (rollup
+                           ? `Measures of \`${rollup.baseSourceName}\` ` +
+                             `pre-aggregated at grain ` +
+                             `(${rollup.grainDimensions.join(", ")}) declare ` +
+                             `\`storage=${declared}\``
+                           : `Source '${persistSource.name}' declares ` +
+                             `\`#@ persist storage=${declared}\``) +
+                           `, but the build was instructed with no storage ` +
+                           `destination, so there is nowhere it may be written. ` +
+                           `Refusing rather than building the table into the source ` +
+                           `warehouse, which the annotation asked it not to be ` +
+                           `written to.`,
+                     );
+                  }
+
                   entry = await this.buildOneSource(
                      persistSource,
                      instruction,
@@ -1951,6 +2248,19 @@ export class MaterializationService {
                      // boundary can never be read against different SQL.
                      sourceEntityId,
                   );
+                  // Stamp what this table was built FOR, here rather than inside
+                  // buildOneSource, because this is the scope that holds the
+                  // compiled plan the answer comes from.
+                  //
+                  // Not decorative. A manifest travels without its build plan, so
+                  // this is the only thing that tells a consumer a table belongs to
+                  // a source appearing in no model file — and the serve path needs
+                  // it: a rollup handled as an ordinary binding is looked up by
+                  // name in the author's model, finds nothing, and is silently
+                  // dropped rather than served (see preaggregation_serve_bindings).
+                  if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
+                     entry = { ...entry, origin: "preaggregate" as const };
+                  }
                } catch (buildErr) {
                   // One source failing does not end the build: the sources that
                   // did materialize stay usable, and this one records the reason
@@ -2036,6 +2346,10 @@ export class MaterializationService {
                }
                builtSources.push(persistSource.name);
                entries[sourceEntityId] = entry;
+               writtenTargets.set(target, {
+                  sourceEntityId,
+                  sourceName: persistSource.name,
+               });
                if (isReclaimableStorageTable(entry)) {
                   builtThisRun.push(entry);
                } else if (entry.storageDestinationName) {
@@ -3138,9 +3452,26 @@ export class MaterializationService {
       // DIFFERENT destination is absent here, so the downstream def fails to
       // compile against the rebind model and the caller falls back — cross-catalog
       // parent reuse is out of scope for the spike.
-      const upstreams: ServeBinding[] = deriveServeBindings(
-         builtEntries,
-      ).filter((b) => b.destinationName === destinationName);
+      // No aliases, and the consequence is a scope boundary rather than a
+      // compile problem: two aliases are two DISTINCT names on one handle, which
+      // is what the serve path emits and compiles. What passing none means is
+      // that a chained downstream reading the EXTENSION's name finds it absent
+      // from the rebind model and falls back to recomputing its upstream from
+      // raw. Correct-but-slower, and out of scope here; the serve path is where
+      // an alias has to resolve.
+      const upstreams: ServeBinding[] = deriveServeBindings(builtEntries, {})
+         .filter((b) => b.destinationName === destinationName)
+         // A rollup is never an upstream: nothing can reference one, because its
+         // name is synthesized and appears in no model file. Inert if left in —
+         // but inert for a reason that expired once on the serve path, where these
+         // same bindings later acquired refinements and the assumption that they
+         // carry none stopped holding. Filtered so the set means what it is named,
+         // the parents a downstream could build on.
+         //
+         // It also restores the legible refusal below: a destination holding only
+         // rollups now reports "no materialized upstream is available" instead of
+         // proceeding and failing later on a compile against an absent parent.
+         .filter((b) => b.origin !== "preaggregate");
       if (upstreams.length === 0) {
          throw new MaterializationEligibilityError({
             message:

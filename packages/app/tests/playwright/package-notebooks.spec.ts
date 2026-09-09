@@ -79,4 +79,51 @@ test.describe("package-notebooks", () => {
       );
       await expect(page.getByText(/does not exist/i)).toHaveCount(0);
    });
+
+   test("a table cell is as tall as its table, not as tall as the cell cap", async ({
+      page,
+   }) => {
+      await page.goto(
+         `/${DEFAULT_ENV}/${PACKAGES.storefront}/storefront.malloynb`,
+      );
+
+      // Every notebook table, measured against the box the cell gives it: a
+      // cell must end up as tall as its table, not as tall as the 700px cap.
+      // Asserted on the ratio rather than on a pixel count so it survives a
+      // row-height or font change, and over every table on the page rather
+      // than the first, because the first one to settle is not deterministic.
+      const tables = page.locator(".malloy-render > .malloy-table.root");
+      // Pin the count before measuring anything. Notebook cells render
+      // progressively, and the poll below succeeds the moment nothing it can
+      // see has dead space, so without this a run where only one table has
+      // painted is a pass - and that is the run least likely to reproduce the
+      // measurement race this test guards. Three is every untagged view in
+      // storefront.malloynb: top_products, top_customers, and the two-row
+      // top_products cell. Every other view carries a render tag, and the
+      // dashboard's nested tables match neither .root nor the direct-child
+      // step. Adding an untagged cell to that notebook means updating this.
+      await expect(tables).toHaveCount(3);
+      await expect
+         .poll(
+            () =>
+               tables.evaluateAll((nodes) =>
+                  nodes
+                     .map((node) => {
+                        const table = node as HTMLElement;
+                        const box = table.parentElement as HTMLElement;
+                        return {
+                           table: table.offsetHeight,
+                           box: box.offsetHeight,
+                        };
+                     })
+                     // Only the ones with dead space left under the table, so a
+                     // failure names the measurements rather than saying false.
+                     .filter(
+                        ({ table, box }) => table === 0 || box - table > 4,
+                     ),
+               ),
+            { timeout: 30_000 },
+         )
+         .toEqual([]);
+   });
 });
