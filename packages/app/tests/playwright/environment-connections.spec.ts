@@ -176,28 +176,22 @@ test.describe("environment-connections — delete is not gated on `resource`", (
       test.setTimeout(60_000);
       const connName = tmpName("tmp_guarded").replace(/-/g, "_");
 
-      const listRes = await request.get(
-         `/api/v0/environments/${DEFAULT_ENV}/connections`,
-      );
-      expect(listRes.ok()).toBeTruthy();
-      const existing = (await listRes.json()) as unknown[];
-
-      const seeded = await request.patch(
-         `/api/v0/environments/${DEFAULT_ENV}`,
+      // Seeded through the dedicated create endpoint, not a GET-then-PATCH of
+      // the whole list. PATCH rewrites every connection in the environment to
+      // add this one row, which is the round-trip that stops being safe once
+      // reads withhold secrets: the others would go back stripped. POST touches
+      // only this connection, and `resource` on the body still reproduces the
+      // after-restart shape this test needs.
+      const seeded = await request.post(
+         `/api/v0/environments/${DEFAULT_ENV}/connections/${connName}`,
          {
             data: {
-               name: DEFAULT_ENV,
-               connections: [
-                  ...existing,
-                  {
-                     name: connName,
-                     type: "postgres",
-                     resource: `/api/v0/connections/${connName}`,
-                     postgresConnection: {
-                        connectionString: "postgres://test@localhost:5432/test",
-                     },
-                  },
-               ],
+               name: connName,
+               type: "postgres",
+               resource: `/api/v0/connections/${connName}`,
+               postgresConnection: {
+                  connectionString: "postgres://test@localhost:5432/test",
+               },
             },
          },
       );
