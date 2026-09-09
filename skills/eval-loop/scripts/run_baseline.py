@@ -772,9 +772,25 @@ def _norm(q: str) -> str:
     return " ".join((q or "").split())
 
 
+def _model_path_of(query: str, runs: list[dict[str, Any]]) -> str | None:
+    """The file the picked query ran against, or None if the call named none.
+
+    None is the honest answer for a call that left `modelPath` off: the server
+    resolved it from its own default, so the run's own default, which the
+    re-execution falls back to, is a closer guess than a file some other call
+    named. A query run more than once takes the file that ANSWERED it -- a
+    retry after "Reference to undefined object" is usually the same query
+    against a different file, and the one that errored reproduces the error.
+    """
+    hits = [c for c in runs if _norm(c.get("query") or "") == _norm(query)]
+    ok = [c for c in hits if not c.get("error")]
+    return next((c.get("modelPath") for c in reversed(ok or hits)), None)
+
+
 def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
-                     answer_text: str) -> tuple[str | None, str | None]:
-    """The query the answer rests on, and how that was decided.
+                     answer_text: str
+                     ) -> tuple[str | None, str | None, str | None]:
+    """The query the answer rests on, how that was decided, and its model file.
 
     The last query run is the obvious choice and the wrong one: an answerer
     that computes its result and then runs a small probe to sanity-check a date
@@ -788,18 +804,28 @@ def pick_final_query(queries: list[str], calls: list[dict[str, Any]],
                 it actually ran (the prompt asks for exactly this)
     `last_ok`   the last one the server answered without an error
     `last`      the last one it ran, when nothing else narrows it
+
+    The model file comes back WITH the query because they are one fact about
+    one call. Choosing it separately -- the last modelPath seen anywhere in the
+    transcript -- pairs the answer's query with a probe's file the moment those
+    are different calls, and a package holds many model files, so a source does
+    not resolve outside the one that declares it. The re-execution then reports
+    `Reference to undefined object` for a source that plainly exists, the judge
+    is handed an empty prediction, and the case scores as a model failure.
     """
     if not queries:
-        return None, None
+        return None, None, None
+    runs = [c for c in calls
+            if c.get("tool") == "execute_query" and c.get("query")]
     ran = {_norm(q): q for q in queries}
     for block in reversed(_FENCE.findall(answer_text or "")):
         hit = ran.get(_norm(block))
         if hit is not None:
-            return hit, "declared"
-    for c in reversed(calls):
-        if c.get("tool") == "execute_query" and not c.get("error") and c.get("query"):
-            return c["query"], "last_ok"
-    return queries[-1], "last"
+            return hit, "declared", _model_path_of(hit, runs)
+    for c in reversed(runs):
+        if not c.get("error"):
+            return c["query"], "last_ok", c.get("modelPath")
+    return queries[-1], "last", _model_path_of(queries[-1], runs)
 
 
 def retrieval_summary(attempts: Iterable[dict[str, Any]]
@@ -1004,7 +1030,6 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         shutil.rmtree(work, ignore_errors=True)
 
     calls, answer, queries = [], [], []
-    model_paths = []
     n_get, n_exec, n_err, host_tools = 0, 0, 0, 0
     foreign_skills: list[str] = []
     pending: dict[str, dict[str, Any]] = {}
@@ -1048,18 +1073,14 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                         q = c["input"].get("query") or named_query(c["input"])
                         if q:
                             queries.append(q)
-                            # A package can hold many model files, and a source
-                            # does not resolve outside the file that declares
-                            # it. Re-executing every query against a single
-                            # --model-path fails for every case whose source
-                            # lives in another file, which then reads as a
-                            # model failure rather than a harness one.
-                            model_paths.append(c["input"].get("modelPath")
-                                               or c["input"].get("model_path"))
-                        # The query goes onto the call, not just into
-                        # `queries`: picking the final query needs to know
-                        # which of them the server actually answered, and only
-                        # the RESULT says that.
+                        # The query AND the file it was written against go onto
+                        # the call, not into lists beside it: picking the final
+                        # query needs to know which of them the server actually
+                        # answered, and only the RESULT says that. A package
+                        # can hold many model files and a source does not
+                        # resolve outside the one that declares it, so the two
+                        # kept as parallel lists drift the moment the answer
+                        # and the last probe are different calls.
                         pending[c["id"]] = {"tool": "execute_query",
                                             "targets": None,
                                             "query": q,
@@ -1119,7 +1140,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
     text = "\n\n".join(answer).strip()
     (d / "answer.md").write_text(text)
 
-    final_query, final_source = pick_final_query(queries, calls, text)
+    final_query, final_source, final_path = pick_final_query(
+        queries, calls, text)
 
     return {
         "qid": qid,
@@ -1131,7 +1153,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "queries": queries,
         "final_query": final_query,
         "final_query_source": final_source,
-        "final_model_path": next((p for p in reversed(model_paths) if p), None),
+        "final_model_path": final_path,
         "answer_text": text,
         "n_get_context": n_get,
         "n_execute": n_exec,

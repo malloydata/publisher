@@ -36,19 +36,57 @@ class NamedQuery(unittest.TestCase):
 class FinalQuery(unittest.TestCase):
     def setUp(self):
         self.qs = ["run: a -> answer", "run: a -> probe"]
+        # The two queries ran against DIFFERENT model files, which is the case
+        # that matters: a package holds many, and the probe is the last call.
         self.calls = [
-            {"tool": "execute_query", "query": "run: a -> answer", "error": None},
-            {"tool": "execute_query", "query": "run: a -> probe", "error": None},
+            {"tool": "execute_query", "query": "run: a -> answer",
+             "modelPath": "answer.malloy", "error": None},
+            {"tool": "execute_query", "query": "run: a -> probe",
+             "modelPath": "probe.malloy", "error": None},
         ]
 
     def test_the_answer_names_its_query(self):
         text = "The total is 4744743.45.\n\n```malloy\nrun: a -> answer\n```"
         self.assertEqual(rb.pick_final_query(self.qs, self.calls, text),
-                         ("run: a -> answer", "declared"))
+                         ("run: a -> answer", "declared", "answer.malloy"))
+
+    def test_the_file_follows_the_query_not_the_transcript(self):
+        # The last modelPath in the transcript is the probe's. Sending the
+        # answer's query to that file is `Reference to undefined object` for a
+        # source that plainly exists, and the case scores as a model failure.
+        text = "```malloy\nrun: a -> answer\n```"
+        self.assertEqual(rb.pick_final_query(self.qs, self.calls, text)[2],
+                         "answer.malloy")
+
+    def test_a_retry_is_credited_to_the_file_that_answered(self):
+        # One query, two files: the retry is how an answerer recovers from
+        # naming the wrong one, and re-executing the failed call reproduces
+        # the error rather than the answer.
+        calls = [
+            {"tool": "execute_query", "query": "run: a -> answer",
+             "modelPath": "wrong.malloy",
+             "error": "Reference to undefined object"},
+            {"tool": "execute_query", "query": "run: a -> answer",
+             "modelPath": "answer.malloy", "error": None},
+        ]
+        text = "```malloy\nrun: a -> answer\n```"
+        self.assertEqual(
+            rb.pick_final_query(["run: a -> answer"] * 2, calls, text)[2],
+            "answer.malloy")
+
+    def test_a_call_that_named_no_file_reports_none(self):
+        # The server resolved the file from its own default, so the run's
+        # default is the closer guess than a file another call named.
+        calls = [{"tool": "execute_query", "query": "run: a -> answer",
+                  "error": None},
+                 {"tool": "execute_query", "query": "run: a -> probe",
+                  "modelPath": "probe.malloy", "error": None}]
+        text = "```malloy\nrun: a -> answer\n```"
+        self.assertIsNone(rb.pick_final_query(self.qs, calls, text)[2])
 
     def test_a_fenced_block_it_never_ran_is_not_credited(self):
         text = "```malloy\nrun: a -> invented\n```"
-        q, how = rb.pick_final_query(self.qs, self.calls, text)
+        q, how, mp = rb.pick_final_query(self.qs, self.calls, text)
         self.assertEqual(how, "last_ok")
 
     def test_whitespace_does_not_defeat_the_match(self):
@@ -60,16 +98,16 @@ class FinalQuery(unittest.TestCase):
     def test_the_last_error_is_skipped(self):
         calls = [self.calls[0],
                  {"tool": "execute_query", "query": "run: a -> probe",
-                  "error": "no such field"}]
+                  "modelPath": "probe.malloy", "error": "no such field"}]
         self.assertEqual(rb.pick_final_query(self.qs, calls, "no fence"),
-                         ("run: a -> answer", "last_ok"))
+                         ("run: a -> answer", "last_ok", "answer.malloy"))
 
     def test_with_no_results_it_falls_back_to_the_last_query(self):
         self.assertEqual(rb.pick_final_query(self.qs, [], "no fence"),
-                         ("run: a -> probe", "last"))
+                         ("run: a -> probe", "last", None))
 
     def test_no_queries_at_all(self):
-        self.assertEqual(rb.pick_final_query([], [], ""), (None, None))
+        self.assertEqual(rb.pick_final_query([], [], ""), (None, None, None))
 
 
 class Retrieval(unittest.TestCase):
