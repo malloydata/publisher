@@ -8,9 +8,23 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 
 // Client-facing body for an internal failure (500/502). The specific error
 // message can carry internal detail -- a filesystem path, an SQL fragment, an
-// upstream host -- so it is logged server-side (below) and NOT returned. Every
-// other status this mapper produces is a client error (4xx) whose message is
-// actionable to the caller and is returned as-is.
+// upstream host -- so it is logged server-side (below) and NOT returned.
+//
+// Generalizing is decided per branch, not by status class -- 501, 503 and 504
+// are 5xx and still return their messages. Every 4xx returns its message
+// because a client error names what the caller must change. The 5xx branches
+// that return theirs do so because the message is one this server composed (a
+// missing feature, a cap that was reached, a timeout), which is true of most of
+// them but not all: the worker-pool and compile-worker throws behind 503
+// interpolate the underlying failure, so a crash message reaches the caller
+// there. Generalizing that one at the mapper is not possible -- the pool
+// serializes an error across a worker boundary as a plain `Error`, so an
+// unusable-manifest error and a worker crash arrive indistinguishable, and
+// blanking both suppresses a message the caller needs to fix their config. It
+// belongs at those throw sites, where the two are still telling apart.
+//
+// So a NEW 5xx branch is a decision rather than a default: generalize it here
+// if its message comes from a driver, a worker, or the filesystem.
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
 
@@ -108,6 +122,19 @@ export function internalErrorToHttpError(error: Error) {
       // actionable and returned as-is; anything wrapping a driver message is
       // logged and generalized, because it can name an internal host/port, echo
       // the caller's SQL, or distinguish refused from timed-out from auth-failed.
+      //
+      // This intentionally covers a statement the warehouse itself rejected, on
+      // the sqlSource and sqlQuery paths, and that is the uncomfortable half of
+      // the trade: "object DB.SCHEMA.FOO does not exist" is the most useful
+      // sentence the product produces, and only the caller can act on it. It is
+      // generalized anyway because ConnectionError is one class covering both a
+      // rejected statement and an unreachable host, and the same text that names
+      // the caller's own typo names an internal hostname when the failure is
+      // ours. Splitting the class -- a rejected statement as 4xx with its
+      // message, transport failure as a generic 502 -- is the right end state
+      // and wants its own change; a table path that names nothing already took
+      // that route (see TableNotFoundError, 404). Until then a caller who needs
+      // the driver's text gets it from the logs, by traceparent.
       if (error.callerSafe) {
          return httpError(502, error.message);
       }

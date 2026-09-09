@@ -922,6 +922,13 @@ export class ConnectionController {
       try {
          return await testConnectionConfig(connectionConfig);
       } catch (error) {
+         // The driver's text is the payload here, not a leak: the caller just
+         // supplied this connection config and is being told why it does not
+         // work, so "password authentication failed" or "no such host" is the
+         // answer to their own question about their own credentials. Unlike the
+         // 500/502 bodies the mapper generalizes, nothing in scope belongs to
+         // another tenant or to the server -- the host, port and user are all
+         // values that arrived in this request.
          return {
             status: "failed",
             errorMessage: `Connection test failed: ${(error as Error).message}`,
