@@ -16,6 +16,7 @@ import {
    registerReloadPackageTool,
    RELOAD_FAILURE_IS_SAFE,
 } from "./tools/reload_package_tool";
+import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
 import skillsBundle from "./skills/skills_bundle.json";
@@ -52,7 +53,7 @@ Start with list_packages, which takes no arguments and names every environment a
 
 To build a model from a database rather than from an existing package, start with search_database_schema: it lists the connections, their schemas, and their tables, and ranks those tables against a plain-English description of the data you want. Each table it returns carries the source line to start from. It returns names and types only: no row value is returned.
 
-Task-specific guidance is served as prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
+Task-specific guidance is served two ways, over the same content. As prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness. And through get_skill, which additionally serves guides a PACKAGE ships about itself: call it with a package scope before answering questions against a package you have not worked in, because a package can document its own conventions and can replace a built-in guide with its own version for that package.
 
 Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
 
@@ -74,6 +75,7 @@ export function initializeMcpServer(
    registerReloadPackageTool(mcpServer, environmentStore);
    registerSearchDatabaseSchemaTool(mcpServer, environmentStore);
    registerGetStatusTool(mcpServer, environmentStore);
+   registerGetSkillTool(mcpServer, environmentStore, AGENT_SKILLS);
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
    // MCP but do not load skill files (e.g. Codex, ChatGPT, Cursor) can pull the

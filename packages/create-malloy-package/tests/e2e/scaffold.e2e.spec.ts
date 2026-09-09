@@ -338,6 +338,7 @@ describe("generated project serves against a real server", () => {
          "compile_model",
          "execute_query",
          "get_context",
+         "get_skill",
          "get_status",
          "list_packages",
          "reload_package",

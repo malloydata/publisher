@@ -301,7 +301,9 @@ def build_workspace(skills: Iterable[str],
                     skills_root: pathlib.Path | Iterable[pathlib.Path],
                     mcp_url: str | None, prefix: str = "agent-",
                     depth: int = 1,
-                    mcp_server: str = "publisher") -> pathlib.Path:
+                    mcp_server: str = "publisher",
+                    package_skills_dir: pathlib.Path | None = None
+                    ) -> pathlib.Path:
     """A scratch cwd holding `.claude/skills/` and an MCP config.
 
     COPIED, not symlinked. A symlink loads SKILL.md fine -- the skills mechanism
@@ -332,6 +334,33 @@ def build_workspace(skills: Iterable[str],
              else list(skills_root))
     for name in present:
         shutil.copytree(find_skill(name, roots), dest / name, symlinks=False)
+    # A package's own skills, installed last so one whose name matches a
+    # manifest skill REPLACES it -- the same shadowing the server does when it
+    # serves them, so the installed path and the tool path agree about which
+    # guide is in force.
+    #
+    # Only the package's `skills/` subtree is copied, never the package. An
+    # eval set lives at `<package>/evals/`, so copying the package would hand
+    # the answerer the goldens.
+    if package_skills_dir is not None:
+        if not package_skills_dir.is_dir():
+            raise FileNotFoundError(
+                f"--package-skills=install was asked for but "
+                f"{package_skills_dir} is not a directory. Installing nothing "
+                f"would silently measure the 'off' arm under the 'install' "
+                f"label, so this is fatal.")
+        if package_skills_dir.name != "skills":
+            raise ValueError(
+                f"refusing to install {package_skills_dir}: expected a "
+                f"directory named 'skills'. Anything wider risks copying the "
+                f"eval set into the answerer's workspace.")
+        for child in sorted(package_skills_dir.iterdir()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            target = dest / child.name
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(child, target, symlinks=False)
     if mcp_url:
         (work / "mcp.json").write_text(json.dumps(
             {"mcpServers": {mcp_server: {"type": "http", "url": mcp_url}}}))

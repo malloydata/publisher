@@ -130,6 +130,7 @@ on that axis.
 | `goldenCheck` | What `verify_goldens.py` said before the run started: `N ok, M drifted, K other finding(s)`, or why it did not run (no truth server on a platform target; `--skip-golden-check`; rebuild). A run that started on a drifted set says so here rather than pretending its verdicts mean something. |
 | `status` | `complete`, or `aborted` when four consecutive attempts errored or found the server dead and the harness stopped rather than spend the rest of the budget on attempts nobody will trust. |
 | `packageSha` / `servedRevision` *(pins)* | Taken from the server, not recomputed: `sourceContentSha` is a content hash over EVERY model path in the package, so an edit to an imported file moves it where a sha of the one `--model-path` does not; `servedRevision` is minted per load, so it identifies a load rather than content and is a poor pin alone. Measured: `publisher.json`'s `version` moves neither, and nothing in Publisher reads it -- it is not in the Package API schema and never returned, so it pins nothing. |
+| `packageSkillsMode` / `packageSkillsSha` *(pins)* | How the package's own skills reached the answerer (`install` copied them into its workspace, `tool` left it to fetch them with `get_skill`, `off` withheld them), and a content hash of that `skills/` tree. Two runs can differ only in guidance; without these the ledger cannot tell them apart, and a flip table between them would look like noise. |
 | `datasetSha` *(pin)* | Content hash of `set.json` + `cases.jsonl`. Deliberately SEPARATE from the model's sha: a golden repair is not a model change, and one pin covering both would make every answer-key fix read as an edit to the model, which is the distinction an A/B rests on. Automatic, so nobody has to remember it; `datasetVersion` stays beside it as the human-readable sequence. **Local targets only.** A hosted target that publishes IMMUTABLE versions needs none of this: the set rides inside the version, and immutability -- not hashing -- is what makes a pin trustworthy. There, `targetVersion` alone identifies model and set together. |
 | `doubtedGoldens` | The cases whose golden the judge did not believe: `qid`, `gold_status` (`suspect` or `verified_wrong`), `gold_note`. **Read this before diagnose.** These are dataset issues, not model failures, and they go through the golden side door in `skill:eval-loop`. Empty list when the judge believed every key. Written from the same scan that prints the end-of-run warning, because a warning that lives only in console text is one scrollback away from sending a modelling agent at a model that is already right. |
 | `mode` / `setName` / `targetVersion` / `serverVersion` / `traceMode` / `callBudget` / `status` | Defined and accepted, **not yet written by any harness** -- kept in the schema for the platform target and the conductor, which need them. |
@@ -282,7 +283,7 @@ rejected direction keeps its record.
 | `issue_ids` | |
 | `files` | Paths the edit touched. |
 | `diffSummary` | One line per file. |
-| `probes` | Query and result for each factual claim. |
+| `probes` | Query and result for each factual claim. May be empty for a `class: skill` candidate that asserts nothing about the data: a guide making no factual claim has nothing to probe. Empty is not a missing receipt there; a guide that DOES quote a number still needs one. |
 | `meaningChanged` | Entities whose *meaning* the edit changed; `[]` for a docs-only edit. |
 | `goldenSuspect` | Each `{qid, entity, stored, rederived}`: a golden this edit may have invalidated. Reported by the improver, never repaired by it. **Non-empty halts the acceptance check** until adjudicated through the golden side door. |
 | `goldenAudit` | The set's `verify_goldens.py` run against the edited model: `{ran, clean, model, tail}`. Catches drift and rubric-vs-model contradictions only; a golden whose value silently moved is invisible to it, which is why `goldenSuspect` exists alongside. |
@@ -298,7 +299,7 @@ Written by `eval-loop`, one per acceptance check decision, BEFORE any checkpoint
 |---|---|
 | `issue_ids` | |
 | `decision` | `accepted` / `rejected`. |
-| `class` | `docs` / `definition` / `retrieval` / `justified`. |
+| `class` | `docs` / `definition` / `skill` / `retrieval` / `justified`. `skill` is an edit to a package skill under the package's `skills/`; it never takes the documentation shortcut in the acceptance check. |
 | `baselineRunId` / `finalRunIds` | Plural: acceptance needs two independent runs. |
 | `regressions` | Case ids whose verdict got worse vs baseline. Must be empty to accept. |
 | `holdoutDelta` | Confident-verdict delta on the holdout slice. |

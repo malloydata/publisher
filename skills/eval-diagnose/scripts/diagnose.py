@@ -83,7 +83,7 @@ NO_EDITS = ("Edit", "Write", "NotebookEdit")
 CODE_IN_TABLE = re.compile(r"^\|\s*`([A-Z][A-Z-]+)`\s*\|", re.M)
 COMPONENTS = ("dataset", "agent-call", "get_context/model",
               "get_context/retrieval", "construction", "model-definition")
-OWNERS = ("model", "retrieval", "agent-skill", "dataset")
+OWNERS = ("model", "package-skill", "retrieval", "agent-skill", "dataset")
 SUFFICIENCY = ("sufficient", "insufficient", "unknown")
 
 
@@ -437,9 +437,10 @@ def main(argv: list[str] | None = None) -> int:
     # on both the ecommerce and VideoAmp runs charged everything to retrieval
     # while the diagnosis beside it said otherwise.
     where = {"model": "model coverage", "retrieval": "retrieval ranking",
-             "agent-skill": "query construction", "dataset": "dataset"}
+             "agent-skill": "query construction", "dataset": "dataset",
+             "package-skill": "package guidance"}
     lever = {"model": "model", "retrieval": "retrieval", "agent-skill": "skill",
-             "dataset": "dataset"}
+             "dataset": "dataset", "package-skill": "package-skill"}
     with (a.run / "clusters.jsonl").open("w") as fh:
         for n, c in enumerate(clusters.get("clusters", []), 1):
             qids = [q for q in c.get("qids", []) if q in by_qid]
@@ -468,11 +469,18 @@ def main(argv: list[str] | None = None) -> int:
     if invalid:
         print(f"{len(invalid)} broke the skill's vocabulary "
               f"(see `_invalid` in diagnoses.jsonl)")
+    # Both owners are fixable in the model repo, so both are what improve may
+    # touch. Counted separately because they license different edits and the
+    # acceptance check treats them differently.
+    fixable = ("model", "package-skill")
     actionable = sum(len(c.get("qids", []))
                      for c in clusters.get("clusters", [])
-                     if c.get("owner") == "model")
-    print(f"{actionable} cases sit behind a model-owned cluster "
-          f"(the only ones eval-improve may touch)")
+                     if c.get("owner") in fixable)
+    by_owner = ", ".join(
+        f"{o}: {sum(len(c.get('qids', [])) for c in clusters.get('clusters', []) if c.get('owner') == o)}"
+        for o in fixable)
+    print(f"{actionable} cases sit behind a cluster eval-improve may touch "
+          f"({by_owner})")
     print(f"cost ${spend:.2f}")
     return 0
 

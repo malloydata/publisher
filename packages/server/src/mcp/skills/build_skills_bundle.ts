@@ -159,8 +159,13 @@ function manifestSkillNames(skillsDir: string): Set<string> {
    ]);
 }
 
-/** Reference files for one skill, sorted, or [] when it has none. */
-function referenceFiles(skillDir: string): string[] {
+/**
+ * Reference files for one skill, sorted, or [] when it has none.
+ *
+ * Exported for the package-skill reader, which shares this repo's on-disk
+ * skill layout but not its manifest gating (see mcp/skills/package_skills.ts).
+ */
+export function referenceFiles(skillDir: string): string[] {
    const dir = path.join(skillDir, REFERENCE_DIR);
    if (!fs.existsSync(dir)) return [];
    return fs
