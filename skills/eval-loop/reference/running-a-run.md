@@ -82,6 +82,23 @@ python3 skills/eval-loop/scripts/build_run_package.py \
   --run results/<a> --run results/<b> --set <repo>/evals/ecommerce --out <pkg>
 ```
 
+### What the run prints at the end
+
+Three layers, in this order, and the order is what makes it readable:
+
+1. **RESULTS.** Passed of decided, the near_match/needs_human remainder, cost.
+2. **Alarms, if any.** A golden the judge does not believe, or an answer that
+   used a forbidden field. Both are DATASET problems: acting on them as model
+   failures sends a modelling agent at a model that is already right.
+3. **COVERAGE & RETRIEVAL.** Which retriever answered, entity recall, and where
+   failures attribute to. Coverage is named here but not computed by the run:
+   it reads the MODEL rather than the answers, asking whether a correct answer
+   is expressible at all, so it is the first question a low score raises and
+   the summary prints the command for it.
+4. **DEEP DIVE.** The events file, and the `build_run_package.py` line that
+   turns the run into the servable package whose HTML app has the per-case
+   drawer (step 5 above).
+
 Order of magnitude for planning, **calibrated on ecommerce over local duckdb**:
 a Sonnet arm over a few dozen cases costs single-digit dollars and finishes in
 minutes, at roughly a dime and a handful of turns per case. A proxied warehouse

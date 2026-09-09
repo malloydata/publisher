@@ -887,6 +887,92 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
         return seen[0], tally
     return "mixed", tally
 
+def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
+                  attempted: int, decided: int, passed: int, near: int,
+                  human: int, doubted: list, vetoed: list, alt_path: int,
+                  retrieval_mode: str, tally: dict, rs: dict,
+                  answerer_cost: float, judge_cost: float) -> list[str]:
+    """The end-of-run report, in three layers.
+
+    A run produces four different kinds of fact and they used to arrive in one
+    flat stream, interleaved: the headline number, two alarms that are about
+    the DATASET rather than the model, the retrieval attribution that says
+    where to fix a failure, and the cost. Read top to bottom that reads as one
+    list of equals, and the reader has to know which is which to act on any of
+    it.
+
+    So: what the run scored, then anything that makes that score untrustworthy,
+    then the two measurements you click into when the score is not what you
+    expected, then the commands that open the run properly. Coverage is named
+    in that third layer even though this run does not compute it, because it is
+    the question a low score raises first ("could the model express this at
+    all?") and it is cheap and separate.
+
+    Pure, so the shape is pinned by tests rather than only by reading a run.
+    """
+    pct = f" ({100 * passed / decided:.0f}%)" if decided else ""
+    lines = ["", "=" * 64,
+             f"RESULTS  {out.name}  ({attempted} cases)",
+             f"  passed        {passed} of {decided} decided{pct}",
+             f"  neither       {near} near_match, {human} needs_human",
+             f"  cost          ${answerer_cost:.2f} answerer"
+             + (f" + ${judge_cost:.2f} judge" if judge_cost else "")]
+
+    # Alarms next, and phrased as dataset problems, because acting on them as
+    # model failures is the most expensive wrong turn available here.
+    if doubted:
+        lines += ["", f"! {len(doubted)} golden(s) the judge does not believe. "
+                      f"Dataset issues, NOT model failures:"]
+        for qid, status, note in doubted:
+            lines += [f"    {status:15s} {qid}", f"      {note}"]
+        lines += ["  Route via the golden side door in skill:eval-loop before "
+                  "improving."]
+    if vetoed:
+        lines += ["", f"! {len(vetoed)} answer(s) used a field the golden "
+                      f"forbids (golden.mustNotUse).",
+                  "  Scored no_match by the script, not the judge:"]
+        for qid, hits in vetoed:
+            lines += [f"    {qid}: {'; '.join(hits)}"]
+
+    lines += ["", "COVERAGE & RETRIEVAL",
+              f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
+              f" lexical {tally['lexical']},"
+              f" unreported {tally['unreported']})"]
+    if retrieval_mode != "semantic":
+        lines += ["                ! not a semantic run. Local retrieval "
+                  "degrades to lexical without an embedding key, and comparing "
+                  "across that reads as a model change; flip_table.py refuses "
+                  "the pair unless both sides match."]
+    if rs.get("retrieval_scored"):
+        lines += [f"  entity recall mean {100 * rs['mean_recall']:.1f}%, "
+                  f"complete on {rs['complete_retrievals']} of "
+                  f"{rs['retrieval_scored']} scored"]
+        if alt_path:
+            lines += [f"                {alt_path} passing case(s) answered "
+                      f"without every required entity -- check whether "
+                      f"`required` over-specifies the path"]
+    if rs.get("failures_by_where_to_fix"):
+        lines += ["  where to fix  " + ", ".join(
+            f"{k} {v}" for k, v in
+            sorted(rs["failures_by_where_to_fix"].items()))]
+    lines += ["  coverage      not measured here: it reads the MODEL, not the "
+              "answers, and asks whether a",
+              "                correct answer is expressible at all. Ask it "
+              "when the score is low:",
+              f"                python3 skills/eval-answer/scripts/"
+              f"check_coverage.py --set {set_dir} --model <package-dir>"]
+
+    lines += ["", "DEEP DIVE",
+              f"  events        {out}/events.jsonl ({events_n} events)",
+              "  case matrix   build the run package, then serve it and open "
+              "the app for the",
+              "                per-case drawer:",
+              f"                python3 skills/eval-loop/scripts/"
+              f"build_run_package.py \\",
+              f"                  --run {out} --set {set_dir} --out /tmp/evalpkg",
+              "=" * 64]
+    return lines
+
 
 def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
                         ) -> dict[str, int]:
@@ -2021,23 +2107,12 @@ def main(argv: list[str] | None = None) -> int:
                ("match", "no_match"))
     human = sum(1 for v in scored.values() if v.get("verdict") == "needs_human")
     cost = sum(a.get("cost_usd") or 0 for a in attempts.values())
-    print(f"\n{a.out}/events.jsonl  ({len(events)} events)")
-    print(f"attempted {len(cases)}, decided {conf}, "
-          f"passed {ok}" + (f" ({100*ok/conf:.0f}%)" if conf else ""))
-    print(f"neither: {near} near_match, {human} needs_human")
-
     # Printed rather than left in the ledger: a doubted answer key sends the
     # next agent to fix a model that is already right, and the whole point of
     # asking the judge was to catch that before anyone acts on the run.
     doubted = sorted((q, v.get("gold_status"), (v.get("gold_note") or "")[:150])
                      for q, v in verdicts.items()
                      if v.get("gold_status") in ("suspect", "verified_wrong"))
-    if doubted:
-        print(f"\n! {len(doubted)} golden(s) the judge does not believe. These are "
-              f"dataset issues, NOT model failures:")
-        for q, st, note in doubted:
-            print(f"    {st:15s} {q}\n      {note}")
-        print("  Route via the golden side door in skill:eval-loop before improving.")
 
     # Retrieval was always recorded and never read: the entity IDs go onto every
     # tool_call event, but scoring them only happened in build_run_package, so a
@@ -2047,45 +2122,29 @@ def main(argv: list[str] | None = None) -> int:
                        verdicts.get(c["qid"], {}).get("verdict"))
             for c in cases]
     rs = summarise(retr)
-    if rs["retrieval_scored"]:
-        print(f"\nper-question entity recall: mean {100 * rs['mean_recall']:.1f}%, "
-              f"complete on {rs['complete_retrievals']} of "
-              f"{rs['retrieval_scored']} scored")
-        # Recall below 1.0 on a PASSING case means the required list named one
-        # path to an answer the agent reached by another. That is an expectation
-        # defect, not a retrieval miss, and it is why mean recall is a weaker
-        # number than the attribution below.
-        alt = sum(1 for r in retr
-                  if r["recall"] is not None and r["recall"] < 1.0
-                  and not r["failed"] and r["verdict"] is not None)
-        if alt:
-            print(f"  {alt} passing case(s) answered without every required "
-                  f"entity -- check whether `required` over-specifies the path")
-    if rs["failures_by_where_to_fix"]:
-        print("where to fix: " + ", ".join(
-            f"{k} {v}" for k, v in sorted(rs["failures_by_where_to_fix"].items())))
+    # Recall below 1.0 on a PASSING case means the required list named one path
+    # to an answer the agent reached by another. That is an expectation defect,
+    # not a retrieval miss, and it is why mean recall is a weaker number than
+    # the attribution beside it.
+    alt = sum(1 for r in retr
+              if r["recall"] is not None and r["recall"] < 1.0
+              and not r["failed"] and r["verdict"] is not None)
     judge_cost = sum((v.get("judge_cost_usd") or 0) for v in verdicts.values())
+    mode, tally = retrieval_summary(attempts.values())
+
+    for line in summary_lines(
+            out=a.out, set_dir=a.set_dir, events_n=len(events),
+            attempted=len(cases), decided=conf, passed=ok, near=near,
+            human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
+            retrieval_mode=mode, tally=tally, rs=rs,
+            answerer_cost=cost, judge_cost=judge_cost):
+        print(line)
+
     # Recorded, not only printed. The next command is usually diagnose, and a
-    # doubted key sends a modelling agent to fix a model that is already right --
+    # doubted key sends a modelling agent to fix a model that is already right,
     # the most expensive wrong turn this loop can take. A warning that exists
     # only as console text is one scrollback away from being missed, so the run
     # itself carries the list and the conductor can read it from run.json.
-    if vetoed:
-        print(f"\n{len(vetoed)} answer(s) used a field the golden forbids "
-              f"(golden.mustNotUse), scored no_match by the script, not the judge:")
-        for qid, hits in vetoed:
-            print(f"    {qid}: {'; '.join(hits)}")
-
-    mode, tally = retrieval_summary(attempts.values())
-    print(f"\nretrieval: {mode} "
-          f"(semantic {tally['semantic']}, lexical {tally['lexical']}, "
-          f"unreported {tally['unreported']})")
-    if mode != "semantic":
-        print("  ! not a semantic run. Local retrieval degrades to lexical "
-              "without an embedding key, and comparing across that reads as a "
-              "model change. flip_table.py refuses the pair unless both sides "
-              "match.")
-
     ledger.update_run(a.out, answererCostUsd=round(cost, 4),
                       judgeCostUsd=round(judge_cost, 4),
                       retrievalMode=mode, retrievalCalls=tally,
@@ -2095,7 +2154,6 @@ def main(argv: list[str] | None = None) -> int:
                                        "gold_note": note}
                                       for q, st, note in doubted],
                       status="aborted" if aborted else "complete")
-    print(f"answerer cost ${cost:.2f}" + (f", judge ${judge_cost:.2f}" if judge_cost else ""))
     return 0
 
 

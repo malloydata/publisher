@@ -236,5 +236,84 @@ class PlatformMcpUrl(unittest.TestCase):
             rb.platform_url_error("local", rb.LOCAL_MCP_URL, "hosted"))
 
 
+
+class RunSummary(unittest.TestCase):
+    """The end-of-run report is three layers, and the order is the point.
+
+    What the run scored, then anything that makes that score untrustworthy,
+    then the two measurements you click into and the commands that open the
+    run properly. Flat, these read as one list of equals and the reader has to
+    already know which is which.
+    """
+
+    def lines(self, **over):
+        args = dict(
+            out=pathlib.Path("results/r1"), set_dir=pathlib.Path("evals/e"),
+            events_n=10, attempted=69, decided=49, passed=36, near=10, human=3,
+            doubted=[], vetoed=[], alt_path=0, retrieval_mode="semantic",
+            tally={"semantic": 5, "lexical": 0, "unreported": 2},
+            rs={"retrieval_scored": 49, "mean_recall": 0.842,
+                "complete_retrievals": 41,
+                "failures_by_where_to_fix": {"model": 8}},
+            answerer_cost=4.0, judge_cost=0.5)
+        args.update(over)
+        return rb.summary_lines(**args)
+
+    def index_of(self, lines, needle):
+        return next(i for i, l in enumerate(lines) if needle in l)
+
+    def test_the_three_layers_appear_in_order(self):
+        lines = self.lines()
+        self.assertLess(self.index_of(lines, "RESULTS"),
+                        self.index_of(lines, "COVERAGE & RETRIEVAL"))
+        self.assertLess(self.index_of(lines, "COVERAGE & RETRIEVAL"),
+                        self.index_of(lines, "DEEP DIVE"))
+
+    def test_the_headline_carries_the_score(self):
+        lines = self.lines()
+        headline = lines[self.index_of(lines, "passed")]
+        self.assertIn("36 of 49", headline)
+        self.assertIn("73%", headline)
+
+    def test_an_untrustworthy_score_is_flagged_above_the_detail(self):
+        # A doubted golden is a DATASET problem. Read after the retrieval
+        # numbers it looks like one more measurement.
+        lines = self.lines(doubted=[("q7", "suspect", "note")])
+        self.assertLess(self.index_of(lines, "does not believe"),
+                        self.index_of(lines, "COVERAGE & RETRIEVAL"))
+        self.assertIn("NOT model failures",
+                      lines[self.index_of(lines, "does not believe")])
+
+    def test_a_clean_run_raises_no_alarms(self):
+        self.assertFalse([l for l in self.lines() if l.startswith("!")])
+
+    def test_coverage_says_it_was_not_measured_and_how_to_measure_it(self):
+        lines = self.lines()
+        block = "\n".join(lines)
+        self.assertIn("not measured here", block)
+        self.assertIn("check_coverage.py", block)
+        self.assertIn("--set evals/e", block)
+
+    def test_the_deep_dive_links_the_case_matrix(self):
+        block = "\n".join(self.lines())
+        self.assertIn("build_run_package.py", block)
+        self.assertIn("--run results/r1", block)
+        self.assertIn("events.jsonl", block)
+
+    def test_a_lexical_run_says_so_where_the_number_is(self):
+        lines = self.lines(retrieval_mode="lexical",
+                           tally={"semantic": 0, "lexical": 5,
+                                  "unreported": 0})
+        warn = self.index_of(lines, "not a semantic run")
+        self.assertLess(self.index_of(lines, "COVERAGE & RETRIEVAL"), warn)
+        self.assertLess(warn, self.index_of(lines, "DEEP DIVE"))
+
+    def test_no_retrieval_scores_omits_the_recall_line(self):
+        lines = self.lines(rs={"retrieval_scored": 0, "mean_recall": None,
+                               "complete_retrievals": 0,
+                               "failures_by_where_to_fix": {}})
+        self.assertFalse([l for l in lines if "entity recall" in l])
+
+
 if __name__ == "__main__":
     unittest.main()
