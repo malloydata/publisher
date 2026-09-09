@@ -5,6 +5,8 @@ import * as path from "path";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
 import { BadRequestError, FrozenConfigError } from "../errors";
+import { logger } from "../logger";
+import { getPackageEmbeddingStatus } from "../mcp/tools/get_context_tool";
 import { EnvironmentStore } from "../service/environment_store";
 
 type ApiPackage = components["schemas"]["Package"];
@@ -79,17 +81,57 @@ export class PackageController {
       packageName: string,
       reload: boolean,
    ): Promise<ApiPackage> {
+      let metadata: ApiPackage;
       if (reload) {
-         return (await this.reloadPackage(environmentName, packageName))
+         metadata = (await this.reloadPackage(environmentName, packageName))
             .metadata;
+      } else {
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const _package = await environment.getPackage(packageName, false);
+         metadata = _package.getPackageMetadata();
       }
 
-      const environment = await this.environmentStore.getEnvironment(
+      // Enriched on BOTH paths. This sat below a `reload` early return, so
+      // `?reload=true` answered without the field while a plain GET carried
+      // it: one resource in two shapes, decided by a query param. And it was
+      // absent from precisely the request that INVALIDATES the index, which
+      // is when a caller starts the `status` polling the field exists for.
+      const embeddingIndex = await this.embeddingIndexStatus(
          environmentName,
-         false,
+         packageName,
       );
-      const _package = await environment.getPackage(packageName, false);
-      return _package.getPackageMetadata();
+      return embeddingIndex ? { ...metadata, embeddingIndex } : metadata;
+   }
+
+   /**
+    * The package's semantic-index state, or undefined when the server has no
+    * embedding provider (nothing to describe) or the state could not be read.
+    *
+    * Never fails the request: this is a reporting field on a resource whose
+    * primary job is package metadata, so a storage handle that is not ready
+    * must not turn a working GET into a 500.
+    */
+   private async embeddingIndexStatus(
+      environmentName: string,
+      packageName: string,
+   ): Promise<ApiPackage["embeddingIndex"] | undefined> {
+      try {
+         return await getPackageEmbeddingStatus(
+            this.environmentStore,
+            environmentName,
+            packageName,
+         );
+      } catch (error) {
+         logger.debug("Could not read the package's embedding index state", {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return undefined;
+      }
    }
 
    /**

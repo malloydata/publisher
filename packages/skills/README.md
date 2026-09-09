@@ -53,11 +53,11 @@ skill points to for detail it does not inline. Start with `malloy-getting-starte
 `malloy-review` to check Malloy for correctness.
 
 A few skills (`malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, and
-the `malloy` index) are written for a Publisher host and name Publisher's `malloy_*` MCP tools
+the `malloy` index) are written for a Publisher host and name Publisher's MCP tools
 directly. The rest describe Malloy itself and refer to tools by bare name (`get_context`,
 `execute_query`, `search_malloy_docs`), because the prefix depends on the
-host. `search_database_schema` maps the same way if a shared skill starts using it. On Publisher those are `malloy_getContext`, `malloy_executeQuery`, `malloy_searchDocs`, and
-`malloy_searchDatabaseSchema`.
+host. `search_database_schema` maps the same way if a shared skill starts using it. On Publisher those are `get_context`, `execute_query`, `search_malloy_docs`, and
+`search_database_schema`.
 
 ## Versioning
 

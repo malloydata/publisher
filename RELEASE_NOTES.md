@@ -31,7 +31,91 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — bound the memory a LARGE DuckLake write spends holding Parquet
+## [Unreleased] — a persist name must now be a plain identifier path
+
+`#@ persist name=` accepts the table name a source materializes into, and that
+value is pasted into the `CREATE OR REPLACE TABLE` and `DROP TABLE IF EXISTS`
+statements the builder runs. It was only ever checked for being *quoted*, never
+for what the quotes contained, so a name carrying its own quote character closed
+the identifier early and the rest of the value continued as SQL.
+
+The accepted grammar is now dot-separated segments of letters, digits,
+underscores and hyphens -- `^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`. That covers
+every shape a table path takes today, including a hyphenated BigQuery project id
+(`my-proj.mydataset.engaged_events`), a leading-digit segment, and a three-part
+`project.dataset.table`. It is the same character set the control plane already
+applies to physical names, so the two agree on what a name may contain. A value
+with a quote, a backtick, a semicolon or a space is refused when the model loads,
+with an error naming the annotation and the allowed shape.
+
+To check a package without reading the diff: if every `#@ persist name=` value is
+letters, digits, underscores, hyphens and dots, nothing changes for it.
+
+A census of the packages we can see -- 438 persist annotations across 47
+packages, 152 distinct names -- found none that this refuses, so no package that
+loads today stops loading. The check exists because the value is author-supplied
+input on a server that loads packages it did not write, not because a name in the
+wild was doing this.
+
+---
+
+## [0.2.4] (BREAKING) — every MCP tool loses its `malloy_` prefix, and get_context answers in one shape
+
+**Every MCP tool is renamed.** The `malloy_` prefix is gone and the names are bare
+snake_case. There is no alias and no deprecation window: the old names are removed,
+so an agent or client that calls them gets an unknown-tool error until it is updated.
+
+| Before | Now |
+|---|---|
+| `malloy_getContext` | `get_context` |
+| `malloy_executeQuery` | `execute_query` |
+| `malloy_compile` | `compile_model` |
+| `malloy_reloadPackage` | `reload_package` |
+| `malloy_getStatus` | `get_status` |
+| `malloy_searchDatabaseSchema` | `search_database_schema` |
+| `malloy_searchDocs` | `search_malloy_docs` |
+
+**What to do.** Hosts that discover tools at connect time (Claude Code, Cursor, Codex)
+pick the new names up on reconnect with no config change — the names appear in the
+tool list, not in `.mcp.json`. Anything that hardcodes a tool name in a prompt, a
+script, or a saved agent config has to be edited. The bundled skills and every doc in
+this repo already use the new names.
+
+**`get_context` also answers in a new response shape.** It used to return a flat ranked
+`results[]` of entities; it now returns `sources[]`, where each source carries the
+entities that matched inside it. A client that reads `results[0].name` finds nothing —
+`results` is gone from every payload. An error payload keeps the empty collection of the
+tool it came from: `sources: []` from `get_context`, `environments: []` from
+`list_packages`, so a client can read either without branching on success first. Alongside the shape,
+the response gained `below_cutoff_count`, `retrieval_reason`, `aliases`,
+`givens`, `authorize`, `data_type`, `one_line_summary`, and `warnings[]` (which replaces
+the single `note` string). The tool's own description is the contract and is pinned by a
+test; re-read it rather than working from a cached copy.
+
+**Duplicate rows are decided by the compiled model, not by names.** A field whose
+whole definition is a reference to a sibling of the same source (`dimension: site is
+SITE`) folds into it, reported in `aliases`. That used to be a guess from
+name-humanization, which could not tell a rename from a derivation that happened to
+look like one. And nothing folds ACROSS sources any more: two sources exposing a
+same-named field are two different numbers, so each is returned under its own card
+with its own `docs`, which is where the `where:` or grain rule that makes them differ
+is written. Pass `include_code` to see a field's Malloy expression as `code`; off by
+default.
+
+**Listing the catalog is now its own tool, `list_packages`.** `malloy_getContext` with
+no arguments used to list the environments; `get_context` requires its `search_targets`
+and a `scopes` naming a package, so the catalog moved to a sibling tool that supplies
+those names. Call `list_packages` first when you do not already know an environment and
+package name.
+
+Why now rather than behind an alias: no SDK surface exposes these names, and the
+consumers that do use them (agents) re-read the tool list and the tool description on
+every session, so a clean cut costs one reconnect where an alias would have left two
+spellings in the docs indefinitely.
+
+---
+
+## [0.2.4] — bound the memory a LARGE DuckLake write spends holding Parquet
 
 `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` caps how large a Parquet file DuckLake writes
 before rotating to the next one. Unset, nothing changes: no option is set and the attach
@@ -96,7 +180,7 @@ so until it ships in a release, this is the lever available.
 
 ---
 
-## [Unreleased] — a pre-aggregation rollup can be built into and served from a storage destination
+## [0.2.4] — a pre-aggregation rollup can be built into and served from a storage destination
 
 `storage=` now works on a `#@ preaggregate` line: the rollup is built into that
 destination and served from it, and a query that names the base source is unchanged — it
@@ -159,6 +243,7 @@ this is a proxy for size and not a reading of it. One consequence worth knowing:
 is offered whether or not it has been built yet, so adding a coarse grain to a package
 that already has a built finer rollup costs acceleration until the new one builds —
 answers are unaffected, and it lasts one build.
+
 
 ## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
 

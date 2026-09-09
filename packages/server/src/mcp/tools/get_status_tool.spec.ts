@@ -29,7 +29,7 @@ function parse(result: { content: Content }) {
    return JSON.parse(result.content[0].resource!.text);
 }
 
-describe("malloy_getStatus", () => {
+describe("get_status", () => {
    it("reduces status to state, package names, and load errors", async () => {
       const handler = captureHandler({
          getStatus: async () =>
