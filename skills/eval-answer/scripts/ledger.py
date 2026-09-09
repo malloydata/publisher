@@ -78,8 +78,16 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         # either. Which retriever answered decides whether two runs are
         # comparable at all, and it is only knowable from the response that
         # answered.
+        # `query`, `modelPath` and `filterParams` are one fact about one
+        # call: the text that ran, the file it was written against, and the
+        # filter values it ran under. Recorded apart they drift, and two of
+        # the three drift SILENTLY -- a replay against the wrong file at least
+        # errors, while a replay under another report's filter values returns
+        # real rows for the wrong population. Keeping all three on the event
+        # is what lets a re-execution be audited from the ledger at all.
         "optional": {"targets", "rankedSummary", "error", "traceId",
-                     "query", "modelPath", "retrieval_mode", "at"},
+                     "query", "modelPath", "filterParams", "retrieval_mode",
+                     "at"},
     },
     "score": {
         "required": _CASE | {"verdict", "reason"},

@@ -10,9 +10,14 @@ check, a judge, and a conformant `events.jsonl`.
 
 ```bash
 # 1. serve the model under test -- in its own session, so the shell's exit
-#    cannot take it down, and returning only once it answers a query
+#    cannot take it down, and returning only once it answers a query.
+#    --warm-retrieval also waits for the embedding index to settle and exits 3
+#    if it does not reach `ready`: the sync is lazy, so without it the first
+#    cases are answered LEXICALLY and the run reports that as the model's
+#    number.
 python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/server \
   --server-root <root> --port 4811 --mcp-port 4040 --trace-retrieval \
+  --warm-retrieval --environment <env> --package <pkg> \
   [--allow-proxy]   # required for a `publisher`-type (proxied) connection
 #    a second server for the TRUTH package, on other ports, that the answerer
 #    has no route to:

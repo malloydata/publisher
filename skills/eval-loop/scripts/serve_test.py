@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for when serve.py seeds the store and when it preserves it.
+"""Tests for serve.py: when it seeds the store, and how it warms retrieval.
 
 `--init` used to be passed on every start. It sets `force=true` on
 `initializeSchema`, whose `dropAllTables` list includes `entity_embeddings`, so
@@ -71,6 +71,62 @@ class InitDecision(unittest.TestCase):
                         (r / serve.DB_NAME).write_text("")
                     _, why = serve.init_decision(r, reinit=reset)
                     self.assertTrue(why.strip())
+
+
+class WarmArguments(unittest.TestCase):
+    """The warm-up call has to RANK, and has to be unscoped.
+
+    Both are easy to get wrong in a way that still looks like it worked. An
+    earlier version passed `search_text` at the TOP level, which is not a
+    parameter of the tool at all: the server ignored it, logged
+    `hasQuery:false`, never reached the ranking path, and kicked no sync. It
+    read as a 300-second timeout.
+    """
+
+    def args(self):
+        return serve.warm_arguments("examples", "storefront")
+
+    def test_it_ranks_rather_than_enumerating(self):
+        # A target with no search_text enumerates; enumeration embeds nothing,
+        # so a warm-up built from one reports success having done no work.
+        targets = self.args()["search_targets"]
+        self.assertTrue(targets)
+        for t in targets:
+            self.assertTrue(t.get("search_text"))
+
+    def test_the_search_text_is_nested_in_a_target(self):
+        # The own-goal above: not a top-level key.
+        self.assertNotIn("search_text", self.args())
+        self.assertNotIn("query", self.args())
+
+    def test_it_names_exactly_one_scope(self):
+        scopes = self.args()["scopes"]
+        self.assertEqual(len(scopes), 1)
+        self.assertEqual(scopes[0]["environment"], "examples")
+        self.assertEqual(scopes[0]["package"], "storefront")
+
+    def test_the_scope_narrows_nothing(self):
+        # A narrowed scope is what the sync used to be handed as its desired
+        # row set, and it deleted everything outside it.
+        for key in ("source", "model_path", "entity_name"):
+            self.assertNotIn(key, self.args()["scopes"][0])
+
+
+class IndexStatus(unittest.TestCase):
+    def test_it_reads_the_status(self):
+        self.assertEqual(
+            serve.index_status({"embeddingIndex": {"status": "ready"}}), "ready")
+
+    def test_a_package_without_an_index_is_not_indexing(self):
+        # No provider configured is a different fact from "still working", and
+        # waiting on it would hang until the deadline for no reason.
+        self.assertIsNone(serve.index_status({}))
+        self.assertIsNone(serve.index_status({"embeddingIndex": None}))
+
+    def test_only_indexing_is_non_terminal(self):
+        self.assertNotIn("indexing", serve.TERMINAL_INDEX_STATES)
+        for state in ("ready", "cooldown", "oversize"):
+            self.assertIn(state, serve.TERMINAL_INDEX_STATES)
 
 
 class ServerCmd(unittest.TestCase):

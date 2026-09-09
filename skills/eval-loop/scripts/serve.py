@@ -3,7 +3,8 @@
 
   python3 serve.py --publisher-dir <publisher>/packages/server \\
       --server-root <scratch>/evalroot --port 4811 --mcp-port 4040 \\
-      [--allow-proxy] [--trace-retrieval] [--reinit] [--wait 60]
+      [--allow-proxy] [--trace-retrieval] [--reinit] [--wait 60] \\
+      [--warm-retrieval --environment <env> --package <pkg>]
 
   python3 serve.py --stop --server-root <scratch>/evalroot
 
@@ -26,6 +27,28 @@ one, or when `--reinit` asks for a wipe, because it drops every table including
 arriving during the sync from lexical retrieval instead. `--reinit` is also how
 a `publisher.config.json` edit takes effect, since reading that manifest is
 the flag's other job; the start line says which mode it chose.
+
+`--warm-retrieval` closes the gap between "the server answers" and "the server
+answers SEMANTICALLY". The embedding sync is lazy: it is kicked by the first
+call that ranks, and calls arriving while it runs are answered lexically
+without recording that they were. So a run that starts measuring the moment
+the REST root replies measures the lexical matcher for its first few cases and
+reports the number as if it were the model's.
+
+It drives one ranking call, then polls the package resource until
+`embeddingIndex.status` reaches a terminal value and prints it. Only `ready`
+licenses reading a run's discoverability findings.
+
+The status field is the readiness signal to poll; an earlier version of this
+script scraped the log for a "Synced entity embeddings" line instead and
+documented that Publisher exposed nothing pollable. That was wrong twice over:
+the field exists, and the scrape could never work anyway, because a server
+whose cache is already current logs no sync line at all.
+
+Caveat worth knowing: before publisher#1131, `status` could report `ready`
+while the next question was still ranked lexically, because readiness was
+derived from cached rows covering the current entity NAMES and rows outlive a
+reload. On such a build, `ready` here is necessary but not sufficient.
 
 Two flags name the two things a run needs that are off by default:
 --allow-proxy sets PUBLISHER_ALLOW_PROXY_CONNECTIONS=true (a `publisher`-type
@@ -95,6 +118,91 @@ def init_decision(root: pathlib.Path, reinit: bool) -> tuple[bool, str]:
                    f"publisher.config.json")
 
 
+# One ranking call, unscoped, is what kicks the embedding sync.
+#
+# RANKING, because the marker and the sync both hang off the ranking path: a
+# target with no `search_text` enumerates instead, which returns rows without
+# embedding anything, so a warm-up built from one would report success having
+# done nothing.
+#
+# UNSCOPED, because `scopes` narrowing (`source`, `model_path`, `entity_name`)
+# is what the sync used to be handed as its desired row set, and it obliged by
+# deleting everything outside it -- publisher#1028 fixed that, but a warm-up
+# whose whole job is "make the cache whole" should not be the call that tests
+# the fix.
+WARM_SEARCH_TEXT = "what data is in this package"
+
+# `indexing` is the only non-terminal one: the other three are all settled
+# answers, and two of them are settled bad news.
+TERMINAL_INDEX_STATES = frozenset({"ready", "cooldown", "oversize"})
+
+
+def warm_arguments(environment: str, package: str) -> dict:
+    """The get_context arguments for the warm-up call."""
+    return {
+        "search_targets": [{"target_type": "source",
+                            "search_text": WARM_SEARCH_TEXT}],
+        "scopes": [{"environment": environment, "package": package}],
+    }
+
+
+def index_status(package_payload: dict) -> str | None:
+    """`embeddingIndex.status` from a package resource, or None if absent.
+
+    Absent means the server has no embedding provider configured, which is a
+    different fact from `indexing` and must not be waited on.
+    """
+    index = package_payload.get("embeddingIndex")
+    return index.get("status") if isinstance(index, dict) else None
+
+
+def _mcp_call(mcp_port: int, name: str, arguments: dict, timeout: int) -> None:
+    """One MCP tools/call, response ignored -- the point is the side effect."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": name, "arguments": arguments}})
+    req = urllib.request.Request(
+        f"http://localhost:{mcp_port}/mcp", data=body.encode(),
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream"})
+    urllib.request.urlopen(req, timeout=timeout).read()
+
+
+def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
+                   wait: int) -> tuple[str | None, str]:
+    """Kick the sync, then poll to a terminal status. Returns (status, line)."""
+    try:
+        _mcp_call(mcp_port, "get_context",
+                  warm_arguments(environment, package), timeout=60)
+    except Exception as e:  # noqa: BLE001
+        return None, f"warm-up call failed: {e}"
+
+    url = (f"http://localhost:{port}/api/v0/environments/{environment}"
+           f"/packages/{package}")
+    deadline = time.time() + wait
+    status = None
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                status = index_status(json.loads(r.read().decode()))
+        except Exception:  # noqa: BLE001
+            status = None
+        if status is None:
+            return None, ("no embeddingIndex on the package resource; this "
+                          "server has no embedding provider, so every run "
+                          "against it is LEXICAL -- do not report "
+                          "discoverability findings from it")
+        if status in TERMINAL_INDEX_STATES:
+            break
+        time.sleep(2)
+    if status == "ready":
+        return status, "retrieval index ready: rankings are semantic"
+    if status in TERMINAL_INDEX_STATES:
+        return status, (f"retrieval index {status}: rankings are NOT semantic "
+                        f"-- do not report discoverability findings")
+    return status, (f"retrieval index still {status} after {wait}s; it may "
+                    f"settle later, but nothing measured now is semantic")
+
+
 def server_cmd(server: pathlib.Path, root: pathlib.Path, port: int,
                mcp_port: int, seed: bool) -> list[str]:
     """The argv for one Publisher, with `--init` only when seeding."""
@@ -121,6 +229,12 @@ def main() -> int:
                          "it an existing server root is preserved")
     ap.add_argument("--wait", type=int, default=90,
                     help="seconds to wait for the REST root before giving up")
+    ap.add_argument("--warm-retrieval", action="store_true",
+                    help="after the server answers, drive one ranking call and "
+                         "poll embeddingIndex.status until it settles. Requires "
+                         "--environment and --package")
+    ap.add_argument("--environment", help="environment to warm (--warm-retrieval)")
+    ap.add_argument("--package", help="package to warm (--warm-retrieval)")
     ap.add_argument("--stop", action="store_true",
                     help="stop the server recorded in <server-root>/publisher.pid")
     a = ap.parse_args()
@@ -141,6 +255,8 @@ def main() -> int:
         pidfile.unlink()
         return 0
 
+    if a.warm_retrieval and not (a.environment and a.package):
+        raise SystemExit("--warm-retrieval needs --environment and --package")
     if not a.publisher_dir:
         raise SystemExit("--publisher-dir is required to start")
     server = a.publisher_dir / "dist" / "server.mjs"
@@ -181,6 +297,15 @@ def main() -> int:
                 print(f"  ! {errs[-1].strip()} -- a package failed to load; it will "
                       f"answer HTTP and serve nothing (check the log)")
                 return 2
+            if a.warm_retrieval:
+                status, line = warm_retrieval(a.port, a.mcp_port, a.environment,
+                                              a.package, a.wait)
+                print(f"  {line}")
+                # Not a server failure: it started and serves. The caller
+                # decides whether a lexical run is worth having, so say which
+                # it is and let the exit code mean "the server is up".
+                if status != "ready":
+                    return 3
             return 0
         time.sleep(1)
     print(f"no answer on port {a.port} after {a.wait}s; server still running as "

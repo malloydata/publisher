@@ -123,6 +123,21 @@ class WriteContract(unittest.TestCase):
             ledger.event("score", qid="q1", sample=0, phase="baseline",
                          verdict="probably", reason="r")
 
+    def test_a_tool_call_records_the_filters_it_ran_under(self):
+        """`query`, `modelPath` and `filterParams` are one fact about one call.
+
+        A re-execution replays the query; the file and the filter values decide
+        what it means. Sent under another call's `report_id` it returns real
+        rows for the wrong population and nothing says so -- unlike the wrong
+        file, which at least errors. The field has to be writable for that
+        pairing to be auditable from the ledger at all.
+        """
+        e = ledger.event("tool_call", qid="q1", sample=0, phase="baseline",
+                         tool="execute_query", query="run: x -> y",
+                         modelPath="a.malloy",
+                         filterParams={"report_id": "123"})
+        self.assertEqual(e["filterParams"], {"report_id": "123"})
+
     def test_run_config_requires_identity(self):
         with self.assertRaises(ValueError) as cm:
             ledger.run_config(**{k: v for k, v in RUN.items()
