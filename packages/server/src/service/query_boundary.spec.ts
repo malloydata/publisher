@@ -697,6 +697,101 @@ export { \`customer-orders\` }`,
       }
    });
 
+   it("declared: derivation THROUGH a named query is queryable over a curated source, not a hidden one", async () => {
+      // The pre-aggregate idiom composes through a `query:` hop:
+      //   query:  agg is <curated> -> { … }
+      //   source: blended is agg extend { … }
+      //   run:    blended -> { … }
+      // The walk has to follow `query:` declarations as well as `source:` ones
+      // or it dead-ends on `agg` — neither curated nor a `source:` alias — and
+      // fails closed on a query that only ever reads a source the caller may
+      // plainly read. Worse, `/compile` is exempt from this boundary, so the
+      // same text compiles clean first and the 404 explains nothing.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         const { result } = await model.getQueryResults(
+            undefined,
+            undefined,
+            "query: agg is customers -> { group_by: id aggregate: t is total }\n" +
+               "source: blended is agg extend { primary_key: id }\n" +
+               "run: blended -> { group_by: id }",
+         );
+         expect(result.data).toBeDefined();
+
+         // Admission still turns on reaching a CURATED name, so the same shape
+         // over a hidden source launders nothing.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "query: agg is helper -> { group_by: id aggregate: n is c }\n" +
+                  "source: blended is agg extend { primary_key: id }\n" +
+                  "run: blended -> { group_by: id }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a forged or shadowing derivation edge cannot buy admission", async () => {
+      // Widening the walk to `query:` widens ADMISSION, so the two hardenings
+      // that make it safe are pinned here rather than assumed.
+      writeManifest({ explores: ["index.malloy"] });
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         // (a) A declaration forged inside a STRING LITERAL is blanked before
+         // the scan, so it never becomes an edge: `mine` stays ungrounded.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: mine is helper extend {\n" +
+                  "  dimension: note is 'query: mine is customers'\n" +
+                  "}\nrun: mine -> { group_by: note }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // (b) A SECOND declaration for a name adds an obligation instead of
+         // replacing the first: every base must prove out, so pairing a hidden
+         // base with a curated one is denied, not admitted. (Malloy itself
+         // rejects the redefinition; the boundary must not be the thing that
+         // would have let it through.)
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "query: mine is helper -> { group_by: id }\n" +
+                  "query: mine is customers -> { group_by: id }\n" +
+                  "source: alias is mine extend { primary_key: id }\n" +
+                  "run: alias -> { group_by: id }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // (c) A derivation cycle grounds nothing and must fail closed.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: a is b extend { measure: m is count() }\n" +
+                  "source: b is a extend { measure: m2 is count() }\n" +
+                  "run: a -> { aggregate: m }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("declared: an exported named query reading a hidden source is admitted by name", async () => {
       // Exporting a query is the author's deliberate exposure of a result,
       // even when the source it reads stays hidden. The explicit queryName
