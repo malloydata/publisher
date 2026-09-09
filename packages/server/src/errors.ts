@@ -25,6 +25,18 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 //
 // So a NEW 5xx branch is a decision rather than a default: generalize it here
 // if its message comes from a driver, a worker, or the filesystem.
+//
+// Neither generic body carries a correlation handle, which is what a user
+// reporting "I got Internal server error." would hand an operator to find the
+// logged detail. That is deliberately unchanged rather than overlooked: no error
+// response in this server has ever carried one (the `details` field the Error
+// schema declares is populated nowhere, and the MCP JSON-RPC path answers with a
+// bare "Internal server error" too), so adding one only here would make this the
+// single exception rather than the new convention. Worth doing server-wide --
+// `loggerMiddleware` already derives a W3C traceId when the caller sends
+// `traceparent`, and it would go in `details` with no schema change -- but it is
+// its own change, and it wants an id that exists for callers who send no
+// traceparent.
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
 
