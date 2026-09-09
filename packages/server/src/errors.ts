@@ -56,6 +56,20 @@ export function logInternalFailure(summary: string, error: Error): void {
    });
 }
 
+/**
+ * Machine-readable discriminator on an error response, for callers that must
+ * branch on *which* 404 they got rather than on prose.
+ *
+ * The router retries a 404 by invalidating its cached worker location and
+ * asking the control plane again, because a 404 normally means the worker it
+ * called no longer hosts that environment or connection. A table that is not in
+ * the database is also a 404 but carries no such implication -- retrying it
+ * re-queries the same absent table and throws away a cache entry every other
+ * caller on that connection is using. Only reasons that a caller is expected to
+ * branch on are emitted; absence is the norm and means "no special handling".
+ */
+export type ErrorReason = "TABLE_NOT_FOUND";
+
 export function internalErrorToHttpError(error: Error) {
    if (error instanceof BadRequestError) {
       return httpError(400, error.message);
@@ -75,6 +89,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(404, error.message);
    } else if (error instanceof MalloyError) {
       return httpError(400, error.message);
+   } else if (error instanceof TableNotFoundError) {
+      return httpError(404, error.message, "TABLE_NOT_FOUND");
    } else if (error instanceof ConnectionNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof DestinationNotFoundError) {
@@ -124,12 +140,15 @@ export function internalErrorToHttpError(error: Error) {
    }
 }
 
-function httpError(code: number, message: string) {
+function httpError(code: number, message: string, reason?: ErrorReason) {
    return {
       status: code,
       json: {
          code,
          message: message,
+         // Omitted rather than undefined so existing toStrictEqual assertions
+         // on reason-less errors keep passing.
+         ...(reason ? { reason } : {}),
       },
    };
 }
@@ -193,6 +212,24 @@ export class DashboardNotFoundError extends Error {
 }
 
 export class ConnectionNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * The connection is reachable and authenticated, but it holds no table at that
+ * path. A caller's bad reference, not a server or upstream fault, so it maps to
+ * 404 -- which is what every spec declaring this route has always documented
+ * (502 appears in none of them).
+ *
+ * Distinct from {@link ConnectionError}, which stays 502 for genuine transport
+ * failures: unreachable database, expired credentials, exhausted quota. The
+ * split matters beyond tidiness, because a 5xx here is counted against the
+ * router's server-error budget and pages on-call for what is a typo in someone's
+ * model.
+ */
+export class TableNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }

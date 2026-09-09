@@ -52,16 +52,18 @@ describe("internalErrorToHttpError does not leak internal detail (F-12 Part A)",
    });
 
    it("preserves a server-authored 502 message (caller-safe)", () => {
-      // Not every 502 is a leak. "Table x.y not found" is written by this server,
-      // names nothing internal, and tells the caller what to fix -- genericizing
-      // the whole 502 class to suppress driver messages would destroy it.
+      // Not every 502 is a leak. A message this server composed names nothing
+      // internal and tells the caller what to fix, so genericizing the whole
+      // 502 class to suppress driver messages would destroy it. (A missing
+      // table is a 404 via TableNotFoundError and never reaches this branch;
+      // the opt-in is what keeps any remaining server-authored 502 readable.)
       const { status, json } = internalErrorToHttpError(
-         new ConnectionError("Table analytics.orders not found", {
+         new ConnectionError("Package name is undefined", {
             callerSafe: true,
          }),
       );
       expect(status).toBe(502);
-      expect(json.message).toContain("Table analytics.orders not found");
+      expect(json.message).toContain("Package name is undefined");
    });
 
    it("generalizes a 502 that wraps a driver message (not caller-safe)", () => {
@@ -103,11 +105,11 @@ describe("getInternalError does not leak driver detail over MCP (F-12 Part A)", 
    it("keeps a server-authored caller-safe message", () => {
       const { message } = getInternalError(
          "executeQuery",
-         new ConnectionError("Table analytics.orders not found", {
+         new ConnectionError("Package name is undefined", {
             callerSafe: true,
          }),
       );
-      expect(message).toContain("Table analytics.orders not found");
+      expect(message).toContain("Package name is undefined");
    });
 
    it("keeps the message of an operational error that is not a ConnectionError", () => {
