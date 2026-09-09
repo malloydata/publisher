@@ -130,28 +130,43 @@ describe("getInternalError does not leak driver detail over MCP (F-12 Part A)", 
 // caller can drive in a loop, so it must not fill the error log or move an
 // error-rate dashboard that tracks our own faults.
 describe("internal-failure logging level (F-12 Part A)", () => {
-   it("logs an unrecognized internal error at error", () => {
+   // Assert on the arguments of THIS call, found by a marker unique to the test,
+   // rather than on a call count. Bun runs every spec file in one process under
+   // --serial, so any other file that maps an internal error increments the same
+   // spy and a count assertion fails for a reason that has nothing to do with
+   // the contract.
+   const callsWith = (spy: ReturnType<typeof spyOn>, marker: string) =>
+      spy.mock.calls.filter(
+         (args: unknown[]) =>
+            typeof args[1] === "object" &&
+            args[1] !== null &&
+            String((args[1] as { message?: unknown }).message ?? "").includes(
+               marker,
+            ),
+      );
+
+   it("logs an unrecognized internal error at error, not warn", () => {
+      const marker = "unrecognized-marker-9f2a";
       const err = spyOn(logger, "error").mockImplementation(() => logger);
       const warn = spyOn(logger, "warn").mockImplementation(() => logger);
       try {
-         internalErrorToHttpError(new Error("boom"));
-         expect(err).toHaveBeenCalledTimes(1);
-         expect(warn).toHaveBeenCalledTimes(0);
+         internalErrorToHttpError(new Error(marker));
+         expect(callsWith(err, marker)).toHaveLength(1);
+         expect(callsWith(warn, marker)).toHaveLength(0);
       } finally {
          err.mockRestore();
          warn.mockRestore();
       }
    });
 
-   it("logs a driver-wrapped upstream failure at warn", () => {
+   it("logs a driver-wrapped upstream failure at warn, not error", () => {
+      const marker = "upstream-marker-4c7b";
       const err = spyOn(logger, "error").mockImplementation(() => logger);
       const warn = spyOn(logger, "warn").mockImplementation(() => logger);
       try {
-         internalErrorToHttpError(
-            new ConnectionError("connect ECONNREFUSED 10.0.0.1:5432"),
-         );
-         expect(warn).toHaveBeenCalledTimes(1);
-         expect(err).toHaveBeenCalledTimes(0);
+         internalErrorToHttpError(new ConnectionError(marker));
+         expect(callsWith(warn, marker)).toHaveLength(1);
+         expect(callsWith(err, marker)).toHaveLength(0);
       } finally {
          err.mockRestore();
          warn.mockRestore();
