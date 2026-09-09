@@ -196,6 +196,33 @@ describe("get_context source attribution", () => {
       expect(capped.total_available).toBe(2);
    });
 
+   /**
+    * The listing path does not go through `windowBySource`, and counted a
+    * drill-down as 1-of-1 outright. A source pinned by name still resolves in
+    * every file that imports it, so the drill-down is N cards and the envelope
+    * has to say N.
+    */
+   it("counts every resolving path in a drill-down envelope", async () => {
+      const drill = await payloadFor(twoFilePackage(), {
+         search_targets: [{ target_type: "dimension" }],
+         scopes: [{ environment: "e", package: "p", source: "shared" }],
+      });
+      expect(drill.sources).toHaveLength(2);
+      expect(drill.returned).toBe(2);
+      // Was hard-coded to 1, so the envelope contradicted its own payload.
+      expect(drill.total_available).toBe(2);
+   });
+
+   it("reports an unknown drill-down source as empty, not as one card", async () => {
+      const missing = await payloadFor(twoFilePackage(), {
+         search_targets: [{ target_type: "dimension" }],
+         scopes: [{ environment: "e", package: "p", source: "nope" }],
+      });
+      expect(missing.sources).toEqual([]);
+      expect(missing.total_available).toBe(0);
+      expect(missing.warnings).toBeUndefined();
+   });
+
    it("hides nothing when a model exposes no agent-hidden accessor", async () => {
       // Package.getModel is duck-typed at several call sites; an older double
       // must not blank the listing.

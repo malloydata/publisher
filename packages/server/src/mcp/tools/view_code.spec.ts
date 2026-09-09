@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { pathToFileURL } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { sliceRange } from "./get_context_tool";
 
 const MODEL = `source: orders is duckdb.sql("select 'CA' as state, 1 as amt") extend {
@@ -71,7 +71,11 @@ describe("a view's definition (compiler contract)", () => {
          // The default reader does not resolve file: URLs here, and the file
          // has to be real: the slice is taken from it.
          urlReader: {
-            readURL: async (url: URL) => fs.readFileSync(url.pathname, "utf8"),
+            // fileURLToPath, not url.pathname: on Windows the pathname of a
+            // file: URL keeps a leading slash ("/D:/Temp/..."), which does not
+            // open.
+            readURL: async (url: URL) =>
+               fs.readFileSync(fileURLToPath(url), "utf8"),
          },
          connections: new FixedConnectionMap(
             new Map([["duckdb", duckdb]]),
