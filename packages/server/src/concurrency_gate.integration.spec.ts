@@ -179,7 +179,9 @@ describe("compile and sqlSource are admission-controlled", () => {
          COMPILE_PATH,
          { source: "run: 1 -> { select: one is 1 }" },
       );
-      expect(first, "the held request should still succeed once released").toBe(200);
+      expect(first, "the held request should still succeed once released").toBe(
+         200,
+      );
       expect(
          second,
          "a second compile arriving while the cap is full must be refused, not queued or served",
@@ -192,7 +194,9 @@ describe("compile and sqlSource are admission-controlled", () => {
          SQL_SOURCE_PATH,
          { sqlStatement: "SELECT 1" },
       );
-      expect(first, "the held request should still succeed once released").toBe(200);
+      expect(first, "the held request should still succeed once released").toBe(
+         200,
+      );
       expect(
          second,
          "a second sqlSource arriving while the cap is full must be refused, not queued or served",

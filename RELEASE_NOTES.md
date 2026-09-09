@@ -38,7 +38,7 @@ flood cannot saturate it. It covered `query`, `sqlQuery` and `sqlTemporaryTable`
 but not `compile` or `sqlSource` -- and both of those reach the database too:
 compile resolves a source's schema against the connection, and sqlSource runs a
 live introspection. A burst of either bypassed the cap its sibling routes
-enforce. The legacy `/projects/...` routes and the `malloy_compile` MCP tool had
+enforce. The legacy `/projects/...` routes and the `compile_model` MCP tool had
 the same gap, so all three surfaces are gated together; leaving one open would
 just move the bypass.
 
