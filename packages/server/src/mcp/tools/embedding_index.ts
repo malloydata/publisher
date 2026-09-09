@@ -729,7 +729,9 @@ export async function deleteEnvironmentEmbeddings(
  * current entity set: embed new/changed entities (content-hash diff, so
  * unchanged entities never re-embed, across restarts too), upsert them,
  * and delete rows for entities that no longer exist. Runs under the
- * package-name mutex. Returns the package generation the sync ran under.
+ * package-name mutex. Completion is recorded on the package's meta
+ * (`meta.synced`), not returned: nothing awaits this call, so that record is
+ * the only channel by which the sync's result is observed. See kickSync.
  * Throws on provider or storage failure; partial writes are safe because
  * the hash diff self-heals on the next sync.
  */
@@ -739,7 +741,7 @@ async function syncPackageEmbeddings(
    environmentName: string,
    packageName: string,
    entities: EmbeddableEntity[],
-): Promise<number> {
+): Promise<void> {
    const meta = metaFor(environmentName, packageName);
    return meta.mutex.runExclusive(async () => {
       // The meta may have been orphaned while this sync waited on the
@@ -747,16 +749,16 @@ async function syncPackageEmbeddings(
       // package was deleted with this call already in flight). A sync
       // under an orphaned meta is no longer serialized against syncs
       // under a re-minted meta for the same name, so it must not write.
-      // Aborting is safe: the caller's memo records this orphaned
-      // generation, which can never match a fresh meta's (generations
-      // are globally unique), so the next call re-syncs under the fresh
-      // meta.
+      // Aborting is safe because it also records nothing: `meta.synced` is
+      // set only at the bottom of this function, so an orphaned meta never
+      // carries a `synced` fact, and the next call -- which fetches a
+      // freshly minted meta for this name -- re-syncs under that one.
       if (syncMeta.get(metaKey(environmentName, packageName)) !== meta) {
          logger.debug(
             "[MCP Tool getContext] Skipping embedding sync for a deleted package",
             { environmentName, packageName },
          );
-         return meta.generation;
+         return;
       }
 
       // Everything here runs under the package mutex: a purge (same
@@ -819,6 +821,8 @@ async function syncPackageEmbeddings(
       // Ollama) would otherwise mismatch the configured value forever
       // and re-embed the whole package on every instance swap. A real
       // dims change is caught at query time by the stale-row heal.
+      // This is the CACHED rule; the READABLE rule the scan and the heal
+      // use is the other one. Both are set out above getEmbeddingIndexStatus.
       const toEmbed = desired.filter((d) => {
          const row = existing.get(
             facetRowKey(
@@ -930,7 +934,6 @@ async function syncPackageEmbeddings(
          embedded: toEmbed.length,
          deleted,
       });
-      return meta.generation;
    });
 }
 
@@ -1441,7 +1444,7 @@ export async function trySemanticSearch(args: {
          if (outcome === "purged" || outcome === "busy") {
             // Nothing to evict: the purge bumped the generation, which is
             // what invalidates meta.synced, so the next call re-kicks on its
-            // own. (This used to have to clear a per-instance `done` memo.)
+            // own.
             return { unavailable: "indexing" };
          }
          if (outcome === "backoff") {
@@ -1484,9 +1487,15 @@ export interface EmbeddingIndexStatus {
    status: "indexing" | "ready" | "cooldown" | "too-many-entities";
    /**
     * Rows cached for this package under the provider's CURRENT model, across
-    * all entities and facets. Rows left by an earlier model are excluded,
-    * because the search path excludes them too and a number that counted them
-    * would not agree with `status`.
+    * all entities and facets. Rows left by an earlier model are excluded.
+    *
+    * Scoped by model only, NOT by vector length, so this is not a count of
+    * rows the search path could read today: that scan also matches
+    * `dims = <query vector length>` (see trySemanticSearch), and a dims
+    * change no question has probed yet leaves rows counted here that the
+    * stale-row heal will purge on the next search. Deliberate -- the two
+    * rules are described above getEmbeddingIndexStatus. Read `status` for
+    * readiness; read this for how much of the package is cached.
     */
    embeddedRows: number;
    /** Entities the package currently exposes to retrieval. */
@@ -1522,6 +1531,28 @@ export interface EmbeddingIndexStatus {
  *
  * Derived, never authoritative: it takes no mutex and writes nothing, so
  * calling it cannot perturb or serialize behind a sync in flight.
+ *
+ * Two DIFFERENT row rules live in this file, and collapsing them is the
+ * mistake to avoid -- it has been made twice already, once on the sync diff
+ * and once on these counts:
+ *
+ *   CACHED (model + content hash, dims ignored): "would the sync rewrite
+ *   this row?" Used by the sync diff and by the counts below. Dims is
+ *   excluded on purpose -- `dims` records the length the provider RETURNED,
+ *   and a provider that ignores the requested `dimensions` (Ollama) never
+ *   matches the configured value, which would re-embed every package on
+ *   every reload and pin these counts at 0.
+ *
+ *   READABLE (model + dims == the query vector's length): "can the cosine
+ *   scan use this row?" Used by trySemanticSearch and by the stale-row heal.
+ *   Only a real question knows that length, so this path cannot apply the
+ *   rule without embedding something, which it must not do.
+ *
+ * So the counts report CACHED and `status` reports readiness from the
+ * recorded sync; neither one predicts READABLE. A dims change no question
+ * has probed yet is the gap that leaves: `status` is already correct there
+ * (providerKeyFor carries the configured dims, so isSynced goes false), and
+ * the counts keep describing rows until a search fires the heal.
  */
 export async function getEmbeddingIndexStatus(
    db: DuckDBConnection,
@@ -1531,13 +1562,10 @@ export async function getEmbeddingIndexStatus(
    entities: EmbeddableEntity[],
 ): Promise<EmbeddingIndexStatus> {
    const entityCount = entities.length;
-   // Scoped to the provider's current model but NOT to its configured
-   // `dimensions`: `dims` holds the ACTUAL response vector length, and a
-   // provider that ignores the `dimensions` request parameter (e.g. Ollama)
-   // writes rows the configured value never matches. These counts use the
-   // same currency rule as the sync diff and isSynced, which is what keeps
-   // them describing the rows readiness is decided over: `ready` beside
-   // `embeddedRows: 0` is not a state this can report.
+   // The CACHED rule (see above): current model, any dims. Scoping these to
+   // the configured `dimensions` is what once pinned them at 0 for a provider
+   // that ignores the request parameter, reporting `ready` beside
+   // `embeddedRows: 0`.
    const scope = [environmentName, packageName, provider.model];
 
    const row = await db.get<{ n: number; last: string | null }>(

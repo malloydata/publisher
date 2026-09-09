@@ -259,13 +259,17 @@ What to know before turning it on:
   carries an `embeddingIndex` object with `status` (`indexing` / `ready` / `cooldown` /
   `too-many-entities`, the same words `retrieval_reason` uses), `embeddedRows`, `totalEntities`,
   `embeddedEntities`, and `lastSyncedAt`. Poll it until `ready` before measuring retrieval quality,
-  so you are not measuring a half-built index. `ready` means the next question about the package
-  will be ranked semantically, and nothing weaker: it is decided by the same completed sync the
+  so you are not measuring a half-built index. `ready` means the index is warm, so the next
+  question about the package is ranked semantically: it is decided by the same completed sync the
   search path gates on, so a server pointed at a new `EMBEDDING_MODEL` reports `indexing` until it
   has re-embedded, and a restart reports `indexing` until the first question re-establishes the
-  sync, even though the vectors are still on disk. Do not read readiness off `embeddedEntities ==
-  totalEntities`: those count coverage by entity name, so they can be equal while a doc edit is
-  still unembedded. Two things worth knowing: the sync runs on a `get_context` question, so a
+  sync, even though the vectors are still on disk. It describes the index, not the next response —
+  a question whose own query embedding fails still falls back, with `retrieval_reason:
+  provider-error`. Do not read readiness off `embeddedEntities == totalEntities`: those count
+  coverage by entity name, so they can be equal while a doc edit is still unembedded. Nor off
+  `embeddedRows`, which counts every cached vector under the current model regardless of its
+  length, so a change to `EMBEDDING_DIMENSIONS` that no question has probed yet still counts the
+  old rows. Two things worth knowing: the sync runs on a `get_context` question, so a
   package nothing has queried stays at `indexing` rather than warming on its own; and the first
   read after a package loads or reloads builds that package's entity index, which is work a plain
   metadata read would not otherwise do. It is absent when no provider is configured, and reading it

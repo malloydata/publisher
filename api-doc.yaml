@@ -3434,10 +3434,10 @@ components:
         queried stays `indexing` until a `get_context` question triggers the
         sync that builds its index, so poll a package you are about to query,
         not one you have not touched. Every count is scoped to the embedding
-        model currently
-        configured, matching what the search path reads, so a server pointed
-        at a new model reports the index as not yet ready rather than
-        reporting rows retrieval would reject. Reading it takes no locks, so
+        model currently configured, so rows left behind by an earlier model
+        are never counted. Read `status` for readiness and the counts for
+        coverage: they answer different questions, and only `status` tracks
+        what the search path will do. Reading it takes no locks, so
         polling cannot perturb an indexing run; note that the first read after
         a package loads or reloads builds the package's entity index, which is
         work a metadata read would not otherwise do.
@@ -3450,19 +3450,24 @@ components:
             - cooldown
             - too-many-entities
           description: >-
-            `ready` = the next `get_context` question about this package will
-            be ranked semantically. That is the whole meaning, and it is what
-            makes the field answerable: it is decided by the same completed
-            sync the search path gates on, not by whether cached rows happen
-            to cover the current entity names. Those two differ exactly where
-            it matters - the rows outlive a restart and a reload, so a
-            coverage test called an index warm while the next question was
-            still answered lexically.
+            `ready` = the index is warm, so the next `get_context` question
+            about this package is ranked semantically rather than lexically.
+            (It is a statement about the index, not a promise about the next
+            response: a question whose own query embedding fails still falls
+            back, reporting `retrieval_reason: provider-error`.) It is decided
+            by the same completed sync the search path gates on, not by
+            whether cached rows happen to cover the current entity names.
+            Those two differ exactly where it matters - the rows outlive a
+            restart and a reload, so a coverage test called an index warm
+            while the next question was still answered lexically.
             `indexing` = no completed sync covers the package's current
             content under the current model, so retrieval answers lexically
             meanwhile. A reload whose files did not change stays `ready`,
-            because the vectors still describe that content; an edit, a new
-            package, or a changed `EMBEDDING_MODEL` moves it to `indexing`. It
+            because the vectors still describe that content. Four things move
+            a package to `indexing`: an edit, a new package, a changed
+            `EMBEDDING_MODEL`, and a server restart - the sync is recorded in
+            memory, so a restart reports `indexing` until the first question
+            re-establishes it, even though the vectors are still on disk. It
             clears when a `get_context` question triggers a sync, which is
             what builds the index; a package nothing has ever queried does not
             warm on its own.
@@ -3477,7 +3482,12 @@ components:
             Cached vectors for this package under the current embedding model.
             An entity contributes one row for its name plus one per chunk of
             its documentation, so this exceeds `totalEntities` on a documented
-            model and is not a count of entities.
+            model and is not a count of entities. Scoped by model only, not by
+            vector length, so it counts what is cached rather than what a
+            search could read today: after a change to `EMBEDDING_DIMENSIONS`
+            that no question has probed yet, rows of the old length are still
+            counted here until the next search discards them. `status` is
+            already `indexing` in that window.
         totalEntities:
           type: integer
           description: Entities the package currently exposes to retrieval.
