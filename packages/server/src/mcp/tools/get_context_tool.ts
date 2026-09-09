@@ -396,15 +396,16 @@ function toSourceResults(
       // Type narrowing only: collectEntities excludes the one entity kind
       // that can lack a source, so no ranked row reaches here nameless.
       if (!name) return undefined;
-      let entry = bySource.get(name);
+      const key = sourceContextKey(modelPathFallback, name);
+      let entry = bySource.get(key);
       if (!entry) {
-         const ctx = sourceContext.get(name);
+         const ctx = sourceContext.get(key);
          entry = {
             source_info: {
                resource_id: {
                   environment: environmentName,
                   package: packageName,
-                  model_path: ctx?.modelPath ?? modelPathFallback,
+                  model_path: modelPathFallback,
                   source: name,
                },
                ...(ctx?.oneLineSummary
@@ -417,7 +418,7 @@ function toSourceResults(
                joins: ctx?.joins ?? [],
             },
          };
-         bySource.set(name, entry);
+         bySource.set(key, entry);
       }
       return entry;
    };
@@ -1195,16 +1196,31 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       // and a model that failed to compile has none. Either way the fields
       // still index, just without provenance.
       const modelDef = model.getModelDef?.();
+      // `#(agent-hidden)` is a retrieval-visibility tag only: the source stays
+      // queryable by name, it just gets no card of its own. Enforced at this
+      // one read-time point rather than at index time, so nothing that reaches
+      // the entity another way loses it.
+      //
+      // Optional-chained on the same grounds as getSources/getModelDef above.
+      // Absent ⇒ hide nothing, which is the right way to fail: this is a
+      // discoverability control, not a security boundary — the query boundary
+      // is `queryableSources`, the identity gate is `#(authorize)`, and
+      // neither runs through here.
+      const agentHidden =
+         model.getAgentHiddenSourceNames?.() ?? new Set<string>();
 
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
+         if (agentHidden.has(sourceName)) continue;
          const provenance = readFieldProvenance(modelDef, sourceName);
-         // First model wins, matching the entity dedupe below, so a source's
-         // identity and its governance always come from the same model.
-         if (!governance.has(sourceName)) {
+         // Keyed per (model path, source) like the card it decorates, so a
+         // card can never show one file's givens/gates beside another file's
+         // model_path.
+         const governanceKey = sourceContextKey(modelPath, sourceName);
+         if (!governance.has(governanceKey)) {
             const apiSource = apiSources.find((c) => c.name === sourceName);
             if (apiSource) {
-               governance.set(sourceName, {
+               governance.set(governanceKey, {
                   givens: (apiSource.givens ?? []).flatMap((given) =>
                      given.name
                         ? [
@@ -1336,6 +1352,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // never appearing in `returned`. Exclude it here, before it can be
          // counted anywhere, rather than at serialization.
          if (!query.sourceName) continue;
+         if (agentHidden.has(query.sourceName)) continue;
          entities.push({
             id: String(n++),
             kind: "query",
@@ -1348,12 +1365,13 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       }
    }
 
-   // A package can re-export the same source from more than one model (e.g. a
-   // model that extends another), which surfaces the same entity twice. Keep the
-   // first occurrence per (kind, source, name).
+   // One model surfacing the same entity twice (a re-export, say) is a
+   // duplicate. Two DIFFERENT models surfacing it is not: a source is queryable
+   // at every path that resolves it, and each of those is its own card — so the
+   // model path is part of the key.
    const seen = new Set<string>();
    const deduped = entities.filter((e) => {
-      const key = entityRowKey(e.kind, e.source ?? "", e.name);
+      const key = `${e.modelPath}|${entityRowKey(e.kind, e.source ?? "", e.name)}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -1518,6 +1536,17 @@ interface PackageIndex {
    sourceContext: Map<string, SourceContextEntry>;
 }
 
+/**
+ * Per-source state is keyed by (model path, source name), not source name
+ * alone. A source is resolvable — and queryable — from its own file AND from
+ * every file that imports it, so the same name legitimately carries different
+ * paths, and each pairing is its own card. Keying on the name alone collapsed
+ * them to whichever model was walked first.
+ */
+function sourceContextKey(modelPath: string, source: string): string {
+   return `${modelPath}|${source}`;
+}
+
 /** Longest a one-line summary may be, matching the hosted API's own cap. */
 const ONE_LINE_SUMMARY_MAX_CHARS = 120;
 
@@ -1551,9 +1580,9 @@ function buildSourceContext(
    const context = new Map<string, SourceContextEntry>();
    for (const e of entities) {
       if (e.kind !== "source") continue;
-      const gates = governance.get(e.name);
+      const gates = governance.get(sourceContextKey(e.modelPath, e.name));
       const summary = oneLineSummary(e.doc);
-      context.set(e.name, {
+      context.set(sourceContextKey(e.modelPath, e.name), {
          name: e.name,
          modelPath: e.modelPath,
          doc: truncateDoc(e.doc, SOURCE_DOC_MAX_CHARS),
@@ -1568,7 +1597,9 @@ function buildSourceContext(
       if (e.kind !== "join" || !e.relationship) continue;
       // A join declared on a source the collector never emitted (defensive:
       // every join reaches us through its source) has nowhere to hang.
-      const parent = e.source ? context.get(e.source) : undefined;
+      const parent = e.source
+         ? context.get(sourceContextKey(e.modelPath, e.source))
+         : undefined;
       if (!parent) continue;
       parent.joins.push({
          name: e.name,
@@ -2050,27 +2081,32 @@ async function runContextQuery(
                   sourceName: sourceName || undefined,
                });
                if ("hits" in semantic) {
-                  const byKey = new Map(
-                     Array.from(byId.values()).map((e) => [
-                        entityRowKey(e.kind, e.source ?? "", e.name),
-                        e,
-                     ]),
-                  );
+                  // One row per (kind, source, name) is EMBEDDED — the
+                  // text is identical for every model path that reaches
+                  // the entity, so the vector is stored once — but
+                  // several live entities can share that key, one per
+                  // path. Fan the hit out to all of them; a 1:1 map
+                  // silently kept only whichever was seen last.
+                  const byKey = new Map<string, Entity[]>();
+                  for (const e of byId.values()) {
+                     const k = entityRowKey(e.kind, e.source ?? "", e.name);
+                     const at = byKey.get(k);
+                     if (at) at.push(e);
+                     else byKey.set(k, [e]);
+                  }
                   // Rows are only a vector cache: modelPath and doc
                   // come from the live entity, and a hit with no live
                   // entity (deleted since the last sync) is dropped.
                   const ranked = semantic.hits.flatMap((hit) => {
-                     const e = byKey.get(
-                        entityRowKey(hit.kind, hit.source ?? "", hit.name),
-                     );
-                     if (!e) return [];
-                     return [
-                        {
-                           ...projectEntity(e, environmentName, packageName),
-                           score: Math.round(hit.score * 10_000) / 10_000,
-                           targetScores: hit.targetScores,
-                        },
-                     ];
+                     const matches =
+                        byKey.get(
+                           entityRowKey(hit.kind, hit.source ?? "", hit.name),
+                        ) ?? [];
+                     return matches.map((e) => ({
+                        ...projectEntity(e, environmentName, packageName),
+                        score: Math.round(hit.score * 10_000) / 10_000,
+                        targetScores: hit.targetScores,
+                     }));
                   });
                   for (const row of ranked) {
                      // The scan scored this row only against targets that may

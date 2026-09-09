@@ -174,6 +174,8 @@ import {
    type PartitionGraftEntry,
 } from "./gate_classification";
 import {
+   agentHiddenSourceNames,
+   collectSourceInfos,
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
 } from "./source_extraction";
@@ -471,6 +473,7 @@ export class Model {
     *  Defaults to false (legacy listings) so a Model created outside a
     *  Package matches pre-opt-in behavior. */
    private discoveryCurationEnabled = false;
+   private agentHiddenMemo: ReadonlySet<string> | undefined;
    /** Per-package query-boundary policy, pushed down by the owning Package
     *  (see `Package.applyQueryBoundaryToModels`). Defaults are inert (mode
     *  "all" / not declared) so a Model created outside a Package — or before
@@ -3020,50 +3023,12 @@ export class Model {
                },
             });
 
-            // Collect sourceInfos from imported models first
-            // This follows the same pattern as notebook imports handling
-            const imports = modelDef.imports || [];
-            const importedSourceNames = new Set<string>();
-            for (const importLocation of imports) {
-               try {
-                  const modelString = await runtime.urlReader.readURL(
-                     new URL(importLocation.importURL),
-                  );
-                  const importedModelDef = (
-                     await runtime
-                        .loadModel(modelString as string, { importBaseURL })
-                        .getModel()
-                  )._modelDef;
-                  const importedModelInfo =
-                     modelDefToModelInfo(importedModelDef);
-                  const importedSources = importedModelInfo.entries.filter(
-                     (entry) => entry.kind === "source",
-                  ) as Malloy.SourceInfo[];
-                  for (const source of importedSources) {
-                     if (!importedSourceNames.has(source.name)) {
-                        sourceInfos.push(source);
-                        importedSourceNames.add(source.name);
-                     }
-                  }
-               } catch (importError) {
-                  // Log but don't fail if we can't load an import's sourceInfo
-                  logger.warn("Failed to load sourceInfo from import", {
-                     importURL: importLocation.importURL,
-                     error: importError,
-                  });
-               }
-            }
-
-            // Add locally-defined sources (not already added from imports)
-            const localModelInfo = modelDefToModelInfo(modelDef);
-            const localSources = localModelInfo.entries.filter(
-               (entry) => entry.kind === "source",
-            ) as Malloy.SourceInfo[];
-            for (const source of localSources) {
-               if (!importedSourceNames.has(source.name)) {
-                  sourceInfos.push(source);
-               }
-            }
+            // Every source this file can resolve — its own declarations plus
+            // exactly the names an `import { … }` selected. Shared with the
+            // package-load worker so the two paths cannot drift; see
+            // collectSourceInfos on why re-loading each imported file (what
+            // this used to do) reported sources that resolve nowhere here.
+            sourceInfos.push(...collectSourceInfos(modelDef));
          }
 
          const model = new Model(
@@ -3349,7 +3314,17 @@ export class Model {
       if (!items) return items;
       if (!this.discoveryCurationEnabled) return items;
       const exports = this.modelDef?.exports;
-      if (!Array.isArray(exports)) return items;
+      if (!Array.isArray(exports)) {
+         // Every other step on this path fails closed; this one cannot without
+         // blanking a package's listing over a malloy shape change. `exports`
+         // is non-optional in `ModelDef`, so reaching here means the IR moved
+         // under us — say so instead of quietly serving an uncurated surface.
+         logger.warn(
+            "Discovery curation skipped: modelDef.exports is not an array",
+            { modelPath: this.modelPath, packageName: this.packageName },
+         );
+         return items;
+      }
       const exported = new Set(exports);
       return items.filter(
          (item) => item.name !== undefined && exported.has(item.name),
@@ -3359,6 +3334,22 @@ export class Model {
    /** Set by the owning Package; see {@link curateForDiscovery}. */
    public setDiscoveryCuration(enabled: boolean): void {
       this.discoveryCurationEnabled = enabled;
+   }
+
+   /**
+    * Sources this model marks `#(agent-hidden)` / `##(agent-hidden)` — kept out
+    * of retrieval surfaces but fully queryable. Derived from `modelDef` rather
+    * than threaded through the worker protocol: it is a pure read of the
+    * annotations already on the wire, so both compile paths get it for free.
+    * See {@link agentHiddenSourceNames} for why neither spelling may fold.
+    */
+   public getAgentHiddenSourceNames(): ReadonlySet<string> {
+      if (this.agentHiddenMemo === undefined) {
+         this.agentHiddenMemo = this.modelDef
+            ? agentHiddenSourceNames(this.modelDef)
+            : new Set<string>();
+      }
+      return this.agentHiddenMemo;
    }
 
    /**
