@@ -158,7 +158,7 @@ exist in the flat shape, so the flat shape is the contract.) `kind` is one of:
 | `qid` | string | |
 | `sample` | int or null | Which repeat. Required even when null. |
 | `phase` | string | `baseline` / `loop` / `blind_gate` / `canary` / `final`. `phase` lives here, on the attempt, not in run config. |
-| `question_sha` | string | Hash of the exact text the answerer saw, so two runs can be compared on whether they asked the same thing. A case may carry `questionSha` from the source it was converted from, and that wins when present; reading only that field, which no case writes, left this null on every attempt. It does not prove the question was not edited: the fallback re-hashes whatever the case now says. |
+| `question_sha` | string | Hash of the exact text the answerer saw, so two runs can be compared on whether they asked the same thing. A case may carry `questionSha`, the seal stamped at conversion, and that wins when present; the ecommerce set writes a 16-char prefix of it, and a set without one left this null. Neither form proves the question was not edited, since both follow the case as it now reads: that comparison is check 6 of `verify_goldens.py`. |
 | `submitted` | bool | False when there was no final query. Not a wrong answer. |
 | `final_query` | string or null | Required to replay. A named view is recorded as the Malloy it stands for, `run: <source> -> <view>`, so every consumer sees one shape and the query re-executes. |
 | `final_query_source` | string or null | How `final_query` was chosen: `declared` (the answer printed it), `last_ok` (the last call the server answered) or `last`. `last` is a warning: a trailing sanity probe may be standing in for the answer's own query. |

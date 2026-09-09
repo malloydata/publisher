@@ -121,8 +121,13 @@ And one that arrived as criteria alone, with no number anywhere:
 
 No query settles "underperforming", so there is nothing to derive and nothing
 that can be numerically wrong: the clauses are the whole key, and this case
-scores on the first run. `criteria` is the one kind an import may mark
-`verified`.
+scores on the first run.
+
+`criteria` and `unanswerable` are the two kinds an import may mark `verified`,
+and they arrive looking alike. A criterion reading "PASS: a refusal that names
+the missing data" belongs to the second: the key is that the data is absent,
+so `kind: unanswerable`, and filing it as `criteria` beside a value would make
+a correct refusal fail.
 
 What happened to that one `answer` string: the number became a provisional
 value, checkable because they sent the query that produced it; "should break

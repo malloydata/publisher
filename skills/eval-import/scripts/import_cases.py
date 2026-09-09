@@ -55,15 +55,29 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def stamp_matches(stamp: str, question: str) -> bool:
+    """Whether a stored seal still matches the question, by PREFIX.
+
+    A stamp is not always the whole digest. The ecommerce set's author script
+    writes `sha256(question)[:16]`, and comparing the full 64 read all 49 of
+    its cases as edited questions. 64 bits is ample to catch an edit, and a
+    false finding is worse than a missed one here: `verify_goldens.py` runs
+    this before every arm.
+    """
+    return sha256_text(question).startswith(stamp)
+
+
 def holds_value(golden: dict[str, Any]) -> bool:
     """A golden asserting a value, as opposed to prose criteria or a refusal.
 
-    `value` of 0 and an empty row artifact are both real keys, so this tests
-    for the KEY's presence and not its truthiness.
+    `value` of 0 and an empty row artifact are both real keys, so truthiness is
+    the wrong test. An explicit `"value": null` is NOT a key, though: that is
+    how the ecommerce set's four refusal cases say there is no number, and
+    reading the key's mere presence counted them as holding one.
     """
     if golden.get("kind") in ("criteria", "unanswerable"):
         return False
-    return "value" in golden or "path" in golden
+    return golden.get("value") is not None or "path" in golden
 
 
 def read_cases(path: pathlib.Path) -> tuple[list[dict[str, Any]], list[str]]:
@@ -111,7 +125,7 @@ def check_case(case: dict[str, Any], where: str) -> tuple[list[str], list[str]]:
                         "not a holdout")
 
     stamp = case.get("questionSha")
-    if stamp and question is not None and stamp != sha256_text(question):
+    if stamp and question is not None and not stamp_matches(stamp, question):
         findings.append(
             f"{where} {qid}: the question does not match its `questionSha`. "
             "Either the question was edited after import, which is never "
@@ -155,10 +169,11 @@ def check_case(case: dict[str, Any], where: str) -> tuple[list[str], list[str]]:
                         "`canonicalQuery`. Fix: store the query they sent, or "
                         "drop the claim")
 
-    if (case.get("expectedEntities") or {}).get("required"):
-        review.append(f"{qid}: carries `expectedEntities.required` at import. "
-                      "An id this model lacks scores as a retrieval miss on "
-                      "every run and reads as a model failure")
+    # No review item for `expectedEntities`. Whether a required id exists is a
+    # question about the MODEL, which this script never reads, so a warning
+    # here could only be unfalsifiable -- and it fired on 45 of 49 cases of a
+    # mature set whose ids were derived from executing queries. The real audit
+    # is check 5 of `verify_goldens.py`, which takes `--model` and can answer.
     return findings, review
 
 
@@ -182,7 +197,8 @@ def summarize(cases: list[dict[str, Any]], lines: int) -> list[str]:
     "47 cases" reads like a 47-case measurement. The number a first run can
     actually score is usually much smaller, so it goes on the first line.
     """
-    scorable = provisional_q = provisional_bare = no_golden = verified_values = 0
+    scorable = with_query = value_only = to_derive = no_golden = 0
+    verified_values = 0
     for case in cases:
         golden = case.get("golden")
         if not isinstance(golden, dict):
@@ -194,14 +210,22 @@ def summarize(cases: list[dict[str, Any]], lines: int) -> list[str]:
             if holds_value(golden):
                 verified_values += 1
         elif status == "provisional":
+            # Three different amounts of work, and the first summary called
+            # them all "numbers only" -- including cases that arrived with no
+            # number at all, where the criteria describe a key nobody has
+            # derived. That reads as "we have a number we distrust" when the
+            # truth is "we have nothing yet".
             if golden.get("canonicalQuery"):
-                provisional_q += 1
+                with_query += 1
+            elif holds_value(golden):
+                value_only += 1
             else:
-                provisional_bare += 1
+                to_derive += 1
+    provisional = with_query + value_only + to_derive
     out = [f"{len(cases)} cases from {lines} lines",
            f"  {scorable} scorable now",
-           f"  {provisional_q + provisional_bare} provisional "
-           f"({provisional_q} with their query, {provisional_bare} numbers only)",
+           f"  {provisional} provisional ({with_query} with their query, "
+           f"{value_only} a number alone, {to_derive} nothing to compare yet)",
            f"  {no_golden} no golden (question only)"]
     if verified_values:
         out.append(f"  {verified_values} verified VALUES, which an import "

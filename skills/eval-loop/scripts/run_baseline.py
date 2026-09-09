@@ -230,13 +230,15 @@ def sha256(data: bytes) -> str:
 def question_sha(case: dict[str, Any]) -> str:
     """Hash of the question this case asked, for comparing two runs.
 
-    A case MAY carry `questionSha`, a hash of the authored source it was
-    converted from; none does today, and reading only that field left
-    `question_sha` null on every attempt ever recorded. The fallback hashes
-    the text the answerer saw, which makes two runs comparable on whether
-    they asked the same thing. It does NOT catch a question edited between
-    runs: that needs the authored file's hash, which nothing stamps yet
-    (`reference/auditing-an-answer-key.md`).
+    A case MAY carry `questionSha`, the seal stamped when it was converted;
+    the ecommerce set writes `sha256(question)[:16]`, and a set without one
+    left this null. The fallback hashes the text the answerer saw, so two runs
+    are comparable on whether they asked the same thing either way.
+
+    Neither form catches a question edited between runs, because both follow
+    the case as it now reads. What catches that is comparing the seal with the
+    question, which `verify_goldens.py` does before every arm
+    (`skill:eval-loop`, `reference/auditing-an-answer-key.md`).
     """
     return case.get("questionSha") or sha256(case["question"].encode())
 

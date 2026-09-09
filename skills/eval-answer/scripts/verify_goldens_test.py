@@ -281,6 +281,21 @@ class QuestionDrift(unittest.TestCase):
         self.assertIn("questionSha", got[0])
         self.assertIn("new qid", got[0])
 
+    def test_a_16_char_stamp_is_the_real_shape(self):
+        # evals/ecommerce/_author.py:602 writes sha256(question)[:16] for all
+        # 49 cases. A full-digest comparison called every one of them edited.
+        q = "What were our 2022 bookings?"
+        c = {"qid": "ecom_2022_sales_bookings", "question": q,
+             "questionSha": hashlib.sha256(q.encode()).hexdigest()[:16]}
+        self.assertEqual(question_drift_findings([c]), [])
+
+    def test_a_16_char_stamp_still_catches_an_edit(self):
+        stamped = hashlib.sha256(b"the frequency distribution").hexdigest()[:16]
+        got = question_drift_findings([
+            {"qid": "q1", "question": "the reach frequency distribution",
+             "questionSha": stamped}])
+        self.assertEqual(len(got), 1)
+
     def test_an_unsealed_case_is_skipped_not_failed(self):
         # Sets predate the seal. Unguarded is not the same as broken, and
         # failing them would block every arm on every existing set.

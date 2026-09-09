@@ -41,6 +41,23 @@ class TheSeal(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertIn("does not match its `questionSha`", got[0])
 
+    def test_a_truncated_stamp_matches_by_prefix(self):
+        # The ecommerce set writes sha256(question)[:16]. Comparing the full 64
+        # read all 49 of its cases as edited questions, and check 6 runs before
+        # every arm, so that false finding would have blocked every arm.
+        q = "How many orders shipped late?"
+        self.assertEqual(
+            findings(case(questionSha=ic.sha256_text(q)[:16])), [])
+
+    def test_a_truncated_stamp_still_catches_an_edit(self):
+        stamped = ic.sha256_text("the frequency distribution")[:16]
+        got = findings(case(question="the reach frequency distribution",
+                            questionSha=stamped))
+        self.assertEqual(len(got), 1)
+
+    def test_a_stamp_that_is_not_a_prefix_at_all_is_a_finding(self):
+        self.assertEqual(len(findings(case(questionSha="deadbeefdeadbeef"))), 1)
+
     def test_no_stamp_is_not_a_finding(self):
         # --stamp writes it. A set mid-import is not a broken set.
         self.assertEqual(findings(case()), [])
@@ -69,6 +86,11 @@ class WhatAnImportedKeyMayClaim(unittest.TestCase):
         got = findings(case(golden={"status": "verified", "kind": "scalar",
                                     "value": 0}))
         self.assertEqual(len(got), 1)
+
+    def test_an_explicit_null_value_is_not_a_value(self):
+        # How the ecommerce set's four refusal cases say "no number".
+        self.assertFalse(ic.holds_value({"kind": "scalar", "value": None}))
+        self.assertTrue(ic.holds_value({"kind": "scalar", "value": 0}))
 
     def test_criteria_are_verified_on_arrival(self):
         self.assertEqual(findings(case(golden={
@@ -110,11 +132,14 @@ class WhatIsReportedNotFailed(unittest.TestCase):
         self.assertEqual(findings(case()), [])
         self.assertTrue(any("no golden" in r for r in review(case())))
 
-    def test_guessed_required_entities_are_flagged(self):
+    def test_expected_entities_are_left_alone(self):
+        # Whether a required id exists is a question about the model, which
+        # this script never reads. Warning anyway fired on 45 of 49 cases of a
+        # mature set; verify_goldens.py check 5 takes --model and can answer.
         c = case(golden={"status": "provisional", "kind": "scalar", "value": 1},
                  expectedEntities={"required": ["field:orders:late_count"]})
         self.assertEqual(findings(c), [])
-        self.assertTrue(any("retrieval miss" in r for r in review(c)))
+        self.assertEqual(review(c), [])
 
 
 class RequiredFields(unittest.TestCase):
@@ -151,8 +176,17 @@ class Counting(unittest.TestCase):
         out = ic.summarize(cases, lines=4)
         self.assertEqual(out[0], "4 cases from 4 lines")
         self.assertIn("1 scorable now", out[1])
-        self.assertIn("2 provisional (1 with their query, 1 numbers only)", out[2])
+        self.assertIn("2 provisional (1 with their query, 1 a number alone, "
+                      "0 nothing to compare yet)", out[2])
         self.assertIn("1 no golden", out[3])
+
+    def test_criteria_describing_an_underived_key_is_not_a_number(self):
+        # A markdown thread arrives with clauses and no figures. Calling those
+        # "numbers only" said we had a number we distrusted; we had nothing.
+        out = ic.summarize([case(golden={
+            "status": "provisional", "kind": "scalar",
+            "rubric": "Top five by revenue, named."})], lines=1)
+        self.assertIn("0 a number alone, 1 nothing to compare yet", out[2])
 
     def test_a_dropped_line_shows_in_the_headline(self):
         out = ic.summarize([case()], lines=50)

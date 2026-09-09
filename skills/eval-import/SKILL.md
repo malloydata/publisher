@@ -68,12 +68,19 @@ has performed neither. `provisional` goldens are unscorable by design:
 around. A set that arrives with 60 typed numbers genuinely has 60 unverified
 numbers, and the number it can honestly produce on day one is a coverage score.
 
-The exception is a golden that holds no value at all. A key made of prose
-criteria (`kind: criteria`, step 4) has nothing to re-derive: the author's
-words ARE the key, so it imports `verified` with
-`verifiedBy: authored_criteria` and scores immediately. The rule is about
-numbers, because a number is the thing that can be wrong while looking
-right.
+The exception is a golden that holds no value at all, and there are two
+kinds. Prose criteria (`kind: criteria`, step 4) have nothing to re-derive:
+the author's words ARE the key. So does a case whose stated answer is that the
+data is not there (`kind: unanswerable`), where the pass is a refusal that
+names what is missing and a confident number is the failure. Both import
+`verified` with `verifiedBy: authored_criteria` and score immediately. The
+rule is about numbers, because a number is the thing that can be wrong while
+looking right.
+
+Watch for the second one in what arrives. A criterion reading "a refusal that
+names the missing data" is not a rubric clause on a normal case, it is the
+whole key, and importing it as `criteria` on a case with a value would make a
+refusal fail.
 
 **A question with no golden is a case, not a reject.** Do not hold questions
 back until somebody derives keys. A set of bare questions already measures
@@ -185,9 +192,16 @@ Then tell the user, in these terms, what arrived:
 ```
 47 cases from 50 lines
   12 scorable now
-  29 provisional (21 with their query, 8 numbers only)
+  29 provisional (21 with their query, 5 a number alone, 3 nothing to compare yet)
   6 no golden (question only)
 ```
+
+The three provisional buckets are three different amounts of work, which is
+why they are counted apart. "With their query" needs a re-run. "A number
+alone" needs a derivation. "Nothing to compare yet" is a case whose criteria
+describe a key nobody has derived, and it is the one most easily mistaken for
+progress: measured on a real markdown thread, all three of its asks landed
+there.
 
 Say the scorable count out loud when you report it, not just the case count.
 "47 cases" reads like a 47-case measurement, and 12 is the number a first run

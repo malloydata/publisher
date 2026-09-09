@@ -54,7 +54,9 @@ WHAT IT CHECKS, AND WHAT EACH CATCHES
                  for `acceptable` and for a veto on a field the model lacks.
 
 6. question drift -- every `questionSha` stamped at import still matches the
-                 case's question. The question is the stimulus and is never
+                 case's question, compared as a prefix so a truncated stamp
+                 (the ecommerce set writes 16 hex chars) is not read as 49
+                 edited questions. The question is the stimulus and is never
                  editable; a narrowed question deletes what its case tested and
                  reads as a pass. Four questions on one 69-case set were
                  narrowed to match what the answerer kept doing, three with the
@@ -365,16 +367,23 @@ def question_drift_findings(cases: list[dict[str, Any]]) -> list[str]:
     reads as a pass: it happened to four questions on one 69-case set, three
     of them with the answer key untouched, and nothing in the run said so.
 
-    A case with no `questionSha` is not a finding. Sets predate the seal, and
-    `skill:eval-import`'s `import_cases.py --stamp` is what adds it; an
-    unsealed set is unguarded, which is different from broken.
+    Compared as a PREFIX, because a stamp is not always the whole digest: the
+    ecommerce set's author script writes `sha256(question)[:16]`, and a full
+    64-char comparison read all 49 of its cases as edited. 64 bits is ample to
+    catch an edit, and this check runs before every arm, so a false finding
+    here blocks an arm over nothing.
+
+    A case with no `questionSha` is not a finding. Some sets predate the seal;
+    an unsealed set is unguarded, which is different from broken. New stamps
+    come from `skill:eval-import`'s `import_cases.py --stamp`.
     """
     out = []
     for c in cases:
         stamp, question = c.get("questionSha"), c.get("question")
         if not stamp or not isinstance(question, str):
             continue
-        if stamp != hashlib.sha256(question.encode()).hexdigest():
+        full = hashlib.sha256(question.encode()).hexdigest()
+        if full[:len(stamp)] != stamp:
             out.append(
                 f"{c['qid']}: question does not match its questionSha. It was "
                 "edited after import, or the stamp is wrong. Fix: restore the "
