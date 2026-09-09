@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [0.2.6] — a persist name must now be a plain identifier path
+## [0.2.5] — a persist name must now be a plain identifier path
 
 `#@ persist name=` accepts the table name a source materializes into, and that
 value is pasted into the `CREATE OR REPLACE TABLE` and `DROP TABLE IF EXISTS`
