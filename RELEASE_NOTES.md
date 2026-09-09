@@ -1160,7 +1160,7 @@ the parts whose text changed.
 **`embeddingIndex.status` keeps its name and changes its basis, so read this if
 you poll it.** On the package resource
 (`GET /api/v0/environments/{env}/packages/{pkg}`), `ready` used to be derived
-from whether cached rows covered the package's current entity *names*. Vectors
+from whether cached rows covered the package's current entity _names_. Vectors
 outlive a restart and a reload, so that reported `ready` immediately — while the
 next question was still answered lexically. Anything following the documented
 "poll until `ready` before measuring retrieval quality" could therefore measure a
@@ -1180,6 +1180,15 @@ and after a doc-only edit. Both clear on the next `get_context` question. The
 unchanged caveat still applies — a package nothing has ever queried does not warm
 on its own, so poll a package you are about to query rather than one you have not
 touched.
+
+**If your embedding provider ignores `EMBEDDING_DIMENSIONS`, the coverage counts
+now match reality.** The `dims` column records the length the provider actually
+returned, and some providers (Ollama among them) ignore the requested value.
+`embeddedRows` and `embeddedEntities` were counted against the _configured_
+value instead, so for those providers they read 0 while retrieval was reading
+those same vectors happily — and that also pinned `status` at `indexing`. Both
+now count the rows retrieval actually reads, on the same rule the sync itself
+uses to decide a row is current.
 
 Unrelated to the above, and unchanged: `--init` still drops the vector cache
 along with the rest of persisted storage. It resets the server root, and it
