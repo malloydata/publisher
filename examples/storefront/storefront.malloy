@@ -244,9 +244,10 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
 
   // ── Dashboard (KPI tiles + nested charts, one query) ────────────────
   #(doc) Business overview: KPIs, monthly trend, geography, and top sellers
-  # dashboard
+  # dashboard { columns=2 }
   view: business_overview is {
     nest:
+      # colspan=2
       # big_value
       kpis is {
         aggregate:

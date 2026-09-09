@@ -8,6 +8,6 @@
 // and binding one at run time fails. Importing them is what makes the control
 // row bindable.
 ##! experimental.givens
-## artifact { title="Combined" tiles=["orders -> by_brand", "orders -> by_region", "orders -> totals"] dashboard_columns=4 }
+## artifact { title="Combined" tiles=["orders -> by_brand", "orders -> by_region", "orders -> totals"] } dashboard { columns=4 }
 import { orders, region_suggest } from '../orders.malloy'
 import { BRAND, REGION } from '../givens.malloy'

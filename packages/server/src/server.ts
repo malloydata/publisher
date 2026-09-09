@@ -84,6 +84,11 @@ import {
    normalizeQueryArray,
    parseNonNegativeIntParam,
 } from "./query_param_utils";
+import {
+   booleanParamOr400,
+   optionalBooleanParamOr400,
+   setCollectionReloadError,
+} from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
@@ -1064,7 +1069,14 @@ app.get(
    },
 );
 
-app.get(`${API_PREFIX}/environments`, async (_req, res) => {
+app.get(`${API_PREFIX}/environments`, async (req, res) => {
+   if (req.query.reload !== undefined) {
+      setCollectionReloadError(
+         res,
+         `${API_PREFIX}/environments/{environmentName}`,
+      );
+      return;
+   }
    try {
       res.status(200).json(await environmentStore.listEnvironments());
    } catch (error) {
@@ -1101,10 +1113,14 @@ app.post(`${API_PREFIX}/environments`, async (req, res) => {
 });
 
 app.get(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
+   const reload = booleanParamOr400(req, res, "reload");
+   if (reload === undefined) {
+      return;
+   }
    try {
       const environment = await environmentStore.getEnvironment(
          req.params.environmentName,
-         req.query.reload === "true",
+         reload,
       );
       res.status(200).json(await environment.serialize());
    } catch (error) {
@@ -1509,6 +1525,13 @@ app.get(
          setVersionIdError(res);
          return;
       }
+      if (req.query.reload !== undefined) {
+         setCollectionReloadError(
+            res,
+            `${API_PREFIX}/environments/${req.params.environmentName}/packages/{packageName}`,
+         );
+         return;
+      }
 
       try {
          res.status(200).json(
@@ -1571,13 +1594,17 @@ app.get(
          setVersionIdError(res);
          return;
       }
+      const reload = booleanParamOr400(req, res, "reload");
+      if (reload === undefined) {
+         return;
+      }
 
       try {
          res.status(200).json(
             await packageController.getPackage(
                req.params.environmentName,
                req.params.packageName,
-               req.query.reload === "true",
+               reload,
             ),
          );
       } catch (error) {
@@ -1779,8 +1806,13 @@ app.get(
                return;
             }
          }
-         const bypassFilters =
-            req.query.bypass_filters === "true" ? true : undefined;
+         // Absence must stay distinguishable from an explicit `false` here:
+         // the Deprecation header below fires on `bypassFilters !== undefined`.
+         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
+         if (!bypass.ok) {
+            return;
+         }
+         const bypassFilters = bypass.value;
 
          let givens: Record<string, GivenValue> | undefined;
          if (typeof req.query.givens === "string") {
@@ -2027,12 +2059,16 @@ app.post(
 app.delete(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
+      const dropTables = booleanParamOr400(req, res, "dropTables");
+      if (dropTables === undefined) {
+         return;
+      }
       try {
          await materializationController.deleteMaterialization(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables: req.query.dropTables === "true" },
+            { dropTables },
          );
          res.status(204).send();
       } catch (error) {

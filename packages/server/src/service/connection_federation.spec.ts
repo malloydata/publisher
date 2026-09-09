@@ -8,7 +8,7 @@
 // secret scoping, read-only-ness, escaping); live behavior is the measured
 // spike's job.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import type { components } from "../api";
 import {
@@ -294,5 +294,37 @@ describe("attachDuckLakeReadWrite", () => {
       expect(attach).not.toContain("READ_ONLY");
       expect(attach).not.toContain("AUTOMATIC_MIGRATION");
       expect(attach).toContain("AS lake");
+   });
+
+   // Both write bounds are covered in isolation by their own specs, which pass
+   // whether or not anything calls them -- deleting a call site is invisible
+   // there. This asserts the WIRING: that a read-write attach actually reaches
+   // both. The read-only counterpart is not asserted here because that attach is
+   // module-private and reachable only through the connection factory; the gate
+   // itself is one `if (!options.readOnly)` that both calls sit inside.
+   describe("write bounds reach the attach", () => {
+      afterEach(() => {
+         delete process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES;
+         delete process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES;
+      });
+
+      it("read-write issues both configured catalog options", async () => {
+         process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES = "32MB";
+         process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES = "256MB";
+         const { conn, sql } = stubbedConnection();
+         await attachDuckLakeReadWrite(conn, "lake", ducklakeConfig);
+         expect(
+            sql.some((s) =>
+               s.includes(
+                  "CALL lake.set_option('parquet_row_group_size_bytes', '32MB')",
+               ),
+            ),
+         ).toBe(true);
+         expect(
+            sql.some((s) =>
+               s.includes("CALL lake.set_option('target_file_size', '256MB')"),
+            ),
+         ).toBe(true);
+      });
    });
 });

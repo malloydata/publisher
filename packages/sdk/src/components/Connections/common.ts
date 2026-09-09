@@ -356,16 +356,43 @@ export const attachedDatabaseConnectionFieldName: Record<string, string> = {
 // Fields for S3 attached database
 export const s3AttachedDatabaseFields: Array<ConnectionField> = [
    {
+      label: "Credential Provider",
+      name: "provider" as keyof S3Connection,
+      type: "text",
+      required: false,
+      selectOptions: [
+         { label: "Access key pair", value: "config" },
+         { label: "Host credential chain", value: "credential_chain" },
+      ],
+   },
+   // Neither key is `required` any more, because under `credential_chain` there is
+   // no key to give and a hidden-but-required field blocks submit with nothing on
+   // screen to fix. Presence is enforced where it can be conditional instead: each
+   // dialog checks the pair on the `config` path, in BOTH the DuckLake storage
+   // branch and the attached-database branch. Server-side, a keyless `config`
+   // storage DESTINATION is rejected at config load; a DuckLake connection or an
+   // attached database still fails at attach, because a load-time throw there would
+   // take the whole environment down with it.
+   {
       label: "Access Key ID",
       name: "accessKeyId" as keyof S3Connection,
       type: "text",
-      required: true,
+      required: false,
+      visibleWhen: { field: "provider", value: "config" },
    },
    {
       label: "Secret Access Key",
       name: "secretAccessKey" as keyof S3Connection,
       type: "password",
-      required: true,
+      required: false,
+      visibleWhen: { field: "provider", value: "config" },
+   },
+   {
+      label: "Credential Chain",
+      name: "chain" as keyof S3Connection,
+      type: "text",
+      required: false,
+      visibleWhen: { field: "provider", value: "credential_chain" },
    },
    {
       label: "Region",
@@ -384,6 +411,7 @@ export const s3AttachedDatabaseFields: Array<ConnectionField> = [
       name: "sessionToken" as keyof S3Connection,
       type: "password",
       required: false,
+      visibleWhen: { field: "provider", value: "config" },
    },
 ];
 

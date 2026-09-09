@@ -1749,7 +1749,7 @@ export class Environment {
             // logs to stderr). Cleared on the next successful load via
             // clearPackageLoadFailure. Recording here, not in the watch
             // controller, covers every reload caller: the chokidar watcher,
-            // MCP malloy_reloadPackage, and REST ?reload=true.
+            // MCP reload_package, and REST ?reload=true.
             this.staleCompileErrors.set(packageName, {
                message: redactPgSecrets(
                   error instanceof Error ? error.message : String(error),

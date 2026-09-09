@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Build a bundled lunr index over the Malloy documentation for the malloy_searchDocs MCP tool.
+ * Build a bundled lunr index over the Malloy documentation for the search_malloy_docs MCP tool.
  *
  * The output JSON is committed as a build-time asset so the server has no runtime network
  * dependency. Regenerate it from a Malloy docs checkout when the docs are updated.

@@ -111,10 +111,12 @@ extend {
 
 ### Computed Source (from Query)
 
+Wrap the query in parentheses and extend it. `from(...)` was removed from the language and no longer parses (`unexpected 'from'`).
+
 ```malloy
 import "orders.malloy"
 
-source: user_order_facts is from(
+source: user_order_facts is (
   orders -> {
     group_by: customer_id
     aggregate:
@@ -168,8 +170,20 @@ source: customer_health is customers extend {
 | **Dimensions** | Intrinsic to this table only | Cross-source (require joins) |
 | **Measures** | Single-table aggregations | Cross-source aggregations |
 | **Joins** | None (or only lookup joins intrinsic to the source) | Defines relationships between base sources |
-| **Views** | None (views belong in analysis) | None |
+| **Views** | None, in schema-first (see below) | None, in schema-first (see below) |
 | **One per** | Physical table or computed source | Analytical domain |
+
+**The "no views" rule is schema-first only.** A schema-first model is built before anyone
+has asked a question, so any view in it is a guess. It does **not** apply to the
+analysis-first workflow (`skill:malloy-model-as-you-go`), where every view is a
+question that was asked and verified - there, **saving a view or a dashboard is the right
+call**, in the model file next to the measures it uses. Analysis-first still models
+everything else properly: documented dimensions, measures, and joins.
+
+**Two more rules here are schema-first only.** Analysis-first should skip access modifiers
+and curation - there is no discovery surface to curate when every field was paid for by a
+question - and skip one-file-per-table, keeping a single domain file until it genuinely
+gets unwieldy.
 
 ## Key Rules
 
