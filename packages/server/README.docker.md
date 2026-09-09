@@ -37,7 +37,7 @@ docker run -d \
   ms2data/malloy-publisher
 ```
 
-See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`) lives in the [deployment guide](../../docs/deployment.md).
+See the [Docker Hub tags page](https://hub.docker.com/r/ms2data/malloy-publisher/tags) for available versions. Tag-scheme guidance (`:latest`, `:X.Y.Z`) lives in the [deployment guide](../../docs/deployment.md).
 
 ## Runtime layout
 

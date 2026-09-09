@@ -129,6 +129,31 @@ Prereleases keep the hyphen convention: `npm-sdk.yml` routes a hyphenated versio
 to the `next` dist-tag and `docker-image.yml` withholds `latest`, so a prerelease
 never takes over either.
 
+**The `next` dist-tag was retired on 2026-08-26, on npm and on Docker Hub.** It
+had pointed at `0.0.198-dev6` since 2026-05-21 while 51 stable versions shipped
+past it, because a dist-tag only moves when a publish uses it and no prerelease
+had been cut since. So `@malloy-publisher/server@next` silently installed a
+three-month-old build, and `ms2data/malloy-publisher:next` served the matching
+image. Nothing in this repo, in the Credible service, or in the published docs
+installed from either. Three consequences, and the first one decides what
+automation is possible here at all:
+
+- **npm OIDC cannot move a dist-tag.** Trusted publishing authenticates
+  `npm publish` and `npm stage publish` only; `npm dist-tag add|rm` needs a
+  granular token, which this repo deliberately does not have (see the OIDC note
+  below). So CI can move `next` only by publishing a real prerelease under it.
+  Re-pointing `next` at an existing stable release is not available without
+  reintroducing `NPM_TOKEN`, which is not a trade worth making for a tag nothing
+  reads. The same follows for any other dist-tag surgery: it is a human org
+  member acting by hand, never a workflow.
+- **The routing was left in place, so this is self-healing.** `npm-sdk.yml`
+  still sends any hyphenated version to `next`, and `docker-image.yml` still
+  tags `:next` on a prerelease. The first prerelease after this recreates both
+  tags, correctly, with no change here.
+- **`docs/deployment.md` now states there is no pre-release channel today.**
+  That sentence is true only while the above holds, so a release that cuts a
+  prerelease has to update it in the same PR.
+
 ### A forgotten bump is a red PR check
 
 It used to be invisible until release time — `publish-packages` skips a package

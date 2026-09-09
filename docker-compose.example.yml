@@ -10,7 +10,7 @@
 # before bringing the stack up.
 #
 # REST is on :4000 and MCP is on :4040. See docs/deployment.md for
-# tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`).
+# tag-scheme guidance (`:latest`, `:X.Y.Z`).
 #
 # The `publisher_data` named volume persists the per-environment
 # package clones and DuckDB extension cache across container
