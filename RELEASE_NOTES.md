@@ -31,7 +31,111 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a persist name must now be a plain identifier path
+## [0.2.6] — a bad table reference answers 404 or 400, not 502
+
+A table path that names nothing, or that the dialect cannot parse at all, is the
+caller's mistake. Both used to be reported as `502`, so browsing for a table that
+turned out not to exist read as a server fault: it counted against a downstream
+server-error budget and, on one deployment, paged on-call twice in an afternoon for
+what was a modeler mistyping a table name.
+
+`404` was already the declared contract for these routes and `502` appears in no spec
+for them, so this is conformance rather than a break. `400` is newly declared
+alongside it.
+
+**A 404 now carries `reason: "TABLE_NOT_FOUND"`.** A caller that retries a 404 by
+re-resolving which server hosts a resource has to tell that case apart from a table
+that is simply absent, and the status alone cannot say which. `Error` also gained
+`code`, the status repeated in the body. Both are optional, so an existing client is
+unaffected — but a client built by a strict generator against the previous spec will
+reject the new fields until it is regenerated.
+
+`reason` is an open string rather than an enum on purpose. A generator renders an
+enum closed, so adding a second value later would break every client generated
+before it, on the one field whose whole purpose is to grow. Treat an unrecognized
+value as absent.
+
+**Only two dialects are classified, and the rest deliberately still answer 502.**
+
+| Dialect | A missing table now | Why |
+|---|---|---|
+| BigQuery | `404`, or `400` for a path with no dot | The driver returns `error.message` as a string instead of throwing, discarding the structured 404 the Google client handed it, so the text is the only surviving signal. `Not found: Table\|Dataset` maps to 404; `Improper table path` to 400, which is every prefix typed before the first dot |
+| DuckDB, and the Azure and DuckLake connections built on it | `404` | Three thrown shapes, matched where they actually arrive — in the catch. `DuckDBCommon.fetchTableSchema` either returns a structDef or throws, so it never resolves an empty schema |
+| Postgres | still `502` | A missing table answers with a generic `Unable to read schema.`, indistinguishable from any other failure |
+| Snowflake | still `502` | `DESCRIBE TABLE` says `does not exist or not authorized`, conflating absence with denial by design |
+
+Guessing on either of the bottom two would be worse than a 502, and anything
+unrecognized stays `ConnectionError`/502 so that a real outage stays loud. A
+not-found is now logged at warn rather than error, so a path being typed cannot fill
+the error log.
+
+---
+
+## [0.2.5] (BREAKING) — `#(partition)` is a column and given pair, grafted at read time
+
+`#(partition)` used to name a given and leave the predicate to the author: a
+`filter<T>` given plus a matching `where:` in the source body. It is now a single
+annotation carrying both facts, in the shape `#(authorize)` already uses, and the
+server builds the predicate itself.
+
+```malloy
+// before
+given:
+  TENANT :: filter<string>
+#(partition) $TENANT
+source: tenant_orders is duckdb.table('orders.csv') extend {
+  where: tenant ~ $TENANT
+}
+
+// now
+given:
+  TENANT :: string
+#(partition) tenant = $TENANT
+source: tenant_orders is duckdb.table('orders.csv')
+```
+
+**What to do.** Rewrite the annotation as `<field path> = $GIVEN`, drop the
+`where:` from the source body, and change the given's type from `filter<string>` to
+`string`. The old form does not carry forward.
+
+**The given is a plain scalar type now, not `filter<T>`.** The server builds the
+predicate as an equality, so the given is compared with `=` and wants a plain
+`string` (or another scalar). `filter<T>` was only ever needed by the old form's `~`
+match against an author-written `where:`.
+
+**Where the filter lands.** The pair is grafted onto the entry point's own
+`filterList` through the same mechanism `#(authorize)` uses, so a plain source read,
+a named query invoked by `queryName` alone, an ad-hoc caller-declared derivation, and
+a notebook cell are all filtered. It composes conjunctively with an `#(authorize)`
+gate. It is skipped under `bypassAuthorize`, the trusted server-side bypass, which
+is how a trusted scan reads across every partition at once; `bypassFilters`, the
+legacy `#(filter)` control, never skips it.
+
+**Three fail-closed protections now check `#(partition)` explicitly.** Moving the
+predicate out of the source body removes the given reference those checks keyed on,
+so each gained its own check rather than inheriting one: storage-destination
+materialization eligibility, colocated persist, and the storage and pre-aggregation
+routing veto.
+
+**Refused at publish, each with its own cause.** A composite source that declares
+`#(partition)` itself or whose member declares it; a marker the entry-point resolver
+cannot reach, meaning one line too low — on a dimension, a view, or inside an inline
+`compose(...)`; and a malformed annotation body or a duplicate given. An unreadable
+ancestry chain is treated as a marker being present and denies, rather than reading
+as unpartitioned.
+
+The composite case was measured, not theorized: wrapping a partitioned source in
+`compose(...)` read **every** partition. Grafting resolves to the composite's own
+contents entry, while a composite run target compiles against a distinct resolved
+member branch, so the filter never landed. A marker on the composite itself denied
+loudly; a marker on one of its members was silent, which is why both are now refused.
+
+`BuildPlan.refusedSources` gained `partition` to its reason enum alongside
+`free_parameter`, `given` and `authorize`.
+
+---
+
+## [0.2.5] — a persist name must now be a plain identifier path
 
 `#@ persist name=` accepts the table name a source materializes into, and that
 value is pasted into the `CREATE OR REPLACE TABLE` and `DROP TABLE IF EXISTS`
