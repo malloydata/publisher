@@ -21,7 +21,7 @@ The log is a JSON object:
     "toolUses": [
       {"name": "Read", "input": {"path": "..."}},
       {"name": "Shell", "input": {"command": "..."}},
-      {"name": "malloy_getContext", "input": {}}
+      {"name": "get_context", "input": {}}
     ],
     "reportedCalls": 4
   }
@@ -148,7 +148,7 @@ def check(
         name = _tool_name(entry) or f"use[{i}]"
         hay = _haystack(entry)
         hits = _matches(hay, needles)
-        # modelPath on malloy_executeQuery is required, not a file read --
+        # modelPath on execute_query is required, not a file read --
         # including when the MCP call rides over Shell as a curl JSON-RPC.
         if model_needles and _is_host_file_tool(name) and not _is_mcp_transport(hay):
             hits.extend(_matches(hay, model_needles))

@@ -1138,6 +1138,12 @@ export async function assertStorageServeShapeCompiles(params: {
 }): Promise<void> {
    const { destinationName, sourceName, virtualHandle, physicalTableName } =
       params;
+   // No `origin`, and none is needed. This gate compiles a throwaway shape from
+   // the CAPTURED schema alone — no author-model lookup, no composite, no
+   // refinements — so it asks the same question of a rollup's table as of an
+   // authored one: do these columns form a valid DuckDB virtual source. It reads
+   // the binding as an opaque (handle, table, destination) triple, which is the
+   // property that makes a consumer origin-neutral.
    const binding: ServeBinding = {
       sourceName,
       destinationName,

@@ -22,8 +22,7 @@ Restate what is being asked: which metric, which breakdown (group-by), which fil
 Find the right entities before writing any query.
 
 - If you do not already know which package to work in, confirm the environment and package with the user before continuing.
-- Call `get_context` with a plain-English description of the question (for example "revenue by product category"). It returns the most relevant sources, views, and dimension/measure fields, the model each lives in, and their `#(doc)` descriptions. Start here so you target the right source and reuse an existing `view:` instead of scanning everything.
-- Drill down: call `get_context` again scoped to a single source to focus on the fields and views within it. Even when you know an entity's name, use a descriptive search rather than just echoing the name.
+- Call `get_context` with entity targets that describe the fields the question needs: a `measure` for the metric, a `dimension` for each breakdown or filter, and a `view` if the question sounds like a canned report. `skill:malloy-phrase-detection` covers how to phrase them; the tool description covers what comes back and how to narrow or browse.
 - Read the `#(doc)` on each returned entity: it is where grain, units, null handling, and any source-level filters are described. Confirm the exact field names against the results before using them.
 - **Read the source's own docstring too, not just each field's.** The source-level `#(doc)` often defines the grain, the universe of rows it represents, how joins behave, and source-level filters or assumptions that apply to every query rooted on it. Factor both the source and the field docstrings into how you build and later verify the query.
 - When unsure of Malloy syntax, call `search_malloy_docs` (for example "window functions", "histograms") rather than guessing. For decomposing a multi-part question into retrieval targets, load `skill:malloy-phrase-detection`.
@@ -83,4 +82,4 @@ Never re-run the exact same query expecting a different result: a given query al
 
 Answer in plain language, lead with the number that was asked for, and show the supporting rows. State the assumptions you made (filter values, date ranges, any ad-hoc field). Acknowledge caveats the verification step surfaced, and say so if you could not fully verify something. When the result lends itself to a chart, say which Malloy render tag fits and why (load `skill:malloy-charts`), for example `# bar_chart` for a category breakdown or `# line_chart` for a trend over time.
 
-End with a short **Next steps**: one or two specific deeper analyses the data could support (a finer breakdown, a comparison, a different angle), concrete to what you just found. You can also offer to capture the analysis as a Malloy notebook (`skill:malloy-notebooks`) so it can be re-run and shared.
+End with a short **Next steps**: one or two specific deeper analyses the data could support (a finer breakdown, a comparison, a different angle), concrete to what you just found. If a notebook-authoring skill is available to you, you can also offer to capture the analysis as a Malloy notebook so it can be re-run and shared.

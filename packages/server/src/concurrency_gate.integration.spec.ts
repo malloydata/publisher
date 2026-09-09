@@ -95,7 +95,17 @@ function compileApp(hold: Promise<unknown>): express.Express {
       queryConcurrency(),
       async (req, res) => {
          try {
-            res.status(200).json(await compileController.compile());
+            // Real arguments, the way server.ts passes them: the stub ignores
+            // them, but the cast keeps the call typed against the controller,
+            // so a signature change surfaces here rather than at runtime.
+            res.status(200).json(
+               await compileController.compile(
+                  req.params.environmentName,
+                  req.params.packageName,
+                  (req.params as Record<string, string>)["0"] ?? "",
+                  undefined,
+               ),
+            );
          } catch (error) {
             const { json, status } = internalErrorToHttpError(error as Error);
             res.status(status).json(json);
@@ -123,7 +133,11 @@ function sqlSourceApp(hold: Promise<unknown>): express.Express {
       async (req, res) => {
          try {
             res.status(200).json(
-               await connectionController.getConnectionSqlSource(),
+               await connectionController.getConnectionSqlSource(
+                  req.params.environmentName,
+                  req.params.connectionName,
+                  "SELECT 1",
+               ),
             );
          } catch (error) {
             const { json, status } = internalErrorToHttpError(error as Error);
@@ -179,7 +193,9 @@ describe("compile and sqlSource are admission-controlled", () => {
          COMPILE_PATH,
          { source: "run: 1 -> { select: one is 1 }" },
       );
-      expect(first, "the held request should still succeed once released").toBe(200);
+      expect(first, "the held request should still succeed once released").toBe(
+         200,
+      );
       expect(
          second,
          "a second compile arriving while the cap is full must be refused, not queued or served",
@@ -192,7 +208,9 @@ describe("compile and sqlSource are admission-controlled", () => {
          SQL_SOURCE_PATH,
          { sqlStatement: "SELECT 1" },
       );
-      expect(first, "the held request should still succeed once released").toBe(200);
+      expect(first, "the held request should still succeed once released").toBe(
+         200,
+      );
       expect(
          second,
          "a second sqlSource arriving while the cap is full must be refused, not queued or served",

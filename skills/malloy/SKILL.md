@@ -98,4 +98,4 @@ Publishing is out of scope for open-source Publisher v1. Self-hosters move a fin
 
 ## Syntax Help
 
-Call `malloy_searchDocs` with your question. Use `skill:malloy-patterns` to discover available topics.
+Call `search_malloy_docs` with your question. Use `skill:malloy-patterns` to discover available topics.

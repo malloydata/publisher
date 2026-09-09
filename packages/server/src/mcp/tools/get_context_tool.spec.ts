@@ -16,10 +16,13 @@ import * as path from "path";
 import {
    docOnlyText,
    docText,
+   entityId,
    sanitize,
    registerGetContextTool,
+   registerListPackagesTool,
 } from "./get_context_tool";
 import { embeddingText } from "./embedding_index";
+import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
 import { PackageNotFoundError } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
@@ -147,34 +150,145 @@ type Handler = (params: Record<string, unknown>) => Promise<{
    content: Content;
 }>;
 
-function captureHandler(store: Partial<EnvironmentStore>): Handler {
-   let handler: Handler | undefined;
+/**
+ * Two tools register from one call, so capture by NAME rather than by taking
+ * whichever registered last. Defaults to the flat tool, which is what the bulk
+ * of this file exercises; `captureConverged` takes the other.
+ */
+function captureNamed(
+   store: Partial<EnvironmentStore>,
+   wanted: string,
+): Handler {
+   const handlers = new Map<string, Handler>();
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
-         handler = h;
+      tool: (name: string, _desc: string, _shape: unknown, h: Handler) => {
+         handlers.set(name, h);
       },
    };
    registerGetContextTool(fakeServer as never, store as EnvironmentStore);
-   if (!handler) throw new Error("handler was not registered");
+   const handler = handlers.get(wanted);
+   if (!handler) throw new Error(`${wanted} was not registered`);
    return handler;
 }
 
+function captureHandler(store: Partial<EnvironmentStore>): Handler {
+   return captureNamed(store, "get_context");
+}
+
+const captureConverged = captureHandler;
+
+const EVERY_KIND = ["source", "dimension", "measure", "view", "join"] as const;
+
+/**
+ * One phrase against every kind. The flat request this tool replaced took a
+ * single untyped `query` that ranged over all of them, so this is what those
+ * cases mean once targets are typed. Ranking is unchanged: identical text
+ * scores identically whichever target carries it, and each entity is claimed
+ * by the one target whose kind it matches.
+ */
+const anyKind = (text: string) =>
+   EVERY_KIND.map((target_type) => ({ target_type, search_text: text }));
+
+/** Enumerate every kind, which is what a source-scoped listing returns. */
+const everyKind = () => EVERY_KIND.map((target_type) => ({ target_type }));
+
 function parse(result: { content: Content }) {
    return JSON.parse(result.content[0].resource!.text);
+}
+
+/**
+ * The response's entities as one ranked list, un-nested from `sources[]`.
+ *
+ * The payload is source-centric (the hosted API's GetContextResponse
+ * shape), but
+ * most of what this file tests -- ranking order, sibling grouping, alias
+ * collapse, the relevance floor -- is about the ranked ENTITY list that feeds
+ * serialization. Walking the nesting inside each of those tests would bury the
+ * behaviour under structure, so they read the list and the shape gets its own
+ * tests below.
+ *
+ * Field names are the wire's, not the old flat payload's, so a test still
+ * asserts on what actually ships. `source` is lifted from the containing
+ * `resource_id` because an un-nested entity has lost it otherwise. Source
+ * order then entity order reproduces the original ranking.
+ */
+interface SourceCardShape {
+   source_info: {
+      resource_id: { source: string };
+      [key: string]: unknown;
+   };
+   entities?: Record<string, unknown>[];
+}
+
+function rankedEntities(payload: {
+   sources?: {
+      source_info: { resource_id: { source: string } };
+      entities?: Record<string, unknown>[];
+   }[];
+}) {
+   return (payload.sources ?? []).flatMap((s) =>
+      (s.entities ?? []).map((e) => ({
+         ...e,
+         source: s.source_info.resource_id.source,
+      })),
+   ) as RankedEntity[];
+}
+
+/** One entity as the response ships it, tagged with the source it came from. */
+interface RankedEntity {
+   name: string;
+   entity_type: string;
+   source: string;
+   entity_id?: string;
+   description?: string;
+   data_type?: string;
+   relevance?: number;
+   relationship?: string;
+   join_path?: string;
+   matched_targets?: Array<{ search_text: string; relevance: number }>;
+   aliases?: string[];
+   code?: string;
+}
+
+/** The sources a response returned, by name, in response order. */
+function sourceNames(payload: {
+   sources?: { source_info: { resource_id: { source: string } } }[];
+}) {
+   return (payload.sources ?? []).map((s) => s.source_info.resource_id.source);
 }
 
 function textBlock(result: { content: Content }) {
    return result.content.find((b) => b.type === "text")?.text;
 }
 
-// A model with one source (order_items) carrying one dimension (state).
+// A model with one source (order_items) carrying one dimension (state) and one
+// declared join (current_building). The join's own schema carries a field with
+// a distinctive token, so a search for it pins that a joined field is indexed
+// under its dotted path rather than left unreachable.
 const mockModel = {
    getSourceInfos: () => [
       {
          name: "order_items",
-         annotations: [],
+         annotations: ["#(doc) One row per product sold on an order."],
          schema: {
-            fields: [{ kind: "dimension", name: "state", annotations: [] }],
+            fields: [
+               { kind: "dimension", name: "state", annotations: [] },
+               {
+                  kind: "join",
+                  name: "current_building",
+                  relationship: "one",
+                  annotations: ["#(doc) Building this asset sits in."],
+                  schema: {
+                     fields: [
+                        {
+                           kind: "dimension",
+                           name: "building_name",
+                           annotations: ["#(doc) Zzyzx joined-source field."],
+                        },
+                     ],
+                  },
+               },
+            ],
          },
       },
    ],
@@ -220,6 +334,149 @@ const envWith = (
       getPackage,
       getStaleCompileErrors: () => staleCompileErrors,
    }) as never;
+// A source carrying a raw physical column beside its own documented alias,
+// which is what a model that renames without hiding produces.
+const mockAliasModel = {
+   getSourceInfos: () => [
+      {
+         name: "fclt_building",
+         annotations: [],
+         schema: {
+            fields: [
+               { kind: "dimension", name: "SITE", annotations: [] },
+               {
+                  kind: "dimension",
+                  name: "site",
+                  annotations: ["#(doc) Campus site the building sits on."],
+               },
+               { kind: "dimension", name: "height", annotations: [] },
+            ],
+         },
+      },
+   ],
+   getQueries: () => [],
+   // The compiled IR behind that schema. `site` is declared as `SITE`, which
+   // is what a real `dimension: site is SITE` compiles to and the only thing
+   // that proves the two are one column; `height` is an ordinary raw column
+   // and references nothing.
+   getModelDef: () => ({
+      contents: {
+         fclt_building: {
+            name: "fclt_building",
+            fields: [
+               { name: "SITE" },
+               {
+                  name: "site",
+                  code: "SITE",
+                  e: { node: "field", path: ["SITE"] },
+               },
+               { name: "height" },
+            ],
+         },
+      },
+   }),
+};
+const mockAliasPackage = {
+   listModels: async () => [{ path: "b.malloy" }],
+   getModel: () => mockAliasModel,
+};
+
+// Both carry an expression, and NEITHER is a bare reference to the other:
+// `netSales` is computed with a filter. Under the old name-humanizing rule
+// these folded unless their docs differed; under the reference rule they are
+// simply two fields.
+const mockDistinctSpellingDefs = {
+   contents: {
+      orders: {
+         name: "orders",
+         fields: [
+            { name: "net_sales", code: "gross - returns" },
+            {
+               name: "netSales",
+               code: "gross { where: status = 'complete' } - returns",
+            },
+         ],
+      },
+   },
+};
+
+// Three parallel sources carrying the same concept, the shape that produced
+// the largest measured failure class.
+const SIBLING_SOURCES = ["fac_building", "fclt_building", "fclt_building_hist"];
+const mockSiblingModel = {
+   getSourceInfos: () =>
+      SIBLING_SOURCES.map((name) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [{ kind: "dimension", name: "site", annotations: [] }],
+         },
+      })),
+   getQueries: () => [],
+};
+// Two names that humanize identically but are NOT one column: a raw amount
+// and a filtered measure. Neither is declared as the other, and that -- not
+// their docs -- is what keeps them apart now.
+const mockDistinctSpellingModel = {
+   getSourceInfos: () => [
+      {
+         name: "orders",
+         annotations: [],
+         schema: {
+            fields: [
+               {
+                  kind: "dimension",
+                  name: "net_sales",
+                  annotations: ["#(doc) Gross sales less returns, all orders."],
+               },
+               {
+                  kind: "dimension",
+                  name: "netSales",
+                  annotations: [
+                     "#(doc) Completed orders only, excludes trials.",
+                  ],
+               },
+            ],
+         },
+      },
+   ],
+   getQueries: () => [],
+   getModelDef: () => mockDistinctSpellingDefs,
+};
+const mockDistinctSpellingPackage = {
+   listModels: async () => [{ path: "d.malloy" }],
+   getModel: () => mockDistinctSpellingModel,
+};
+const mockSiblingPackage = {
+   listModels: async () => [{ path: "sib.malloy" }],
+   getModel: () => mockSiblingModel,
+};
+
+// A source whose doc is longer than SOURCE_DOC_MAX_CHARS, and one that
+// declares no joins at all, to pin the truncation and the empty-joins signal.
+const LONG_SOURCE_DOC = `Rooms in the facilities inventory. ${"Grain caveats and population rules go here. ".repeat(20)}`;
+const mockLongDocModel = {
+   getSourceInfos: () => [
+      {
+         name: "rooms",
+         annotations: [`#(doc) ${LONG_SOURCE_DOC}`],
+         schema: {
+            fields: [
+               { kind: "dimension", name: "room_key", annotations: [] },
+               // Shares no token with the source's name or doc, so a query for
+               // it reaches the source only as the field's parent -- which is
+               // the case where the doc is carried rather than returned.
+               { kind: "dimension", name: "occupancy_pct", annotations: [] },
+            ],
+         },
+      },
+   ],
+   getQueries: () => [],
+};
+const mockLongDocPackage = {
+   listModels: async () => [{ path: "rooms.malloy" }],
+   getModel: () => mockLongDocModel,
+};
 
 const mockTwoSourceModel = {
    getSourceInfos: () => [
@@ -231,8 +488,8 @@ const mockTwoSourceModel = {
                { kind: "view", name: "by_month", annotations: [] },
                { kind: "dimension", name: "status", annotations: [] },
                { kind: "measure", name: "total_revenue", annotations: [] },
-               // Structural: collectEntities skips joins, so a drill-down must
-               // not start surfacing them just because the kind filter widened.
+               // A declared join is an entity of this source, so a drill-down
+               // shows what the agent can traverse.
                { kind: "join", name: "customer", annotations: [] },
             ],
          },
@@ -256,143 +513,6 @@ const mockTwoSourcePackage = {
 };
 
 describe("get_context discovery tiers", () => {
-   it("tier 1: no environment lists environments with their package names", async () => {
-      const handler = captureHandler({
-         listEnvironments: async () =>
-            [
-               {
-                  name: "malloy-samples",
-                  packages: [{ name: "ecommerce" }, { name: "imdb" }],
-               },
-            ] as never,
-      });
-      const { results } = parse(await handler({}));
-      expect(results).toEqual([
-         {
-            kind: "environment",
-            name: "malloy-samples",
-            packages: ["ecommerce", "imdb"],
-         },
-      ]);
-   });
-
-   it("tier 2: environment without a package lists the packages", async () => {
-      const handler = captureHandler({
-         getEnvironment: async () =>
-            ({
-               listPackages: async () => [
-                  { name: "ecommerce", description: "Ecommerce demo" },
-               ],
-               getFailedPackages: () => new Map(),
-               getStaleCompileErrors: () => new Map(),
-            }) as never,
-      });
-      const { results } = parse(
-         await handler({ environmentName: "malloy-samples" }),
-      );
-      // No health markers on a healthy package: the entry is byte-identical
-      // to what it was before staleness was reported at all.
-      expect(results).toEqual([
-         {
-            kind: "package",
-            name: "ecommerce",
-            description: "Ecommerce demo",
-            environmentName: "malloy-samples",
-         },
-      ]);
-   });
-
-   it("tier 2: lists a failed package with its load error instead of omitting it", async () => {
-      // listPackages() drops packages that failed to load, which reads as
-      // "does not exist" to an agent. The listing must carry them with an
-      // error marker so a broken package is distinguishable from an absent one.
-      const handler = captureHandler({
-         getEnvironment: async () =>
-            ({
-               listPackages: async () => [{ name: "good" }],
-               getFailedPackages: () =>
-                  new Map([["broken", "Compile failed: unexpected token"]]),
-               getStaleCompileErrors: () => new Map(),
-            }) as never,
-      });
-      const { results } = parse(
-         await handler({ environmentName: "malloy-samples" }),
-      );
-      expect(results).toHaveLength(2);
-      expect(results[0]).toMatchObject({ kind: "package", name: "good" });
-      expect(results[1]).toEqual({
-         kind: "package",
-         name: "broken",
-         environmentName: "malloy-samples",
-         error: "Compile failed: unexpected token",
-      });
-      // No stale marker: this package is not serving anything at all, which is
-      // the distinction the marker exists to draw.
-      expect("stale" in results[1]).toBe(false);
-   });
-
-   it("tier 2: marks a stale package, which listPackages reports as healthy", async () => {
-      // A failed reload keeps the package SERVING, so it comes back from
-      // listPackages looking exactly like a current one. Unmarked, an agent
-      // queries it and gets numbers from the model compiled before the last
-      // save, with nothing in the payload to say so.
-      const handler = captureHandler({
-         getEnvironment: async () =>
-            ({
-               listPackages: async () => [
-                  { name: "current" },
-                  { name: "stale-pkg" },
-               ],
-               getFailedPackages: () => new Map(),
-               getStaleCompileErrors: () =>
-                  new Map([
-                     [
-                        "stale-pkg",
-                        {
-                           message: "line 3: missing ')'",
-                           failedAt: "2026-08-13T00:00:00.000Z",
-                        },
-                     ],
-                  ]),
-            }) as never,
-      });
-      const { results } = parse(
-         await handler({ environmentName: "malloy-samples" }),
-      );
-      expect(results).toEqual([
-         {
-            kind: "package",
-            name: "current",
-            environmentName: "malloy-samples",
-         },
-         {
-            kind: "package",
-            name: "stale-pkg",
-            environmentName: "malloy-samples",
-            error: "line 3: missing ')'",
-            stale: true,
-         },
-      ]);
-   });
-
-   it("tier 2: surfaces an unresolved environment as a tool error", async () => {
-      const handler = captureHandler({
-         getEnvironment: async () => {
-            throw new Error("Environment 'nope' could not be resolved");
-         },
-      });
-      const result = await handler({ environmentName: "nope" });
-      expect(result.isError).toBe(true);
-      const parsed = parse(result);
-      expect(parsed.results).toEqual([]);
-      expect(parsed.error).toContain("could not be resolved");
-      // Suggestions and a text block, same as this tool's three siblings. Both
-      // were absent before: the payload carried a bare message, and a
-      // text-only client saw nothing at all.
-      expect(parsed.suggestions.length).toBeGreaterThan(0);
-      expect(textBlock(result)).toContain("could not be resolved");
-   });
-
    it("reports an unknown package as not-found, not as an internal fault", async () => {
       // Pins the classification, not just that an error came back. Before this
       // routed through classifyToolError every failure arrived as the raw
@@ -407,70 +527,72 @@ describe("get_context discovery tiers", () => {
             }) as never,
       });
       const result = await handler({
-         environmentName: "malloy-samples",
-         packageName: "nope",
-         query: "state",
+         search_targets: anyKind("state"),
+         scopes: [{ environment: "malloy-samples", package: "nope" }],
       });
       expect(result.isError).toBe(true);
       const parsed = parse(result);
-      expect(parsed.results).toEqual([]);
+      expect(parsed.sources).toEqual([]);
+      expect(parsed).not.toHaveProperty("results");
       expect(parsed.error).toContain("Resource not found");
       expect(parsed.error).toContain("nope");
       expect(textBlock(result)).toContain("Resource not found");
-   });
-
-   it("reports a non-Error throwable without inventing 'Unknown error'", async () => {
-      // The old per-site `error instanceof Error ? error.message : "Unknown
-      // error"` turned a thrown string into exactly the unhelpful text this
-      // tool's callers reported. classifyToolError stringifies it instead.
-      const handler = captureHandler({
-         listEnvironments: async () => {
-            throw "the store exploded";
-         },
-      });
-      const result = await handler({});
-      const parsed = parse(result);
-      expect(parsed.error).toContain("the store exploded");
-      expect(parsed.error).not.toContain("Unknown error");
-      expect(textBlock(result)).toContain("the store exploded");
    });
 
    it("tier 3: package without a query lists only its sources", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
-      const { results } = parse(
+      const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
-      expect(results).toEqual([
-         {
-            kind: "source",
-            name: "order_items",
-            source: "order_items",
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            modelPath: "ecommerce.malloy",
-            doc: "",
-         },
-      ]);
+      // The whole listing payload, pinned: this is the response contract, in
+      // the platform's shape. A listing has no relevance to report and no
+      // entities under each source -- it is the catalog, not a search.
+      expect(payload).toEqual({
+         sources: [
+            {
+               source_info: {
+                  resource_id: {
+                     environment: "malloy-samples",
+                     package: "ecommerce",
+                     model_path: "ecommerce.malloy",
+                     source: "order_items",
+                  },
+                  one_line_summary: "One row per product sold on an order.",
+                  docs: "One row per product sold on an order.",
+                  joins: [
+                     {
+                        name: "current_building",
+                        relationship: "one",
+                        doc: "Building this asset sits in.",
+                     },
+                  ],
+               },
+            },
+         ],
+         ranking: "prominence",
+         total_available: 1,
+         returned: 1,
+      });
    });
 
-   it("tier 3: a populated listing of a current package carries no note", async () => {
-      // Notes are for the ambiguous cases only; a healthy payload must stay
-      // byte-identical to what it was before notes existed.
+   it("tier 3: a populated listing of a current package carries no warnings", async () => {
+      // Warnings are for the ambiguous cases only; a healthy payload must stay
+      // byte-identical to what it was before warnings existed.
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
-      expect("note" in payload).toBe(false);
+      expect("warnings" in payload).toBe(false);
    });
 
    it("tier 3: a stale package says its names predate the last save", async () => {
@@ -494,14 +616,14 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
-      expect(payload.results).toHaveLength(1);
-      expect(payload.note).toContain("STALE");
-      expect(payload.note).toContain("2026-08-13T00:00:00.000Z");
-      expect(payload.note).toContain("malloy_reloadPackage");
+      expect(payload.sources).toHaveLength(1);
+      expect(payload.warnings.join(" ")).toContain("STALE");
+      expect(payload.warnings.join(" ")).toContain("2026-08-13T00:00:00.000Z");
+      expect(payload.warnings.join(" ")).toContain("reload_package");
    });
 
    it("tier 4: retrieval against a stale package carries the note too", async () => {
@@ -524,12 +646,11 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "order items",
+            search_targets: anyKind("order items"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
-      expect(payload.note).toContain("STALE");
+      expect(payload.warnings.join(" ")).toContain("STALE");
    });
 
    it("tier 3: an empty listing says it is a curation gap, not an empty database", async () => {
@@ -545,67 +666,667 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "curated-empty",
+            search_targets: [{ target_type: "source" }],
+            scopes: [
+               { environment: "malloy-samples", package: "curated-empty" },
+            ],
          }),
       );
-      expect(payload.results).toEqual([]);
-      expect(payload.note).toContain("curation gap");
-      expect(payload.note).toContain("malloy_getStatus");
+      expect(payload.sources).toEqual([]);
+      expect(payload.warnings.join(" ")).toContain("curation gap");
+      expect(payload.warnings.join(" ")).toContain("get_status");
+   });
+
+   it("a scope naming a source that does not exist warns about nothing", async () => {
+      // Found by hand-driving a live server. The truncation warning counted
+      // its two sides in different units: `capped.length - 1` assumed the
+      // scoped source's own row was present, so an unknown source produced
+      // "Returned -1 of 0 matching entities" -- a negative count, advising a
+      // remedy for a cut that never happened. A result that lost nothing must
+      // say nothing, the way a question the model does not cover already does.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "ecommerce",
+                  source: "not_a_source",
+               },
+            ],
+         }),
+      );
+      expect(payload.sources).toEqual([]);
+      expect(payload.total_available).toBe(0);
+      expect(payload.returned).toBe(0);
+      expect(payload.warnings).toBeUndefined();
+   });
+
+   it("an unsearchable target type is not reported as a curation gap", async () => {
+      // `dimensional_value` selects no kinds, so the listing is empty for a
+      // reason that has nothing to do with curation -- and the package here
+      // exposes a source. Blaming `explores` / `export {}` contradicted the
+      // unsupported-target warning printed beside it and sent an agent to
+      // audit a healthy package.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [
+               { target_type: "dimensional_value", search_text: "California" },
+            ],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      expect(payload.sources).toEqual([]);
+      const warnings = (payload.warnings ?? []).join(" ");
+      expect(warnings).toContain("No index for target_type dimensional_value");
+      expect(warnings).not.toContain("curation gap");
+   });
+
+   it("offset on a ranked request is a caller error, not a server fault", async () => {
+      // The refusal is deliberate and states its fix, but it threw a bare
+      // Error, which classifyToolError can only read as an internal fault --
+      // so it came back as "An unexpected internal error occurred during
+      // getContext.: Invalid offset: ...". That reads as a bug to report and
+      // invites the retry that cannot work.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+            ],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+            offset: 5,
+         }),
+      );
+      expect(payload.error).toContain("Invalid offset");
+      expect(payload.error).not.toContain("unexpected internal error");
+      expect(payload.suggestions.join(" ")).toContain("not transient");
+      expect(payload.sources).toEqual([]);
    });
 
    it("tier 4: a query retrieves the matching entity", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockPackage),
       });
-      const { results } = parse(
-         await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "state",
-         }),
+      const results = rankedEntities(
+         parse(
+            await handler({
+               search_targets: anyKind("state"),
+               scopes: [
+                  { environment: "malloy-samples", package: "ecommerce" },
+               ],
+            }),
+         ),
       );
       expect(
          results.some(
-            (r: { name: string; kind: string }) =>
-               r.name === "state" && r.kind === "dimension",
+            (r) => r.name === "state" && r.entity_type === "dimension",
          ),
       ).toBe(true);
    });
 
-   it("tier 1: surfaces a listEnvironments failure as a tool error", async () => {
+   it("tier 4: retrieves a declared join, carrying its cardinality", async () => {
+      // Joins were skipped by the collector, so an agent could not see that
+      // the model declared one and concluded it had to bridge the tables
+      // itself. The join's #(doc) was likewise unreachable.
       const handler = captureHandler({
-         listEnvironments: async () => {
-            throw new Error("environment store not initialized");
-         },
+         getEnvironment: async () => envWith(async () => mockPackage),
       });
-      const result = await handler({});
-      expect(result.isError).toBe(true);
-      const parsed = parse(result);
-      expect(parsed.results).toEqual([]);
-      expect(parsed.error).toContain("not initialized");
-      expect(parsed.suggestions.length).toBeGreaterThan(0);
-      expect(textBlock(result)).toContain("not initialized");
+      const results = rankedEntities(
+         parse(
+            await handler({
+               search_targets: anyKind("building"),
+               scopes: [
+                  { environment: "malloy-samples", package: "ecommerce" },
+               ],
+            }),
+         ),
+      );
+      const join = results.find((r) => r.name === "current_building");
+      expect(join).toBeDefined();
+      // `join` is not one of the hosted API's three entity types. Publisher keeps it
+      // because an agent that cannot see a declared join concludes the model
+      // has none and burns calls bridging the tables itself.
+      expect(join!.entity_type).toBe("join");
+      expect(join!.relationship).toBe("one");
+      // A join nests under the source that DECLARES it, so a drill-down on
+      // that source sees it.
+      expect(join!.source).toBe("order_items");
+      expect(join!.description).toBe("Building this asset sits in.");
+      expect(join!.entity_id).toBe("join:order_items:current_building");
+   });
+
+   it("identifies every entity as kind:source:name, container included", async () => {
+      // The response already carries kind, name and source, so this adds no
+      // information -- it adds agreement. Consumers comparing entities across
+      // two responses were each assembling the key themselves, and a
+      // one-character disagreement reads as a total miss on a call that
+      // returned the right thing.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const listed = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      // A source's identity is its resource_id, which is how the shape
+      // names a source; it needs no entity row and gets none.
+      expect(listed.sources[0].source_info.resource_id).toEqual({
+         environment: "malloy-samples",
+         package: "ecommerce",
+         model_path: "ecommerce.malloy",
+         source: "order_items",
+      });
+
+      const results = rankedEntities(
+         parse(
+            await handler({
+               search_targets: anyKind("state"),
+               scopes: [
+                  { environment: "malloy-samples", package: "ecommerce" },
+               ],
+            }),
+         ),
+      );
+      const field = results.find((r) => r.name === "state");
+      expect(field!.entity_id).toBe("dimension:order_items:state");
+      // The invariant a caller splitting on ":" depends on, across every kind.
+      // Shape before brevity: a form that dropped the middle segment for an
+      // entity with no source would hand callers two id shapes to parse.
+      for (const r of results) {
+         expect(r.entity_id?.split(":")).toHaveLength(3);
+         expect(r.entity_id).toBe(`${r.entity_type}:${r.source}:${r.name}`);
+      }
+   });
+
+   it("keeps entity_id at three segments for a sourceless entity", () => {
+      // The case the docstring calls out as already costly and no test
+      // covered: a model-level named query declares no source, and a caller
+      // splitting on ":" must still read [1] as the source.
+      const id = entityId("query", undefined, "top_sellers");
+      expect(id).toBe("query:top_sellers:top_sellers");
+      expect(id.split(":")).toHaveLength(3);
+      // A container is its own source, so a source self-references.
+      expect(entityId("source", "orders", "orders")).toBe(
+         "source:orders:orders",
+      );
+   });
+
+   it("keeps entity_id at three segments when a name contains a colon", () => {
+      // A backtick-quoted Malloy identifier may contain ":". Unescaped, the
+      // id grew extra segments and a caller reading [1] as the source got a
+      // fragment of the name instead.
+      const id = entityId("dimension", "orders", "a:b");
+      expect(id.split(":")).toHaveLength(3);
+      expect(id.split(":").map(decodeURIComponent)).toEqual([
+         "dimension",
+         "orders",
+         "a:b",
+      ]);
+      // Reversible, so "%" in a name round-trips too.
+      expect(
+         entityId("dimension", "orders", "100%:done")
+            .split(":")
+            .map(decodeURIComponent)[2],
+      ).toBe("100%:done");
+      // Ordinary names are untouched.
+      expect(entityId("measure", "orders", "revenue")).toBe(
+         "measure:orders:revenue",
+      );
+   });
+
+   it("tier 4: indexes a joined field under its dotted path", async () => {
+      // The path is what a query needs and what nothing else in the response
+      // can supply: JoinInfo inlines the target's schema without naming the
+      // target source, so an agent holding only the join entity cannot derive
+      // `current_building.building_name` -- while the tool description tells
+      // it to traverse a join exactly that way.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: anyKind("Zzyzx"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      const hit = rankedEntities(payload).find((r) =>
+         r.name.includes("building_name"),
+      );
+      expect(hit).toBeDefined();
+      // The dotted Malloy path, verbatim, not the bare field name.
+      expect(hit!.name).toBe("current_building.building_name");
+      expect(hit!.join_path).toBe("current_building");
+      // The cardinality of the path that reaches it: `one` means aggregating
+      // through it does not fan out.
+      expect(hit!.relationship).toBe("one");
+      // It nests under the source that DECLARES the traversal, which is the
+      // card a caller would actually query from.
+      expect(
+         payload.sources.find(
+            (c: { source_info: { resource_id: { source: string } } }) =>
+               c.source_info.resource_id.source === "order_items",
+         ),
+      ).toBeDefined();
+   });
+
+   it("tier 3: a package listing still returns only sources, not joins", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      // A listing is sources and nothing else: no entity rows at all, so a
+      // join can never appear as one.
+      expect(sourceNames(payload)).toEqual(["order_items"]);
+      expect(rankedEntities(payload)).toEqual([]);
+   });
+
+   it("delivers the parent source's doc and joins alongside a field hit", async () => {
+      // A field hit used to arrive with only its own doc: the source's grain
+      // and population rules reached the agent only when the source itself
+      // happened to rank for the same query, so guidance placement depended
+      // on query phrasing rather than on where the modeller wrote it.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      // The hit itself is a field carrying only its own (empty) doc...
+      const hit = rankedEntities(payload)[0];
+      expect(hit.entity_type).toBe("dimension");
+      expect(hit.description).toBeUndefined();
+      // ...and its source's guidance arrives regardless, on the container the
+      // field now nests inside, which is what makes placement independent of
+      // how the question was phrased.
+      expect(payload.sources[0].source_info).toEqual({
+         resource_id: {
+            environment: "malloy-samples",
+            package: "ecommerce",
+            model_path: "ecommerce.malloy",
+            source: "order_items",
+         },
+         one_line_summary: "One row per product sold on an order.",
+         docs: "One row per product sold on an order.",
+         joins: [
+            {
+               name: "current_building",
+               relationship: "one",
+               doc: "Building this asset sits in.",
+            },
+         ],
+      });
+   });
+
+   it("reports each source once, however many of its entities matched", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: anyKind("order building state"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      expect(rankedEntities(payload).length).toBeGreaterThan(1);
+      expect(sourceNames(payload)).toEqual(["order_items"]);
+   });
+
+   it("truncates a long source doc in context but not in the result itself", async () => {
+      // The context copy exists to deliver the caveat, not to reproduce the
+      // model file; a source that is itself the hit still returns in full.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockLongDocPackage),
+      });
+      const matched = parse(
+         await handler({
+            search_targets: anyKind("rooms"),
+            scopes: [{ environment: "e", package: "p" }],
+         }),
+      );
+      // The source itself ranked, so its docs come back whole.
+      expect(matched.sources[0].source_info.docs).toBe(LONG_SOURCE_DOC.trim());
+      expect(matched.sources[0].source_info.docs.length).toBeGreaterThan(500);
+
+      // Reached only as the parent of a field hit, the same doc is the
+      // truncated context copy: enough to deliver the caveat, not the file.
+      const viaField = parse(
+         await handler({
+            search_targets: anyKind("occupancy_pct"),
+            scopes: [{ environment: "e", package: "p" }],
+         }),
+      );
+      const docs = viaField.sources[0].source_info.docs;
+      expect(docs.length).toBeLessThanOrEqual(501);
+      expect(docs.endsWith("…")).toBe(true);
+      expect(docs).toStartWith("Rooms in the facilities inventory.");
+   });
+
+   it("reports an empty joins list for a source that declares none", async () => {
+      // The authoritative negative: without it an agent cannot tell "no joins
+      // declared" from "joins exist but were not returned", and we watched
+      // agents spend queries probing for a relationship that was never there.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockLongDocPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "e", package: "p" }],
+         }),
+      );
+      expect(payload.sources[0].source_info.joins).toEqual([]);
+   });
+
+   it("returns sources as an empty array, never absent, when nothing matched", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: anyKind("Qwghlm"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      // `sources` is the result set now, not a context block beside one, so
+      // it is always present -- required in the published schema. Absent and
+      // empty would otherwise be two spellings of a true negative, and a
+      // caller has to distinguish "nothing matched" from "old server".
+      expect(payload.sources).toEqual([]);
+      expect(payload.returned).toBe(0);
+      expect(payload.total_available).toBe(0);
+   });
+
+   it("collapses a raw column into the alias declared as it", async () => {
+      // `dimension: site is SITE` puts one physical column in the schema
+      // twice, and both competed for the same scarce slots. The fold is
+      // decided by the compiled expression -- `site` IS `SITE` -- not by the
+      // two names looking alike, and the authored name is the survivor
+      // because it is the one the modeller meant an agent to use.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockAliasPackage }) as never,
+      });
+      const results = rankedEntities(
+         parse(
+            await handler({
+               search_targets: anyKind("site"),
+               scopes: [{ environment: "e", package: "p" }],
+            }),
+         ),
+      );
+      const sites = results.filter((r) => r.name.toLowerCase() === "site");
+      expect(sites).toHaveLength(1);
+      expect(sites[0].name).toBe("site");
+      expect(sites[0].description).toBe("Campus site the building sits on.");
+      expect(sites[0].aliases).toEqual(["SITE"]);
+   });
+
+   it("does not fold a derivation that merely humanizes the same", async () => {
+      // The false positive the old rule could produce and could not detect.
+      // `site_code` humanizes to "site code" and `SITE_CODE` to the same, but
+      // here the second is computed rather than declared as the first, so
+      // there is no reference and nothing folds. Under name matching these
+      // collapsed unless their docs happened to differ.
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "bldg",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "dimension", name: "site_code", annotations: [] },
+                     { kind: "dimension", name: "siteCode", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+         getModelDef: () => ({
+            contents: {
+               bldg: {
+                  name: "bldg",
+                  fields: [
+                     { name: "site_code" },
+                     { name: "siteCode", code: "upper(site_code)" },
+                  ],
+               },
+            },
+         }),
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "b.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const names = rankedEntities(
+         parse(
+            await handler({
+               search_targets: [{ target_type: "dimension" }],
+               scopes: [{ environment: "e", package: "p", source: "bldg" }],
+            }),
+         ),
+      ).map((r) => r.name);
+      expect(names.sort()).toEqual(["siteCode", "site_code"]);
+   });
+
+   it("does not fold a reference that traverses a join", async () => {
+      // `dimension: category is products.category` is a bare field reference
+      // too, but it reaches a DIFFERENT column through a relationship that
+      // may filter or fan out. Only a single-segment path names a sibling of
+      // the same source. This is not hypothetical: order_items.category,
+      // .brand and .region in the bundled storefront model are all exactly
+      // this shape.
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "order_items",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "dimension", name: "category", annotations: [] },
+                  ],
+               },
+            },
+            {
+               name: "products",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "dimension", name: "category", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+         getModelDef: () => ({
+            contents: {
+               order_items: {
+                  name: "order_items",
+                  fields: [
+                     {
+                        name: "category",
+                        code: "products.category",
+                        e: { node: "field", path: ["products", "category"] },
+                     },
+                  ],
+               },
+               products: {
+                  name: "products",
+                  fields: [{ name: "category" }],
+               },
+            },
+         }),
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const rows = rankedEntities(
+         parse(
+            await handler({
+               search_targets: [{ target_type: "dimension" }],
+               scopes: [{ environment: "e", package: "p" }],
+            }),
+         ),
+      ).filter((r) => r.name === "category");
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.source).sort()).toEqual([
+         "order_items",
+         "products",
+      ]);
+      expect(rows.every((r) => r.aliases === undefined)).toBe(true);
+   });
+
+   it("keeps two same-humanizing fields apart when neither declares the other", async () => {
+      // `net_sales` and `netSales` humanize identically, so the old name-only
+      // rule folded them unless their docs happened to differ -- it had no
+      // way to see that one is a raw amount and the other a filtered measure.
+      // Now the docs are beside the point: neither field's expression is a
+      // reference to the other, so there is nothing to fold and the doc is
+      // free to be whatever the modeller wrote.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockDistinctSpellingPackage }) as never,
+      });
+      // Listed via the drill-down, which enumerates every entity the source
+      // still offers, so this asserts on what survived the collapse rather
+      // than on what one query's tokens happened to match.
+      const results = rankedEntities(
+         parse(
+            await handler({
+               search_targets: everyKind(),
+               scopes: [{ environment: "e", package: "p", source: "orders" }],
+            }),
+         ),
+      );
+      expect(results.map((r) => r.name).sort()).toEqual([
+         "netSales",
+         "net_sales",
+      ]);
+      expect(results.every((r) => r.aliases === undefined)).toBe(true);
+      // Each keeps the doc that distinguishes it.
+      expect(results.map((r) => r.description).sort()).toEqual([
+         "Completed orders only, excludes trials.",
+         "Gross sales less returns, all orders.",
+      ]);
+   });
+
+   it("leaves genuinely distinct fields in a source alone", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({ getPackage: async () => mockAliasPackage }) as never,
+      });
+      const results = rankedEntities(
+         parse(
+            await handler({
+               search_targets: anyKind("height"),
+               scopes: [{ environment: "e", package: "p" }],
+            }),
+         ),
+      );
+      const height = results.find((r) => r.name === "height");
+      expect(height).toBeDefined();
+      expect(height!.aliases).toBeUndefined();
+   });
+
+   it("never sees a field the model hid with an access modifier", async () => {
+      // The modelling-side fix for the same redundancy, and the reason this
+      // tool needs no opt-out: Malloy drops non-public fields before the
+      // compiled SourceInfo exists, so `include { internal: SITE }` removes
+      // the raw twin from retrieval outright. Pinned because the collapse
+      // heuristic above would otherwise look like the only defence.
+      const hiddenModel = {
+         getSourceInfos: () => [
+            {
+               name: "fclt_building",
+               annotations: [],
+               schema: {
+                  fields: [
+                     {
+                        kind: "dimension",
+                        name: "site",
+                        annotations: ["#(doc) Campus site."],
+                     },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            ({
+               getPackage: async () => ({
+                  listModels: async () => [{ path: "h.malloy" }],
+                  getModel: () => hiddenModel,
+               }),
+            }) as never,
+      });
+      const results = rankedEntities(
+         parse(
+            await handler({
+               search_targets: anyKind("site"),
+               scopes: [{ environment: "e", package: "p" }],
+            }),
+         ),
+      );
+      expect(results.some((r) => r.name === "SITE")).toBe(false);
+      expect(results[0].aliases).toBeUndefined();
    });
 
    it("tier 3: lists every source, not just the first 10", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockManySourcePackage),
       });
-      const { results } = parse(
-         await handler({ environmentName: "e", packageName: "p" }),
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "e", package: "p" }],
+         }),
       );
-      expect(results).toHaveLength(12);
+      expect(payload.sources).toHaveLength(12);
+      expect(payload.total_available).toBe(12);
    });
 
    it("tier 3: honors an explicit limit when given", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => mockManySourcePackage),
       });
-      const { results } = parse(
-         await handler({ environmentName: "e", packageName: "p", limit: 5 }),
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "e", package: "p" }],
+            limit: 5,
+         }),
       );
-      expect(results).toHaveLength(5);
+      expect(payload.sources).toHaveLength(5);
+      // returned against total_available is how a caller sees it was capped.
+      expect(payload.returned).toBe(5);
+      expect(payload.total_available).toBe(12);
    });
 
    it("tier 4: without a provider the payload has no retrieval marker or scores", async () => {
@@ -614,16 +1335,24 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "state",
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect(payload.retrieval).toBeUndefined();
-      expect(Object.keys(payload)).toEqual(["results"]);
-      for (const r of payload.results) {
-         expect(r.score).toBeUndefined();
+      // The shape is the shape with or without a provider: source cards and
+      // their joins are metadata every caller benefits from. Only the marker
+      // and the relevance scores are provider-only.
+      expect(Object.keys(payload)).toEqual([
+         "sources",
+         "ranking",
+         "total_available",
+         "returned",
+      ]);
+      for (const r of rankedEntities(payload)) {
+         expect(r.relevance).toBeUndefined();
       }
+      expect(payload.sources[0].relevance).toBeUndefined();
    });
 
    it("tier 3 drill-down: sourceName lists that source's fields, views and queries", async () => {
@@ -634,24 +1363,41 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () =>
             ({ getPackage: async () => mockTwoSourcePackage }) as never,
       });
-      const { results } = parse(
+      const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
-            sourceName: "orders",
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "sales",
+                  source: "orders",
+               },
+            ],
          }),
       );
-      // Order matters: the source leads, so its doc is the first thing read.
+      // One card: the source is the container, its fields nest inside it.
+      expect(payload.sources).toHaveLength(1);
+      expect(payload.sources[0].source_info.resource_id.source).toBe("orders");
+      expect(payload.sources[0].source_info.docs).toBe("One row per order.");
       expect(
-         results.map((r: { kind: string; name: string }) => [r.kind, r.name]),
+         payload.sources[0].entities.map(
+            (e: { entity_type: string; name: string }) => [
+               e.entity_type,
+               e.name,
+            ],
+         ),
       ).toEqual([
-         ["source", "orders"],
          ["view", "by_month"],
          ["dimension", "status"],
          ["measure", "total_revenue"],
+         // The declared join is an entity of this source too: a drill-down is
+         // where an agent learns what it can traverse.
+         ["join", "customer"],
          ["query", "top_orders"],
       ]);
-      expect(results[0].doc).toBe("One row per order.");
+      // The card is one source of one, however many entities nest in it.
+      expect(payload.total_available).toBe(1);
+      expect(payload.returned).toBe(1);
    });
 
    it("tier 3 drill-down: excludes entities belonging to another source", async () => {
@@ -659,19 +1405,30 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () =>
             ({ getPackage: async () => mockTwoSourcePackage }) as never,
       });
-      const { results } = parse(
+      const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
-            sourceName: "customers",
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "sales",
+                  source: "customers",
+               },
+            ],
          }),
       );
+      expect(payload.sources).toHaveLength(1);
+      expect(payload.sources[0].source_info.resource_id.source).toBe(
+         "customers",
+      );
       expect(
-         results.map((r: { kind: string; name: string }) => [r.kind, r.name]),
-      ).toEqual([
-         ["source", "customers"],
-         ["dimension", "state"],
-      ]);
+         payload.sources[0].entities.map(
+            (e: { entity_type: string; name: string }) => [
+               e.entity_type,
+               e.name,
+            ],
+         ),
+      ).toEqual([["dimension", "state"]]);
    });
 
    it("tier 3 without sourceName still lists sources only, not their fields", async () => {
@@ -682,16 +1439,24 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () =>
             ({ getPackage: async () => mockTwoSourcePackage }) as never,
       });
-      const { results } = parse(
+      const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "sales" }],
          }),
       );
-      expect(results.map((r: { name: string }) => r.name)).toEqual([
-         "orders",
-         "customers",
-      ]);
+      expect(
+         payload.sources.map(
+            (c: { source_info: { resource_id: { source: string } } }) =>
+               c.source_info.resource_id.source,
+         ),
+      ).toEqual(["orders", "customers"]);
+      // An overview names sources, never their fields.
+      expect(
+         payload.sources.every(
+            (c: { entities?: unknown[] }) => c.entities === undefined,
+         ),
+      ).toBe(true);
    });
 
    it("tier 3 drill-down: an unknown sourceName returns no results, not everything", async () => {
@@ -699,14 +1464,20 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () =>
             ({ getPackage: async () => mockTwoSourcePackage }) as never,
       });
-      const { results } = parse(
+      const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
-            sourceName: "nope",
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "sales",
+                  source: "nope",
+               },
+            ],
          }),
       );
-      expect(results).toEqual([]);
+      expect(payload.sources).toEqual([]);
+      expect(payload.total_available).toBe(0);
    });
 
    it("tier 3 drill-down: limit caps the fields returned", async () => {
@@ -714,19 +1485,31 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () =>
             ({ getPackage: async () => mockTwoSourcePackage }) as never,
       });
-      const { results } = parse(
+      const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "sales",
-            sourceName: "orders",
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "malloy-samples",
+                  package: "sales",
+                  source: "orders",
+               },
+            ],
             limit: 2,
          }),
       );
+      // The source is the card, not an entity, so the limit buys two FIELDS
+      // rather than the source row plus one field.
       expect(
-         results.map((r: { kind: string; name: string }) => [r.kind, r.name]),
+         payload.sources[0].entities.map(
+            (e: { entity_type: string; name: string }) => [
+               e.entity_type,
+               e.name,
+            ],
+         ),
       ).toEqual([
-         ["source", "orders"],
          ["view", "by_month"],
+         ["dimension", "status"],
       ]);
    });
 
@@ -739,13 +1522,14 @@ describe("get_context discovery tiers", () => {
       });
       const payload = parse(
          await handler({
-            environmentName: "malloy-samples",
-            packageName: "ecommerce",
-            query: "state",
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
       expect("retrieval" in payload).toBe(false);
-      expect(payload.results.every((r: object) => !("score" in r))).toBe(true);
+      expect(rankedEntities(payload).every((e) => !("relevance" in e))).toBe(
+         true,
+      );
    });
 });
 
@@ -773,22 +1557,43 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(null);
    });
 
-   // Entity texts are humanize(name) [+ doc]: "order items" and "state".
    const VECTORS: Record<string, number[]> = {
+      // An entity's name and its doc embed as separate facets, so both need
+      // a stub vector. A missing entry throws, which is what makes this map
+      // double as a pin on exactly what gets embedded: the join's facets and
+      // those of the field reached THROUGH it are both here, because both are
+      // indexed. A joined field embeds under its dotted path, so its name
+      // facet is the humanized path, not the bare field name.
       "order items": [0, 1],
+      "order items: One row per product sold on an order.": [0, 1],
       state: [1, 0],
+      "current building": [0, 1],
+      "current building: Building this asset sits in.": [0, 1],
+      "current building building name": [0, 1],
+      "current building building name: Zzyzx joined-source field.": [0, 1],
       "where do customers live": [1, 0],
+      "what building is this in": [0, 1],
+      // Points away from both entity axes, so it scores about -0.707 against
+      // every facet in the package and nothing clears the floor. This is the
+      // true negative: the question is not modelled here at all.
+      "seismic retrofit of bridge pilings": [-1, -1],
    };
 
-   function stubProvider(options: { fail?: boolean } = {}): EmbeddingProvider {
+   /** A provider over an explicit text -> vector map. Unknown text throws, */
+   /** so the map pins exactly which facets get embedded. */
+   function stubProviderFor(
+      vectors: Record<string, number[]>,
+      options: { fail?: boolean; onRequest?: (inputs: string[]) => void } = {},
+   ): EmbeddingProvider {
       const fetchStub = (async (
          _url: RequestInfo | URL,
          init?: RequestInit,
       ) => {
          if (options.fail) return new Response("down", { status: 500 });
          const body = JSON.parse(String(init?.body)) as { input: string[] };
+         options.onRequest?.(body.input);
          const data = body.input.map((text, index) => {
-            const embedding = VECTORS[text];
+            const embedding = vectors[text];
             if (!embedding) throw new Error(`no stub vector for "${text}"`);
             return { index, embedding };
          });
@@ -799,23 +1604,32 @@ describe("get_context semantic retrieval", () => {
             apiKey: "test",
             model: "stub-model",
             baseUrl: "https://stub.example.com/v1",
+            minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
          },
          fetchStub,
       );
    }
 
-   /** A store whose package is a fresh instance, backed by the temp DB. */
-   function semanticStore(): Partial<EnvironmentStore> {
-      const pkg = {
-         listModels: async () => [{ path: "ecommerce.malloy" }],
-         getModel: () => mockModel,
-      };
+   function stubProvider(options: { fail?: boolean } = {}): EmbeddingProvider {
+      return stubProviderFor(VECTORS, options);
+   }
+
+   /** A store over the given package, backed by the temp DB. */
+   function semanticStoreFor(pkg: unknown): Partial<EnvironmentStore> {
       return {
          getEnvironment: async () => envWith(async () => pkg),
          storageManager: {
             getDuckDbConnection: () => db,
          } as never,
       };
+   }
+
+   /** A store whose package is a fresh instance, backed by the temp DB. */
+   function semanticStore(): Partial<EnvironmentStore> {
+      return semanticStoreFor({
+         listModels: async () => [{ path: "ecommerce.malloy" }],
+         getModel: () => mockModel,
+      });
    }
 
    async function callUntilSemantic(
@@ -830,13 +1644,338 @@ describe("get_context semantic retrieval", () => {
       throw new Error("retrieval never became semantic");
    }
 
+   // Two sources declaring the same field name, which is the shape an
+   // `extend` sibling produces. humanizeName(name) carries no source, so both
+   // name facets embed from ONE map entry here -- reproducing the identical
+   // embedding rather than asserting it.
+   const siblingMeasure = (doc: string) => ({
+      kind: "measure",
+      name: "total_amount",
+      annotations: [`#(doc) ${doc}`],
+   });
+   const OPEN_DOC = "Total order amount.";
+   const GATED_DOC = "Total order amount, after the access gate.";
+   const siblingSourcesModel = (securedMeasureDoc: string) => ({
+      getSourceInfos: () => [
+         {
+            name: "sales",
+            annotations: ["#(doc) Every order."],
+            schema: { fields: [siblingMeasure(OPEN_DOC)] },
+         },
+         {
+            name: "sales_secured",
+            annotations: ["#(doc) Only orders this caller may see."],
+            schema: { fields: [siblingMeasure(securedMeasureDoc)] },
+         },
+      ],
+      getQueries: () => [],
+   });
+   const SIBLING_VECTORS: Record<string, number[]> = {
+      sales: [0, 1],
+      "sales: Every order.": [0, 1],
+      "sales secured": [0, 1],
+      "sales secured: Only orders this caller may see.": [0, 1],
+      // ONE entry, read by both sources' name facet.
+      "total amount": [1, 0],
+      [`total amount: ${OPEN_DOC}`]: [0, 1],
+      [`total amount: ${GATED_DOC}`]: [0, 1],
+      "total order amount": [1, 0],
+   };
+   const siblingHandler = (securedMeasureDoc: string) =>
+      captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => siblingSourcesModel(securedMeasureDoc),
+         }),
+      );
+
+   it("embeds every target in ONE provider request and scans once", async () => {
+      // The claim the multi-target design rests on: N targets cost one round
+      // trip, not N. embedBatch already batches and the scan cross-joins the
+      // vectors, so this is observable as the number of requests a WARM index
+      // makes for a three-target question.
+      const requests: string[][] = [];
+      const provider = stubProviderFor(
+         {
+            ...SIBLING_VECTORS,
+            "orders this caller may see": [0, 1],
+            "amount of the order": [1, 0],
+         },
+         { onRequest: (inputs) => requests.push(inputs) },
+      );
+      _setEmbeddingProviderForTests(provider);
+
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => siblingSourcesModel(GATED_DOC),
+         }),
+      );
+      const params = {
+         search_targets: [
+            { target_type: "measure", search_text: "total order amount" },
+            {
+               target_type: "dimension",
+               search_text: "orders this caller may see",
+            },
+            { target_type: "view", search_text: "amount of the order" },
+         ],
+         scopes: [{ environment: "specs", package: "sib-batch" }],
+      };
+      // Warm the index first: the cold call triggers the bulk sync, and that
+      // sync's own requests are not what this measures.
+      await callUntilSemantic(handler, params);
+
+      requests.length = 0;
+      const payload = parse(await handler(params));
+      expect(payload.retrieval).toBe("semantic");
+      expect(requests).toHaveLength(1);
+      // And that one request carried all three texts, in the caller's order.
+      expect(requests[0]).toEqual([
+         "total order amount",
+         "orders this caller may see",
+         "amount of the order",
+      ]);
+
+      // Semantic IS where matched_targets belongs: cosine is an absolute
+      // scale, so the number means something on its own and across targets.
+      const hit = rankedEntities(payload).find((e) => e.matched_targets);
+      expect(hit).toBeDefined();
+      expect(hit!.relevance).toBeGreaterThan(0);
+      for (const m of hit!.matched_targets!) {
+         expect(requests[0]).toContain(m.search_text);
+         expect(m.relevance).toBeGreaterThan(0);
+      }
+   });
+
+   it("never loses a target's answer when other targets join the call", async () => {
+      // The invariant the source-bucketed window exists for. Adding targets to
+      // a call adds questions; it must not subtract answers from the ones
+      // already there. Under an entity-counted limit it did: asking for a
+      // measure alone returned 3 hits and asking for it beside a dimension and
+      // a view returned 2.
+      //
+      // The guarantee is a SUPERSET, not equality, and the difference is real
+      // rather than a hedge: `limit` counts sources, so other targets can pull
+      // further sources into the window, and those sources carry hits for this
+      // target too. Measured against malloy-samples, a measure target returned
+      // 3 hits alone and 4 in a set of three. More is fine; fewer is the bug.
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "s",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "measure", name: "m1", annotations: [] },
+                     { kind: "measure", name: "m2", annotations: [] },
+                     { kind: "measure", name: "m3", annotations: [] },
+                     { kind: "dimension", name: "d1", annotations: [] },
+                     { kind: "dimension", name: "d2", annotations: [] },
+                     { kind: "dimension", name: "d3", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+      };
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            s: [-1, -1],
+            // Dimensions all score 1.0, so under a shared budget they would
+            // take every slot and starve the measures.
+            d1: [1, 0],
+            d2: [1, 0],
+            d3: [1, 0],
+            m1: [0, 1],
+            m2: [0.3, 0.954],
+            m3: [0.5, 0.866],
+            meas: [0, 1],
+            dims: [1, 0],
+         }),
+      );
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => model,
+         }),
+      );
+      const scopes = [{ environment: "specs", package: "no-loss" }];
+      const measures = (payload: {
+         sources: Array<{
+            entities?: Array<{ name: string; entity_type: string }>;
+         }>;
+      }) =>
+         payload.sources
+            .flatMap((c) => c.entities ?? [])
+            .filter((e) => e.entity_type === "measure")
+            .map((e) => e.name);
+
+      const alone = await callUntilSemantic(handler, {
+         search_targets: [{ target_type: "measure", search_text: "meas" }],
+         scopes,
+         limit: 3,
+      });
+      const inASet = await callUntilSemantic(handler, {
+         search_targets: [
+            { target_type: "measure", search_text: "meas" },
+            { target_type: "dimension", search_text: "dims" },
+         ],
+         scopes,
+         limit: 3,
+      });
+
+      expect(measures(alone)).toEqual(["m1", "m2", "m3"]);
+      // Every answer the target had alone survives the company of others.
+      for (const name of measures(alone)) {
+         expect(measures(inASet)).toContain(name);
+      }
+      // And the added target is answered too, rather than trading places.
+      expect(
+         inASet.sources
+            .flatMap(
+               (c: { entities?: Array<{ entity_type: string }> }) =>
+                  c.entities ?? [],
+            )
+            .some(
+               (e: { entity_type: string }) => e.entity_type === "dimension",
+            ),
+      ).toBe(true);
+   });
+
+   it("gives every target a share of the window, not just the strongest", async () => {
+      // Found against malloy-samples: three targets, limit 4, and the
+      // dimension target's hits at 0.63 took every slot -- the measure
+      // target's own best (0.42) and the view target's (0.53) were absent, not
+      // ranked lower. One call asking three questions answered one of them.
+      // Here the three dimensions all score 1.0 and would sweep a global cut.
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "s",
+               annotations: [],
+               schema: {
+                  fields: [
+                     { kind: "dimension", name: "d1", annotations: [] },
+                     { kind: "dimension", name: "d2", annotations: [] },
+                     { kind: "dimension", name: "d3", annotations: [] },
+                     { kind: "measure", name: "m1", annotations: [] },
+                     { kind: "view", name: "v1", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+      };
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            s: [-1, -1],
+            d1: [1, 0],
+            d2: [1, 0],
+            d3: [1, 0],
+            m1: [0.5, 0.866],
+            v1: [0.7, 0.714],
+            dims: [1, 0],
+            meas: [0, 1],
+            vw: [0, 1],
+         }),
+      );
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => model,
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: [
+            { target_type: "dimension", search_text: "dims" },
+            { target_type: "measure", search_text: "meas" },
+            { target_type: "view", search_text: "vw" },
+         ],
+         scopes: [{ environment: "specs", package: "share" }],
+         limit: 3,
+      });
+      // Every target answered. Bucketing by source is what guarantees it:
+      // targets no longer spend from one pool, so a broad target cannot
+      // starve a narrow one.
+      const kinds = new Set(rankedEntities(payload).map((e) => e.entity_type));
+      expect([...kinds].sort()).toEqual(["dimension", "measure", "view"]);
+   });
+
+   it("returns a same-named measure from every source that declares it", async () => {
+      // Two sources, one measure name, identical scores -- both rows come
+      // back, each under its own card. Nothing folds across sources, because
+      // a shared name is not a shared number: `sales_secured` is `sales`
+      // narrowed by an access gate, and the caller picks between them by
+      // reading each source's doc.
+      _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
+      const payload = await callUntilSemantic(siblingHandler(GATED_DOC), {
+         search_targets: anyKind("total order amount"),
+         scopes: [{ environment: "specs", package: "sib-semantic-differing" }],
+      });
+      const rows = rankedEntities(payload).filter(
+         (e) => e.name === "total_amount",
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows[0].relevance).toBe(rows[1].relevance);
+      expect(rows.map((r) => r.source).sort()).toEqual([
+         "sales",
+         "sales_secured",
+      ]);
+      expect(rows.map((r) => r.description).sort()).toEqual(
+         [OPEN_DOC, GATED_DOC].sort(),
+      );
+   });
+
+   it("returns both sources even when the measure docs are IDENTICAL", async () => {
+      // The case the old collapse got most wrong. An inherited measure
+      // carries its parent's doc verbatim, so a doc comparison sees no
+      // difference and folded one row away -- while the SOURCE doc, the only
+      // place "only orders this caller may see" is written, said the numbers
+      // differ. Identical field docs are not evidence of identical numbers.
+      _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
+      const payload = await callUntilSemantic(siblingHandler(OPEN_DOC), {
+         search_targets: anyKind("total order amount"),
+         scopes: [{ environment: "specs", package: "sib-semantic-identical" }],
+      });
+      const rows = rankedEntities(payload).filter(
+         (e) => e.name === "total_amount",
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.source).sort()).toEqual([
+         "sales",
+         "sales_secured",
+      ]);
+
+      const cards = payload.sources as Array<{
+         source_info: { resource_id: { source: string }; docs?: string };
+         entities?: unknown[];
+      }>;
+      expect(cards.map((c) => c.source_info.resource_id.source).sort()).toEqual(
+         ["sales", "sales_secured"],
+      );
+      // Each card carries its OWN doc, which is what the caller reads to
+      // choose -- and every card carries entities now, where a folded
+      // sibling used to arrive empty.
+      const cardFor = (name: string) =>
+         cards.find((c) => c.source_info.resource_id.source === name);
+      expect(cardFor("sales")?.source_info.docs).toContain("Every order");
+      expect(cardFor("sales_secured")?.source_info.docs).toContain(
+         "this caller may see",
+      );
+      expect(cards.every((c) => (c.entities ?? []).length > 0)).toBe(true);
+      expect(payload.total_available).toBe(2);
+      // returned never exceeds the caller's window now: a folded sibling's
+      // card used to be materialised outside it.
+      expect(payload.returned).toBe(cards.length);
+   });
+
    it("ranks semantically once the index syncs, with scores and a marker", async () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
-         environmentName: "specs",
-         packageName: "semantic-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "semantic-pkg" }],
       };
 
       // Cold start: the sync kicks off in the background and this call
@@ -845,16 +1984,483 @@ describe("get_context semantic retrieval", () => {
       expect(first.retrieval).toBe("lexical");
 
       const payload = await callUntilSemantic(handler, params);
-      expect(payload.results[0].name).toBe("state");
-      expect(payload.results[0].kind).toBe("dimension");
-      expect(payload.results[0].score).toBeCloseTo(1.0, 3);
+      const results = rankedEntities(payload);
+      expect(results[0].name).toBe("state");
+      expect(results[0].entity_type).toBe("dimension");
+      expect(results[0].relevance).toBeCloseTo(1.0, 3);
       // "order items" is orthogonal to the query: below the similarity
       // floor, so it must not pad the results.
+      expect(results.some((r) => r.name === "order_items")).toBe(false);
+   });
+
+   it("carries the same entity facts on the lexical and semantic paths", async () => {
+      // The two paths score differently and are MEANT to: only the semantic
+      // one publishes a relevance, and only it names matched_targets. What
+      // they must not differ on is what an entity IS -- its type, its Malloy
+      // data type, the join traversal reaching it, its doc, its identity.
+      //
+      // That drifted twice, because each path wrote the projection out by
+      // hand: sibling collapse shipped on the semantic path before the
+      // lexical one had it, and matched_targets never reached the semantic
+      // path at all. Neither showed up as a failing test, because a dropped
+      // field makes a response smaller, not wrong. projectEntity is now the
+      // single projection; this pins that the paths agree through it.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         // join-pkg, and this phrasing, on purpose: the shared entities have
+         // to CARRY the optional fields for comparing them to mean anything.
+         // A bare dimension has no relationship, join_path, doc or data_type,
+         // so the same assertion over semantic-pkg passes without testing
+         // anything. "current building" also matches lexically (it humanizes
+         // to the join's own name) and has a stub vector, so both paths
+         // return it.
+         search_targets: anyKind("current building"),
+         scopes: [{ environment: "specs", package: "join-pkg" }],
+      };
+
+      const lexical = parse(await handler(params));
+      expect(lexical.retrieval).toBe("lexical");
+      const semantic = await callUntilSemantic(handler, params);
+
+      type Ranked = ReturnType<typeof rankedEntities>[number];
+      const identityOf = (e: Ranked) => ({
+         name: e.name,
+         source: e.source,
+         entity_type: e.entity_type,
+         entity_id: e.entity_id,
+         description: e.description,
+         data_type: e.data_type,
+         join_path: e.join_path,
+         relationship: e.relationship,
+         aliases: e.aliases,
+      });
+      const byId = (rows: Ranked[]) =>
+         new Map(rows.map((e) => [e.entity_id as string, identityOf(e)]));
+
+      const lexicalById = byId(rankedEntities(lexical));
+      const semanticById = byId(rankedEntities(semantic));
+
+      // Guard the guard: if the two paths shared no entity the comparison
+      // below would pass by matching nothing.
+      const shared = [...semanticById.keys()].filter((id) =>
+         lexicalById.has(id),
+      );
+      expect(shared.length).toBeGreaterThan(0);
+      // Guard the guard, part two: comparing entities that carry none of the
+      // optional fields would agree trivially. At least one shared row must
+      // carry each field that has ever drifted between the paths.
+      //
+      // join_path and data_type are NOT covered, and not by choice: the
+      // lexical index feeds lunr the raw `e.name`, so a dotted joined field
+      // like `current_building.building_name` is one token and no plain-English
+      // phrasing reaches it. Only entities the lexical path can return by name
+      // can be compared, and none of those carry a join path. Widening this
+      // test needs that fixed first.
+      const sharedRows = shared.map((id) => semanticById.get(id)!);
+      expect(sharedRows.some((e) => e.description !== undefined)).toBe(true);
+      expect(sharedRows.some((e) => e.relationship !== undefined)).toBe(true);
+      for (const id of shared) {
+         expect(semanticById.get(id)).toEqual(lexicalById.get(id)!);
+      }
+
+      // And the fields that SHOULD differ still do, so the assertion above
+      // is not passing because both paths went quiet.
+      const semanticRows = rankedEntities(semantic);
+      expect(semanticRows.some((e) => e.relevance !== undefined)).toBe(true);
       expect(
-         payload.results.some(
-            (r: { name: string }) => r.name === "order_items",
-         ),
-      ).toBe(false);
+         rankedEntities(lexical).every((e) => e.relevance === undefined),
+      ).toBe(true);
+   });
+
+   it("ranks a join semantically and writes it to the embedding index", async () => {
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("what building is this in"),
+         scopes: [{ environment: "specs", package: "join-pkg" }],
+      });
+      const join = rankedEntities(payload).find(
+         (r) => r.name === "current_building",
+      );
+      expect(join).toBeDefined();
+      expect(join!.entity_type).toBe("join");
+      expect(join!.relationship).toBe("one");
+      expect(join!.relevance).toBeCloseTo(1.0, 3);
+
+      // The vector cache holds it under its own kind, so it survives a
+      // restart and takes part in the incremental hash diff like any other
+      // entity — including being faceted, so a join's doc cannot bury the
+      // join's own name.
+      const rows = await db.all<{ facet: string }>(
+         `SELECT facet FROM entity_embeddings
+          WHERE package_name = ? AND entity_kind = 'join' AND entity_name = ?
+          ORDER BY facet`,
+         ["join-pkg", "current_building"],
+      );
+      expect(rows.map((r) => r.facet)).toEqual(["doc:0", "name"]);
+   });
+
+   it("delivers a source's doc even when the source itself scores below the floor", async () => {
+      // The §5 fix, on the path that produced it. "where do customers live"
+      // is orthogonal to the order_items source entity, so the source is
+      // dropped by MIN_SIMILARITY and, before this, its doc went with it —
+      // the agent got a field with no idea of the source's grain. The doc now
+      // rides on the response regardless of how the source itself scored.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "context-pkg" }],
+      });
+      // The source itself never cleared the floor, so it is in the response
+      // only as the parent of a field that did. Its relevance is therefore
+      // derived from its best entity, which is what the published schema
+      // specifies when source-level matching is unavailable -- a matched
+      // source is never reported at null for a caller ranking sources.
+      expect(payload.sources[0].relevance).toBeCloseTo(1.0, 3);
+      expect(payload.sources).toEqual([
+         {
+            relevance: 1,
+            // ...and it is still the container its field hit nests in, which
+            // is what carries the doc through regardless of the source's score.
+            source_info: {
+               resource_id: {
+                  environment: "specs",
+                  package: "context-pkg",
+                  model_path: "ecommerce.malloy",
+                  source: "order_items",
+               },
+               one_line_summary: "One row per product sold on an order.",
+               docs: "One row per product sold on an order.",
+               joins: [
+                  {
+                     name: "current_building",
+                     relationship: "one",
+                     doc: "Building this asset sits in.",
+                  },
+               ],
+            },
+            entities: [
+               {
+                  name: "state",
+                  entity_type: "dimension",
+                  entity_id: "dimension:order_items:state",
+                  relevance: 1,
+                  // Which target found it, and how well. A strict toEqual is
+                  // deliberate here: it is the one assertion in this file that
+                  // fails when a field ships without anyone deciding to add it.
+                  matched_targets: [
+                     {
+                        search_text: "where do customers live",
+                        relevance: 1,
+                     },
+                  ],
+               },
+            ],
+         },
+      ]);
+   });
+
+   it("says WHY a configured server answered lexically, and stops once semantic", async () => {
+      // "lexical" alone is a dead end: an agent cannot tell a cold index,
+      // which clears in seconds and is worth one retry, from a down provider,
+      // which is not. Only the first is actionable, so only naming it helps.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "reason-pkg" }],
+      };
+      const first = parse(await handler(params));
+      expect(first.retrieval).toBe("lexical");
+      expect(first.retrieval_reason).toBe("indexing");
+
+      const warm = await callUntilSemantic(handler, params);
+      expect(warm).not.toHaveProperty("retrieval_reason");
+   });
+
+   it("reports a dead provider as provider-error, then as cooldown", async () => {
+      // Two different remedies behind one "lexical": the first call learns the
+      // endpoint is down, and every call in the window after it is being
+      // short-circuited deliberately rather than re-probing.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "dead-provider-pkg" }],
+      };
+      await callUntilSemantic(handler, params);
+
+      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
+      const failed = parse(await handler(params));
+      expect(failed.retrieval).toBe("lexical");
+      expect(failed.retrieval_reason).toBe("provider-error");
+
+      const cooled = parse(await handler(params));
+      expect(cooled.retrieval_reason).toBe("cooldown");
+   });
+
+   // A source that matches on its own terms becomes the CARD, not a row under
+   // it, so returned-entities and matched-rows are different units. Pairing
+   // them reported a cut that never happened. Both directions pinned here.
+   const truncModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: ["#(doc) Orders placed by customers."],
+            schema: {
+               fields: [
+                  { kind: "dimension", name: "state", annotations: [] },
+                  { kind: "dimension", name: "city", annotations: [] },
+               ],
+            },
+         },
+      ],
+      getQueries: () => [],
+   };
+   const TRUNC_VECTORS: Record<string, number[]> = {
+      orders: [1, 0],
+      "orders: Orders placed by customers.": [1, 0],
+      state: [1, 0],
+      city: [1, 0],
+      "where do customers live": [1, 0],
+   };
+   const truncStore = () =>
+      semanticStoreFor({
+         listModels: async () => [{ path: "orders.malloy" }],
+         getModel: () => truncModel,
+      });
+
+   it("reports more sources available than returned when the cap cuts", async () => {
+      // total_available and returned were both set from the returned cards,
+      // so the pair read "N of N" on every search including a cut one. Counted
+      // over everything that matched, the cap is visible in the numbers.
+      _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
+      const handler = captureHandler(truncStore());
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "avail-pkg" }],
+         limit: 10,
+      });
+      expect(payload.total_available).toBe(1);
+      expect(payload.returned).toBe(1);
+   });
+
+   it("stays silent on the semantic path when a matched source fills no slot", async () => {
+      _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
+      const handler = captureHandler(truncStore());
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "trunc-pkg" }],
+         limit: 10,
+      });
+
+      // Three rows matched (the source and its two fields) and all three came
+      // back; the source became the card, leaving two nested entities.
+      expect(payload.sources).toHaveLength(1);
+      expect(payload.sources[0].relevance).toBeCloseTo(1.0, 3);
+      expect(rankedEntities(payload)).toHaveLength(2);
+      expect("warnings" in payload).toBe(false);
+   });
+
+   it("stays silent when the limit cut no SOURCE", async () => {
+      // limit counts sources. This package has one, so limit 1 leaves nothing
+      // out however many entities nest in it, and a warning would be false.
+      _setEmbeddingProviderForTests(stubProviderFor(TRUNC_VECTORS));
+      const handler = captureHandler(truncStore());
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "trunc-cut-pkg" }],
+         limit: 1,
+      });
+      expect(payload.sources).toHaveLength(1);
+      expect("warnings" in payload).toBe(false);
+   });
+
+   it("reports below_cutoff_count on semantic responses, never on lexical ones", async () => {
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "cutoff-pkg" }],
+      };
+
+      // Cold start answers lexically: there is no floor on that path, so
+      // reporting a count would be meaningless.
+      const first = parse(await handler(params));
+      expect(first.retrieval).toBe("lexical");
+      expect(first).not.toHaveProperty("below_cutoff_count");
+
+      // order_items, its join, and the field reached through that join are
+      // all orthogonal to this query, so they are dropped by the floor and
+      // counted rather than silently missing.
+      const payload = await callUntilSemantic(handler, params);
+      expect(rankedEntities(payload).map((r) => r.name)).toEqual(["state"]);
+      expect(payload.below_cutoff_count).toBe(3);
+      // The denominator ships with it. Without it the count is a bare number
+      // an agent cannot scale: 3 rejected is a tight match out of 4 and a
+      // catastrophe out of 200, and nothing else in the response says which.
+      expect(payload.total_entities).toBe(4);
+   });
+
+   it("fills a measure target's window with measures, not with nearer dimensions", async () => {
+      // Three dimensions sit exactly on the query text and the one measure a
+      // little off it. limit 1 over-fetches three rows, so a window cut
+      // BEFORE the kind claim holds only dimensions, and the claim then
+      // empties it: sources [] beside below_cutoff_count 0, the pair the
+      // contract rules out, with a description telling the agent to rephrase
+      // when the measure it wanted cleared the floor.
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            orders: [0, 1],
+            "orders: Every order.": [0, 1],
+            "dim a": [1, 0],
+            "dim b": [1, 0],
+            "dim c": [1, 0],
+            revenue: [0.9, 0.436],
+            "total revenue": [1, 0],
+         }),
+      );
+      const handler = captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "w.malloy" }],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  {
+                     name: "orders",
+                     annotations: ["#(doc) Every order."],
+                     schema: {
+                        fields: [
+                           {
+                              kind: "dimension",
+                              name: "dim_a",
+                              annotations: [],
+                           },
+                           {
+                              kind: "dimension",
+                              name: "dim_b",
+                              annotations: [],
+                           },
+                           {
+                              kind: "dimension",
+                              name: "dim_c",
+                              annotations: [],
+                           },
+                           {
+                              kind: "measure",
+                              name: "revenue",
+                              annotations: [],
+                           },
+                        ],
+                     },
+                  },
+               ],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: [
+            { target_type: "measure", search_text: "total revenue" },
+         ],
+         scopes: [{ environment: "specs", package: "kind-window" }],
+         limit: 1,
+      });
+      expect(rankedEntities(payload).map((e) => e.name)).toEqual(["revenue"]);
+      // The counts are scoped the same way: a dimension is never weighed for
+      // a measure target, so it is in neither number.
+      expect(payload.total_entities).toBe(1);
+      expect(payload.below_cutoff_count).toBe(0);
+   });
+
+   it("reports the true negative as below_cutoff_count === total_entities, not 0", async () => {
+      // The contract this replaces said "0 with no results means nothing is
+      // related". That state is unreachable: every entity in scope is either
+      // at-or-above the floor (and could be a hit) or below it (and is
+      // counted), so zero-below means every entity was above, which would
+      // have produced hits. Measured against a real provider, an ecommerce
+      // package asked about seismic retrofits returned 0 results with
+      // below_cutoff_count equal to its full entity count -- which the old
+      // wording told the agent to read as "too diffuse, rephrase", the exact
+      // opposite of the truth. Pin the reachable shape so the description
+      // cannot drift back.
+      _setEmbeddingProviderForTests(stubProvider());
+      const handler = captureHandler(semanticStore());
+      const params = {
+         search_targets: anyKind("seismic retrofit of bridge pilings"),
+         scopes: [{ environment: "specs", package: "cutoff-pkg" }],
+      };
+
+      const payload = await callUntilSemantic(handler, params);
+      expect(payload.sources).toEqual([]);
+      expect(payload.total_entities).toBeGreaterThan(0);
+      expect(payload.below_cutoff_count).toBe(payload.total_entities);
+   });
+
+   it("returns a sibling family's shared field once per source", async () => {
+      // The case that motivated cross-source folding: "site of the building"
+      // returns `site` at an identical score from fac_building,
+      // fclt_building and fclt_building_hist. Folding them into one row
+      // named the alternatives but dropped two rows' docs, data_types and
+      // entity_ids, and the three are not one column -- a `_hist` table is
+      // not the live one. All three come back, each under its own card, and
+      // the caller chooses by reading those cards' docs.
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            site: [1, 0],
+            "fac building": [0, 1],
+            "fclt building": [0, 1],
+            "fclt building hist": [0, 1],
+            "site of the building": [1, 0],
+         }),
+      );
+      const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("site of the building"),
+         scopes: [{ environment: "specs", package: "sibling-pkg" }],
+      });
+      const sites = rankedEntities(payload).filter((r) => r.name === "site");
+      expect(sites).toHaveLength(3);
+      expect(sites.map((r) => r.source).sort()).toEqual(
+         [...SIBLING_SOURCES].sort(),
+      );
+      // One card per source, and each is a real card rather than the empty
+      // stand-in a folded sibling used to get.
+      const cards = payload.sources as Array<{
+         source_info: { resource_id: { source: string } };
+         entities?: unknown[];
+      }>;
+      expect(cards.map((c) => c.source_info.resource_id.source).sort()).toEqual(
+         [...SIBLING_SOURCES].sort(),
+      );
+      expect(cards.every((c) => (c.entities ?? []).length > 0)).toBe(true);
+   });
+
+   it("narrows to the scoped source, leaving its siblings out", async () => {
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            site: [1, 0],
+            "fac building": [0, 1],
+            "fclt building": [0, 1],
+            "fclt building hist": [0, 1],
+            "site of the building": [1, 0],
+         }),
+      );
+      const handler = captureHandler(semanticStoreFor(mockSiblingPackage));
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("site of the building"),
+         scopes: [
+            {
+               environment: "specs",
+               package: "sibling-scoped-pkg",
+               source: "fclt_building",
+            },
+         ],
+      });
+      const drilled = rankedEntities(payload);
+      expect(drilled).toHaveLength(1);
+      expect(drilled[0].source).toBe("fclt_building");
    });
 
    it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
@@ -863,9 +2469,8 @@ describe("get_context semantic retrieval", () => {
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
-         environmentName: "specs",
-         packageName: "failing-pkg",
-         query: "where do customers live",
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "failing-pkg" }],
       };
       await callUntilSemantic(handler, params);
 
@@ -873,13 +2478,15 @@ describe("get_context semantic retrieval", () => {
       // per-call query embed fails and the call degrades to marked
       // lexical with no scores.
       _setEmbeddingProviderForTests(stubProvider({ fail: true }));
-      const payload = parse(await handler({ ...params, query: "state" }));
+      const payload = parse(
+         await handler({ ...params, search_targets: anyKind("state") }),
+      );
       expect(payload.retrieval).toBe("lexical");
-      expect(
-         payload.results.some((r: { name: string }) => r.name === "state"),
-      ).toBe(true);
-      for (const r of payload.results) {
-         expect(r.score).toBeUndefined();
+      expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
+         true,
+      );
+      for (const r of rankedEntities(payload)) {
+         expect(r.relevance).toBeUndefined();
       }
    });
 
@@ -890,15 +2497,14 @@ describe("get_context semantic retrieval", () => {
       const handler = captureHandler(store);
       const payload = parse(
          await handler({
-            environmentName: "specs",
-            packageName: "no-storage-pkg",
-            query: "state",
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "specs", package: "no-storage-pkg" }],
          }),
       );
       expect(payload.retrieval).toBe("lexical");
-      expect(
-         payload.results.some((r: { name: string }) => r.name === "state"),
-      ).toBe(true);
+      expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
+         true,
+      );
    });
 
    it("degrades to lexical (never throws) when the real config is malformed", async () => {
@@ -917,15 +2523,14 @@ describe("get_context semantic retrieval", () => {
          const handler = captureHandler(semanticStore());
          const payload = parse(
             await handler({
-               environmentName: "specs",
-               packageName: "malformed-cfg-pkg",
-               query: "state",
+               search_targets: anyKind("state"),
+               scopes: [{ environment: "specs", package: "malformed-cfg-pkg" }],
             }),
          );
          expect(payload.retrieval).toBe("lexical");
-         expect(
-            payload.results.some((r: { name: string }) => r.name === "state"),
-         ).toBe(true);
+         expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
+            true,
+         );
       } finally {
          if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
          else process.env.EMBEDDING_API_KEY = saved.key;
@@ -934,5 +2539,1362 @@ describe("get_context semantic retrieval", () => {
          _clearEmbeddingProviderForTests();
          _setEmbeddingProviderForTests(null);
       }
+   });
+});
+
+/**
+ * The card fields that come from the compiled model rather than from its
+ * schema: what governs querying a source, and what type a field carries.
+ *
+ * These exist because retrieval that names an entity without them sends an
+ * agent to write a query it cannot run. A gated source looks like any other
+ * until the denial arrives; a given the model defaults looks like a value the
+ * agent has to invent; and a field's type decides whether it can be filtered
+ * with a string or summed at all.
+ */
+describe("get_context source governance and field types", () => {
+   const gatedModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders_secured",
+            annotations: ["#(doc) Orders visible to this caller."],
+            schema: {
+               fields: [
+                  { kind: "measure", name: "order_count", annotations: [] },
+               ],
+            },
+         },
+         {
+            name: "sales",
+            annotations: [],
+            schema: {
+               fields: [{ kind: "dimension", name: "region", annotations: [] }],
+            },
+         },
+      ],
+      getQueries: () => [],
+      getSources: () => [
+         {
+            name: "orders_secured",
+            givens: [
+               { name: "ROLE", type: "string", default: "'analyst'" },
+               { name: "TENANT", type: "string" },
+            ],
+            authorize: ["$ROLE = 'admin' or $TENANT = 'acme'"],
+         },
+         {
+            name: "sales",
+            givens: [{ name: "REGION", type: "filter<string>" }],
+         },
+      ],
+   };
+   const gatedPackage = {
+      listModels: async () => [{ path: "governed.malloy" }],
+      getModel: () => gatedModel,
+   };
+
+   it("reports a source's authorize gates and the givens they read", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => gatedPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "governed" }],
+         }),
+      );
+      const gated = payload.sources.find(
+         (c: SourceCardShape) =>
+            c.source_info.resource_id.source === "orders_secured",
+      );
+      expect(gated.source_info.authorize).toEqual([
+         {
+            expression: "$ROLE = 'admin' or $TENANT = 'acme'",
+            given_names: ["ROLE", "TENANT"],
+         },
+      ]);
+      expect(gated.source_info.givens).toEqual([
+         { name: "ROLE", type: "string", default: "'analyst'" },
+         { name: "TENANT", type: "string" },
+      ]);
+   });
+
+   it("omits authorize on an ungated source rather than sending it empty", async () => {
+      // Absence is the contract on both sides, and an empty array would read
+      // as "a gate with no expressions" to anything checking length.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => gatedPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "governed" }],
+         }),
+      );
+      const open = payload.sources.find(
+         (c: SourceCardShape) => c.source_info.resource_id.source === "sales",
+      );
+      expect("authorize" in open.source_info).toBe(false);
+      expect(open.source_info.givens).toEqual([
+         { name: "REGION", type: "filter<string>" },
+      ]);
+   });
+
+   it("omits both when the model exposes no compiled sources", async () => {
+      // getSources() is read defensively: a model that does not implement it
+      // must still list, not throw, and must not grow empty keys.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      expect("givens" in payload.sources[0].source_info).toBe(false);
+      expect("authorize" in payload.sources[0].source_info).toBe(false);
+   });
+
+   it("carries a field's Malloy type, and only where a type exists", async () => {
+      const typedModel = {
+         getSourceInfos: () => [
+            {
+               name: "orders",
+               annotations: [],
+               schema: {
+                  fields: [
+                     {
+                        kind: "dimension",
+                        name: "status",
+                        type: { kind: "string_type" },
+                        annotations: [],
+                     },
+                     {
+                        kind: "measure",
+                        name: "revenue",
+                        type: { kind: "number_type" },
+                        annotations: [],
+                     },
+                     { kind: "view", name: "by_month", annotations: [] },
+                  ],
+               },
+            },
+         ],
+         getQueries: () => [],
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "typed.malloy" }],
+               getModel: () => typedModel,
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: everyKind(),
+            scopes: [
+               { environment: "specs", package: "typed", source: "orders" },
+            ],
+         }),
+      );
+      const byName = new Map(
+         (payload.sources[0].entities as RankedEntity[]).map((e) => [
+            e.name,
+            e,
+         ]),
+      );
+      expect(byName.get("status")?.data_type).toBe("string");
+      expect(byName.get("revenue")?.data_type).toBe("number");
+      // A view is a query, not a value, so it has no type to report.
+      expect("data_type" in (byName.get("by_month") ?? {})).toBe(false);
+   });
+
+   it("summarizes a source in one line, cut at its first sentence", async () => {
+      const wordy = `#(doc) One row per order. ${"Detail sentence. ".repeat(20)}`;
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "wordy.malloy" }],
+               getModel: () => ({
+                  getSourceInfos: () => [
+                     {
+                        name: "orders",
+                        annotations: [wordy],
+                        schema: { fields: [] },
+                     },
+                  ],
+                  getQueries: () => [],
+               }),
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "wordy" }],
+         }),
+      );
+      const info = payload.sources[0].source_info;
+      expect(info.one_line_summary).toBe("One row per order.");
+      // The full text stays on the card; the summary is a label, not a
+      // replacement for it.
+      expect(info.docs.length).toBeGreaterThan(info.one_line_summary.length);
+   });
+
+   it("omits the summary for an undocumented source", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockTwoSourcePackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "sales" }],
+         }),
+      );
+      const customers = payload.sources.find(
+         (c: SourceCardShape) =>
+            c.source_info.resource_id.source === "customers",
+      );
+      expect("one_line_summary" in customers.source_info).toBe(false);
+   });
+});
+
+/**
+ * What a capped response says about what it left out.
+ *
+ * A response cut to `limit` used to look identical to one that found exactly
+ * that many entities, so an agent stopped at a partial answer believing it was
+ * complete. The warning states the count and the remedy that works, which is
+ * raising the limit or narrowing the question -- not "search more
+ * specifically", which is advice about a stage that did not do the cutting.
+ */
+describe("get_context truncation reporting", () => {
+   const wideModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: [],
+            schema: {
+               fields: Array.from({ length: 12 }, (_, i) => ({
+                  kind: "measure",
+                  name: `revenue_${i}`,
+                  // Documented so a lexical search matches all twelve:
+                  // `revenue_0` is a single lunr token and the bare term
+                  // would not reach it.
+                  annotations: [`#(doc) Revenue measure ${i}.`],
+               })),
+            },
+         },
+      ],
+      getQueries: () => [],
+   };
+   const widePackage = {
+      listModels: async () => [{ path: "wide.malloy" }],
+      getModel: () => wideModel,
+   };
+
+   it("says how many entities a capped drill-down left out", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => widePackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: everyKind(),
+            scopes: [
+               { environment: "specs", package: "wide", source: "orders" },
+            ],
+            limit: 4,
+         }),
+      );
+      expect(payload.sources[0].entities).toHaveLength(4);
+      expect(payload.warnings.join(" ")).toContain("Returned 4 of 12");
+      expect(payload.warnings.join(" ")).toContain("Raise limit");
+   });
+
+   it("says how many entities the per-source cap left out", async () => {
+      // The two cuts are reported in their own units and have different
+      // remedies. `limit` drops whole sources; this one drops entities inside
+      // a source it kept, so raising the limit would not recover them --
+      // scoping to the source is what does.
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => widePackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: anyKind("revenue"),
+            scopes: [{ environment: "specs", package: "wide" }],
+            limit: 3,
+         }),
+      );
+      // 12 matched in one source; the cap keeps 10 of them.
+      expect(rankedEntities(payload)).toHaveLength(10);
+      const warning = payload.warnings.join(" ");
+      expect(warning).toContain("2 further entities");
+      expect(warning).toContain("per source per target");
+      expect(warning).toContain("Scope to one source");
+      // Not the source warning: no source was dropped.
+      expect(warning).not.toContain("matching sources");
+   });
+
+   it("stays silent when nothing was cut", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => widePackage),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: everyKind(),
+            scopes: [
+               { environment: "specs", package: "wide", source: "orders" },
+            ],
+            limit: 50,
+         }),
+      );
+      expect("warnings" in payload).toBe(false);
+   });
+});
+
+/**
+ * Duplicate and hidden entities, the classes that decide what a result window
+ * is actually worth. Each is a defect observed in a comparable retrieval
+ * service; these pin whether Publisher shares it.
+ */
+describe("get_context duplicate and visibility handling", () => {
+   const sharedSource = {
+      name: "orders",
+      annotations: ["#(doc) One row per order."],
+      schema: {
+         fields: [{ kind: "dimension", name: "status", annotations: [] }],
+      },
+   };
+
+   it("indexes a re-exported source once, from the same model every time", async () => {
+      // A package can expose one source from several models (an import, or a
+      // model that extends another). Only the first is kept, so which model
+      // that is has to be a property of the package rather than of the order
+      // the filesystem happened to list it in.
+      const pathsFor = async (models: string[]) => {
+         const handler = captureHandler({
+            getEnvironment: async () =>
+               envWith(async () => ({
+                  listModels: async () => models.map((path) => ({ path })),
+                  getModel: () => ({
+                     getSourceInfos: () => [sharedSource],
+                     getQueries: () => [],
+                  }),
+               })),
+         });
+         const payload = parse(
+            await handler({
+               search_targets: [{ target_type: "source" }],
+               scopes: [{ environment: "specs", package: "dup" }],
+            }),
+         );
+         expect(payload.sources).toHaveLength(1);
+         return payload.sources[0].source_info.resource_id.model_path;
+      };
+      expect(await pathsFor(["a.malloy", "b.malloy"])).toBe("a.malloy");
+      // Reversed listing, same answer: the choice does not follow the order.
+      expect(await pathsFor(["b.malloy", "a.malloy"])).toBe("a.malloy");
+   });
+
+   it("never returns a join declared inside another join's target", async () => {
+      // A joined source's own joins belong to that source, and it is indexed
+      // under its own name. Surfacing them here would offer a path the caller
+      // cannot write from this source, at a grain it did not ask for.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "nested.malloy" }],
+               getModel: () => ({
+                  getSourceInfos: () => [
+                     {
+                        name: "order_items",
+                        annotations: [],
+                        schema: {
+                           fields: [
+                              {
+                                 kind: "join",
+                                 name: "products",
+                                 relationship: "one",
+                                 annotations: [],
+                                 schema: {
+                                    fields: [
+                                       {
+                                          kind: "join",
+                                          name: "category",
+                                          relationship: "one",
+                                          annotations: [],
+                                          schema: { fields: [] },
+                                       },
+                                    ],
+                                 },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  getQueries: () => [],
+               }),
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: everyKind(),
+            scopes: [
+               {
+                  environment: "specs",
+                  package: "nested",
+                  source: "order_items",
+               },
+            ],
+         }),
+      );
+      const names = payload.sources[0].entities.map(
+         (e: { name: string }) => e.name,
+      );
+      expect(names).toEqual(["products"]);
+      // The card's join list is the source's own, and complete.
+      expect(payload.sources[0].source_info.joins).toEqual([
+         { name: "products", relationship: "one" },
+      ]);
+   });
+
+   it("treats an underscore-prefixed name as an ordinary field", async () => {
+      // Malloy has no naming convention for privacy; hiding a field is what
+      // `include { internal: ... }` is for, and the compiler drops those
+      // before this code sees them. Inventing a second rule here would hide a
+      // field its author never asked to hide.
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "u.malloy" }],
+               getModel: () => ({
+                  getSourceInfos: () => [
+                     {
+                        name: "orders",
+                        annotations: [],
+                        schema: {
+                           fields: [
+                              {
+                                 kind: "dimension",
+                                 name: "_internal_key",
+                                 annotations: [],
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  getQueries: () => [],
+               }),
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: everyKind(),
+            scopes: [{ environment: "specs", package: "u", source: "orders" }],
+         }),
+      );
+      expect(
+         payload.sources[0].entities.map((e: { name: string }) => e.name),
+      ).toEqual(["_internal_key"]);
+   });
+
+   it("states a source's doc once, not once per matching entity", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => mockPackage),
+      });
+      const result = await handler({
+         search_targets: anyKind("order state"),
+         scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+      });
+      const text = JSON.stringify(parse(result).sources);
+      const doc = "One row per product sold on an order.";
+      // Once as `docs`, once as the one-line summary derived from it, and
+      // never repeated onto the entities that nest under the card.
+      expect(text.split(doc).length - 1).toBe(2);
+   });
+});
+
+/**
+ * Same-named fields in sibling sources, on the LEXICAL path, which is what an
+ * unconfigured server runs.
+ *
+ * A model whose sources extend a common base repeats every inherited field
+ * verbatim -- same name, same inherited #(doc), same score. These used to
+ * fold into one row, and the identical doc was read as evidence they were one
+ * number. They are not: `sales_secured` is `sales` behind an access gate, and
+ * the difference is stated on the SOURCE, which a field-doc comparison never
+ * looks at. Both are returned, on either ranker.
+ */
+describe("get_context same-named fields in sibling sources", () => {
+   const inheritedField = (doc: string) => ({
+      kind: "measure",
+      name: "total_amount",
+      annotations: [`#(doc) ${doc}`],
+   });
+   const siblingModel = (baseDoc: string, derivedDoc: string) => ({
+      getSourceInfos: () => [
+         {
+            name: "sales",
+            annotations: [],
+            schema: { fields: [inheritedField(baseDoc)] },
+         },
+         {
+            name: "sales_secured",
+            annotations: [],
+            schema: { fields: [inheritedField(derivedDoc)] },
+         },
+      ],
+      getQueries: () => [],
+   });
+   const handlerFor = (model: unknown) =>
+      captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+
+   it("returns both when two sources inherited the field unchanged", async () => {
+      const doc = "Total order amount.";
+      const payload = parse(
+         await handlerFor(siblingModel(doc, doc))({
+            search_targets: anyKind("total order amount"),
+            scopes: [{ environment: "specs", package: "sib" }],
+         }),
+      );
+      const rows = rankedEntities(payload).filter(
+         (e) => e.name === "total_amount",
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.source).sort()).toEqual([
+         "sales",
+         "sales_secured",
+      ]);
+   });
+
+   it("returns both when their docs say different things", async () => {
+      // Different docs are different guidance, and the agent chooses between
+      // them by reading both.
+      const payload = parse(
+         await handlerFor(
+            siblingModel(
+               "Total order amount.",
+               "Total order amount visible to this caller, after the access gate.",
+            ),
+         )({
+            search_targets: anyKind("total order amount"),
+            scopes: [{ environment: "specs", package: "sib" }],
+         }),
+      );
+      const rows = rankedEntities(payload).filter(
+         (e) => e.name === "total_amount",
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.description).sort()).toEqual([
+         "Total order amount visible to this caller, after the access gate.",
+         "Total order amount.",
+      ]);
+   });
+
+   it("narrows to the scoped source under a drill-down", async () => {
+      const doc = "Total order amount.";
+      const payload = parse(
+         await handlerFor(siblingModel(doc, doc))({
+            search_targets: anyKind("total order amount"),
+            scopes: [{ environment: "specs", package: "sib", source: "sales" }],
+         }),
+      );
+      expect(sourceNames(payload)).toEqual(["sales"]);
+   });
+});
+
+describe("get_context source documentation", () => {
+   // `narrowed` is `base extend { where: ... }` -- a filtered source, so it is
+   // a different population and the parent's description does not describe
+   // it. Malloy's stable SourceInfo flattens the two into one array with the
+   // INHERITED note first, which is the shape reproduced here.
+   const OWN = "#(doc) Only completed lines.";
+   const PARENT = "#(doc) Every order line.";
+   const model = {
+      getSourceInfos: () => [
+         {
+            name: "base",
+            annotations: [PARENT],
+            schema: {
+               fields: [{ kind: "measure", name: "total", annotations: [] }],
+            },
+         },
+         {
+            // Flattened: parent first, then its own.
+            name: "narrowed",
+            annotations: [PARENT, OWN],
+            schema: {
+               fields: [{ kind: "measure", name: "total", annotations: [] }],
+            },
+         },
+      ],
+      getQueries: () => [],
+      getModelDef: () => ({
+         contents: {
+            base: {
+               name: "base",
+               annotations: { blockNotes: [{ text: PARENT }] },
+               fields: [{ name: "total" }],
+            },
+            narrowed: {
+               name: "narrowed",
+               annotations: {
+                  blockNotes: [{ text: OWN }],
+                  inherits: { blockNotes: [{ text: PARENT }] },
+               },
+               fields: [{ name: "total" }],
+            },
+         },
+      }),
+   };
+   const handlerFor = (m: unknown) =>
+      captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "m.malloy" }],
+               getModel: () => m,
+            })),
+      });
+   const cardsOf = (payload: {
+      sources: Array<{
+         source_info: {
+            resource_id: { source: string };
+            docs?: string;
+            one_line_summary?: string;
+         };
+      }>;
+   }) =>
+      new Map(
+         payload.sources.map((c) => [c.source_info.resource_id.source, c]),
+      );
+
+   it("reports an extended source's OWN doc, not the one it inherited", async () => {
+      const cards = cardsOf(
+         parse(
+            await handlerFor(model)({
+               search_targets: [{ target_type: "source" }],
+               scopes: [{ environment: "e", package: "p" }],
+            }),
+         ),
+      );
+      expect(cards.get("base")?.source_info.docs).toBe("Every order line.");
+      // The whole point: a filtered source does not borrow its parent's
+      // description, and its summary is its own rather than a copy.
+      expect(cards.get("narrowed")?.source_info.docs).toBe(
+         "Only completed lines.",
+      );
+      expect(cards.get("narrowed")?.source_info.one_line_summary).not.toBe(
+         cards.get("base")?.source_info.one_line_summary,
+      );
+   });
+
+   it("falls back to the flattened annotations with no compiled model", async () => {
+      // A spec stand-in or a model that failed to compile has no IR to read.
+      // That must keep the previous behaviour rather than silently drop the
+      // doc entirely.
+      const { getModelDef: _omitted, ...withoutIr } = model;
+      const cards = cardsOf(
+         parse(
+            await handlerFor(withoutIr)({
+               search_targets: [{ target_type: "source" }],
+               scopes: [{ environment: "e", package: "p" }],
+            }),
+         ),
+      );
+      expect(cards.get("narrowed")?.source_info.docs).toContain(
+         "Only completed lines.",
+      );
+   });
+});
+
+describe("get_context include_code", () => {
+   // A measure with an expression and a raw column without one, so the flag's
+   // two outcomes are both observable: code present, and code meaningfully
+   // ABSENT because the field is physical rather than derived.
+   const model = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: [],
+            schema: {
+               fields: [
+                  { kind: "measure", name: "revenue", annotations: [] },
+                  { kind: "dimension", name: "order_id", annotations: [] },
+               ],
+            },
+         },
+      ],
+      getQueries: () => [],
+      getModelDef: () => ({
+         contents: {
+            orders: {
+               name: "orders",
+               fields: [
+                  { name: "revenue", code: "sale_price.sum()" },
+                  { name: "order_id" },
+               ],
+            },
+         },
+      }),
+   };
+   const handler = () =>
+      captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "o.malloy" }],
+               getModel: () => model,
+            })),
+      });
+   const request = (extra: Record<string, unknown>) => ({
+      search_targets: [
+         { target_type: "measure" },
+         { target_type: "dimension" },
+      ],
+      scopes: [{ environment: "e", package: "p", source: "orders" }],
+      ...extra,
+   });
+
+   it("omits code unless the caller asks", async () => {
+      // Off by default: an expression is long, and a source's #(doc) is meant
+      // to carry the meaning. A caller that wants the mechanics opts in.
+      const rows = rankedEntities(parse(await handler()(request({}))));
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((r) => r.code === undefined)).toBe(true);
+   });
+
+   it("returns each field's expression when include_code is set", async () => {
+      const rows = rankedEntities(
+         parse(await handler()(request({ include_code: true }))),
+      );
+      const revenue = rows.find((r) => r.name === "revenue");
+      expect(revenue?.code).toBe("sale_price.sum()");
+      // A physical column has no expression, so absence under the flag is the
+      // fact that the field is raw -- not a gap in the response.
+      const orderId = rows.find((r) => r.name === "order_id");
+      expect(orderId).toBeDefined();
+      expect(orderId?.code).toBeUndefined();
+   });
+});
+
+describe("get_context converged request shape", () => {
+   // A package with two sources so a target's kind filter is observable:
+   // `orders` carries a measure and a dimension, `customers` only a dimension.
+   const convergedModel = {
+      getSourceInfos: () => [
+         {
+            name: "orders",
+            annotations: ["#(doc) One row per order."],
+            schema: {
+               fields: [
+                  {
+                     kind: "measure",
+                     name: "revenue",
+                     annotations: ["#(doc) Total order revenue."],
+                  },
+                  {
+                     kind: "dimension",
+                     name: "category",
+                     annotations: ["#(doc) Product category of the order."],
+                  },
+               ],
+            },
+         },
+         {
+            name: "customers",
+            annotations: ["#(doc) One row per customer."],
+            schema: {
+               fields: [
+                  {
+                     kind: "dimension",
+                     name: "category",
+                     annotations: ["#(doc) Customer segment category."],
+                  },
+               ],
+            },
+         },
+      ],
+      getQueries: () => [],
+   };
+   const handler = () =>
+      captureConverged({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "m.malloy" }],
+               getModel: () => convergedModel,
+            })),
+      });
+   const scope = [{ environment: "specs", package: "shop" }];
+
+   it("answers a multi-target question in ONE call, grouped by source", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+               { target_type: "dimension", search_text: "category" },
+            ],
+            scopes: scope,
+         }),
+      );
+      // No source scope was given and none was needed: the response says which
+      // sources hold these fields. That is the whole point of the shape.
+      const names = rankedEntities(payload)
+         .map((e) => `${e.source}.${e.name}`)
+         .sort();
+      expect(names).toContain("orders.revenue");
+      expect(names).toContain("orders.category");
+      expect(payload.ranking).toBe("relevance");
+   });
+
+   it("a target only claims the kinds it selects", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [{ target_type: "measure", search_text: "order" }],
+            scopes: scope,
+         }),
+      );
+      // "order" matches the measure `revenue` ("Total order revenue.") AND
+      // the dimension `category` ("Product category of the order.") by text,
+      // but a measure target must surface only the measure: that filter is
+      // what target_type buys over a single untyped query string. And it
+      // must still return SOMETHING: `.every()` is vacuously true on an empty
+      // list, so without the length check a filter that drops everything
+      // would pass here. (The earlier text, "category", matched no measure
+      // at all, so this test was passing on exactly that vacuity.)
+      expect(rankedEntities(payload).length).toBeGreaterThan(0);
+      expect(
+         rankedEntities(payload).every((e) => e.entity_type === "measure"),
+      ).toBe(true);
+   });
+
+   it("excludes a named query over an inline source, which has no card to live in", async () => {
+      // `query: q is orders extend {...} -> ...` compiles with no source
+      // name. The response nests every entity under a source card, so such a
+      // query could match a view target, spend a slot in the per-source
+      // window and count in total_available while never appearing in
+      // `returned`. It is excluded before it can be counted anywhere.
+      const payload = parse(
+         await captureConverged({
+            getEnvironment: async () =>
+               envWith(async () => ({
+                  listModels: async () => [{ path: "m.malloy" }],
+                  getModel: () => ({
+                     ...convergedModel,
+                     getQueries: () => [
+                        {
+                           name: "revenue_by_category",
+                           sourceName: undefined,
+                           annotations: ["#(doc) Revenue by category."],
+                        },
+                        {
+                           name: "revenue_rollup",
+                           sourceName: "orders",
+                           annotations: ["#(doc) Revenue rolled up."],
+                        },
+                     ],
+                  }),
+               })),
+         })({
+            search_targets: [{ target_type: "view", search_text: "revenue" }],
+            scopes: scope,
+         }),
+      );
+      const names = rankedEntities(payload).map((e) => e.name);
+      expect(names).toContain("revenue_rollup");
+      expect(names).not.toContain("revenue_by_category");
+      expect(payload.total_available).toBe(payload.returned);
+   });
+
+   it("budgets the lexical window per target, so one target cannot crowd another out of a source", async () => {
+      // Eleven measures all match the measure target and one dimension
+      // matches the dimension target, in ONE source. The per-source cap is
+      // 10 per target (MAX_ENTITIES_PER_SOURCE_TARGET). Under a single shared
+      // cap the measures fill it and the dimension, the answer to the
+      // caller's other concept, is dropped from the response entirely.
+      const measures = Array.from({ length: 11 }, (_, i) => ({
+         kind: "measure",
+         name: `revenue_${i}`,
+         annotations: ["#(doc) Order revenue."],
+      }));
+      const payload = parse(
+         await captureConverged({
+            getEnvironment: async () =>
+               envWith(async () => ({
+                  listModels: async () => [{ path: "m.malloy" }],
+                  getModel: () => ({
+                     getSourceInfos: () => [
+                        {
+                           name: "orders",
+                           annotations: ["#(doc) One row per order."],
+                           schema: {
+                              fields: [
+                                 ...measures,
+                                 {
+                                    kind: "dimension",
+                                    name: "category",
+                                    annotations: ["#(doc) Product category."],
+                                 },
+                              ],
+                           },
+                        },
+                     ],
+                     getQueries: () => [],
+                  }),
+               })),
+         })({
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+               { target_type: "dimension", search_text: "category" },
+            ],
+            scopes: scope,
+         }),
+      );
+      const names = rankedEntities(payload).map((e) => e.name);
+      expect(names).toContain("category");
+      expect(names.filter((n) => n.startsWith("revenue_"))).toHaveLength(10);
+   });
+
+   it("withholds matched_targets on the lexical path", async () => {
+      // relevance is REQUIRED inside matched_targets, so emitting it here
+      // would publish a lunr score -- the exact number this path already
+      // withholds from the entity's own `relevance`, because it is relative
+      // to its own query and comparing two of them means nothing. Naming the
+      // matched target is not worth contradicting that.
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+            ],
+            scopes: scope,
+         }),
+      );
+      const revenue = rankedEntities(payload).find((e) => e.name === "revenue");
+      expect(revenue).toBeDefined();
+      expect(revenue!.relevance).toBeUndefined();
+      expect(revenue!.matched_targets).toBeUndefined();
+   });
+
+   it("enumerates instead of ranking when no target carries text", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [{ target_type: "source" }],
+            scopes: scope,
+         }),
+      );
+      expect(payload.ranking).toBe("prominence");
+      expect(
+         payload.sources
+            .map(
+               (c: { source_info: { resource_id: { source: string } } }) =>
+                  c.source_info.resource_id.source,
+            )
+            .sort(),
+      ).toEqual(["customers", "orders"]);
+   });
+
+   it("narrows to one source when the scope names it", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "dimension", search_text: "category" },
+            ],
+            scopes: [
+               { environment: "specs", package: "shop", source: "customers" },
+            ],
+         }),
+      );
+      expect(
+         rankedEntities(payload).every((e) => e.source === "customers"),
+      ).toBe(true);
+   });
+
+   it("says so, with the remedy, for a target type it cannot search", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "dimensional_value", search_text: "premium" },
+            ],
+            scopes: scope,
+         }),
+      );
+      // Publisher indexes the model, not the values in it. Silence would read
+      // as "no such value"; this says which it is and what to do instead.
+      const warning = (payload.warnings as string[]).join(" ");
+      expect(warning).toContain("dimensional_value");
+      expect(warning).toContain("execute_query");
+   });
+});
+
+describe("get_context filter_params", () => {
+   it("reports a source's #(filter) declarations, required ones included", async () => {
+      // A required filter the caller cannot see is a query that fails the
+      // moment they use the source. Publisher enforces #(filter) server-side
+      // and exposes it over REST as filterParams; withholding it from the card
+      // made the card unusable without a second, undocumented lookup.
+      const model = {
+         getSourceInfos: () => [
+            { name: "sales", annotations: [], schema: { fields: [] } },
+         ],
+         getSources: () => [
+            {
+               name: "sales",
+               filters: [
+                  { name: "region", type: "in", dimension: "region_code" },
+                  { name: "amount", type: "greater_than", required: true },
+               ],
+            },
+         ],
+         getQueries: () => [],
+      };
+      const handler = captureConverged({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "shop" }],
+         }),
+      );
+      const card = payload.sources[0];
+      expect(card.source_info.filter_params).toEqual([
+         { name: "region", type: "in", dimension: "region_code" },
+         { name: "amount", type: "greater_than", required: true },
+      ]);
+   });
+
+   it("omits filter_params entirely when the source declares none", async () => {
+      // Absent, not empty: the published shape omits null fields, so a caller
+      // reads absence as "declares none" on both surfaces.
+      const model = {
+         getSourceInfos: () => [
+            { name: "plain", annotations: [], schema: { fields: [] } },
+         ],
+         getSources: () => [{ name: "plain" }],
+         getQueries: () => [],
+      };
+      const handler = captureConverged({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "shop" }],
+         }),
+      );
+      expect(payload.sources[0].source_info).not.toHaveProperty(
+         "filter_params",
+      );
+   });
+});
+
+describe("get_context catalog browse", () => {
+   const documented = (n: number) => ({
+      name: `src_${n}`,
+      annotations: [
+         `#(doc) Source number ${n}. A long paragraph of grain and population rules that a browse does not need in order to choose between cards.`,
+      ],
+      schema: { fields: [] },
+   });
+   const model = {
+      getSourceInfos: () => [1, 2, 3, 4, 5].map(documented),
+      getQueries: () => [],
+   };
+   const handler = () =>
+      captureConverged({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "s.malloy" }],
+               getModel: () => model,
+            })),
+      });
+   const scopes = [{ environment: "specs", package: "many" }];
+   const browse = (extra: Record<string, unknown> = {}) => ({
+      search_targets: [{ target_type: "source" }],
+      scopes,
+      ...extra,
+   });
+   const sourceNames = (payload: {
+      sources: Array<{ source_info: { resource_id: { source: string } } }>;
+   }) => payload.sources.map((c) => c.source_info.resource_id.source);
+
+   it("keeps each source's full doc on a browse", async () => {
+      // A deliberate divergence from the hosted thin catalog card, which drops
+      // `docs` because its browse spans a whole workspace and can run to 150
+      // sources. This one cannot: `scopes` requires a package, so a browse is
+      // one package's sources -- a handful, whose docs carry the grain and
+      // population rules an agent needs to pick between them. Withholding
+      // there would cost the caveat and save almost nothing.
+      const payload = parse(await handler()(browse()));
+      const card = payload.sources[0].source_info;
+      expect(card.docs).toContain("grain and population rules");
+      expect(card.one_line_summary).toContain("Source number 1");
+      // The joins list stays complete, so "empty means none declared" holds
+      // on a browse as it does everywhere else.
+      expect(card.joins).toEqual([]);
+   });
+
+   it("names paging, not the limit, as the remedy on a browse", async () => {
+      // A listing has a resumable order, so the rest is one offset away.
+      // Telling a caller to raise the limit sends them at the one control
+      // that cannot reach source 151.
+      const payload = parse(await handler()(browse({ limit: 2 })));
+      const warning = payload.warnings.join(" ");
+      expect(warning).toContain("Returned 2 of 5 sources in scope");
+      expect(warning).toContain("next_offset");
+      expect(warning).not.toContain("Raise limit");
+   });
+
+   it("reports the same source count in the envelope and the warning", async () => {
+      // These are the same fact in the same unit, and they drifted: the
+      // warning counted matched sources while `returned` counted CARDS, which
+      // differ whenever a folded sibling's card rides along with the row that
+      // names it.
+      const payload = parse(await handler()(browse({ limit: 2 })));
+      expect(payload.returned).toBe(payload.sources.length);
+      expect(payload.warnings.join(" ")).toContain(
+         `Returned ${payload.returned} of`,
+      );
+   });
+
+   it("pages with offset and says where the next page starts", async () => {
+      const first = parse(await handler()(browse({ limit: 2 })));
+      expect(sourceNames(first)).toEqual(["src_1", "src_2"]);
+      expect(first.next_offset).toBe(2);
+      expect(first.total_available).toBe(5);
+
+      const second = parse(
+         await handler()(browse({ limit: 2, offset: first.next_offset })),
+      );
+      expect(sourceNames(second)).toEqual(["src_3", "src_4"]);
+      expect(second.next_offset).toBe(4);
+
+      const last = parse(await handler()(browse({ limit: 2, offset: 4 })));
+      expect(sourceNames(last)).toEqual(["src_5"]);
+      // Absent on the final page: present would promise a page that is not
+      // there, and a caller walking next_offset would loop.
+      expect(last).not.toHaveProperty("next_offset");
+   });
+
+   it("keeps the full doc when the caller scopes to one source", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [{ target_type: "source" }],
+            scopes: [
+               { environment: "specs", package: "many", source: "src_2" },
+            ],
+         }),
+      );
+      expect(payload.sources[0].source_info.docs).toContain(
+         "grain and population rules",
+      );
+   });
+
+   it("refuses an offset on a response with no resumable order", async () => {
+      const payload = parse(
+         await handler()({
+            search_targets: [
+               { target_type: "measure", search_text: "revenue" },
+            ],
+            scopes,
+            offset: 10,
+         }),
+      );
+      // Silently dropping it would hand back page 1 to a caller who believed
+      // they were reading page 2.
+      expect(JSON.stringify(payload)).toContain("Invalid offset");
+   });
+});
+
+describe("list_packages", () => {
+   function listHandler(store: Partial<EnvironmentStore>): Handler {
+      const handlers = new Map<string, Handler>();
+      const fakeServer = {
+         tool: (name: string, _d: string, _s: unknown, h: Handler) => {
+            handlers.set(name, h);
+         },
+      };
+      registerListPackagesTool(fakeServer as never, store as EnvironmentStore);
+      const handler = handlers.get("list_packages");
+      if (!handler) throw new Error("not registered");
+      return handler;
+   }
+   const storeWith = (env: unknown): Partial<EnvironmentStore> => ({
+      listEnvironments: async () => [{ name: "specs" }] as never,
+      getEnvironment: async () => env as never,
+   });
+
+   it("lists each environment with its packages", async () => {
+      const handler = listHandler(
+         storeWith({
+            listPackages: async () => [
+               { name: "ecommerce", description: "Ecommerce demo" },
+            ],
+            getFailedPackages: () => new Map(),
+            getStaleCompileErrors: () => new Map(),
+         }),
+      );
+      const { environments } = parse(await handler({}));
+      expect(environments).toEqual([
+         {
+            name: "specs",
+            packages: [{ name: "ecommerce", description: "Ecommerce demo" }],
+         },
+      ]);
+   });
+
+   it("lists a failed package with its load error instead of omitting it", async () => {
+      // listPackages() drops packages that failed to load, which reads as
+      // "does not exist" to an agent. This is the only surface that draws the
+      // distinction, so a broken package must arrive with its reason.
+      const handler = listHandler(
+         storeWith({
+            listPackages: async () => [{ name: "good" }],
+            getFailedPackages: () =>
+               new Map([["broken", "Compile failed: unexpected token"]]),
+            getStaleCompileErrors: () => new Map(),
+         }),
+      );
+      const { environments } = parse(await handler({}));
+      const packages = environments[0].packages;
+      expect(packages).toHaveLength(2);
+      expect(packages[0]).toMatchObject({ name: "good" });
+      expect(packages[1]).toEqual({
+         name: "broken",
+         error: "Compile failed: unexpected token",
+      });
+      // No stale marker: this package is not serving anything at all, which is
+      // the distinction the marker exists to draw.
+      expect("stale" in packages[1]).toBe(false);
+   });
+
+   it("marks a stale package, which listPackages reports as healthy", async () => {
+      // A failed reload keeps the package SERVING, so it comes back from
+      // listPackages looking exactly like a current one. Unmarked, an agent
+      // queries it and gets numbers from the model compiled before the last
+      // save, with nothing to say so.
+      const handler = listHandler(
+         storeWith({
+            listPackages: async () => [
+               { name: "current" },
+               { name: "stale-pkg" },
+            ],
+            getFailedPackages: () => new Map(),
+            getStaleCompileErrors: () =>
+               new Map([
+                  [
+                     "stale-pkg",
+                     {
+                        message: "line 3: missing ')'",
+                        failedAt: "2026-08-13T00:00:00.000Z",
+                     },
+                  ],
+               ]),
+         }),
+      );
+      const { environments } = parse(await handler({}));
+      expect(environments[0].packages).toEqual([
+         { name: "current" },
+         { name: "stale-pkg", error: "line 3: missing ')'", stale: true },
+      ]);
+   });
+
+   it("keeps listing when one environment cannot be read, and says why", async () => {
+      // The point of this tool is to say what IS there, so one unreachable
+      // environment must not take the catalog down with it. But surviving the
+      // failure is only half of it: an empty `packages` is also what a
+      // genuinely empty environment looks like, so the reason has to come
+      // back with it.
+      const handler = listHandler({
+         listEnvironments: async () => [{ name: "broken" }] as never,
+         getEnvironment: async () => {
+            throw new Error("Environment 'broken' could not be resolved");
+         },
+      });
+      const { environments } = parse(await handler({}));
+      expect(environments).toEqual([
+         {
+            name: "broken",
+            error: "Environment 'broken' could not be resolved",
+            packages: [],
+         },
+      ]);
+   });
+
+   it("leaves a genuinely empty environment without an error", async () => {
+      // The other half of the pair above: `error` is what separates "the
+      // listing failed" from "there is nothing here", so an environment that
+      // really holds no packages must not carry one.
+      const handler = listHandler(
+         storeWith({
+            listPackages: async () => [],
+            getFailedPackages: () => new Map(),
+            getStaleCompileErrors: () => new Map(),
+         }),
+      );
+      const { environments } = parse(await handler({}));
+      expect(environments).toEqual([{ name: "specs", packages: [] }]);
+   });
+
+   it("reports a non-Error thrown while listing one environment's packages", async () => {
+      const handler = listHandler({
+         listEnvironments: async () => [{ name: "broken" }] as never,
+         getEnvironment: async () => {
+            throw "the store exploded";
+         },
+      });
+      const { environments } = parse(await handler({}));
+      expect(environments[0].error).toBe("the store exploded");
+   });
+
+   it("reports a non-Error throwable without inventing 'Unknown error'", async () => {
+      // The old per-site `error instanceof Error ? error.message : "Unknown
+      // error"` turned a thrown string into exactly the unhelpful text this
+      // tool's callers reported. classifyToolError stringifies it instead.
+      const handler = listHandler({
+         listEnvironments: async () => {
+            throw "the store exploded";
+         },
+      });
+      const result = await handler({});
+      const parsed = parse(result);
+      expect(parsed.error).toContain("the store exploded");
+      expect(parsed.error).not.toContain("Unknown error");
+      expect(textBlock(result)).toContain("the store exploded");
+   });
+
+   it("surfaces a total failure as a tool error, with suggestions", async () => {
+      const handler = listHandler({
+         listEnvironments: async () => {
+            throw new Error("storage is unavailable");
+         },
+      });
+      const result = await handler({});
+      expect(result.isError).toBe(true);
+      const parsed = parse(result);
+      expect(parsed.error).toContain("storage is unavailable");
+      expect(parsed.suggestions.length).toBeGreaterThan(0);
+      expect(textBlock(result)).toContain("storage is unavailable");
+      // The envelope is this tool's, not get_context's: the same empty
+      // `environments` the success path answers with, and an error that
+      // names the operation that failed.
+      expect(parsed.environments).toEqual([]);
+      expect(parsed).not.toHaveProperty("sources");
+      expect(parsed).not.toHaveProperty("results");
+      expect(parsed.error).toContain("listPackages");
+      expect(parsed.error).not.toContain("getContext");
    });
 });

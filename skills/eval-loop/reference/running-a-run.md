@@ -76,7 +76,7 @@ chases `ModuleNotFoundError` three times.
 Two failure modes worth pre-empting, because both produce a clean-looking run:
 
 - **Pre-approve the tools.** A headless answerer that has to ask permission for
-  `malloy_getContext` stalls until the timeout and lands as a harness error.
+  `get_context` stalls until the timeout and lands as a harness error.
 - **Check the served revision is the one you edited.** Publisher serves a
   snapshot copy, so a model fix can be absent from the run that is supposed to
   measure it. Query the changed measure once before spending an arm on it.

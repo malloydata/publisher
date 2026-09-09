@@ -157,7 +157,7 @@ filter wiring, and error handling. Guide:
 
 - It's still code, even when an agent writes it. The filter widgets, loading states, error
   handling, and responsive layout that notebooks and dashboards give you for free are the app's
-  to get right. The skills cover them, but they live in your page, not the platform.
+  to get right. The skills cover them, but they live in your page, not in Publisher.
 - Nothing is derived from the model: add a given, and the UI has to be updated to match (another
   agent pass, but a pass someone has to remember to make).
 - Highest maintenance cost of the three, and quality depends on the author, human or agent.

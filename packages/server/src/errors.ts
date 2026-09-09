@@ -8,9 +8,35 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 
 // Client-facing body for an internal failure (500/502). The specific error
 // message can carry internal detail -- a filesystem path, an SQL fragment, an
-// upstream host -- so it is logged server-side (below) and NOT returned. Every
-// other status this mapper produces is a client error (4xx) whose message is
-// actionable to the caller and is returned as-is.
+// upstream host -- so it is logged server-side (below) and NOT returned.
+//
+// Generalizing is decided per branch, not by status class -- 501, 503 and 504
+// are 5xx and still return their messages. Every 4xx returns its message
+// because a client error names what the caller must change. The 5xx branches
+// that return theirs do so because the message is one this server composed (a
+// missing feature, a cap that was reached, a timeout), which is true of most of
+// them but not all: the worker-pool and compile-worker throws behind 503
+// interpolate the underlying failure, so a crash message reaches the caller
+// there. Generalizing that one at the mapper is not possible -- the pool
+// serializes an error across a worker boundary as a plain `Error`, so an
+// unusable-manifest error and a worker crash arrive indistinguishable, and
+// blanking both suppresses a message the caller needs to fix their config. It
+// belongs at those throw sites, where the two are still telling apart.
+//
+// So a NEW 5xx branch is a decision rather than a default: generalize it here
+// if its message comes from a driver, a worker, or the filesystem.
+//
+// Neither generic body carries a correlation handle, which is what a user
+// reporting "I got Internal server error." would hand an operator to find the
+// logged detail. That is deliberately unchanged rather than overlooked: no error
+// response in this server has ever carried one (the `details` field the Error
+// schema declares is populated nowhere, and the MCP JSON-RPC path answers with a
+// bare "Internal server error" too), so adding one only here would make this the
+// single exception rather than the new convention. Worth doing server-wide --
+// `loggerMiddleware` already derives a W3C traceId when the caller sends
+// `traceparent`, and it would go in `details` with no schema change -- but it is
+// its own change, and it wants an id that exists for callers who send no
+// traceparent.
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
 
@@ -42,19 +68,44 @@ const MAX_LOGGED_DETAIL_CHARS = 2000;
  * JSON.stringify does NOT escape (NEL, and the U+2028/U+2029 line and paragraph
  * separators): those reach the rendered line verbatim under both formats, so
  * `format.json()` is not a backstop for them the way it is for `\n`.
+ *
+ * `level` separates the two cases that reach here, because they mean different
+ * things to whoever is watching. An unrecognized error is a bug in this server
+ * and belongs at `error`. An upstream connection failure is usually the
+ * caller's or the warehouse's, and a caller can drive it in a loop with bad
+ * SQL, so logging it at `error` lets one client fill the error log and move an
+ * error-rate dashboard meant to track our own faults. It goes to `warn`.
  */
-export function logInternalFailure(summary: string, error: Error): void {
+export function logInternalFailure(
+   summary: string,
+   error: Error,
+   level: "error" | "warn" = "error",
+): void {
    const sanitize = (value: string): string =>
-      // eslint-disable-next-line no-control-regex
       value
+         // eslint-disable-next-line no-control-regex
          .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
          .slice(0, MAX_LOGGED_DETAIL_CHARS);
-   logger.error(summary, {
+   logger[level](summary, {
       name: error.name,
       message: sanitize(error.message ?? ""),
       stack: sanitize(error.stack ?? ""),
    });
 }
+
+/**
+ * Machine-readable discriminator on an error response, for callers that must
+ * branch on *which* 404 they got rather than on prose.
+ *
+ * The router retries a 404 by invalidating its cached worker location and
+ * asking the control plane again, because a 404 normally means the worker it
+ * called no longer hosts that environment or connection. A table that is not in
+ * the database is also a 404 but carries no such implication -- retrying it
+ * re-queries the same absent table and throws away a cache entry every other
+ * caller on that connection is using. Only reasons that a caller is expected to
+ * branch on are emitted; absence is the norm and means "no special handling".
+ */
+export type ErrorReason = "TABLE_NOT_FOUND";
 
 export function internalErrorToHttpError(error: Error) {
    if (error instanceof BadRequestError) {
@@ -75,6 +126,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(404, error.message);
    } else if (error instanceof MalloyError) {
       return httpError(400, error.message);
+   } else if (error instanceof TableNotFoundError) {
+      return httpError(404, error.message, "TABLE_NOT_FOUND");
    } else if (error instanceof ConnectionNotFoundError) {
       return httpError(404, error.message);
    } else if (error instanceof DestinationNotFoundError) {
@@ -92,10 +145,23 @@ export function internalErrorToHttpError(error: Error) {
       // actionable and returned as-is; anything wrapping a driver message is
       // logged and generalized, because it can name an internal host/port, echo
       // the caller's SQL, or distinguish refused from timed-out from auth-failed.
+      //
+      // This intentionally covers a statement the warehouse itself rejected, on
+      // the sqlSource and sqlQuery paths, and that is the uncomfortable half of
+      // the trade: "object DB.SCHEMA.FOO does not exist" is the most useful
+      // sentence the product produces, and only the caller can act on it. It is
+      // generalized anyway because ConnectionError is one class covering both a
+      // rejected statement and an unreachable host, and the same text that names
+      // the caller's own typo names an internal hostname when the failure is
+      // ours. Splitting the class -- a rejected statement as 4xx with its
+      // message, transport failure as a generic 502 -- is the right end state
+      // and wants its own change; a table path that names nothing already took
+      // that route (see TableNotFoundError, 404). Until then a caller who needs
+      // the driver's text gets it from the logs, by traceparent.
       if (error.callerSafe) {
          return httpError(502, error.message);
       }
-      logInternalFailure("Upstream connection error", error);
+      logInternalFailure("Upstream connection error", error, "warn");
       return httpError(502, GENERIC_UPSTREAM_MESSAGE);
    } else if (error instanceof MaterializationNotFoundError) {
       return httpError(404, error.message);
@@ -124,12 +190,15 @@ export function internalErrorToHttpError(error: Error) {
    }
 }
 
-function httpError(code: number, message: string) {
+function httpError(code: number, message: string, reason?: ErrorReason) {
    return {
       status: code,
       json: {
          code,
          message: message,
+         // Omitted rather than undefined so existing toStrictEqual assertions
+         // on reason-less errors keep passing.
+         ...(reason ? { reason } : {}),
       },
    };
 }
@@ -193,6 +262,24 @@ export class DashboardNotFoundError extends Error {
 }
 
 export class ConnectionNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * The connection is reachable and authenticated, but it holds no table at that
+ * path. A caller's bad reference, not a server or upstream fault, so it maps to
+ * 404 -- which is what every spec declaring this route has always documented
+ * (502 appears in none of them).
+ *
+ * Distinct from {@link ConnectionError}, which stays 502 for genuine transport
+ * failures: unreachable database, expired credentials, exhausted quota. The
+ * split matters beyond tidiness, because a 5xx here is counted against the
+ * router's server-error budget and pages on-call for what is a typo in someone's
+ * model.
+ */
+export class TableNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }
@@ -284,6 +371,28 @@ export class MaterializationEligibilityError extends Error {
       super(error.message);
       this.name = "MaterializationEligibilityError";
       this.reason = error.reason;
+   }
+}
+
+/**
+ * The config file exists but could not be turned into a manifest: malformed
+ * JSON, a shape the loader rejects, or a `${VAR}` reference to an unset
+ * environment variable.
+ *
+ * Distinct from the file being ABSENT, which is not an error: Publisher then
+ * falls back to the bundled DuckDB-only default. This is a file the operator
+ * wrote and Publisher cannot honour, so it must not degrade to serving nothing
+ * while reporting healthy.
+ */
+export class PublisherConfigError extends Error {
+   constructor(configName: string, cause: unknown) {
+      super(
+         `Could not read ${configName}: ${
+            cause instanceof Error ? cause.message : String(cause)
+         }. Fix the file, or move it aside to fall back to the bundled default.`,
+      );
+      this.name = "PublisherConfigError";
+      this.cause = cause;
    }
 }
 

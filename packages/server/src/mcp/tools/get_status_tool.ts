@@ -15,12 +15,12 @@ A JSON object with:
 - operationalState: "initializing" | "serving" | "throttled" | "draining".
 - initialized: whether startup finished.
 - environments: each environment's name with its loaded package names.
-- loadErrors (only present when something failed): entries of {environment, package?, message, stale?, failedAt?}. An entry WITHOUT stale means the package (or whole environment, when package is absent) did not load and is missing from environments. An entry WITH stale: true means the package IS serving, but its most recent reload failed to compile, so the model answering queries is OLDER than the files on disk; the message says why. Fix the file and reload (malloy_reloadPackage) to clear it.
+- loadErrors (only present when something failed): entries of {environment, package?, message, stale?, failedAt?}. An entry WITHOUT stale means the package (or whole environment, when package is absent) did not load and is missing from environments. An entry WITH stale: true means the package IS serving, but its most recent reload failed to compile, so the model answering queries is OLDER than the files on disk; the message says why. Fix the file and reload (reload_package) to clear it.
 
 No loadErrors key means everything configured loaded and nothing is stale.`;
 
 /**
- * Registers the malloy_getStatus MCP tool: the MCP analog of GET /api/v0/status,
+ * Registers the get_status MCP tool: the MCP analog of GET /api/v0/status,
  * reduced to what an agent needs to judge health (state, package names, load
  * errors, staleness). Without it an agent cannot distinguish "empty package"
  * from "package that failed to load", and a failed watch-mode recompile is
@@ -34,7 +34,7 @@ export function registerGetStatusTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
-   mcpServer.tool("malloy_getStatus", GET_STATUS_DESCRIPTION, {}, async () => {
+   mcpServer.tool("get_status", GET_STATUS_DESCRIPTION, {}, async () => {
       const uri = buildMalloyUri({}, "getStatus");
       try {
          const status = await environmentStore.getStatus();
