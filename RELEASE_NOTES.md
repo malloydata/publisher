@@ -31,6 +31,69 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — the authorize bypass, the MCP bind, and package reload are closed by default
+
+Three controls that were open on a naive deployment now require an operator to
+enable them. Each flips a **default**, so a deployment relying on the previous
+behaviour has a migration step below. All three are unauthenticated surfaces
+today, which is why the default moves rather than the capability disappearing.
+
+**The `#(authorize)` bypass header now needs a validated secret.** Presence
+alone used to be enough: any caller who could send
+`x-publisher-bypass-authorize: true` ran with the author's `#(authorize)` gates
+skipped, so whether a gate held was a property of the deployment's edge rather
+than of Publisher. The header now carries a shared secret, compared in constant
+time against `PUBLISHER_BYPASS_AUTHORIZE_SECRET`. With that variable unset or
+blank there is no value any caller could present, so every bypass request is
+refused.
+
+_Migration._ If a data-management caller (an indexer, or anything scanning a
+gated source) relies on the bypass, set `PUBLISHER_BYPASS_AUTHORIZE_SECRET` to a
+long random value and have that caller send exactly that value in the header
+instead of `true`. Treat it as a credential: keep it in a secret store and
+rotate it. Keep stripping the header at your edge — the secret makes a forwarded
+header useless to a caller who does not know it, but it does not make the header
+safe to forward. If nothing needs a bypass, set nothing; the refusal is the new
+default. See [docs/authorize-bypass-deployment.md](docs/authorize-bypass-deployment.md).
+
+**The MCP server binds loopback by default.** It previously shared
+`PUBLISHER_HOST` with the REST server and so defaulted to `0.0.0.0`, publishing
+an unauthenticated endpoint that exposes every MCP tool on every interface. It
+now binds `127.0.0.1` unless told otherwise, which matches the guidance already
+in `AGENTS.md`. Setting `--host` / `PUBLISHER_HOST` explicitly still moves both
+listeners together, so an operator who deliberately widened the bind keeps it;
+the new `MCP_HOST` / `--mcp_host` sets the MCP bind on its own. The REST server's
+own default is unchanged.
+
+Cross-origin access to the MCP endpoint is now opt-in as well. It was bare
+permissive CORS, which reflected any origin back and let a browser page on any
+site read a response. `MCP_CORS_ORIGINS` takes a comma-separated allowlist (or
+`*`), and defaults to no cross-origin access.
+
+_Migration._ If an MCP client connects from another host, set `MCP_HOST=0.0.0.0`
+(or `--mcp_host 0.0.0.0`) and put an authenticating gateway in front of the port.
+If a browser page calls the MCP endpoint from another origin, list that origin in
+`MCP_CORS_ORIGINS`. A non-browser MCP client sends no `Origin` and needs no
+allowlist entry.
+
+**`?reload=true` on a package GET now requires a secret.** An unauthenticated
+`GET /…/packages/{pkg}?reload=true` triggered a full package recompile, replacing
+the served model and — on a package with an install `location` — re-fetching over
+on-disk edits. It now requires the secret in `PUBLISHER_RELOAD_SECRET`, presented
+in the `x-publisher-reload-secret` header, and answers `403` while no secret is
+configured. The legacy `/projects/…` alias is gated identically, since it reaches
+the same reload.
+
+Reading package metadata **without** `?reload=true` is unchanged and needs no
+secret, and the MCP `reload_package` tool is unaffected — it does not pass through
+the HTTP boundary, and its endpoint is now loopback by default.
+
+_Migration._ If a deploy hook, CI step, or watch script calls `?reload=true`, set
+`PUBLISHER_RELOAD_SECRET` and send the header. For local model iteration, prefer
+the MCP `reload_package` tool, which needs no secret.
+
+---
+
 ## [Unreleased] — 500 and 502 responses no longer echo the internal error
 
 A 500 or a 502 returned `error.message` verbatim. That message is not always
