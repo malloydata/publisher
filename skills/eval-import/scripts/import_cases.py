@@ -228,8 +228,14 @@ def summarize(cases: list[dict[str, Any]], lines: int) -> list[str]:
            f"{value_only} a number alone, {to_derive} nothing to compare yet)",
            f"  {no_golden} no golden (question only)"]
     if verified_values:
-        out.append(f"  {verified_values} verified VALUES, which an import "
-                   "cannot produce. Check them")
+        # Not phrased as an accusation. This script is also the set validator,
+        # so it runs on established sets whose values were verified long after
+        # import -- the ecommerce set has 45 -- and telling those they "cannot"
+        # be verified reads as a defect where there is none.
+        out.append(f"  {verified_values} of those hold a verified VALUE. An "
+                   "import cannot produce one, so on a fresh conversion this "
+                   "is a finding; on an established set it is the record of a "
+                   "re-derivation")
     return out
 
 
