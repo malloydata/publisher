@@ -17,6 +17,7 @@ import os from "os";
 import path from "path";
 import {
    BYPASS_AUTHORIZE_HEADER,
+   BYPASS_AUTHORIZE_SECRET_ENV,
    readBypassAuthorize,
 } from "../authorize_bypass_header";
 import { resetAuthorizeGuardTelemetryForTesting } from "../authorize_metrics";
@@ -3745,7 +3746,22 @@ source: dm_mixed is duckdb.table('customers') extend {
    // authorize_bypass_header.spec.ts; what these two add is the composition —
    // that a header reaches the gate and that a body field does not.
    describe("arrives on the header, not the body", () => {
-      it("honours the bypass when the header carries it", async () => {
+      const BYPASS_SECRET = "s3cret-bypass-value";
+      const savedSecret = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+
+      beforeEach(() => {
+         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = BYPASS_SECRET;
+      });
+
+      afterEach(() => {
+         if (savedSecret === undefined) {
+            delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+         } else {
+            process.env[BYPASS_AUTHORIZE_SECRET_ENV] = savedSecret;
+         }
+      });
+
+      it("honours the bypass when the header carries the secret", async () => {
          await writeModel("dm_gated.malloy", GATED);
          const result = await runGated(
             "dm_gated.malloy",
@@ -3753,10 +3769,28 @@ source: dm_mixed is duckdb.table('customers') extend {
             {},
             undefined,
             readBypassAuthorize({
-               headers: { [BYPASS_AUTHORIZE_HEADER]: "true" },
+               headers: { [BYPASS_AUTHORIZE_HEADER]: BYPASS_SECRET },
             }),
          );
          expect(countOf(result.compactResult)).toBe(2);
+      });
+
+      // The gate stays enforced when no secret is configured, which is the
+      // fail-closed half: the header alone can no longer disable it.
+      it("leaves gates enforced when no secret is configured", async () => {
+         delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+         await writeModel("dm_gated.malloy", GATED);
+         await expect(
+            runGated(
+               "dm_gated.malloy",
+               "run: dm_gated -> { aggregate: c }",
+               {},
+               undefined,
+               readBypassAuthorize({
+                  headers: { [BYPASS_AUTHORIZE_HEADER]: BYPASS_SECRET },
+               }),
+            ),
+         ).rejects.toThrow();
       });
 
       // The whole safety argument for putting this on a header rather than in

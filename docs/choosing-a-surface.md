@@ -147,8 +147,10 @@ filter wiring, and error handling. Guide:
 - Given-scoped filtering and query caps apply as usual, because the page asks the same endpoints
   every other surface asks. **`#(authorize)` is the exception, and it follows from the author-code
   property rather than from the endpoint:** because the page controls its own requests, it can send
-  `x-publisher-bypass-authorize: true` and skip gate evaluation on any deployment that does not strip
-  that header at its edge ([authorize.md](authorize.md#authorize-bypass-for-trusted-data-management-callers),
+  `x-publisher-bypass-authorize` and skip gate evaluation — but only on a deployment that both
+  configured `PUBLISHER_BYPASS_AUTHORIZE_SECRET` and leaked its value to the page, since the header
+  is refused without the secret, and only where that header is not stripped at the edge
+  ([authorize.md](authorize.md#authorize-bypass-for-trusted-data-management-callers),
   [authorize-bypass-deployment.md](authorize-bypass-deployment.md)). Sending a custom header takes
   JavaScript, which neither format gives an author a file for;
   [security-posture.md](security-posture.md) covers where that boundary is and is not absolute.

@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 Publisher accepts a request header that **skips `#(authorize)` gate evaluation**:
 
 ```
-x-publisher-bypass-authorize: true
+x-publisher-bypass-authorize: <the shared secret>
 ```
 
 It exists so a data-management caller can scan a gated source — an indexer is a machine identity
@@ -17,17 +17,38 @@ with no givens, so a gated source returns 403 and is never indexed, which turns 
 bypass](authorize.md#authorize-bypass-for-trusted-data-management-callers) covers the semantics
 (only gates are skipped; `where:`, caps, and restricted mode are untouched).
 
-This page is for whoever operates the deployment. There is exactly one thing you must do.
+This page is for whoever operates the deployment.
 
-## Strip it at the edge
+## The bypass is off until you configure a secret
 
-**Publisher does not authenticate anything and does not bound who may send this header.** The name
-and value are documented — here and in every copy of these docs — so treat them as known to
-everyone. Whether a gate holds is therefore a property of your edge, not of Publisher.
+The header carries a **shared secret**, and it grants a bypass only when the value matches
+`PUBLISHER_BYPASS_AUTHORIZE_SECRET`. With that variable unset or blank there is no value any caller
+could send, so **every bypass request is refused** — the bypass is unavailable rather than
+open-by-default. A deployment that needs no bypass configures nothing and has nothing to strip.
 
-If untrusted callers can reach Publisher through a proxy that forwards unrecognized request
-headers — which many do by default — then an end user can set this header on their own request, it
-rides through, and the gate is off. No guessing involved.
+To enable it, set the variable to a long random value and have the internal caller send exactly
+that value on the internal hop:
+
+```bash
+PUBLISHER_BYPASS_AUTHORIZE_SECRET="$(openssl rand -hex 32)"
+```
+
+Treat it as a credential: keep it in your secret store rather than in an image or a committed
+config, and rotate it as you would any other. The comparison is constant-time, so a wrong value
+leaks nothing about the right one through timing.
+
+## Still strip it at the edge
+
+The secret makes a forwarded header useless to a caller who does not know the secret. It does not
+make the header safe to forward, so keep stripping it.
+
+**Publisher does not authenticate anything.** The header NAME is documented — here and in every
+copy of these docs — so treat it as known to everyone; only the secret's value is yours.
+
+If untrusted callers reach Publisher through a proxy that forwards unrecognized request headers —
+which many do by default — then an end user can set this header on their own request and it rides
+through. Without the secret it is refused, but stripping it inbound keeps a leaked or guessed
+secret from being reachable from outside at all.
 
 So: **clear it on every inbound request at your gateway**, and let it be set only by the internal
 caller that needs it, on the internal hop.
@@ -94,10 +115,12 @@ values.
 
 ## If you do not need it
 
-There is no flag to disable it, and adding one would be a false comfort: a flag lives in the same
-process a compromised caller is already talking to, whereas the edge strip is a different trust
-domain. If no caller in your deployment needs a bypass, strip the header inbound and nothing will
-ever set it.
+Leave `PUBLISHER_BYPASS_AUTHORIZE_SECRET` unset. That is the default, and it refuses every bypass
+request, so there is nothing to turn off and nothing a forwarded header can reach. Strip the header
+inbound as well, per above, so a secret configured later is not immediately reachable from outside.
+
+The edge strip remains worth keeping even so: it is a different trust domain from the process a
+compromised caller is already talking to.
 
 ## Where this is going
 
