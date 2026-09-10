@@ -33,6 +33,32 @@ static AdbcStatusCode (*real_StatementSetOption)(struct AdbcStatement*, const ch
                                                  struct AdbcError*);
 static int debug_statements;
 
+// The driver rejects anything that is not a positive integer, but it does so per
+// statement and only in a log line; validating here keeps the startup line honest
+// (an operator typo such as 0 must not print as if the bound were on).
+static int is_positive_integer(const char* s) {
+  if (!s || !*s) return 0;
+  for (const char* p = s; *p; ++p)
+    if (*p < '0' || *p > '9') return 0;
+  return strtol(s, NULL, 10) > 0;
+}
+
+// The value to apply for an env var, or NULL when unset/empty/invalid.
+static const char* option_value(const char* env) {
+  const char* v = getenv(env);
+  if (!v || !*v) return NULL;
+  return is_positive_integer(v) ? v : NULL;
+}
+
+// How the startup line describes an env var.
+static const char* describe(const char* env, char* buf, size_t len) {
+  const char* v = getenv(env);
+  if (!v || !*v) return "(unset)";
+  if (is_positive_integer(v)) return v;
+  snprintf(buf, len, "(invalid \"%s\", ignored)", v);
+  return buf;
+}
+
 // Resolve the real driver: ADBC_REAL_DRIVER if set, else REAL_DRIVER_BASENAME
 // in the directory this shim was loaded from.
 static int real_driver_path(char* out, size_t out_len) {
@@ -56,8 +82,8 @@ static int real_driver_path(char* out, size_t out_len) {
 
 static void set_option(struct AdbcStatement* stmt, const char* key, const char* env,
                        struct AdbcError* err) {
-  const char* value = getenv(env);
-  if (!value || !*value) return;
+  const char* value = option_value(env);
+  if (!value) return;
   AdbcStatusCode status = real_StatementSetOption(stmt, key, value, err);
   if (status != ADBC_STATUS_OK) {
     fprintf(stderr, LOG_PREFIX "%s=%s rejected by driver (status %d)%s%s\n", key, value,
@@ -110,10 +136,10 @@ AdbcStatusCode AdbcDriverInit(int version, void* raw_driver, struct AdbcError* e
 
   const char* dbg = getenv("ADBC_SHIM_DEBUG");
   debug_statements = dbg && *dbg;
-  const char* q = getenv("ADBC_RESULT_QUEUE_SIZE");
-  const char* p = getenv("ADBC_PREFETCH_CONCURRENCY");
+  char qbuf[128], pbuf[128];
   fprintf(stderr, LOG_PREFIX "wrapping %s (adbc %d); result_queue_size=%s prefetch_concurrency=%s\n",
-          path, version, (q && *q) ? q : "(unset)", (p && *p) ? p : "(unset)");
+          path, version, describe("ADBC_RESULT_QUEUE_SIZE", qbuf, sizeof(qbuf)),
+          describe("ADBC_PREFETCH_CONCURRENCY", pbuf, sizeof(pbuf)));
   return ADBC_STATUS_OK;
 }
 

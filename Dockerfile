@@ -28,8 +28,9 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org
     apt-get install -y nodejs && \
     rm -rf /var/lib/apt/lists/*
 
-# ADBC Snowflake driver + shim. Kept in its own stage so the compiler never
-# reaches the runtime image and so a broken driver/shim pair fails the BUILD.
+# ADBC Snowflake driver + shim (ADBC-SHIM). Kept in its own stage so the
+# compiler never reaches the runtime image and so a broken driver/shim pair
+# fails the BUILD. Removal: see packages/server/adbc-shim/README.md.
 #
 # Downloaded directly rather than through the upstream installer's `curl … | sh`,
 # and checked against the digest GitHub publishes: this is a 16MB native library
@@ -66,6 +67,8 @@ RUN mkdir -p /out && ADBC_ARCH="$(dpkg --print-architecture)" && \
     tar -xzf /tmp/adbc-snowflake.tar.gz -C /tmp libadbc_driver_snowflake.so && \
     mv /tmp/libadbc_driver_snowflake.so /out/libadbc_driver_snowflake.real.so && \
     rm -f /tmp/adbc-snowflake.tar.gz
+# ADBC-SHIM: compile + self-test. Without the shim this stage ends at the mv
+# above, with the driver kept under its real name.
 COPY packages/server/adbc-shim/ /src/adbc-shim/
 RUN gcc -O2 -Wall -Wextra -shared -fPIC -o /out/libadbc_driver_snowflake.so /src/adbc-shim/shim.c -ldl && \
     gcc -O2 -Wall -o /tmp/selftest /src/adbc-shim/selftest.c -ldl && \
@@ -160,7 +163,8 @@ COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
 # (libadbc_driver_snowflake.so) not found".
 #
 # The driver is downloaded, verified and wrapped in the `adbc-driver` stage
-# above; what arrives here is two files:
+# above; what arrives here is two files (ADBC-SHIM — without the shim it is the
+# one upstream file under its own name):
 #
 #   libadbc_driver_snowflake.so       the shim (packages/server/adbc-shim/), which
 #                                     forwards every call to the real driver and
@@ -177,16 +181,21 @@ COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
 # (base-deps) and the bake (@duckdb/node-api, in the builder) each write their
 # own, and this is the layer that ships.
 #
-# The closing `test`s are the verification — snowflake_version() cannot serve
-# as one, being a scalar that never touches the driver.
+# The closing count-match is the verification — one shim and one real driver
+# for EVERY extension directory, not "at least one somewhere": a pipeline's
+# status is its last command's, so a copy that failed in a non-final loop
+# iteration would otherwise pass. snowflake_version() cannot serve as a check,
+# being a scalar that never touches the driver.
 COPY --from=adbc-driver /out/libadbc_driver_snowflake.so /out/libadbc_driver_snowflake.real.so /tmp/adbc/
 RUN find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
       | while read -r d; do cp /tmp/adbc/libadbc_driver_snowflake.so /tmp/adbc/libadbc_driver_snowflake.real.so "$d/"; done && \
     rm -rf /tmp/adbc && \
-    test -n "$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.so -print -quit)" && \
-    test -n "$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.real.so -print -quit)"
+    ext=$(find /root/.duckdb/extensions -name snowflake.duckdb_extension | wc -l) && \
+    shim=$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.so | wc -l) && \
+    real=$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.real.so | wc -l) && \
+    test "$ext" -gt 0 && test "$shim" -eq "$ext" && test "$real" -eq "$ext"
 
-# The shim is opt-in: with neither variable set it is a pure pass-through and
+# ADBC-SHIM operator note. The shim is opt-in: with neither variable set it is a pure pass-through and
 # the driver behaves exactly as upstream ships it. To bound how far the driver
 # reads ahead of the consumer, set at deploy time:
 #

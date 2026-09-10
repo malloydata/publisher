@@ -54,19 +54,50 @@ and exposes no secret field, `ATTACH` option, setting or environment variable
 that reaches these options, so a wrapper at the driver boundary is the only
 place to set them without forking the extension.
 
-## When it goes away
+## When it goes away, and how
 
-This is an interim. Delete this directory, the `adbc-driver` stage's compile
-and self-test lines, the `.real.so` handling and the operator comment in the
-Dockerfile, and the rows in `docs/configuration.md`, once **either**:
+This is an interim. It comes out once **either**:
 
 - [iqea-ai/duckdb-snowflake#66](https://github.com/iqea-ai/duckdb-snowflake/issues/66)
-  ships: the extension exposes the options (proposed as
-  `SET snowflake_result_queue_size` / `SET snowflake_prefetch_concurrency`),
-  and the server issues the `SET` itself on the build and attach paths; or
+  ships and the baked extension is at that version: the extension exposes the
+  options (proposed as `SET snowflake_result_queue_size` /
+  `SET snowflake_prefetch_concurrency`), and the server issues the `SET` itself
+  on the build path (`federateSourceForPassthrough`) and the live `ATTACH` path
+  in `connection.ts`, best-effort so an older extension does not fail the read; or
 - [adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/issues/197)
-  ships: the driver bounds buffered records by consumption, as its
-  documentation already implies, and the default needs no help.
+  ships and `ADBC_SNOWFLAKE_VERSION` in the Dockerfile is bumped to it: the
+  driver bounds buffered records by consumption, as its documentation already
+  implies, and nothing needs to set anything.
+
+Every touchpoint carries the marker `ADBC-SHIM`, so the removal set is:
+
+```
+$ grep -rn 'ADBC-SHIM' --exclude-dir=node_modules .
+```
+
+Checklist:
+
+1. **`Dockerfile`, `adbc-driver` stage** — delete the `COPY packages/server/adbc-shim/`
+   and the `RUN gcc … selftest` lines; change the `mv` so the downloaded driver keeps
+   its real name (`/out/libadbc_driver_snowflake.so`). The stage itself stays: the
+   pinned-digest download and fail-the-build posture predate the shim.
+2. **`Dockerfile`, final stage** — `COPY --from=adbc-driver` only
+   `libadbc_driver_snowflake.so`; drop `.real.so` from the `cp` and from the
+   count-match (`shim` becomes the only count); delete the operator note block
+   that documents `ADBC_RESULT_QUEUE_SIZE` / `ADBC_PREFETCH_CONCURRENCY`.
+3. **`.github/workflows/build.yml`, docker smoke test 4a** — delete the
+   `.real.so` assertion line and the `ADBC-SHIM` note above it; restore the ✓
+   line's wording.
+4. **`docs/configuration.md`** — delete the two `ADBC_*` rows.
+5. **`packages/server/adbc-shim/`** — delete the directory (this README included).
+6. **Deployments** — remove `ADBC_RESULT_QUEUE_SIZE` / `ADBC_PREFETCH_CONCURRENCY`
+   from any deployment that set them; with the shim gone they are inert, not
+   harmful, so this can trail.
+7. **`RELEASE_NOTES.md`** — do not edit the stamped section; write a new
+   `[Unreleased]` entry saying the bound is now provided by the extension or the
+   driver and the variables are retired.
+
+`grep -rn 'ADBC-SHIM'` returning nothing is the definition of done.
 
 ## Files
 
@@ -95,7 +126,9 @@ $ docker run --rm --entrypoint sh <image> -c \
 ```
 
 At runtime the first Snowflake statement logs
-`[adbc-shim] wrapping … result_queue_size=<value or (unset)> prefetch_concurrency=…`
-on stderr — the line that says, per process, whether the bound is on. A driver that rejects an option logs `rejected by driver (status N)` and
+`[adbc-shim] wrapping … result_queue_size=<value | (unset) | (invalid "…", ignored)> prefetch_concurrency=…`
+on stderr — the line that says, per process, whether the bound is on. Values must be
+positive integers; anything else is reported there and not applied, so an operator
+typo such as `0` cannot print as if the bound were on. A driver that rejects an option logs `rejected by driver (status N)` and
 the statement proceeds unbounded — the behaviour without the shim, never a
 failed query.
