@@ -20,7 +20,9 @@ import { Model } from "./model";
  * whether or not the memo exists.
  */
 
-function sourceWithPreaggregateNote(name: string): SourceDef {
+// Same shape the other synthetic-ModelDef specs build (authorize_gate_walk,
+// partition_resolution); each keeps its own copy rather than sharing a fixture.
+function tableSource(name: string, extra: object = {}): SourceDef {
    return {
       type: "table",
       name,
@@ -28,6 +30,12 @@ function sourceWithPreaggregateNote(name: string): SourceDef {
       tablePath: name,
       connection: "duckdb",
       fields: [],
+      ...extra,
+   } as unknown as SourceDef;
+}
+
+function sourceWithPreaggregateNote(name: string): SourceDef {
+   return tableSource(name, {
       // A source-level declaration, which is a rejection: the grain would have
       // no measure to apply to. Used here only because it is the cheapest
       // annotation that makes the walk produce a finding.
@@ -45,21 +53,28 @@ function sourceWithPreaggregateNote(name: string): SourceDef {
             },
          ],
       },
-   } as unknown as SourceDef;
+   });
 }
 
-function modelWith(contents: Record<string, SourceDef>): Model {
+function modelWith(
+   contents: Record<string, SourceDef>,
+   onContentsRead?: () => void,
+): Model {
+   const modelDef = {
+      name: "synthetic.malloy",
+      exports: [],
+      get contents() {
+         onContentsRead?.();
+         return contents;
+      },
+   };
    return new Model(
       "test-pkg",
       "synthetic.malloy",
       {},
       "model",
       undefined,
-      {
-         name: "synthetic.malloy",
-         exports: [],
-         contents,
-      } as unknown as ModelDef,
+      modelDef as unknown as ModelDef,
       undefined,
       undefined,
       undefined,
@@ -93,16 +108,7 @@ describe("Model.preaggregateViolations memoization", () => {
    it("memoizes a clean model too, so the common case is not the slow path", () => {
       // The hot path in production is a package with nothing wrong with it, so
       // an empty result must be memoized as well as a non-empty one.
-      const model = modelWith({
-         orders: {
-            type: "table",
-            name: "orders",
-            dialect: "duckdb",
-            tablePath: "orders",
-            connection: "duckdb",
-            fields: [],
-         } as unknown as SourceDef,
-      });
+      const model = modelWith({ orders: tableSource("orders") });
       const first = model.preaggregateViolations();
       expect(first).toEqual([]);
       expect(model.preaggregateViolations()).toBe(first);
@@ -123,6 +129,25 @@ describe("Model.preaggregateViolations memoization", () => {
 
       expect(model.preaggregateViolations()).toHaveLength(1);
       expect(model.preaggregateViolations()[0].sourceName).toBe("orders");
+   });
+
+   it("reads the model contents once, however many times it is called", () => {
+      // The assertions above pin the returned VALUE as cached, which a
+      // recompute-and-discard implementation would also satisfy while burning
+      // exactly the CPU this change exists to remove. Counting reads of
+      // `contents` -- the walk's only entry into the model -- pins the work.
+      const contents = { orders: sourceWithPreaggregateNote("orders") };
+      let reads = 0;
+      const model = modelWith(contents, () => {
+         reads += 1;
+      });
+      reads = 0; // Ignore whatever construction itself touched.
+
+      model.preaggregateViolations();
+      model.preaggregateViolations();
+      model.preaggregateViolations();
+
+      expect(reads).toBe(1);
    });
 
    it("keeps each model's memo to itself", () => {
