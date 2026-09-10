@@ -1417,9 +1417,22 @@ paths:
             `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
             parameter repeated) is refused with 400 rather than read as `false`,
             which would answer 200 without recompiling.
+
+            A reload recompiles the package and replaces the served model, so it
+            requires the `X-Publisher-Reload-Secret` header and is refused with
+            403 when no reload secret is configured on the server. Requesting the
+            package without this parameter is a plain read and needs no header.
           required: false
           schema:
             type: boolean
+        - name: X-Publisher-Reload-Secret
+          in: header
+          description: |
+            Shared secret authorizing a `reload=true` request. Required only when
+            `reload=true`; ignored otherwise.
+          required: false
+          schema:
+            type: string
       responses:
         "200":
           description: Package details and metadata
@@ -1431,6 +1444,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
