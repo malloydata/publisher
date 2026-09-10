@@ -37,10 +37,20 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
  * other. The detail is logged server-side instead, and a server-authored
  * `callerSafe` message stays as it is.
  *
- * Every other error keeps its message. Most of what reaches here is operational
- * rather than sensitive -- a store failure, an unresolved environment, a thrown
- * string -- and blanking those returns callers to the unhelpful generic text
- * that `classifyToolError` exists to avoid.
+ * Every other error keeps its message, and the line is drawn by CLASS rather
+ * than by transport. `ConnectionError` is the one class whose message is always
+ * someone else's text -- a driver's -- so it is the one that is always unsafe to
+ * echo. Everything else reaching here is operational: a store failure, an
+ * unresolved environment, a thrown string. Blanking those returns callers to the
+ * generic text `classifyToolError` exists to avoid, and costs an agent the only
+ * sentence that tells it what to do next.
+ *
+ * That is deliberately NOT the same rule the HTTP mapper applies, which
+ * generalizes its unrecognized-error branch too. An unrecognized error there can
+ * carry a filesystem path (an ENOSPC naming an environment root, say), and it
+ * still can here -- so this is a narrower posture, justified by the endpoint
+ * being local and unauthenticated-by-design rather than by the text being safe.
+ * If this endpoint ever fronts a remote caller, this branch generalizes with it.
  *
  * @param operation The operation that failed (e.g., 'executeQuery').
  * @param error Optional: The underlying error object or message.
