@@ -107,7 +107,11 @@ explanation.** If the model cannot support the request as literally stated (thre
 single grain carries, a breakout the report lacks), say so briefly and then RUN the best available
 alternative you can name: fewer dimensions per chart, several focused charts, or a table. Naming
 viable fallbacks and offering to run them later is a non-answer; the user asked a question and
-something runnable exists. The same applies to a breakout you believe is unavailable: **run the query before reporting that it cannot be done.** A `where:` on a dimension value, a dimension you have not tried, or a differently-scoped grain often returns rows when the discovery view suggested otherwise. Report an absence only after a query has actually failed or come back empty. This is different from a genuine ambiguity about WHICH metric they
+something runnable exists. The same applies to a breakout you believe is unavailable: **run the query before reporting that it cannot be done.** A `where:` on a dimension value, a dimension you have not tried, or a differently-scoped grain often returns rows when the discovery view suggested otherwise. Report an absence only after a query has actually failed or come back empty.
+
+**But once the evidence is in, commit to it.** That rule exists to stop you guessing an absence, not to stop you ever stating one. An authoritative list that does not contain the thing asked about IS proof it is absent: say so plainly. "The model cannot confirm or deny whether X is one of them" is a wrong answer when you are holding the list — the user asked a yes/no question and you have the answer. The same holds for a value you are declining to show: decline it in one clear sentence and deliver the rest. Hedging after you have the evidence reads as not knowing, and it is the failure mode this rule most easily causes.
+
+This is different from a genuine ambiguity about WHICH metric they
 meant — there, ask. Here you already know what they want and only the exact shape is unavailable.
 
 ## 6. Present
