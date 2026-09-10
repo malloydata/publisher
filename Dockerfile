@@ -74,10 +74,20 @@ RUN mkdir -p /out && ADBC_ARCH="$(dpkg --print-architecture)" && \
     rm -f /tmp/adbc-snowflake.tar.gz
 # ADBC-SHIM: compile + self-test. Without the shim this stage ends at the mv
 # above, with the driver kept under its real name.
+#
+# adbc.h is the ABI the shim wraps, vendored byte-for-byte from
+# apache/arrow-adbc@7f35429e (c/include/arrow-adbc/adbc.h). The digest makes a
+# re-vendor deliberate: update it and the provenance line in the shim's README
+# together, and re-read the AdbcDriver struct layout when you do.
+ARG ADBC_HEADER_SHA256=b6ce3eb8394d4877af1693654d34bc11648a2dfb1f0eacc0c47d062ca69feb71
 COPY packages/server/adbc-shim/ /src/adbc-shim/
-RUN gcc -O2 -Wall -Wextra -shared -fPIC -o /out/libadbc_driver_snowflake.so /src/adbc-shim/shim.c -ldl && \
-    gcc -O2 -Wall -o /tmp/selftest /src/adbc-shim/selftest.c -ldl && \
-    /tmp/selftest /out/libadbc_driver_snowflake.so
+RUN echo "${ADBC_HEADER_SHA256}  /src/adbc-shim/adbc.h" | sha256sum -c - && \
+    gcc -O2 -Wall -Wextra -shared -fPIC -o /out/libadbc_driver_snowflake.so /src/adbc-shim/shim.c -ldl && \
+    gcc -O2 -Wall -Wextra -o /tmp/selftest /src/adbc-shim/selftest.c -ldl && \
+    /tmp/selftest /out/libadbc_driver_snowflake.so && \
+    mkdir -p /tmp/stub && \
+    gcc -O2 -Wall -Wextra -I/src/adbc-shim -shared -fPIC -o /tmp/stub/libadbc_driver_snowflake.real.so /src/adbc-shim/stub_driver.c && \
+    ADBC_REAL_DRIVER=/tmp/stub/libadbc_driver_snowflake.real.so /tmp/selftest /out/libadbc_driver_snowflake.so
 
 # Builder stage
 FROM oven/bun:1.3.13-slim AS builder

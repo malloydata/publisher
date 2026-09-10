@@ -36,9 +36,10 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 The Docker image now installs a small shim in front of the ADBC Snowflake driver
 that can set `adbc.rpc.result_queue_size` on every Snowflake statement. It is
 **opt-in**: with `ADBC_RESULT_QUEUE_SIZE` unset — the default — the shim is a
-pass-through and the driver behaves exactly as upstream ships it, so an image
-upgrade changes nothing. Set `ADBC_RESULT_QUEUE_SIZE=1` on the deployment to turn
-the bound on. Non-Docker installs are unaffected either way, because the
+pass-through and the driver behaves exactly as upstream ships it. The image itself
+is different (the extension now loads the shim, which loads the upstream driver
+beside it), but with the variable unset the shim sets nothing and forwards every
+call. Set `ADBC_RESULT_QUEUE_SIZE=1` on the deployment to turn the bound on. Non-Docker installs are unaffected either way, because the
 `snowflake` extension has no way to set this option and the server process does
 not touch it.
 

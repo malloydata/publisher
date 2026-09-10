@@ -23,6 +23,7 @@
 // process. Repeats of that line are expected, not a fault.
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,11 @@
 #define REAL_DRIVER_BASENAME "libadbc_driver_snowflake.real.so"
 #define LOG_PREFIX "[adbc-shim] "
 
+// Process-global, rewritten on EVERY AdbcDriverInit (once per pooled client) with
+// the same values, since one process loads one real driver: inits serialise on
+// the loader lock, so the unguarded writes are benign. The assumption that would
+// break this is two different real drivers in one process — then the last writer
+// wins for both. Not a case the extension can produce today.
 static AdbcStatusCode (*real_StatementNew)(struct AdbcConnection*, struct AdbcStatement*,
                                            struct AdbcError*);
 static AdbcStatusCode (*real_StatementSetOption)(struct AdbcStatement*, const char*, const char*,
@@ -46,8 +52,20 @@ static int is_positive_integer(const char* s) {
   if (!s || !*s) return 0;
   for (const char* p = s; *p; ++p)
     if (*p < '0' || *p > '9') return 0;
-  return strtol(s, NULL, 10) > 0;
+  // strtol saturates to LONG_MAX on overflow rather than failing, so a 30-digit
+  // value would pass a plain "> 0" check, be forwarded verbatim, and then be
+  // rejected by the driver per statement — exactly the mismatch this function
+  // exists to prevent. The driver stores the value in a C int, so cap there.
+  errno = 0;
+  char* end = NULL;
+  long v = strtol(s, &end, 10);
+  if (errno == ERANGE || !end || *end != '\0') return 0;
+  return v > 0 && v <= INT_MAX;
 }
+
+// Exported for selftest.c, which cannot see the statics above.
+int AdbcShimIsPositiveInteger(const char* s) { return is_positive_integer(s); }
+void* AdbcShimCapturedStatementNew(void) { return (void*)real_StatementNew; }
 
 // The value to apply for an env var, or NULL when unset/empty/invalid.
 static const char* option_value(const char* env) {
@@ -138,6 +156,11 @@ AdbcStatusCode AdbcDriverInit(int version, void* raw_driver, struct AdbcError* e
   if (status != ADBC_STATUS_OK) return status;
 
   struct AdbcDriver* driver = (struct AdbcDriver*)raw_driver;
+  // Self-wrap guard. The real driver overwrites every slot today, but a manager
+  // that reuses one AdbcDriver across inits with a driver that preserves populated
+  // slots would hand us our own StatementNew here — capturing it as "real" makes
+  // shim_StatementNew call itself forever. Already wrapped means nothing to do.
+  if (driver->StatementNew == shim_StatementNew) return ADBC_STATUS_OK;
   real_StatementNew = driver->StatementNew;
   real_StatementSetOption = driver->StatementSetOption;
   if (!real_StatementNew || !real_StatementSetOption) {
@@ -148,10 +171,17 @@ AdbcStatusCode AdbcDriverInit(int version, void* raw_driver, struct AdbcError* e
 
   const char* dbg = getenv("ADBC_SHIM_DEBUG");
   debug_statements = dbg && *dbg;
-  char qbuf[128], pbuf[128];
-  fprintf(stderr, LOG_PREFIX "wrapping %s (adbc %d); result_queue_size=%s prefetch_concurrency=%s\n",
-          path, version, describe("ADBC_RESULT_QUEUE_SIZE", qbuf, sizeof(qbuf)),
-          describe("ADBC_PREFETCH_CONCURRENCY", pbuf, sizeof(pbuf)));
+  const char* q = getenv("ADBC_RESULT_QUEUE_SIZE");
+  const char* p = getenv("ADBC_PREFETCH_CONCURRENCY");
+  // Quiet when the feature is off: with both variables unset there is nothing to
+  // report, and this runs once per pooled client. Anything set — valid or not —
+  // is worth a line, because that line is the operator's acceptance check.
+  if ((q && *q) || (p && *p) || debug_statements) {
+    char qbuf[128], pbuf[128];
+    fprintf(stderr, LOG_PREFIX "wrapping %s (adbc %d); result_queue_size=%s prefetch_concurrency=%s\n",
+            path, version, describe("ADBC_RESULT_QUEUE_SIZE", qbuf, sizeof(qbuf)),
+            describe("ADBC_PREFETCH_CONCURRENCY", pbuf, sizeof(pbuf)));
+  }
   return ADBC_STATUS_OK;
 }
 

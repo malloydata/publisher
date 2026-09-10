@@ -103,18 +103,37 @@ Checklist:
 
 - `shim.c` — the shim. Exports `AdbcDriverInit` (and `AdbcDriverSnowflakeInit`,
   the name a driver manager may derive from the file name). Finds the real
-  driver beside itself via `dladdr`; `ADBC_REAL_DRIVER` overrides the path.
-  Logs one line at load — `[adbc-shim] wrapping <path> (adbc <version>);
-  result_queue_size=… prefetch_concurrency=…` — and a line per rejected
-  option; `ADBC_SHIM_DEBUG=1` adds a line per applied option.
+  driver beside itself via `dladdr`; `ADBC_REAL_DRIVER` overrides the path (a
+  test hook). Fails closed: a real driver that cannot be loaded returns
+  `ADBC_STATUS_INTERNAL` rather than silently serving without one. Guards
+  against wrapping itself if a manager re-inits an already-wrapped table. Logs
+  one line per driver load — `[adbc-shim] wrapping <path> (adbc <version>);
+  result_queue_size=… prefetch_concurrency=…` — **only when at least one
+  variable is set** (valid or invalid) or `ADBC_SHIM_DEBUG=1`; with the feature
+  off it is silent. A rejected option always logs. Values must be positive
+  integers that fit a C `int`; `strtol` saturation is checked, so a 30-digit
+  value is reported invalid rather than forwarded.
 - `selftest.c` — build-time check run in the Dockerfile's `adbc-driver` stage:
-  `dlopen`s the shim as the driver manager would, calls `AdbcDriverInit`, and
-  asserts the driver table is populated with the shim's `StatementNew` in place.
-  No network, no credentials; a broken shim/driver pair fails the image build.
-- `adbc.h` — the ADBC C header, vendored verbatim from
-  [apache/arrow-adbc](https://github.com/apache/arrow-adbc/blob/main/c/include/arrow-adbc/adbc.h)
-  (Apache-2.0; header retained). The `AdbcDriver` struct layout is the ABI the
-  shim wraps, so it is the upstream definition and not a local copy of it.
+  `dlopen`s the shim as the driver manager would, calls `AdbcDriverInit`, asserts
+  `StatementNew` resolves into the shim by exact basename and `DatabaseNew` into
+  the real driver, re-inits the same table to prove the self-wrap guard, and runs
+  the validator over an accept/reject matrix including the `strtol` overflow
+  cases. No network, no credentials; a broken shim/driver pair fails the image
+  build. Run twice in the Dockerfile: against the real driver (proves the chain) and
+  against `stub_driver.c` (proves the guard). It cannot exercise the applied-option
+  path (no connection) — see below.
+- `stub_driver.c` — test fixture, never installed: a driver that fills only EMPTY
+  table slots. The real driver overwrites every slot on init, so only against this
+  stub can a second init hand the shim its own `StatementNew` back — the case the
+  self-wrap guard exists for, and one a driver bump could make real.
+- `adbc.h` — the ADBC C header, vendored byte-for-byte from
+  [apache/arrow-adbc@7f35429e](https://github.com/apache/arrow-adbc/blob/7f35429e502f3cbe8fd827e288c12dbd8f4cea9f/c/include/arrow-adbc/adbc.h)
+  (`c/include/arrow-adbc/adbc.h`, 2026-02-13; Apache-2.0, header retained),
+  sha256 `b6ce3eb8394d4877af1693654d34bc11648a2dfb1f0eacc0c47d062ca69feb71`. The
+  Dockerfile checks that digest before compiling, so a re-vendor is a deliberate
+  edit to both. The `AdbcDriver` struct layout is the ABI the shim wraps; both
+  wrapped slots sit in the 1.0.0 region of the struct, ahead of the 1.1.0
+  additions, so a manager allocating the smaller struct is still safe.
 
 ## Verifying it in a running image
 
@@ -125,12 +144,14 @@ $ docker run --rm --entrypoint sh <image> -c \
 …/libadbc_driver_snowflake.real.so   # the driver
 ```
 
-At runtime, each time the extension loads the driver, the shim logs
-`[adbc-shim] wrapping … result_queue_size=<value | (unset) | (invalid "…", ignored)> prefetch_concurrency=…`
-on stderr — the line that says whether the bound is on. It is **per driver load, not
-per process**: the extension opens one ADBC database per pooled Snowflake client and
-the driver manager re-runs `AdbcDriverInit` for each, so the line repeats once per
-client and that is expected. Values must be positive integers; anything else is
+At runtime, each time the extension loads the driver **with at least one variable
+set**, the shim logs
+`[adbc-shim] wrapping … result_queue_size=<value | (invalid "…", ignored)> prefetch_concurrency=…`
+on stderr — the line that says whether the bound is on. With both unset it is silent
+(set `ADBC_SHIM_DEBUG=1` to see it anyway). It is **per driver load, not per
+process**: the extension opens one ADBC database per pooled Snowflake client and the
+driver manager re-runs `AdbcDriverInit` for each, so the line repeats once per client
+and that is expected. Values must be positive integers; anything else is
 reported there and not applied, so an operator typo such as `0` cannot print as if
 the bound were on.
 
