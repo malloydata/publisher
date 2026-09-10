@@ -229,6 +229,16 @@ enforcement; the proxy itself does not reject writes. A missing `connectionUri`
 fails at startup with an actionable error rather than a generic
 `Unsupported connection type`.
 
+> **The proxy forwards SQL verbatim, and that is load-bearing.** A `publisher`
+> connection reports the REMOTE connection's `dialectName`, so the local Malloy
+> compiler generates SQL for that dialect and the remote runs it as sent. Where
+> the dialect finalizes a query -- Postgres collapses its result into a single
+> `row` column, which its connector unwraps -- the statement arrives already
+> finalized, and the remote's `sqlQuery` endpoint deliberately leaves it alone.
+> Finalizing it a second time would not fail; it would return
+> `{"row": {...}}` and the caller would read nulls off a level nothing strips.
+> Pinned in `connection.controller.spec.ts`.
+
 **Known limitation:** the `accessToken` is user-scoped and short-lived. The
 server uses the token as configured and does not refresh it, so a long-running
 `--watch-env` session can outlive the token. Token refresh/expiry is owned by the

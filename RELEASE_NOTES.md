@@ -31,6 +31,39 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — plain SQL through `sqlQuery` now returns rows on Postgres
+
+`POST /api/v0/environments/{env}/connections/{conn}/sqlQuery` failed for every
+plain statement against a Postgres connection, `SELECT 1` included, with
+`The "string" argument must be of type string or an instance of Buffer or
+ArrayBuffer. Received undefined` and HTTP 502.
+
+Malloy's Postgres dialect finalizes a query by collapsing its result into a
+single JSON column named `row`, and `@malloydata/db-postgres` unwraps that
+column from every row it returns. A statement the caller wrote does not project
+it, so the driver handed back nothing readable. It had never worked through this
+endpoint; before the response caps landed it returned an array of nulls rather
+than failing, so nothing said so.
+
+An eligible statement is now finalized on the way in, for any dialect whose
+connector expects it -- read off `Dialect.hasFinalStage`, which is Postgres
+alone today, rather than hardcoded. No request change: `SELECT 1` returns a row.
+
+What is deliberately NOT finalized, and still runs exactly as sent:
+
+- DDL, `SET`, `EXPLAIN`, `SHOW`, a data-modifying CTE, and Postgres'
+  `SELECT ... INTO`. None can sit in the subquery position the wrapper uses, and
+  they returned no rows to unwrap in the first place, so they already worked.
+- A statement that already projects the column. This is what a `publisher` proxy
+  connection forwards: it reports the REMOTE's dialect, so the Malloy compiler
+  on the far side finalized the statement before it was sent. Finalizing it
+  again would add a level the connector does not strip, and the caller would
+  read nulls off `{"row": {...}}` with no error to notice. The Malloy CLI and
+  the VS Code extensions reach Publisher this way.
+
+A statement in neither group that still produces rows the driver cannot read now
+answers 400 naming the wrapper to apply by hand, instead of the 502 above.
+
 ## [0.2.7] — bound how far the Snowflake driver reads ahead of a slow consumer
 
 The Docker image now installs a small shim in front of the ADBC Snowflake driver

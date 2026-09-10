@@ -436,15 +436,17 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
    function buildStreamingController(opts: {
       rows: QueryRecord[];
       honorRowLimit?: boolean;
+      dialectName?: string;
    }): {
       controller: ConnectionController;
       seenSql: { value: string | undefined };
       seenOptions: { value: RunSQLOptions | undefined };
    } {
-      const { rows, honorRowLimit = true } = opts;
+      const { rows, honorRowLimit = true, dialectName } = opts;
       const seenSql = { value: undefined as string | undefined };
       const seenOptions = { value: undefined as RunSQLOptions | undefined };
       const fakeConnection = {
+         dialectName,
          canStream(): true {
             return true;
          },
@@ -632,6 +634,85 @@ describe("ConnectionController.getConnectionQueryData streaming", () => {
       const signal = seenOptions.value?.abortSignal;
       expect(signal).toBeInstanceOf(AbortSignal);
       expect(signal?.aborted).toBe(false);
+   });
+
+   // The dialect/connector final-stage contract. Postgres' connector unwraps a
+   // `row` column from every row, so a caller's plain SELECT has to be
+   // finalized on the way in or it comes back as nullish rows. Eligibility
+   // itself is covered in service/final_stage_sql.spec.ts; these pin that the
+   // controller applies the verdict, and what a statement it cannot finalize
+   // reports back.
+   it("finalizes a plain SELECT for a dialect whose connector unwraps a row column", async () => {
+      const { controller, seenSql } = buildStreamingController({
+         rows: [{ x: 1 }],
+         dialectName: "postgres",
+      });
+
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT 1 AS x",
+         "",
+      );
+
+      expect(seenSql.value).not.toBe("SELECT 1 AS x");
+      expect(seenSql.value).toContain("SELECT 1 AS x");
+      expect(seenSql.value).toContain("row_to_json");
+   });
+
+   it("passes an already-finalized statement through untouched", async () => {
+      // A `publisher` proxy connection reports the remote's dialect, so the SQL
+      // arriving here is already finalized by the compiler on the far side.
+      // Finalizing it again would return `{"row": {...}}` -- nulls read off a
+      // level the connector does not strip, with no error to notice.
+      const compiled =
+         'WITH __stage0 AS (SELECT 1 AS "x")\nSELECT row_to_json(finalStage) as row FROM __stage0 AS finalStage';
+      const { controller, seenSql } = buildStreamingController({
+         rows: [{ x: 1 }],
+         dialectName: "postgres",
+      });
+
+      await controller.getConnectionQueryData("env", "conn", compiled, "");
+
+      expect(seenSql.value).toBe(compiled);
+   });
+
+   it("passes DDL through untouched", async () => {
+      const { controller, seenSql } = buildStreamingController({
+         rows: [],
+         dialectName: "postgres",
+      });
+
+      await controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "CREATE TABLE t (a int)",
+         "",
+      );
+
+      expect(seenSql.value).toBe("CREATE TABLE t (a int)");
+   });
+
+   it("answers a nullish row with an actionable 400 rather than a driver fault", async () => {
+      // What the caller used to get here was a 502 reading `The "string"
+      // argument must be of type string or an instance of Buffer or
+      // ArrayBuffer. Received undefined` -- the byte cap's
+      // `Buffer.byteLength(JSON.stringify(undefined))`, which names nothing the
+      // caller can act on and does not fire at all when the byte cap is off.
+      process.env.PUBLISHER_MAX_RESPONSE_BYTES = "0";
+      const { controller } = buildStreamingController({
+         rows: [undefined as unknown as QueryRecord],
+         dialectName: "postgres",
+      });
+
+      const call = controller.getConnectionQueryData(
+         "env",
+         "conn",
+         "SELECT row_to_json(t) AS payload FROM t",
+         "",
+      );
+      await expect(call).rejects.toBeInstanceOf(BadRequestError);
+      await expect(call).rejects.toThrow("row_to_json");
    });
 });
 
