@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { Box, Paper, Typography } from "@mui/material";
+import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import type { GivenValue } from "../../hooks/givenValue";
 import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
@@ -15,11 +17,19 @@ import { useServer } from "../ServerProvider";
 export interface DashboardTileProps {
    environmentName: string;
    packageName: string;
+   /** The package version the dashboard's URI named, when it named one. */
+   versionId?: string;
    modelPath: string;
    /** A named query (the single-query form). */
    queryName?: string;
    /** A run expression (a composite tile). */
    tile?: string;
+   /** `# label` on the view the tile names, when it has one. */
+   label?: string;
+   /** `# subtitle` on it: a second line under the heading. */
+   subtitle?: string;
+   /** `# borderless` on it: no card around the result. */
+   borderless?: boolean;
    /**
     * The whole applied control row, NOT this tile's share of it. The narrowing
     * happens here, in `givensToRequest` below, using {@link givenNames}: the
@@ -42,13 +52,14 @@ export interface DashboardTileProps {
 }
 
 /**
- * A composite tile's heading, read off its run expression: the last step's name
- * as a sentence, so `scoped_sales -> sales_by_month` is titled "Sales by month".
+ * A composite tile's heading when the view it names carries no `# label`: the
+ * last step's name as a sentence, so `scoped_sales -> sales_by_month` is titled
+ * "Sales by month".
  *
- * A tile in the single-query form gets its heading from a `# label` on the nest,
- * and a composite tile has no nest to label: the entry is a string in
- * `tiles=[…]`. Deriving it keeps the two forms reading alike instead of one
- * showing titles and the other showing code.
+ * The label itself is the same `# label` a nest gets in the single-query form,
+ * read off the view server-side, so one view is titled identically whichever way
+ * it is consumed. This derivation is the fallback for an untitled view, so a
+ * tile shows a heading rather than code.
  */
 export function tileTitle(tile: string): string {
    const lastStep = tile.split("->").at(-1)?.trim() ?? tile;
@@ -67,9 +78,13 @@ export function tileTitle(tile: string): string {
 export function DashboardTile({
    environmentName,
    packageName,
+   versionId,
    modelPath,
    queryName,
    tile,
+   label,
+   subtitle,
+   borderless,
    givens,
    declaredTypes,
    givenNames,
@@ -78,6 +93,7 @@ export function DashboardTile({
    drill,
 }: DashboardTileProps) {
    const { apiClients } = useServer();
+   const { theme } = usePublisherTheme();
    const requestGivens = givensToRequest(givens, declaredTypes, givenNames);
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
@@ -85,6 +101,7 @@ export function DashboardTile({
          "dashboardTile",
          environmentName,
          packageName,
+         versionId,
          modelPath,
          queryName,
          tile,
@@ -101,6 +118,7 @@ export function DashboardTile({
                queryName,
                query: tile !== undefined ? `run: ${tile}` : undefined,
                givens: requestGivens,
+               versionId,
             },
          ),
       ...CHART_RESULT_QUERY_OPTIONS,
@@ -110,24 +128,52 @@ export function DashboardTile({
       <Paper
          elevation={0}
          sx={{
-            border: 1,
-            borderColor: "divider",
-            borderRadius: 1,
+            // The instance theme's border, not MUI's `divider`: the renderer
+            // card's edge is this same value, and a card that agrees with the
+            // theme everywhere except its outline still reads as a different
+            // card. Radius stays on the host's `shape.borderRadius`, which the
+            // renderer card is now pointed at too.
+            //
+            // `# borderless` asks for the result with no card, which the renderer
+            // honours by dropping background, border, radius and most padding on
+            // its own `.dashboard-item`. Same here, so the tag reads the same on
+            // both forms.
+            border: borderless ? "none" : theme.border,
+            borderRadius: borderless ? 0 : 1,
+            background: borderless ? "none" : undefined,
             overflow: "hidden",
             minHeight: 120,
+            p: borderless ? "12px 0" : `${DASHBOARD_CARD_PADDING_PX}px`,
          }}
       >
          {tile !== undefined && (
-            <Box sx={{ px: 2.5, pt: 2 }}>
+            <Box sx={{ pb: 1.5 }}>
                <Typography
                   variant="subtitle2"
-                  sx={{ fontWeight: 500, color: "text.secondary" }}
+                  sx={{
+                     fontWeight: 500,
+                     color: theme.tileTitle,
+                     fontFamily: theme.font.family,
+                  }}
                   // The expression is what actually ran, so it stays reachable
                   // as a tooltip rather than as the heading.
                   title={tile}
                >
-                  {tileTitle(tile)}
+                  {label ?? tileTitle(tile)}
                </Typography>
+               {subtitle !== undefined && (
+                  <Typography
+                     variant="caption"
+                     sx={{
+                        display: "block",
+                        color: theme.tileTitle,
+                        fontFamily: theme.font.family,
+                        opacity: 0.8,
+                     }}
+                  >
+                     {subtitle}
+                  </Typography>
+               )}
             </Box>
          )}
          {!isSuccess && !isError && <Loading text="Running…" />}

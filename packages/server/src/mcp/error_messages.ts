@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { ConnectionError, logInternalFailure } from "../errors";
+
 export interface ErrorDetails {
    message: string;
    suggestions: string[];
@@ -26,6 +28,30 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
 
 /**
  * Generates generic error details for internal server errors.
+ *
+ * A `ConnectionError` is withheld from the caller here for the same reason
+ * `internalErrorToHttpError` withholds it on the HTTP side: it wraps a driver
+ * message that can name an internal host and port, echo the caller's SQL, or
+ * distinguish refused from timed-out from auth-failed. Withholding it on only
+ * one of the two transports would leave the same text retrievable over the
+ * other. The detail is logged server-side instead, and a server-authored
+ * `callerSafe` message stays as it is.
+ *
+ * Every other error keeps its message, and the line is drawn by CLASS rather
+ * than by transport. `ConnectionError` is the one class whose message is always
+ * someone else's text -- a driver's -- so it is the one that is always unsafe to
+ * echo. Everything else reaching here is operational: a store failure, an
+ * unresolved environment, a thrown string. Blanking those returns callers to the
+ * generic text `classifyToolError` exists to avoid, and costs an agent the only
+ * sentence that tells it what to do next.
+ *
+ * That is deliberately NOT the same rule the HTTP mapper applies, which
+ * generalizes its unrecognized-error branch too. An unrecognized error there can
+ * carry a filesystem path (an ENOSPC naming an environment root, say), and it
+ * still can here -- so this is a narrower posture, justified by the endpoint
+ * being local and unauthenticated-by-design rather than by the text being safe.
+ * If this endpoint ever fronts a remote caller, this branch generalizes with it.
+ *
  * @param operation The operation that failed (e.g., 'executeQuery').
  * @param error Optional: The underlying error object or message.
  * @returns ErrorDetails object.
@@ -35,20 +61,35 @@ export function getInternalError(
    error?: unknown,
 ): ErrorDetails {
    const baseMessage = `An unexpected internal error occurred during ${operation}.`;
+   const suggestions = [
+      "Try the request again later.",
+      "If the problem persists, check server logs or contact support.",
+   ];
+   if (error instanceof ConnectionError && !error.callerSafe) {
+      // warn, not error: the same reasoning as the HTTP 502 branch -- this is
+      // the caller's or the warehouse's failure and a caller can drive it in a
+      // loop, so it must not fill the error log or move an error-rate dashboard.
+      logInternalFailure(
+         `Upstream connection error during ${operation}`,
+         error,
+         "warn",
+      );
+      return {
+         message: `${baseMessage}: Upstream connection error.`,
+         suggestions,
+      };
+   }
    const errorMessage = error instanceof Error ? error.message : String(error);
    return {
       message: error ? `${baseMessage}: ${errorMessage}` : baseMessage,
-      suggestions: [
-         "Try the request again later.",
-         "If the problem persists, check server logs or contact support.",
-      ],
+      suggestions,
    };
 }
 
 /**
  * Every construct restricted mode refuses in ad-hoc query text, in one place
  * because two surfaces state it: the suggestion below, which a caller reads
- * only after tripping the rule, and `malloy_executeQuery`'s `query` param doc,
+ * only after tripping the rule, and `execute_query`'s `query` param doc,
  * which it reads before. Two hand-maintained copies drift, and a rule that is
  * missing from the list an agent is handed reads as permission.
  *
@@ -121,7 +162,7 @@ export function getMalloyErrorDetails(
          return {
             message: `Error during ${operation} for resource '${modelIdentifier}': ${causes}`,
             suggestions: [
-               `Suggestion: This query ran in restricted mode: ad-hoc query text may not use ${RESTRICTED_CONSTRUCTS}. These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with malloy_compile, save, call malloy_reloadPackage, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems.`,
+               `Suggestion: This query ran in restricted mode: ad-hoc query text may not use ${RESTRICTED_CONSTRUCTS}. These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with compile_model, save, call reload_package, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems.`,
             ],
          };
       }
@@ -174,21 +215,21 @@ export function getMalloyErrorDetails(
          refined = true;
          const [, viewName, sourceName] = viewNotFoundMatch;
          suggestions.unshift(
-            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling or call malloy_getContext with sourceName '${sourceName}' to see the list of available views. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
+            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling, or list that source's views with get_context: pass search_targets [{"target_type": "view"}] and a scopes entry whose source is '${sourceName}'. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
          );
       } else if (sourceNotFoundMatch) {
          refined = true;
          const [, sourceName] = sourceNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Source '${sourceName}' was not found or could not be accessed. Verify its definition (e.g., \`source: ${sourceName} is table('...')\` or \`duckdb.sql("...")\`) and ensure any associated connections are valid.`,
-            `Suggestion: Check the spelling of '${sourceName}'. You can list the sources in the package using malloy_getContext.`,
+            `Suggestion: Check the spelling of '${sourceName}'. List the package's sources with get_context: pass search_targets [{"target_type": "source"}] and a scopes entry naming the environment and package.`,
          );
       } else if (queryNotFoundMatch) {
          refined = true;
          const [, queryName] = queryNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Named query '${queryName}' was not found. Verify its definition (e.g., \`query: ${queryName} is source_name -> { ... }\`) within the model '${modelIdentifier}'.`,
-            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. You can list named queries using malloy_getContext.`,
+            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. List them with get_context: pass search_targets [{"target_type": "view"}], which covers named queries too.`,
          );
       } else if (fieldNotFoundMatch) {
          refined = true;
@@ -196,7 +237,7 @@ export function getMalloyErrorDetails(
             fieldNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Field '${fieldName}' was not found in ${fieldContextType} '${fieldContextName}'. Check the spelling of the field name within the definition of '${fieldContextName}'.`,
-            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. You can inspect the ${fieldContextType}'s fields using malloy_getContext.`,
+            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. Inspect its fields with get_context: pass search_targets [{"target_type": "dimension"}, {"target_type": "measure"}], scoped to the source that holds it.`,
          );
       } else if (referenceErrorMatch) {
          refined = true;

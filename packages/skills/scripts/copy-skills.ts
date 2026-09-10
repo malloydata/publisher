@@ -14,17 +14,44 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isExcluded } from "./exclusions";
 import { locateFrontmatterClose } from "./frontmatter";
+import { manifestPath, manifestSkillNames } from "./manifest";
 
 const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = path.join(packageDir, "..", "..", "skills");
 const destination = path.join(packageDir, "skills");
+
+// What ships is the manifest, not whatever happens to be in skills/.
+//
+// The manifest is exhaustive by construction, not a way to hold a skill back:
+// manifest.spec.ts fails on any skill in the tree the manifest omits, and
+// check-pack.ts fails the publish on the same state. So this filter never
+// subtracts today. It earns its keep by making the set stated rather than
+// incidental -- registering a skill is one line, forgetting is a red build --
+// and by giving `groups` something to name.
+const shipping = new Set(manifestSkillNames());
+const missing = [...shipping].filter(
+   (name) => !fs.existsSync(path.join(source, name, "SKILL.md")),
+);
+if (missing.length > 0) {
+   console.error(
+      `${manifestPath} names ${missing.length} skill(s) with no SKILL.md in ` +
+         `${source}: ${missing.join(", ")}`,
+   );
+   process.exit(1);
+}
 
 fs.rmSync(destination, { recursive: true, force: true });
 fs.cpSync(source, destination, {
    recursive: true,
    filter: (from: string) => {
       const relative = path.relative(source, from);
-      return relative === "" || !isExcluded(relative);
+      if (relative === "") return true;
+      if (isExcluded(relative)) return false;
+      // Keep the manifest's skills and everything under them; drop the rest.
+      // path.sep rather than "/" so this holds on Windows, which the
+      // cross-platform job actually runs.
+      const [top] = relative.split(path.sep);
+      return shipping.has(top);
    },
 });
 

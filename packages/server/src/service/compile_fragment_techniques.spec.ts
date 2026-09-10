@@ -8,7 +8,7 @@ import path from "path";
 import { Environment } from "./environment";
 
 /**
- * The fragment-checking advice in malloy_compile's tool description, pinned
+ * The fragment-checking advice in compile_model's tool description, pinned
  * against the REAL compiler.
  *
  * That description tells an agent how to validate part of a source: send a view
@@ -37,7 +37,7 @@ source: sales is base extend {
 }
 `;
 
-describe("malloy_compile: checking part of a source", () => {
+describe("compile_model: checking part of a source", () => {
    let rootDir: string;
    let env: Environment;
 

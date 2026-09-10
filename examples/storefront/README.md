@@ -23,6 +23,7 @@ no conversion step. **No credentials required.**
 | `storefront.malloynb` | A guided-tour notebook: the business overview dashboard plus growth, seasonality, geography, category, brand, and top-seller views. |
 | `givens.malloy` | The data app's filter controls, declared as `given:` parameters with the tags that say how each one renders. |
 | `data_app.malloy` | `scoped_orders`: `order_items` narrowed by those givens. Every tile on the page queries it. |
+| `dashboards/overview.malloy` | A [dashboard](../../docs/dashboards.md): `## artifact { tiles=[…] }` naming views off `scoped_orders`, laid out by `# colspan` and `# break` on each. Served at `/examples/storefront/dashboards/overview`. The same figures as the model's `business_overview` view, which is the one-query form of the same page. |
 | `public/index.html` | A no-build [HTML data app](../../docs/html-data-apps.md): a four-tab Chart.js dashboard. Served at `/environments/examples/packages/storefront/`. |
 | `public/app/` | The page's ES modules (state and rendering, controls, charts, tables, formatting). No build step: the browser loads them directly. |
 | `public/vendor/chart.umd.js` | Chart.js v4.5.0 (MIT), vendored so the page renders where a CDN is blocked. |

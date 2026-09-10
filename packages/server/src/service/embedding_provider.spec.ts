@@ -11,12 +11,13 @@ import {
    getEmbeddingProvider,
    prepareEmbeddingInput,
 } from "./embedding_provider";
-import { EmbeddingConfig } from "../config";
+import { DEFAULT_EMBEDDING_MIN_SIMILARITY, EmbeddingConfig } from "../config";
 
 const CONFIG: EmbeddingConfig = {
    apiKey: "test-key",
    model: "test-model",
    baseUrl: "https://embeddings.example.com/v1",
+   minSimilarity: DEFAULT_EMBEDDING_MIN_SIMILARITY,
 };
 
 interface CapturedRequest {

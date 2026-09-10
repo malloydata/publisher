@@ -31,7 +31,481 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — a colocated persist into a non-default schema now lands there (ACTION REQUIRED)
+## [Unreleased] — 500 and 502 responses no longer echo the internal error
+
+A 500 or a 502 returned `error.message` verbatim. That message is not always
+something a caller should see: an unrecognised internal failure carries a stack
+fragment or a filesystem path, and a connection failure wraps the driver's own
+text, which can name an internal host and port, echo the SQL the caller sent, or
+distinguish "refused" from "timed out" from "auth failed" -- a reachability
+oracle for anything the server can reach.
+
+Both now answer with a fixed message (`Internal server error.`,
+`Upstream connection error.`) and the real error is logged server-side instead.
+The status codes are unchanged.
+
+The MCP endpoint gets the same treatment for the same reason. An unclassified
+tool error is answered by `getInternalError`, and a connection failure matches
+none of the classifier's branches, so the driver text withheld over HTTP would
+otherwise have stayed readable over `/mcp`. It is now withheld there too. Only
+that class is withheld: an operational failure keeps its message, because a tool
+error that says nothing is what the classifier exists to avoid.
+
+Two things are deliberately *not* generalised, because the point is to drop what
+a caller cannot use rather than everything:
+
+- Every 4xx keeps its message. A 400 compile error, a 404 naming the package it
+  could not find, and the 424 that quotes an offending annotation are all
+  actionable, and a caller needs them to fix the request.
+- A 502 the server wrote itself keeps its message too. A message the server
+  composed names nothing internal, so it is marked caller-safe at the point it is
+  raised; only the driver passthrough is generalised. A new throw site that does
+  not mark itself is generalised by default. (The table-not-found case that used
+  to rely on this is a 404 in 0.2.6, so it no longer reaches the 502 branch at
+  all.)
+
+If you parse the body of a 5xx rather than reading its status, that text is now
+fixed. The detail moved to the logs, which is where it was always meant to be:
+before this change it reached them only incidentally, via response-body logging.
+
+---
+
+## [0.2.6] — a bad table reference answers 404 or 400, not 502
+
+A table path that names nothing, or that the dialect cannot parse at all, is the
+caller's mistake. Both used to be reported as `502`, so browsing for a table that
+turned out not to exist read as a server fault: it counted against a downstream
+server-error budget and, on one deployment, paged on-call twice in an afternoon for
+what was a modeler mistyping a table name.
+
+`404` was already the declared contract for these routes and `502` appears in no spec
+for them, so this is conformance rather than a break. `400` is newly declared
+alongside it.
+
+**A 404 now carries `reason: "TABLE_NOT_FOUND"`.** A caller that retries a 404 by
+re-resolving which server hosts a resource has to tell that case apart from a table
+that is simply absent, and the status alone cannot say which. `Error` also gained
+`code`, the status repeated in the body. Both are optional, so an existing client is
+unaffected — but a client built by a strict generator against the previous spec will
+reject the new fields until it is regenerated.
+
+`reason` is an open string rather than an enum on purpose. A generator renders an
+enum closed, so adding a second value later would break every client generated
+before it, on the one field whose whole purpose is to grow. Treat an unrecognized
+value as absent.
+
+**Only two dialects are classified, and the rest deliberately still answer 502.**
+
+| Dialect | A missing table now | Why |
+|---|---|---|
+| BigQuery | `404`, or `400` for a path with no dot | The driver returns `error.message` as a string instead of throwing, discarding the structured 404 the Google client handed it, so the text is the only surviving signal. `Not found: Table\|Dataset` maps to 404; `Improper table path` to 400, which is every prefix typed before the first dot |
+| DuckDB, and the Azure and DuckLake connections built on it | `404` | Three thrown shapes, matched where they actually arrive — in the catch. `DuckDBCommon.fetchTableSchema` either returns a structDef or throws, so it never resolves an empty schema |
+| Postgres | still `502` | A missing table answers with a generic `Unable to read schema.`, indistinguishable from any other failure |
+| Snowflake | still `502` | `DESCRIBE TABLE` says `does not exist or not authorized`, conflating absence with denial by design |
+
+Guessing on either of the bottom two would be worse than a 502, and anything
+unrecognized stays `ConnectionError`/502 so that a real outage stays loud. A
+not-found is now logged at warn rather than error, so a path being typed cannot fill
+the error log.
+
+---
+
+## [0.2.5] (BREAKING) — `#(partition)` is a column and given pair, grafted at read time
+
+`#(partition)` used to name a given and leave the predicate to the author: a
+`filter<T>` given plus a matching `where:` in the source body. It is now a single
+annotation carrying both facts, in the shape `#(authorize)` already uses, and the
+server builds the predicate itself.
+
+```malloy
+// before
+given:
+  TENANT :: filter<string>
+#(partition) $TENANT
+source: tenant_orders is duckdb.table('orders.csv') extend {
+  where: tenant ~ $TENANT
+}
+
+// now
+given:
+  TENANT :: string
+#(partition) tenant = $TENANT
+source: tenant_orders is duckdb.table('orders.csv')
+```
+
+**What to do.** Rewrite the annotation as `<field path> = $GIVEN`, drop the
+`where:` from the source body, and change the given's type from `filter<string>` to
+`string`. The old form does not carry forward.
+
+**The given is a plain scalar type now, not `filter<T>`.** The server builds the
+predicate as an equality, so the given is compared with `=` and wants a plain
+`string` (or another scalar). `filter<T>` was only ever needed by the old form's `~`
+match against an author-written `where:`.
+
+**Where the filter lands.** The pair is grafted onto the entry point's own
+`filterList` through the same mechanism `#(authorize)` uses, so a plain source read,
+a named query invoked by `queryName` alone, an ad-hoc caller-declared derivation, and
+a notebook cell are all filtered. It composes conjunctively with an `#(authorize)`
+gate. It is skipped under `bypassAuthorize`, the trusted server-side bypass, which
+is how a trusted scan reads across every partition at once; `bypassFilters`, the
+legacy `#(filter)` control, never skips it.
+
+**Three fail-closed protections now check `#(partition)` explicitly.** Moving the
+predicate out of the source body removes the given reference those checks keyed on,
+so each gained its own check rather than inheriting one: storage-destination
+materialization eligibility, colocated persist, and the storage and pre-aggregation
+routing veto.
+
+**Refused at publish, each with its own cause.** A composite source that declares
+`#(partition)` itself or whose member declares it; a marker the entry-point resolver
+cannot reach, meaning one line too low — on a dimension, a view, or inside an inline
+`compose(...)`; and a malformed annotation body or a duplicate given. An unreadable
+ancestry chain is treated as a marker being present and denies, rather than reading
+as unpartitioned.
+
+The composite case was measured, not theorized: wrapping a partitioned source in
+`compose(...)` read **every** partition. Grafting resolves to the composite's own
+contents entry, while a composite run target compiles against a distinct resolved
+member branch, so the filter never landed. A marker on the composite itself denied
+loudly; a marker on one of its members was silent, which is why both are now refused.
+
+`BuildPlan.refusedSources` gained `partition` to its reason enum alongside
+`free_parameter`, `given` and `authorize`.
+
+---
+
+## [0.2.5] — a persist name must now be a plain identifier path
+
+`#@ persist name=` accepts the table name a source materializes into, and that
+value is pasted into the `CREATE OR REPLACE TABLE` and `DROP TABLE IF EXISTS`
+statements the builder runs. It was only ever checked for being *quoted*, never
+for what the quotes contained, so a name carrying its own quote character closed
+the identifier early and the rest of the value continued as SQL.
+
+The accepted grammar is now dot-separated segments of letters, digits,
+underscores and hyphens -- `^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$`. That covers
+every shape a table path takes today, including a hyphenated BigQuery project id
+(`my-proj.mydataset.engaged_events`), a leading-digit segment, and a three-part
+`project.dataset.table`. It is the same character set the control plane already
+applies to physical names, so the two agree on what a name may contain. A value
+with a quote, a backtick, a semicolon or a space is refused when the model loads,
+with an error naming the annotation and the allowed shape.
+
+To check a package without reading the diff: if every `#@ persist name=` value is
+letters, digits, underscores, hyphens and dots, nothing changes for it.
+
+A census of the packages we can see -- 438 persist annotations across 47
+packages, 152 distinct names -- found none that this refuses, so no package that
+loads today stops loading. The check exists because the value is author-supplied
+input on a server that loads packages it did not write, not because a name in the
+wild was doing this.
+
+---
+
+## [0.2.4] (BREAKING) — every MCP tool loses its `malloy_` prefix, and get_context answers in one shape
+
+**Every MCP tool is renamed.** The `malloy_` prefix is gone and the names are bare
+snake_case. There is no alias and no deprecation window: the old names are removed,
+so an agent or client that calls them gets an unknown-tool error until it is updated.
+
+| Before | Now |
+|---|---|
+| `malloy_getContext` | `get_context` |
+| `malloy_executeQuery` | `execute_query` |
+| `malloy_compile` | `compile_model` |
+| `malloy_reloadPackage` | `reload_package` |
+| `malloy_getStatus` | `get_status` |
+| `malloy_searchDatabaseSchema` | `search_database_schema` |
+| `malloy_searchDocs` | `search_malloy_docs` |
+
+**What to do.** Hosts that discover tools at connect time (Claude Code, Cursor, Codex)
+pick the new names up on reconnect with no config change — the names appear in the
+tool list, not in `.mcp.json`. Anything that hardcodes a tool name in a prompt, a
+script, or a saved agent config has to be edited. The bundled skills and every doc in
+this repo already use the new names.
+
+**`get_context` also answers in a new response shape.** It used to return a flat ranked
+`results[]` of entities; it now returns `sources[]`, where each source carries the
+entities that matched inside it. A client that reads `results[0].name` finds nothing —
+`results` is gone from every payload. An error payload keeps the empty collection of the
+tool it came from: `sources: []` from `get_context`, `environments: []` from
+`list_packages`, so a client can read either without branching on success first. Alongside the shape,
+the response gained `below_cutoff_count`, `retrieval_reason`, `aliases`,
+`givens`, `authorize`, `data_type`, `one_line_summary`, and `warnings[]` (which replaces
+the single `note` string). The tool's own description is the contract and is pinned by a
+test; re-read it rather than working from a cached copy.
+
+**Duplicate rows are decided by the compiled model, not by names.** A field whose
+whole definition is a reference to a sibling of the same source (`dimension: site is
+SITE`) folds into it, reported in `aliases`. That used to be a guess from
+name-humanization, which could not tell a rename from a derivation that happened to
+look like one. And nothing folds ACROSS sources any more: two sources exposing a
+same-named field are two different numbers, so each is returned under its own card
+with its own `docs`, which is where the `where:` or grain rule that makes them differ
+is written. Pass `include_code` to see a field's Malloy expression as `code`; off by
+default.
+
+**Listing the catalog is now its own tool, `list_packages`.** `malloy_getContext` with
+no arguments used to list the environments; `get_context` requires its `search_targets`
+and a `scopes` naming a package, so the catalog moved to a sibling tool that supplies
+those names. Call `list_packages` first when you do not already know an environment and
+package name.
+
+Why now rather than behind an alias: no SDK surface exposes these names, and the
+consumers that do use them (agents) re-read the tool list and the tool description on
+every session, so a clean cut costs one reconnect where an alias would have left two
+spellings in the docs indefinitely.
+
+---
+
+## [0.2.4] — bound the memory a LARGE DuckLake write spends holding Parquet
+
+`PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` caps how large a Parquet file DuckLake writes
+before rotating to the next one. Unset, nothing changes: no option is set and the attach
+issues exactly the SQL it issued before.
+
+This is a **second, separate** term from the row group bound in 0.2.3 below, not a
+replacement. The row group bounds the per-column buffer *within* a file; this bounds how much
+of the file is resident. Writing to object storage, DuckDB copies each multipart part into a
+buffer it allocates itself and holds it until the file completes, so a file's bytes stay
+resident however they are grouped inside it. Peak memory therefore tracks the FILE size —
+and, like the row group buffers, is not bounded by `PUBLISHER_DUCKDB_MEMORY_LIMIT` at any
+value.
+
+Writing the same data to a local path does not do this; it streams. A deployment that
+materializes to `s3://` or `gs://` pays a cost its local-disk testing will not show.
+
+Measured on a 72-column, 20,000,000-row DuckLake write to GCS, sampling cgroup
+`memory.stat` `anon` — all six cells in one batch, since this number moves with link speed
+and with catalog state left by earlier runs:
+
+| `PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES` | files | peak anon |
+|---|---|---|
+| unset — DuckLake's own default, ~512MB files | 6 | 650 MiB |
+| `1024MB` | 3 | 892 MiB |
+| `512MB` | 6 | 550 MiB |
+| `256MB` | 12 | 373 MiB |
+| `128MB` | 23 | 262 MiB |
+| `64MB` | 45 | 255 MiB |
+
+So the realistic gain is **650 → 373 MiB, about 1.74×** — DuckLake already rotates files, and
+this option moves where it rotates. The underlying effect is much larger than that ratio
+suggests: a plain single-file `COPY` of the same data measured 2979 MiB, against 149 MiB
+writing to local disk, and S3 and GCS agreed within 0.1% (2976 vs 2979). But DuckLake never
+writes the single file, so ~650 MiB is the baseline this option actually improves on.
+
+Each bound alone leaves the other term unpaid. On one 5M-row write: row group only −18%,
+file size only −34%, both −65%.
+
+**Pick the LARGEST value that clears your memory ceiling, not the smallest.** Memory is the
+only axis where smaller wins, and it stops improving below ~`128MB`. Everything else gets
+worse: a full scan of the same data took 21.6s at `64MB` against 13.0s at `512MB`, the write
+itself ran 70s against 42s, and the catalog carries one row per file per column — 3,240 rows
+at `64MB` against 216 at `1024MB` for one 2.7 GiB table, in a catalog database every writer
+of that lake shares. File-level pruning was already effective at every size tested, so the
+small end buys nothing back on reads.
+
+Same catalog mechanics as the row group bound: it persists in `ducklake_metadata`, is seen by
+every writer of that lake, is skipped on a read-only attach, and a catalog that refuses it is
+logged and attached anyway. It does **not** require `preserve_insertion_order=false`, and the
+order the two options are applied in does not matter.
+
+One consequence of persistence worth knowing before you tune: **unsetting the variable does not
+revert the lake.** The last value written stays in `ducklake_metadata` for every writer of that
+catalog. To go back, write the old value explicitly — `CALL <lake>.set_option('target_file_size',
+'<value>')` — rather than removing the environment variable.
+
+This is expected to be temporary. DuckDB's object-storage upload was reworked in
+[duckdb-httpfs#389](https://github.com/duckdb/duckdb-httpfs/pull/389) to stream from buffers
+the engine already owns rather than copying each part, which should remove the term this
+option exists to bound. That work landed after the DuckDB version Publisher currently pins,
+so until it ships in a release, this is the lever available.
+
+---
+
+## [0.2.4] — a pre-aggregation rollup can be built into and served from a storage destination
+
+`storage=` now works on a `#@ preaggregate` line: the rollup is built into that
+destination and served from it, and a query that names the base source is unchanged — it
+still knows no rollup exists.
+
+```malloy
+source: orders is orders_pg.table('public.orders') extend {
+  measure:
+    #@ preaggregate grain="category" storage=lake
+    total is amount.sum()
+}
+```
+
+Before this the key parsed, passed validation, and did nothing: the reader took only
+`grain` and `namespace`, nothing rejected the unknown key, and the rollup was built
+alongside its base. No documented path reached it, which is why support arrives together
+with refusals for the parts that are still not supported, rather than as two changes.
+
+What is refused, and why each is a refusal rather than a silent choice:
+
+- **`namespace=` with `storage=` on one line.** Placement inside a destination is
+  derived, not authored — a freshly provisioned catalog has no schema to create the
+  table in.
+- **Two measures at one grain naming different destinations.** One grain is one table.
+
+Two things that are NOT refusals, both of which read like they should be.
+
+**A hidden field warns**, at publish and at load alike. A rollup stores its grain and each
+measure's partial and is served under the base's name with none of the source's field
+visibility applying, so the planner refuses to plan one at all — nothing is built and
+nothing can be served. It warns rather than refusing because a package of that shape
+published before the rule existed, and because the refusal was unfollowable: an annotation
+inherited onto a source that then hides the measure raises it, while that source produces
+no rollup and exposes nothing.
+
+**Two grains on one base naming different destinations is dropped at serve, not refused at
+publish.** Two grains are two tables, so nothing at publish has grounds to refuse what it
+allows for `namespace=`. But a base's rollups are offered through ONE composite and every
+member of a composite must live on one connection, so such a base serves from its rollups
+not at all and its queries are answered from the base.
+
+A destination is written on the `#@ preaggregate` line and is **not** inherited from the
+base's `#@ persist storage=`, which stays as it was: a `storage=` base lends its rollups
+nothing. Inheriting it would not work — a base that can carry that annotation builds a
+stored table of its own, and a rollup over a stored base is built by reading that table,
+along a path that recovers the rollup's definition from a model file it does not have. So
+the build fails. Even had it succeeded, the base's own table already claims the name its
+rollups would be served under.
+
+With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is not built — and not built
+alongside its base either, which would put a table in your warehouse under a generated
+name you never wrote. Queries are answered from the base and the package reports the
+degraded state as a warning.
+
+**Also changed for rollups that are not in a store.** Where several rollups cover one
+query, the **coarsest** is now used. Members were previously ordered by generated name,
+so with `grain="b"` and `grain="a, b"` a query grouping by `b` alone read the `a, b`
+table because `a_b` sorts first. Grain dimensions are counted rather than measured, so
+this is a proxy for size and not a reading of it. One consequence worth knowing: a rollup
+is offered whether or not it has been built yet, so adding a coarse grain to a package
+that already has a built finer rollup costs acceleration until the new one builds —
+answers are unaffected, and it lasts one build.
+
+
+## [0.2.3] — bound the memory a wide DuckLake write spends buffering Parquet
+
+`PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` caps how much column data DuckLake buffers
+before it flushes a Parquet row group. Unset, nothing changes: no option is set and the
+attach issues exactly the SQL it issued before.
+
+Worth reading even if you do not plan to set it, because it corrects an assumption
+`PUBLISHER_DUCKDB_MEMORY_LIMIT` invites. A DuckLake write buffers a whole row group **per
+column**, so the memory it needs follows the table's WIDTH rather than its row count — and
+those buffers sit outside DuckDB's buffer manager, so the memory limit does not bound them
+at any value. A deployment sized on `memory_limit` alone is therefore sized on the wrong
+axis: it survives long narrow materializations and is killed by short wide ones. The
+symptom is a worker OOM-killed on one source while every other source in the same package
+builds comfortably, with each DuckDB session reporting itself well inside its budget
+throughout. If that is familiar, the source that killed it is almost certainly your widest.
+
+Measured on a 72-column, 5,000,000-row `CREATE TABLE AS` into DuckLake, sampling cgroup
+`memory.stat` `anon`:
+
+| `PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES` | peak anon | rows per row group |
+|---|---|---|
+| unset (DuckLake's default of 122,880 rows) | 2772 MiB | ~122,880 |
+| `64MB` | 1530 MiB | ~42,300 |
+| `32MB` | 1360 MiB | ~21,900 |
+| `16MB` | 1006 MiB | ~11,700 |
+
+If you measure this yourself, read `anon` and not `memory.current`: the latter includes the
+page cache of the Parquet being written, which scales with output size, roughly doubles the
+apparent figure, and carries enough run-to-run variance to hide the effect entirely.
+
+**Costs to know before adopting.** Smaller row groups are not free — more of them means more
+Parquet metadata and coarser row-group pruning at read time, and only the write side of that
+trade is measured here. Start at `32MB` rather than the smallest value that fits; go lower
+only if a wide source still will not build.
+
+The value is expressed in bytes rather than DuckLake's `parquet_row_group_size` row count on
+purpose: one row count cannot suit a 9-column and a 110-column table at once, while a byte
+budget derives rows-per-group from the data actually buffered and so tracks width as models
+change.
+
+Two mechanics that surprise people. It is applied as a **catalog** option, so it persists in
+`ducklake_metadata` and is seen by every writer of that lake — Publisher skips it on a
+read-only attach, and a catalog that refuses the option is logged and attached anyway. And
+it requires `preserve_insertion_order=false`, which Publisher sets on the attaching session:
+DuckLake plans its copy parallel unconditionally and does not preserve input order on these
+writes regardless, so the guarantee being waived is not one that was being provided.
+Measured on a 1.5M-row write from a sorted source: 15 adjacent inversions with the setting
+on, 10 with it off.
+
+## [0.2.2] — one materialized table, written once and readable by every source that shares it
+
+Malloy [#3029](https://github.com/malloydata/malloy/pull/3029) settled that several sources naming one
+physical table is the design, not a defect: `#@ persist` is inherited through `extend`, `extend` never
+changes a source's materialization SQL, and `#@ -persist` is the opt-out. The publisher still assumed
+one source owned one table. Two consequences, in opposite directions.
+
+**A table was written more than once.** The build loop iterated per SOURCE, so it wrote a table once
+per name that reached it, and once per graph that reached it. It now writes each physical table once,
+keyed on the table's coordinate (destination-or-connection plus physical name) rather than on the
+content address — the address says what a table contains, the coordinate says which table it is.
+
+**An extension of a persisted source served LIVE instead of reading its base's table.** Serve
+bindings are derived one per manifest entry and keyed on that entry's source name, and an entry names
+only the source that built the table — so of a base and its extension, exactly one was bound and the
+other silently recomputed, decided by build order. Every source sharing the table is now bound, on one
+virtual handle. The colocated tier was never affected: it substitutes through the same-connection
+manifest, which is keyed by content address.
+
+Two definitions with DIFFERENT content landing on one physical table is the same guard read backwards:
+each build overwrites the other's rows while both addresses resolve to the table at serve time. That is
+reported, and refused when `PERSIST_COLLISION_ENFORCE` is set — **before anything is written**, since a
+refusal that lands mid-build leaves the first table already replaced and no reclaim can restore the
+rows it overwrote.
+
+### New metrics
+
+| Counter | Meaning |
+|---|---|
+| `publisher_materialization_duplicate_target_skipped_total` | A source whose table this run already wrote. Ordinary for a package that extends a persisted source — a volume signal, not a fault. |
+| `publisher_materialization_shared_address_instructions_total` | One content address instructed to build more than one table. Wasteful, not wrong: the content is the same either way. |
+| `publisher_materialization_table_collision_total` | Two definitions materializing into one table — serve-time wrong data. **This is the one to alert on.** Its rate is also what enabling `PERSIST_COLLISION_ENFORCE` would begin refusing, so a rollout can be measured before it is turned on. |
+
+
+## [0.2.2] — a boolean query param you misspell now fails instead of doing nothing
+
+`reload`, `dropTables` and `bypass_filters` were each read as `=== "true"`, so
+every other spelling — `?reload=1`, `?dropTables=yes`, `?reload=TRUE`, or the
+parameter repeated — quietly read as `false`. The request then succeeded while
+doing nothing of what it asked.
+
+The worst of the three was `dropTables`. `DELETE
+…/materializations/{id}?dropTables=1` deleted the materialization record, left
+its physical tables on disk, and answered `204 No Content`, so nothing in the
+response said half the operation had been skipped. `reload=1` on a package cost
+callers more often: they edited a model, saw `200`, and queried the model the
+server had never recompiled.
+
+All three now accept only `true` and `false` — the two spellings `api-doc.yaml`
+already declared — and refuse anything else with `400`, quoting the value back
+and naming a form that works. `bypass_filters` was already declared in the spec
+as an enum of exactly those two, so this makes the server match its own
+contract.
+
+Separately, `reload` on a **collection** route (`GET /environments`,
+`GET …/packages`, and their legacy `/projects` twins) now answers `400` naming
+the per-resource route. Reload recompiles one named resource, so a collection
+never could; it used to answer `200` with the list, which reads as a reload that
+worked.
+
+**Who is affected.** Anyone sending a non-`true`/`false` value to these three
+params, or sending `reload` to a collection route, gets a `400` where they used
+to get success. Every such request was already a silent no-op, so no working
+behaviour changes — but a client that ignored the response body and trusted the
+status will now see the failure it was previously missing. Generated clients
+send real booleans and are unaffected. `api-doc.yaml` now documents the `400` on
+each of these routes.
+
+## [0.2.0] — a colocated persist into a non-default schema now lands there (ACTION REQUIRED)
 
 A colocated `#@ persist name=` that names a container — `name="analytics.orders"`
 rather than `name="orders"` — was materialized into the connection's **default**
@@ -62,7 +536,7 @@ dropped once the rebuild is confirmed.
 Unaffected: `storage=` sources (a different write path), colocated sources whose
 `name=` carries no container, and every dialect other than the three above.
 
-## [Unreleased] — every DuckDB session is now bounded
+## [0.2.0] — every DuckDB session is now bounded
 
 DuckDB sizes its `memory_limit` from the container, at roughly 80%, and it does that **independently per instance**. Publisher runs several instances in one process — the metadata store, a serve-shape gate session, the environment lookup funnel, a sandbox per loaded package, and a disposable session for each materialization build — and none of them accounts for the resident runtime baseline or for any of the others. Measured in a 3 GiB container, three instances each reported a 2.3 GiB limit: 6.9 GiB of committed budget against 3 GiB of real memory. The process is then killed by the kernel while every instance still believes it is comfortably inside its budget, so none of them looks at fault and the growth presents as untracked native memory.
 
@@ -72,7 +546,75 @@ Unset now logs a startup warning naming the condition, so the oversubscription i
 
 One thing worth knowing before tuning: setting a `memory_limit` does **not** by itself introduce spill on the `storage=` build path. That pipeline pushes its SQL to the source warehouse and streams the result into the destination, with nothing to spill — measured at a flat peak across a 30× range of output, with zero bytes written to the temp directory at any limit, including one tight enough to fail. An over-tight limit fails the query and leaves the process up, which is the intended trade against losing the pod.
 
-## [Unreleased] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
+---
+
+## [0.2.1] — a versioned dashboard URI is now honoured
+
+`<Dashboard>` accepted a `?versionId=` in its `resourceUri` and dropped it. It now sends it, on the
+manifest fetch, on each tile's query, and on each control's suggest query, and each is cached per
+version. `<Package>`'s dashboards listing sends it too, and a notebook's suggest queries — shared
+code, and the only part of `<Notebook>` that was still unversioned while its own fetch and its cell
+execution were not.
+
+Omit `versionId` and nothing is sent, so a URI without one behaves exactly as before. **Point a
+versioned URI at Publisher and the page now reports an error where it used to render the latest**:
+Publisher answers `501 Not Implemented` to a `versionId` on every route that declares one, and
+these calls no longer hide it. That is the same contract `<Notebook>` and `<Model>` have always
+had, and it is why the components are useful to a host that resolves versions at its own routing
+layer. See [docs/dashboards.md](docs/dashboards.md#rendering-one-in-your-own-react-app).
+
+The in-package HTML data apps stay unversioned, deliberately: `/data-apps` serves static files and
+declares no `versionId`.
+
+---
+
+## [0.2.1] — one way to build a dashboard, and per-tile layout for it (BREAKING)
+
+A Publisher dashboard is `## artifact { tiles=[…] }`. The `# artifact` on a `query:` still works and
+is still served, but it is no longer offered as a second way to build one: it is a rendered Malloy
+query, the same thing a notebook cell shows, and it cannot span sources because a nest's pipeline
+starts from its own query's source.
+
+Two things changed to make that one form sufficient.
+
+**Per-tile layout.** The per-child dashboard tags on the view a tile names are now read by Publisher
+and applied in its own grid: `# colspan=N`, `# break`, `# subtitle`, `# borderless` and `# label`,
+which is the whole set `@malloydata/render` resolves for a `# dashboard` nest child, validated and
+clamped the same way. So one view presents identically whether it is named as a tile or nested under
+a query, and a dashboard is no longer limited to equal-width tiles. `DashboardTile` on the wire gains
+`label`, `subtitle`, `colspan`, `break` and `borderless`, each spelled the way the tag is (a generated
+client escapes the attribute where the word is reserved, so the Python client exposes `break_`, while
+the wire key stays `break`).
+
+**One spelling of the grid width. `dashboard_columns` is gone.** Write
+`# dashboard { columns=N }` beside the artifact tag, on either form:
+
+```malloy
+## artifact { title="Overview" tiles=["overview -> kpis", "overview -> trend"] } dashboard { columns=12 }
+```
+
+Nothing reads `dashboard_columns` any more, so a package still spelling it lays out at the default
+width. That is not silent: a new lint enumerates the artifact tag and names every property Publisher
+does not read, `dashboard_columns` included, with the spelling to use instead. It also catches a
+misspelling and a `tiles=` on a query-level tag, neither of which was reported before — the reader
+looks properties up by name, so an unrecognised one was simply never asked for.
+
+`DashboardManifest.dashboardColumns` therefore narrows on a tiles-form dashboard: it now reflects
+only `# dashboard { columns=N }`. Downstream artifacts spelling `dashboard_columns=2`, which equals
+the viewer's default, do not visibly move, but their lint output changes.
+
+This is also where Publisher stops being byte-compatible with Malloyyo, which reads
+`dashboard_columns`. That is one property and it is deliberate — the render tag already covers a
+tagged `query:`, so one spelling covers both forms — and the docs that claimed byte-compatibility now
+say so. `docs/malloyyo-dashboards-design.md` §Where Publisher diverges is the record, and the
+divergence is an input to the shared-grammar extraction rather than a settled thing.
+
+`examples/storefront/dashboards/overview.malloy` is the first dashboard the bundled examples ship,
+and it is the same figures as the model's `business_overview` view laid out with these tags.
+
+---
+
+## [0.2.0] — `#(authorize)` is an expression on the `source:` line now, not a quoted string (BREAKING)
 
 This is the headline change of this release, and it supersedes every earlier section on this page
 that shows `#(authorize) "<expr>"` on a `source:` line — including the `[0.0.248]` and `[0.0.205]`
@@ -208,7 +750,7 @@ constant-`false` lock does not hold there and `includeSql` returns the ungrafted
 
 ---
 
-## [Unreleased] — a proven row-level `#(authorize)` gate can now be colocated-persisted
+## [0.2.0] — a proven row-level `#(authorize)` gate can now be colocated-persisted
 
 This supersedes the "A colocated `#@ persist` on an `#(authorize)`-gated source is now REFUSED" bullet
 further down this file, before that section has even shipped: unconditional refusal is no longer the
@@ -240,7 +782,7 @@ either — its delta is bounded by the watermark, so a row that changes owner wi
 advancing is never re-read. Only a full rebuild recomputes the gate column. See
 [docs/materialization.md § freshness contract](docs/materialization.md#the-freshness-contract-for-a-gated-colocated-persist-source).
 
-## [Unreleased] — `BuildPlan.refusedSources`, and a materialization-ordering fix
+## [0.2.0] — `BuildPlan.refusedSources`, and a materialization-ordering fix
 
 **`BuildPlan` gains a `refusedSources` collection**, alongside the existing `sources` map, so a host can tell
 "this package declares no persist source" from "every persist source was refused". It is a SEPARATE
@@ -274,7 +816,7 @@ Also added a routing-outcome label, `blocked_by_row_level_gate`, on `publisher_s
 previously a row-level-gated entry point that vetoed both the storage and pre-aggregation tiers recorded no
 routing outcome at all.
 
-## [Unreleased] — a gated `#@ preaggregate` rollup now reports its own refusal
+## [0.2.0] — a gated `#@ preaggregate` rollup now reports its own refusal
 
 `BuildPlan.refusedSources` gains a `preaggregate` tier. A gated rollup's pre-aggregation gate refuses
 unconditionally when its base is `#(authorize)`-gated (rollups group away the gate column, so there is
@@ -288,7 +830,7 @@ instruction before instructing it.
 
 ---
 
-## [Unreleased] — every `#(authorize)` gate is a row filter now, not just a field-referencing one (BREAKING)
+## [0.2.0] — every `#(authorize)` gate is a row filter now, not just a field-referencing one (BREAKING)
 
 This supersedes the "a gate that references only givens is unaffected" line in the section below, before
 that section has even shipped: there is no longer a separate given-only shape. A gate that reads no row

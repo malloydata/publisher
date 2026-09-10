@@ -106,7 +106,11 @@ const PUBLISHER: PublicShape = { connectionUri: "scalar" };
 // Object-store credentials. The key IDs are identifiers rather than secrets and
 // match what `SENSITIVE_KEY_NAMES` in logger.ts already treats as safe to log;
 // the paired secrets (secretAccessKey, sessionToken, secret) are omitted.
+// provider and chain say HOW the credential is obtained, not what it is: an
+// enum, and an ordered list of provider names. The key pair beside them stays out.
 const S3: PublicShape = {
+   provider: "scalar",
+   chain: "scalar",
    region: "scalar",
    endpoint: "scalar",
    accessKeyId: "scalar",

@@ -7,6 +7,10 @@ import path from "path";
 import { components } from "../api";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
+import {
+   resolveCloudStorageCredentials,
+   validateS3ProviderShape,
+} from "./gcs_s3_utils";
 import { parseHostKeys } from "./proxy";
 import {
    queryMetadataAdvisoryWarnings,
@@ -532,6 +536,21 @@ function validateConnectionShape(connection: ApiConnection): void {
                   `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
                );
             }
+            // Shape only, deliberately not the whole credential check. This
+            // validator's throw fails the ENTIRE environment (assembleEnvironmentConnections
+            // has no per-connection recovery), and nothing here validates an attached
+            // database's credentials today — so demanding a key pair at load would turn
+            // configs that load-and-fail-late into configs that load nothing at all.
+            // These checks reject only shapes no path ever accepted, so no config that
+            // loads today stops loading.
+            for (const attachedDb of attached) {
+               if (attachedDb.type === "s3" && attachedDb.s3Connection) {
+                  validateS3ProviderShape(
+                     attachedDb.s3Connection,
+                     attachedDb.name ?? connection.name,
+                  );
+               }
+            }
          }
          break;
       case "motherduck":
@@ -560,6 +579,26 @@ function validateConnectionShape(connection: ApiConnection): void {
             throw new Error(
                `Storage bucketUrl is required for DuckLake: ${connection.name}`,
             );
+         }
+         // Shape only, matching the duckdb branch above, and for the same reason:
+         // this validator's throw reaches assembleEnvironmentConnections, which has
+         // no per-connection recovery, so a rule enforced here fails the ENTIRE
+         // environment. The mutual-exclusion and enum guards are safe to apply
+         // because no config that loads today can violate them. The key-pair
+         // requirement is NOT applied here — a DuckLake carrying a present but
+         // incomplete s3Connection has always loaded and failed when used, and
+         // making it fail every other connection in the environment is a worse
+         // trade than reporting it late.
+         //
+         // A storage DESTINATION is different: validateStorageDestinations rejects
+         // one entry without touching the rest, so it can afford the full check and
+         // does it there. That is the case that motivated moving these guards at
+         // all — a destination is only attached at its first BUILD.
+         {
+            const storage = connection.ducklakeConnection.storage;
+            if (storage.s3Connection) {
+               validateS3ProviderShape(storage.s3Connection, connection.name);
+            }
          }
          // metadataSchema is optional, but when present it reaches the ATTACH as a
          // quoted string literal AND the catalog-format preflight as a quoted
@@ -832,6 +871,36 @@ export function validateStorageDestinations(
 
       try {
          validateConnectionShape(destination);
+         // Stricter than validateConnectionShape is allowed to be. It stops at the
+         // credential SHAPE because its throw fails a whole environment; here a bad
+         // entry is rejected on its own, so the full check is affordable — and it is
+         // wanted, because a destination is only attached at its first BUILD, which
+         // is where a missing storage credential would otherwise surface, hours
+         // after the config change that caused it.
+         // Both arms, and in the attach path's own precedence (see
+         // attachDuckLakeWithMode, which takes s3 over gcs): a partial GCS
+         // credential is the same late failure as a partial S3 one, and
+         // resolveCloudStorageCredentials already enforces that pair too.
+         const storage = destination.ducklakeConnection?.storage;
+         if (storage?.s3Connection) {
+            resolveCloudStorageCredentials(
+               {
+                  name,
+                  type: "s3",
+                  s3Connection: storage.s3Connection,
+               },
+               // The OPERATOR's own configuration, not an author's: a managed
+               // storage tier running on the host's identity is the intended use
+               // of credential_chain, so `destinations-only` permits it here.
+               "storage-destination",
+            );
+         } else if (storage?.gcsConnection) {
+            resolveCloudStorageCredentials({
+               name,
+               type: "gcs",
+               gcsConnection: storage.gcsConnection,
+            });
+         }
       } catch (error) {
          rejected.push({ name, reason: (error as Error).message });
          continue;

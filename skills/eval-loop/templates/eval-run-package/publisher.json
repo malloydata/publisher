@@ -1,0 +1,5 @@
+{
+    "name": "eval-run",
+    "version": "1.0.0",
+    "description": "One or more scored eval runs as a semantic model: attempts, judge verdicts, retrieval recall and precision, failure attribution, and the model-improvement backlog. Built by skills/eval-loop/scripts/build_run_package.py from a run's events.jsonl plus the set it scored against."
+}

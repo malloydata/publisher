@@ -1,6 +1,6 @@
 ---
 id: extended-source-inherits-persist-colocated
-tags: serve-correctness, safety, known-red
+tags: serve-correctness, safety
 package: esc
 ---
 <!--
@@ -8,28 +8,24 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# An extension must not become a second build target — COLOCATED
+# An extension shares the base's colocated table, not a second one — COLOCATED
 
-The colocated (in-warehouse, no `storage=`) twin of `extended-source-inherits-persist`,
-and the same defect: a source that EXTENDS a persisted source inherits its
-`#@ persist name=`, so the extended reader becomes a SECOND build target writing the
-same table — here, colocated in the source warehouse. Extending a persisted source
-should READ its table, not claim it.
+The colocated (in-warehouse, no `storage=`) twin of `extended-source-inherits-persist`.
 
-Inheriting the annotation through `extend` is by design in Malloy (`#@ -persist` opts
-out); inheriting the `name=` as a build target is what this pins.
+A source that EXTENDS a persisted source inherits its `#@ persist name=`, and that
+inheritance is by design in Malloy (`#@ -persist` opts out) — without it the extension
+could never be served from a table at all. An `extend` adds query-time fields and changes
+no materialization SQL, so `daily` and `daily_with_avg` compile identically, share one
+content address, and must share ONE physical table in the source warehouse.
 
-The user flow: author `daily` (`#@ persist`, colocated), then `daily_with_avg` extending
-it to add a derived field. Publish, materialize, and query both — that works here,
-because `daily` and `daily_with_avg` share a `sourceEntityId` and the publisher's
-auto-run dedups the duplicate (both read the one colocated table). But the build
-plan still lists `daily_with_avg` as a second target writing the same warehouse table,
-which collides when a host materializes per-source, and the collision guard misses
-it (it dedups by `sourceEntityId`, which these share).
+Both sources therefore belong in the plan; what must never appear is a second table. The
+`entity` column is the assertion that carries that.
 
-The `## Build targets` step surfaces the root cause: exactly ONE build target for
-`esc_daily`. RED today; GREEN once an inherited `name=` stops minting a duplicate
-target.
+Worth noting against the external twin: the colocated tier substitutes through the
+same-connection manifest, which is keyed by content ADDRESS, so every source sharing an
+address resolves automatically. The storage tier binds by source NAME, which is why it
+needed an explicit fix to route an extension's read — see
+`extend-routes-to-the-base-table`. Colocated was never exposed to that failure.
 
 ## Publisher
 
@@ -97,21 +93,12 @@ Expect:
 
 ## Build targets
 
-Only the base `daily` may write `esc_daily`. RED today for the same upstream
-reason as the external twin; here the duplicate target writes the customer's own
-warehouse.
+Both sources are in the plan, both carrying the inherited `name=`. One content address
+(label `A`) across both, so one colocated table.
 
 Expect:
 
-| source | writes    |
-| ------ | --------- |
-| daily  | esc_daily |
-
-## Note (since=2026-07-24)
-
-> Colocated twin of `extended-source-inherits-persist`. Same upstream fix
-> (malloydata/malloy PR 3012 — `persistDeclared` from the source's own annotation
-> only) and same publisher-side blind spot (`persistenceCollisionWarnings` dedups
-> by `sourceEntityId`, which the base and extended reader share). Here the duplicate
-> target writes the customer's own warehouse, so a per-source host materialize would
-> issue two CTAS to the same warehouse table.
+| source         | writes    | entity |
+| -------------- | --------- | ------ |
+| daily          | esc_daily | A      |
+| daily_with_avg | esc_daily | A      |
