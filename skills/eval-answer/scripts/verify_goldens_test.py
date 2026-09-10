@@ -10,10 +10,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from verify_goldens import (  # noqa: E402
-    model_text, question_drift_findings, unknown_name_findings, verify)
+    model_text, question_drift_findings, truth_isolation_findings,
+    unknown_name_findings, verify)
 
 MODEL = """
 source: order_items is duckdb.table('data/order_items.parquet') extend {
@@ -301,6 +303,48 @@ class QuestionDrift(unittest.TestCase):
         # failing them would block every arm on every existing set.
         self.assertEqual(
             question_drift_findings([{"qid": "q1", "question": "x"}]), [])
+
+
+class TruthIsolation(unittest.TestCase):
+    """A truth server that also serves the model under test must be refused."""
+
+    def fake_listing(self, names):
+        import verify_goldens as vg_mod
+        return unittest.mock.patch.object(
+            vg_mod, "get_json",
+            lambda base, path, timeout=30: [{"name": n} for n in names])
+
+    def test_a_server_holding_both_packages_is_a_finding(self):
+        # The laptop case: one server, both packages. The values are still
+        # read from the truth package; what breaks is isolation, because the
+        # answerer can retrieve the raw truth sources beside the model.
+        with self.fake_listing(["ecommerce", "ecommerce-truth"]):
+            got = truth_isolation_findings("http://x", "samples", "ecommerce")
+        self.assertEqual(len(got), 1)
+        self.assertIn("not an isolated truth server", got[0])
+
+    def test_a_truth_only_server_is_silent(self):
+        with self.fake_listing(["ecommerce-truth"]):
+            self.assertEqual(
+                truth_isolation_findings("http://x", "samples", "ecommerce"), [])
+
+    def test_a_set_naming_no_target_package_is_silent(self):
+        with self.fake_listing(["ecommerce", "ecommerce-truth"]):
+            self.assertEqual(
+                truth_isolation_findings("http://x", "samples", None), [])
+
+    def test_an_unreachable_server_is_not_a_golden_finding(self):
+        # It must not turn a connection problem into evidence about goldens:
+        # the value check reports its own error, and exit 3 means "did not
+        # happen".
+        import verify_goldens as vg_mod
+
+        def boom(*a, **k):
+            raise OSError("connection refused")
+
+        with unittest.mock.patch.object(vg_mod, "get_json", boom):
+            self.assertEqual(
+                truth_isolation_findings("http://x", "samples", "ecommerce"), [])
 
 
 if __name__ == "__main__":

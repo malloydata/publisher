@@ -110,10 +110,11 @@ import pathlib
 import re
 import sys
 import traceback
+import urllib.parse
 from typing import Any
 
 from check_must_not_use import candidate as must_not_use_candidate
-from publisher_rest import try_query    # the one direct path to a Publisher
+from publisher_rest import get_json, try_query  # the direct paths to a Publisher
 
 _TABLE_REF = re.compile(r"""duckdb\.table\(\s*['"](?:\.\./)?data/(\w+)\.\w+['"]\s*\)""")
 
@@ -202,7 +203,16 @@ def golden_numbers(value: Any) -> list[float]:
     return out
 
 
-_WRONG_MARK = re.compile(r"(?i)\b(close but wrong|wrong|incorrect|trap|reject)\b")
+# What ends the rubric's ACCEPTING clause. A rejecting marker was always here;
+# `divergent` / `near_match` / `also acceptable` were not, and a rubric that
+# labels its alternative readings that way instead of "WRONG" had its whole
+# text read as accepting. Every figure of every alternative reading was then
+# required to appear in the golden, which it cannot: a divergent reading is by
+# definition not the golden's value. That was 14 of the 79 figures this check
+# reported on the ecommerce set.
+_WRONG_MARK = re.compile(
+    r"(?i)\b(close but wrong|wrong|incorrect|trap|reject"
+    r"|divergent|near_match|also acceptable)\b")
 
 
 def rubric_number_findings(case: dict[str, Any]) -> list[str]:
@@ -216,6 +226,16 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
     small counts are excluded by construction. A figure matches if it is a
     golden value, or the sum of a golden column -- rubrics legitimately quote
     "177,340,447.81 across the three groups".
+
+    READ THE OUTPUT KNOWING ITS PRECISION. Measured over the 49-case ecommerce
+    set: 65 figures reported, and most are legitimate -- a denominator ("over
+    264,071 distinct order_id"), or a cross-case reconciliation ("12566292.88
+    of sales minus this cost is the 6564004.49 gross margin"). A lexical guard
+    on denominator phrasing was tried and dropped: it removed 12 of the 65 and
+    would have suppressed a real one. So this is a prompt to read a rubric
+    against its rows, never a defect count. It does earn its keep: on that set
+    it reports `216,917` for `ecom_unsold_inventory`, which the set's own
+    notes record as an open discrepancy between the rubric and golden.value.
     """
     g = case.get("golden") or {}
     rubric = g.get("rubric") or ""
@@ -359,6 +379,49 @@ def _id_named(entity_id: str, text: str) -> bool:
     return len(parts) > 1 and all(_named(p, text) for p in parts[1:])
 
 
+def truth_isolation_findings(base: str, environment: str,
+                             target_package: str | None) -> list[str]:
+    """Refuse a "truth" server that also serves the package under test.
+
+    Not because the numbers would be wrong. The value check names the truth
+    package explicitly, so it reads the right sources even on a combined
+    server. The problem is that the ANSWERER can then reach the raw truth
+    sources beside the model it is being tested on: `get_context` retrieves
+    them, and what is under test quietly changes. The ecommerce set's README
+    records this happening, which is why its truth package was moved out of
+    the served tree and onto a second server the answerer has no route to.
+
+    So this reports a server that is not isolated, whether or not this run's
+    values came back clean. It also catches the operator error that motivated
+    it: `--publisher` used to default to 4811, the port that set's README
+    assigns to the ANSWERER, so the default and the documented layout named
+    different servers and nothing said so.
+
+    Silent when the listing cannot be read: the value check reports its own
+    connection error, and a guard that turns an unreachable server into a
+    golden finding is the confusion this file's exit codes exist to prevent.
+    """
+    if not target_package:
+        return []
+    try:
+        listed = get_json(
+            base, f"api/v0/environments/{urllib.parse.quote(environment)}/packages")
+    except Exception:                                   # noqa: BLE001
+        return []
+    if not isinstance(listed, list):
+        return []
+    names = {p.get("name") for p in listed if isinstance(p, dict)}
+    if target_package not in names:
+        return []
+    return [f"the server at {base} serves the package under test "
+            f"({target_package!r}) alongside the truth package, so it is not "
+            "an isolated truth server. These values are still re-derived from "
+            "the truth package, but an answerer on this server can retrieve "
+            "the raw truth sources beside the model and change what is under "
+            "test. Fix: serve the truth package on its own Publisher, which "
+            "the answerer has no route to, and point --publisher there"]
+
+
 def question_drift_findings(cases: list[dict[str, Any]]) -> list[str]:
     """Cases whose question no longer matches the seal stamped at import.
 
@@ -469,8 +532,14 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     # audit below still runs. Returning here skipped four checks that need no
     # server at all, including the set-name lint, on precisely the set whose
     # names and rubrics nobody has verified either.
-    skipped = None if a.truth_package else (
-        "set.json names no truthPackage; nothing to re-derive against")
+    skipped = None
+    if not a.truth_package:
+        skipped = "set.json names no truthPackage; nothing to re-derive against"
+    elif not publisher:
+        # Same class as the line above: the value check did not happen, and
+        # exit 3 says so. What it must never be is a guess at a port.
+        skipped = ("no --publisher given, so no truth server to re-derive "
+                   "against")
 
     path = set_dir / cases_file
     lines = path.read_text().splitlines()
@@ -489,6 +558,9 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     findings += unknown_name_findings(chosen, model_text(model))
     findings += question_drift_findings(chosen)
 
+    if not skipped:
+        findings += truth_isolation_findings(publisher, environment,
+                                             meta.get("targetPackage"))
     if skipped and not quiet:
         print(f"  ! {skipped}; running only the checks that need no server")
     # `[] if skipped else chosen` rather than an `if` block: the guard belongs
@@ -568,8 +640,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--publisher", default="http://localhost:4811",
-                    help="the Publisher serving the TRUTH package")
+    # No default, and not required. It WAS http://localhost:4811, which the
+    # ecommerce set's own README assigns to the ANSWERER's server, so the
+    # default and the documented ports named different servers and the wrong
+    # one self-certifies goldens. Omitting it now skips the value check the
+    # same way a set with no truthPackage does -- exit 3, "did not happen" --
+    # rather than quietly querying a port nobody chose. Both in-tree callers
+    # pass it explicitly.
+    ap.add_argument("--publisher", default=None,
+                    help="the Publisher serving the TRUTH package, and ONLY "
+                         "that package. Omit to run just the checks that need "
+                         "no server; the value check then reports as not run")
     ap.add_argument("--environment", default="samples")
     ap.add_argument("--qid", action="append", help="verify only these cases")
     ap.add_argument("--cases", default="cases.jsonl",
