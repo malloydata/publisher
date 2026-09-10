@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — bound how far the Snowflake driver reads ahead of a slow consumer
+## [0.2.7] — bound how far the Snowflake driver reads ahead of a slow consumer
 
 The Docker image now installs a small shim in front of the ADBC Snowflake driver
 that can set `adbc.rpc.result_queue_size` on every Snowflake statement. It is
@@ -71,7 +71,7 @@ implies ([adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/
 
 ---
 
-## [Unreleased] — 500 and 502 responses no longer echo the internal error
+## [0.2.7] — 500 and 502 responses no longer echo the internal error
 
 A 500 or a 502 returned `error.message` verbatim. That message is not always
 something a caller should see: an unrecognised internal failure carries a stack
