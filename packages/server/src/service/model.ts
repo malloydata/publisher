@@ -369,6 +369,11 @@ export function bindingsAllowDegradeToLive(
    );
 }
 
+/** The one empty result {@link Model.preaggregateViolations} hands back, so its
+ *  identity contract holds on the branch that never reaches the memo. */
+const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
+   Object.freeze([]);
+
 export class Model {
    private packageName: string;
    private modelPath: string;
@@ -457,6 +462,10 @@ export class Model {
    /** Memo for {@link getDeclaredSourceQueryMetadata}. */
    private declaredSourceQueryMetadataMemo:
       | { sourceName: string; queryMetadata: QueryMetadata }[]
+      | undefined;
+   /** Memo for {@link preaggregateViolations}. */
+   private preaggregateViolationsMemo:
+      | readonly Readonly<PreaggregateViolation>[]
       | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
     *  anywhere in this model -- every top-level source's own gate, and every
@@ -3783,12 +3792,30 @@ export class Model {
     * Returned rather than thrown: the owning Package joins these across its
     * models into one rejection, so an author fixing a package sees every bad
     * declaration at once instead of one per publish.
+    *
+    * Memoized for the same reason as {@link getDeclaredQueryMetadata}, and it
+    * matters more here: `preaggregateAccessWarnings` puts this on
+    * `getPackageMetadata()`, which `/status` reaches for every package on every
+    * poll, and the walk below re-parses the annotations on every field of every
+    * source. A compiled model's annotations never change — a reload replaces the
+    * `Model` object outright — so the memo needs no invalidation.
+    *
+    * `readonly` down to the element because callers now share one array rather
+    * than each getting a fresh walk: a caller that sorted the array, or edited a
+    * violation's message, would be editing every later caller's copy. Enforced by
+    * the type rather than `Object.freeze` — the sharing is what makes this cheap,
+    * and a deep freeze would put back a per-element cost.
     */
-   public preaggregateViolations(): PreaggregateViolation[] {
-      if (!this.modelDef) return [];
-      return validateModelPreaggregation(
-         this.modelDef.contents as Record<string, unknown>,
-      );
+   public preaggregateViolations(): readonly Readonly<PreaggregateViolation>[] {
+      // Shared rather than a fresh `[]`, so the identity contract above holds on
+      // this branch too (a model that failed to compile has no `modelDef`).
+      if (!this.modelDef) return NO_PREAGGREGATE_VIOLATIONS;
+      if (this.preaggregateViolationsMemo === undefined) {
+         this.preaggregateViolationsMemo = validateModelPreaggregation(
+            this.modelDef.contents as Record<string, unknown>,
+         );
+      }
+      return this.preaggregateViolationsMemo;
    }
 
    /**

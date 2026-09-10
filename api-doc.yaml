@@ -731,6 +731,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -779,6 +781,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1089,6 +1093,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1143,6 +1149,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -5347,12 +5355,34 @@ components:
       type: object
       description: Standard error response format
       properties:
+        code:
+          type: integer
+          description: HTTP status code, repeated in the body for convenience
         message:
           type: string
           description: Human-readable error message describing what went wrong
         details:
           type: string
           description: Additional error details or context
+        reason:
+          type: string
+          description: |
+            Machine-readable discriminator, for callers that must branch on
+            which error they got rather than on prose. Absent unless a caller is
+            expected to act on it, so treat absence as "no special handling".
+
+            TABLE_NOT_FOUND distinguishes a table that is not in the database
+            from the other conditions that also answer 404 on these routes --
+            an environment or connection this server does not host. The former
+            says nothing about whether the caller reached the right server; the
+            latter is a routing problem worth retrying elsewhere.
+
+            Deliberately an open string rather than an enum. Generators render
+            an enum closed, so adding a second value here would break every
+            client generated before it -- on the one field whose purpose is to
+            grow. Callers must treat an unrecognized value as absent.
+
+            Known values: TABLE_NOT_FOUND.
       required:
         - message
 
