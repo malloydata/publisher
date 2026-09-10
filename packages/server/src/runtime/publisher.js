@@ -251,15 +251,26 @@
             var pad = parseFloat(bodyStyle.paddingBottom) || 0;
             return Math.ceil(maxBottom + scrollTop + pad);
          }
-         // Smallest change worth reporting. Below this is sub-pixel reflow, which
-         // the host cannot act on without the resize itself becoming a layout
-         // change inside this frame — the feedback loop.
+         // Smallest SHRINK worth reporting. measureContentHeight already ceils,
+         // so nothing sub-pixel reaches here; what this absorbs is a 1-2px
+         // rounding flip-flop between two layout passes, which the host cannot
+         // act on without the resize itself becoming a layout change inside this
+         // frame — the feedback loop.
+         //
+         // Applied to shrinks ONLY, deliberately. A frame a few pixels too tall
+         // shows dead space; a few pixels too short CLIPS, and the frame has no
+         // internal scrollbar. The asymmetry also stops the two sides' bands
+         // compounding: the host runs its own epsilon against ITS height, which
+         // its MIN clamp guarantees can differ from lastHeight here, so two
+         // symmetric 8px bands leave a dead zone wider than either. Growing at
+         // 1px precision keeps the host's band the only one that applies.
          var RESIZE_EPSILON = 8;
          var resizePending = false;
 
          function emitSize() {
             var h = measureContentHeight();
-            if (Math.abs(h - lastHeight) < RESIZE_EPSILON) return;
+            if (h < lastHeight && lastHeight - h < RESIZE_EPSILON) return;
+            if (h === lastHeight) return;
             lastHeight = h;
             try {
                window.parent.postMessage(
