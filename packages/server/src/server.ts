@@ -52,6 +52,7 @@ import {
    getEmbeddingConfig,
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
+   getMcpCorsOrigins,
    getMemoryGovernorConfig,
    isDuckDBMemoryLimitDisabled,
    getPersistCollisionEnforce,
@@ -59,6 +60,7 @@ import {
    getQueryMetadataMode,
 } from "./config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
+import { authorizeReload, reloadDeniedMessage } from "./reload_authorization";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
@@ -132,6 +134,9 @@ function parseArgs() {
       } else if (arg === "--mcp_port" && args[i + 1]) {
          process.env.MCP_PORT = args[i + 1];
          i++;
+      } else if (arg === "--mcp_host" && args[i + 1]) {
+         process.env.MCP_HOST = args[i + 1];
+         i++;
       } else if (arg === "--shutdown_drain_duration_seconds" && args[i + 1]) {
          process.env.SHUTDOWN_DRAIN_DURATION_SECONDS = args[i + 1];
          i++;
@@ -163,7 +168,10 @@ function parseArgs() {
             "  --port <number>        Port to run the server on (default: 4000)",
          );
          console.log(
-            "  --host <string>        Host to bind the REST and MCP servers to (default: 0.0.0.0)",
+            "  --host <string>        Host to bind the REST server to, and the MCP server unless --mcp_host is given (default: 0.0.0.0)",
+         );
+         console.log(
+            "  --mcp_host <string>    Host to bind the MCP server to (default: 127.0.0.1, or --host when that is set)",
          );
          console.log(
             "  --server_root <path>   Root directory to serve files from (default: .)",
@@ -239,6 +247,14 @@ getQueryMetadataMode();
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+// The MCP endpoint is unauthenticated and exposes every MCP tool, so it binds
+// LOOPBACK by default while the REST port keeps its own PUBLISHER_HOST default.
+// Precedence: MCP_HOST, then an explicit PUBLISHER_HOST (so `--host` still moves
+// both listeners together for an operator who asked for a wider bind), then
+// loopback. Widening this is opt-in and belongs behind an authenticating
+// gateway.
+const MCP_HOST =
+   process.env.MCP_HOST || process.env.PUBLISHER_HOST || "127.0.0.1";
 // Resolved here rather than in the listen callback: parseBoolEnv throws on a
 // typo, which is the convention for flags in this server, but a throw inside a
 // listen callback is an uncaughtException that kills a server which has already
@@ -375,7 +391,13 @@ export const mcpApp = express();
 registerHealthEndpoints(mcpApp);
 
 mcpApp.use(MCP_ENDPOINT, express.json());
-mcpApp.use(MCP_ENDPOINT, cors());
+// Cross-origin access is OPT-IN via MCP_CORS_ORIGINS (comma-separated origins,
+// or `*` to allow any). Default is no allowlist, which reflects no
+// `Access-Control-Allow-Origin` back, so a browser page on another origin cannot
+// read a response from this unauthenticated endpoint. A non-browser client (an
+// MCP agent over HTTP) sends no Origin and is unaffected either way: CORS
+// governs what a browser hands to script, not who may connect.
+mcpApp.use(MCP_ENDPOINT, cors({ origin: getMcpCorsOrigins() }));
 
 mcpApp.all(MCP_ENDPOINT, async (req, res) => {
    logger.info(`[MCP Debug] Handling ${req.method} (Stateless)`);
@@ -1598,6 +1620,18 @@ app.get(
       if (reload === undefined) {
          return;
       }
+      // A reload recompiles the package and replaces the served model, so it is
+      // gated while a plain metadata GET stays open.
+      if (reload) {
+         const decision = authorizeReload(req);
+         if (!decision.authorized) {
+            res.status(403).json({
+               code: 403,
+               message: reloadDeniedMessage(decision.reason),
+            });
+            return;
+         }
+      }
 
       try {
          res.status(200).json(
@@ -2339,7 +2373,7 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
 });
 const mcpServer = mcpApp.listen(
    MCP_PORT,
-   PUBLISHER_HOST,
+   MCP_HOST,
    function (this: import("net").Server) {
       // Read back rather than reusing MCP_PORT, which is only what was requested.
       // `--mcp_port 0` asks for any free port, and under bun a non-numeric value
@@ -2356,7 +2390,7 @@ const mcpServer = mcpApp.listen(
       // dialable form belongs in .mcp.json and in the advice, not here.
       const bound = this.address();
       const boundHost =
-         typeof bound === "object" && bound ? bound.address : PUBLISHER_HOST;
+         typeof bound === "object" && bound ? bound.address : MCP_HOST;
       logger.info(
          `MCP server listening at http://${boundHost.includes(":") ? `[${boundHost}]` : boundHost}:${boundPort}`,
       );
@@ -2383,7 +2417,7 @@ const mcpServer = mcpApp.listen(
                // so another local process can hold the same port on the other family
                // and receive the agent's traffic instead.
                const endpoint = mcpEndpoint(
-                  resolveClientHost(boundAddress, PUBLISHER_HOST),
+                  resolveClientHost(boundAddress, MCP_HOST),
                   boundPort,
                );
                // cwd, not server_root: the file is for whoever opens an agent here.
@@ -2397,7 +2431,7 @@ const mcpServer = mcpApp.listen(
                );
             } catch (error) {
                logger.info(
-                  `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(boundAddress, PUBLISHER_HOST), boundPort))}`,
+                  `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(boundAddress, MCP_HOST), boundPort))}`,
                );
             }
          });

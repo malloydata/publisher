@@ -938,6 +938,32 @@ export const getPersistCollisionEnforce = (): boolean =>
    parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
 
 /**
+ * Which origins may read a cross-origin response from the MCP endpoint, from
+ * `MCP_CORS_ORIGINS` (comma-separated; `*` allows any).
+ *
+ * Returns the value for `cors`'s `origin` option. `false`, the default, sends
+ * no `Access-Control-Allow-Origin`, so a browser withholds the response from a
+ * page on another origin. That is the safe default for an endpoint that is
+ * unauthenticated and can read whatever the models connect to.
+ *
+ * Returned as a value rather than applied here so the policy is unit-testable
+ * without booting a listener.
+ */
+export const getMcpCorsOrigins = (): string[] | boolean | string => {
+   const raw = process.env.MCP_CORS_ORIGINS;
+   if (raw === undefined || raw.trim() === "") return false;
+   const trimmed = raw.trim();
+   if (trimmed === "*") return "*";
+   const origins = trimmed
+      .split(",")
+      .map((origin) => origin.trim())
+      .filter((origin) => origin.length > 0);
+   // A value that parses to nothing (`","`, `" , "`) is a typo, not a request to
+   // allow every origin. Deny rather than fall through to a permissive default.
+   return origins.length > 0 ? origins : false;
+};
+
+/**
  * Whether the publisher attaches per-query metadata at all, from
  * `PUBLISHER_QUERY_METADATA` (default `off`).
  *
