@@ -20,7 +20,12 @@ import {
    utils as sshUtils,
    type Connection as SshServerConnection,
 } from "ssh2";
-import { openProxy } from "./proxy";
+import {
+   ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV,
+   allowUnverifiedHostKey,
+   openProxy,
+   type ProxyEndpoint,
+} from "./proxy";
 
 // ── Key material generated once for the test suite ────────────────────────────
 
@@ -306,26 +311,60 @@ describe("openProxy — SSH tunnel", () => {
       ).rejects.toThrow(/host-key verification failed/i);
    });
 
-   it("connects when hostKey is absent — unpinned self-service default", async () => {
-      // No hostKey → connect without host-key verification (the SSH transport is
-      // still encrypted). Matches mainstream BI tools' SSH-tunnel default.
-      const ep = await openProxy(
-         {
-            type: "ssh",
-            ssh: {
-               host: "127.0.0.1",
-               port: sshServer.port,
-               username: "testuser",
-               privateKey: clientPrivatePem,
-            },
-         },
-         { host: "127.0.0.1", port: echoServer.port },
-      );
+   it("fails closed when hostKey is absent and the unverified opt-in is off", async () => {
+      // No hostKey and no opt-in: an unverified host key admits a MITM on the
+      // publisher->bastion hop, so the tunnel is refused rather than connected.
+      const prev = process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
+      delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
       try {
+         await expect(
+            openProxy(
+               {
+                  type: "ssh",
+                  ssh: {
+                     host: "127.0.0.1",
+                     port: sshServer.port,
+                     username: "testuser",
+                     privateKey: clientPrivatePem,
+                  },
+               },
+               { host: "127.0.0.1", port: echoServer.port },
+            ),
+         ).rejects.toThrow(/host-key verification is required/);
+      } finally {
+         if (prev === undefined)
+            delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
+         else process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY = prev;
+      }
+   });
+
+   it("connects unpinned when the unverified opt-in is set", async () => {
+      // The operator escape hatch: with PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY
+      // set, an unpinned tunnel connects (the SSH transport is still encrypted).
+      const prev = process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
+      process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY = "true";
+      let ep: ProxyEndpoint | undefined;
+      try {
+         ep = await openProxy(
+            {
+               type: "ssh",
+               ssh: {
+                  host: "127.0.0.1",
+                  port: sshServer.port,
+                  username: "testuser",
+                  privateKey: clientPrivatePem,
+               },
+            },
+            { host: "127.0.0.1", port: echoServer.port },
+         );
          const reply = await connectAndSend(ep.port, "unpinned");
          expect(reply).toContain("unpinned");
       } finally {
-         await closeQuietly(() => ep.close());
+         const opened = ep;
+         if (opened) await closeQuietly(() => opened.close());
+         if (prev === undefined)
+            delete process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY;
+         else process.env.PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY = prev;
       }
    });
 
@@ -413,5 +452,50 @@ describe("openProxy — SSH tunnel", () => {
             { host: "127.0.0.1", port: echoServer.port },
          ),
       ).rejects.toThrow(/not supported/i);
+   });
+});
+
+// The opt-in accepts the spellings every other boolean flag in this server
+// accepts, and falls back to the secure default on anything else. It cannot
+// throw: one caller is ssh2's hostVerifier, a synchronous callback inside a
+// Promise constructor, where a throw escapes past fail() and settles the
+// connection through a path this module does not control. The loud rejection of
+// a misspelling lives at config load instead.
+describe("allowUnverifiedHostKey env parsing", () => {
+   const withEnv = (value: string | undefined, run: () => void) => {
+      const prev = process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV];
+      if (value === undefined)
+         delete process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV];
+      else process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] = value;
+      try {
+         run();
+      } finally {
+         if (prev === undefined)
+            delete process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV];
+         else process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] = prev;
+      }
+   };
+
+   for (const value of ["true", "TRUE", " true ", "1", "yes", "on"]) {
+      it(`opts in on ${JSON.stringify(value)}`, () => {
+         withEnv(value, () => expect(allowUnverifiedHostKey()).toBe(true));
+      });
+   }
+
+   for (const value of ["false", "0", "no", "off", "", "ture", "maybe"]) {
+      it(`stays fail-closed on ${JSON.stringify(value)}`, () => {
+         withEnv(value, () => expect(allowUnverifiedHostKey()).toBe(false));
+      });
+   }
+
+   it("stays fail-closed when unset", () => {
+      withEnv(undefined, () => expect(allowUnverifiedHostKey()).toBe(false));
+   });
+
+   it("does not throw on an unrecognised value", () => {
+      // The property the hostVerifier depends on.
+      withEnv("ture", () =>
+         expect(() => allowUnverifiedHostKey()).not.toThrow(),
+      );
    });
 });
