@@ -195,11 +195,20 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
     scope_line = ""
     if platform and a.scope:
         env, pkg = a.scope.split("/", 1)
+        ver = getattr(a, "scope_version", None)
+        vscope = f', "version": "{ver}"' if ver else ""
+        vquery = f' and version="{ver}"' if ver else ""
         scope_line = (f"\nThe run under diagnosis was scoped to environment "
-                      f'"{env}", package "{pkg}". Pass scopes=[{{"environment": '
-                      f'"{env}", "package": "{pkg}"}}] on get_context and '
-                      f'environment="{env}", package="{pkg}" on execute_query, '
+                      f'"{env}", package "{pkg}"'
+                      + (f", version \"{ver}\"" if ver else "")
+                      + f'. Pass scopes=[{{"environment": '
+                      f'"{env}", "package": "{pkg}"{vscope}}}] on get_context and '
+                      f'environment="{env}", package="{pkg}"{vquery} on execute_query, '
                       f"so your probes hit the same model the answerer did.")
+        if ver:
+            scope_line += (f" Do not omit the version: without it you probe "
+                           f"whatever is latest, and a finding about a model "
+                           f"the run never measured is not a finding.")
     r = spawn_agent(
         DIAGNOSE_PROMPT.format(
             environment=a.environment, package=a.package,
@@ -397,9 +406,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="platform only: the MCP server name. Must match the "
                          "one the run's answerer used -- it is the OAuth cache "
                          "key and the `mcp__<server>__<tool>` prefix")
-    ap.add_argument("--scope", default=None, metavar="ENV/PACKAGE",
+    ap.add_argument("--scope", default=None, metavar="ENV/PACKAGE[@VERSION]",
                     help="platform only: the package the run was scoped to, "
-                         "so probes hit the same model")
+                         "so probes hit the same model. Append @VERSION to pin "
+                         "the published version too; without one, probes hit "
+                         "whatever is latest, which is not what the run "
+                         "measured. Defaults to the run's own scope.")
+    ap.add_argument("--target-version", default=None, metavar="VERSION",
+                    help="platform only: the published version to probe. An "
+                         "alternative to @VERSION on --scope, and it wins if "
+                         "both are given. Defaults to the run's targetVersion.")
     ap.add_argument("--force", action="store_true",
                     help="re-diagnose cases that already have a diagnosis")
     ap.add_argument("--manifest", default=None,
@@ -425,6 +441,30 @@ def main(argv: list[str] | None = None) -> int:
         a.manifest = default_manifest("modeling", repo)
     a.role_skills = ([] if a.no_role_skills
                      else manifest_skills(a.manifest, repo))
+
+    # A diagnosis of version X whose probes hit latest describes a model no one
+    # measured. Take the scope and version from the run unless told otherwise,
+    # so the default is "probe what was measured" rather than "probe latest".
+    run_meta: dict[str, Any] = {}
+    rj = a.run / "run.json"
+    if rj.exists():
+        try:
+            run_meta = json.loads(rj.read_text())
+        except json.JSONDecodeError:
+            run_meta = {}
+    if not a.scope and run_meta.get("scope"):
+        a.scope = run_meta["scope"]
+    a.scope_version = None
+    if a.scope and "@" in a.scope:
+        a.scope, a.scope_version = a.scope.rsplit("@", 1)
+    if a.target_version:
+        a.scope_version = a.target_version
+    elif not a.scope_version and run_meta.get("targetVersion"):
+        a.scope_version = run_meta["targetVersion"]
+    if a.target == "platform" and a.scope and not a.scope_version:
+        print("  ! no published version pinned: probes will hit latest, which "
+              "may not be the version this run measured. Pass --target-version "
+              "or --scope ENV/PACKAGE@VERSION.")
 
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
