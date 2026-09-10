@@ -15,6 +15,12 @@
 // An unset or empty variable sets nothing for that option, so with neither
 // set the shim is a pure pass-through. Why this exists, the measurements, and
 // the condition for deleting it are in README.md next to this file.
+//
+// Lifetime: the extension opens one ADBC database per pooled Snowflake client,
+// and the driver manager runs AdbcDriverInit at each AdbcDatabaseInit — so the
+// statics below are re-initialised and the "wrapping" line is logged once PER
+// DRIVER LOAD, i.e. once per client the extension creates, not once per
+// process. Repeats of that line are expected, not a fault.
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <limits.h>
@@ -112,7 +118,13 @@ static AdbcStatusCode shim_StatementNew(struct AdbcConnection* conn, struct Adbc
 AdbcStatusCode AdbcDriverInit(int version, void* raw_driver, struct AdbcError* error) {
   char path[PATH_MAX];
   if (real_driver_path(path, sizeof(path)) != 0) return ADBC_STATUS_INTERNAL;
-  void* handle = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+  // RTLD_LOCAL (the default): the shim reaches the driver only through this
+  // handle, so its exported Go-runtime symbols stay out of the namespace DuckDB,
+  // Node and every other extension share. The handle is deliberately never
+  // dlclose'd — a Go c-shared library cannot be unloaded cleanly — so the driver
+  // stays mapped for the life of the process even when the manager releases the
+  // shim. That pins memory the upstream layout would also have pinned once loaded.
+  void* handle = dlopen(path, RTLD_NOW);
   if (!handle) {
     fprintf(stderr, LOG_PREFIX "dlopen(%s) failed: %s\n", path, dlerror());
     return ADBC_STATUS_INTERNAL;

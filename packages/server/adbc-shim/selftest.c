@@ -23,8 +23,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   AdbcDriverInitFunc init = (AdbcDriverInitFunc)dlsym(h, "AdbcDriverInit");
-  void* shim_new = dlsym(h, "AdbcDriverInit");
-  if (!init || !shim_new) {
+  if (!init) {
     fprintf(stderr, "shim exports no AdbcDriverInit\n");
     return 1;
   }

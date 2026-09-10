@@ -50,6 +50,11 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org
 # When bumping DUCKDB_VERSION, re-check this: the community extension moves with
 # DuckDB and the driver ABI may move with it, and a mismatch surfaces only at
 # query time.
+# Same base as `final` ON PURPOSE: `-ldl` binds the shim's dlopen to this
+# glibc (dlopen@GLIBC_2.34), and the selftest below runs against THIS libc. A
+# final stage on a different base would pass the selftest here and fail to load
+# the shim at runtime, where only smoke-test 4b would notice. Change both or
+# neither.
 FROM oven/bun:1.3.13-slim AS adbc-driver
 ARG ADBC_SNOWFLAKE_VERSION=1.12.0
 ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c

@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # ADBC Snowflake driver shim
 
-A ~100-line C shared library that the Docker image installs **as**
+A small C shared library (under 150 lines with comments) that the Docker image installs **as**
 `libadbc_driver_snowflake.so` beside the DuckDB `snowflake` extension, with the
 real driver renamed to `libadbc_driver_snowflake.real.so` in the same directory.
 It forwards every ADBC call to the real driver unchanged and does one thing of
@@ -125,10 +125,22 @@ $ docker run --rm --entrypoint sh <image> -c \
 …/libadbc_driver_snowflake.real.so   # the driver
 ```
 
-At runtime the first Snowflake statement logs
+At runtime, each time the extension loads the driver, the shim logs
 `[adbc-shim] wrapping … result_queue_size=<value | (unset) | (invalid "…", ignored)> prefetch_concurrency=…`
-on stderr — the line that says, per process, whether the bound is on. Values must be
-positive integers; anything else is reported there and not applied, so an operator
-typo such as `0` cannot print as if the bound were on. A driver that rejects an option logs `rejected by driver (status N)` and
+on stderr — the line that says whether the bound is on. It is **per driver load, not
+per process**: the extension opens one ADBC database per pooled Snowflake client and
+the driver manager re-runs `AdbcDriverInit` for each, so the line repeats once per
+client and that is expected. Values must be positive integers; anything else is
+reported there and not applied, so an operator typo such as `0` cannot print as if
+the bound were on.
+
+### What is and is not tested
+
+| surface | covered by |
+| --- | --- |
+| shim compiles, dlopens the real driver, wraps `StatementNew` | `selftest.c`, in the `adbc-driver` build stage (fails the image build) |
+| one shim + one real driver beside every extension copy | Dockerfile count-match; CI smoke test 4a |
+| the pair loads in the runtime image and reaches Snowflake login | CI smoke test 4b (bogus secret, exit 124) |
+| **the option is actually applied on a statement** | **no automated test** — login fails before any `StatementNew` in 4b, and `selftest.c` has no connection. Evidence is the real-credential run recorded in the PR. A deployment that turns the bound on should treat `result_queue_size=1` in the worker's `wrapping` line as its acceptance check. | A driver that rejects an option logs `rejected by driver (status N)` and
 the statement proceeds unbounded — the behaviour without the shim, never a
 failed query.
