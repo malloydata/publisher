@@ -17,11 +17,16 @@ import type { EligibilityRefusalReason } from "./materialization_metrics";
 // missing feature, a cap that was reached, a timeout), which is true of most of
 // them but not all: the worker-pool and compile-worker throws behind 503
 // interpolate the underlying failure, so a crash message reaches the caller
-// there. Generalizing that one at the mapper is not possible -- the pool
-// serializes an error across a worker boundary as a plain `Error`, so an
-// unusable-manifest error and a worker crash arrive indistinguishable, and
-// blanking both suppresses a message the caller needs to fix their config. It
-// belongs at those throw sites, where the two are still telling apart.
+// there. Generalizing that one at the mapper would also blank a message the
+// caller needs to fix their own config, because the two are indistinguishable
+// by the time they arrive -- and the reason for that is worth stating exactly,
+// since it is fixable and this comment would otherwise outlive it. The pool's
+// wire shape DOES carry `name` and deserializeError restores it; what collapses
+// the two is that `BadRequestError` never sets `this.name`, where
+// AccessDeniedError, NotQueryableError, PayloadTooLargeError and
+// MaterializationEligibilityError all do. Give it a name and the mapper could
+// tell an unusable manifest from a worker crash. Until then the distinction
+// only exists at those throw sites, so the fix belongs there.
 //
 // So a NEW 5xx branch is a decision rather than a default: generalize it here
 // if its message comes from a driver, a worker, or the filesystem.
@@ -54,12 +59,21 @@ const MAX_LOGGED_DETAIL_CHARS = 2000;
  * Log an internal failure's detail server-side, in the one place the response
  * stops carrying it.
  *
- * The fields are copied out explicitly rather than passed as `{ error }`:
- * `message` and `stack` are non-enumerable own properties of `Error`, so
- * `logger.error(msg, { error })` serializes to `{"error":{}}` under both formats
- * this server configures -- the detail would exist nowhere at all. A bare splat
- * (`logger.error(msg, error)`) does carry both, but copying the fields is what
- * lets the two guards below apply to them.
+ * The fields are copied out explicitly rather than passing the Error itself:
+ * `message` and `stack` are non-enumerable own properties, so
+ * `logger.error(msg, { error })` on an actual Error serializes to
+ * `{"error":{}}` under both formats this server configures -- the detail would
+ * exist nowhere at all. Copying the fields is also what lets the guards below
+ * apply to them.
+ *
+ * They are nested under `error` rather than spread at the top level because
+ * `message` is winston's own reserved key: a top-level `message` is fused into
+ * `info.message`, so the summary becomes "<summary> <the whole driver error>".
+ * That makes the summary unique per failure -- unusable as a grouping key or an
+ * alert condition -- and leaves no queryable field holding just the error text.
+ * Nesting keeps the summary stable and puts the detail at `error.message`. This
+ * is not the `{ error }` bug above returning: these are plain strings, so
+ * nothing depends on non-enumerable properties.
  *
  * Newlines and other control characters are stripped because the default format
  * (colorize + simple, whenever OTEL_EXPORTER_OTLP_ENDPOINT is unset) is
@@ -81,15 +95,27 @@ export function logInternalFailure(
    error: Error,
    level: "error" | "warn" = "error",
 ): void {
-   const sanitize = (value: string): string =>
-      value
-         // eslint-disable-next-line no-control-regex
-         .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
-         .slice(0, MAX_LOGGED_DETAIL_CHARS);
+   // Strip first, cap second: the caller decides how much of the stripped value
+   // to keep, because the stack needs its own budget (below).
+   const strip = (value: string): string =>
+      // eslint-disable-next-line no-control-regex
+      value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
+   const message = error.message ?? "";
+   const stack = error.stack ?? "";
+   // V8 prefixes the stack with `Name: message`, so capping the stack from
+   // character 0 spends the whole budget on a message that is already logged in
+   // its own field -- a 3KB driver error echoing the caller's SQL (the case
+   // MAX_LOGGED_DETAIL_CHARS exists for) leaves zero frames, on the branch where
+   // the frames are the point. Drop the prefix, then cap what remains.
+   const framesOnly = stack.startsWith(`${error.name}: ${message}`)
+      ? stack.slice(`${error.name}: ${message}`.length).replace(/^\r?\n/, "")
+      : stack;
    logger[level](summary, {
-      name: error.name,
-      message: sanitize(error.message ?? ""),
-      stack: sanitize(error.stack ?? ""),
+      error: {
+         name: error.name,
+         message: strip(message).slice(0, MAX_LOGGED_DETAIL_CHARS),
+         stack: strip(framesOnly).slice(0, MAX_LOGGED_DETAIL_CHARS),
+      },
    });
 }
 

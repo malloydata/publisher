@@ -136,14 +136,12 @@ describe("internal-failure logging level (F-12 Part A)", () => {
    // spy and a count assertion fails for a reason that has nothing to do with
    // the contract.
    const callsWith = (spy: ReturnType<typeof spyOn>, marker: string) =>
-      spy.mock.calls.filter(
-         (args: unknown[]) =>
-            typeof args[1] === "object" &&
-            args[1] !== null &&
-            String((args[1] as { message?: unknown }).message ?? "").includes(
-               marker,
-            ),
-      );
+      spy.mock.calls.filter((args: unknown[]) => {
+         // The detail is nested under `error`: a top-level `message` would be
+         // fused into winston's own info.message.
+         const meta = args[1] as { error?: { message?: unknown } } | undefined;
+         return String(meta?.error?.message ?? "").includes(marker);
+      });
 
    it("logs an unrecognized internal error at error, not warn", () => {
       const marker = "unrecognized-marker-9f2a";
@@ -202,5 +200,72 @@ describe("a handler with its own body shape still uses the mapper's text", () =>
       const body = { error: json.message };
       expect(status).toBe(400);
       expect(body.error).toContain("environmentName must match");
+   });
+});
+
+// The two guards on the logged detail. Neither was pinned, which is how a
+// truncation that dropped every stack frame shipped unnoticed.
+describe("logged detail keeps a stable summary and real frames", () => {
+   const capture = (run: () => void) => {
+      const calls: Array<[string, Record<string, unknown>]> = [];
+      const record = (m: string, meta: Record<string, unknown>) => {
+         calls.push([m, meta]);
+         return logger;
+      };
+      const err = spyOn(logger, "error").mockImplementation(
+         record as unknown as typeof logger.error,
+      );
+      const warn = spyOn(logger, "warn").mockImplementation(
+         record as unknown as typeof logger.warn,
+      );
+      try {
+         run();
+      } finally {
+         err.mockRestore();
+         warn.mockRestore();
+      }
+      return calls;
+   };
+
+   // A driver error echoing the caller's whole statement: the case
+   // MAX_LOGGED_DETAIL_CHARS exists for, and the one that used to eat the stack.
+   const hugeMessage = "SQL compilation error: " + "x".repeat(3200);
+
+   it("keeps the summary free of the error text, so it can group and alert", () => {
+      const calls = capture(() =>
+         internalErrorToHttpError(new Error(hugeMessage)),
+      );
+      expect(calls).toHaveLength(1);
+      const [summary, meta] = calls[0]!;
+      // winston fuses a TOP-LEVEL `message` into info.message. Nesting under
+      // `error` is what keeps this summary a constant.
+      expect(summary).toBe("Unhandled internal error");
+      expect(summary).not.toContain("SQL compilation");
+      expect(meta).toHaveProperty("error");
+      expect(meta).not.toHaveProperty("message");
+   });
+
+   it("retains stack frames even when the message alone exceeds the cap", () => {
+      const calls = capture(() =>
+         internalErrorToHttpError(new Error(hugeMessage)),
+      );
+      const detail = calls[0]![1].error as Record<string, string>;
+      // The message is capped in its own field...
+      expect(detail.message.length).toBe(2000);
+      // ...and the stack's budget is spent on frames, not on repeating it.
+      expect(detail.stack).not.toStartWith("SQL compilation");
+      expect(detail.stack).toContain(" at ");
+   });
+
+   it("strips the separators JSON.stringify does not escape", () => {
+      const nasty =
+         "a" +
+         String.fromCharCode(0x0a, 0x85, 0x2028, 0x2029) +
+         "forged: level=error";
+      const calls = capture(() => internalErrorToHttpError(new Error(nasty)));
+      const detail = calls[0]![1].error as Record<string, string>;
+      for (const code of [0x0a, 0x85, 0x2028, 0x2029]) {
+         expect(detail.message).not.toContain(String.fromCharCode(code));
+      }
    });
 });
