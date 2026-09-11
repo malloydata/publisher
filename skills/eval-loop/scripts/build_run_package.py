@@ -281,12 +281,29 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     for rd in run_dirs:
         cfg = read_json(rd / "run.json")
         run_id = cfg.get("runId") or rd.name
+        # WHICH BUILD AND WHICH RETRIEVER ANSWERED, carried through to the
+        # browsable package and not just to run.json and flip_table's console.
+        # `judge_version` and `set_version` above are pins of exactly the same
+        # kind, so leaving these four in the ledger meant the data app could
+        # show two arms side by side with no way to see they measured different
+        # models. Null on runs written before each field existed.
+        reexec = cfg.get("reExecution") or {}
         runs.append({
             "run_id": run_id, "label": cfg.get("label") or rd.name,
             "target": cfg.get("target"), "model": cfg.get("answererModel"),
             "effort": cfg.get("effort"), "started": cfg.get("started"),
             "judge_version": cfg.get("judgeVersion"),
             "set_version": cfg.get("datasetVersion"),
+            "retrieval_mode": cfg.get("retrievalMode"),
+            "target_version": cfg.get("targetVersion"),
+            "model_git_sha": cfg.get("modelGitSha"),
+            "model_repo": cfg.get("modelRepo"),
+            "reexec_attempted": reexec.get("attempted"),
+            "reexec_ok": reexec.get("ok"),
+            "reexec_failed": reexec.get("failed"),
+            "reexec_no_query": reexec.get("noQuery"),
+            "reexec_not_re_executed": reexec.get("notReExecuted"),
+            "reexec_missing": reexec.get("missing"),
         })
         events = read_jsonl(rd / "events.jsonl")
         verdicts = {key(e): e for e in events if e.get("kind") == "score"}
@@ -360,6 +377,10 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
                     "n_returned": len(eids),
                     "entity_ids": eids[:40],
                     "error": t.get("error"),
+                    # Which retriever answered this call. Absent on a server
+                    # with no embedding provider, and on any run written before
+                    # the harness recorded it.
+                    "retrieval_mode": t.get("retrieval_mode"),
                 })
 
             # The one scoring implementation, shared with eval-answer.
@@ -443,11 +464,15 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
 
     write_csv(data / "runs.csv", runs, [
         "run_id", "label", "target", "model", "effort", "started",
-        "judge_version", "set_version"])
+        "judge_version", "set_version",
+        "retrieval_mode", "target_version", "model_git_sha", "model_repo",
+        "reexec_attempted", "reexec_ok", "reexec_failed", "reexec_no_query",
+        "reexec_not_re_executed", "reexec_missing"])
     write_csv(data / "attempts.csv", attempts, [
         "attempt_key", "run_id", "qid", "sample", "phase", "submitted", "final_query",
         "answer_text", "n_get_context", "n_execute", "n_execute_errors",
-        "host_tool_uses", "reported_calls", "contaminated", "servedRevision",
+        "host_tool_uses", "mcp_tool_uses", "reported_calls", "contaminated",
+        "final_query_source", "servedRevision",
         "input_tokens", "output_tokens", "cache_read_tokens", "cost_usd",
         "num_turns", "wall_seconds", "run_error", "transcriptPath",
         "n_steps", "prediction"])
@@ -460,14 +485,14 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "attempt_key", "run_id", "qid", "sample", "phase", "verdict", "outcome",
         "reason", "confidence",
         "judge_version", "rubric_sha", "golden_revision", "gold_status",
-        "contaminated", "artifactPath"])
+        "contaminated", "judge_verdict", "must_not_use_hits", "artifactPath"])
     write_csv(data / "retrieval.csv", retr, [
         "attempt_key", "run_id", "qid", "sample", "phase", "coverage", "verdict", "failed",
         "recall", "precision", "n_required", "n_returned", "n_get_context",
         "missing", "noise", "component", "owner", "where_to_fix", "why"])
     write_csv(data / "calls.csv", calls, [
         "attempt_key", "run_id", "qid", "sample", "call_index", "tool", "targets",
-        "n_returned", "entity_ids", "error"])
+        "n_returned", "entity_ids", "error", "retrieval_mode"])
     write_csv(data / "entities.csv", ents, [
         "run_id", "qid", "sample", "entity_id", "entity_kind", "entity_source",
         "entity_name", "role"])

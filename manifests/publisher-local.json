@@ -5,6 +5,7 @@
   "auto_discovered": [
     "eval-answer",
     "eval-diagnose",
+    "eval-import",
     "eval-improve",
     "eval-judge",
     "eval-loop",
@@ -91,6 +92,7 @@
     ],
     "eval": [
       "eval-loop",
+      "eval-import",
       "eval-answer",
       "eval-diagnose",
       "eval-improve",

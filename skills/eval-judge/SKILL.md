@@ -50,6 +50,13 @@ containment when `golden.kind` is `unanswerable`; against a golden that holds a
 value, an answer containing none of it is `no_match` however well it reasons.
 `reference/refusal.md` is the whole rule.
 
+A third kind holds no value: `criteria`, where the case's rubric IS the key
+and there is no number to contain. Grade the clauses and nothing else. Do not
+manufacture a figure to check the answer against, and do not read the absence
+of a value as a missing golden: a `criteria` golden is complete. Report
+`gold_status` on it the same way, on the criteria rather than on a number, so
+a clause that contradicts the model still surfaces.
+
 ## Answer judge
 
 Input, all of it (a judge with only two row sets grades formatting, not
@@ -116,13 +123,28 @@ Output, exactly this shape:
    in the next, and the pass rate moves although nothing did. A verdict whose
    content is "this is arguable" cannot be allowed to decide anything. Its
    count is still reported, and a rising one means the rubrics are going vague.
-   (What that share was for a given set is in that set's calibration record.)
+   (What that share was for a given set is in that set's `CALIBRATION.md`.)
+
+   A `near_match` that lands the same way in two arms is a different animal
+   from one that flickers. Stable across a pair, it is not judge noise: the
+   model cannot distinguish two readings the question does, which is a coverage
+   finding, and softening the rubric will not close it. `flip_table.py` lists
+   the stable ones and `diagnose.py --verdicts near_match` takes them.
 8. On a large row set, compare it as a set rather than scanning pairwise: state
    how many gold rows you located in the prediction, name the ones you could
    not, and say what the mismatched values look like (uniformly scaled, off in
    one column, a different population). "I checked all 76" without that
    breakdown is not a comparison.
-9. **Score the data, not the insight.** A question that asks for a figure or
+9. **A `mustNotUse` field is not yours to weigh, unless it is prose.** A
+   script checks the final query for the field names `golden.mustNotUse`
+   lists and forces `no_match` on a hit before you are asked, so a case that
+   reaches you with a `MUST NOT USE` line is carrying only what a text check
+   could not decide: a reading described in words, an objection to a USE of a
+   field rather than to the field (`X as ...`, `X through ...`), or a bare field
+   name that may or may not be the forbidden one. Apply those as the rubric's own
+   clauses. Do not soften a verdict because a veto might have caught it, and do
+   not invent a veto the rubric did not ask for.
+10. **Score the data, not the insight.** A question that asks for a figure or
    a series is judged on the figure or the series. Where the question also asks
    for an interpretation -- "when did it flatten out", "what drove the change"
    -- that interpretation is not scored unless the rubric marks it `REQUIRED`
@@ -131,7 +153,7 @@ Output, exactly this shape:
    named is measuring taste, and a run that lost a case that way (13 of 13
    weekly values exact, plateau named one week outside a window) was measuring
    nothing. Exact data with a different reading of it is `match`.
-10. **Do not demand a grain the question did not fix.** When the question names
+11. **Do not demand a grain the question did not fix.** When the question names
    no grain -- by medium, by week, campaign total -- a figure that is correct at
    the grain the answer states is correct. The golden's grain is `PREFERRED`,
    not the only one: an answer at another grain is `match` when the grain is

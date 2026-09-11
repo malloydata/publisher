@@ -1,0 +1,498 @@
+#!/usr/bin/env python3
+"""Tests for the set-name lint: ids and vetoes that name nothing in the model
+under test. The rest of verify_goldens needs a live Publisher and is exercised
+by running it."""
+import hashlib
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+import unittest.mock
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import verify_goldens  # noqa: E402
+from verify_goldens import (  # noqa: E402
+    model_text, promotion_blocker, question_drift_findings,
+    truth_isolation_findings, unknown_name_findings, verify)
+
+MODEL = """
+source: order_items is duckdb.table('data/order_items.parquet') extend {
+  measure: total_sales is sale_price.sum()
+  dimension: is_returned is status = 'Returned'
+}
+"""
+
+
+def case(qid="q1", required=None, any_of=None, acceptable=None, must_not_use=None):
+    return {"qid": qid,
+            "expectedEntities": {k: v for k, v in
+                                 (("required", required), ("requiredAnyOf", any_of),
+                                  ("acceptable", acceptable)) if v},
+            "golden": {"mustNotUse": must_not_use} if must_not_use else {}}
+
+
+class RequiredIds(unittest.TestCase):
+    def test_an_id_the_model_has_is_no_finding(self):
+        f = unknown_name_findings(
+            [case(required=["measure:order_items:total_sales"])], MODEL)
+        self.assertEqual(f, [])
+
+    def test_an_id_from_another_package_fails(self):
+        # The real bug: five ids named after a sibling package scored as
+        # retrieval misses on every run for two days.
+        f = unknown_name_findings(
+            [case(required=["measure:attribution_creative_linear:creative_name"])],
+            MODEL)
+        self.assertEqual(len(f), 1)
+        self.assertFalse(f[0].startswith("review "))
+        self.assertIn("creative_name", f[0])
+
+    def test_a_right_field_under_a_wrong_source_still_fails(self):
+        # The field name often survives a rename that the source name does not.
+        f = unknown_name_findings(
+            [case(required=["measure:attribution_creative_linear:total_sales"])],
+            MODEL)
+        self.assertEqual(len(f), 1)
+
+    def test_a_two_part_id_is_checked_on_its_name(self):
+        self.assertEqual(unknown_name_findings([case(required=["measure:total_sales"])],
+                                               MODEL), [])
+        self.assertEqual(len(unknown_name_findings(
+            [case(required=["measure:no_such_measure"])], MODEL)), 1)
+
+    def test_an_id_with_no_kind_prefix_is_a_finding(self):
+        # `all(parts[1:])` is True on an empty slice, so a one-part id passed
+        # the check written to catch exactly this shape, while the well-formed
+        # `measure:x:no_such_field` was caught. Scoring compares whole ids, so a
+        # prefix-less one can never match however real the field is.
+        for bad in ("ecommerce.no_such_field", "no_such_field", ""):
+            with self.subTest(bad=bad):
+                f = unknown_name_findings([case(required=[bad])], MODEL)
+                self.assertEqual(len(f), 1)
+                self.assertFalse(f[0].startswith("review "))
+                self.assertIn("kind:", f[0])
+
+    def test_a_bare_name_the_model_does_have_is_still_a_finding(self):
+        # `total_sales` IS in the model, and the id is still unusable: it is
+        # the prefix that is missing, not the field. Checking the name alone
+        # would let this one through and it would score as a miss every run.
+        f = unknown_name_findings([case(required=["total_sales"])], MODEL)
+        self.assertEqual(len(f), 1)
+        self.assertIn("kind:", f[0])
+
+
+class RequiredAnyOf(unittest.TestCase):
+    def test_a_group_passes_when_one_id_resolves(self):
+        # This is the repair for a set scored against two package versions, so
+        # it must not be flagged.
+        f = unknown_name_findings([case(any_of=[[
+            "measure:attribution_creative_linear:creative_name",
+            "measure:order_items:total_sales"]])], MODEL)
+        self.assertEqual(f, [])
+
+    def test_a_group_where_none_resolves_fails(self):
+        f = unknown_name_findings([case(any_of=[[
+            "measure:gone:one", "measure:gone:two"]])], MODEL)
+        self.assertEqual(len(f), 1)
+        self.assertFalse(f[0].startswith("review "))
+
+    def test_a_malformed_entry_does_not_rescue_a_dead_group(self):
+        # Worse here than in `required`: a group passes when ANY member
+        # resolves, so one prefix-less id used to pass a group whose every
+        # well-formed id names nothing.
+        f = unknown_name_findings([case(any_of=[[
+            "measure:gone:one", "no_such_field"]])], MODEL)
+        self.assertEqual(len(f), 1)
+        self.assertFalse(f[0].startswith("review "))
+
+
+class ReviewedNotFailed(unittest.TestCase):
+    def test_an_unknown_acceptable_id_is_only_reviewed(self):
+        f = unknown_name_findings([case(acceptable=["measure:gone:x"])], MODEL)
+        self.assertEqual(len(f), 1)
+        self.assertTrue(f[0].startswith("review "))
+
+    def test_a_dead_veto_is_only_reviewed(self):
+        # It cannot move a number; it just protects nothing. And a model that
+        # passes a raw column through without naming it would trip this.
+        f = unknown_name_findings([case(must_not_use=["no_such_field"])], MODEL)
+        self.assertEqual(len(f), 1)
+        self.assertTrue(f[0].startswith("review "))
+
+    def test_a_live_veto_is_no_finding(self):
+        self.assertEqual(
+            unknown_name_findings([case(must_not_use=["sale_price"])], MODEL), [])
+
+    def test_prose_must_not_use_is_never_checked(self):
+        # It names no field, so there is nothing to look for.
+        self.assertEqual(unknown_name_findings(
+            [case(must_not_use=["weekly_active_users as a cumulative series"])],
+            MODEL), [])
+
+
+class NoModel(unittest.TestCase):
+    def test_without_model_text_the_lint_says_nothing(self):
+        # A platform target has no local model text. Silence is right; claiming
+        # every id is unknown would be worse than not checking.
+        self.assertEqual(unknown_name_findings([case(required=["measure:a:b"])], ""), [])
+
+
+class ModelText(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_directory_is_walked_recursively(self):
+        (self.tmp / "dashboards").mkdir()
+        (self.tmp / "a.malloy").write_text("source: one is x")
+        (self.tmp / "dashboards" / "b.malloy").write_text("source: two is y")
+        text = model_text(self.tmp)
+        self.assertIn("one", text)
+        self.assertIn("two", text)
+
+    def test_a_missing_path_is_empty_not_an_error(self):
+        self.assertEqual(model_text(self.tmp / "nope"), "")
+        self.assertEqual(model_text(None), "")
+
+
+class ExitCodes(unittest.TestCase):
+    """The three-way signal improve.py's acceptance gate reads.
+
+    An uncaught traceback exits 1 by default, and 1 is the code meaning "a
+    golden drifted" -- so a missing cases.jsonl used to send someone to settle a
+    golden that was fine. Anything unanticipated must land outside {0, 1}.
+    """
+
+    SCRIPT = pathlib.Path(__file__).resolve().parent / "verify_goldens.py"
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_it(self, *args):
+        return subprocess.run(
+            [sys.executable, str(self.SCRIPT), *args],
+            capture_output=True, text=True, timeout=120)
+
+    def test_a_crash_exits_3_not_1(self):
+        # set.json present, cases.jsonl absent: the read that used to raise
+        # FileNotFoundError straight through Python's default exit status.
+        (self.tmp / "set.json").write_text('{"truthPackage": "x"}')
+        p = self.run_it("--set", str(self.tmp),
+                        "--publisher", "http://127.0.0.1:9")
+        self.assertEqual(p.returncode, 3, p.stderr[-400:])
+        self.assertIn("could not run", p.stderr)
+        self.assertIn("says NOTHING about the goldens", p.stderr)
+
+    def test_a_usage_error_still_exits_2(self):
+        self.assertEqual(self.run_it().returncode, 2)
+
+    def audit_set(self, required: str) -> pathlib.Path:
+        """A set with no truthPackage and one entity id to audit."""
+        (self.tmp / "set.json").write_text('{"name": "probe"}')
+        (self.tmp / "cases.jsonl").write_text(json.dumps(
+            {"qid": "q1", "expectedEntities": {"required": [required]}}) + "\n")
+        model = self.tmp / "m.malloy"
+        model.write_text(MODEL)
+        return model
+
+    def test_a_set_with_no_truth_package_exits_3_not_0(self):
+        # 0 claimed "every golden re-derived, no findings" about a run that
+        # re-derived nothing, and improve.py recorded it as `clean`. No
+        # --publisher here on purpose: nothing is contacted.
+        model = self.audit_set("measure:order_items:total_sales")
+        p = self.run_it("--set", str(self.tmp), "--model", str(model))
+        self.assertEqual(p.returncode, 3, p.stdout[-400:])
+        self.assertIn("truthPackage", p.stdout)
+        self.assertIn("do not read it as a pass", p.stderr)
+
+    def test_the_audits_still_run_without_a_truth_package(self):
+        # The whole point. Four checks need no server, including the set-name
+        # lint, and the early return skipped all of them on exactly the set
+        # whose names nobody had verified.
+        model = self.audit_set("measure:other_package:creative_name")
+        p = self.run_it("--set", str(self.tmp), "--model", str(model))
+        self.assertIn("creative_name", p.stdout)
+
+    def test_a_finding_without_a_truth_package_exits_1_not_3(self):
+        # A finding outranks a skip: 3 tells the caller there is nothing here
+        # to read, and a caller obeying that would discard the one fact this
+        # run produced.
+        model = self.audit_set("measure:other_package:creative_name")
+        p = self.run_it("--set", str(self.tmp), "--model", str(model))
+        self.assertEqual(p.returncode, 1, p.stdout[-400:])
+
+
+class SkipShape(unittest.TestCase):
+    """run_baseline.py calls verify() in process and never sees an exit code.
+
+    It reads `tally` and `findings` on both paths, so one return shape has to
+    carry both -- two shapes is what let the skip branch drop the findings.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_the_skip_shape_carries_a_tally_and_the_audit_findings(self):
+        (self.tmp / "set.json").write_text('{"name": "probe"}')
+        (self.tmp / "cases.jsonl").write_text(json.dumps(
+            {"qid": "q1",
+             "expectedEntities": {"required": ["measure:other_package:x"]}}) + "\n")
+        model = self.tmp / "m.malloy"
+        model.write_text(MODEL)
+        # An unroutable publisher: an empty tally is also the proof that no
+        # request went out, since a contacted-and-failed one tallies `error`.
+        r = verify(self.tmp, "http://127.0.0.1:9", "samples",
+                   model=model, quiet=True)
+        self.assertTrue(r["skipped"])
+        self.assertEqual(r["tally"], {})
+        self.assertEqual(r["drifted"], 0)
+        self.assertTrue([f for f in r["findings"]
+                         if not f.startswith("review ")])
+
+    def test_a_normal_run_reports_skipped_as_none(self):
+        (self.tmp / "set.json").write_text('{"truthPackage": "truth"}')
+        (self.tmp / "cases.jsonl").write_text("")
+        r = verify(self.tmp, "http://127.0.0.1:9", "samples", quiet=True)
+        self.assertIsNone(r["skipped"])
+
+
+class QuestionDrift(unittest.TestCase):
+    def sealed(self, question, asked=None):
+        return {"qid": "q1", "question": asked or question,
+                "questionSha": hashlib.sha256(question.encode()).hexdigest()}
+
+    def test_an_intact_question_is_silent(self):
+        self.assertEqual(
+            question_drift_findings([self.sealed("how many orders?")]), [])
+
+    def test_a_narrowed_question_is_a_hard_finding(self):
+        got = question_drift_findings([self.sealed(
+            "the frequency distribution",
+            asked="the reach frequency distribution")])
+        self.assertEqual(len(got), 1)
+        self.assertIn("questionSha", got[0])
+        self.assertIn("new qid", got[0])
+
+    def test_a_16_char_stamp_is_the_real_shape(self):
+        # evals/ecommerce/_author.py:602 writes sha256(question)[:16] for all
+        # 49 cases. A full-digest comparison called every one of them edited.
+        q = "What were our 2022 bookings?"
+        c = {"qid": "ecom_2022_sales_bookings", "question": q,
+             "questionSha": hashlib.sha256(q.encode()).hexdigest()[:16]}
+        self.assertEqual(question_drift_findings([c]), [])
+
+    def test_a_16_char_stamp_still_catches_an_edit(self):
+        stamped = hashlib.sha256(b"the frequency distribution").hexdigest()[:16]
+        got = question_drift_findings([
+            {"qid": "q1", "question": "the reach frequency distribution",
+             "questionSha": stamped}])
+        self.assertEqual(len(got), 1)
+
+    def test_an_unsealed_case_is_skipped_not_failed(self):
+        # Sets predate the seal. Unguarded is not the same as broken, and
+        # failing them would block every arm on every existing set.
+        self.assertEqual(
+            question_drift_findings([{"qid": "q1", "question": "x"}]), [])
+
+
+class TruthIsolation(unittest.TestCase):
+    """A truth server that also serves the model under test must be refused."""
+
+    def fake_listing(self, names):
+        import verify_goldens as vg_mod
+        return unittest.mock.patch.object(
+            vg_mod, "get_json",
+            lambda base, path, timeout=30: [{"name": n} for n in names])
+
+    def test_a_server_holding_both_packages_is_a_finding(self):
+        # The laptop case: one server, both packages. The values are still
+        # read from the truth package; what breaks is isolation, because the
+        # answerer can retrieve the raw truth sources beside the model.
+        with self.fake_listing(["ecommerce", "ecommerce-truth"]):
+            got = truth_isolation_findings("http://x", "samples", "ecommerce")
+        self.assertEqual(len(got), 1)
+        self.assertIn("not an isolated truth server", got[0])
+
+    def test_a_truth_only_server_is_silent(self):
+        with self.fake_listing(["ecommerce-truth"]):
+            self.assertEqual(
+                truth_isolation_findings("http://x", "samples", "ecommerce"), [])
+
+    def test_a_set_naming_no_target_package_is_silent(self):
+        # Silent HERE is correct -- the function cannot guess what is under
+        # test. What was wrong is that `targetPackage` was the only way to
+        # supply it, and that field is written by nothing, appears in no
+        # schema and is on no set, so the guard never fired anywhere. The
+        # caller now passes it; see the two below.
+        with self.fake_listing(["ecommerce", "ecommerce-truth"]):
+            self.assertEqual(
+                truth_isolation_findings("http://x", "samples", None), [])
+
+    def test_verify_takes_the_target_package_from_its_caller(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            (tmp / "set.json").write_text('{"truthPackage": "ecommerce-truth"}')
+            (tmp / "cases.jsonl").write_text("")
+            with self.fake_listing(["ecommerce", "ecommerce-truth"]):
+                r = verify(tmp, "http://x", "samples",
+                           target_package="ecommerce", quiet=True)
+            self.assertTrue([f for f in r["findings"]
+                             if "not an isolated truth server" in f])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_set_json_still_supplies_it_when_the_caller_does_not(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            (tmp / "set.json").write_text(
+                '{"truthPackage": "ecommerce-truth", '
+                '"targetPackage": "ecommerce"}')
+            (tmp / "cases.jsonl").write_text("")
+            with self.fake_listing(["ecommerce", "ecommerce-truth"]):
+                r = verify(tmp, "http://x", "samples", quiet=True)
+            self.assertTrue([f for f in r["findings"]
+                             if "not an isolated truth server" in f])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_an_unreachable_server_is_not_a_golden_finding(self):
+        # It must not turn a connection problem into evidence about goldens:
+        # the value check reports its own error, and exit 3 means "did not
+        # happen".
+        import verify_goldens as vg_mod
+
+        def boom(*a, **k):
+            raise OSError("connection refused")
+
+        with unittest.mock.patch.object(vg_mod, "get_json", boom):
+            self.assertEqual(
+                truth_isolation_findings("http://x", "samples", "ecommerce"), [])
+
+
+
+
+class Promotion(unittest.TestCase):
+    """`--promote` is the ONLY thing that writes `golden.status`.
+
+    Without it the loop was closed: `skill:eval-import` stamps `provisional` on
+    every golden holding a value and enforces it on write, `skill:eval-answer`
+    refuses a verdict on one, and nothing promoted -- so an imported set was
+    unscorable forever and no file said why. These pin the standard it enforces
+    rather than a softer one.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "set.json").write_text(
+            '{"name": "s", "truthPackage": "truth"}')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def case(self, **golden):
+        g = {"status": "provisional", "kind": "scalar", "value": 42}
+        g.update(golden)
+        return {"qid": "q1", "question": "x", "golden": g}
+
+    def write(self, case):
+        (self.tmp / "cases.jsonl").write_text(json.dumps(case) + "\n")
+
+    def run_promote(self, case, value_status="ok"):
+        self.write(case)
+        with unittest.mock.patch.object(
+                verify_goldens, "check_value",
+                return_value=(value_status, "", [{"x": 42}])):
+            r = verify(self.tmp, "http://truth", "samples", promote=True,
+                       quiet=True)
+        stored = json.loads((self.tmp / "cases.jsonl").read_text())
+        return r, stored
+
+    SECOND = {"verification": {"primaryAxis": "day", "variesAxis": "region"}}
+
+    def test_a_re_derived_golden_with_a_second_derivation_promotes(self):
+        r, stored = self.run_promote(self.case(**self.SECOND))
+        self.assertEqual(r["promoted"], ["q1"])
+        self.assertEqual(stored["golden"]["status"], "verified")
+        self.assertEqual(stored["golden"]["verifiedBy"],
+                         "verify_goldens.py --promote")
+
+    def test_promotion_does_not_bump_goldenRevision(self):
+        # The VALUE did not move, so scores taken against it stay comparable.
+        # Bumping would have read as a golden repair and invalidated them.
+        case = self.case(**self.SECOND)
+        case["goldenRevision"] = 3
+        _, stored = self.run_promote(case)
+        self.assertEqual(stored["goldenRevision"], 3)
+
+    def test_one_derivation_agreeing_with_itself_does_not_promote(self):
+        r, stored = self.run_promote(self.case())
+        self.assertEqual(r["promoted"], [])
+        self.assertEqual(stored["golden"]["status"], "provisional")
+        self.assertIn("no second derivation", r["promotionNotes"][0])
+
+    def test_a_drifted_value_does_not_promote(self):
+        r, stored = self.run_promote(self.case(**self.SECOND),
+                                     value_status="diff")
+        self.assertEqual(r["promoted"], [])
+        self.assertEqual(stored["golden"]["status"], "provisional")
+
+    def test_their_own_query_agreeing_is_not_enough(self):
+        # The exact shape eval-import step 3 describes: their query, their
+        # number, agreeing. It ran against the model under test, so a model bug
+        # would certify its own golden.
+        r, _ = self.run_promote(
+            self.case(verifiedBy="authored_query", canonicalQuery="run: a"))
+        self.assertEqual(r["promoted"], [])
+
+    def test_invalid_and_ambiguous_never_promote(self):
+        # Judgements about the key that a re-derivation cannot make. They go
+        # through the golden side door and a person settles them.
+        for status in ("invalid", "ambiguous"):
+            with self.subTest(status):
+                r, stored = self.run_promote(
+                    self.case(status=status, **self.SECOND))
+                self.assertEqual(r["promoted"], [])
+                self.assertEqual(stored["golden"]["status"], status)
+
+    def test_nothing_is_written_without_the_flag(self):
+        self.write(self.case(**self.SECOND))
+        with unittest.mock.patch.object(
+                verify_goldens, "check_value",
+                return_value=("ok", "", [{"x": 42}])):
+            r = verify(self.tmp, "http://truth", "samples", quiet=True)
+        self.assertEqual(r["promoted"], [])
+        self.assertEqual(
+            json.loads((self.tmp / "cases.jsonl").read_text())["golden"]["status"],
+            "provisional")
+
+    def test_every_unpromoted_golden_says_why(self):
+        # A caller that asked for promotion and got none must learn the reason,
+        # or it is back to guessing at an invisible gate.
+        r, _ = self.run_promote(self.case())
+        self.assertEqual(len(r["promotionNotes"]), 1)
+        self.assertIn("q1", r["promotionNotes"][0])
+
+    def test_blocker_reasons_are_distinct_per_cause(self):
+        s = pathlib.Path(self.tmp)
+        self.assertIn("already verified",
+                      promotion_blocker(self.case(status="verified"), s))
+        self.assertIn("holds no value",
+                      promotion_blocker(
+                          {"qid": "q1", "golden": {"status": "provisional",
+                                                   "kind": "criteria"}}, s))
+        self.assertIsNone(promotion_blocker(self.case(**self.SECOND), s))
+
+
+if __name__ == "__main__":
+    unittest.main()

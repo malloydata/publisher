@@ -41,7 +41,9 @@ Two rules make it work:
 
 `eval-loop`, `eval-answer`, `eval-diagnose` and `eval-improve` are the model-evaluation loop: a set
 of questions with goldens computed from raw tables, a blind answerer over the model, a judge, a
-diagnosis of each failure, and one smallest model edit gated by a re-run. They are shared skills
+diagnosis of each failure, and one smallest model edit gated by a re-run. `eval-import` comes
+before all of it: it turns a question list, in whatever shape it arrived, into a set, and decides
+what each arriving key is actually worth. They are shared skills
 (upstream: `ms2data/agent-skills`) and ship in the `eval` group. Their Python scripts import each
 other by path from `skills/eval-answer/scripts`, so they run in place from a checkout, not from the
 pack. `manifests/publisher-local.json`'s groups are what the loop installs for the
@@ -51,6 +53,29 @@ the judge's rubric and the acceptance check away from the agents they score. The
 contract probes) is deliberately **not** here: it is Credible's question about its hosted engine and
 lives in an unlisted skill upstream. `credibledata/malloy-samples#23` is a set anyone can run the
 loop on.
+
+The six eval skills are mirrored FROM here to `ms2data/agent-skills`, like every other shared
+skill. The upstream copy has drifted before and it matters more here than elsewhere, because the
+scripts are the harness: a run made with a stale copy produces a ledger that reads as current and
+is not.
+
+**Record the commit you mirrored FROM, in the upstream PR and in upstream's README.** Without it
+nobody downstream can tell a deliberate pin from drift, and "identical to Publisher" ages into a
+false claim the day the next commit lands here. A sync that names its source SHA is checkable in one
+line; one that does not costs a reviewer a `diff -r` against a guess.
+
+Two files exist only upstream and are not part of the set: `eval-loop/scripts/run_all.py` (a
+sequencing orchestrator, which `skill:eval-loop` forbids) and `eval-answer/reference/judge.md` (now
+`skill:eval-judge`). Delete them when mirroring rather than copying them back.
+
+**`eval-answer/scripts/mcp_client.py` is the exception, and this file used to say to delete it.**
+It is not mirrored -- it does not exist here -- but it is imported by upstream's engine-side
+`eval-retrieval`, which ships to no customer and therefore has no copy here to keep it alive.
+Deleting it on a sync broke both of that skill's entry points outright
+(`ModuleNotFoundError: No module named 'mcp_client'`), which is the shape of mistake this list
+exists to prevent and caused instead. **Leave anything upstream-only alone unless you have checked
+that nothing upstream imports it**; "not part of the set" is a statement about what we own, not a
+licence to remove it.
 
 ## Tool names in shared skills
 

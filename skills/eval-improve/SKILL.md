@@ -97,6 +97,36 @@ displace answers that already worked.
 | 4 | Declared join on a *probed* key |
 | 5 | A new source: last resort, at most one |
 
+### Four ways a doc edit backfires, each measured
+
+**Do not put an emphatic claim next to an unsettled one.** A dimension doc was
+changed to read "The metric is the same either way: cumulative reach PERCENT OF
+TOTAL", to settle the *shape* of an output. On a question naming no metric the
+agent read it as settling *which metric* and silently picked one -- the exact
+failure its key forbade. The "there is no default, ask" note was on the
+*source*; the emphatic sentence was on the *dimension*, so an agent reading the
+dimension got the claim without the caveat. Put the caveat adjacent to the
+claim, not one level up, and say what the claim does **not** settle.
+
+**Do not leave two docs disagreeing about a default.** In the same package a
+view described itself as "DEFAULT for any unqualified X ask" while its own
+source said there is no default and the agent must ask. Whichever the agent
+reads first wins. After adding a "no default" note anywhere, grep the package
+for the old claim -- ours survived in three places and was found by reading what
+`get_context` returns, not the file.
+
+**Do not copy an expression into its own documentation.** The tempting fix for
+"the agent rebuilt this calculation wrong" is to paste the working expression
+into the view's `#(doc)`. That puts it in two places kept in sync by hand and
+the doc goes stale silently. State the invariants instead -- what must stay true
+at any parameterisation -- and name the view to reuse.
+
+**Do not introduce a first-of-its-kind construct for a handful of cases.** A
+parameterized view was considered for three failures; the experimental flag was
+declared but **zero of the package's 33 sources had ever taken a parameter**.
+Generalising an existing view reached the same place without teaching everyone
+a new shape.
+
 Make the correct thing the default. Guidance phrased as a caveat
 ("pair with X", "note that Y also includes Z") is retrieved, read, and
 declined. A source parameter or named measure that is already the safe
@@ -134,7 +164,13 @@ every entity you touched; a doc reword changes no meaning:
    the stored golden. Different means the golden is stale, not that you are
    wrong.
 3. Run the set's golden verification if it has one, which catches the mechanical
-   subset (drift, and rubric sentences that contradict the model).
+   subset (drift, and rubric sentences that contradict the model). `improve.py`
+   runs it for you after an edit and needs `--truth-publisher` to do it: the
+   goldens are re-derived against the TRUTH package, never against the model you
+   just changed, which would let an edit certify its own answer key. A verifier
+   that could not run at all is reported as a harness failure and never as a
+   suspect golden, because sending someone to settle a key that is fine is the
+   most expensive wrong turn this step can cause.
 
 Report every hit as `golden_suspect` in the handoff, with the entity, the case,
 and the old and new values. **Do not repair them yourself.** Goldens are the
