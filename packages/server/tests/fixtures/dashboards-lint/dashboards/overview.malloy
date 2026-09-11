@@ -1,0 +1,13 @@
+##! experimental.givens
+import { orders } from '../orders.malloy'
+import { BRAND } from '../givens.malloy'
+
+// The one well-formed dashboard here: it exists so a `# drill { to=["overview"] }`
+// has something real to resolve to. Its only finding is BRAND's suggest, which
+// names a query nothing defines.
+# artifact { title="Overview" }
+query: overview is orders -> {
+   where: brand_name ~ $BRAND
+   group_by: brand_name
+   aggregate: total_amount
+}

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { expect, Page, test } from '@playwright/test';
 import fs from 'fs';
 import { spawn, execSync } from 'child_process';

@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Publisher app — Playwright E2E
 
 End-to-end tests for the React SPA in `packages/app`.

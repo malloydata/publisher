@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Per-query freshness gate for persisted sources (persistence.md §9.3, §14
  * Phase B). A query on a `#@ persist` source may use its materialized table

@@ -2,6 +2,11 @@
 name: malloy-notebook-chat
 description: Steps to follow when the chat is bound to a notebook or saved report. The notebook's cells are the agent's primary context, answer from it, run its queries, and only reach for get_context when the user asks about something outside it.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Notebook/Report Chat Workflow
 
 Steps to follow when the user asks a question:
@@ -15,5 +20,5 @@ Steps to follow when the user asks a question:
   - If the question can be answered by a query already in the notebook, run that cell's query via `execute_query` (exact code, or a minor variation like adding a filter or changing a group_by).
   - If the question asks for an analysis that is clearly NOT in the notebook (new source, different package, different domain), then, and only then, call `get_context` to explore.
   - Do NOT call `get_context` as a default first step. The notebook already tells you what's available.
-4. Before writing or modifying a query, read the `malloy-queries` skill for syntax patterns. When you tweak a query (add a `where:` clause, change a `group_by`, etc.), do NOT add `#(filter)` annotations: filters live on the source's model file and are inherited by this notebook automatically. Query-level `where:` filtering inside a cell is fine; declaring new filter UI is a model change, not a chat-time change.
+4. Before writing or modifying a query, read the `malloy-queries` skill for syntax patterns. When you tweak a query (add a `where:` clause, change a `group_by`, etc.), do NOT add `#(filter)` annotations or `given:` declarations: both live on the source's model file and are inherited by this notebook automatically. Query-level `where:` filtering inside a cell is fine; declaring a new runtime parameter is a model change, not a chat-time change.
 5. Summarize insights from query results. Do not echo raw rows: the user sees them rendered.

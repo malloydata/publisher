@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Markdown scenario interpreter (FitNesse-style). A scenario is a folder with a
 // `scenario.md` that reads like a story — starting data as tables, Malloy in code
 // blocks, a publish step, and query/expect pairs — plus an optional `hooks.ts`
@@ -31,6 +34,14 @@
 //                                        [body: `givens: NAME=v; OTHER=v` to supply runtime
 //                                        givens; `columns: exact` to assert the Expect table's
 //                                        columns are the COMPLETE result column set]
+//   ## Build [refused] (orchestrated, …) + `- <src> -> <name> @ <dest> [(failed)]` lines;
+//                                        `(failed)` = instructed but expected to FAIL, asserted
+//                                        against the manifest's `failures`. An unmarked source is
+//                                        asserted built AND absent from `failures`.
+//   ## Build refusals [(pkg=P)]          + GFM table `source [| tier | reason]` -> assert the
+//                                        compiled build plan's REFUSED sources (examined and
+//                                        refused, as opposed to never present). An EMPTY table
+//                                        asserts nothing was refused. Runs nothing.
 //   ## Build targets [(pkg=P)]           + GFM table `source | writes [| entity]` -> assert the
 //                                        compiled build plan's persist sources and the physical
 //                                        name each writes. An `entity` column groups by content
@@ -56,7 +67,7 @@
 import path from "path";
 import type { PersistStorageMode } from "./server";
 import { Rest } from "./rest";
-import { sleep } from "./util";
+import { log, sleep } from "./util";
 
 /** The default environment every scenario runs in unless a step says `(env=…)`. */
 const PRIMARY_ENV = "default";
@@ -78,6 +89,18 @@ interface Table {
    rows: string[][];
 }
 
+/** One `## Manifest` line: an entry a host would send, with its per-entry stamps. */
+interface ManifestEntrySpec {
+   src: string;
+   table: string;
+   dest: string;
+   /** The build plan has no id for this source; use the name as the handle. */
+   unplanned: boolean;
+   fallback?: string;
+   asof?: string;
+   fresh?: number;
+}
+
 // Server-facing steps carry an optional `env` (from `(env=…)`), selecting which
 // environment the step runs against; it defaults to PRIMARY_ENV. A publisher
 // process serves every configured environment, so env is orthogonal to `pub`.
@@ -91,6 +114,7 @@ type Step =
         mode: PersistStorageMode;
         bindings: { source: string; conn: string }[];
         forceRefresh: boolean;
+        reseed: boolean;
         sourceNames?: string[];
         async: boolean;
         label?: string;
@@ -104,7 +128,12 @@ type Step =
         mode: PersistStorageMode;
         refused: boolean;
         strict: boolean;
-        sources: { src: string; name: string; dest: string }[];
+        sources: {
+           src: string;
+           name: string;
+           dest: string;
+           failed: boolean;
+        }[];
         references: { src: string; from?: string }[];
         cites?: string;
         excludes?: string;
@@ -148,6 +177,14 @@ type Step =
         exactColumns: boolean;
      }
    | {
+        kind: "buildRefusals";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        expect: Table;
+     }
+   | {
         kind: "buildTargets";
         pub?: string;
         env: string;
@@ -157,7 +194,13 @@ type Step =
      }
    | { kind: "mutate"; conn: string; table: string; rows?: Table; sql?: string }
    | { kind: "sql"; label: string; sql: string; expect: Table }
-   | { kind: "operator"; conn: string; mode: PersistStorageMode; sql: string }
+   | {
+        kind: "operator";
+        conn: string;
+        mode: PersistStorageMode;
+        sql: string;
+        expect?: Table;
+     }
    | {
         kind: "connection";
         pub?: string;
@@ -196,6 +239,14 @@ type Step =
         source: string;
         refused: boolean;
         cites?: string;
+     }
+   | {
+        kind: "manifest";
+        pub?: string;
+        env: string;
+        pkg: string;
+        mode: PersistStorageMode;
+        entries: ManifestEntrySpec[];
      }
    | {
         kind: "bind";
@@ -263,7 +314,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    data: {},
    mutate: {},
    model: {},
-   publish: { attrs: ["sources", "forcerefresh", "async", "label"] },
+   publish: { attrs: ["sources", "forcerefresh", "reseed", "async", "label"] },
    await: { attrs: ["label"] },
    delete: {},
    reclaim: {},
@@ -286,6 +337,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    bind: {
       attrs: ["bad", "empty", "clear", "from", "fresh", "asof", "fallback"],
    },
+   manifest: { attrs: ["pkg"] },
    restart: { attrs: ["init"] },
    hook: {},
 };
@@ -321,6 +373,7 @@ const SIDE_EFFECT_ONLY_STEPS = new Set([
    "publisher",
    "restart",
    "bind",
+   "manifest",
    "hook",
    "publish",
 ]);
@@ -554,6 +607,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                mode,
                bindings,
                forceRefresh: !!attrs.forcerefresh,
+               reseed: !!attrs.reseed,
                sourceNames,
                async: !!attrs.async,
                label: attrs.label as string | undefined,
@@ -604,12 +658,43 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                });
                break;
             }
+            // Tested before the `refused` prefix below: this asserts the plan's
+            // OTHER collection and runs nothing, where "## Build refused" runs a
+            // build and asserts it fails.
+            if (/^refusals\b/i.test(arg)) {
+               const expect = requireExpectTable(sec.body, sec.header);
+               if (!expect.cols.some((c) => c.name === "source")) {
+                  throw new Error(
+                     `section "## ${sec.header}" requires a "source" column ` +
+                        `(optionally "tier" and "reason"); got: ${expect.cols.map((c) => c.name).join(", ")}`,
+                  );
+               }
+               steps.push({
+                  kind: "buildRefusals",
+                  pub,
+                  env,
+                  pkg: (attrs.pkg as string) ?? defaultPackage,
+                  mode,
+                  expect,
+               });
+               break;
+            }
             const refused = /^refused\b/i.test(arg);
             const pkg =
                (attrs.pkg as string) ??
                (arg.replace(/^refused/i, "").trim() || defaultPackage);
             if (attrs.orchestrated) {
                const { sources, references } = parseOrchestratedBody(sec.body);
+               // `refused` asserts the RUN failed, so it records no per-source
+               // outcome to check `(failed)` against. Marking one there asks for
+               // an assertion the step cannot make; say which shape is meant.
+               if (refused && sources.some((src) => src.failed)) {
+                  throw new Error(
+                     `${sec.header}: \`(failed)\` is meaningless on a refused build — ` +
+                        `a refused run commits no manifest. Drop \`refused\` to assert ` +
+                        `a part-way failure, or drop \`(failed)\` to assert the whole run fails.`,
+                  );
+               }
                steps.push({
                   kind: "orchestratedBuild",
                   pub,
@@ -701,7 +786,14 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             const sql = extractCode(sec.body, "sql");
             if (!sql)
                throw new Error(`## Operator ${arg}: missing a \`\`\`sql block`);
-            steps.push({ kind: "operator", conn: arg.trim(), mode, sql });
+            steps.push({
+               kind: "operator",
+               conn: arg.trim(),
+               mode,
+               sql,
+               // Optional: provisioning DDL asserts nothing, a read asserts rows.
+               expect: parseExpectTable(sec.body),
+            });
             break;
          }
          case "connection": {
@@ -801,6 +893,28 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                source,
                refused: !!attrs.refused,
                cites: firstKey(sec.body, "cites"),
+            });
+            break;
+         }
+         case "manifest": {
+            // A host authoring a manifest BY HAND, rather than `## Bind` replaying
+            // one the publisher produced. That is a real consumer's flow — the
+            // orchestrator writes these — and the interesting cases are the ones
+            // the publisher would never generate itself: an entry for a source it
+            // refused to build, a stale generation, a table it does not own.
+            const entries = parseManifestBody(sec.body);
+            if (entries.length === 0) {
+               throw new Error(
+                  `${sec.header}: no entries — expected \`- <source> -> <table> @ <destination>\` lines`,
+               );
+            }
+            steps.push({
+               kind: "manifest",
+               pub,
+               env,
+               pkg: (attrs.pkg as string) ?? (arg.trim() || defaultPackage),
+               mode,
+               entries,
             });
             break;
          }
@@ -1040,23 +1154,58 @@ function requireExpectTable(body: string[], header: string): Table {
 }
 
 /**
- * Parse an orchestrated-build body: `- <src> -> <physicalName> @ <dest>` lines
- * (the sources this build produces, with caller-assigned/generational names) and
- * `reference: <upstreamSrc> [(from=<pub>)]` lines (upstreams to reuse, resolved by
- * source name at run time). References are collected package-wide (they map to the
- * build's `referenceManifest`), not nested under a source.
+ * Parse an orchestrated-build body: `- <src> -> <physicalName> @ <dest> [(failed)]`
+ * lines (the sources this build produces, with caller-assigned/generational names)
+ * and `reference: <upstreamSrc> [(from=<pub>)]` lines (upstreams to reuse, resolved
+ * by source name at run time). References are collected package-wide (they map to
+ * the build's `referenceManifest`), not nested under a source.
+ *
+ * Per-source `failed` — this source is instructed and EXPECTED to fail. The run
+ * still commits a manifest (a part-way failure records what built and why the rest
+ * did not), so the step asserts a recorded `failures` entry for it instead of a
+ * built table. Say it out loud in the markdown: an unmarked source is asserted
+ * BUILT and absent from `failures`, because a failed source is mirrored into
+ * `entries` carrying the physical name it was headed for, and a check reading only
+ * that name cannot tell the two apart.
  */
 function parseOrchestratedBody(body: string[]): {
-   sources: { src: string; name: string; dest: string }[];
+   sources: { src: string; name: string; dest: string; failed: boolean }[];
    references: { src: string; from?: string }[];
 } {
-   const sources: { src: string; name: string; dest: string }[] = [];
+   const sources: {
+      src: string;
+      name: string;
+      dest?: string;
+      failed: boolean;
+   }[] = [];
    const references: { src: string; from?: string }[] = [];
    for (const raw of body) {
+      // Split a trailing (…) off first so the destination match stays simple.
       const line = raw.trim();
-      const s = line.match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
+      const withAttrs = line.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+      const head = withAttrs ? withAttrs[1] : line;
+      // `@ <destination>` is OPTIONAL. A host may issue an instruction carrying no
+      // destination — because it could not resolve one, or chose not to — and what
+      // the publisher does with such an instruction for a source that DECLARES
+      // `storage=` is a rule worth being able to state in a scenario rather than
+      // only in a unit test.
+      const s = head.match(/^-\s*(\S+)\s*->\s*(\S+)\s*(?:@\s*(\S+)\s*)?$/);
       if (s) {
-         sources.push({ src: s[1], name: s[2], dest: s[3] });
+         const attrs = withAttrs
+            ? withAttrs[2]
+                 .split(",")
+                 .map((a) => a.trim())
+                 .filter(Boolean)
+            : [];
+         let failed = false;
+         for (const a of attrs) {
+            if (a === "failed") failed = true;
+            else
+               throw new Error(
+                  `## Build (orchestrated): unknown attribute "${a}" on "${line}"`,
+               );
+         }
+         sources.push({ src: s[1], name: s[2], dest: s[3], failed });
          continue;
       }
       const r = line.match(
@@ -1065,6 +1214,62 @@ function parseOrchestratedBody(body: string[]): {
       if (r) references.push({ src: r[1], from: r[2]?.trim() || undefined });
    }
    return { sources, references };
+}
+
+/**
+ * `- <source> -> <table> @ <destination> [(attr, …)]` lines for a hand-authored
+ * manifest. Per-entry attributes, because a host stamps a manifest entry by
+ * entry and the interesting forgeries are per entry:
+ *
+ * - `unplanned` — the package build plan does not know this source, so the step
+ *   cannot look up its `sourceEntityId` and uses the source name as the handle.
+ *   Say it out loud in the markdown: without the attribute an unknown source is
+ *   a typo and still throws.
+ * - `fallback=<live|stale_ok|fail>`, `asof=<iso>`, `fresh=<seconds>` — stamp the
+ *   freshness fields on THIS entry. `## Bind` stamps every entry with one value,
+ *   so a MIXED set is only expressible here — and mixed is the normal case for a
+ *   host, since it stamps per generation.
+ */
+function parseManifestBody(body: string[]): ManifestEntrySpec[] {
+   const out: ManifestEntrySpec[] = [];
+   for (const raw of body) {
+      // Split a trailing (…) off first so the destination match stays simple.
+      const line = raw.trim();
+      const withAttrs = line.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+      const head = withAttrs ? withAttrs[1] : line;
+      const attrs = withAttrs
+         ? withAttrs[2]
+              .split(",")
+              .map((a) => a.trim())
+              .filter(Boolean)
+         : [];
+      const m = head.match(/^-\s*(\S+)\s*->\s*(\S+)\s*@\s*(\S+)\s*$/);
+      if (!m) continue;
+      const entry: ManifestEntrySpec = {
+         src: m[1],
+         table: m[2],
+         dest: m[3],
+         unplanned: false,
+      };
+      for (const a of attrs) {
+         const [key, value] = a.includes("=")
+            ? [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]
+            : [a, undefined];
+         if (key === "unplanned" && value === undefined) entry.unplanned = true;
+         else if (key === "fallback" && value) entry.fallback = value;
+         else if (key === "asof" && value) entry.asof = value;
+         else if (key === "fresh" && value) entry.fresh = Number(value);
+         else
+            throw new Error(
+               `## Manifest: unknown attribute "${a}" on "${line}"`,
+            );
+      }
+      if (entry.fresh !== undefined && Number.isNaN(entry.fresh)) {
+         throw new Error(`## Manifest: fresh= must be a number on "${line}"`);
+      }
+      out.push(entry);
+   }
+   return out;
 }
 
 function parseBindings(body: string[]): { source: string; conn: string }[] {
@@ -1342,11 +1547,12 @@ async function buildOrchestratedBody(
    step: {
       pkg: string;
       strict: boolean;
-      sources: { src: string; name: string; dest: string }[];
+      sources: { src: string; name: string; dest?: string; failed: boolean }[];
       references: { src: string; from?: string }[];
    },
-): Promise<OrchestratedBody> {
+): Promise<{ body: OrchestratedBody; failedEids: Set<string> }> {
    const eids = await rest.sourceEntityIds(step.pkg);
+   const failedEids = new Set<string>();
    const sources = step.sources.map((s) => {
       const eid = eids[s.src];
       if (!eid) {
@@ -1354,12 +1560,15 @@ async function buildOrchestratedBody(
             `## Build (orchestrated): source '${s.src}' not in ${step.pkg} build plan (have: ${Object.keys(eids).join(", ")})`,
          );
       }
+      if (s.failed) failedEids.add(eid);
       return {
          sourceEntityId: eid,
          materializedTableId: `mt-${s.name}`,
          physicalTableName: s.name,
          realization: "COPY",
-         destination: s.dest,
+         // Omitted entirely when the line named none, so the wire instruction is
+         // shaped the way a host that resolved no destination would send it.
+         ...(s.dest ? { destination: s.dest } : {}),
       };
    });
    const referenceManifest: {
@@ -1383,11 +1592,14 @@ async function buildOrchestratedBody(
       });
    }
    return {
-      buildInstructions: {
-         sources,
-         ...(referenceManifest.length ? { referenceManifest } : {}),
-         strictUpstreams: step.strict,
+      body: {
+         buildInstructions: {
+            sources,
+            ...(referenceManifest.length ? { referenceManifest } : {}),
+            strictUpstreams: step.strict,
+         },
       },
+      failedEids,
    };
 }
 
@@ -1559,9 +1771,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       // bound to the step's environment. One server process serves every
       // configured environment, so an env-targeted step just rebinds the REST
       // client to that env against the same base URL.
+      // `env` here is the scenario-authored (logical) name; ctx maps it to the
+      // physical environment this scenario owns.
       const serverFor = async (pub?: string, env?: string): Promise<Rest> => {
          const base = pub ? ctx.restOf(pub) : await active();
-         const target = env ?? PRIMARY_ENV;
+         const target = ctx.envFor(env ?? PRIMARY_ENV);
          return target === base.env ? base : new Rest(base.baseUrl, target);
       };
       const modelPath = (pkg?: string, env?: string): string =>
@@ -1569,8 +1783,12 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             pkgKey(env ?? PRIMARY_ENV, pkg ?? parsed.defaultPackage),
          ) ?? `${parsed.defaultPackage}.malloy`;
 
+      // HAMMER_STEP_TIMING=1 reports every step slower than 500ms, so a scenario
+      // that is slow only inside a full run localizes itself without bisecting.
+      const stepTiming = process.env.HAMMER_STEP_TIMING === "1";
       for (const step of parsed.steps) {
          const checksBefore = assert.checks.length;
+         const stepStart = stepTiming ? performance.now() : 0;
          switch (step.kind) {
             case "model":
                await ctx.editPackageModel(
@@ -1584,6 +1802,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                const rest = await serverFor(step.pub, step.env);
                const buildBody = {
                   ...(step.forceRefresh ? { forceRefresh: true } : {}),
+                  // Distinct from forceRefresh, which never re-seeds: this is the
+                  // only way to send an incremental source back to a full rebuild.
+                  ...(step.reseed ? { reseed: true } : {}),
                   ...(step.sourceNames
                      ? { sourceNames: step.sourceNames }
                      : {}),
@@ -1607,7 +1828,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   // the assertion is deterministic rather than racing the rebind.
                   type Binding = {
                      sourceName: string;
-                     storageConnectionName: string;
+                     storageDestinationName: string;
                   };
                   const has = (
                      bindings: Binding[],
@@ -1616,7 +1837,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      bindings.some(
                         (x) =>
                            x.sourceName === b.source &&
-                           x.storageConnectionName === b.conn,
+                           x.storageDestinationName === b.conn,
                      );
                   let bindings: Binding[] = [];
                   for (let attempt = 0; attempt < 40; attempt++) {
@@ -1687,7 +1908,11 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "orchestratedBuild": {
                const rest = await serverFor(step.pub, step.env);
-               const body = await buildOrchestratedBody(ctx, rest, step);
+               const { body, failedEids } = await buildOrchestratedBody(
+                  ctx,
+                  rest,
+                  step,
+               );
                const wire = body as unknown as Record<string, unknown>;
                if (step.refused) {
                   const outcome = await refusedOutcome(rest, step.pkg, wire);
@@ -1712,21 +1937,35 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   }
                } else {
                   const rec = await rest.build(step.pkg, wire);
-                  const entries =
-                     (
-                        rec.manifest as {
-                           entries?: Record<
-                              string,
-                              { physicalTableName?: string }
-                           >;
-                        } | null
-                     )?.entries ?? {};
-                  // Verify each built source landed in the caller-assigned name.
+                  const manifest = rec.manifest as {
+                     entries?: Record<string, { physicalTableName?: string }>;
+                     failures?: Record<string, { reason?: string }>;
+                  } | null;
+                  const entries = manifest?.entries ?? {};
+                  // A part-way failure still commits a manifest, and a failed
+                  // source is MIRRORED into `entries` carrying the physical name
+                  // it was headed for — a table that does not exist. The
+                  // physical-name check alone therefore cannot tell built from
+                  // failed, so `failures` is the authority in both directions.
+                  const failures = manifest?.failures ?? {};
                   for (const s of body.buildInstructions.sources) {
+                     if (failedEids.has(s.sourceEntityId)) {
+                        assert.ok(
+                           `failed ${s.physicalTableName}`,
+                           !!failures[s.sourceEntityId],
+                           `expected a recorded failure, got failures=${Object.keys(failures).join(", ") || "none"}`,
+                        );
+                        continue;
+                     }
                      assert.eq(
                         `built ${s.physicalTableName}`,
                         entries[s.sourceEntityId]?.physicalTableName,
                         s.physicalTableName,
+                     );
+                     assert.ok(
+                        `built ${s.physicalTableName}: not recorded as a failure`,
+                        !failures[s.sourceEntityId],
+                        failures[s.sourceEntityId]?.reason,
                      );
                   }
                }
@@ -1776,6 +2015,60 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                         out.rows,
                      );
                }
+               break;
+            }
+            case "buildRefusals": {
+               const rest = await serverFor(step.pub, step.env);
+               const pkg = (await rest.getPackage(step.pkg)) as {
+                  buildPlan?: {
+                     refusedSources?: Record<
+                        string,
+                        { name?: string; tier?: string; reason?: string }
+                     >;
+                  };
+               };
+               // The plan's second collection: sources compiled, EXAMINED and
+               // refused, distinct from a source the plan never contained at all
+               // (which is an absence, and reads as "never examined" — see
+               // host-binding-of-unplanned-source). An empty Expect table asserts
+               // exactly that nothing was refused, which is the only way to pin
+               // the absence side positively.
+               const refused = Object.values(
+                  pkg.buildPlan?.refusedSources ?? {},
+               );
+               // One row per DISTINCT source name, sorted both sides so the
+               // comparison is order-independent — plan iteration order is not a
+               // contract. `tier` and `reason` are opt-in columns, the same way
+               // `## Build targets` treats `entity`.
+               const actual = [
+                  ...new Map(
+                     refused
+                        .filter((r) => r.name)
+                        .map((r) => [
+                           r.name!,
+                           {
+                              source: r.name!,
+                              tier: r.tier ?? "",
+                              reason: r.reason ?? "",
+                           },
+                        ]),
+                  ).values(),
+               ].sort((a, b) => a.source.localeCompare(b.source));
+               const srcCol = step.expect.cols.findIndex(
+                  (c) => c.name === "source",
+               );
+               const expectSorted: Table = {
+                  cols: step.expect.cols,
+                  rows: [...step.expect.rows].sort((a, b) =>
+                     String(a[srcCol]).localeCompare(String(b[srcCol])),
+                  ),
+               };
+               compareRows(
+                  assert,
+                  `build refusals (${step.pkg})`,
+                  expectSorted,
+                  actual as unknown as Record<string, unknown>[],
+               );
                break;
             }
             case "buildTargets": {
@@ -1884,13 +2177,23 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                // one running), then run the operator's read-write DDL out-of-band
                // (via the operator's OWN DuckLake client, not the publisher).
                await active();
-               await ctx.operatorSql(step.conn, step.sql);
+               const operatorRows = await ctx.operatorSql(step.conn, step.sql);
+               if (step.expect) {
+                  compareRows(
+                     assert,
+                     `operator ${step.conn}`,
+                     step.expect,
+                     operatorRows,
+                  );
+               }
                break;
             }
             case "connection": {
                // Runs THROUGH the publisher's connection sqlQuery endpoint (what a
-               // caller can reach). For a storage destination this attach is
-               // read-only, so `refused` asserts DDL is rejected.
+               // caller can reach). A storage destination is not in that
+               // namespace at all, and a user connection onto a lake is attached
+               // read-only, so `refused` covers both: unreachable, or reachable
+               // but not writable.
                const rest = await serverFor(step.pub, step.env);
                if (step.refused) {
                   let threw = false;
@@ -1978,7 +2281,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                const pkg = (await rest.getPackage(step.pkg)) as {
                   warnings?: {
                      model?: string;
-                     target?: string;
+                     subject?: string;
                      message?: string;
                   }[];
                };
@@ -2027,6 +2330,65 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                         : `expected success, got problems=${problems.slice(0, 200)}`,
                   );
                }
+               break;
+            }
+            case "manifest": {
+               // Author the manifest a host would send, and bind it. The schema is
+               // copied from whichever CAPTURED entry already describes that
+               // physical table — a real build has to have produced it, which is
+               // what keeps the forged entry honest about the table's shape while
+               // being dishonest about which source may be served from it.
+               const rest = await serverFor(step.pub, step.env);
+               const captured = await rest.latestManifestEntries(step.pkg);
+               const ids = await rest.sourceEntityIds(step.pkg);
+               const entries: Record<string, unknown> = {};
+               for (const e of step.entries) {
+                  // `unplanned`: the plan has no id for this source, which is the
+                  // point — a host naming a source the publisher's plan dropped.
+                  // The handle only has to be stable, so the source name serves.
+                  const eid = e.unplanned ? e.src : ids[e.src];
+                  if (!eid) {
+                     throw new Error(
+                        `## Manifest: source "${e.src}" is not in ${step.pkg}'s build plan ` +
+                           `(planned: ${Object.keys(ids).join(", ") || "none"}). ` +
+                           `Add \`(unplanned)\` if that is the point of the scenario.`,
+                     );
+                  }
+                  if (e.unplanned && ids[e.src]) {
+                     throw new Error(
+                        `## Manifest: source "${e.src}" is marked \`(unplanned)\` but IS in ` +
+                           `${step.pkg}'s build plan — the scenario's premise no longer holds`,
+                     );
+                  }
+                  const schemaOf = Object.values(captured).find(
+                     (c) =>
+                        (c as { physicalTableName?: string })
+                           .physicalTableName === e.table,
+                  ) as { schema?: unknown } | undefined;
+                  if (!schemaOf?.schema) {
+                     throw new Error(
+                        `## Manifest: no captured schema for table "${e.table}" — ` +
+                           `a real build must have produced it before a manifest can name it`,
+                     );
+                  }
+                  entries[eid] = {
+                     sourceEntityId: eid,
+                     sourceName: e.src,
+                     physicalTableName: e.table,
+                     storageDestinationName: e.dest,
+                     schema: schemaOf.schema,
+                     ...(e.fallback ? { freshnessFallback: e.fallback } : {}),
+                     ...(e.asof ? { dataAsOf: e.asof } : {}),
+                     ...(e.fresh !== undefined
+                        ? { freshnessWindowSeconds: e.fresh }
+                        : {}),
+                  };
+               }
+               const uri = await ctx.writeManifest(
+                  `${step.pkg}-authored`,
+                  entries,
+               );
+               await rest.patchPackage(step.pkg, { manifestLocation: uri });
                break;
             }
             case "bind": {
@@ -2183,6 +2545,14 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   `a cites:/excludes: key, or (rows=N), or it is not verifying anything`,
             );
          }
+         if (stepTiming) {
+            const took = performance.now() - stepStart;
+            if (took >= 500) {
+               log.info(
+                  `[${parsed.id}] step "${step.kind}" took ${(took / 1000).toFixed(1)}s`,
+               );
+            }
+         }
       }
 
       // Drain any async publishes the scenario didn't explicitly `## Await`, so a
@@ -2200,6 +2570,13 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
       title: parsed.title,
       packages,
       sourceTables,
+      // Every mode this scenario will boot at, in order (see Scenario.modes).
+      modes: parsed.steps
+         .filter(
+            (s): s is Extract<Step, { kind: "publisher" }> =>
+               s.kind === "publisher",
+         )
+         .map((s) => s.mode),
       connections: parsed.connectionDecls,
       run,
    };

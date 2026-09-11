@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -12,6 +15,7 @@ import {
    PUBLISHER_CONFIG_NAME,
 } from "./constants";
 import { logger } from "./logger";
+import { accessSync, constants as fsConstants, mkdirSync } from "node:fs";
 
 /**
  * Path to the publisher.config.json file shipped inside the published
@@ -115,6 +119,7 @@ export type Environment = {
    theme?: Theme;
    packages: Package[];
    connections?: Connection[];
+   storageDestinations?: Connection[];
 };
 
 export type PublisherConfig = {
@@ -128,6 +133,13 @@ export type ProcessedEnvironment = {
    theme?: Theme;
    packages: Package[];
    connections: ApiConnection[];
+   /**
+    * Carried through unfiltered: destinations are validated in one place,
+    * `processStorageDestinations`, which every path onto an Environment
+    * goes through. Filtering here too would mean two lists to keep in step, and
+    * the config file is not the only source — a request body is the other.
+    */
+   storageDestinations: ApiConnection[];
 };
 
 export type ProcessedPublisherConfig = {
@@ -177,19 +189,31 @@ function parseIntEnv(name: string): number | undefined {
    return value;
 }
 
-function parseFloatEnv(name: string): number | undefined {
+function parseFloatEnv(name: string, example: string): number | undefined {
    const raw = process.env[name];
    if (raw === undefined || raw.trim() === "") return undefined;
-   const value = Number.parseFloat(raw);
-   if (!Number.isFinite(value)) {
-      throw new Error(
-         `Invalid value for ${name}: expected a finite number, got "${raw}"`,
+   const trimmed = raw.trim();
+   // Number.parseFloat stops at the first character it cannot read, so
+   // "0.5abc" parses as 0.5 and would drive behaviour as though the operator
+   // had written a valid setting. Match the whole string first. A round-trip
+   // check like parseIntEnv's cannot serve here: it would reject "0.50",
+   // ".5" and "1e-3", all of which are meant.
+   const invalid = () =>
+      new Error(
+         `Invalid value for ${name}: expected a finite number, got "${raw}". ` +
+            `Fix: ${name}=${example}`,
       );
+   if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
+      throw invalid();
+   }
+   const value = Number.parseFloat(trimmed);
+   if (!Number.isFinite(value)) {
+      throw invalid();
    }
    return value;
 }
 
-function parseBoolEnv(name: string): boolean | undefined {
+export function parseBoolEnv(name: string): boolean | undefined {
    const raw = process.env[name];
    if (raw === undefined || raw.trim() === "") return undefined;
    const normalised = raw.trim().toLowerCase();
@@ -221,10 +245,10 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
    }
 
    const highWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION") ??
+      parseFloatEnv("PUBLISHER_MEMORY_HIGH_WATER_FRACTION", "0.8") ??
       DEFAULT_HIGH_WATER_FRACTION;
    const lowWaterFraction =
-      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION") ??
+      parseFloatEnv("PUBLISHER_MEMORY_LOW_WATER_FRACTION", "0.7") ??
       DEFAULT_LOW_WATER_FRACTION;
    const checkIntervalMs =
       parseIntEnv("PUBLISHER_MEMORY_CHECK_INTERVAL_MS") ??
@@ -261,6 +285,321 @@ export const getMemoryGovernorConfig = (): MemoryGovernorConfig | null => {
       backpressureEnabled,
    };
 };
+
+/**
+ * DuckDB `memory_limit` for every Publisher-owned DuckDB session and instance,
+ * as a FLAT value (`'1GB'`, `'512MB'`). `off` or unset leaves DuckDB's own
+ * default. Sizing guidance and the full rationale live in
+ * `docs/configuration.md`; what matters at this call site is why the value is
+ * absolute rather than derived.
+ *
+ * DuckDB sizes its default from the container INDEPENDENTLY per instance, so N
+ * instances in one process commit N times that share and the kernel kills the
+ * process while each of them still believes it is inside its budget. Publisher
+ * cannot fix that by computing bytes from the container and dividing: the
+ * divisor is not known when a session opens (a build, a package sandbox and the
+ * gate session all come and go independently, and nothing bounds concurrent
+ * builds), and revising the division as instances appear would shrink a live
+ * cap underneath a running query. An absolute per-session value is the only
+ * thing that bounds the sum without needing to know N.
+ *
+ * Read per session rather than at startup so a malformed value surfaces on the
+ * session that used it; {@link assertDuckDBResourceConfig} is what makes that a
+ * boot failure instead.
+ */
+/**
+ * Whether an operator explicitly opted out with the documented `off` sentinel,
+ * as distinct from never having set the variable.
+ *
+ * Both resolve to "no limit", so the difference is invisible to
+ * {@link getDuckDBMemoryLimit} — but only one of them is a decision. The startup
+ * warning about unbounded instances is worth making to someone who has never
+ * seen it and worthless to someone who opted out on purpose, and a warning with
+ * no way to acknowledge it is the kind people learn to filter.
+ */
+export const isDuckDBMemoryLimitDisabled = (): boolean =>
+   process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim().toLowerCase() === "off";
+
+export const getDuckDBMemoryLimit = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKDB_MEMORY_LIMIT?.trim();
+   if (raw === undefined || raw === "" || raw.toLowerCase() === "off") {
+      return undefined;
+   }
+   return raw;
+};
+
+/**
+ * Bound on how much column data DuckLake buffers before flushing a Parquet row
+ * group, in bytes (`PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES`, e.g. `16MB`).
+ * Unset leaves DuckLake's own default of 122,880 ROWS, and issues nothing at all
+ * on attach.
+ *
+ * A DuckLake write buffers a whole row group per column, so its memory is driven
+ * by the table's WIDTH rather than its row count -- a 72-column write measured
+ * 2.7 GiB at the default and 1.0 GiB at 16MB, with the read side under 200 MiB
+ * either way. `memory_limit` does not bound this: the buffers sit outside the
+ * buffer manager, so a low limit and a large row group OOM together.
+ *
+ * Bytes rather than DuckLake's own row count, because a row count cannot suit a
+ * 9-column and a 110-column table at once: the byte form derives the rows per group
+ * from the data actually buffered, so it tracks width without anyone estimating it.
+ * It requires `preserve_insertion_order=false`, which DuckLake's write path does not
+ * honour anyway (it plans the copy parallel unconditionally), so the guarantee being
+ * waived is not one that was being provided.
+ *
+ * Absolute rather than derived, for the same reason {@link getDuckDBMemoryLimit}
+ * is: the number of concurrent builds is not known when a lake is attached.
+ */
+export const getDuckLakeRowGroupSizeBytes = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
+/**
+ * Bound on how large a Parquet file DuckLake writes before rotating to the next
+ * one (`PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES`, e.g. `256MB`). Unset leaves
+ * DuckLake's own default and issues nothing at all on attach.
+ *
+ * Writing to object storage, DuckDB copies each multipart part into a buffer it
+ * allocates itself, so a file's bytes stay resident until that file completes:
+ * peak memory tracks the FILE size, not the row group. Measured on a 72-column,
+ * 20M-row DuckLake write to GCS, one batch: 650 MiB at DuckLake's own default
+ * (~512MB files), 550 at 512MB, 373 at 256MB, 262 at 128MB, 255 at 64MB.
+ * `memory_limit` does not bound it; the allocation is tagged for the extension
+ * and the limit is not enforced against it. The effect is far larger without
+ * DuckLake's rotation -- a plain single-file COPY of the same data measured
+ * 2979 MiB against 149 MiB writing to local disk -- but DuckLake always rotates,
+ * so ~650 MiB is the baseline this option actually improves on.
+ *
+ * This is a DIFFERENT term from {@link getDuckLakeRowGroupSizeBytes}, not a
+ * replacement: the row group bounds the per-column buffer WITHIN a file, this
+ * bounds how much of the file is resident. Measured separately on one write, each
+ * alone gives 18% and 34%, and together 65%.
+ *
+ * Larger is better on every axis except memory -- full scans, write throughput and
+ * catalog rows all improve with file size and plateau around 512MB, while file-level
+ * pruning is already effective at every size. So the value to want is the LARGEST
+ * that clears the deployment's memory ceiling, not the smallest.
+ */
+export const getDuckLakeTargetFileSizeBytes = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
+/**
+ * Directory DuckDB spills to. A materialization build overrides this with its
+ * own disposable working directory; every other session and instance uses this.
+ *
+ * No `off` sentinel, unlike {@link getDuckDBMemoryLimit}: a directory named
+ * `off` is a legal path, and unset already means "DuckDB's default".
+ *
+ * Setting a `memory_limit` does not by itself create spill on the `storage=`
+ * build path — that pipeline pushes its SQL to the source warehouse and streams
+ * the result into the destination, with nothing to spill. Local compute, and so
+ * spill, is the chained-build and serve paths.
+ */
+export const getDuckDBTempDirectory = (): string | undefined => {
+   const raw = process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY?.trim();
+   return raw === undefined || raw === "" ? undefined : raw;
+};
+
+/**
+ * Validate the DuckDB resource settings at boot, and create the spill directory.
+ *
+ * Both are otherwise read on the first session that opens, which is the wrong
+ * moment to discover a typo: `/health` and `/health/readiness` never touch
+ * DuckDB, so the pod reports ready and then fails every query and package load.
+ * `getExtensionFetchPolicy` resolves the same tradeoff the same way.
+ *
+ * The directory is created rather than merely checked because
+ * `SET temp_directory` accepts a path that does not exist and only fails at the
+ * first spill, with an IO error that names the directory but not the variable
+ * that set it. Creating it here turns both that and an unwritable path into a
+ * startup failure naming the variable.
+ */
+/**
+ * The byte sizes DuckDB itself accepts, for every size-valued setting Publisher
+ * validates at boot. Probed against v1.5.5 rather than assumed: it takes the
+ * 1000^i units (KB MB GB TB) and the 1024^i units (KiB MiB GiB TiB), refuses
+ * anything larger (`1PB`), and refuses a bare byte count -- its own error names
+ * exactly this set. Anchored to those units rather than any letters, so trailing
+ * garbage like `1GBB` fails here instead of at the first session that opens.
+ *
+ * One constant rather than three literals: a validator NARROWER than the engine
+ * fails the pod on a value DuckDB would have taken, with a message that reads as
+ * if the operator wrote something malformed. The two DuckLake settings were
+ * narrower than this -- no `TB`/`TIB` -- until they were pointed here.
+ *
+ * Zero is rejected: DuckDB accepts `0MB` and stores it, and none of these
+ * settings has a sensible zero.
+ */
+const DUCKDB_BYTE_SIZE =
+   /^(?!0+(\.0+)?\s*[A-Za-z])\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i;
+
+export function assertDuckDBResourceConfig(): void {
+   const memoryLimit = getDuckDBMemoryLimit();
+   if (memoryLimit !== undefined && !DUCKDB_BYTE_SIZE.test(memoryLimit)) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKDB_MEMORY_LIMIT: expected a size like ` +
+            `"1GB" or "512MB" (or "off" to disable), got "${memoryLimit}"`,
+      );
+   }
+   const rowGroupSizeBytes = getDuckLakeRowGroupSizeBytes();
+   if (
+      rowGroupSizeBytes !== undefined &&
+      !DUCKDB_BYTE_SIZE.test(rowGroupSizeBytes)
+   ) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES: expected a ` +
+            `size like "16MB", got "${rowGroupSizeBytes}"`,
+      );
+   }
+   const targetFileSizeBytes = getDuckLakeTargetFileSizeBytes();
+   if (
+      targetFileSizeBytes !== undefined &&
+      !DUCKDB_BYTE_SIZE.test(targetFileSizeBytes)
+   ) {
+      throw new Error(
+         `Invalid value for PUBLISHER_DUCKLAKE_TARGET_FILE_SIZE_BYTES: expected a ` +
+            `size like "256MB", got "${targetFileSizeBytes}"`,
+      );
+   }
+   const tempDirectory = getDuckDBTempDirectory();
+   if (tempDirectory !== undefined) {
+      try {
+         mkdirSync(tempDirectory, { recursive: true });
+         // `recursive: true` returns silently when the directory already exists,
+         // whatever its permissions — the common Kubernetes case of a volume
+         // mounted with the wrong ownership, and the one the promise above would
+         // otherwise miss. Checked explicitly so an unwritable mount fails the
+         // boot rather than the first spill.
+         accessSync(tempDirectory, fsConstants.W_OK);
+      } catch (error) {
+         const detail = error instanceof Error ? error.message : String(error);
+         throw new Error(
+            `Cannot use PUBLISHER_DUCKDB_TEMP_DIRECTORY "${tempDirectory}": ` +
+               `${detail}`,
+         );
+      }
+   }
+}
+
+/**
+ * Settings for the optional embedding provider behind semantic
+ * `get_context` retrieval. See {@link getEmbeddingConfig}.
+ */
+export interface EmbeddingConfig {
+   /** Bearer token sent to the embedding endpoint. */
+   apiKey: string;
+   /** Embedding model name, e.g. "text-embedding-3-small". */
+   model: string;
+   /** Base URL of an OpenAI-compatible API (no trailing slash). */
+   baseUrl: string;
+   /**
+    * Optional `dimensions` request parameter. Omitted from requests when
+    * unset; the vector length then comes from the provider's response.
+    */
+   dimensions?: number;
+   /**
+    * Cosine-similarity floor a match must clear to be returned at all.
+    * See {@link DEFAULT_EMBEDDING_MIN_SIMILARITY}.
+    */
+   minSimilarity: number;
+}
+
+const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+const DEFAULT_EMBEDDING_API_BASE = "https://api.openai.com/v1";
+
+/**
+ * Default cosine-similarity floor for semantic retrieval.
+ *
+ * Tunable because the right value is a property of the embedding model, not
+ * of Publisher: cosine similarity is not calibrated across models, so a floor
+ * that separates signal from noise for one endpoint does not for another.
+ * Deliberately permissive, letting a few weak matches through rather than
+ * discarding a real one; operators who would rather see nothing than noise
+ * should raise it. `belowCutoffCount` against `totalEntities` in each
+ * response is the measurement to tune with. See docs/configuration.md.
+ */
+export const DEFAULT_EMBEDDING_MIN_SIMILARITY = 0.2;
+
+/**
+ * Embedding-provider settings for semantic `get_context` retrieval,
+ * or `null` when the feature is disabled. The feature is enabled iff
+ * `EMBEDDING_API_KEY` is set and non-empty; without it the tool keeps its
+ * lexical (lunr) ranking unchanged.
+ *
+ * The key must be set explicitly. An ambient provider key (for example
+ * `OPENAI_API_KEY`) is deliberately NOT read: enabling this feature sends
+ * entity names, `#(doc)` text, and query strings to the configured
+ * endpoint, and that egress must never switch on just because a commonly
+ * exported variable happens to be present.
+ *
+ * Throws on malformed companion values (bad URL, bad integer) so a typo
+ * surfaces loudly in the log rather than silently degrading to lexical.
+ */
+export const getEmbeddingConfig = (): EmbeddingConfig | null => {
+   const apiKey = process.env.EMBEDDING_API_KEY?.trim();
+   if (!apiKey) {
+      return null;
+   }
+
+   const rawBase = process.env.EMBEDDING_API_BASE;
+   const baseUrl = (rawBase?.trim() || DEFAULT_EMBEDDING_API_BASE).replace(
+      /\/+$/,
+      "",
+   );
+   try {
+      new URL(baseUrl);
+   } catch {
+      throw new Error(
+         `Invalid value for EMBEDDING_API_BASE: expected a URL, got "${rawBase}"`,
+      );
+   }
+
+   const model = process.env.EMBEDDING_MODEL?.trim() || DEFAULT_EMBEDDING_MODEL;
+
+   const dimensions = parseIntEnv("EMBEDDING_DIMENSIONS");
+   if (dimensions !== undefined && dimensions <= 0) {
+      throw new Error(
+         `EMBEDDING_DIMENSIONS must be a positive integer (got ${dimensions})`,
+      );
+   }
+
+   const minSimilarity =
+      parseFloatEnv("EMBEDDING_MIN_SIMILARITY", "0.35") ??
+      DEFAULT_EMBEDDING_MIN_SIMILARITY;
+   // Rejected rather than clamped: a floor of 1 returns nothing and a
+   // negative one returns everything, and both look like a broken index
+   // rather than a bad setting. An invalid value must never go on to drive
+   // retrieval.
+   if (minSimilarity < 0 || minSimilarity >= 1) {
+      throw new Error(
+         `Invalid EMBEDDING_MIN_SIMILARITY: expected a number in [0, 1), got ${minSimilarity}. ` +
+            `Fix: EMBEDDING_MIN_SIMILARITY=0.35 (default ${DEFAULT_EMBEDDING_MIN_SIMILARITY})`,
+      );
+   }
+
+   return { apiKey, model, baseUrl, dimensions, minSimilarity };
+};
+
+/**
+ * Whether `search_database_schema` may send a connection's table and
+ * column names to the configured embedding provider. Off unless set.
+ *
+ * Deliberately a SECOND switch on top of `EMBEDDING_API_KEY` rather than
+ * riding on it, for the same reason that key is not inferred from an ambient
+ * `OPENAI_API_KEY`: the two authorise different disclosures. `EMBEDDING_API_KEY`
+ * covers the operator's own model text (entity names and `#(doc)`), which is
+ * already on their disk; a warehouse's table and column names are the
+ * customer's, and turning on semantic `get_context` must not silently
+ * start shipping them to a third party.
+ *
+ * With this off (the default) schema search still works: it ranks lexically,
+ * which needs no network at all.
+ */
+export const schemaEmbeddingEnabled = (): boolean =>
+   parseBoolEnv("EMBEDDING_INDEX_CONNECTION_SCHEMA") ?? false;
 
 /**
  * Tunables for the standalone {@link MaterializationScheduler}. Sourced from
@@ -481,6 +820,56 @@ export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
 };
 
 /**
+ * Where an `s3` connection may select `provider: credential_chain` — host-resolved
+ * credentials rather than a configured key pair.
+ */
+export type S3CredentialChainPolicy = "any" | "destinations-only" | "off";
+
+/**
+ * Resolve the S3 credential-chain policy from `S3_CREDENTIAL_CHAIN_POLICY`; falls
+ * back to `any` when unset or empty.
+ *
+ * `credential_chain` makes DuckDB resolve the HOST's own credentials — on EKS the
+ * pod's IRSA role, on EC2 its instance profile. That is what the field is for, and
+ * on a single-tenant deployment it is unremarkable. It stops being unremarkable
+ * when the connection is authored by someone other than the operator: Publisher's
+ * connection create and test endpoints take an arbitrary body, so anyone who can
+ * reach them can ask the host to act as itself against any bucket its role permits.
+ * Publisher is documented as unauthenticated and localhost-only, so this is not a
+ * new bypass — but it raises what reaching the existing one is worth, and a
+ * deployment that fronts Publisher with its own authorization had no way to say so.
+ *
+ * - `any` (default): preserves prior behaviour. Any `s3` connection may name it.
+ * - `destinations-only`: permitted on a `storageDestinations` entry — which the
+ *   OPERATOR configures — and refused on an environment connection, which an
+ *   author may supply. The distinction is the point: a managed storage tier runs
+ *   on the host's identity by design, while a user connection naming it is asking
+ *   the host to lend that identity to an arbitrary bucket.
+ * - `off`: refused everywhere, for a deployment that mints no host-identity
+ *   access at all.
+ *
+ * Throws on an unrecognised value, for the same reason the extension policy does:
+ * a typo in a manifest should fail the boot rather than silently choose the
+ * permissive option.
+ */
+export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy => {
+   const raw = process.env.S3_CREDENTIAL_CHAIN_POLICY;
+   if (raw === undefined || raw.trim() === "") return "any";
+   const normalised = raw.trim().toLowerCase();
+   if (
+      normalised === "any" ||
+      normalised === "destinations-only" ||
+      normalised === "off"
+   ) {
+      return normalised;
+   }
+   throw new Error(
+      `Invalid value for S3_CREDENTIAL_CHAIN_POLICY: expected "any", ` +
+         `"destinations-only" or "off", got "${raw}"`,
+   );
+};
+
+/**
  * The three `#@ persist storage=<conn>` deployment modes, read from
  * `PERSIST_STORAGE_MODE`. This is a runtime kill switch — flipping DOWN must
  * never fail an already-loaded package, only change how `storage=` is honored:
@@ -541,9 +930,45 @@ export const getPersistStorageMode = (): PersistStorageMode => {
  * re-publishes of existing packages. Load is ALWAYS warn-only regardless — the
  * flag only governs whether publish rejects.
  */
-export const getPersistCollisionEnforce = (): boolean => {
-   const raw = process.env.PERSIST_COLLISION_ENFORCE;
-   return raw !== undefined && raw.trim().toLowerCase() === "true";
+export const getPersistCollisionEnforce = (): boolean =>
+   // parseBoolEnv, not an ad-hoc === "true": an operator who writes `1` or `yes`
+   // has asked for the check to block, and an ad-hoc compare would silently leave
+   // it warn-only — the flag failing open in exactly the direction it exists to
+   // prevent. A typo throws at startup, like every other flag here.
+   parseBoolEnv("PERSIST_COLLISION_ENFORCE") ?? false;
+
+/**
+ * Whether the publisher attaches per-query metadata at all, from
+ * `PUBLISHER_QUERY_METADATA` (default `off`).
+ *
+ * Ships dark for a release, like `PERSIST_STORAGE_MODE` before it, and for the
+ * same reason: this is the rare feature that touches EVERY statement the server
+ * sends. On a backend with no native tag facility the bag rides as a leading SQL
+ * comment, so `on` changes the text of the statement (never its meaning or its
+ * results) and puts the bag in query logs and `pg_stat_activity`.
+ *
+ * The risk that decides the default is upstream, not here. Malloy validates the
+ * bag at dispatch and THROWS on one it cannot render, and the contract it
+ * validates against is mirrored in `service/query_metadata.ts` against a pinned
+ * version. Every mitigation on this path — clamping, shedding, never throwing —
+ * is downstream of that mirror being right, so a tightened upstream limit would
+ * surface as failing customer queries on a path nobody opted into. `off` for a
+ * release means a deployment turns attribution on deliberately, having read
+ * what it does to its statements.
+ *
+ * Case-insensitive; loud-fails on an unrecognized value, so a typo cannot
+ * silently leave a deployment that asked for attribution without it.
+ */
+export type QueryMetadataMode = "on" | "off";
+
+export const getQueryMetadataMode = (): QueryMetadataMode => {
+   const raw = process.env.PUBLISHER_QUERY_METADATA;
+   if (raw === undefined || raw.trim() === "") return "off";
+   const value = raw.trim().toLowerCase();
+   if (value === "on" || value === "off") return value;
+   throw new Error(
+      `PUBLISHER_QUERY_METADATA must be on | off (got ${JSON.stringify(raw)})`,
+   );
 };
 
 function substituteEnvVars(value: string): string {
@@ -643,18 +1068,14 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       rawConfig = JSON.parse(fileContent);
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logger.error(
-         `Failed to parse ${publisherConfigPath}: ${message}. Using default empty config.`,
-         {
-            path: publisherConfigPath,
-            error: message,
-            stack: error instanceof Error ? error.stack : undefined,
-         },
-      );
-      return {
-         frozenConfig: false,
-         environments: [],
-      };
+      // Raised, not absorbed into an empty config. A file that exists and does
+      // not parse is an operator's typo, and returning `environments: []` for
+      // it produced a server that booted, reported "serving" with an empty
+      // loadErrors, and served nothing -- with the reason only in the log.
+      // Callers that can carry on without a config already catch this
+      // (isPublisherConfigFrozen defaults to false, getConnectionsFrom...
+      // returns none); the manifest read turns it into a refusal to start.
+      throw new Error(`Failed to parse ${publisherConfigPath}: ${message}`);
    }
 
    // Process environment variables in config values
@@ -857,7 +1278,7 @@ export const isPublisherConfigFrozen = (serverRoot: string) => {
    } catch (error) {
       logger.error(
          `Error checking if ${PUBLISHER_CONFIG_NAME} is frozen. Defaulting to false.`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return false;
    }
@@ -881,7 +1302,7 @@ export const getConnectionsFromPublisherConfig = (
    } catch (error) {
       logger.error(
          `Error getting connections for environment "${environmentName}" from ${PUBLISHER_CONFIG_NAME}`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return [];
    }
@@ -902,7 +1323,7 @@ export const convertConnectionsToApiConnections = (
          if (!conn.name || typeof conn.name !== "string") {
             logger.warn(
                `Invalid connection: missing or invalid "name" field. Skipping.`,
-               { connection: conn },
+               { type: typeof conn.type === "string" ? conn.type : undefined },
             );
             return false;
          }
@@ -940,7 +1361,7 @@ export const getProcessedPublisherConfig = (
 
    // Filter and validate environments, skipping invalid ones
    const validEnvironments: ProcessedEnvironment[] = [];
-   for (const environment of rawConfig.environments) {
+   for (const [index, environment] of rawConfig.environments.entries()) {
       if (!environment || typeof environment !== "object") {
          logger.warn(
             `Invalid environment in ${PUBLISHER_CONFIG_NAME}: entry must be an object. Skipping.`,
@@ -949,9 +1370,15 @@ export const getProcessedPublisherConfig = (
       }
 
       if (!environment.name || typeof environment.name !== "string") {
+         // Index only. The environment carries every connection and storage
+         // destination, credentials included and already ${VAR}-substituted,
+         // and the name is what is missing, so position is the only safe way
+         // to point at the entry. Metadata here reaches a log transport
+         // verbatim: redactSensitive is applied at the request/response and
+         // axios-error call sites, not in the winston format chain.
          logger.warn(
             `Invalid environment in ${PUBLISHER_CONFIG_NAME}: missing or invalid "name" field. Skipping entry.`,
-            { environment },
+            { index },
          );
          continue;
       }
@@ -1010,6 +1437,9 @@ export const getProcessedPublisherConfig = (
          connections: convertConnectionsToApiConnections(
             environment.connections || [],
          ),
+         storageDestinations: Array.isArray(environment.storageDestinations)
+            ? (environment.storageDestinations as ApiConnection[])
+            : [],
          ...(resolvedTheme ? { theme: resolvedTheme } : {}),
       });
    }
@@ -1032,7 +1462,7 @@ export const getInstanceTheme = (serverRoot: string): Theme | undefined => {
    } catch (error) {
       logger.error(
          `Error reading instance theme from ${PUBLISHER_CONFIG_NAME}`,
-         { error },
+         { error: error instanceof Error ? error.message : String(error) },
       );
       return undefined;
    }

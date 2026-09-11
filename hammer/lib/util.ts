@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Small shared utilities for the hammer harness. Zero external deps — bun + node builtins only.
 
 export const sleep = (ms: number): Promise<void> =>

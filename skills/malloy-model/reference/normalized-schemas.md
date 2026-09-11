@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Normalized Schemas (3-Stage Pattern)
 
 Use this pattern when data is in normalized/relational form, ER-diagram style schemas, application databases (CRM, ERP, OLTP), many tables linked by foreign keys, no clear single fact table, or many-to-many relationships.

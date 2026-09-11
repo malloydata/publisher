@@ -2,6 +2,10 @@
 name: malloy-gotchas-rendering
 description: Common Malloy renderer annotation mistakes. Read BEFORE adding chart annotations, formatting tags, or building dashboards. Covers tag syntax, scale rules, sparkline setup, and big_value patterns.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Rendering Gotchas
 

@@ -3,6 +3,10 @@ id: given-on-model-materialized-source-serves
 tags: serve-correctness, givens
 package: gx
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A model-level given must not break serving a given-free materialized source
 

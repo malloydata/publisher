@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Malloy Publisher SDK
 
 The Publisher SDK (`@malloy-publisher/sdk`) is a comprehensive React component library for building data applications that interact with Publisher's REST API. It provides everything you need to browse semantic models, execute queries, visualize results, and build interactive data experiences.
@@ -424,6 +429,19 @@ import { Notebook, encodeResourceUri } from "@malloy-publisher/sdk";
 interface NotebookProps {
    resourceUri: string;
    maxResultSize?: number; // Default: 0 (no limit)
+   // The notebook's `given:` parameters. Pass the ones you hold (from the URL,
+   // say) and the notebook runs every cell with them.
+   givens?: Record<string, string>;
+   // Called when a parameter changes, with the new values and the names the
+   // notebook manages, so a host can put them in the URL. `managed` is what to
+   // clear when a value goes away; anything else in your URL is left alone.
+   onGivensChange?: (
+      givens: Record<string, string>,
+      managed: readonly string[],
+   ) => void;
+   // Where a `# drill` click wants to go. Given no handler, a drill onto the
+   // notebook's own parameters still works; only navigation away is dropped.
+   onNavigate?: (to: string, event?: NavigationClick) => void;
 }
 
 // Usage
@@ -538,14 +556,19 @@ interface RenderedResultProps {
    result: string; // JSON result string
    height?: number; // Fixed height in pixels
    onSizeChange?: (height: number) => void; // Callback when size changes
-   onDrill?: (element: unknown) => void; // Drill-down callback
+   drill?: DrillBinding; // `# drill` click handling and its affordance
 }
 
 // Usage (result is the JSON string from query execution)
 <RenderedResult
    result={queryResultJson}
-   onDrill={(element) => {
-      console.log("Drilled into:", element);
+   drill={{
+      onClick: (payload) => {
+         console.log("Clicked:", payload.field?.name, payload.value);
+      },
+      // Which fields' cells should read as clickable. Build the whole binding
+      // with `useDrill` to get destination handling and the menu for free.
+      canDrill: () => false,
    }}
 />;
 ```
@@ -581,7 +604,9 @@ const embedded = createEmbeddedQueryResult({
 
 ## Dimensional Filters
 
-The SDK supports interactive dimensional filtering for notebooks and embedded data apps. Filters are configured through annotations in Malloy source files and notebooks.
+The SDK supports interactive dimensional filtering for hand-built data apps.
+Filters are configured through annotations in Malloy source files. The `Notebook`
+component does not use this mechanism; see [Notebooks use `given:`](#notebooks-use-given-not-these-annotations) below.
 
 ### Filter Types
 
@@ -657,21 +682,16 @@ source: recalls is duckdb.table('data/recalls.csv') extend {
 
 The `# label="..."` annotation can be placed before or after the `#(filter)` annotation. When present, the label value will be displayed in the filter UI instead of the raw field name.
 
-### Notebook Annotation Syntax
+### Notebooks use `given:`, not these annotations
 
-Enable filters in a notebook by adding a `##(filters)` annotation in a Malloy code cell. This annotation specifies which dimensions should appear as filters using `source.dimension` format:
+The `Notebook` component no longer renders a filter panel from a `##(filters)`
+annotation, and its `retrievalFn` prop is gone with it. A notebook's controls now
+come from the `given:` parameters its model declares, which is the mechanism
+described in [docs/givens.md](../../docs/givens.md). A `##(filters)` annotation in
+a notebook cell is inert.
 
-**Simple array format:**
-```malloy
-##(filters) ["flights.origin_code", "carriers.name", "flights.flight_departure"]
-import {flights, carriers} from 'flights.malloy'
-```
-
-The filter type for each dimension is determined by the `#(filter)` annotation on that dimension in the source file. If no source annotation exists, the dimension is ignored.
-
-**Note**: Semantic search is not supported by the Publisher.
-When using the Notebook component, you supply an async function which implements the search for that column+query.
-If no search function is supplied, the filter is ignored.
+The `#(filter)` source annotations above still work, and so do the hooks below.
+They are what a hand-built data app uses; only the notebook's own panel changed.
 
 ### React Hooks for Programmatic Filtering
 

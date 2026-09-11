@@ -3,6 +3,10 @@ id: persist-shape-not-materializable
 tags: eligibility, backstop
 package: pd
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Backstop: a `#@ persist` source Malloy drops is refused, not silently ignored
 

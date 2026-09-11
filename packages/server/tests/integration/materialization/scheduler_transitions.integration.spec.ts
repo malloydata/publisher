@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /// <reference types="bun-types" />
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";

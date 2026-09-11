@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Box, Container, Stack, Typography } from "@mui/material";
 import { useEffect } from "react";
 import { parseResourceUri } from "../../utils/formatting";

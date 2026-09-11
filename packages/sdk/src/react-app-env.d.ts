@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /* eslint-disable @typescript-eslint/triple-slash-reference */
 /// <reference types="node" />
 /// <reference types="react" />

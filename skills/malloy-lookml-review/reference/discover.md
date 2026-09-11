@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML Discovery (Step 1)
 
 > Inventory a LookML project, classify its contents, extract architecture-level candidates, and capture prior-art notes in the conversation. Does NOT extract individual field definitions; that's deferred to `propose-fields.md`.

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { check, group, sleep } from "k6";
 import { getProjectsClient } from "../utils/client_factory.ts";
 import { AUTH_TOKEN, BASE_URL, generateTestName } from "../utils/common.ts";

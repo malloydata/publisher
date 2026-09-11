@@ -1,8 +1,13 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { MalloyError } from "@malloydata/malloy";
 import { EnvironmentStore } from "../service/environment_store";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionNotFoundError,
+   InvalidArgumentError,
    PackageNotFoundError,
    ModelNotFoundError,
    ModelCompilationError,
@@ -10,6 +15,7 @@ import {
    NotQueryableError,
    PayloadTooLargeError,
    QueryTimeoutError,
+   ResponseUnserializableError,
    ServiceUnavailableError,
 } from "../errors";
 import {
@@ -19,6 +25,8 @@ import {
    type ErrorDetails,
 } from "./error_messages";
 import type { Model } from "../service/model";
+import type { Environment } from "../service/environment";
+import type { Package } from "../service/package";
 import { logger } from "../logger";
 
 /**
@@ -63,7 +71,11 @@ export function classifyToolError(
       // server fault would tell the caller to contact support about a boundary
       // that is working. getNotFoundError also drops the source name this class
       // is careful not to confirm.
-      error instanceof NotQueryableError
+      error instanceof NotQueryableError ||
+      // A mistyped connection name is the most likely caller error of all, and
+      // as an unclassified throw it came back as "unexpected internal error,
+      // try again later", which an agent then does forever.
+      error instanceof ConnectionNotFoundError
    ) {
       return getNotFoundError(identifier);
    }
@@ -73,6 +85,19 @@ export function classifyToolError(
       return {
          message: error.message,
          suggestions: [...BACK_PRESSURE_SUGGESTIONS],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof ResponseUnserializableError) {
+      // Checked before the shared branch below, which would otherwise offer to
+      // raise the cap. There is no cap at which a response that will not
+      // serialize starts serializing, so that advice would send an agent to
+      // change a setting and hit the identical failure.
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
+            "Raising the byte cap will not help, because the response cannot be serialized at any cap. Shrink it instead: project fewer columns, add a LIMIT, or filter out the wide values.",
+         ],
       } satisfies ErrorDetails;
    }
    if (
@@ -93,6 +118,29 @@ export function classifyToolError(
          ],
       } satisfies ErrorDetails;
    }
+   // Must precede the Malloy branch: InvalidArgumentError extends
+   // BadRequestError, which that branch matches.
+   if (error instanceof InvalidArgumentError) {
+      // One named argument was malformed, and it is NOT about Malloy. A schema
+      // introspection argument error ("DuckDB schema name must be qualified as
+      // catalog.schema") answered with the Malloy advice came back with four
+      // suggestions about checking `source:` and `view:` keywords in a model
+      // file the caller never mentioned. These messages are already specific;
+      // the suggestions only need to say that retrying unchanged is pointless.
+      //
+      // Deliberately NOT widened to BadRequestError, which the branch below
+      // still handles. That class is also the general wrapper for query-time
+      // failures, including "Model compilation failed: ..." (the fallback for
+      // compile errors that are not ModelCompilationError), and those are
+      // genuine Malloy problems that want the syntax guidance and doc links.
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient. The same arguments will fail the same way, so change them rather than retrying.",
+            "The message above names what was wrong. If it names an expected format, use that format exactly.",
+         ],
+      } satisfies ErrorDetails;
+   }
    if (
       // A raw engine error: what a bad query throws (syntax, undefined name,
       // field not found). executeQuery's catch sees these, so they must keep
@@ -102,7 +150,8 @@ export function classifyToolError(
       error instanceof ModelCompilationError ||
       // An #(authorize) denial, whose message getMalloyErrorDetails recognizes.
       error instanceof AccessDeniedError ||
-      // A malformed request is the caller's to fix, not ours to retry.
+      // A malformed request is the caller's to fix, not ours to retry. Covers
+      // model.ts's query-time failures, which are about Malloy.
       error instanceof BadRequestError
    ) {
       return getMalloyErrorDetails(operation, identifier, error);
@@ -116,6 +165,11 @@ export function classifyToolError(
 /**
  * Fetches and validates the Package and Model instances needed for query execution.
  * Handles errors related to package/model access and initial compilation.
+ *
+ * The resolved Environment comes back with the model because a query needs it for
+ * more than the lookup: it owns the connection configs the per-query metadata
+ * layers are read from.
+ *
  * @returns An object containing the Model instance or a pre-formatted ErrorDetails object.
  */
 export async function getModelForQuery(
@@ -123,7 +177,10 @@ export async function getModelForQuery(
    environmentName: string,
    packageName: string,
    modelPath: string,
-): Promise<{ model: Model } | { error: ErrorDetails }> {
+): Promise<
+   | { model: Model; environment: Environment; pkg: Package }
+   | { error: ErrorDetails }
+> {
    try {
       const environment = await environmentStore.getEnvironment(
          environmentName,
@@ -143,7 +200,7 @@ export async function getModelForQuery(
       }
       // Attempt to get the model definition early to catch initial compilation errors
       await model.getModel(); // This might throw ModelCompilationError
-      return { model };
+      return { model, environment, pkg };
    } catch (error) {
       // Handle errors during package/model access or initial compilation
       let errorDetails: ErrorDetails;

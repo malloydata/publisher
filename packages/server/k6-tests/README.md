@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # k6-tests
 
 Performance and load testing suite for the Malloy Publisher API using k6.

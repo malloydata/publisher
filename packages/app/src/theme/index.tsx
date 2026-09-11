@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { ThemeMode } from "@malloy-publisher/sdk";
 import { createTheme } from "@mui/material/styles";
 import { colors, greyScale, SANS_FONT_FAMILY } from "./colors";

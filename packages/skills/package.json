@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/skills",
    "description": "Agent skills for Malloy and the Malloy Publisher",
-   "version": "0.1.0",
+   "version": "0.1.16",
    "license": "MIT",
    "type": "module",
    "main": "dist/index.js",
@@ -26,7 +26,8 @@
    ],
    "repository": {
       "type": "git",
-      "url": "https://github.com/malloydata/publisher.git"
+      "url": "https://github.com/malloydata/publisher.git",
+      "directory": "packages/skills"
    },
    "publishConfig": {
       "access": "public"

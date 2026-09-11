@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The OPERATOR's own DuckLake client — deliberately EXTERNAL to the publisher.
 // A real orchestrator provisions the catalog (CREATE SCHEMA, grants, …) through
 // its own read-write DuckLake connection, NOT through anything the publisher

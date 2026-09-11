@@ -3,6 +3,10 @@ id: shape-bounds-physical-columns
 tags: security, visibility
 package: shp
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # The declared serve shape bounds which physical columns are reachable
 

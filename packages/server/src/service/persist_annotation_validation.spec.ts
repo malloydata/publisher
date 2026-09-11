@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { ModelCompilationError } from "../errors";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
@@ -61,6 +64,18 @@ describe("assertPersistNamesQuoted", () => {
       expect(() =>
          assertPersistNamesQuoted(
             `#@ persist tablename=foo name="bar"`,
+            "m.malloy",
+         ),
+      ).not.toThrow();
+   });
+
+   it("does not mistake a DOTTED key for the name field", () => {
+      // `.` is a word boundary, so a `\b`-anchored pattern reads
+      // `queryMetadata.name=` as the persist name and fails the whole model
+      // load with a 424 about quoting a name the author never declared.
+      expect(() =>
+         assertPersistNamesQuoted(
+            `#@ persist name="bar" queryMetadata.name=finance`,
             "m.malloy",
          ),
       ).not.toThrow();

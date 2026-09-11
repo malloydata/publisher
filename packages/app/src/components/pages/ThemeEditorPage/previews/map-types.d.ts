@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Minimal type stubs for the transitive map deps the MapPreview uses.
 // Both `d3-geo` and `topojson-client` are already in node_modules
 // (transitively via @malloydata/render's `us-atlas` dep) but ship

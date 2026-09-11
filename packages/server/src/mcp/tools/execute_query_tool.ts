@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -9,13 +12,18 @@ import {
    type QuerySlotHandle,
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
+import { filterPublisherOwnedRenderLogs } from "../../service/dashboard";
 import { EnvironmentStore } from "../../service/environment_store";
-import { type ErrorDetails } from "../error_messages";
+import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
    buildMalloyUri,
    classifyToolError,
    getModelForQuery,
 } from "../handler_utils";
+import { jsonResource, jsonToolError } from "../tool_response";
+import { buildQueryEnvelope } from "../query_envelope";
+import { mintCorrelationId } from "../../service/query_metadata";
+import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 
 /**
@@ -36,17 +44,32 @@ const executeQueryShape = {
    environmentName: z
       .string()
       .describe(
-         "Environment name. Call malloy_getContext with no arguments to list the available environments.",
+         "Environment name. Call get_context with no arguments to list the available environments.",
       ),
    packageName: z
       .string()
       .describe(
-         "Package containing the model. Call malloy_getContext with just environmentName to list its packages.",
+         "Package containing the model. Call get_context with just environmentName to list its packages.",
       ),
    modelPath: z.string().describe("Path to the .malloy model file"),
-   query: z.string().optional().describe("Ad-hoc Malloy query code"),
-   sourceName: z.string().optional().describe("Source name for a view"),
-   queryName: z.string().optional().describe("Named query or view"),
+   query: z
+      .string()
+      .optional()
+      .describe(
+         `Ad-hoc Malloy query code. Runs in restricted mode: it may not use ${RESTRICTED_CONSTRUCTS} — put those in a model file and reload instead.`,
+      ),
+   sourceName: z
+      .string()
+      .optional()
+      .describe(
+         "Source name for a view. A NAME, not Malloy code: one name exactly as get_context returned it, sent bare (the server quotes it, so a hyphen or a reserved word is fine — do not add backticks yourself). Anything richer, such as a parameterized source or an inline extension, goes in query.",
+      ),
+   queryName: z
+      .string()
+      .optional()
+      .describe(
+         "Named query or view. A NAME, not Malloy code, on the same terms as sourceName: one view name as get_context returned it. A dotted path (carriers.by_name), a refinement (by_carrier + { limit: 10 }), or anything containing a newline goes in query instead.",
+      ),
    filterParams: z
       .record(z.union([z.string(), z.array(z.string())]))
       .optional()
@@ -61,20 +84,42 @@ const executeQueryShape = {
       ),
 };
 
+const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return the rows. Takes either ad-hoc Malloy in query, or a named view/query via queryName (with sourceName for a view).
+
+## Contract rules
+- Check _limit_hit before reporting any total, count, or "top N". True means the server's default cap cut the result off and more rows exist, so what came back is a partial set, not the answer.
+- Never sum or count the returned rows to state a total when _limit_hit or _rows_truncated is set. Aggregate in the query instead.
+- _returned_rows: 0 with _rows_truncated set means one row was too large to send, NOT that nothing matched. Do not report it as an empty result.
+- Use source, view, and field names exactly as get_context returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a second statement) in query.
+- query is RESTRICTED: no raw SQL/import/##! (see its param doc).
+
+## Response
+A JSON object, the same shape Credible's execute_query and an in-package data app receive:
+- rows: flat objects keyed by column name.
+- _meta: the Malloy metadata flat rows drop (schema with field types and render tags, annotations, connection_name, query_timezone).
+- _query_row_limit: the cap pushed into the SQL, from the query's own limit: or the server default.
+- _limit_source: "query" when the cap came from the query's own limit:/top:, "server_default" otherwise.
+- _limit_hit: the row count equals that cap AND the cap was the server default, so a query carrying its own limit:/top: never sets it and exactly that many rows is a complete answer.
+- _rows_truncated / _total_rows / _returned_rows: present only when the payload cap dropped rows.
+- _query_id: this query's id in the warehouse's own query history. Present only where enabled.
+- warning, renderLogErrors: present only when they apply.
+
+Values above 2^53 are returned as JSON strings so their digits survive.`;
+
 // Type inference is handled automatically by the MCP server based on the executeQueryShape
 
 /**
- * Registers the malloy_executeQuery tool with the MCP server.
+ * Registers the execute_query tool with the MCP server.
  */
 export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
    mcpServer.tool(
-      "malloy_executeQuery",
-      "Executes a Malloy query (either ad-hoc or a named query/view defined in a model) against the specified model and returns the results as JSON.",
+      "execute_query",
+      EXECUTE_QUERY_DESCRIPTION,
       executeQueryShape,
-      /** Handles requests for the malloy_executeQuery tool */
+      /** Handles requests for the execute_query tool */
       async (params) => {
          // Destructure environmentName as well
          const {
@@ -120,33 +165,14 @@ export function registerExecuteQueryTool(
 
          // Handle errors during package/model access (e.g., not found, initial compilation)
          if ("error" in modelResult) {
-            // Format error details as structured JSON
-            const errorJson = JSON.stringify(
-               {
-                  error: modelResult.error.message,
-                  suggestions: modelResult.error.suggestions,
-               },
-               null,
-               2,
+            return jsonToolError(
+               "error://executeQuery/modelAccess",
+               modelResult.error,
             );
-            return {
-               isError: true,
-               // Return as application/json nested inside a 'resource' type
-               content: [
-                  {
-                     type: "resource", // Use 'resource' type
-                     resource: {
-                        type: "application/json", // Actual content type
-                        uri: "error://executeQuery/modelAccess", // Placeholder URI
-                        text: errorJson,
-                     },
-                  },
-               ],
-            };
          }
 
          // --- Execute Query ---
-         const { model } = modelResult;
+         const { model, environment, pkg } = modelResult;
          logger.info(
             `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
          );
@@ -160,123 +186,129 @@ export function registerExecuteQueryTool(
          let querySlot: QuerySlotHandle | null = null;
          try {
             querySlot = tryAcquireQuerySlot("mcp:executeQuery");
-            // If ad-hoc query is provided, use it directly in the 3rd arg
-            if (query) {
-               const { result } = await runWithQueryTimeout(
-                  (abortSignal) =>
-                     model.getQueryResults(
-                        undefined,
-                        undefined,
-                        query,
-                        filterParams,
-                        undefined,
-                        givens as Record<string, GivenValue> | undefined,
-                        abortSignal,
-                     ),
-                  getQueryTimeoutMs(),
-               );
-               const { validateRenderTags } = await import(
-                  "@malloydata/render-validator"
-               );
-               const renderLogs = validateRenderTags(result);
-
-               const baseUriComponents = {
-                  environment: environmentName,
-                  package: packageName,
-                  resourceType: "models" as const,
-                  resourceName: modelPath,
-               };
-               const resultUri = buildMalloyUri(baseUriComponents, "result");
-               const resultString = JSON.stringify(result, null, 2);
-
-               const content = [
-                  {
-                     type: "resource" as const,
-                     resource: {
-                        type: "application/json",
-                        uri: resultUri,
-                        text: resultString,
-                     },
-                  },
-               ];
-
-               if (renderLogs.length > 0) {
-                  return {
-                     isError: false,
-                     content: [
-                        ...content,
-                        {
-                           type: "text" as const,
-                           text: `Render tag warnings:\n${JSON.stringify(renderLogs, null, 2)}`,
-                        },
-                     ],
-                  };
-               }
-
-               return { isError: false, content };
-            } else if (queryName) {
-               const { result } = await runWithQueryTimeout(
-                  (abortSignal) =>
-                     model.getQueryResults(
-                        sourceName,
-                        queryName,
-                        undefined,
-                        filterParams,
-                        undefined,
-                        givens as Record<string, GivenValue> | undefined,
-                        abortSignal,
-                     ),
-                  getQueryTimeoutMs(),
-               );
-               const { validateRenderTags } = await import(
-                  "@malloydata/render-validator"
-               );
-               const renderLogs = validateRenderTags(result);
-
-               const baseUriComponents = {
-                  environment: environmentName,
-                  package: packageName,
-                  resourceType: "models" as const,
-                  resourceName: modelPath,
-               };
-               const resultUri = buildMalloyUri(baseUriComponents, "result");
-               const resultString = JSON.stringify(result, null, 2);
-
-               const content = [
-                  {
-                     type: "resource" as const,
-                     resource: {
-                        type: "application/json",
-                        uri: resultUri,
-                        text: resultString,
-                     },
-                  },
-               ];
-
-               if (renderLogs.length > 0) {
-                  return {
-                     isError: false,
-                     content: [
-                        ...content,
-                        {
-                           type: "text" as const,
-                           text: `Render tag warnings:\n${JSON.stringify(renderLogs, null, 2)}`,
-                        },
-                     ],
-                  };
-               }
-
-               return { isError: false, content };
-            }
-
-            // If execution reaches this point, something has gone wrong with
-            // the earlier parameter validation logic. Throw an explicit error
-            // so the return type is never 'undefined' from the compiler's
-            // perspective.
-            throw new McpError(
-               ErrorCode.InternalError,
-               "Unreachable executeQuery code path – parameters were not validated correctly.",
+            // Per-query metadata, built the same way the HTTP query controller
+            // builds it: MCP is a query boundary like any other, and a
+            // connection's enforced properties describe the deployment rather
+            // than the protocol a query arrived over.
+            const queryMetadataInput = {
+               environment: environmentName,
+               // Minted here because the envelope below returns it.
+               correlationId: mintCorrelationId(),
+               // The package owns its manifest, so the least-specific
+               // author-declared layer is read here; the model knows only its
+               // own file and its package's NAME.
+               packageDeclaration: pkg.getDeclaredQueryMetadata(),
+               // The environment owns the connection configs, so the default
+               // and enforced layers are read here rather than from the model.
+               connectionMetadata: (connectionName: string) => {
+                  try {
+                     const connection =
+                        environment.getApiConnection(connectionName);
+                     return {
+                        default: connection.queryMetadata,
+                        enforced: connection.queryMetadataEnforced,
+                     };
+                  } catch (error) {
+                     logger.debug(
+                        "[MCP Tool executeQuery] No query-metadata layers for connection",
+                        { connectionName, error },
+                     );
+                     return null;
+                  }
+               },
+            };
+            // The two call modes differ only in which arguments carry the
+            // query; everything after the run is identical, so they share one
+            // path rather than two copies that can drift.
+            const {
+               result,
+               compactResult,
+               rowLimit,
+               rowLimitSource,
+               queryCorrelationId,
+            } = await runWithQueryTimeout(
+               (abortSignal) =>
+                  query
+                     ? model.getQueryResults(
+                          undefined,
+                          undefined,
+                          query,
+                          filterParams,
+                          undefined,
+                          givens as Record<string, GivenValue> | undefined,
+                          abortSignal,
+                          queryMetadataInput,
+                          // The envelope below is built from `compactResult`, so
+                          // that is the shape to cap and to guard. Left at the
+                          // default this measured the full wrapped result and
+                          // threw the string away, which meant a query could be
+                          // refused on bytes the agent would never receive: the
+                          // envelope is truncated to MAX_RESULT_CHARS anyway, so
+                          // a wrapped result measuring over the cap was a 413 for
+                          // a payload that would have arrived at 90k characters.
+                          "compact",
+                       )
+                     : model.getQueryResults(
+                          sourceName,
+                          queryName,
+                          undefined,
+                          filterParams,
+                          undefined,
+                          givens as Record<string, GivenValue> | undefined,
+                          abortSignal,
+                          queryMetadataInput,
+                          "compact",
+                       ),
+               getQueryTimeoutMs(),
             );
+
+            // Render-tag validation reads the FULL Malloy result: the tags live
+            // in its schema annotations, which the flat rows do not carry. It
+            // runs regardless of which shape is returned.
+            const { validateRenderTags } = await import(
+               "@malloydata/render-validator"
+            );
+            const renderLogs = filterPublisherOwnedRenderLogs(
+               validateRenderTags(result),
+               modelPath,
+            );
+
+            const resultUri = buildMalloyUri(
+               {
+                  environment: environmentName,
+                  package: packageName,
+                  resourceType: "models" as const,
+                  resourceName: modelPath,
+               },
+               "result",
+            );
+
+            const envelope = buildQueryEnvelope(
+               compactResult,
+               rowLimit,
+               result,
+               renderLogs.map((log) => log.message),
+               undefined,
+               rowLimitSource,
+               queryCorrelationId,
+            );
+
+            // A capped or truncated result, and a broken render tag, are the
+            // things an agent most needs to notice, so they are stated in text
+            // rather than left for a client that parses the payload.
+            const notes = [
+               envelope.warning,
+               envelope.renderLogErrors &&
+                  `Render tag problems: ${envelope.renderLogErrors.join("; ")}`,
+            ].filter(Boolean);
+
+            return jsonResource(resultUri, envelope, {
+               space: 2,
+               // BigInt reaches here: compactResult is raw driver output and
+               // DuckDB returns count() as one.
+               replacer: bigIntReplacer,
+               text: notes.length > 0 ? notes.join("\n\n") : undefined,
+            });
          } catch (queryError) {
             // Handle query execution errors (syntax errors, invalid queries, etc.)
             logger.error(
@@ -302,33 +334,14 @@ export function registerExecuteQueryTool(
             const suggestions = [...errorDetails.suggestions];
             if (isUndefinedNameError(errorDetails.message)) {
                suggestions.push(
-                  "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call malloy_reloadPackage for this package, then retry.",
+                  "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
                );
             }
 
-            // Format error details as structured JSON
-            const errorJson = JSON.stringify(
-               {
-                  error: errorDetails.message,
-                  suggestions,
-               },
-               null,
-               2,
-            );
-            return {
-               isError: true,
-               // Return as application/json nested inside a 'resource' type
-               content: [
-                  {
-                     type: "resource", // Use 'resource' type
-                     resource: {
-                        type: "application/json", // Actual content type
-                        uri: "error://executeQuery/queryExecution", // Placeholder URI
-                        text: errorJson,
-                     },
-                  },
-               ],
-            };
+            return jsonToolError("error://executeQuery/queryExecution", {
+               message: errorDetails.message,
+               suggestions,
+            });
          } finally {
             // Release on every exit path — success, error, or
             // unreachable code-path throw. `release()` is idempotent

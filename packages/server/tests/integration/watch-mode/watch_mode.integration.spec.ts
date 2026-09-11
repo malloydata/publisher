@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /// <reference types="bun-types" />
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -337,6 +340,34 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
       );
       expect(mountGone).toBe(false);
 
+      // The failed recompile must be visible off-box, not just on stderr:
+      // /status reports the package as a loadErrors entry with stale: true
+      // (still serving the last good compile) while the file is broken, and
+      // the package stays listed under environments because it IS serving.
+      const staleStatus = await poll(async () => {
+         const res = await fetch(`${baseUrl}/api/v0/status`);
+         if (!res.ok) return false;
+         const status = (await res.json()) as {
+            environments: Array<{ name: string }>;
+            loadErrors?: Array<{
+               package?: string;
+               stale?: boolean;
+               failedAt?: string;
+               message?: string;
+            }>;
+         };
+         const entry = (status.loadErrors ?? []).find(
+            (e) => e.package === PKG_NAME && e.stale === true,
+         );
+         return (
+            entry !== undefined &&
+            typeof entry.failedAt === "string" &&
+            Boolean(entry.message) &&
+            status.environments.some((e) => e.name === ENV_NAME)
+         );
+      }, 25_000);
+      expect(staleStatus).toBe(true);
+
       // Fix the model; the package must recompile (proving the mount, hence the
       // live source, is still reachable) and serve the recovered source.
       fs.writeFileSync(
@@ -354,6 +385,18 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
          );
       }, 25_000);
       expect(recovered).toBe(true);
+
+      // Recovery clears the stale entry: a healthy status omits loadErrors
+      // entirely (the byte-for-byte-healthy contract).
+      const staleCleared = await poll(async () => {
+         const res = await fetch(`${baseUrl}/api/v0/status`);
+         if (!res.ok) return false;
+         const status = (await res.json()) as {
+            loadErrors?: Array<unknown>;
+         };
+         return status.loadErrors === undefined;
+      }, 25_000);
+      expect(staleCleared).toBe(true);
    });
 
    // ── stop ──────────────────────────────────────────────────────────

@@ -3,6 +3,10 @@ id: givens-refused
 tags: eligibility, security
 package: f1
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Eligibility: a given-referencing source is refused
 

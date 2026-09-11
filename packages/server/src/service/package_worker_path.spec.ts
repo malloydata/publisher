@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Integration test: exercise `Package.create` with the package-load
  * worker pool enabled (PACKAGE_LOAD_WORKERS=1).
@@ -178,8 +181,8 @@ describe("Package.create via worker pool", () => {
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.sql("select 1 as id")`,
+#(authorize) $ROLE = 'analyst'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
@@ -209,8 +212,8 @@ source: gated is duckdb.sql("select 1 as id")`,
 given:
   ROLE :: string
 
-#(authorize) "$NOPE = 'x'"
-source: gated is duckdb.sql("select 1 as id")`,
+#(authorize) $NOPE = 'x'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { ModelCompilationError } = await import("../errors");
@@ -240,8 +243,8 @@ source: gated is duckdb.sql("select 1 as id")`,
 given:
   ROLE :: string
 
-#(authorize) "$ROLE = 'analyst'"
-source: gated is duckdb.sql("select 1 as id")`,
+#(authorize) $ROLE = 'analyst'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { malloyConfig, duckdb } = await makeMalloyConfig();
@@ -267,8 +270,8 @@ source: gated is duckdb.sql("select 1 as id")`,
 given:
   ROLE :: string
 
-#(authorize) "$NOPE = 'x'"
-source: gated is duckdb.sql("select 1 as id")`,
+#(authorize) $NOPE = 'x'
+source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { ModelCompilationError } = await import("../errors");
@@ -312,7 +315,8 @@ source: gated is duckdb.sql("select 1 as id")`,
          expect(
             warnings.some(
                (m) =>
-                  m.includes("Invalid renderer configuration") &&
+                  m.includes("Render tag findings on") &&
+                  m.includes("[error]") &&
                   m.includes("nums -> card"),
             ),
          ).toBe(true);
@@ -323,7 +327,7 @@ source: gated is duckdb.sql("select 1 as id")`,
             responseWarnings.some(
                (w) =>
                   w.model === "bad_render.malloy" &&
-                  w.target === "nums -> card" &&
+                  w.subject === "nums -> card" &&
                   w.severity === "error",
             ),
          ).toBe(true);
@@ -386,7 +390,8 @@ source: gated is duckdb.sql("select 1 as id")`,
          expect(
             warnings.some(
                (m) =>
-                  m.includes("Invalid renderer configuration") &&
+                  m.includes("Render tag findings on") &&
+                  m.includes("[error]") &&
                   m.includes("bad-source -> card"),
             ),
          ).toBe(true);
@@ -426,7 +431,8 @@ source: gated is duckdb.sql("select 1 as id")`,
          expect(
             warnings.some(
                (m) =>
-                  m.includes("Invalid renderer configuration") &&
+                  m.includes("Render tag findings on") &&
+                  m.includes("[error]") &&
                   m.includes("card"),
             ),
          ).toBe(true);
@@ -460,7 +466,10 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          expect(pkg.getModelPaths()).toEqual(["bad_render.malloynb"]);
          const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
          expect(
-            warnings.some((m) => m.includes("Invalid renderer configuration")),
+            warnings.some(
+               (m) =>
+                  m.includes("Render tag findings on") && m.includes("[error]"),
+            ),
          ).toBe(true);
          // The notebook finding also rides the package response (not just logs).
          const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
@@ -518,13 +527,24 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          await expect(reloaded!.getModel()).resolves.toBeDefined();
          const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
          expect(
-            warnings.some((m) => m.includes("Invalid renderer configuration")),
+            warnings.some(
+               (m) =>
+                  m.includes("Render tag findings on") && m.includes("[error]"),
+            ),
          ).toBe(true);
-         // Reload refreshes the response-level warnings too.
+         // Reload refreshes the response-level warnings too. Assert `subject`
+         // as well as `model`: the reload path builds the wire entry at its own
+         // call site, so asserting only `model` would pass even if that site
+         // put the wrong value in the field the rename is about.
          const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
-         expect(responseWarnings.some((w) => w.model === "m.malloy")).toBe(
-            true,
-         );
+         expect(
+            responseWarnings.some(
+               (w) =>
+                  w.model === "m.malloy" &&
+                  w.subject === "nums -> card" &&
+                  w.severity === "error",
+            ),
+         ).toBe(true);
       } finally {
          warnSpy.mockRestore();
          await duckdb.close();
@@ -599,7 +619,7 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
          expect(models.has("a.malloy")).toBe(true);
          expect(models.has("b.malloy")).toBe(true);
          expect(models.size).toBe(2);
-         // The message field is carried through, not just model/target/severity.
+         // The message field is carried through, not just model/subject/severity.
          expect(
             responseWarnings.every((w) => (w.message ?? "").length > 0),
          ).toBe(true);

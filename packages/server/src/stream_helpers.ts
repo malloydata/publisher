@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Helpers for streaming the ad-hoc connection SQL endpoints
  * (`/environments/.../connections/.../sqlQuery`) so the publisher

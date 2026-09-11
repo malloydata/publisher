@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { AxiosError } from "axios";
 import { logAxiosError } from "../utils/logger.js";
 import {

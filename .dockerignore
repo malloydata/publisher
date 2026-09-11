@@ -35,7 +35,8 @@ coverage
 examples/
 malloy-samples/
 docs/
-scripts/
+scripts/*
+!scripts/add-license-headers.mjs
 .github/
 
 # Exclude development files

@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 import pytest
 from malloy_publisher_sdk.models import Environment  # Generated model
 from malloy_publisher_sdk.types import UNSET  # Import UNSET

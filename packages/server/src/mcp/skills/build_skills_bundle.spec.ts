@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { parseSkill, unquote } from "./build_skills_bundle";
 

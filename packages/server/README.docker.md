@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Publisher in Docker
 
 The canonical build is the root [`Dockerfile`](../../Dockerfile) and the CI smoke test (`docker_smoke_test` in `.github/workflows/build.yml`) builds and runs that exact image. The two-port REST + MCP server, the Snowflake ADBC driver, the DuckDB CLI, and the production app bundle all ship in it.
@@ -68,6 +73,7 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST API port. |
 | `PUBLISHER_HOST` | `--host <h>` | `0.0.0.0` | Bind address. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP API port. |
+| `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | `1` **in this image** | Suppresses the `.mcp.json` the server otherwise writes into its working directory on startup. That file exists so an AI agent opened in that directory finds the server; nothing starts an agent session inside the container, and the git-working-tree guard that would normally cover `/publisher` cannot fire because `.dockerignore` excludes `.git`. Left on, every boot would create a root-owned file, which matters if you bind-mount a project directory at `/publisher`. Pass `-e PUBLISHER_NO_MCP_CONFIG=` to turn it back on. Note this is the one env var the image sets for you: `docker run -e PUBLISHER_NO_MCP_CONFIG` (no `=`) and a Compose `environment:` entry with no value both *delete* it when the host does not have it set, which re-enables the write. |
 | `SERVER_ROOT` | `--server_root <path>` | `.` (cwd) at the server level; overridden to `/publisher` by the bundled CMD | Directory the server treats as its working dir. The image's CMD passes `--server_root /publisher` explicitly so the zero-arg `npx` bundled-default trigger doesn't fire inside the container. If you override CMD with your own entrypoint, set `SERVER_ROOT` yourself to keep this behaviour. |
 | `PUBLISHER_CONFIG_PATH` | `--config <path>` | unset | Absolute path to a `publisher.config.json`. Wins over `<SERVER_ROOT>/publisher.config.json`. Use this if you want to mount your config somewhere other than `/publisher/`. |
 | `INITIALIZE_STORAGE` | `--init` | `false` | Wipes `publisher_data/` and re-syncs it from the config on boot. A first boot with empty storage loads the config automatically, so set this only to reset state or resync after the on-disk config has drifted from `publisher_data/`. Re-initializing discards any state there that isn't reproducible from the config. See [configuration.md](../../docs/configuration.md#environment-variables--cli-flags). |
@@ -79,6 +85,10 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | `PUBLISHER_MEMORY_LOW_WATER_FRACTION` | — | `0.7` | Fraction at which back-pressure clears. The gap between low and high gives hysteresis so the governor doesn't flap on every GC cycle. |
 | `PUBLISHER_MEMORY_CHECK_INTERVAL_MS` | — | `5000` | How often the governor samples RSS. Minimum `100`. Smaller values catch spikes faster but burn a few extra microseconds per tick. |
 | `PUBLISHER_MEMORY_BACKPRESSURE` | — | `true` | When `false`, the governor still samples RSS and emits metrics but never flips the back-pressure flag. Useful for a monitoring-only rollout before enabling the 503 behaviour. |
+| `EMBEDDING_API_KEY` | — | _unset_ | Enables semantic ranking for `get_context` question retrieval; sent as a bearer token to the embedding endpoint. Unset keeps lexical retrieval, unchanged. Entity names, annotation text, and query strings are sent to the endpoint when enabled; see "Semantic retrieval" in `docs/configuration.md`. |
+| `EMBEDDING_MODEL` | — | `text-embedding-3-small` | Embedding model name. |
+| `EMBEDDING_API_BASE` | — | `https://api.openai.com/v1` | Base URL of an OpenAI-compatible embeddings API. |
+| `EMBEDDING_DIMENSIONS` | — | _unset_ | Optional `dimensions` request parameter; omitted when unset. |
 
 ### Memory governor
 

@@ -3,8 +3,12 @@ id: restart-survival
 tags: lifecycle, durability
 package: rs
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
-# Restart survival: serving is re-established from the store after a restart
+# Serving is re-established from the store after a restart, with no rebuild
 
 A built source serves from storage. After a server restart that PRESERVES the
 materialization store (no re-init, no rebuild), serving must be re-established on

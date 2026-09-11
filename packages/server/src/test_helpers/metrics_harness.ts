@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Test helper: spin up an in-memory OpenTelemetry MeterProvider so
  * unit tests can assert that the new guardrails (admission gate,

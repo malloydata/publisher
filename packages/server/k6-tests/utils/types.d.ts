@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 type KnownThresholds = {
    http_req_duration?: string[];
    http_req_failed?: string[];

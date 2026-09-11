@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Mutex } from "async-mutex";
 import {
    DuckDBConnection as NeoConnection,
@@ -5,7 +8,27 @@ import {
    type DuckDBValue,
 } from "@duckdb/node-api";
 import * as path from "path";
+import { logger } from "../../logger";
 import { DatabaseConnection } from "../DatabaseInterface";
+import { getDuckDBMemoryLimit, getDuckDBTempDirectory } from "../../config";
+
+/**
+ * The `memory_limit` / `temp_directory` instance options, when configured.
+ * Empty when neither is set, so `DuckDBInstance.create` sees exactly what it saw
+ * before and nothing changes for a deployment that has not opted in.
+ */
+function duckDBInstanceResourceOptions(): Record<string, string> {
+   const options: Record<string, string> = {};
+   const memoryLimit = getDuckDBMemoryLimit();
+   if (memoryLimit !== undefined) {
+      options["memory_limit"] = memoryLimit;
+   }
+   const tempDirectory = getDuckDBTempDirectory();
+   if (tempDirectory !== undefined) {
+      options["temp_directory"] = tempDirectory;
+   }
+   return options;
+}
 
 /**
  * Embedded persistence layer for the publisher's own metadata (environments,
@@ -35,7 +58,17 @@ export class DuckDBConnection implements DatabaseConnection {
 
    async initialize(): Promise<void> {
       try {
-         this.instance = await DuckDBInstance.create(this.dbPath);
+         // The metadata store is a real DuckDB instance held open for the whole
+         // server lifetime, and it sizes its memory from the container exactly
+         // like every other one — so it belongs in the same budget. It is a
+         // different class from Malloy's connection, so the session funnel that
+         // bounds those never sees it; passed as instance config here instead,
+         // which is the only hook this one has. Not idle, either: the embedding
+         // index runs real compute against it.
+         this.instance = await DuckDBInstance.create(
+            this.dbPath,
+            duckDBInstanceResourceOptions(),
+         );
          this.connection = await this.instance.connect();
          // Verify the connection works
          await this.connection.run("SELECT 42 as answer");
@@ -56,7 +89,10 @@ export class DuckDBConnection implements DatabaseConnection {
             this.instance.closeSync();
             this.instance = null;
          }
-         console.log("DuckDB connection closed");
+         // Debug, not stdout: the schema reconcile opens and closes a scratch
+         // in-memory database on every boot, and an unconditional "closed" line
+         // during startup reads as the real store going away.
+         logger.debug("DuckDB connection closed");
       } catch (err) {
          const message = err instanceof Error ? err.message : String(err);
          throw new Error(`Failed to close DuckDB connection: ${message}`);

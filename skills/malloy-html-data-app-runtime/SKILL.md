@@ -2,6 +2,10 @@
 name: malloy-html-data-app-runtime
 description: Write the JavaScript that drives an in-package HTML data app, calling Publisher.query, building queries from filter state, and handling results and errors. Read before writing the page's data code.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # HTML Data App Runtime
 
@@ -18,7 +22,7 @@ The runtime loads from the root-relative `<script src="/sdk/publisher.js">` and 
 
 - `modelPath` is the model FILE path within the package, with `/` separators (`"subscriptions.malloy"`, `"models/events.malloy"`). It is not the source name.
 - `malloy` is any query string, written in standard Malloy. This skill covers only the JavaScript glue, not Malloy syntax.
-- `opts` (all optional): `sourceName`, `queryName`, `givens` (a `{ name: value }` map bound to the model's Malloy `given:` runtime parameters for this query; safe parameterization, values are bound by the runtime, not string-interpolated), `filterParams` (values for the model's legacy `#(filter)` source filters), `bypassFilters`, and `environment` / `package` (only if the page is served from outside `/environments/<env>/packages/<pkg>/`). `givens` and `filterParams` compose (both apply).
+- `opts` (all optional): `sourceName`, `queryName` (`queryName` runs a saved query, with `sourceName` qualifying the source a view hangs off; `sourceName` on its own is a 400), `givens` (a `{ name: value }` map bound to the model's Malloy `given:` runtime parameters for this query; safe parameterization, values are bound by Publisher server-side, not string-interpolated), `filterParams` (values for the model's legacy `#(filter)` source filters), `bypassFilters`, and `environment` / `package` (only if the page is served from outside `/environments/<env>/packages/<pkg>/`). `givens` and `filterParams` compose (both apply).
 
 ## Structure the app as modules, not one inline script
 
@@ -43,7 +47,7 @@ Declare each tile's source and view names once, in `tiles.js`, and have everythi
 
 ## Patterns that work
 
-These run against the example `html-data-app` package (source `subscriptions`; views `plan_mix`, `mrr_by_industry`, `kpis`). Swap in your own model and view names.
+These assume a `subscriptions.malloy` model whose `subscriptions` source defines the views `plan_mix`, `mrr_by_industry`, and `kpis`. The names are illustrative; swap in your own model and view names.
 
 Run a named view:
 
@@ -67,7 +71,7 @@ const rows = await Publisher.query(
 );
 ```
 
-Do not interpolate free-text or otherwise untrusted input into the query string. Route parameterized input through `opts.givens` (or the legacy `opts.filterParams`) instead: those values are bound by the runtime as typed parameters, not string-interpolated, so they can't inject query syntax. (One nuance: a `filter<T>`-typed given takes Malloy filter syntax as its value, so validate it against a known set like any other input; scalar givens carry no syntax at all.) `opts.givens` is safe *parameterization*, not an authorization boundary: a client-supplied given is client-trusted unless a server upstream (a trusted gateway, or an operator's per-package config) strips or finalizes it. Where you must build query text from input, constrain it to a known set and escape it, or keep the filtering in model-defined views.
+Do not interpolate free-text or otherwise untrusted input into the query string. Route parameterized input through `opts.givens` (or the legacy `opts.filterParams`) instead: Publisher binds those values server-side as typed parameters, so they are never concatenated into query text and can't inject query syntax. (One nuance: a `filter<T>`-typed given takes Malloy filter syntax as its value, so validate it against a known set like any other input; scalar givens carry no syntax at all.) `opts.givens` is safe *parameterization*, not an authorization boundary: a client-supplied given is client-trusted unless a trusted tier upstream sets it from verified identity. Publisher has no per-package control that strips or finalizes one; identity-bound givens are a planned milestone, not a shipped feature. Where you must build query text from input, constrain it to a known set and escape it, or keep the filtering in model-defined views.
 
 KPI or single-row view. Destructure element zero:
 
@@ -130,7 +134,7 @@ const el = document.querySelector("malloy-render");
 el.result = await Publisher.queryFull("subscriptions.malloy", "run: subscriptions -> plan_mix");
 ```
 
-Publisher does not serve or bundle `<malloy-render>`; you must obtain a built component bundle matched to your model's Malloy version and vendor it into `public/` yourself, then confirm it accepts the envelope as-is. The shipped example renders rows with a plain chart library instead, so this path is not exercised there. A view tagged in the model (for example `# bar_chart`) drives how it draws.
+Publisher does not serve or bundle `<malloy-render>`; you must obtain a built component bundle matched to your model's Malloy version and vendor it into `public/` yourself, then confirm it accepts the envelope as-is. The `storefront` example draws with Chart.js and has no `<malloy-render>` element in its pages, so the component itself is not exercised there. A view tagged in the model (for example `# bar_chart`) drives how it draws.
 
 Validate every query before wiring it into render code, using whatever query tool your environment provides, or by POSTing the query to a running Publisher at `/api/v0/environments/<env>/packages/<pkg>/models/<modelPath>/query` with body `{"compactJson":true,"query":"..."}`, or by running `Publisher.query` once and logging the rows. Malloy names result columns after the `group_by` / `aggregate` field names (`group_by: plan` gives a `plan` column; `aggregate: account_count` gives an `account_count` column), so confirm those names against real output before you read them.
 

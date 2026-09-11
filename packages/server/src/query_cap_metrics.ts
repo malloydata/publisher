@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Centralized telemetry for row-cap / byte-cap rejections (HTTP 413).
  *
@@ -5,7 +8,7 @@
  * {@link PUBLISHER_MAX_RESPONSE_BYTES} can only see undifferentiated
  * `http_server_requests_total{status_code="413"}` — they can't tell
  * which cap is firing or which query surface is hottest. The counter
- * here carries `cap_type` (`rows` / `bytes`) and `source`
+ * here carries `cap_type` (`rows` / `bytes` / `unserializable`) and `source`
  * (`connection_sql` / `model_query` / `notebook_cell`) so a single
  * dashboard panel can answer "what should I tune and on which
  * endpoint?".
@@ -30,7 +33,14 @@ import { publisherMeter } from "./telemetry";
 
 import { getMaxQueryRows, getMaxResponseBytes } from "./config";
 
-export type QueryCapType = "rows" | "bytes";
+/**
+ * `unserializable` is deliberately distinct from `bytes`: the response could
+ * not be turned into JSON at all, which is not the same event as measuring
+ * over the configured cap and may not have exceeded any cap (the engine's own
+ * string limit can be lower than a raised cap). Sharing one label would mix
+ * the two under whatever alerts on it.
+ */
+export type QueryCapType = "rows" | "bytes" | "unserializable";
 export type QueryCapSource = "connection_sql" | "model_query" | "notebook_cell";
 
 let capExceededCounter: Counter | null = null;
@@ -46,7 +56,7 @@ function ensureCapTelemetry(): Counter {
          "publisher_query_cap_exceeded_total",
          {
             description:
-               "Queries rejected with 413 because the row or byte cap was exceeded. Labels: cap_type ('rows'|'bytes'), source ('connection_sql'|'model_query'|'notebook_cell').",
+               "413s for an oversized response. cap_type: rows|bytes exceeded that cap; unserializable could not be turned into JSON at all, so no cap need have been exceeded. source: connection_sql|model_query|notebook_cell.",
          },
       );
    }
@@ -95,7 +105,7 @@ function ensureCapTelemetry(): Counter {
  * payloads rather than letting them bubble to the HTTP error
  * mapper).
  *
- * `cap_type` must be one of `rows` / `bytes`; `source` identifies
+ * `cap_type` must be one of `rows` / `bytes` / `unserializable`; `source` identifies
  * the query surface that detected the overflow.
  */
 export function recordQueryCapExceeded(

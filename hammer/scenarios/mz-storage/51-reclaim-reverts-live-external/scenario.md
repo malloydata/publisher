@@ -3,6 +3,10 @@ id: reclaim-reverts-live-external
 tags: lifecycle, build-control
 package: rrx
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Reclaim reverts to live IN PLACE (external) — no restart
 

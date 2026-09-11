@@ -3,6 +3,10 @@ id: extend-persist-materializes-nothing-new
 tags: serve-correctness, build-control, needs-attention
 package: xpn
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Persisting an `extend` of a persisted source materializes nothing new
 
@@ -103,7 +107,7 @@ Expect:
 | daily          | daily_tbl          | A      |
 | daily_with_avg | daily_with_avg_tbl | A      |
 
-## Connection lake (rows=1)
+## Connection lake_probe (rows=1)
 
 Exactly ONE of the two declared names is physically materialized — the other is
 deduped away. A row count rather than a name, because which one wins depends on

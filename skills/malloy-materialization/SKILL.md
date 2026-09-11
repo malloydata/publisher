@@ -2,6 +2,10 @@
 name: malloy-materialization
 description: Add and debug Malloy Persistence materializations in a package - persist an expensive source so queries read a pre-built table. Read this whenever the user wants to materialize a source, add a persist annotation, speed up a slow source, or asks why a persist source isn't building.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Materialization (Malloy Persistence)
 
@@ -30,13 +34,17 @@ Materialize an expensive source once so queries read a **pre-built warehouse tab
    ```jsonc
    {
      "name": "my-package",
-     "scope": "package",  // default; "version" = each published version owns its own tables
-     "materialization": { "freshness": { "window": "24h", "fallback": "live" } }
+     "materialization": {
+       "scope": "package",  // default; "version" = each published version owns its own tables
+       "freshness": { "window": "24h", "fallback": "live" },
+       "queryMetadata": { "team": "finance" }  // tags the build's backend statements
+     }
    }
    ```
    Enforced at publish (strict), on edits (strict), at load (warn, still serves), and by the scheduler (an offending package is skipped):
-   - **`scope`**: `package` (default; artifacts reused across published versions) or `version` (each artifact owned by one version). Package-level only; there is no per-source scope.
+   - **`scope`**: `package` (default; artifacts reused across published versions) or `version` (each artifact owned by one version). Package-level only; there is no per-source scope. A root-level `scope` is the deprecated home and still works, with a warning; declaring both homes with different values is rejected.
    - **`materialization.freshness`** (`window` + `fallback` of `live`/`stale_ok`/`fail`) is the objective a **hosted control plane** enforces by refreshing the table to meet it (`fallback: "live"` serves live compute while stale/absent). A **standalone** Publisher does **not** act on `freshness` for refresh - see **Building and refreshing**.
+   - **`materialization.queryMetadata`** is a bag of string properties attached to every statement the build issues, for the backend's own cost attribution (Snowflake `QUERY_TAG`, BigQuery job labels, a leading SQL comment elsewhere). Overridable per source with `#@ persist queryMetadata.<name>="<value>"`. Observability only: it never changes what gets built. See `docs/query-metadata.md`.
    - **`materialization.schedule`** is a 5-field UTC cron (`min hour dom mon dow`; `L`/`W`/`#`/`?` rejected). It **requires `scope: "version"`** and is **mutually exclusive with `freshness`**. This is how a standalone Publisher refreshes on a cadence.
 
 4. **Reads vs writes.** The persist source can *read* any dataset the connection can read; the persist *target* (`name=`'s dataset) must be a dataset the connection can **write** (typically a scratch dataset).
@@ -86,6 +94,76 @@ source: persist_smoke is smoke_raw -> { aggregate: n is count() }
 
 Delete the smoke file and drop its table afterward.
 
+## Persisting an `#(authorize)`-gated source
+
+A gated source **can** be persisted, but only on one tier and only in one shape, and the thing to be
+careful about is not refused by anything - you have to decide it.
+
+- **`storage=` and `#@ preaggregate` always refuse a gated source**, with a 422 at build time naming the
+  source. (`#@ persist storage=<name>` is the tier that materializes into a separate registered storage
+  destination and serves from there, rather than building in the source's own connection; `#@ preaggregate`
+  stores a rollup Publisher derives from a measure you annotated with a grain, rather than a source you
+  wrote.) A rollup also groups *across* the gated column, so it could not be row-filtered afterwards even
+  in principle.
+- **A colocated `#@ persist` (no `storage=`) is admitted** when the gate is provably the entry point's
+  **own row filter**. It is refused when the gate is reached only through a join, inherited from a base
+  the compiler cannot attribute cleanly, or does not classify as a row filter at all. The gate is found
+  through the import -> rename -> `query_source` chain, so a gate the persisted source did not declare
+  itself still counts.
+
+**What to be wary of.** Persisting does not weaken the gate: it changes only where rows are read FROM, and
+the gate still runs live on every query as that query's own `WHERE`, so filtered rows come back filtered.
+What freezes is the **column the gate filters on**. A row whose access decision changes - it changes
+owner, say - keeps being served under its OLD decision until the next rebuild. That is a stale *access
+decision*, not merely stale data, and nothing raises an error.
+
+**None of this is needed for the gate to work.** It is enforced live on every query either way; what
+needs a bound is how long a *stale* decision can survive. Of the three controls that look like that
+bound, only the first is:
+
+- **`materialization.freshness` `{ "window": "24h", "fallback": "live" }` is the bound.** The serve path
+  re-checks freshness per query, so once the artifact ages past the window it drops out of the serving set
+  and the query recomputes live, correctly filtered - whether or not a rebuild ever lands. Three details
+  decide whether you actually get that. **`fallback` must be `live`**: under `stale_ok` a stale artifact
+  keeps being served, which voids the bound, and window and fallback resolve *independently* per layer,
+  so a package-level `stale_ok` silently defeats a window you set on the source. That is a statement about
+  **layers**, which do not combine - not about siblings, below. Prefer the
+  **per-source** spelling `#@ persist name="..." freshness.window="24h" freshness.fallback="live"` over
+  the package-wide `materialization.freshness` key: the gated source is what needs the bound, and setting
+  it package-wide forces every other persisted source to recompute once stale too. And **a
+  content-identical sibling shares the artifact, so it shares the window**: reuse is keyed on the
+  content-addressed `sourceEntityId`, which folds the connection and the SQL but *not* the source name, so
+  two persist sources whose bodies compute the same SQL resolve to one table carrying one freshness
+  policy. The tightest window any of them declares governs all of them - a sibling declaring nothing
+  cannot loosen yours, and yours pulls that sibling's reads off the table once it lapses. A sibling's
+  `stale_ok` cannot void your bound either: the fold keeps whichever fallback bounds staleness, so the
+  layer rule above does not carry over here. If two sources need genuinely different windows, give them
+  genuinely different SQL.
+
+  Both of those are properties of the **host** that assembles the manifest, not of the annotation. Where
+  the host does not fold, which sibling's policy reaches the wire is unspecified; and a host that folds at
+  manifest-assembly time typically applies it when a version's manifest is next published rather than
+  retroactively to manifests already distributed - so you can declare the window correctly and not have it
+  in force yet.
+- **A cron alone is not a bound.** A failed build or a stopped scheduler leaves the source serving its old
+  decisions indefinitely. `freshness` and `schedule` are mutually exclusive; for a gated source, take the
+  window.
+- **`refresh="incremental"` does not bound revocation.** The delta only re-reads rows in
+  `[covered_through, frontier)`, so a row that changes owner *without its watermark advancing* is never
+  re-read - while the entry still reports an advancing `coveredThrough` and reads as healthy. Only a full
+  rebuild recomputes the gating column.
+
+**And the window only binds where the serving manifest carries it.** Freshness is enforced from fields a
+control plane stamps onto the manifest it distributes; a Publisher that serves what it just built binds the
+table with no `dataAsOf` and no window, and an entry carrying no window never ages out. So on a standalone
+deployment the declared window is inert and the artifact serves until the next full rebuild - which leaves a
+rebuild cadence you actually verify as the only bound, and makes leaving a revocation-sensitive source
+unpersisted the safer call.
+
+When recommending `#@ persist` on a gated source, pair it with a freshness window and say out loud what
+staleness the author is accepting. A gated source with neither a window nor a full-rebuild cadence has no
+bound on how long a revoked row keeps being served.
+
 ## Gotchas
 
 - **Every `.malloy` file needs the persistence flag** - one unflagged file aborts the whole package's build plan. (A `#@ persist` on a *non*-persistable source, by contrast, is silently ignored and does not affect other sources.)
@@ -94,3 +172,4 @@ Delete the smoke file and drop its table afterward.
 - **Quote the name** - a bare `name=` always hard-stops the build.
 - **Republishing unchanged persist logic reuses the table** - reuse is keyed on the content-addressed `sourceEntityId`, not the `name=`.
 - **Removing a persist source (or a smoke test) does not drop its table** - physical-table cleanup is the caller's responsibility; drop it yourself.
+- **An `#(authorize)`-gated source freezes its gating column when persisted** - the gate still runs live, but a revoked row keeps being served under its old access decision until the next rebuild. `storage=` and `#@ preaggregate` refuse a gated source outright. See **Persisting an `#(authorize)`-gated source**.

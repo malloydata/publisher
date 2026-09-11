@@ -3,6 +3,10 @@ id: within-package-collision
 tags: eligibility, safety
 package: col
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Within-package persist-target collision surfaces as a warning
 

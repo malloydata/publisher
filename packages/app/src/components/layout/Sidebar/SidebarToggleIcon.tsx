@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import SvgIcon, { SvgIconProps } from "@mui/material/SvgIcon";
 
 export default function SidebarToggleIcon(props: SvgIconProps) {

@@ -3,6 +3,10 @@ id: concurrent-build-conflict
 tags: lifecycle, build-control
 package: cbc
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Concurrent builds of one package: the second is rejected
 

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Box, Typography } from "@mui/material";
 
 interface DashboardPreviewProps {

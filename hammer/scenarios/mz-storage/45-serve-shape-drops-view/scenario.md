@@ -3,6 +3,10 @@ id: serve-shape-drops-view
 tags: serve-correctness, joins
 package: fbv
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Serve-shape ladder: a non-reproducible VIEW is dropped, base still routes
 

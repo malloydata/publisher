@@ -1,0 +1,13 @@
+// A name containing a percent sign. Published raw it is not merely a wrong
+// link: Express cannot decode the param at all, so the request dies during
+// route matching and the server answers 500, not the 400 the error's own
+// `status` asks for. Measured, and the integration suite pins it alongside the
+// `models` and `notebooks` routes, which answer identically. Encoded as `p%25q`
+// it round-trips back to this exact name.
+import { orders } from '../orders.malloy'
+
+# artifact { title="Percent In Name" }
+query: percent_in_name is orders -> {
+   group_by: brand_name
+   aggregate: total_amount
+}

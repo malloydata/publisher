@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { buildTableCssVars } from "./buildTableCssVars";
 import { resolveTheme } from "./resolveTheme";
@@ -50,6 +53,25 @@ describe("buildTableCssVars", () => {
       expect(buildTableCssVars(t)["--malloy-render--table-font-size"]).toBe(
          "14px",
       );
+   });
+
+   // The card geometry does NOT come from the instance theme: the radius is the
+   // host app's MUI `shape.borderRadius`, passed in, so a dashboard card reads as
+   // a card of the app it is embedded in. The default is the renderer's own, so a
+   // caller that passes nothing gets today's look.
+   it("carries the caller's card geometry into the publisher namespace", () => {
+      const vars = buildTableCssVars(resolveTheme([], "light"), {
+         radius: "4px",
+         padding: "20px",
+      });
+      expect(vars["--publisher-dashboard-card-radius"]).toBe("4px");
+      expect(vars["--publisher-dashboard-card-padding"]).toBe("20px");
+   });
+
+   it("defaults the card geometry to the renderer's own", () => {
+      const vars = buildTableCssVars(resolveTheme([], "light"));
+      expect(vars["--publisher-dashboard-card-radius"]).toBe("8px");
+      expect(vars["--publisher-dashboard-card-padding"]).toBe("20px");
    });
 
    it("emits the font-family token consumed by the renderer", () => {

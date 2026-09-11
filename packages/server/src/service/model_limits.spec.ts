@@ -1,10 +1,30 @@
-import { describe, expect, it } from "bun:test";
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
 
-import { PayloadTooLargeError } from "../errors";
+import { describe, expect, it, spyOn } from "bun:test";
+
+import { PayloadTooLargeError, ResponseUnserializableError } from "../errors";
 import {
-   assertWithinModelResponseLimits,
+   assertWithinModelByteLimit,
+   assertWithinModelRowLimit,
+   queryRowLimitSource,
    resolveModelQueryRowLimit,
+   stringifyQueryResponse,
 } from "./model_limits";
+
+/**
+ * A value whose serialization fails the way an oversized one does. Throwing
+ * from `toJSON` reproduces the real failure without allocating the ~512 MB a
+ * genuine overflow needs, and the messages are the ones the two engines
+ * actually produce (verified on node v24 and bun 1.3).
+ */
+function failingToSerialize(error: Error) {
+   return {
+      toJSON() {
+         throw error;
+      },
+   };
+}
 
 describe("resolveModelQueryRowLimit", () => {
    it("uses the user's LIMIT when set and below the maxRows ceiling", () => {
@@ -85,97 +105,254 @@ describe("resolveModelQueryRowLimit", () => {
    });
 });
 
-describe("assertWithinModelResponseLimits", () => {
-   it("does not throw when both counts are below their caps", () => {
+describe("assertWithinModelRowLimit", () => {
+   it("does not throw below the cap", () => {
       expect(() =>
-         assertWithinModelResponseLimits(
-            500,
-            1_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelRowLimit(500, 1000, "model_query"),
       ).not.toThrow();
    });
 
-   it("does not throw when row count equals the cap exactly (sentinel hasn't fired)", () => {
+   it("does not throw when the count equals the cap (the sentinel has not fired)", () => {
+      // resolveModelQueryRowLimit asks the connector for maxRows + 1, so equality
+      // means the query ran right up to the cap and is complete.
       expect(() =>
-         assertWithinModelResponseLimits(
-            1000,
-            1_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelRowLimit(1000, 1000, "model_query"),
       ).not.toThrow();
    });
 
-   it("throws PayloadTooLargeError with the row-cap message on row overflow", () => {
+   it("throws PayloadTooLargeError naming the row cap on overflow", () => {
       expect(() =>
-         assertWithinModelResponseLimits(
-            1001,
-            1_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelRowLimit(1001, 1000, "model_query"),
       ).toThrow(PayloadTooLargeError);
       expect(() =>
-         assertWithinModelResponseLimits(
-            1001,
-            1_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelRowLimit(1001, 1000, "model_query"),
       ).toThrow("more than 1000 rows");
+      // Raising the cap IS a remedy here, unlike the unserializable case.
+      expect(() =>
+         assertWithinModelRowLimit(1001, 1000, "model_query"),
+      ).toThrow("PUBLISHER_MAX_QUERY_ROWS");
    });
 
-   it("throws PayloadTooLargeError with the byte-cap message on byte overflow", () => {
+   it("is disabled by a cap of 0", () => {
       expect(() =>
-         assertWithinModelResponseLimits(
-            10,
-            50_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
+         assertWithinModelRowLimit(1_000_000, 0, "model_query"),
+      ).not.toThrow();
+   });
+});
+
+describe("assertWithinModelByteLimit", () => {
+   it("does not throw below the cap", () => {
+      expect(() =>
+         assertWithinModelByteLimit("x".repeat(100), 10_000, "model_query"),
+      ).not.toThrow();
+   });
+
+   it("throws PayloadTooLargeError naming the byte cap and the measured size", () => {
+      const body = "x".repeat(500);
+      expect(() =>
+         assertWithinModelByteLimit(body, 100, "model_query"),
       ).toThrow(PayloadTooLargeError);
       expect(() =>
-         assertWithinModelResponseLimits(
+         assertWithinModelByteLimit(body, 100, "model_query"),
+      ).toThrow("exceeded 100 bytes");
+      expect(() =>
+         assertWithinModelByteLimit(body, 100, "model_query"),
+      ).toThrow("was 500");
+   });
+
+   it("measures UTF-8 bytes, not characters", () => {
+      // Three bytes each, so 40 of them clear a 100-byte cap by count and not by
+      // size. Measuring characters would let a payload through at 3x the cap.
+      const multibyte = "€".repeat(40);
+      expect(multibyte.length).toBeLessThan(100);
+      expect(() =>
+         assertWithinModelByteLimit(multibyte, 100, "model_query"),
+      ).toThrow("exceeded 100 bytes");
+   });
+
+   it("is disabled by a cap of 0, without measuring the response", () => {
+      // Asserting the early return, not just the absence of a throw: with the
+      // cap off a caller must not pay a UTF-8 length scan over a response that
+      // can be hundreds of megabytes, and returning after measuring would pass
+      // a `not.toThrow()` check just as well.
+      const measure = spyOn(Buffer, "byteLength");
+      try {
+         expect(() =>
+            assertWithinModelByteLimit("x".repeat(1000), 0, "model_query"),
+         ).not.toThrow();
+         expect(measure).not.toHaveBeenCalled();
+      } finally {
+         measure.mockRestore();
+      }
+   });
+});
+
+describe("stringifyQueryResponse", () => {
+   it("returns the same JSON as JSON.stringify for a serializable response", () => {
+      const response = { data: [{ id: 1, name: "a" }], schema: {} };
+      expect(stringifyQueryResponse(response, 1, 10_000, "model_query")).toBe(
+         JSON.stringify(response),
+      );
+   });
+
+   it("converts V8's overflow (node: 'Invalid string length') into a 413", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      expect(() =>
+         stringifyQueryResponse(tooBig, 100_000, 50_000_000, "model_query"),
+      ).toThrow(PayloadTooLargeError);
+   });
+
+   it("throws the subclass, so REST still 413s and MCP can drop the cap advice", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      try {
+         stringifyQueryResponse(tooBig, 100_000, 50_000_000, "model_query");
+         throw new Error("expected a throw");
+      } catch (error) {
+         expect(error).toBeInstanceOf(ResponseUnserializableError);
+         expect(error).toBeInstanceOf(PayloadTooLargeError);
+      }
+   });
+
+   it("converts JSC's overflow (bun: 'Out of memory') into a 413", () => {
+      // Bun runs the Docker image, and its engine reports the same condition
+      // with a different message, so the RangeError class is what we match on.
+      const tooBig = failingToSerialize(new RangeError("Out of memory"));
+      expect(() =>
+         stringifyQueryResponse(tooBig, 100_000, 50_000_000, "model_query"),
+      ).toThrow(PayloadTooLargeError);
+   });
+
+   it("names the cap, the row count, and remedies that can actually help", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      let message = "";
+      try {
+         stringifyQueryResponse(tooBig, 100_000, 50_000_000, "model_query");
+      } catch (error) {
+         message = (error as Error).message;
+      }
+      // Reports the cap as context, not as the limit that fired: on node the
+      // engine gives up at ~512 MB whatever the cap is set to, so "exceeded
+      // <cap> bytes" would be false for any cap above that.
+      expect(message).toContain("could not be serialized");
+      expect(message).toContain("byte cap: 50000000");
+      expect(message).not.toContain("exceeded 50000000 bytes");
+      expect(message).toContain("100000-row");
+      expect(message).toContain("Project fewer columns");
+      expect(message).toContain("add a LIMIT");
+      expect(message).toContain("filter wide values");
+      // Raising the cap cannot help a response that will not serialize at any
+      // cap, so the byte-cap message's third remedy must not be repeated here.
+      expect(message).not.toContain("PUBLISHER_MAX_RESPONSE_BYTES");
+   });
+
+   it("omits the cap from the message when the byte cap is disabled", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      let message = "";
+      try {
+         stringifyQueryResponse(tooBig, 42, 0, "notebook_cell");
+      } catch (error) {
+         message = (error as Error).message;
+      }
+      expect(message).not.toContain("byte cap");
+      expect(message).toContain("could not be serialized");
+      expect(message).toContain("42-row");
+   });
+
+   it("is deterministic: two calls on the same value give the same string", () => {
+      // The caller sends the string this returns, so it has to be the same bytes
+      // the byte check measured. Nothing may make a second call differ.
+      const response = { data: [{ id: 1 }] };
+      const first = stringifyQueryResponse(response, 1, 10_000, "model_query");
+      const second = stringifyQueryResponse(response, 1, 10_000, "model_query");
+      expect(second).toBe(first);
+   });
+
+   it("applies a replacer, which the compact shape needs for bigints", () => {
+      // The compact response is serialized with bigIntReplacer and needs this
+      // same guard, so the helper has to carry the replacer through rather than
+      // leaving the caller to stringify unguarded.
+      const withBigInt = { n: 9007199254740993n };
+      expect(
+         stringifyQueryResponse(
+            withBigInt,
+            1,
+            10_000,
+            "model_query",
+            (_k, v) => (typeof v === "bigint" ? v.toString() : v),
+         ),
+      ).toBe('{"n":"9007199254740993"}');
+   });
+
+   it("converts an overflow on the replacer path too", () => {
+      const tooBig = failingToSerialize(
+         new RangeError("Invalid string length"),
+      );
+      expect(() =>
+         stringifyQueryResponse(
+            tooBig,
             10,
-            50_000,
-            { maxRows: 1000, maxBytes: 10_000 },
+            50_000_000,
             "model_query",
+            (_k, v) => v,
          ),
-      ).toThrow("exceeded 10000 bytes");
+      ).toThrow(ResponseUnserializableError);
    });
 
-   it("prefers the row-cap message when both caps would have fired (row check runs first)", () => {
+   it("leaves a stack overflow alone: deep nesting is not a size cap", () => {
+      const deep = failingToSerialize(
+         new RangeError("Maximum call stack size exceeded"),
+      );
       expect(() =>
-         assertWithinModelResponseLimits(
-            2000,
-            50_000,
-            { maxRows: 1000, maxBytes: 10_000 },
-            "model_query",
-         ),
-      ).toThrow("more than 1000 rows");
+         stringifyQueryResponse(deep, 1, 50_000_000, "model_query"),
+      ).toThrow("Maximum call stack size exceeded");
+      expect(() =>
+         stringifyQueryResponse(deep, 1, 50_000_000, "model_query"),
+      ).not.toThrow(PayloadTooLargeError);
    });
 
-   it("disables row cap when maxRows is 0", () => {
+   it("leaves a non-RangeError alone: an unserializable type is not too large", () => {
+      // What a BigInt in the payload throws. Reporting it as 413 would send the
+      // caller off shrinking a query that is not too big.
+      const unserializable = failingToSerialize(
+         new TypeError("Do not know how to serialize a BigInt"),
+      );
       expect(() =>
-         assertWithinModelResponseLimits(
-            1_000_000,
-            1_000,
-            { maxRows: 0, maxBytes: 10_000 },
-            "model_query",
-         ),
-      ).not.toThrow();
+         stringifyQueryResponse(unserializable, 1, 50_000_000, "model_query"),
+      ).toThrow(TypeError);
+   });
+});
+
+describe("queryRowLimitSource", () => {
+   /**
+    * Must mirror resolveModelQueryRowLimit's own `requested` condition: if the
+    * two ever disagree, the reported source describes a different limit than
+    * the one actually pushed into the SQL.
+    */
+   it("reports the query when it carried its own positive limit", () => {
+      expect(queryRowLimitSource(10)).toBe("query");
+      expect(queryRowLimitSource(1)).toBe("query");
    });
 
-   it("disables byte cap when maxBytes is 0", () => {
-      expect(() =>
-         assertWithinModelResponseLimits(
-            10,
-            1_000_000_000,
-            { maxRows: 1000, maxBytes: 0 },
-            "model_query",
-         ),
-      ).not.toThrow();
+   it("reports the server default when the query carried none", () => {
+      expect(queryRowLimitSource(undefined)).toBe("server_default");
+      expect(queryRowLimitSource(0)).toBe("server_default");
+      expect(queryRowLimitSource(-1)).toBe("server_default");
+   });
+
+   it("agrees with which limit resolveModelQueryRowLimit actually used", () => {
+      const config = { defaultLimit: 1000, maxRows: 0 };
+      for (const userLimit of [undefined, 0, -1, 1, 10, 5000]) {
+         const used = resolveModelQueryRowLimit(userLimit, config);
+         const cameFromQuery = queryRowLimitSource(userLimit) === "query";
+         expect(cameFromQuery).toBe(used !== config.defaultLimit);
+      }
    });
 });

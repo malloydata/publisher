@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
@@ -14,7 +17,7 @@ import { Environment, PackageStatus } from "./environment";
  * failed to compile deleted the user's package directory and evicted the
  * last-good compiled model, taking the package offline until it was
  * re-provisioned. That is reachable from the reload endpoint and the
- * malloy_reloadPackage MCP tool by any caller that saves a broken model and
+ * reload_package MCP tool by any caller that saves a broken model and
  * reloads, which is the ordinary authoring mistake.
  *
  * Directory cleanup is now opt-in and only `installPackage` asks for it, so

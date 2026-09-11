@@ -1,0 +1,23 @@
+>>>markdown
+# Brands
+
+A notebook, not a dashboard — here to pin that `# drill` fires from a notebook
+cell too. Nothing in this file mentions drill: the tags are on
+`orders.brand_name` and `orders.region_name`, so any cell that groups by one of
+those dimensions is clickable, and clicking one either leaves for a dashboard or
+filters this notebook in place.
+>>>malloy
+##! experimental.givens
+
+// REGION is named so the notebook surfaces a control for it, which is what
+// `to=self` needs somewhere to put the clicked value.
+import "orders.malloy"
+import { REGION } from "givens.malloy"
+>>>markdown
+## Amount by brand
+>>>malloy
+run: orders -> by_brand
+>>>markdown
+## Orders by region
+>>>malloy
+run: orders -> by_region

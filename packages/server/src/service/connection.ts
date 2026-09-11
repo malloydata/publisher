@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import "@malloydata/db-bigquery";
 import type { BigQueryConnection } from "@malloydata/db-bigquery";
 import "@malloydata/db-databricks";
@@ -33,12 +36,22 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { components } from "../api";
-import { getExtensionFetchPolicy } from "../config";
+import {
+   getDuckDBMemoryLimit,
+   getDuckLakeRowGroupSizeBytes,
+   getDuckLakeTargetFileSizeBytes,
+   getDuckDBTempDirectory,
+   getExtensionFetchPolicy,
+} from "../config";
 import {
    catalogFormatRangeForEngine,
    isCatalogFormatInRange,
 } from "../ducklake_version";
-import { UnsupportedCatalogFormatError } from "../errors";
+import {
+   ConnectionNotFoundError,
+   TableNotFoundError,
+   UnsupportedCatalogFormatError,
+} from "../errors";
 import { logAxiosError, logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
 import {
@@ -52,7 +65,12 @@ import {
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
 } from "./connection_config";
-import { CloudStorageCredentials } from "./gcs_s3_utils";
+import { gcpImpersonationOverlay } from "./gcp_impersonation";
+import {
+   CloudStorageCredentials,
+   DEFAULT_S3_CREDENTIAL_CHAIN,
+   resolveCloudStorageCredentials,
+} from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
 import { quoteIdentifier } from "./quoting";
 
@@ -91,6 +109,159 @@ export type InternalConnection = ApiConnection & {
 const extensionSessionPinned = new WeakSet<Connection>();
 
 /**
+ * Bound the Parquet row group DuckLake buffers before flushing, when configured.
+ *
+ * Applied after the ATTACH rather than as a session `SET`, because DuckLake carries
+ * these as CATALOG options: `set_option` writes them to `ducklake_metadata`, so the
+ * value outlives this connection and is seen by every writer of the lake. That is
+ * the only surface DuckLake offers -- there is no session-scoped equivalent -- and
+ * it is why this is skipped on a read-only attach, where the caller has asked not
+ * to write to the lake at all.
+ *
+ * Failures are swallowed. A catalog whose format predates the option, or one this
+ * deployment may read but not re-configure, must still attach and serve; the write
+ * is a memory optimisation, not a correctness requirement.
+ */
+export async function applyDuckLakeRowGroupBound(
+   connection: DuckDBConnection,
+   dbName: string,
+): Promise<void> {
+   const bytes = getDuckLakeRowGroupSizeBytes();
+   if (bytes === undefined) {
+      return;
+   }
+   try {
+      // ROW_GROUP_SIZE_BYTES is refused outright while insertion order is being
+      // preserved -- a Binder Error, not a silent ignore. Unlike the CALL below
+      // this is a SET rather than a catalog option, so it does not persist in
+      // `ducklake_metadata`; but its scope is GLOBAL, so it binds the whole DuckDB
+      // instance rather than this connection. What keeps it contained is the
+      // caller: a build gets its own instance from `createIsolatedBuildSession`,
+      // and a read-only attach never reaches here.
+      await connection.runSQL("SET preserve_insertion_order=false");
+      await connection.runSQL(
+         `CALL ${dbName}.set_option('parquet_row_group_size_bytes', '${escapeSQL(bytes)}')`,
+      );
+      logger.info(`DuckLake row group bound applied to ${dbName}: ${bytes}`);
+   } catch (error) {
+      logger.warn(
+         `Could not set the DuckLake row group bound on ${dbName}; the lake keeps ` +
+            `its existing value: ${error instanceof Error ? error.message : String(error)}`,
+      );
+   }
+}
+
+/**
+ * Bound how large a Parquet file DuckLake writes before rotating, when configured.
+ *
+ * Same catalog-option mechanics, and the same reason for being skipped on a
+ * read-only attach, as {@link applyDuckLakeRowGroupBound} above -- and the same
+ * swallowed failure, for the same reason. NOT shared: that one must also clear
+ * `preserve_insertion_order`, which DuckDB refuses the byte-based row group
+ * without. This option carries no such requirement, and the order the two are
+ * applied in does not matter.
+ *
+ * Separate from the row group because it bounds a separate term. Writing to object
+ * storage, DuckDB copies each multipart part into its own buffer and holds it until
+ * the file completes, so a file's bytes stay resident however they are grouped
+ * inside it: the row group bounds the per-column buffer, this bounds the file. A
+ * write that sets only one of the two keeps paying the other.
+ */
+export async function applyDuckLakeTargetFileSize(
+   connection: DuckDBConnection,
+   dbName: string,
+): Promise<void> {
+   const bytes = getDuckLakeTargetFileSizeBytes();
+   if (bytes === undefined) {
+      return;
+   }
+   try {
+      await connection.runSQL(
+         `CALL ${dbName}.set_option('target_file_size', '${escapeSQL(bytes)}')`,
+      );
+      logger.info(`DuckLake target file size applied to ${dbName}: ${bytes}`);
+   } catch (error) {
+      logger.warn(
+         `Could not set the DuckLake target file size on ${dbName}; the lake keeps ` +
+            `its existing value: ${error instanceof Error ? error.message : String(error)}`,
+      );
+   }
+}
+
+/**
+ * Sessions that already carry their resource limits, mapped to the spill
+ * directory they were given, so the funnel can be reached twice for one
+ * connection without re-issuing the SETs — while a caller that owns a directory
+ * can still re-point one that was set from the global default.
+ */
+const sessionLimitsApplied = new WeakMap<
+   DuckDBConnection,
+   string | undefined
+>();
+
+/**
+ * Bound ONE DuckDB session's memory, and name where it spills.
+ *
+ * Applied to every Publisher-owned session, which is the point rather than mere
+ * thoroughness: DuckDB sizes `memory_limit` per INSTANCE from the container, and
+ * Publisher runs several in one process. Each independently claims most of the
+ * container, so the process commits a multiple of what it has and the kernel
+ * kills it while every session still believes it is inside its budget. Bounding
+ * only the session running the largest job fixes nothing — the SUM is what
+ * overcommits.
+ *
+ * Both settings are opt-in and independent; unset leaves DuckDB's own default.
+ * See {@link getDuckDBMemoryLimit} for why the limit is absolute, not derived.
+ *
+ * `tempDirectory` names a directory the SESSION owns — a build session's
+ * disposable working directory, unique per build and removed with it, so its
+ * spill can neither outlive the build nor collide with another one. It takes
+ * precedence over the configured default AND over a directory already applied
+ * from that default, because the two are reached in an order this function
+ * cannot see: an attach carries a session through the funnel below, which knows
+ * nothing of the caller's directory. Latching the first value silently cost the
+ * build its own directory on precisely the destination type that reaches
+ * production, so the override is the property, not a convenience.
+ *
+ * Failures are NOT swallowed, unlike the extension pin below. A configured value
+ * DuckDB rejects is an operator error in a resource bound, and continuing would
+ * open a session on the unbounded default while the configuration says otherwise.
+ */
+export async function applySessionResourceLimits(
+   connection: DuckDBConnection,
+   { tempDirectory }: { tempDirectory?: string } = {},
+): Promise<void> {
+   const memoryLimit = getDuckDBMemoryLimit();
+   const temp = tempDirectory ?? getDuckDBTempDirectory();
+   if (sessionLimitsApplied.has(connection)) {
+      const applied = sessionLimitsApplied.get(connection);
+      // Only a session-owned directory can revise an earlier decision, and only
+      // the directory: the memory bound is identical either way.
+      if (tempDirectory === undefined || tempDirectory === applied) {
+         return;
+      }
+      await connection.runSQL(
+         `SET temp_directory = '${escapeSQL(tempDirectory)}'`,
+      );
+      sessionLimitsApplied.set(connection, tempDirectory);
+      return;
+   }
+   if (temp !== undefined) {
+      // Before `memory_limit`: a limit low enough to force spill must never be in
+      // effect while the directory is still DuckDB's default.
+      await connection.runSQL(`SET temp_directory = '${escapeSQL(temp)}'`);
+   }
+   if (memoryLimit !== undefined) {
+      await connection.runSQL(`SET memory_limit = '${escapeSQL(memoryLimit)}'`);
+   }
+   sessionLimitsApplied.set(connection, temp);
+   logger.debug("Applied DuckDB session resource limits", {
+      memoryLimit: memoryLimit ?? "<duckdb default>",
+      tempDirectory: temp ?? "<duckdb default>",
+   });
+}
+
+/**
  * Pin the extension-management PRAGMAs on a Publisher-owned DuckDB session.
  * Publisher installs the extensions it needs explicitly (see
  * {@link installAndLoadExtension}), so DuckDB's own IMPLICIT auto-install
@@ -124,6 +295,11 @@ export async function applyExtensionSessionSettings(
       alwaysDisableAutoinstall = false,
    }: { alwaysDisableAutoinstall?: boolean } = {},
 ): Promise<void> {
+   // Ahead of the autoinstall guard below, which returns early in the common
+   // case: the resource limits must not inherit the extension policy's
+   // conditions. This is the one funnel every Publisher-owned session reaches,
+   // so it is where "every session is bounded" is actually enforced.
+   await applySessionResourceLimits(connection);
    const policy = getExtensionFetchPolicy();
    const disableAutoinstall =
       alwaysDisableAutoinstall || policy === "local-only";
@@ -484,33 +660,72 @@ function runSQLRows(result: unknown): Record<string, unknown>[] {
  * the fixed name (which would make every later preflight for this connection
  * fail its ATTACH with "already exists" and silently skip), and so two
  * concurrent first-touch lookups can't cross-DETACH each other.
+ *
+ * {@link metadataSchema} must be the catalog's configured
+ * `catalog.metadataSchema`, because `ducklake_metadata` lives in that schema
+ * rather than the catalog connection's default one. Getting this wrong is not
+ * loud: the read would simply miss, the catch below would log and return, and the
+ * range check would stop protecting precisely the catalogs that set the option.
  */
 let ducklakePreflightSeq = 0;
 async function preflightDuckLakeCatalogFormat(
    connection: DuckDBConnection,
    dbName: string,
    pgConnString: string,
+   metadataSchema?: string,
 ): Promise<void> {
    const tempDb = `${dbName}_fmt_preflight_${++ducklakePreflightSeq}`;
+   // Identifier position, not a string literal, so the schema is double-quoted.
+   // Measured: with today's validator this is belt-and-braces rather than a fix —
+   // every name the regex admits resolves correctly unquoted, including reserved
+   // words (DuckDB parses them fine here) and mixed case (matching is
+   // case-insensitive). It is quoted anyway because this preflight fails SOFT: a
+   // read that misses logs and returns, silently disabling format range-checking
+   // for that connection, so the cost of ever getting this wrong is invisible.
+   // Quoting makes correctness local to this line instead of contingent on the
+   // validator's accept-set, so widening that regex later cannot break it. Safe
+   // by construction: the regex admits no quote character to break out with.
+   const metadataRef = metadataSchema
+      ? `${tempDb}."${metadataSchema}".ducklake_metadata`
+      : `${tempDb}.ducklake_metadata`;
    let catalogFormat: string | undefined;
    try {
       await connection.runSQL(
          `ATTACH '${escapeSQL(pgConnString)}' AS ${tempDb} (TYPE postgres, READ_ONLY);`,
       );
       const result = await connection.runSQL(
-         `SELECT value FROM ${tempDb}.ducklake_metadata WHERE key = 'version' LIMIT 1;`,
+         `SELECT value FROM ${metadataRef} WHERE key = 'version' LIMIT 1;`,
       );
       const value = runSQLRows(result)[0]?.value;
       catalogFormat = typeof value === "string" ? value : undefined;
    } catch (error) {
+      const message = redactPgSecrets(
+         error instanceof Error ? error.message : String(error),
+      );
+      // A named metadata schema holding no catalog has two very different causes,
+      // and the preflight cannot tell them apart: it is the NORMAL state before the
+      // first read-write attach creates the catalog, and it is also what a typo (or
+      // adding `metadataSchema` to a catalog whose metadata lives elsewhere) looks
+      // like. Neither is loud on its own — a read-write attach CREATES an empty
+      // catalog there and materializes into it, and a read-only attach fails with an
+      // error that says nothing about the schema — so name the schema and say both,
+      // rather than implying a mistake on a path that is expected to hit this once
+      // per catalog. The message also has to hedge on the cause: `does not exist`
+      // matches a missing database or role too, not only a missing table.
+      if (metadataSchema !== undefined && /does not exist/i.test(message)) {
+         logger.warn(
+            "No DuckLake catalog found in the configured metadata schema. This is " +
+               "expected the first time a catalog is created there: a read-write " +
+               "attach will create it, and a read-only attach will fail until it " +
+               "exists. Otherwise check the schema name, and the catalog database " +
+               "and role, against the error.",
+            { dbName, metadataSchema, error: message },
+         );
+         return;
+      }
       logger.warn(
          "DuckLake catalog-format preflight read failed; falling back to ATTACH",
-         {
-            dbName,
-            error: redactPgSecrets(
-               error instanceof Error ? error.message : String(error),
-            ),
-         },
+         { dbName, error: message },
       );
       return;
    } finally {
@@ -640,21 +855,45 @@ async function attachDuckLakeWithMode(
    const mode = options.readOnly ? "READ_ONLY" : "READ_WRITE";
    // READ_ONLY: the client manages metadata, we only read the catalog.
    // READ_WRITE (build only): a build-scoped session materializes into it.
-   logger.info(`pgConnString: ${redactPgSecrets(pgConnString)}`);
+   // Debug, not info. These three lines — this one, the escaped form below, and the
+   // assembled ATTACH — are per-attach diagnostics that between them print the catalog
+   // host and database twice and the storage path once. `redactPgSecrets` removes the
+   // password and any URI userinfo, but a DATA_PATH is not a secret it knows about, so
+   // logging the assembled command at info discloses the bucket and whatever the prefix
+   // encodes to every reader of the logs. What an operator watching a healthy fleet
+   // needs is the mode and the outcome, which stay at info below.
+   logger.debug(`pgConnString: ${redactPgSecrets(pgConnString)}`);
    const escapedPgConnString = escapeSQL(pgConnString);
-   logger.info(
+   logger.debug(
       `Final escaped connection string: ${redactPgSecrets(escapedPgConnString)}`,
    );
    const escapedBucketUrl = escapeSQL(ducklakeConfig.storage.bucketUrl);
-   logger.info(`escapedBucketUrl: ${escapedBucketUrl}`);
+   // Optional metadata schema: which schema in the catalog database holds this
+   // DuckLake's `ducklake_*` tables. Absent keeps DuckLake's default (the catalog
+   // connection's default schema), so the emitted command is unchanged for every
+   // existing config. Validated to a plain identifier at config load, because it
+   // reaches a quoted literal here and an identifier position in the preflight.
+   const metadataSchema = ducklakeConfig.catalog.metadataSchema;
    // Range-preflight the catalog's recorded format version so an unsupported
-   // catalog fails as a clean, actionable 422 rather than a deep DuckDB 500.
-   await preflightDuckLakeCatalogFormat(connection, dbName, pgConnString);
+   // catalog fails as a clean, actionable 422 rather than a deep DuckDB 500. The
+   // schema must be threaded through: the preflight reads `ducklake_metadata`, so
+   // when the metadata does not live in the catalog's default schema an unqualified
+   // read misses it — and the preflight fails SOFT (logs and returns), so the range
+   // check would silently stop protecting exactly the catalogs using this option.
+   await preflightDuckLakeCatalogFormat(
+      connection,
+      dbName,
+      pgConnString,
+      metadataSchema,
+   );
    // READ_ONLY is stated explicitly; read-write omits the flag (DuckLake's
    // default is writable). AUTOMATIC_MIGRATION is never set in either mode.
    const readOnlyClause = options.readOnly ? ", READ_ONLY true" : "";
-   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause});`;
-   logger.info(
+   const metadataSchemaClause = metadataSchema
+      ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
+      : "";
+   const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${dbName} (DATA_PATH '${escapedBucketUrl}', OVERRIDE_DATA_PATH true${readOnlyClause}${metadataSchemaClause});`;
+   logger.debug(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
    try {
@@ -662,6 +901,10 @@ async function attachDuckLakeWithMode(
       logger.info(
          `Successfully attached DuckLake database in ${mode} mode: ${dbName}`,
       );
+      if (!options.readOnly) {
+         await applyDuckLakeRowGroupBound(connection, dbName);
+         await applyDuckLakeTargetFileSize(connection, dbName);
+      }
    } catch (error) {
       // Handle case where DuckLake database is already attached
       if (
@@ -781,6 +1024,20 @@ async function federateBigQuery(
       );
    }
 
+   // Config-load validation rejects impersonateServiceAccount on attached
+   // databases, but a materialization build federating from a BigQuery SOURCE
+   // connection arrives here with that connection's own config — which may
+   // legitimately carry impersonation for the serve path. The DuckDB BIGQUERY
+   // secret takes a key, not a token, so name the limitation instead of
+   // falling through to the generic "service account key required".
+   if (bq.impersonateServiceAccount) {
+      throw new Error(
+         `BigQuery connection '${config.name}' uses impersonateServiceAccount, ` +
+            `which cannot federate through DuckDB: the DuckDB BIGQUERY secret ` +
+            `authenticates with a service account key, not a token. Federated ` +
+            `builds from this source require serviceAccountKeyJson.`,
+      );
+   }
    let projectId = bq.defaultProjectId;
    let serviceAccountJson: string | undefined;
    if (bq.serviceAccountKeyJson) {
@@ -840,15 +1097,24 @@ async function federateSnowflake(
          `Snowflake connection configuration missing for: ${config.name}`,
       );
    }
-   const required = {
+   for (const [field, value] of Object.entries({
       account: sf.account,
       username: sf.username,
-      password: sf.password,
-   };
-   for (const [field, value] of Object.entries(required)) {
+   })) {
       if (!value) {
          throw new Error(`Snowflake ${field} is required for: ${config.name}`);
       }
+   }
+   // Key pair OR password, matching what a Snowflake connection may actually be
+   // configured with. Requiring a password made every key-pair connection
+   // unbuildable into a storage destination even though it queries fine live —
+   // and key-pair is where Snowflake is steering programmatic access, so that is
+   // the case that matters most rather than an exotic one.
+   const usesKeyPair = !!sf.privateKey;
+   if (!usesKeyPair && !sf.password) {
+      throw new Error(
+         `Snowflake privateKey or password is required for: ${config.name}`,
+      );
    }
 
    await installAndLoadExtension(connection, "snowflake", true);
@@ -856,21 +1122,57 @@ async function federateSnowflake(
    const params = {
       account: escapeSQL(sf.account || ""),
       user: escapeSQL(sf.username || ""),
-      password: escapeSQL(sf.password || ""),
+      password: sf.password ? escapeSQL(sf.password) : undefined,
+      // Normalized rather than passed through. The config federated here is an
+      // UNnormalized clone of the API connection, and the live path normalizes at
+      // its own call site — so this is where the two diverge. A single-line PEM
+      // (no newline after the header) makes Go's pem.Decode return nil, and the
+      // extension wants PKCS#8 where a user may legitimately have pasted PKCS#1.
+      // Without this, a key that queries perfectly well live fails the build:
+      // the same shape of bug this change exists to fix, one layer in.
+      privateKey: sf.privateKey
+         ? escapeSQL(normalizeSnowflakePrivateKey(sf.privateKey))
+         : undefined,
+      privateKeyPass: sf.privateKeyPass
+         ? escapeSQL(sf.privateKeyPass)
+         : undefined,
       database: sf.database ? escapeSQL(sf.database) : undefined,
       warehouse: sf.warehouse ? escapeSQL(sf.warehouse) : undefined,
+      schema: sf.schema ? escapeSQL(sf.schema) : undefined,
+      role: sf.role ? escapeSQL(sf.role) : undefined,
    };
    const secretName = sanitizeSecretName(`snowflake_${config.name}`);
-   // DATABASE/WAREHOUSE are optional — emit them only when supplied, so an
-   // absent one doesn't interpolate the literal string 'undefined' into the
+   // Every field below the credential is optional — emit only what was supplied,
+   // so an absent one doesn't interpolate the literal string 'undefined' into the
    // secret (which Snowflake would then try to use as a real db/warehouse name).
+   //
+   // ROLE and SCHEMA are carried for the same reason the credential is: the
+   // Malloy connection folds both into its connection digest, so they are part of
+   // what identifies this connection. Dropping them here would run a build under
+   // the user's DEFAULT role while live queries on the same connection run under
+   // the configured one — a build that fails on permissions the customer thinks
+   // they granted, or worse, one that reads under wider ones.
    const secretLines = [
       `   TYPE snowflake`,
       `   ACCOUNT '${params.account}'`,
       `   USER '${params.user}'`,
-      `   PASSWORD '${params.password}'`,
+      // PRIVATE_KEY_PASSWORD, not the PRIVATE_KEY_PASSPHRASE the extension's docs
+      // show: the latter is carried as a backward-compatible alias onto the
+      // former, and an alias is the thing that gets retired. Both are accepted
+      // today; this is the one the extension actually consumes.
+      ...(usesKeyPair
+         ? [
+              `   AUTH_TYPE 'key_pair'`,
+              `   PRIVATE_KEY '${params.privateKey}'`,
+              ...(params.privateKeyPass
+                 ? [`   PRIVATE_KEY_PASSWORD '${params.privateKeyPass}'`]
+                 : []),
+           ]
+         : [`   PASSWORD '${params.password}'`]),
       ...(params.database ? [`   DATABASE '${params.database}'`] : []),
       ...(params.warehouse ? [`   WAREHOUSE '${params.warehouse}'`] : []),
+      ...(params.schema ? [`   SCHEMA '${params.schema}'`] : []),
+      ...(params.role ? [`   ROLE '${params.role}'`] : []),
    ];
    await connection.runSQL(
       `CREATE OR REPLACE SECRET ${secretName} (\n${secretLines.join(",\n")}\n);`,
@@ -918,65 +1220,61 @@ async function federatePostgres(
    return { handle: alias, sourceType: "postgres" };
 }
 
-async function attachCloudStorage(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   const isGCS = attachedDb.type === "gcs";
-   const isS3 = attachedDb.type === "s3";
+/**
+ * Assembles the CREATE OR REPLACE SECRET for a GCS or S3 storage root.
+ *
+ * Split out from `attachCloudStorage` so the emitted statement can be asserted
+ * without a live DuckDB: the S3 arm now picks between four shapes, and the three
+ * key-based ones have to stay byte-identical to what they were before chain auth
+ * existed.
+ */
+/**
+ * Whether a failure is object storage refusing an EXPIRED credential, as opposed to
+ * refusing a wrong one.
+ *
+ * Matched narrowly on purpose. The remedy this gates -- re-resolve and retry -- is
+ * right for a credential that was valid and aged out, and wrong for one that was
+ * never valid: retrying a bad access key hides a misconfiguration behind a silent
+ * second attempt. `ExpiredToken` is S3's own code for the first case.
+ */
+/** A connection whose object-storage secret can be re-resolved without a reattach. */
+interface RenewableStorageSecret {
+   setStorageSecretRenewer(renew: () => Promise<void>): void;
+}
 
-   if (!isGCS && !isS3) {
-      throw new Error(`Invalid cloud storage type: ${attachedDb.type}`);
-   }
-
-   const storageType = attachedDb.type?.toUpperCase() || "";
-   let credentials: CloudStorageCredentials;
-
-   if (isGCS) {
-      if (!attachedDb.gcsConnection) {
-         throw new Error(
-            `GCS connection configuration missing for: ${attachedDb.name}`,
-         );
-      }
-      if (!attachedDb.gcsConnection.keyId || !attachedDb.gcsConnection.secret) {
-         throw new Error(
-            `GCS keyId and secret are required for: ${attachedDb.name}`,
-         );
-      }
-      credentials = {
-         type: "gcs",
-         accessKeyId: attachedDb.gcsConnection.keyId,
-         secretAccessKey: attachedDb.gcsConnection.secret,
-      };
-   } else {
-      if (!attachedDb.s3Connection) {
-         throw new Error(
-            `S3 connection configuration missing for: ${attachedDb.name}`,
-         );
-      }
-      if (
-         !attachedDb.s3Connection.accessKeyId ||
-         !attachedDb.s3Connection.secretAccessKey
-      ) {
-         throw new Error(
-            `S3 accessKeyId and secretAccessKey are required for: ${attachedDb.name}`,
-         );
-      }
-      credentials = {
-         type: "s3",
-         accessKeyId: attachedDb.s3Connection.accessKeyId,
-         secretAccessKey: attachedDb.s3Connection.secretAccessKey,
-         region: attachedDb.s3Connection.region,
-         endpoint: attachedDb.s3Connection.endpoint,
-         sessionToken: attachedDb.s3Connection.sessionToken,
-      };
-   }
-
-   await installAndLoadExtension(connection, "httpfs");
-
-   const secretName = sanitizeSecretName(
-      `${attachedDb.type}_${attachedDb.name}`,
+/**
+ * Whether a failed statement should re-resolve the storage credential and retry.
+ *
+ * Exported so the rule is tested as the rule, rather than as a copy of it living in
+ * a spec: a predicate mirrored into a test passes whether or not the caller uses it.
+ */
+export function shouldRenewStorageSecret(opts: {
+   error: unknown;
+   hasRenewer: boolean;
+   alreadyRenewing: boolean;
+}): boolean {
+   return (
+      opts.hasRenewer &&
+      !opts.alreadyRenewing &&
+      isExpiredCredentialError(opts.error)
    );
+}
+
+export function isExpiredCredentialError(error: unknown): boolean {
+   const message =
+      error instanceof Error
+         ? error.message
+         : typeof error === "string"
+           ? error
+           : "";
+   return message.includes("ExpiredToken");
+}
+
+export function buildCloudStorageSecretSQL(
+   secretName: string,
+   credentials: CloudStorageCredentials,
+): string {
+   const isGCS = credentials.type === "gcs";
    const escapedKeyId = escapeSQL(credentials.accessKeyId);
    const escapedSecret = escapeSQL(credentials.secretAccessKey);
 
@@ -991,9 +1289,65 @@ async function attachCloudStorage(
          );
       `;
    } else {
+      // One fallback, and it is this one -- the schema carries no `default:`,
+      // because a generated client would not apply it. Warned rather than silent:
+      // a bucket outside us-east-1 reached with no region fails as "no such
+      // bucket", which reads as a wrong name rather than a wrong region.
       const region = credentials.region || "us-east-1";
+      if (!credentials.region) {
+         logger.warn(
+            "S3 connection has no region; defaulting to us-east-1. A bucket in " +
+               "another region will not be found.",
+            { secretName },
+         );
+      }
 
-      if (credentials.endpoint) {
+      if (credentials.provider === "credential_chain") {
+         // CHAIN is load-bearing, not decorative: with it omitted DuckDB
+         // resolves against `config` alone, which is the one provider that
+         // cannot work in a container. So Publisher names an order rather than
+         // passing through only what the caller set.
+         const chain = escapeSQL(
+            credentials.chain?.trim() || DEFAULT_S3_CREDENTIAL_CHAIN,
+         );
+         // A chain secret stores the credentials it resolved, not a reference to
+         // the provider that resolved them, so a temporary credential (a
+         // web-identity assume-role lasts the role's MaxSessionDuration, an hour
+         // by default) expires while the secret lives on. That is invisible on
+         // the build path, where the session lasts one build, and fatal on the
+         // serve path, where the attach is idempotent and the secret lives as
+         // long as the connection.
+         //
+         // `auto` is the ONLY value that arms refresh: the aws extension stores
+         // the `refresh_info` that makes a secret refreshable under
+         // `if (refresh == "auto")` and ignores anything else, and httpfs then
+         // declines to refresh a secret that has no `refresh_info`. Any other
+         // value is accepted and silently does nothing -- and is worse than
+         // omitting the clause, which for a bare `sts`/`web_identity` chain
+         // arms it by default. Not caller-configurable because a frozen
+         // snapshot of an expiring credential has no use.
+         const clauses = [
+            "TYPE s3",
+            "PROVIDER credential_chain",
+            `CHAIN '${chain}'`,
+            "REFRESH 'auto'",
+            `REGION '${region}'`,
+         ];
+         // Additive, not an alternative: an S3-compatible endpoint behind a host
+         // role is a real combination, and the key-based branches below can only
+         // express one modifier at a time.
+         if (credentials.endpoint) {
+            clauses.push(
+               `ENDPOINT '${escapeSQL(credentials.endpoint)}'`,
+               "URL_STYLE 'path'",
+            );
+         }
+         createSecretCommand = `
+            CREATE OR REPLACE SECRET ${secretName} (
+               ${clauses.join(",\n               ")}
+            );
+         `;
+      } else if (credentials.endpoint) {
          const escapedEndpoint = escapeSQL(credentials.endpoint);
          createSecretCommand = `
             CREATE OR REPLACE SECRET ${secretName} (
@@ -1028,11 +1382,67 @@ async function attachCloudStorage(
       }
    }
 
+   return createSecretCommand;
+}
+
+async function attachCloudStorage(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   const storageType = attachedDb.type?.toUpperCase() || "";
+   const credentials = resolveCloudStorageCredentials(attachedDb);
+
+   await installAndLoadExtension(connection, "httpfs");
+   // `credential_chain` is implemented by the `aws` extension and resolves when
+   // the secret is created, so the extension has to be loaded first. The
+   // DuckLake attach path already loads it, but the generic attach path reaches
+   // this same function through the handler table and does not. `aws` is baked
+   // into the image, so this stays within EXTENSION_FETCH_POLICY=local-only.
+   if (credentials.provider === "credential_chain") {
+      await installAndLoadExtension(connection, "aws");
+   }
+
+   const secretName = sanitizeSecretName(
+      `${attachedDb.type}_${attachedDb.name}`,
+   );
+   const createSecretCommand = buildCloudStorageSecretSQL(
+      secretName,
+      credentials,
+   );
+
    if (await doesSecretExistInDuckDB(connection, secretName)) {
       // Force refresh attachments using this storage
       await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
    }
    await connection.runSQL(createSecretCommand);
+
+   // Only a chain secret can go stale: it stores the credentials it RESOLVED, and a
+   // web-identity assume-role yields about an hour of them. A key pair does not
+   // expire, so registering a renewer for one would only serve to retry a wrong key.
+   //
+   // `REFRESH 'auto'` asks DuckDB to do this itself and is emitted, so this is a
+   // fallback rather than the mechanism. It is kept because that refresh does not
+   // reach every read path: a direct object read re-resolves transparently and
+   // never surfaces an error, while a read through an attached DuckLake catalog
+   // has been seen to surface ExpiredToken from an equally armed secret. If DuckDB
+   // refreshes first, the retry never sees an expired credential and stays silent.
+   // Structural check rather than instanceof: attachCloudStorage is reached from the
+   // generic handler table as well as the DuckLake path, so the connection type is
+   // not known here and only some of them can renew.
+   const renewable = connection as unknown as Partial<RenewableStorageSecret>;
+   if (
+      credentials.provider === "credential_chain" &&
+      typeof renewable.setStorageSecretRenewer === "function"
+   ) {
+      renewable.setStorageSecretRenewer(async () => {
+         // Replaced in place on the LIVE connection: CREATE OR REPLACE SECRET is a
+         // statement, not a session property, so nothing is torn down and no query
+         // in flight is disturbed.
+         await connection.runSQL(
+            buildCloudStorageSecretSQL(secretName, credentials),
+         );
+      });
+   }
 
    logger.info(`Created ${storageType} secret: ${secretName}`);
    logger.info(`${storageType} connection configured for: ${attachedDb.name}`);
@@ -1274,7 +1684,9 @@ class AzureDuckDBConnection extends DuckDBConnection {
             });
             const result = await super.fetchTableSchema(tableKey, azureUrl);
             if (!result) {
-               throw new Error(`Azure file not found: ${azureUrl}`);
+               throw new TableNotFoundError(
+                  `Azure file not found: ${azureUrl}`,
+               );
             }
             return result;
          }
@@ -1282,7 +1694,7 @@ class AzureDuckDBConnection extends DuckDBConnection {
 
       const result = await super.fetchTableSchema(tableKey, tablePath);
       if (!result) {
-         throw new Error(`Table ${tablePath} not found`);
+         throw new TableNotFoundError(`Table ${tablePath} not found`);
       }
       return result;
    }
@@ -1290,6 +1702,66 @@ class AzureDuckDBConnection extends DuckDBConnection {
 
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
+   private storageSecretRenewer?: () => Promise<void>;
+   private renewingStorageSecret = false;
+
+   /** @see RenewableStorageSecret */
+   setStorageSecretRenewer(renew: () => Promise<void>): void {
+      this.storageSecretRenewer = renew;
+   }
+
+   /**
+    * Runs SQL, re-resolving an expired object-storage credential once and retrying.
+    *
+    * The tier's serve attach is idempotent and its secret lives as long as the
+    * connection, while the credentials a chain secret RESOLVED last about an hour.
+    * `REFRESH 'auto'` asks DuckDB to re-resolve it, which is the first line of
+    * defence; this is the second, for when that does not happen. Without either, a
+    * serve connection that has been up an hour fails every read with ExpiredToken
+    * while builds keep succeeding -- a build opens its own session, and with it a
+    * fresh secret, so the two paths fail independently.
+    *
+    * Reactive rather than scheduled, and reactive rather than per-query, because
+    * resolving the secret costs an STS round trip. Per query that is one call per
+    * read, forever; on a timer it needs a TTL nobody reports back to us. On the error
+    * it is one call per connection per hour, and the error is the authoritative
+    * signal that the credential is actually gone.
+    *
+    * Once. A second failure is not an expiry.
+    */
+   async runSQL(
+      sql: string,
+      options?: Parameters<DuckDBConnection["runSQL"]>[1],
+   ): Promise<Awaited<ReturnType<DuckDBConnection["runSQL"]>>> {
+      try {
+         return await super.runSQL(sql, options);
+      } catch (error) {
+         // `renewingStorageSecret` guards the renewal's own statement, which runs
+         // through this same method: without it a failure there would recurse.
+         const renew = this.storageSecretRenewer;
+         if (
+            !shouldRenewStorageSecret({
+               error,
+               hasRenewer: !!renew,
+               alreadyRenewing: this.renewingStorageSecret,
+            }) ||
+            !renew
+         ) {
+            throw error;
+         }
+         logger.info(
+            "Object-storage credential expired; re-resolving and retrying once",
+            { connection: this.connectionName },
+         );
+         this.renewingStorageSecret = true;
+         try {
+            await renew();
+         } finally {
+            this.renewingStorageSecret = false;
+         }
+         return await super.runSQL(sql, options);
+      }
+   }
 
    constructor(options: PublisherDuckDBOptions) {
       super(options);
@@ -1323,7 +1795,7 @@ class DuckLakeConnection extends DuckDBConnection {
          });
          const result = await super.fetchTableSchema(tableKey, prefixedPath);
          if (!result) {
-            throw new Error(
+            throw new TableNotFoundError(
                `Table ${prefixedPath} not found in connection ${this.connectionName}`,
             );
          }
@@ -1333,7 +1805,7 @@ class DuckLakeConnection extends DuckDBConnection {
       // For attached databases, in the future
       const result = await super.fetchTableSchema(tableKey, tablePath);
       if (!result) {
-         throw new Error(
+         throw new TableNotFoundError(
             `Table ${tablePath} not found in connection ${this.connectionName}`,
          );
       }
@@ -1371,6 +1843,36 @@ export async function deleteDuckLakeConnectionFile(
    }
 }
 
+/**
+ * A config that resolves `allowed` connection names and nothing else, delegating
+ * those to `base`.
+ *
+ * Used for the materialization serve-shape compile. The shape is generated from a
+ * binding set and names only the destinations those bindings point at, so that is
+ * exactly what it may resolve: not a user connection (the whole point of keeping
+ * the two lists disjoint), and not another destination this shape has no binding
+ * for. Deriving the set from the bindings rather than handing over the whole
+ * destination list keeps the reachable surface minimal by construction, and keeps
+ * working if a binding is ever legitimately allowed to name something else.
+ */
+export function restrictMalloyConfigToConnections(
+   base: MalloyConfig,
+   allowed: ReadonlySet<string>,
+): MalloyConfig {
+   const restricted = new MalloyConfig({ connections: {} });
+   restricted.wrapConnections(() => ({
+      lookupConnection: async (name?: string) => {
+         if (!name || !allowed.has(name)) {
+            throw new ConnectionNotFoundError(
+               `Connection ${name ?? "(default)"} is not available to a materialization serve shape`,
+            );
+         }
+         return base.connections.lookupConnection(name);
+      },
+   }));
+   return restricted;
+}
+
 export type EnvironmentMalloyConfig = {
    malloyConfig: MalloyConfig;
    apiConnections: InternalConnection[];
@@ -1392,12 +1894,44 @@ function entryToDuckDBOptions(
    return { ...removeUndefined(rest), name };
 }
 
-function removeUndefined<T extends object>(value: T): Partial<T> {
+/**
+ * Drop keys whose value is absent, treating `null` as absent alongside
+ * `undefined`.
+ *
+ * This is the null guard for the connectors Publisher builds ITSELF, outside
+ * Malloy's connection lookup. Core strips nulls on its own registry path, so
+ * anything assembled into the Malloy config pojo is already covered; the two
+ * callers here are not. `buildSnowflakePrivateKeyConnection` bypasses the
+ * registry entirely, and reads through `cloneApiConnection`, whose shallow
+ * spread leaves an explicit `null` intact.
+ *
+ * `null` matters as much as `undefined` because the values this builds land in a
+ * connection whose `getDigest()` feeds them to `makeDigest`, which reads
+ * `.length` off each part and special-cases `undefined` alone. A surviving
+ * `null` therefore throws "null is not an object (evaluating 'p.length')" on the
+ * first digest. That digest is taken by the package-load worker's
+ * connection-metadata RPC, so the symptom is not a connection error but the whole
+ * package failing to load with "import reference failure" on the source line --
+ * while the same model compiles cleanly through /compile, which runs on the main
+ * thread and never takes a digest.
+ *
+ * A field omitted from config arrives as `undefined` and was always fine. The
+ * `null` has a producer: an explicit `"database": null` in publisher.config.json,
+ * or a client that serializes unset optionals as null over POST /connections.
+ * Once stored it is durable, because ConnectionRepository round-trips through
+ * JSON.stringify/parse, which drops `undefined` but preserves `null`.
+ *
+ * Stripping is identity-preserving: an explicit null and an omitted field
+ * produce the same digest, so no content-addressed id splits across the fix.
+ */
+function removeUndefined<T extends object>(
+   value: T,
+): { [K in keyof T]?: Exclude<T[K], null> } {
    return Object.fromEntries(
       Object.entries(value).filter(
-         ([, fieldValue]) => fieldValue !== undefined,
+         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
       ),
-   ) as Partial<T>;
+   ) as { [K in keyof T]?: Exclude<T[K], null> };
 }
 
 function buildSnowflakePrivateKeyConnection(
@@ -1648,6 +2182,11 @@ export function buildEnvironmentMalloyConfig(
 
    const malloyConfig = new MalloyConfig(assembled.pojo, {
       config: contextOverlay({ rootDirectory: environmentPath }),
+      // Resolves `authClient: {gcpImpersonation: "<sa-email>"}` references on
+      // bigquery connections to live Impersonated clients (see
+      // gcp_impersonation.ts). Registered unconditionally: the overlay is only
+      // consulted when a connection actually carries the reference.
+      gcpImpersonation: gcpImpersonationOverlay(),
    });
 
    async function attachOnce(
@@ -1668,6 +2207,19 @@ export function buildEnvironmentMalloyConfig(
             connection,
             metadata.attachedDatabases,
          );
+         // Drop a rejected run from the cache so a later lookup can retry, rather
+         // than replaying one transient failure for the life of the process. Every
+         // attach handler reaches the network — postgres opens a real connection,
+         // bigquery and snowflake authenticate, and a cloud-storage secret under
+         // `credential_chain` resolves credentials at CREATE — and the loop in
+         // attachDatabasesToDuckDB rethrows, so without this the first blip is
+         // permanent and only rebuilding the environment clears it. Mirrors the
+         // eviction on proxyConnectionCache below.
+         attachPromise.catch(() => {
+            if (attachPromises.get(connection) === attachPromise) {
+               attachPromises.delete(connection);
+            }
+         });
          attachPromises.set(connection, attachPromise);
       }
       await attachPromise;

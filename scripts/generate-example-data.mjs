@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Regenerate the datasets that back the Publisher example packages.
 //
 //   node scripts/generate-example-data.mjs

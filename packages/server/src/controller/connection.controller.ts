@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
@@ -9,7 +12,9 @@ import {
 import {
    BadRequestError,
    ConnectionError,
+   InvalidArgumentError,
    PayloadTooLargeError,
+   TableNotFoundError,
 } from "../errors";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
@@ -22,6 +27,15 @@ import {
    getSchemasForConnection,
    listTablesForSchema,
 } from "../service/db_utils";
+import {
+   mergeQueryMetadata,
+   mintCorrelationId,
+   parseQueryClass,
+   parseSuppliedQueryMetadata,
+   queryMetadataViolations,
+   type QueryClass,
+   type QueryMetadata,
+} from "../service/query_metadata";
 import type { Environment } from "../service/environment";
 import { EnvironmentStore } from "../service/environment_store";
 import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
@@ -113,6 +127,107 @@ function validateAdminAuthoredConnection(
    } catch (error) {
       throw new BadRequestError((error as Error).message);
    }
+
+   // The connection is the one metadata layer whose author is right here, so it
+   // is the one that can be told. A property the contract rejects (a hyphen in
+   // `cost-centre` is the natural spelling and the first thing anyone tries)
+   // would otherwise be dropped at dispatch and only ever surface as a metric —
+   // every statement on the connection missing the property its operator
+   // believes they configured. Config LOAD warns instead of throwing (see
+   // assembleEnvironmentConnections): a tag must never fail an environment.
+   for (const field of ["queryMetadata", "queryMetadataEnforced"] as const) {
+      const violations = queryMetadataViolations(connectionConfig[field]);
+      if (violations.length > 0) {
+         throw new BadRequestError(
+            `Connection "${connectionName}" ${field} is invalid: ${violations.join("; ")}`,
+         );
+      }
+   }
+}
+
+/**
+ * BigQuery's driver signals failure by RETURNING `error.message` instead of
+ * throwing, discarding the structured `code: 404` the Google client gave it
+ * (`@malloydata/db-bigquery` fetchTableSchema). That text is the only surviving
+ * signal, so a missing table is told apart from a broken connection by matching
+ * BigQuery's own API wording.
+ *
+ * Deliberately not generalized to other dialects. Postgres reports a missing
+ * table as the generic "Unable to read schema.", indistinguishable from any
+ * other failure, and Snowflake's DESCRIBE TABLE answers "does not exist or not
+ * authorized", conflating absence with denial by design. Guessing on either
+ * would be worse than leaving them 502.
+ */
+const BIGQUERY_NOT_FOUND = /^Not found: (Table|Dataset)\b/;
+
+/**
+ * A path that cannot name a table in this dialect at all -- BigQuery needs
+ * `dataset.table`, so a bare `sales` is rejected before any lookup happens. The
+ * caller's argument is malformed, which is a 400, not a 404: the answer is "that
+ * is not a table path", not "no such table".
+ *
+ * Reached constantly while a path is being typed, since every prefix before the
+ * first dot has one segment.
+ */
+const BIGQUERY_IMPROPER_PATH = /^Improper table path\b/;
+
+/**
+ * DuckDB -- the sandbox, and the Azure and DuckLake connections built on it --
+ * rejects rather than resolving empty, so a missing table arrives as a thrown
+ * catalog error. These two cover the three shapes it produces for an absent
+ * object: a missing table, a missing schema behind a table lookup, and a missing
+ * catalog on a three-part path.
+ *
+ * Deliberately not `Catalog Error: .* does not exist`. DuckDB words a missing
+ * EXTENSION the same way -- "Catalog Error: Table Function with name read_csv
+ * does not exist!" -- and that is a misconfigured deployment, not an absent
+ * table. Answering it 404 would hide a broken Azure or DuckLake connection
+ * behind the one status nobody investigates.
+ */
+const DUCKDB_TABLE_NOT_FOUND =
+   /^Catalog Error: Table with name .+ does not exist/;
+const DUCKDB_CATALOG_NOT_FOUND = /^Binder Error: Catalog .+ does not exist/;
+
+/**
+ * Deliberately no pattern for `IO Error: No files found that match the
+ * pattern`. A file-backed table is DuckLake or an Azure blob, where an absent
+ * parquet means corruption or a misconfigured mount rather than a name the
+ * caller mistyped -- the same reason the extension errors above stay 502.
+ */
+
+function driverErrorToPublisherError(message: string): Error {
+   if (
+      BIGQUERY_NOT_FOUND.test(message) ||
+      DUCKDB_TABLE_NOT_FOUND.test(message) ||
+      DUCKDB_CATALOG_NOT_FOUND.test(message)
+   ) {
+      return new TableNotFoundError(message);
+   }
+   if (BIGQUERY_IMPROPER_PATH.test(message)) {
+      return new InvalidArgumentError(message);
+   }
+   return new ConnectionError(message);
+}
+
+/**
+ * Shared by the two schema-introspection catches. Both take a driver failure
+ * that may be a thrown Error, a thrown string, or an already-classified error,
+ * and answer with the narrowest error the message supports.
+ */
+function classifyDriverFailure(error: unknown): Error {
+   if (
+      error instanceof TableNotFoundError ||
+      error instanceof InvalidArgumentError
+   ) {
+      return error;
+   }
+   const message =
+      error instanceof Error
+         ? error.message
+         : typeof error === "string"
+           ? error
+           : JSON.stringify(error);
+   return driverErrorToPublisherError(message);
 }
 
 export class ConnectionController {
@@ -139,6 +254,43 @@ export class ConnectionController {
          };
       }
       return environment.getApiConnection(connectionName);
+   }
+
+   /**
+    * A connection's default per-query metadata, or null when it declares none.
+    * Fails open: metadata is observability, so a connection whose config can't be
+    * read contributes no default rather than failing the query the caller asked
+    * for.
+    */
+   private async connectionQueryMetadata(
+      environmentName: string,
+      connectionName: string,
+   ): Promise<{
+      default: QueryMetadata | null;
+      enforced: QueryMetadata | null;
+   }> {
+      try {
+         const environment = await this.environmentStore.getEnvironment(
+            environmentName,
+            false,
+         );
+         const connection = this.getApiConnectionForLookup(
+            environment,
+            connectionName,
+         );
+         return {
+            default: connection.queryMetadata ?? null,
+            enforced: connection.queryMetadataEnforced ?? null,
+         };
+      } catch (error) {
+         // Fails open like every other metadata path, but not invisibly: the
+         // layer lost here is the enforced one, and no metric covers it.
+         logger.debug("No query-metadata layers for connection", {
+            connectionName,
+            error,
+         });
+         return { default: null, enforced: null };
+      }
    }
 
    private async getMalloyConnection(
@@ -175,14 +327,21 @@ export class ConnectionController {
          if (packages.length === 1) {
             const onlyPackage = packages[0].name;
             if (!onlyPackage) {
-               throw new ConnectionError("Package name is undefined");
+               throw new ConnectionError("Package name is undefined", {
+                  callerSafe: true,
+               });
             }
             const pkg = await environment.getPackage(onlyPackage);
             return await pkg.getMalloyConnection(connectionName);
          }
          throw new BadRequestError(
-            `Ambiguous "duckdb" connection lookup: environment "${environmentName}" has multiple packages. ` +
-               `Use /environments/${environmentName}/packages/{packageName}/connections/duckdb/... to disambiguate.`,
+            `Ambiguous "duckdb" connection lookup: environment "${environmentName}" has multiple packages, ` +
+               `and the "duckdb" sandbox exists once per package. Name one of: ${packages
+                  .map((p) => p.name)
+                  .filter(Boolean)
+                  .join(", ")}. ` +
+               `Over MCP pass it as the packageName argument; over REST use ` +
+               `/environments/${environmentName}/packages/{packageName}/connections/duckdb/...`,
          );
       } else {
          return await environment.getMalloyConnection(connectionName);
@@ -208,11 +367,11 @@ export class ConnectionController {
             }
          ).fetchTableSchema(tableKey, tablePath);
          if (!source) {
-            throw new ConnectionError(`Table ${tablePath} not found`);
+            throw new TableNotFoundError(`Table ${tablePath} not found`);
          }
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof source === "string") {
-            throw new ConnectionError(source);
+            throw driverErrorToPublisherError(source);
          }
 
          return {
@@ -224,18 +383,27 @@ export class ConnectionController {
             })),
          };
       } catch (error) {
-         const errorMessage =
-            error instanceof Error
-               ? error.message
-               : typeof error === "string"
-                 ? error
-                 : JSON.stringify(error);
+         // Where most not-founds actually land. BigQuery returns its message, but
+         // every other driver -- DuckDB included -- rejects, so the falsy checks
+         // above never see them and the blanket rewrap this replaces turned them
+         // all into 502s.
+         const classified = classifyDriverFailure(error);
+         if (!(classified instanceof ConnectionError)) {
+            // A caller's bad reference, not a fault: warn, so a mistyped path
+            // cannot fill the error log while it is being typed.
+            logger.warn("table not resolvable", {
+               tableKey,
+               tablePath,
+               reason: classified.constructor.name,
+            });
+            throw classified;
+         }
          logger.error("fetchTableSchema error", {
             error,
             tableKey,
             tablePath,
          });
-         throw new ConnectionError(errorMessage);
+         throw classified;
       }
    }
 
@@ -348,14 +516,18 @@ export class ConnectionController {
 
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof schema === "string") {
-            throw new ConnectionError(schema);
+            throw driverErrorToPublisherError(schema);
          }
 
          return {
             source: JSON.stringify(schema),
          };
       } catch (error) {
-         throw new ConnectionError((error as Error).message);
+         // Same classification as fetchTable: a driver that rejects has to reach
+         // it too, or this route keeps answering 502 for a reference that is
+         // merely absent. `(error as Error).message` also dropped the message
+         // entirely for a thrown string.
+         throw classifyDriverFailure(error);
       }
    }
 
@@ -454,6 +626,12 @@ export class ConnectionController {
       sqlStatement: string,
       options: string,
       packageName?: string,
+      /**
+       * The request's per-query metadata fields, unvalidated — this controller is
+       * the boundary that turns a bad bag into a 400 rather than letting the
+       * connector refuse the statement at dispatch.
+       */
+      metadata?: { queryMetadata?: unknown; queryClass?: unknown },
    ): Promise<ApiQueryData> {
       // Express parses repeated query parameters (?sqlStatement=a&sqlStatement=b)
       // and array-shaped JSON bodies as `string[]`, not `string`. The route
@@ -512,6 +690,41 @@ export class ConnectionController {
          logger.info("Clearing unsupported abortSignal");
          runSQLOptions.abortSignal = undefined;
       }
+
+      // Per-query metadata. Validated here, not clamped: a raw-SQL caller gets a
+      // 400 telling it which property is wrong instead of a statement the
+      // connector refuses at dispatch. `options` is forwarded as RunSQLOptions, so
+      // a bag can also arrive inside it — validate that one too, and let the
+      // documented field win.
+      const suppliedMetadata =
+         metadata?.queryMetadata ?? runSQLOptions.queryMetadata;
+      let requestMetadata: QueryMetadata | undefined;
+      let queryClass: QueryClass | undefined;
+      try {
+         requestMetadata = parseSuppliedQueryMetadata(suppliedMetadata);
+         queryClass = parseQueryClass(metadata?.queryClass);
+      } catch (error) {
+         throw new BadRequestError((error as Error).message);
+      }
+      const connectionLayers = await this.connectionQueryMetadata(
+         environmentName,
+         connectionName,
+      );
+      const resolvedMetadata = mergeQueryMetadata({
+         connection: connectionLayers.default,
+         enforced: connectionLayers.enforced,
+         request: requestMetadata,
+         context: {
+            // Raw SQL against a connection is platform maintenance unless the
+            // caller says otherwise — it is not a modeled query.
+            queryClass: queryClass ?? "ops",
+            environment: environmentName,
+            package: packageName,
+            correlationId: mintCorrelationId(),
+         },
+      });
+      runSQLOptions.queryMetadata = resolvedMetadata.metadata;
+      const queryCorrelationId = resolvedMetadata.metadata?.query_id ?? null;
 
       // Bound the response with two layered caps:
       //
@@ -573,7 +786,7 @@ export class ConnectionController {
                throw new ConnectionError((error as Error).message);
             }
          }, getQueryTimeoutMs());
-         return { data: JSON.stringify(streamed) };
+         return { data: JSON.stringify(streamed), queryCorrelationId };
       }
 
       const result = await runWithQueryTimeout(async (signal) => {
@@ -602,7 +815,7 @@ export class ConnectionController {
          );
       }
 
-      return { data: JSON.stringify(result) };
+      return { data: JSON.stringify(result), queryCorrelationId };
    }
 
    public async getConnectionTemporaryTable(
@@ -723,6 +936,13 @@ export class ConnectionController {
       try {
          return await testConnectionConfig(connectionConfig);
       } catch (error) {
+         // The driver's text is the payload here, not a leak: the caller just
+         // supplied this connection config and is being told why it does not
+         // work, so "password authentication failed" or "no such host" is the
+         // answer to their own question about their own credentials. Unlike the
+         // 500/502 bodies the mapper generalizes, nothing in scope belongs to
+         // another tenant or to the server -- the host, port and user are all
+         // values that arrived in this request.
          return {
             status: "failed",
             errorMessage: `Connection test failed: ${(error as Error).message}`,

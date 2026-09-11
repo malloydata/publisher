@@ -1,0 +1,7 @@
+##! experimental.givens
+
+// Suggests its options from a query no dashboard file defines or imports.
+# label="Brand" control=select suggest { query=nowhere }
+given: BRAND :: filter<string> is f''
+
+given: REGION :: filter<string> is f''

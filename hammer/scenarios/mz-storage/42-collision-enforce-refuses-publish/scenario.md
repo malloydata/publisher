@@ -3,6 +3,10 @@ id: collision-enforce-refuses-publish
 tags: eligibility, safety, config
 package: coe
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # PERSIST_COLLISION_ENFORCE rejects a colliding publish
 

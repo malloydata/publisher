@@ -1,236 +1,266 @@
 <!doctype html>
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>Storefront</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
   <style>
+    /* ── Theme ──────────────────────────────────────────────────────────────
+       Publisher's own tokens, so this page and the Console agree: the warm grey
+       shell from the Console theme, and the Malloy series palette from the
+       renderer theme (packages/sdk/src/theme/defaults.ts). Chart.js reads the
+       --series-* values through app/charts.js, so the palette has one home.
+
+       Fonts are a system stack, not a webfont. This page is one of the pages
+       the malloy-html-data-apps skill points an author at, and that skill's rule
+       is to load nothing from a CDN, for two reasons that apply here: agent
+       sandboxes and corporate networks block them, and an example that phones a
+       third party on load is a poor default for a self-hosted product. The
+       shell is deliberately colorless besides: color means data here. */
     :root {
-      --bg: #f5f7fb; --card: #ffffff; --ink: #11151c; --ink-soft: #5b6472;
-      --line: #e6eaf2; --accent: #4f46e5; --accent-soft: #eef0ff; --good: #10b981;
-      --shadow: 0 1px 2px rgba(17,21,28,.04), 0 4px 12px rgba(17,21,28,.04); --radius: 12px;
+      --font-sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+      --bg: #ffffff;
+      --surface: #ffffff;
+      --surface-subtle: #f8f8f6;
+      --tile: #f5fafc;
+      --text: #30302e;
+      --text-secondary: #91908f;
+      --divider: #e6e4e1;
+      --border: #e5e7eb;
+      --value: #1f2937;
+      --table-header: #5d626b;
+      --chart-grid: #e6e4e1;
+      --danger: #bf6050;
+      --danger-bg: #f2ddd9;
+
+      --radius: 4px;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      --shadow-menu: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+
+      /* Malloy brand series, in order */
+      --series-1: #14b3cb;
+      --series-2: #e47404;
+      --series-3: #1474a4;
+      --series-4: #66cedc;
+      --series-5: #ec72b8;
+      --series-6: #f9c85b;
+      --series-7: #aacd85;
+      --series-8: #b87ced;
     }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --surface: #1e293b;
+        --surface-subtle: #26334a;
+        --tile: #0f172a;
+        --text: #f1f5f9;
+        --text-secondary: #cbd5e1;
+        --divider: #334155;
+        --border: #334155;
+        --value: #f1f5f9;
+        --table-header: #cbd5e1;
+        --chart-grid: #334155;
+        --danger: #f2b8ac;
+        --danger-bg: #3b2220;
+        --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+      }
+    }
+
     *, *::before, *::after { box-sizing: border-box; }
     html, body { margin: 0; }
     body {
-      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
-      color: var(--ink); background: var(--bg); min-height: 100vh;
+      font: 400 14px/1.5 var(--font-sans);
+      letter-spacing: -0.011em;
+      color: var(--text);
+      background: var(--bg);
+      min-height: 100vh;
     }
-    main { max-width: 1200px; margin: 0 auto; padding: 28px; }
-    header.page { display: flex; align-items: end; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
-    header.page h1 { font-size: 26px; margin: 0; letter-spacing: -0.02em; }
-    header.page p { color: var(--ink-soft); margin: 0; font-size: 13px; }
-    header.page .badge {
-      display: inline-flex; align-items: center; gap: 6px; background: var(--accent-soft);
-      color: var(--accent); padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    code { font-family: var(--font-mono); font-size: 0.9em; }
+    main { max-width: 1320px; margin: 0 auto; padding: 24px 28px 40px; }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header.page { display: flex; align-items: center; gap: 12px; }
+    header.page h1 { font-size: 20px; font-weight: 500; margin: 0; letter-spacing: -0.025em; }
+    header.page p { margin: 2px 0 0; color: var(--text-secondary); font-size: 13px; }
+    .mark { display: block; flex: none; }
+
+    /* ── Tabs ───────────────────────────────────────────────────────────── */
+    #tabs {
+      display: flex; gap: 4px; margin: 18px 0 0;
+      border-bottom: 1px solid var(--divider);
     }
-    header.page .badge::before {
-      content: ""; width: 6px; height: 6px; border-radius: 50%;
-      background: var(--good); box-shadow: 0 0 0 3px rgba(16,185,129,.2);
+    #tabs button {
+      font: 500 14px/1 var(--font-sans); letter-spacing: -0.011em;
+      color: var(--text-secondary); background: none; border: 0;
+      padding: 10px 14px; margin-bottom: -1px; cursor: pointer;
+      border-bottom: 2px solid transparent; border-radius: var(--radius) var(--radius) 0 0;
     }
-    .filters {
-      display: flex; gap: 12px; align-items: center; flex-wrap: wrap; background: var(--card);
-      border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px;
-      box-shadow: var(--shadow); margin-bottom: 20px;
+    #tabs button:hover { color: var(--text); background: var(--surface-subtle); }
+    #tabs button.active { color: var(--text); border-bottom-color: var(--text); }
+
+    /* ── Control row ────────────────────────────────────────────────────── */
+    .controls {
+      display: flex; flex-wrap: wrap; align-items: end; gap: 18px;
+      padding: 16px 0 18px;
     }
-    .filters label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); }
-    .filters select, .filters button {
-      font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
-      background: var(--card); color: var(--ink); min-width: 170px;
+    .control { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 168px; }
+    .control-label { font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+    .controls select,
+    .controls input[type="date"],
+    .controls .select-like {
+      font: inherit; color: var(--text); background: var(--surface);
+      border: 1px solid var(--divider); border-radius: var(--radius);
+      padding: 7px 10px; min-height: 34px; width: 100%; text-align: left;
     }
-    .filters .reset {
-      margin-left: auto; cursor: pointer; background: var(--accent-soft); color: var(--accent);
-      border: none; font-weight: 600; min-width: 0;
+    .controls .select-like { cursor: pointer; }
+    .controls select:hover, .controls .select-like:hover { border-color: var(--text-secondary); }
+    .range { display: flex; align-items: center; gap: 10px; min-height: 34px; }
+    .range input {
+      flex: 1; appearance: none; -webkit-appearance: none; height: 4px;
+      border-radius: 2px; background: var(--divider); cursor: pointer;
     }
-    .filters .reset:hover { background: #e0e3ff; }
-    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
-    .kpi { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); }
-    .kpi .label { color: var(--ink-soft); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
-    .kpi .value { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin-top: 4px; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
-    .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; box-shadow: var(--shadow); }
-    .card h2 { font-size: 14px; margin: 0 0 12px; font-weight: 600; }
-    .card .chart-wrap { position: relative; height: 280px; }
+    .range input::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px; border: 0;
+      border-radius: 50%; background: var(--series-1);
+    }
+    .range input::-moz-range-thumb {
+      width: 14px; height: 14px; border: 0; border-radius: 50%; background: var(--series-1);
+    }
+    .range input::-moz-range-track { height: 4px; border-radius: 2px; background: var(--divider); }
+    .range output { font-variant-numeric: tabular-nums; color: var(--text-secondary); min-width: 54px; }
+    .reset {
+      font: 500 13px/1 var(--font-sans); color: var(--text);
+      background: var(--surface); border: 1px solid var(--divider);
+      border-radius: 20px; padding: 9px 16px; cursor: pointer; margin-left: auto;
+    }
+    .reset:hover { background: var(--surface-subtle); border-color: var(--text-secondary); }
+    .check-panel {
+      position: absolute; top: 100%; left: 0; z-index: 20; margin-top: 4px;
+      min-width: 100%; max-height: 260px; overflow-y: auto; padding: 6px;
+      background: var(--surface); border: 1px solid var(--divider);
+      border-radius: var(--radius); box-shadow: var(--shadow-menu);
+    }
+    .check-row {
+      display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+      border-radius: var(--radius); cursor: pointer; white-space: nowrap;
+    }
+    .check-row:hover { background: var(--surface-subtle); }
+    .check-row input { accent-color: var(--series-1); }
+
+    /* ── Grid: 12 columns ───────────────────────────────────────────────── */
+    .grid, .kpis {
+      display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px;
+    }
+    .kpis { grid-column: 1 / -1; }
+    .tile { grid-column: span var(--colspan, 12); min-width: 0; }
+    .panel[data-busy="true"] .grid { opacity: 0.55; }
+    .grid { transition: opacity 0.15s ease; }
+
+    .tile:not(.kpi) {
+      display: flex; flex-direction: column;
+      background: var(--surface); border: 1px solid var(--divider);
+      border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 18px;
+    }
+    .tile h2 {
+      font-size: 13px; font-weight: 500; margin: 0 0 14px;
+      display: flex; align-items: baseline; gap: 8px;
+    }
+    .tile-note { font-size: 11px; font-weight: 400; color: var(--text-secondary); }
+    /* A chart grows to the height of its row, so a chart beside a long table
+       still ends level with it. The canvas is taken out of flow so it reads its
+       size from the wrapper rather than the wrapper reading its size from the
+       canvas. */
+    /* The page this replaced wrapped its table in `overflow-x: auto`, and the
+       rewrite dropped the wrapper without replacing the rule, so a table wider
+       than its card escaped the card instead of scrolling inside it. Live for
+       `brand_performance` at six columns, and for any table below the 680px
+       breakpoint where a tile goes full width. */
+    .tile-body { overflow-x: auto; }
+    .chart-wrap { position: relative; flex: 1 1 auto; min-height: 268px; }
+    .chart-wrap canvas { position: absolute; inset: 0; }
+    .empty { color: var(--text-secondary); font-size: 13px; margin: 8px 0; }
+
+    .kpi {
+      background: var(--tile); border: 1px solid var(--divider);
+      border-radius: var(--radius); padding: 14px 16px;
+    }
+    .kpi-label {
+      font-size: 11px; font-weight: 500; color: var(--table-header);
+      text-transform: uppercase; letter-spacing: 0.05em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .kpi-value {
+      font-size: 24px; font-weight: 600; letter-spacing: -0.025em;
+      margin-top: 4px; color: var(--value); font-variant-numeric: tabular-nums;
+    }
+
+    /* ── Tables ─────────────────────────────────────────────────────────── */
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-    th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-soft); font-weight: 600; }
+    th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+    th {
+      font-size: 11px; font-weight: 500; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--table-header);
+      background: var(--tile); white-space: nowrap;
+    }
+    td { color: var(--value); }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: var(--surface-subtle); }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-    tbody tr:hover { background: var(--bg); }
-    .err { background: #fff5f5; color: #b00020; border: 1px solid #fcc; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin: 12px 0; white-space: pre-wrap; font-family: ui-monospace, monospace; }
-    @media (max-width: 900px) { .kpis, .grid { grid-template-columns: 1fr 1fr; } }
-    @media (max-width: 600px) { .kpis, .grid { grid-template-columns: 1fr; } main { padding: 18px; } }
+
+    .err {
+      background: var(--danger-bg); color: var(--danger);
+      border: 1px solid var(--danger); border-radius: var(--radius);
+      padding: 10px 14px; font-size: 12px; margin: 8px 0;
+      white-space: pre-wrap; font-family: var(--font-mono);
+    }
+
+    @media (max-width: 1000px) {
+      .grid, .kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    }
+    @media (max-width: 680px) {
+      main { padding: 18px; }
+      .grid, .kpis { grid-template-columns: 1fr; }
+      .tile { grid-column: 1 / -1; }
+      .reset { margin-left: 0; }
+    }
   </style>
 </head>
 <body>
 <main>
   <header class="page">
+    <svg class="mark" width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+      <rect x="2" y="13" width="5" height="11" rx="1.5" fill="var(--series-3)" />
+      <rect x="10.5" y="7" width="5" height="17" rx="1.5" fill="var(--series-1)" />
+      <rect x="19" y="2" width="5" height="22" rx="1.5" fill="var(--series-2)" />
+    </svg>
     <div>
       <h1>Storefront</h1>
-      <p>Live data from <code>storefront.malloy</code> · edits hot-reload automatically</p>
+      <p>Four views over <code>data_app.malloy</code>, filtered by the model's own givens</p>
     </div>
-    <span class="badge">connected</span>
   </header>
 
-  <div class="filters" id="filters">
-    <label>
-      Category
-      <select id="f-category"><option value="">All categories</option></select>
-    </label>
-    <label>
-      Customer state
-      <select id="f-state"><option value="">All states</option></select>
-    </label>
-    <span class="count" id="row-count" style="margin-left:auto;color:var(--ink-soft)">…</span>
-    <button class="reset" id="reset">Reset</button>
-  </div>
-
-  <div class="kpis">
-    <div class="kpi"><div class="label">Total sales</div><div class="value" id="kpi-sales">…</div></div>
-    <div class="kpi"><div class="label">Orders</div><div class="value" id="kpi-orders">…</div></div>
-    <div class="kpi"><div class="label">Customers</div><div class="value" id="kpi-customers">…</div></div>
-    <div class="kpi"><div class="label">Avg order value</div><div class="value" id="kpi-aov">…</div></div>
-  </div>
-
-  <div class="grid">
-    <div class="card"><h2>Revenue by category</h2><div class="chart-wrap"><canvas id="byCategory"></canvas></div></div>
-    <div class="card"><h2>Monthly trend</h2><div class="chart-wrap"><canvas id="byMonth"></canvas></div></div>
-  </div>
-
-  <div class="card">
-    <h2>Top products</h2>
-    <div style="overflow-x: auto">
-      <table id="products">
-        <thead>
-          <tr><th>Product</th><th class="num">Sales</th><th class="num">Margin</th><th class="num">Items</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-
+  <nav id="tabs" role="tablist" aria-label="Views"></nav>
+  <div class="controls" id="filters"></div>
+  <div id="panels"></div>
   <div id="errors"></div>
 </main>
 
 <script src="/sdk/publisher.js"></script>
-<!-- Vendored rather than loaded from a CDN: agent sandboxes and many corporate networks block CDNs,
-     and a blocked CDN leaves the page half-drawn: the script never runs, so the
-     charts and everything drawn after them come up empty.
-     This is chart.js@4.5.0's dist/chart.umd.js (MIT), minus its trailing
+<!-- Vendored rather than loaded from a CDN: agent sandboxes and many corporate
+     networks block CDNs, and a blocked CDN leaves the page half-drawn, because
+     the script never runs and the charts and everything after them come up
+     empty. This is chart.js@4.5.0's dist/chart.umd.js (MIT), minus its trailing
      sourceMappingURL line since the .map file is not vendored. -->
 <script src="./vendor/chart.umd.js"></script>
-<script type="module">
-  const MODEL = "storefront.malloy";
-  const usd = (n) => (n ?? 0).toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-  const esc = (s) => String(s ?? "").replace(/[<>&"]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;", '"':"&quot;" }[c]));
-  function showError(where, e) {
-    console.error(where, e);
-    const div = document.createElement("div");
-    div.className = "err";
-    div.textContent = `${where}: ${e?.message ?? e}`;
-    document.getElementById("errors").appendChild(div);
-  }
-
-  // ---- query builder --------------------------------------------------
-  // Compose a where: clause from the current filter state. Values come only
-  // from the model's own distinct dimension values (the dropdowns below), so
-  // they're safe to interpolate. For free-text input, declare a given: instead.
-  const state = { category: "", customerState: "" };
-  function whereClause() {
-    const c = [];
-    if (state.category) c.push(`products.category = '${state.category.replace(/'/g, "''")}'`);
-    if (state.customerState) c.push(`customers.state = '${state.customerState.replace(/'/g, "''")}'`);
-    return c.length ? ` + { where: ${c.join(" and ")} }` : "";
-  }
-  const q = (body) => Publisher.query(MODEL, `${body}${whereClause()}`);
-
-  // ---- charts ---------------------------------------------------------
-  let catChart = null, monthChart = null;
-  function renderCategory(rows) {
-    const labels = rows.map(r => r.category);
-    const data = rows.map(r => r.total_sales);
-    if (catChart) { catChart.data.labels = labels; catChart.data.datasets[0].data = data; catChart.update(); return; }
-    catChart = new Chart(document.getElementById("byCategory"), {
-      type: "bar",
-      data: { labels, datasets: [{ label: "Revenue", data, backgroundColor: "#4f46e5", borderRadius: 6, maxBarThickness: 40 }] },
-      options: {
-        responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-        scales: { y: { beginAtZero: true, ticks: { callback: v => usd(v) }, grid: { color: "#eef0ff" } }, x: { grid: { display: false } } },
-      },
-    });
-  }
-  function renderMonth(rows) {
-    const labels = rows.map(r => String(r.order_month ?? "").slice(0, 7));   // YYYY-MM
-    const data = rows.map(r => r.total_sales);
-    if (monthChart) { monthChart.data.labels = labels; monthChart.data.datasets[0].data = data; monthChart.update(); return; }
-    monthChart = new Chart(document.getElementById("byMonth"), {
-      type: "line",
-      data: { labels, datasets: [{ label: "Revenue", data, borderColor: "#4f46e5", backgroundColor: "rgba(79,70,229,.1)", fill: true, tension: 0.3, pointRadius: 2 }] },
-      options: {
-        responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-        scales: { y: { beginAtZero: true, ticks: { callback: v => usd(v) }, grid: { color: "#eef0ff" } }, x: { grid: { display: false } } },
-      },
-    });
-  }
-  function renderProducts(rows) {
-    const tbody = document.querySelector("#products tbody");
-    tbody.innerHTML = rows.map(r => `
-      <tr>
-        <td>${esc(r.name)}</td>
-        <td class="num">${usd(r.total_sales)}</td>
-        <td class="num">${usd(r.total_margin)}</td>
-        <td class="num">${(r.order_item_count ?? 0).toLocaleString()}</td>
-      </tr>`).join("");
-    document.getElementById("row-count").textContent =
-      `${rows.length.toLocaleString()} ${rows.length === 1 ? "product" : "products"}`;
-  }
-  function renderKpis(k) {
-    document.getElementById("kpi-sales").textContent = usd(k.total_sales);
-    document.getElementById("kpi-orders").textContent = (k.order_count ?? 0).toLocaleString();
-    document.getElementById("kpi-customers").textContent = (k.customer_count ?? 0).toLocaleString();
-    document.getElementById("kpi-aov").textContent = usd(k.avg_order_value);
-  }
-
-  // ---- load + refresh -------------------------------------------------
-  async function populateFilters() {
-    // Unfiltered distinct values so the dropdowns always list every option.
-    const [cats, states] = await Promise.all([
-      Publisher.query(MODEL, "run: order_items -> by_category"),
-      Publisher.query(MODEL, "run: order_items -> sales_by_state"),
-    ]);
-    const catSel = document.getElementById("f-category");
-    for (const r of cats) { const o = document.createElement("option"); o.value = o.textContent = r.category; catSel.appendChild(o); }
-    const stSel = document.getElementById("f-state");
-    for (const r of states) { const o = document.createElement("option"); o.value = o.textContent = r.state; stSel.appendChild(o); }
-  }
-
-  async function refresh() {
-    try {
-      const [kpiRows, byCat, byMonth, top] = await Promise.all([
-        q("run: order_items -> { aggregate: total_sales, order_count, customer_count, avg_order_value }"),
-        q("run: order_items -> by_category"),
-        q("run: order_items -> sales_by_month"),
-        q("run: order_items -> top_products"),
-      ]);
-      renderKpis(kpiRows[0] ?? {});
-      renderCategory(byCat);
-      renderMonth(byMonth);
-      renderProducts(top);
-    } catch (e) {
-      showError("Refresh", e);
-    }
-  }
-
-  document.getElementById("f-category").addEventListener("change", e => { state.category = e.target.value; refresh(); });
-  document.getElementById("f-state").addEventListener("change", e => { state.customerState = e.target.value; refresh(); });
-  document.getElementById("reset").addEventListener("click", () => {
-    state.category = ""; state.customerState = "";
-    document.getElementById("f-category").value = "";
-    document.getElementById("f-state").value = "";
-    refresh();
-  });
-
-  populateFilters().catch(e => showError("Loading filters", e));
-  refresh();
-</script>
+<script type="module" src="./app/app.js"></script>
 </body>
 </html>

@@ -1,9 +1,19 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import {
    BuildInstruction,
+   LedgerEntry,
    ManifestReference,
 } from "../storage/DatabaseInterface";
 import { MaterializationService } from "../service/materialization_service";
+import { queryMetadataViolations } from "../service/query_metadata";
+
+type RunContext = components["schemas"]["RunContext"];
+
+const RUN_TRIGGERS = ["publish", "on_demand", "scheduler"] as const;
 
 export class MaterializationController {
    constructor(private materializationService: MaterializationService) {}
@@ -27,18 +37,27 @@ export class MaterializationController {
    // `trigger` to this parser, or an API caller could forge a scheduled run.
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
+      reseed?: boolean;
       sourceNames?: string[];
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       strictUpstreams?: boolean;
+      ledger?: LedgerEntry[];
+      runContext?: RunContext;
    } {
       const result: {
          forceRefresh?: boolean;
+         reseed?: boolean;
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         ledger?: LedgerEntry[];
+         runContext?: RunContext;
       } = {};
+      if (body.runContext !== undefined && body.runContext !== null) {
+         result.runContext = this.validateRunContext(body.runContext);
+      }
       if (
          body.buildInstructions !== undefined &&
          body.buildInstructions !== null
@@ -51,12 +70,25 @@ export class MaterializationController {
          if (parsed.strictUpstreams !== undefined) {
             result.strictUpstreams = parsed.strictUpstreams;
          }
+         if (parsed.ledger !== undefined) {
+            result.ledger = parsed.ledger;
+         }
       }
       if (body.forceRefresh !== undefined) {
          if (typeof body.forceRefresh !== "boolean") {
             throw new BadRequestError("forceRefresh must be a boolean");
          }
          result.forceRefresh = body.forceRefresh;
+      }
+      // The run-level ask for a full rebuild of the in-scope incremental sources,
+      // and a SEPARATE flag from forceRefresh on purpose: that one only defeats
+      // skip-if-unchanged, and conflating the two would make every scheduled fire
+      // (which forces on every tick) a full rebuild.
+      if (body.reseed !== undefined) {
+         if (typeof body.reseed !== "boolean") {
+            throw new BadRequestError("reseed must be a boolean");
+         }
+         result.reseed = body.reseed;
       }
       if (body.sourceNames !== undefined) {
          if (
@@ -73,6 +105,55 @@ export class MaterializationController {
    }
 
    /**
+    * Validate `runContext`, the caller's observability context for one run.
+    * `trigger` is a closed enum here even though it feeds a metadata property:
+    * the whole point is that a reader can group runs by how they started, which a
+    * free-form value would quietly break.
+    *
+    * Note this is NOT the service-level `trigger` the parser above deliberately
+    * refuses. That one decides whether the run counts as scheduled; this one only
+    * labels the statements the run issues, so accepting `publish` from a caller
+    * forges nothing.
+    */
+   private validateRunContext(raw: unknown): RunContext {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+         throw new BadRequestError("runContext must be an object");
+      }
+      const obj = raw as Record<string, unknown>;
+      const context: RunContext = {};
+      if (obj.trigger !== undefined && obj.trigger !== null) {
+         if (
+            typeof obj.trigger !== "string" ||
+            !RUN_TRIGGERS.includes(obj.trigger as (typeof RUN_TRIGGERS)[number])
+         ) {
+            throw new BadRequestError(
+               `runContext.trigger must be one of ${RUN_TRIGGERS.join(" | ")}`,
+            );
+         }
+         context.trigger = obj.trigger as RunContext["trigger"];
+      }
+      if (obj.runId !== undefined && obj.runId !== null) {
+         if (typeof obj.runId !== "string") {
+            throw new BadRequestError("runContext.runId must be a string");
+         }
+         // Held to the metadata contract like any other caller-supplied
+         // property: it becomes the `run_id` on every statement of the build,
+         // and a value the contract rejects would otherwise be truncated and
+         // rewritten in silence — leaving the caller with an id it cannot join
+         // on and no way to know why.
+         const violations = queryMetadataViolations({ run_id: obj.runId });
+         if (violations.length > 0) {
+            throw new BadRequestError(
+               `runContext.runId is attached to every statement as the run_id ` +
+                  `property: ${violations.join("; ")}`,
+            );
+         }
+         context.runId = obj.runId;
+      }
+      return context;
+   }
+
+   /**
     * Validate the orchestrated `buildInstructions` payload (BuildInstructions:
     * `{ sources: BuildInstruction[], referenceManifest?, strictUpstreams? }`)
     * into the parts the service consumes: the flattened instruction list, the
@@ -82,6 +163,7 @@ export class MaterializationController {
       sources: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       strictUpstreams?: boolean;
+      ledger?: LedgerEntry[];
    } {
       if (typeof raw !== "object" || raw === null) {
          throw new BadRequestError("buildInstructions must be an object");
@@ -97,6 +179,7 @@ export class MaterializationController {
          sources: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          strictUpstreams?: boolean;
+         ledger?: LedgerEntry[];
       } = {
          sources: sources.map((instruction) =>
             this.validateInstruction(instruction),
@@ -122,6 +205,19 @@ export class MaterializationController {
             );
          }
          result.strictUpstreams = obj.strictUpstreams;
+      }
+      // Null is read as absent ("use the local store"), not as an empty ledger:
+      // the two mean opposite things, and a caller that means "I own the ledger
+      // and it is empty" says so with `[]`.
+      if (obj.ledger !== undefined && obj.ledger !== null) {
+         if (!Array.isArray(obj.ledger)) {
+            throw new BadRequestError(
+               "buildInstructions.ledger must be an array",
+            );
+         }
+         result.ledger = obj.ledger.map((entry) =>
+            this.validateLedgerEntry(entry),
+         );
       }
       return result;
    }
@@ -178,6 +274,14 @@ export class MaterializationController {
             "Build instruction 'realization' must be COPY or SNAPSHOT",
          );
       }
+      if (
+         instruction.reseed !== undefined &&
+         typeof instruction.reseed !== "boolean"
+      ) {
+         throw new BadRequestError(
+            "Build instruction 'reseed' must be a boolean",
+         );
+      }
       return {
          sourceEntityId: instruction.sourceEntityId as string,
          sourceID:
@@ -193,6 +297,89 @@ export class MaterializationController {
          // never materializes into the storage destination.
          ...(typeof instruction.destination === "string"
             ? { destination: instruction.destination }
+            : {}),
+         // The per-source ask for a full rebuild, OR-ed with the request-level
+         // `reseed`. Must be carried through for the same reason as `destination`
+         // above: dropping it here would leave a host unable to rebuild one source
+         // without rebuilding all of them.
+         ...(typeof instruction.reseed === "boolean"
+            ? { reseed: instruction.reseed }
+            : {}),
+      };
+   }
+
+   /**
+    * Validate one `buildInstructions.ledger` entry's SHAPE. Every field is an
+    * echo of a `ManifestEntry.ledger` the publisher reported, so nothing here
+    * is interpreted — only checked for being present and of the right type.
+    * What the entry claims (which table, which source definition) is validated
+    * against the package's build plan by the service, at create time.
+    */
+   private validateLedgerEntry(raw: unknown): LedgerEntry {
+      if (typeof raw !== "object" || raw === null) {
+         throw new BadRequestError(
+            "Each buildInstructions.ledger entry must be an object",
+         );
+      }
+      const entry = raw as Record<string, unknown>;
+      for (const field of [
+         "connectionName",
+         "physicalTableName",
+         "coveredThrough",
+         "coveredThroughType",
+         "watermark",
+         "sourceEntityId",
+      ] as const) {
+         if (typeof entry[field] !== "string" || entry[field] === "") {
+            throw new BadRequestError(
+               `Ledger entry '${field}' must be a non-empty string`,
+            );
+         }
+      }
+      if (entry.strategy !== "merge" && entry.strategy !== "range_replace") {
+         throw new BadRequestError(
+            "Ledger entry 'strategy' must be 'merge' or 'range_replace'",
+         );
+      }
+      if (
+         entry.mergeKeys !== undefined &&
+         (!Array.isArray(entry.mergeKeys) ||
+            entry.mergeKeys.some((k) => typeof k !== "string"))
+      ) {
+         throw new BadRequestError(
+            "Ledger entry 'mergeKeys' must be an array of strings",
+         );
+      }
+      if (
+         entry.storageDestinationName !== undefined &&
+         (typeof entry.storageDestinationName !== "string" ||
+            entry.storageDestinationName === "")
+      ) {
+         throw new BadRequestError(
+            "Ledger entry 'storageDestinationName' must be a non-empty string when present",
+         );
+      }
+      return {
+         connectionName: entry.connectionName as string,
+         physicalTableName: entry.physicalTableName as string,
+         coveredThrough: entry.coveredThrough as string,
+         coveredThroughType: entry.coveredThroughType as string,
+         watermark: entry.watermark as string,
+         strategy: entry.strategy,
+         sourceEntityId: entry.sourceEntityId as string,
+         // Absent and empty mean the same thing — a keyless (range-replace)
+         // source — so an absent list is not normalized into one here; the
+         // comparison reads both as no merge keys.
+         ...(Array.isArray(entry.mergeKeys)
+            ? { mergeKeys: entry.mergeKeys as string[] }
+            : {}),
+         // Absent means the table is colocated in its own warehouse. Part of the
+         // boundary's table identity, so it has to survive this boundary: an
+         // entry that arrives naming a destination and is indexed without one is
+         // never found by the source that owns it, which rebuilds in full on
+         // every refresh instead of advancing.
+         ...(typeof entry.storageDestinationName === "string"
+            ? { storageDestinationName: entry.storageDestinationName }
             : {}),
       };
    }

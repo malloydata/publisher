@@ -3,8 +3,12 @@ id: chained-persist
 tags: serve-correctness, chained
 package: ch
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
-# Chained persist: build a downstream from an upstream's materialized table
+# A downstream persist source is built by reading its upstream's table, not by recomputing it
 
 A downstream persist source (`rollup`) depends on an upstream persist source
 (`daily`), both `storage=lake`. The build must materialize `daily` first, then

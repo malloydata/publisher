@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -10,6 +13,7 @@ import {
    type ScaffoldOptions,
    type ScaffoldResult,
 } from "./scaffold";
+import { REQUIRED_NODE_RANGE } from "./node_version";
 import { countSkills } from "./skills";
 import { skillsDir } from "@malloy-publisher/skills";
 
@@ -191,6 +195,7 @@ describe("scaffold: default package", () => {
       expect(result.packageCreated).toBe(true);
       for (const file of [
          "sales/publisher.json",
+         "sales/malloy-config.json",
          "sales/sales.malloy",
          "sales/data/sales.csv",
          "publisher.config.json",
@@ -207,6 +212,34 @@ describe("scaffold: default package", () => {
    test("publisher.json is just the name", () => {
       run();
       expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
+   });
+
+   test("malloy-config.json points the editor at the package directory", () => {
+      // The whole file is one absolute path, and every way of getting it wrong
+      // is silent: the editor reports unresolved tables while Publisher, which
+      // never reads this file, serves the same model correctly. Absolute
+      // because the extension resolves a relative workingDirectory against its
+      // own per-window process cwd.
+      run();
+      expect(readJson("sales/malloy-config.json")).toEqual({
+         connections: {
+            duckdb: {
+               is: "duckdb",
+               workingDirectory: path.join(tmp, "sales"),
+            },
+         },
+      });
+      expect(path.isAbsolute(tmp)).toBe(true);
+   });
+
+   test("the .gitignore covers the machine-specific editor config", () => {
+      // Committed, its absolute workingDirectory points a teammate's editor at
+      // a directory that does not exist on their machine, which reads as every
+      // table failing rather than as a file that should not have been there.
+      run();
+      expect(fs.readFileSync(path.join(tmp, ".gitignore"), "utf8")).toContain(
+         "malloy-config.json",
+      );
    });
 
    test("registers the package in the config", () => {
@@ -227,6 +260,14 @@ describe("scaffold: default package", () => {
       expect(pkg.scripts.start).toContain("--config ./publisher.config.json");
       expect(pkg.scripts.start).toContain("--watch-env default");
       expect(pkg.scripts.start).not.toContain("--init");
+   });
+
+   test("generated package.json records the Node floor Publisher needs", () => {
+      run();
+      const pkg = readJson("package.json") as {
+         engines?: { node?: string };
+      };
+      expect(pkg.engines?.node).toBe(REQUIRED_NODE_RANGE);
    });
 
    test(".mcp.json points at the local MCP endpoint", () => {
@@ -320,13 +361,124 @@ describe("scaffold: --data", () => {
       expect(model).toContain("duckdb.table('data/budget.xlsx')");
    });
 
+   test("copies a json file and points the model at it", () => {
+      // DuckDB reads .json in place exactly like .csv, so there is no reason to
+      // refuse it: doing so taught agents that only CSV worked and sent them to
+      // python to read a .json file rather than modelling it.
+      const src = path.join(tmp, "reviews.json");
+      fs.writeFileSync(src, '[{"id":1}]');
+      const result = run({ name: "shop", dataFile: src });
+      expect(result.packageCreated).toBe(true);
+      expect(exists("shop/data/reviews.json")).toBe(true);
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).toContain("duckdb.table('data/reviews.json')");
+   });
+
+   test("copies an ndjson file and points the model at it", () => {
+      const src = path.join(tmp, "events.ndjson");
+      fs.writeFileSync(src, '{"id":1}\n{"id":2}\n');
+      run({ name: "shop", dataFile: src });
+      expect(exists("shop/data/events.ndjson")).toBe(true);
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).toContain("duckdb.table('data/events.ndjson')");
+   });
+
+   test("the xlsx model warns that the read can be silently wrong, and shows the fix", () => {
+      // A spreadsheet whose header is not on row one loads clean and reports the
+      // wrong row count: no error at scaffold, compile, load or query. The
+      // scaffolder never opens the file so it cannot detect that, which makes
+      // the generated model the only place the user is told to check.
+      const src = path.join(tmp, "budget.xlsx");
+      fs.writeFileSync(src, "PK not a real spreadsheet");
+      run({ name: "shop", dataFile: src });
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).toContain("overview");
+      expect(model).toContain("read_xlsx");
+      // The options that actually repair a report export, so the fix is present
+      // rather than merely alluded to.
+      expect(model).toContain("sheet =");
+      expect(model).toContain("header =");
+      expect(model).toContain("range =");
+      // The filter is not optional and this assertion exists because the first
+      // version of this template left it out. Verified live against a real
+      // messy workbook: sheet+header+range alone returns 99,995 rows for a
+      // 1,500 row sheet, because an explicit range reads every row in it
+      // including the blank spacers. With the filter it returns exactly 1,500.
+      // A future edit that drops the WHERE would put that back.
+      expect(model).toContain("WHERE");
+      // And stop_at_empty must stay named as the wrong answer: it truncates at
+      // the first blank spacer, which on a real sheet is mid-data (220 rows).
+      expect(model).toContain("stop_at_empty");
+      // The discovery step, without which the remedy names three values (sheet,
+      // header row, id column) the reader has no way to find. It has to be a
+      // model source: Publisher rejects raw SQL in an ad-hoc query with
+      // "`duckdb.sql(...)` cannot be used in a restricted query", verified live,
+      // so an example phrased as a one-off query would not run.
+      expect(model).toContain("_probe");
+      expect(model).toContain("header = false");
+      // Cleaning belongs in the SQL layer. Verified live: `sum(x::number)` is the
+      // right Malloy syntax but throws at query time on a real sheet's 'N/A',
+      // and `x::number.sum()` does not parse at all.
+      expect(model).toContain("try_cast");
+      // Assert the form that WORKS is present. A naive
+      // `.not.toContain("::number.sum()")` was tried and is wrong: the template
+      // names the broken form on purpose, in order to warn about it, so the
+      // negative assertion failed on the very sentence doing the warning.
+      expect(model).toContain("sum(amount::number)");
+      // Rendered, not left as a placeholder.
+      expect(model).not.toContain("{{");
+      expect(model).toContain("'data/budget.xlsx'");
+   });
+
+   test("a csv model carries no spreadsheet warning", () => {
+      // Targeted on purpose: a .csv either parses or fails loudly, so the same
+      // warning there would be noise, and noise is how a real warning stops
+      // being read.
+      const src = path.join(tmp, "orders.csv");
+      fs.writeFileSync(src, "a,b\n1,2\n");
+      run({ name: "shop", dataFile: src });
+      const model = fs.readFileSync(path.join(tmp, "shop/shop.malloy"), "utf8");
+      expect(model).not.toContain("read_xlsx");
+      expect(model).toContain("duckdb.table('data/orders.csv')");
+   });
+
    test("rejects an unsupported file type with nothing created", () => {
       const src = path.join(tmp, "notes.txt");
       fs.writeFileSync(src, "hello");
       expect(() => run({ name: "shop", dataFile: src })).toThrow(
-         /\.csv, \.parquet, or \.xlsx/i,
+         /\.csv, \.parquet, \.json, \.ndjson, \.xlsx/i,
       );
       expect(exists("shop")).toBe(false);
+   });
+
+   test("names other loadable files in the same directory", () => {
+      // --data takes exactly one file. Pointing it at a folder of related
+      // exports modelled one and said nothing about the rest, so the omission
+      // read as "unsupported" rather than "you picked one of these".
+      const dir = path.join(tmp, "exports");
+      fs.mkdirSync(dir);
+      const src = path.join(dir, "wine-130k.csv");
+      fs.writeFileSync(src, "id\n1\n");
+      fs.writeFileSync(path.join(dir, "wine-150k.csv"), "id\n1\n");
+      fs.writeFileSync(path.join(dir, "wine-130k.json"), "[]");
+      fs.writeFileSync(path.join(dir, "notes.txt"), "ignored");
+
+      const result = run({ name: "shop", dataFile: src });
+      // Sorted, the chosen file excluded, and non-loadable files ignored.
+      expect(result.siblingDataFiles).toEqual([
+         "wine-130k.json",
+         "wine-150k.csv",
+      ]);
+   });
+
+   test("says nothing about siblings when the file is alone", () => {
+      const dir = path.join(tmp, "solo");
+      fs.mkdirSync(dir);
+      const src = path.join(dir, "orders.csv");
+      fs.writeFileSync(src, "id\n1\n");
+      expect(
+         run({ name: "shop", dataFile: src }).siblingDataFiles,
+      ).toBeUndefined();
    });
 
    test("rejects a missing --data file", () => {
@@ -405,6 +557,37 @@ describe("scaffold: setup-only (no name)", () => {
    });
 });
 
+/**
+ * Lines carrying a marker only a Claude Code reader can act on. A cursor
+ * workspace must contain none of them, whatever the wording of the day is.
+ *
+ * Two exclusions are deliberate. `.claude/skills/` is legitimate for both hosts,
+ * because the scaffolder really does install skills there, so the pattern matches
+ * `.claude/settings` and not `.claude/`. And the MCP endpoint URL ends in `/mcp`
+ * in both briefings, so `\/mcp` only counts when what precedes it is neither a
+ * word character nor a dot, which is true of the `/mcp` slash command and false
+ * of `localhost:4040/mcp` and `.cursor/mcp.json`.
+ *
+ * index.spec.ts has the same filter over the printed output, where it strips ANSI
+ * first. Keep the two patterns identical.
+ *
+ * If this fires on a line you did not write, host-gate the whole paragraph that
+ * line belongs to, rather than loosening the pattern or gating the one line it
+ * named. The pattern only recognises commands and product names, so a paragraph
+ * that hands a Cursor reader a Claude Code remedy typically has one matchable
+ * line and two or three unmatchable sentences of prose around it that are just
+ * as wrong for that reader.
+ */
+function claudeOnlyLines(text: string): string[] {
+   return text
+      .split("\n")
+      .filter((line) =>
+         /claude mcp add|(^|[^.\w])\/mcp\b|Claude Code|\.claude\/settings/.test(
+            line,
+         ),
+      );
+}
+
 describe("scaffold: cursor host", () => {
    test("writes .cursor/mcp.json instead of .mcp.json and CLAUDE.md", () => {
       run({ host: "cursor" });
@@ -419,6 +602,56 @@ describe("scaffold: cursor host", () => {
       const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
       expect(agents).toContain(".cursor/mcp.json");
       expect(agents).not.toContain("Claude Code offers to connect");
+   });
+
+   test("AGENTS.md does not claim a trust gate Cursor does not have", () => {
+      // A cursor run writes no .claude/settings.json and Cursor shows no trust
+      // dialog, so naming either would have the agent report a blocker that does
+      // not exist, and demote the Refresh that is the real fix for it.
+      //
+      // Asserted as the INVARIANT (no Claude-Code-only marker survives into a
+      // cursor briefing) rather than as the literal phrases any one change
+      // happens to add, because a phrase test only guards the wording it was
+      // written against: text arriving later from another direction reintroduces
+      // the same defect with the suite green. `.claude/skills/` is the one
+      // legitimate exception, since skillsNote prints that path for both hosts
+      // because the scaffolder really does install skills there. The MCP
+      // endpoint URL is the other: `…:4040/mcp` is in both briefings, which is
+      // what the leading character class excludes.
+      run({ host: "cursor" });
+      const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      expect(claudeOnlyLines(agents)).toEqual([]);
+      expect(agents).not.toContain("{{");
+
+      // The claude-code run is the one that carries it, asserted positively so
+      // the facts cannot be deleted from the product text with a green suite.
+      run({ host: "claude-code", force: true });
+      const claudeAgents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      // Whitespace-collapsed, because the note is hard wrapped in the source and
+      // a reword moves the breaks; an assertion anchored on today's line breaks
+      // stops testing the fact and starts testing the wrap.
+      const flat = claudeAgents.replace(/\s+/g, " ");
+      expect(flat).toContain("One gate can void");
+      expect(flat).toContain("settings.json");
+      // Without a way to tell the gate cleared, and a second cause to try when it
+      // did not, the note is a dead end for the agent that relays it.
+      expect(flat).toContain("You will know the prompt was answered");
+      expect(flat).toContain("approval was never given");
+      // The filter self-checks here: if it matched nothing even on the briefing
+      // that is full of Claude Code text, the assertion above would be vacuous.
+      expect(claudeOnlyLines(claudeAgents).length).toBeGreaterThan(0);
+   });
+
+   test("AGENTS.md keeps the two facts that make the REST fallback usable", () => {
+      // The reload form is offered as the check for an unattended run, and it is
+      // only usable with its failure channel: a failed recompile is a 424, and a
+      // non-2xx is a failed check. Untested, a later trim can drop either and
+      // leave the route documented without the facts that make it safe.
+      run({ host: "claude-code" });
+      const agents = fs.readFileSync(path.join(tmp, "AGENTS.md"), "utf8");
+      expect(agents).toContain("?reload=true");
+      expect(agents).toContain("424");
+      expect(agents).toContain("non-2xx");
    });
 });
 
@@ -468,21 +701,92 @@ describe("scaffold: malformed existing config", () => {
 });
 
 describe("scaffold: unservable workspace path", () => {
-   test("refuses a path DuckDB cannot read data files from", () => {
+   // Windows refuses the mkdir itself (EINVAL) for a name carrying a
+   // control character or a reserved character (`< > : " / \ | ? *`), so
+   // those hazards cannot even be staged there; this guards the POSIX
+   // filesystems that allow the name.
+   const posixOnlyTest = process.platform === "win32" ? test.skip : test;
+
+   test("accepts a path containing a space (the YYYY-MM-DD Project Name convention)", () => {
+      // The old refusal's premise — that the workspace path reaches DuckDB's
+      // path parser — does not hold: the served path is the model's RELATIVE
+      // data/… reference, resolved against the package working directory.
+      // Verified end-to-end against the server (load + query a CSV) under
+      // paths containing a space, an apostrophe, and a double quote. One
+      // exception: Package.getDatabaseInfo builds an absolute duckdb.table(...)
+      // literal and does reach the path parser, so a spaced path still loses
+      // row counts/column types on the databases endpoint (pre-existing
+      // server behavior, degrades gracefully, tracked separately).
       const spaced = path.join(tmp, "my data dir");
       fs.mkdirSync(spaced);
-      expect(() => run({ cwd: spaced })).toThrow(/a space/);
-      // Nothing was written, so there is no half-scaffolded package to explain.
-      expect(fs.readdirSync(spaced)).toEqual([]);
+      expect(run({ cwd: spaced }).packageCreated).toBe(true);
    });
 
-   test("names a non-ASCII character by codepoint", () => {
-      const accented = path.join(tmp, "josé");
+   test("accepts an apostrophe", () => {
+      // Verified end-to-end against the server. This tool never hands the
+      // workspace path to a shell, which is the only place it would have
+      // mattered. Legal on Windows, and the character most likely to show up
+      // in a real path (~/Users/O'Brien), so this one runs everywhere.
+      const quoted = path.join(tmp, "jim's data");
+      fs.mkdirSync(quoted);
+      expect(run({ cwd: quoted }).packageCreated).toBe(true);
+   });
+
+   // `"` is a reserved filename character on Windows, so the hazard cannot
+   // even be staged there.
+   posixOnlyTest("accepts a double quote", () => {
+      // Verified end-to-end against the server. This tool never hands the
+      // workspace path to a shell, which is the only place it would have
+      // mattered.
+      const quoted = path.join(tmp, 'jim "data"');
+      fs.mkdirSync(quoted);
+      expect(run({ cwd: quoted }).packageCreated).toBe(true);
+   });
+
+   test("refuses an accented path, because the server will not mount it", () => {
+      // Not a DuckDB constraint, and not a cosmetic one: assertSafeEnvironmentPath
+      // in the server's path_safety.ts tests an environment path against
+      // /^(?:\/|[A-Za-z]:[\\/])[\x20-\x7E]*$/, so a package under a non-ASCII
+      // path never mounts. Measured against 0.0.244 and still the same regex in
+      // 0.0.250, which is what SERVER_VERSION now pins: the server answers
+      // `serving` with environments [], /environments/default/packages 400s,
+      // and the only explanation is in status.loadErrors. Refusing here, before
+      // anything is written, is what turns that into a message.
+      const accented = path.join(tmp, "jos\u00E9");
       fs.mkdirSync(accented);
       expect(() => run({ cwd: accented })).toThrow(/U\+00E9/);
+      expect(() => run({ cwd: accented })).toThrow(/printable ASCII/);
+      // Nothing was written, so there is no half-scaffolded package to explain.
+      expect(fs.readdirSync(accented)).toEqual([]);
    });
 
-   test("accepts the characters DuckDB does accept", () => {
+   posixOnlyTest("refuses a control character, naming it by codepoint", () => {
+      // The escape rather than the raw byte, which is invisible in a diff: a
+      // reviewer reads the directory name as plain ASCII and reads this test as
+      // one that cannot fire. U+0001 is SOH.
+      const weird = path.join(tmp, "soh\u0001here");
+      fs.mkdirSync(weird);
+      expect(() => run({ cwd: weird })).toThrow(/U\+0001/);
+      expect(fs.readdirSync(weird)).toEqual([]);
+   });
+
+   posixOnlyTest("names an escape character without emitting it", () => {
+      // The refusal is printed to a terminal, so interpolating the character
+      // being refused would send the ESC to it instead of showing it.
+      const esc = path.join(tmp, "esc\u001Bhere");
+      fs.mkdirSync(esc);
+      let message = "";
+      try {
+         run({ cwd: esc });
+      } catch (error) {
+         message = (error as Error).message;
+      }
+      expect(message).toContain("U+001B");
+      expect(message).toContain("\\u001B");
+      expect(message).not.toContain("\u001B");
+   });
+
+   test("accepts the plain safe characters", () => {
       const fine = path.join(tmp, "my-data_dir.v2");
       fs.mkdirSync(fine);
       expect(run({ cwd: fine }).packageCreated).toBe(true);

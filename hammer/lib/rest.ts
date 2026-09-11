@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Thin REST client for the running Publisher server. One instance is bound to a
 // (baseUrl, environment) pair. Everything the scenarios need: package inspection,
 // materialization create/poll, manifest binding, and querying with both the

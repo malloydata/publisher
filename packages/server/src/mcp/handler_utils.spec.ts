@@ -1,11 +1,17 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { MalloyError } from "@malloydata/malloy";
 import { classifyToolError } from "./handler_utils";
 import {
    AccessDeniedError,
    BadRequestError,
+   InvalidArgumentError,
    ModelCompilationError,
    PackageNotFoundError,
+   PayloadTooLargeError,
+   ResponseUnserializableError,
    ServiceUnavailableError,
 } from "../errors";
 
@@ -73,20 +79,93 @@ describe("classifyToolError", () => {
    });
 
    it("keeps Malloy advice for an authorize denial and a malformed request", () => {
+      // Both assert the advice they expect, not merely that some error came
+      // back. The previous version asserted the message lacked "unexpected
+      // internal error", which is true of every branch except one, so it passed
+      // whichever branch these landed in and did not notice when BadRequestError
+      // was moved off the Malloy branch entirely.
+      // An authorize denial reaches the Malloy helper and is REFINED there: the
+      // message pattern replaces the generic suggestion list outright, so the
+      // marker is the authorize advice, not "Malloy file".
       expect(
-         classifyToolError(
-            "op",
-            "env/pkg",
-            new AccessDeniedError('Access denied for source "orders"'),
-         ).message,
-      ).not.toContain("unexpected internal error");
+         advice(new AccessDeniedError('Access denied for source "orders"')),
+      ).toContain("#(authorize)");
+      expect(advice(new BadRequestError("Invalid query request."))).toContain(
+         "Malloy file",
+      );
+   });
+
+   it("keeps Malloy advice for a compile failure wrapped as BadRequestError", () => {
+      // model.ts throws a plain BadRequestError for compile errors that are not
+      // ModelCompilationError ("Model compilation failed: ..."). That is a real
+      // Malloy problem and wants the syntax guidance and doc links, which is
+      // why the narrower InvalidArgumentError exists rather than reclassifying
+      // BadRequestError wholesale.
       expect(
-         classifyToolError(
-            "op",
-            "env/pkg",
-            new BadRequestError("Invalid query request."),
-         ).message,
-      ).not.toContain("unexpected internal error");
+         advice(
+            new BadRequestError("Model compilation failed: unexpected '@'"),
+         ),
+      ).toContain("Malloy file");
+   });
+
+   it("homes a malformed argument as the caller's to fix, not as Malloy", () => {
+      const details = classifyToolError(
+         "searchDatabaseSchema",
+         "env/conn",
+         new InvalidArgumentError(
+            'DuckDB schema name must be qualified as "catalog.schema", got "main".',
+         ),
+      );
+      // The message is already specific, so it is passed through rather than
+      // wrapped in "Error during <op> for resource <id>".
+      expect(details.message).toBe(
+         'DuckDB schema name must be qualified as "catalog.schema", got "main".',
+      );
+      const suggestions = JSON.stringify(details.suggestions);
+      expect(suggestions).not.toContain("Malloy file");
+      expect(suggestions).not.toContain("source:");
+      expect(suggestions).toContain("This is not transient");
+   });
+
+   it("routes InvalidArgumentError ahead of the BadRequestError it extends", () => {
+      // Subclass, so branch ORDER is what keeps these apart. Swap the two
+      // branches and this is the only test that fails.
+      expect(new InvalidArgumentError("x")).toBeInstanceOf(BadRequestError);
+      expect(advice(new InvalidArgumentError("x"))).not.toContain(
+         "Malloy file",
+      );
+      expect(advice(new BadRequestError("x"))).toContain("Malloy file");
+   });
+
+   it("does not offer a cap raise for a response that cannot be serialized", () => {
+      // The shared oversize branch tells the agent to raise the cap named in
+      // the message. For this subclass that is advice to change a setting and
+      // hit the identical failure, which is the same confidently-wrong answer
+      // the 413 itself was added to remove.
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ResponseUnserializableError(
+            "Query response could not be serialized: the 25356-row result is too large to turn into JSON (byte cap: 50000000). Project fewer columns, add a LIMIT, or filter wide values.",
+         ),
+      );
+      expect(details.message).toContain("could not be serialized");
+      const suggestions = JSON.stringify(details.suggestions);
+      expect(suggestions).toContain("will not help");
+      expect(suggestions).toContain("not transient");
+      expect(suggestions).not.toContain("raise the configured cap");
+   });
+
+   it("still offers the cap raise for an ordinary oversize response", () => {
+      // The parent class keeps its advice: there the cap really is the limit
+      // that fired, so raising it is a real remedy.
+      expect(
+         advice(
+            new PayloadTooLargeError(
+               "Query response exceeded 50000000 bytes (was 306326576). Project fewer columns, add a LIMIT, or raise PUBLISHER_MAX_RESPONSE_BYTES.",
+            ),
+         ),
+      ).toContain("raise the configured cap");
    });
 
    it("reports anything else as internal rather than blaming the Malloy", () => {

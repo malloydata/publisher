@@ -1,9 +1,13 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
    DimensionSpec,
    FilterType,
 } from "../../hooks/useDimensionalFilterRangeData";
 import { FilterSelection } from "../../hooks/useDimensionFilters";
+import { escapeMalloyString } from "../../utils/malloyString";
 
 /**
  * A single filter specification with source and dimension
@@ -136,9 +140,16 @@ export function parseAllSourceInfos(
       if (cell.type === "code") {
          // Extract model path from the first import statement found
          if (!modelPath && cell.text) {
-            const importMatch = cell.text.match(
-               /import\s+(?:\{[^}]*\}\s+from\s+)?['"]([^'"]+)['"]/,
-            );
+            // The first quoted string on the first `import` line is the
+            // module path, for both `import 'x'` and `import {a} from 'x'`.
+            // A line scan rather than one regex over the whole cell: the
+            // optional `{...} from` group made that regex backtrack
+            // polynomially on adversarial input.
+            const importLine = cell.text
+               .split("\n")
+               .map((line) => line.trim())
+               .find((line) => line.startsWith("import "));
+            const importMatch = importLine?.match(/['"]([^'"\n]+)['"]/);
             if (importMatch) {
                modelPath = importMatch[1];
             }
@@ -295,7 +306,7 @@ export function generateFilterClause(
                return `@${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
             }
             if (typeof v === "string") {
-               return `'${v.replace(/'/g, "\\'")}'`;
+               return `'${escapeMalloyString(v)}'`;
             }
             if (typeof v === "boolean") return v ? "true" : "false";
             return String(v);
@@ -314,7 +325,7 @@ export function generateFilterClause(
 
             case "Contains":
                if (typeof value === "string") {
-                  return `${fieldName} ~ f'%${value.replace(/'/g, "\\'")}%'`;
+                  return `${fieldName} ~ f'%${escapeMalloyString(value)}%'`;
                }
                return `${fieldName} = ${formatValue(value)}`;
 

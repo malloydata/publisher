@@ -1,3 +1,8 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { ConnectionError, logInternalFailure } from "../errors";
+
 export interface ErrorDetails {
    message: string;
    suggestions: string[];
@@ -23,6 +28,30 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
 
 /**
  * Generates generic error details for internal server errors.
+ *
+ * A `ConnectionError` is withheld from the caller here for the same reason
+ * `internalErrorToHttpError` withholds it on the HTTP side: it wraps a driver
+ * message that can name an internal host and port, echo the caller's SQL, or
+ * distinguish refused from timed-out from auth-failed. Withholding it on only
+ * one of the two transports would leave the same text retrievable over the
+ * other. The detail is logged server-side instead, and a server-authored
+ * `callerSafe` message stays as it is.
+ *
+ * Every other error keeps its message, and the line is drawn by CLASS rather
+ * than by transport. `ConnectionError` is the one class whose message is always
+ * someone else's text -- a driver's -- so it is the one that is always unsafe to
+ * echo. Everything else reaching here is operational: a store failure, an
+ * unresolved environment, a thrown string. Blanking those returns callers to the
+ * generic text `classifyToolError` exists to avoid, and costs an agent the only
+ * sentence that tells it what to do next.
+ *
+ * That is deliberately NOT the same rule the HTTP mapper applies, which
+ * generalizes its unrecognized-error branch too. An unrecognized error there can
+ * carry a filesystem path (an ENOSPC naming an environment root, say), and it
+ * still can here -- so this is a narrower posture, justified by the endpoint
+ * being local and unauthenticated-by-design rather than by the text being safe.
+ * If this endpoint ever fronts a remote caller, this branch generalizes with it.
+ *
  * @param operation The operation that failed (e.g., 'executeQuery').
  * @param error Optional: The underlying error object or message.
  * @returns ErrorDetails object.
@@ -32,15 +61,47 @@ export function getInternalError(
    error?: unknown,
 ): ErrorDetails {
    const baseMessage = `An unexpected internal error occurred during ${operation}.`;
+   const suggestions = [
+      "Try the request again later.",
+      "If the problem persists, check server logs or contact support.",
+   ];
+   if (error instanceof ConnectionError && !error.callerSafe) {
+      // warn, not error: the same reasoning as the HTTP 502 branch -- this is
+      // the caller's or the warehouse's failure and a caller can drive it in a
+      // loop, so it must not fill the error log or move an error-rate dashboard.
+      logInternalFailure(
+         `Upstream connection error during ${operation}`,
+         error,
+         "warn",
+      );
+      return {
+         message: `${baseMessage}: Upstream connection error.`,
+         suggestions,
+      };
+   }
    const errorMessage = error instanceof Error ? error.message : String(error);
    return {
       message: error ? `${baseMessage}: ${errorMessage}` : baseMessage,
-      suggestions: [
-         "Try the request again later.",
-         "If the problem persists, check server logs or contact support.",
-      ],
+      suggestions,
    };
 }
+
+/**
+ * Every construct restricted mode refuses in ad-hoc query text, in one place
+ * because two surfaces state it: the suggestion below, which a caller reads
+ * only after tripping the rule, and `execute_query`'s `query` param doc,
+ * which it reads before. Two hand-maintained copies drift, and a rule that is
+ * missing from the list an agent is handed reads as permission.
+ *
+ * These mirror the compiler's `restricted-construct-forbidden` sites. Two more
+ * exist and are deliberately absent: `given:` declarations sit behind the
+ * `givens` experiment, whose `##!` flag restricted mode refuses first, so that
+ * diagnostic is unreachable here — documenting it would describe a rule no
+ * caller can trip. (The `sql_*` family IS listed: its restriction is checked
+ * before its experiment gate, so unlike `given:` it is reachable.)
+ */
+export const RESTRICTED_CONSTRUCTS =
+   "raw SQL (duckdb.sql(...) / connection.sql(...)), direct SQL function calls (name!type(...)), the sql_* function family (sql_number, sql_string, sql_date, sql_timestamp, sql_boolean), import statements, ##! flags, or new sources from connection.table(...)";
 
 /**
  * Generates detailed error information for Malloy compilation or query execution errors.
@@ -67,6 +128,45 @@ export function getMalloyErrorDetails(
 
    // Attempt to extract more specific info if it's a MalloyError or similar
    if (error instanceof Error) {
+      // Restricted-mode rejection: checked FIRST, and it returns early with
+      // ONLY the restricted diagnostics. One forbidden construct (e.g.
+      // `conn.table(...)` in ad-hoc text) cascades into several downstream
+      // diagnostics ("'X' is not defined", "Reference to undefined object")
+      // because the construct was refused, and those read top-down send the
+      // caller hunting for column typos in the warehouse — entirely the wrong
+      // place. The compiler marks the real cause with a structured problem
+      // code ('restricted-construct-forbidden'); a message sniff is the
+      // fallback for re-wrapped errors (see restricted_mode.spec.ts, which
+      // documents both shapes).
+      const problems = (
+         error as { problems?: Array<{ code?: string; message?: string }> }
+      ).problems;
+      const restrictedProblems = Array.isArray(problems)
+         ? problems.filter((p) => (p.code ?? "").includes("restricted"))
+         : [];
+      // Deliberately narrower than the spec helper's includes("restricted"):
+      // this one CLASSIFIES (a match suppresses other diagnostics), so a
+      // user's own identifier containing the word must not trip it. The
+      // compiler's phrasing is "… cannot be used in a restricted query".
+      const restrictedBySniff =
+         restrictedProblems.length === 0 &&
+         /cannot be used in a restricted/i.test(error.message);
+      if (restrictedProblems.length > 0 || restrictedBySniff) {
+         const causes =
+            restrictedProblems.length > 0
+               ? restrictedProblems
+                    .map((p) => p.message)
+                    .filter(Boolean)
+                    .join(" ")
+               : error.message;
+         return {
+            message: `Error during ${operation} for resource '${modelIdentifier}': ${causes}`,
+            suggestions: [
+               `Suggestion: This query ran in restricted mode: ad-hoc query text may not use ${RESTRICTED_CONSTRUCTS}. These constructs ARE allowed in the package's model files (.malloy): add the definition to a model file, validate it with compile_model, save, call reload_package, then query the new source or view by name. Any other diagnostics this compile produced are fallout from the refused construct, not separate problems.`,
+            ],
+         };
+      }
+
       // Prepend the specific error message
       baseMessage = `Error during ${operation} for resource '${modelIdentifier}': ${error.message}`;
 
@@ -115,21 +215,21 @@ export function getMalloyErrorDetails(
          refined = true;
          const [, viewName, sourceName] = viewNotFoundMatch;
          suggestions.unshift(
-            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling or call malloy_getContext with sourceName '${sourceName}' to see the list of available views. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
+            `Suggestion: View '${viewName}' was not found in source '${sourceName}'. Check the view name spelling, or list that source's views with get_context: pass search_targets [{"target_type": "view"}] and a scopes entry whose source is '${sourceName}'. Views are defined within sources like 'source: ${sourceName} is ... extend { view: ${viewName} is { ... } }'.`,
          );
       } else if (sourceNotFoundMatch) {
          refined = true;
          const [, sourceName] = sourceNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Source '${sourceName}' was not found or could not be accessed. Verify its definition (e.g., \`source: ${sourceName} is table('...')\` or \`duckdb.sql("...")\`) and ensure any associated connections are valid.`,
-            `Suggestion: Check the spelling of '${sourceName}'. You can list the sources in the package using malloy_getContext.`,
+            `Suggestion: Check the spelling of '${sourceName}'. List the package's sources with get_context: pass search_targets [{"target_type": "source"}] and a scopes entry naming the environment and package.`,
          );
       } else if (queryNotFoundMatch) {
          refined = true;
          const [, queryName] = queryNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Named query '${queryName}' was not found. Verify its definition (e.g., \`query: ${queryName} is source_name -> { ... }\`) within the model '${modelIdentifier}'.`,
-            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. You can list named queries using malloy_getContext.`,
+            `Suggestion: Check the spelling of '${queryName}'. Ensure it's a named query (defined with \`query:\`), not a view. List them with get_context: pass search_targets [{"target_type": "view"}], which covers named queries too.`,
          );
       } else if (fieldNotFoundMatch) {
          refined = true;
@@ -137,7 +237,7 @@ export function getMalloyErrorDetails(
             fieldNotFoundMatch;
          suggestions.unshift(
             `Suggestion: Field '${fieldName}' was not found in ${fieldContextType} '${fieldContextName}'. Check the spelling of the field name within the definition of '${fieldContextName}'.`,
-            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. You can inspect the ${fieldContextType}'s fields using malloy_getContext.`,
+            `Suggestion: Ensure the field is defined directly or inherited correctly in the '${fieldContextName}' ${fieldContextType}. Inspect its fields with get_context: pass search_targets [{"target_type": "dimension"}, {"target_type": "measure"}], scoped to the source that holds it.`,
          );
       } else if (referenceErrorMatch) {
          refined = true;

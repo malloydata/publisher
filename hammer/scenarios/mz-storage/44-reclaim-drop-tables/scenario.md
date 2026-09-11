@@ -3,6 +3,10 @@ id: reclaim-drop-tables
 tags: lifecycle, build-control
 package: gc
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Reclaim a materialization (dropTables) frees the table and reverts to live
 

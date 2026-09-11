@@ -3,6 +3,10 @@ id: empty-result-set
 tags: serve-correctness
 package: es
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # A zero-row persist source serves an empty table, not an error
 

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { check, sleep } from "k6";
 import {
    getAvailablePackages,

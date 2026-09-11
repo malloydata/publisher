@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # LookML → Malloy Concept Mapping
 
 Reference table for translating LookML constructs to Malloy. Referenced by multiple reference files.
@@ -20,7 +25,7 @@ Reference table for translating LookML constructs to Malloy. Referenced by multi
 | `fields` exclusion (explore/join) | `internal:` (with access modifiers) | Structurally excluded; `internal:` candidate |
 | `required_access_grants` | `private:` (with access modifiers) | Security-restricted; `private:` candidate |
 | `description:` | `#(doc)` tag | Direct mapping |
-| `label:` (simple rename) | `internal:` old + `dimension: new_name is old_name` | Never use `rename:` |
+| `label:` (simple rename) | `internal:` old + `dimension: new_name is old_name` | Lighter than `rename:`, and keeps the raw column reachable |
 | `label:` (complex) | `# label="Display Name"` | When name differs from identifier |
 | `sql_table_name:` | `conn.table('schema.table')` | Use the connection name from the model definition if available |
 | `join: { relationship: many_to_one }` | `join_one:` | Direct mapping |
@@ -36,7 +41,7 @@ Reference table for translating LookML constructs to Malloy. Referenced by multi
 | `+view:` (refinement) | User decides: consolidate or `extend` | Malloy `extend` serves the same purpose |
 | `derived_table: { sql: ... }` (perf-only) | Use base table directly | PDT optimization is Looker-specific |
 | `derived_table: { sql: ... }` (transformation) | Flag for user | Recommend base table + dims or upstream dbt |
-| `derived_table: { explore_source: ... }` (NDT) | `from(source -> { group_by:, aggregate: }) extend { }` | Computed source pattern |
+| `derived_table: { explore_source: ... }` (NDT) | `(source -> { group_by:, aggregate: }) extend { }` | Computed source pattern |
 | `value_format: "$#,##0.00"` | `# currency` | Map to Malloy render tags |
 | `value_format: "0.00%"` | `# percent` | Map to Malloy render tags |
 | `value_format_name: decimal_2` | `# number="0.00"` | Map to Malloy render tags |

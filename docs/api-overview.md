@@ -1,15 +1,20 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # API overview
 
 > What this is: the shape of Publisher's programmatic surfaces — the resource hierarchy, the REST and
 > MCP APIs, and where to find the live, interactive API explorer. For connecting an AI agent, see
-> [ai-agents.md](ai-agents.md); for the App, see [publisher-app.md](publisher-app.md).
+> [ai-agents.md](ai-agents.md); for the Console, see [console.md](console.md).
 
 ## Two surfaces
 
 | Surface | Port | For |
 | --- | --- | --- |
 | **REST API** | `4000` (base path `/api/v0`) | Applications, dashboards, scripts, and unattended agents: list content, compile models, run queries. See the [REST loop](ai-agents.md#unattended-and-one-shot-agents-the-rest-loop). |
-| **MCP API** | `4040` (`/mcp`) | AI agents in interactive sessions: discovery, query, and authoring over the [Model Context Protocol](https://modelcontextprotocol.io), via the five `malloy_*` tools. See [ai-agents.md](ai-agents.md). |
+| **MCP API** | `4040` (`/mcp`) | AI agents in interactive sessions: discovery, query, and authoring over the [Model Context Protocol](https://modelcontextprotocol.io), via the eight MCP tools. See [ai-agents.md](ai-agents.md). |
 
 Both are read-through onto the same resource hierarchy. Neither surface authenticates callers —
 put the server behind your own gateway before exposing it beyond localhost.
@@ -25,7 +30,9 @@ put the server behind your own gateway before exposing it beyond localhost.
     │   │   └── /compile                POST — compile to SQL / metadata
     │   ├── /notebooks/{path}           a .malloynb notebook
     │   │   └── /cells/{index}          GET — run one notebook cell
-    │   ├── /pages                      in-package HTML data apps
+    │   ├── /dashboards                 `# artifact` dashboards in dashboards/
+    │   │   └── /{name}                 GET, one dashboard's manifest
+    │   ├── /data-apps                  in-package HTML data apps
     │   ├── /events                     GET, the live-reload SSE stream (held open)
     │   ├── /databases                  the package's embedded data files (e.g. parquet)
     │   └── /materializations           persisted-source builds
@@ -38,15 +45,17 @@ put the server behind your own gateway before exposing it beyond localhost.
 
 | Method & path | Does |
 | --- | --- |
-| `GET /api/v0/status` | Server lifecycle (`operationalState`), plus `loadErrors` for anything configured that did not load. |
+| `GET /api/v0/status` | Server lifecycle (`operationalState`), plus `loadErrors` for anything configured that did not load, or that is still serving an older model because its most recent reload failed to compile (`stale: true`). |
 | `GET /api/v0/environments` | List environments, each with its packages. |
-| `GET /api/v0/environments/{env}/packages/{pkg}` | Package metadata (models, `explores`, `buildPlan`, …). Add `?reload=true` to recompile the package from disk first, the REST form of `malloy_reloadPackage`. |
+| `GET /api/v0/environments/{env}/packages/{pkg}` | Package metadata (models, `explores`, `buildPlan`, …). Add `?reload=true` to recompile the package from disk first, the REST form of `reload_package`. |
 | `POST /api/v0/environments/{env}/packages` | Register a package at runtime; body `{ "name": "…", "location": "…" }` ([packages.md](packages.md)). |
-| `GET  …/packages/{pkg}/models/{path}` | A model's compiled metadata (sources, views, givens). |
+| `GET  …/packages/{pkg}/models/{path}` | A model's compiled metadata (sources, views, givens), plus `sourceText`, the file's Malloy verbatim. |
 | `POST …/packages/{pkg}/models/{path}/query` | Run a Malloy query; see [request shapes](#query-request-shapes) below. |
 | `POST …/packages/{pkg}/models/{path}/compile` | Compile Malloy to SQL / metadata. |
 | `GET  …/packages/{pkg}/notebooks/{path}/cells/{index}` | Run one notebook cell. |
-| `GET  …/packages/{pkg}/pages` | List a package's HTML pages. |
+| `GET  …/packages/{pkg}/dashboards` | List a package's dashboards: the `.malloy` files in `dashboards/` carrying an `# artifact` tag. |
+| `GET  …/packages/{pkg}/dashboards/{name}` | One dashboard's manifest: its layout, tiles, and the control row derived from the givens its query references (widened to the file's surfaced set when a tile cannot be resolved). There is no run endpoint; run the manifest's `path` through `…/models/{path}/query` with `givens`. Its `query` is a name (`queryName`), a tile's `query` is an expression (`query`, prefixed `run:`); the two are not interchangeable. |
+| `GET  …/packages/{pkg}/data-apps` | List a package's HTML data apps. |
 | `GET  …/packages/{pkg}/events` | Live-reload SSE stream ([html-data-apps.md](html-data-apps.md#live-reload)). Held open by design. |
 | `GET  …/environments/{env}/connections` | List database connections. |
 
@@ -63,10 +72,14 @@ curl -s -X POST \
 
 The query body takes one of two shapes: `query` alone (ad-hoc Malloy, compiled in the model's
 context), or `queryName` without `query` (a named view when `sourceName` is set; a model-level
-named query when it is not). Any other combination returns a 400. The response's `result` field is
-a JSON string, so parse it; with `"compactJson": true` it holds plain row objects, without it the
-full Malloy result envelope with type metadata. `givens` rides on either shape to supply
-model-declared [runtime parameters](givens.md).
+named query when it is not). Any other combination returns a 400. On the named shape, `sourceName`
+and `queryName` are names and not Malloy code: send one name per field, bare, exactly as the model
+response's `sources` listing returns it — the server quotes it, so a name needing quotes works and
+backticks of your own do not. Anything richer than a name goes in `query`.
+
+The response's `result` field is a JSON string, so parse it; with `"compactJson": true` it holds
+plain row objects, without it the full Malloy result envelope with type metadata. `givens` rides on
+either shape to supply model-declared [runtime parameters](givens.md).
 
 ## Live API explorer
 
@@ -77,7 +90,7 @@ The running server hosts the full, interactive **Swagger UI** and the OpenAPI 3.
 | **http://localhost:4000/api-doc.html** | Interactive Swagger UI — browse every endpoint, see schemas, try requests. |
 | **http://localhost:4000/api-doc.yaml** | The raw OpenAPI 3.1 spec (feed it to codegen or Postman). |
 
-The App's footer **Publisher API** link opens the same explorer.
+The Console's footer **Publisher API** link opens the same explorer.
 
 The spec file ships inside the npm package, so every running server serves `/api-doc.yaml` even
 with no internet access. `/api-doc.html` loads the Swagger UI assets from a CDN, so in a sandbox

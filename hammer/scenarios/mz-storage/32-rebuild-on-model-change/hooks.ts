@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // The flow is markdown; these two tiny hooks are the ONE thing markdown can't do —
 // capture an internal sourceEntityId and compare it across a rebuild. They share
 // `api.state`, so the first stashes the id and the second asserts it changed.

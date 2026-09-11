@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import axios from "axios";
 import React, {
@@ -11,13 +14,14 @@ import React, {
 } from "react";
 import {
    ConnectionsApi,
+   DashboardsApi,
+   DataAppsApi,
    DatabasesApi,
    EnvironmentsApi,
    MaterializationsApi,
    ModelsApi,
    NotebooksApi,
    PackagesApi,
-   PagesApi,
    PublisherApi,
    WatchModeApi,
 } from "../client";
@@ -138,7 +142,8 @@ const getApiClients = (
       publisher: new PublisherApi(config, basePath, axiosInstance),
       environments: new EnvironmentsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
-      pages: new PagesApi(config, basePath, axiosInstance),
+      dashboards: new DashboardsApi(config, basePath, axiosInstance),
+      dataApps: new DataAppsApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),
       databases: new DatabasesApi(config, basePath, axiosInstance),

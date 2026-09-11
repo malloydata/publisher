@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, test, expect } from "bun:test";
 import { truncate } from "../utils/logger";
 

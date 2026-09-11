@@ -1,9 +1,13 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { generateKeyPairSync } from "crypto";
 import { components } from "../api";
 import {
    assembleEnvironmentConnections,
    normalizeSnowflakePrivateKey,
+   validateStorageDestinations,
 } from "./connection_config";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -125,6 +129,72 @@ describe("assembleEnvironmentConnections — databricks", () => {
       expect(() => assembleEnvironmentConnections([conn])).toThrow(
          "Databricks requires",
       );
+   });
+});
+
+describe("assembleEnvironmentConnections — snowflake", () => {
+   // An EXPLICIT null in config (or a client serializing an unset optional as
+   // null) survives to the connector; an omitted field arrives as `undefined`
+   // and was always fine. Malloy's makeDigest reads `.length` off every part and
+   // special-cases `undefined` alone, so a surviving `null` throws when a digest
+   // is taken -- which happens on the package-load worker's connection-metadata
+   // RPC, surfacing as the whole package failing to load with "import reference
+   // failure" rather than as a connection error.
+   //
+   // These assertions cover the pojo path, which Malloy's own lookup also
+   // guards. The key-pair path that actually reproduced the bug is pinned in
+   // connection.spec.ts.
+   const nullableFields = ["database", "schema", "role"] as const;
+
+   function snowflakeConnection(
+      overrides: Record<string, unknown>,
+   ): ApiConnection {
+      return {
+         name: "sf",
+         type: "snowflake",
+         snowflakeConnection: {
+            account: "acct",
+            username: "user",
+            password: "pw",
+            warehouse: "wh",
+            ...overrides,
+         },
+      } as ApiConnection;
+   }
+
+   for (const field of nullableFields) {
+      it(`omits a null ${field} from the core entry`, () => {
+         const { pojo } = assembleEnvironmentConnections([
+            snowflakeConnection({ [field]: null }),
+         ]);
+
+         const entry = pojo.connections["sf"] as Record<string, unknown>;
+         // Explicitly not null: `undefined` is what the digest tolerates.
+         expect(entry[field]).toBeUndefined();
+         expect(entry[field]).not.toBeNull();
+      });
+   }
+
+   it("preserves a configured database", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         snowflakeConnection({ database: "MYDB", schema: "MYSCHEMA" }),
+      ]);
+
+      const entry = pojo.connections["sf"] as Record<string, unknown>;
+      expect(entry.database).toBe("MYDB");
+      expect(entry.schema).toBe("MYSCHEMA");
+   });
+
+   it("carries no null through to any core-entry value", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         snowflakeConnection({ database: null, schema: null, role: null }),
+      ]);
+
+      const entry = pojo.connections["sf"] as Record<string, unknown>;
+      const nulls = Object.entries(entry)
+         .filter(([, value]) => value === null)
+         .map(([key]) => key);
+      expect(nulls).toEqual([]);
    });
 });
 
@@ -622,5 +692,407 @@ describe("SSH proxy validation", () => {
       expect(() => assembleEnvironmentConnections([conn])).toThrow(
          "URI-reserved characters",
       );
+   });
+});
+
+describe("ducklake shape validation", () => {
+   // A DuckLake destination is only attached at its first BUILD, so without an
+   // eager check a missing catalog or bucketUrl surfaced hours after the config
+   // change that caused it. Validated at load like its duckdb-family siblings.
+   const valid: ApiConnection = {
+      name: "lake",
+      type: "ducklake",
+      ducklakeConnection: {
+         catalog: {
+            postgresConnection: {
+               host: "127.0.0.1",
+               port: 5432,
+               databaseName: "catalog",
+               userName: "u",
+               password: "p",
+            },
+         },
+         storage: { bucketUrl: "/tmp/lake" },
+      },
+   };
+
+   it("accepts a fully configured destination", () => {
+      expect(() =>
+         assembleEnvironmentConnections([valid], "/tmp/env"),
+      ).not.toThrow();
+   });
+
+   it("rejects a missing catalog connection at load", () => {
+      const c = {
+         ...valid,
+         ducklakeConnection: { storage: { bucketUrl: "/tmp/lake" } },
+      } as ApiConnection;
+      expect(() => assembleEnvironmentConnections([c], "/tmp/env")).toThrow(
+         /PostgreSQL connection configuration is required for DuckLake catalog/i,
+      );
+   });
+
+   it("rejects a missing bucketUrl at load", () => {
+      const c = {
+         ...valid,
+         ducklakeConnection: { catalog: valid.ducklakeConnection!.catalog },
+      } as ApiConnection;
+      expect(() => assembleEnvironmentConnections([c], "/tmp/env")).toThrow(
+         /Storage bucketUrl is required for DuckLake/i,
+      );
+   });
+
+   // metadataSchema reaches TWO grammars: a quoted string literal in the ATTACH,
+   // and a quoted identifier in the catalog-format preflight's table reference.
+   // Restricting it to a plain identifier at load is what keeps one value valid in
+   // both, so these pin the accept/reject boundary rather than trusting escaping.
+   const withSchema = (metadataSchema: unknown): ApiConnection =>
+      ({
+         ...valid,
+         ducklakeConnection: {
+            ...valid.ducklakeConnection,
+            catalog: {
+               ...valid.ducklakeConnection!.catalog,
+               metadataSchema,
+            },
+         },
+      }) as ApiConnection;
+
+   it("accepts an absent metadataSchema", () => {
+      // Optional: absence keeps DuckLake's default schema, the prior behavior.
+      expect(() =>
+         assembleEnvironmentConnections([valid], "/tmp/env"),
+      ).not.toThrow();
+   });
+
+   it("accepts a plain identifier metadataSchema", () => {
+      for (const ok of ["org_a", "_private", "Lake1", "a"]) {
+         expect(() =>
+            assembleEnvironmentConnections([withSchema(ok)], "/tmp/env"),
+         ).not.toThrow();
+      }
+   });
+
+   it("rejects a metadataSchema that is not a plain identifier", () => {
+      for (const bad of [
+         "foo'; DROP TABLE x; --",
+         "has space",
+         "dotted.name",
+         "1leading_digit",
+         "",
+         '"quoted"',
+      ]) {
+         expect(() =>
+            assembleEnvironmentConnections([withSchema(bad)], "/tmp/env"),
+         ).toThrow(/metadataSchema must be a plain identifier/i);
+      }
+   });
+
+   it("rejects a non-string metadataSchema rather than coercing it", () => {
+      // The value comes from untyped JSON and RegExp.test() coerces, so `true` and
+      // `null` match the identifier pattern as "true"/"null" and would pass a
+      // pattern-only check — then reach escapeSQL's String.replace as a non-string
+      // and throw TypeError at the connection's first attach. That runtime failure is
+      // the thing this load-time check exists to prevent, so the type is part of the
+      // contract, not a formality.
+      for (const bad of [true, false, 0, 1, null, {}, [], ["org_a"]]) {
+         expect(() =>
+            assembleEnvironmentConnections([withSchema(bad)], "/tmp/env"),
+         ).toThrow(/metadataSchema must be a plain identifier/i);
+      }
+   });
+});
+
+describe("assembleEnvironmentConnections — bigquery impersonation", () => {
+   const impersonated: ApiConnection = {
+      name: "bigquery",
+      type: "bigquery",
+      bigqueryConnection: {
+         defaultProjectId: "tenant-project",
+         billingProjectId: "tenant-project",
+         impersonateServiceAccount:
+            "sa-viewer@tenant-project.iam.gserviceaccount.com",
+      },
+   };
+
+   it("emits an authClient overlay reference and no key material", () => {
+      const { pojo } = assembleEnvironmentConnections([impersonated]);
+      const entry = pojo.connections["bigquery"];
+      expect(entry.is).toBe("bigquery");
+      expect(entry.authClient).toEqual({
+         gcpImpersonation: "sa-viewer@tenant-project.iam.gserviceaccount.com",
+      });
+      expect(entry.serviceAccountKey).toBeUndefined();
+      expect(entry.projectId).toBe("tenant-project");
+      expect(entry.billingProjectId).toBe("tenant-project");
+   });
+
+   it("emits no authClient when impersonation is not configured", () => {
+      const plain: ApiConnection = {
+         name: "bigquery",
+         type: "bigquery",
+         bigqueryConnection: { defaultProjectId: "tenant-project" },
+      };
+      const { pojo } = assembleEnvironmentConnections([plain]);
+      // The KEY must be absent, not merely undefined: authClient is
+      // mustHaveValue in core, and a present-but-undefined property fails the
+      // connection with "no value arrived".
+      expect("authClient" in pojo.connections["bigquery"]).toBe(false);
+   });
+
+   it("rejects impersonation combined with a service account key", () => {
+      const both: ApiConnection = {
+         ...impersonated,
+         bigqueryConnection: {
+            ...impersonated.bigqueryConnection,
+            serviceAccountKeyJson: JSON.stringify({
+               type: "service_account",
+               project_id: "tenant-project",
+            }),
+         },
+      };
+      expect(() => assembleEnvironmentConnections([both])).toThrow(
+         /impersonateServiceAccount and serviceAccountKeyJson/,
+      );
+   });
+
+   it("rejects impersonation without an explicit billingProjectId", () => {
+      const noBilling: ApiConnection = {
+         ...impersonated,
+         bigqueryConnection: {
+            defaultProjectId: "tenant-project",
+            impersonateServiceAccount:
+               "sa-viewer@tenant-project.iam.gserviceaccount.com",
+         },
+      };
+      expect(() => assembleEnvironmentConnections([noBilling])).toThrow(
+         /no billingProjectId/,
+      );
+   });
+
+   it("rejects impersonation on a DuckDB attached database", () => {
+      const duckdb: ApiConnection = {
+         name: "duck",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [
+               {
+                  name: "bq_attached",
+                  type: "bigquery",
+                  bigqueryConnection: {
+                     defaultProjectId: "tenant-project",
+                     impersonateServiceAccount:
+                        "sa-viewer@tenant-project.iam.gserviceaccount.com",
+                  },
+               },
+            ],
+         },
+      };
+      expect(() => assembleEnvironmentConnections([duckdb])).toThrow(
+         /not supported on attached databases/,
+      );
+   });
+});
+
+// A credential problem used to surface only at the connection's first ATTACH — for a
+// storage destination, the first BUILD, hours after the config change that caused it.
+// These pin where each check now fires, including the one deliberately NOT moved.
+describe("assembleEnvironmentConnections — S3 credential shape at config load", () => {
+   const ducklake = (s3Connection: Record<string, unknown>): ApiConnection =>
+      ({
+         name: "tier",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "h",
+                  port: 5432,
+                  userName: "u",
+                  password: "p",
+                  databaseName: "d",
+               },
+            },
+            storage: { bucketUrl: "s3://bucket/prefix", s3Connection },
+         },
+      }) as unknown as ApiConnection;
+
+   const duckdbWithS3 = (
+      s3Connection: Record<string, unknown>,
+   ): ApiConnection =>
+      ({
+         name: "generic",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [{ name: "root", type: "s3", s3Connection }],
+         },
+      }) as unknown as ApiConnection;
+
+   describe("ducklake connection — shape only, to bound the blast radius", () => {
+      // The counterpart of the duckdb case below, and the reason both are shape-only:
+      // this validator's throw fails the WHOLE environment. A DuckLake carrying a
+      // present-but-incomplete s3Connection has always loaded and failed when used,
+      // and taking every other connection down with it is the worse trade. A storage
+      // DESTINATION gets the full check instead — see the describe below.
+      it("still LOADS a keyless key-based storage root", () => {
+         const { pojo } = assembleEnvironmentConnections([
+            ducklake({ region: "us-east-1" }),
+         ]);
+         expect(pojo.connections["tier"]).toBeDefined();
+      });
+
+      it("accepts a chain-auth storage root with no key pair", () => {
+         const { pojo } = assembleEnvironmentConnections([
+            ducklake({ provider: "credential_chain" }),
+         ]);
+         expect(pojo.connections["tier"]).toBeDefined();
+      });
+
+      it("rejects a key supplied alongside chain auth at load", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               ducklake({ provider: "credential_chain", accessKeyId: "AKIA" }),
+            ]),
+         ).toThrow(/must not be set when provider is 'credential_chain'/);
+      });
+
+      // Without the enum check this reads as `config`, and the error names a missing
+      // access key — pointing at the wrong field for what is a typo in `provider`.
+      it("names the provider field for a misspelled provider", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               ducklake({ provider: "credentialchain" }),
+            ]),
+         ).toThrow(
+            /provider must be one of config, credential_chain for: tier/,
+         );
+      });
+
+      it("rejects a non-string provider rather than treating it as config", () => {
+         expect(() =>
+            assembleEnvironmentConnections([ducklake({ provider: true })]),
+         ).toThrow(/provider must be one of/);
+      });
+
+      it("rejects a non-string chain before it reaches trim()", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               ducklake({ provider: "credential_chain", chain: 7 }),
+            ]),
+         ).toThrow(/chain must be a string for: tier/);
+      });
+   });
+
+   describe("duckdb attached database — shape only, on purpose", () => {
+      it("rejects a misspelled provider at load", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               duckdbWithS3({ provider: "credentialchain" }),
+            ]),
+         ).toThrow(
+            /provider must be one of config, credential_chain for: root/,
+         );
+      });
+
+      it("rejects a key supplied alongside chain auth at load", () => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               duckdbWithS3({
+                  provider: "credential_chain",
+                  secretAccessKey: "shhh",
+               }),
+            ]),
+         ).toThrow(/must not be set when provider is 'credential_chain'/);
+      });
+
+      // The deliberate asymmetry with the ducklake branch above. This validator's
+      // throw fails the WHOLE environment, and nothing here checked an attached
+      // database's credentials before, so moving the key-pair requirement to load
+      // would stop environments loading that load today. It still fails at attach.
+      it("still LOADS a keyless key-based attachment", () => {
+         const { pojo } = assembleEnvironmentConnections([
+            duckdbWithS3({ region: "us-east-1" }),
+         ]);
+         expect(pojo.connections["generic"]).toBeDefined();
+      });
+   });
+});
+
+// A storage destination is rejected on its own, so it can afford the check the
+// environment-wide validator cannot: a destination is only attached at its first
+// BUILD, which is the late failure that motivated moving these guards at all.
+describe("validateStorageDestinations — S3 credential, checked in full", () => {
+   const destination = (s3Connection: Record<string, unknown>): ApiConnection =>
+      ({
+         name: "credible",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "h",
+                  port: 5432,
+                  userName: "u",
+                  password: "p",
+                  databaseName: "d",
+               },
+            },
+            storage: { bucketUrl: "s3://bucket/prefix", s3Connection },
+         },
+      }) as unknown as ApiConnection;
+
+   it("rejects a keyless key-based destination, naming it", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         destination({ region: "us-east-1" }),
+      ]);
+      expect(accepted).toHaveLength(0);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0].name).toBe("credible");
+      expect(rejected[0].reason).toMatch(
+         /accessKeyId and secretAccessKey are required/,
+      );
+   });
+
+   it("accepts a chain-auth destination with no key pair", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         destination({ provider: "credential_chain" }),
+      ]);
+      expect(rejected).toHaveLength(0);
+      expect(accepted).toHaveLength(1);
+   });
+
+   // The GCS arm is the same late failure, so it gets the same treatment.
+   it("rejects a destination with a partial gcsConnection", () => {
+      const gcs = {
+         name: "credible",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "h",
+                  port: 5432,
+                  userName: "u",
+                  password: "p",
+                  databaseName: "d",
+               },
+            },
+            storage: {
+               bucketUrl: "gs://bucket/prefix",
+               gcsConnection: { keyId: "GOOG" },
+            },
+         },
+      } as unknown as ApiConnection;
+      const { accepted, rejected } = validateStorageDestinations([gcs]);
+      expect(accepted).toHaveLength(0);
+      expect(rejected[0].reason).toMatch(/GCS keyId and secret are required/);
+   });
+
+   // The whole point of doing it here rather than in validateConnectionShape.
+   it("rejects only the bad destination, leaving its neighbour accepted", () => {
+      const good = destination({ provider: "credential_chain" });
+      good.name = "good";
+      const bad = destination({ region: "us-east-1" });
+      bad.name = "bad";
+      const { accepted, rejected } = validateStorageDestinations([good, bad]);
+      expect(accepted.map((d) => d.name)).toEqual(["good"]);
+      expect(rejected.map((r) => r.name)).toEqual(["bad"]);
    });
 });

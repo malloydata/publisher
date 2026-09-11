@@ -1,8 +1,22 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
+import { BadRequestError } from "../errors";
+import { logger } from "../logger";
+import {
+   resolveCloudStorageCredentials,
+   validateS3ProviderShape,
+} from "./gcs_s3_utils";
 import { parseHostKeys } from "./proxy";
+import {
+   queryMetadataAdvisoryWarnings,
+   queryMetadataBudgetWarning,
+   queryMetadataViolations,
+} from "./query_metadata";
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
@@ -45,6 +59,20 @@ export type AssembledEnvironmentConnections = {
 };
 
 const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>(["attachedDatabases"]);
+
+/**
+ * Collapse `null` to `undefined` for an optional connection field.
+ *
+ * JSON config distinguishes "absent" from "explicitly null", but the Malloy
+ * config layer treats only `undefined` as absent -- `makeDigest` reads
+ * `.length` off every part it is given and special-cases `undefined` alone, so
+ * a `null` throws rather than hashing as empty. Callers that spread through
+ * `removeUndefined` are not protected either: it filters `undefined`, so a
+ * `null` survives it.
+ */
+function nullToUndefined<T>(value: T | null | undefined): T | undefined {
+   return value ?? undefined;
+}
 
 export function normalizeSnowflakePrivateKey(privateKey: string): string {
    let privateKeyContent = privateKey.trim();
@@ -271,6 +299,48 @@ function buildDuckdbEntry(
    };
 }
 
+/**
+ * Report a connection default that will not do what it says — a property name
+ * the contract rejects, one BigQuery would drop, a bag with no room for the
+ * server's own context.
+ *
+ * Warns rather than throws, unlike everything else in this file: query metadata
+ * is observability, and an environment that refuses to load because a tag has a
+ * hyphen in it would trade a missing label for an outage. The connection update
+ * API rejects the same bag outright (see validateAdminAuthoredConnection) —
+ * strict where a human is waiting, lenient where a config is being loaded.
+ */
+function warnOnConnectionQueryMetadata(connection: ApiConnection): void {
+   let declared = 0;
+   for (const field of ["queryMetadata", "queryMetadataEnforced"] as const) {
+      const metadata = connection[field];
+      if (!metadata) continue;
+      declared += Object.keys(metadata).length;
+      const problems = [
+         ...queryMetadataViolations(metadata),
+         ...queryMetadataAdvisoryWarnings(metadata),
+      ];
+      for (const problem of problems) {
+         logger.warn("Connection query metadata will not apply as declared", {
+            connectionName: connection.name,
+            field,
+            problem,
+         });
+      }
+   }
+   // The budget is checked over BOTH maps, not each one: they merge into the
+   // same bag, so a connection declaring 6 defaults and 6 enforced is over it
+   // while neither map is. This is the boundary where the admin who created the
+   // squeeze is the one reading the warning.
+   const overBudget = queryMetadataBudgetWarning(declared);
+   if (overBudget) {
+      logger.warn("Connection query metadata will not apply as declared", {
+         connectionName: connection.name,
+         problem: overBudget,
+      });
+   }
+}
+
 function validateConnectionShape(connection: ApiConnection): void {
    if (connection.proxy) {
       // A connection proxy makes THIS server open an outbound SSH tunnel to a
@@ -401,8 +471,38 @@ function validateConnectionShape(connection: ApiConnection): void {
    switch (connection.type) {
       case "postgres":
       case "mysql":
-      case "bigquery":
          break;
+      case "bigquery": {
+         const bigquery = connection.bigqueryConnection;
+         if (bigquery?.impersonateServiceAccount) {
+            // An authClient replaces the credential entirely in the SDK, so a
+            // key alongside it would sit there looking live while the
+            // impersonated identity executes every query. Core refuses the
+            // combination at construction too; refusing here surfaces it as a
+            // config error at load instead of a connection error at first use.
+            if (bigquery.serviceAccountKeyJson) {
+               throw new Error(
+                  `Connection '${connection.name}' sets impersonateServiceAccount ` +
+                     `and serviceAccountKeyJson. Impersonation replaces the ` +
+                     `credential entirely — the key would be ignored — so supply ` +
+                     `one or the other.`,
+               );
+            }
+            // With an authClient the SDK resolves the project id through the
+            // impersonated credential, not ambient ADC, so auto-detection is
+            // not a meaningful fallback for the job project. Require it named.
+            if (!bigquery.billingProjectId) {
+               throw new Error(
+                  `Connection '${connection.name}' sets impersonateServiceAccount ` +
+                     `but no billingProjectId. Impersonated connections resolve ` +
+                     `the project through the impersonated credential, so the ` +
+                     `project that runs (and is billed for) jobs must be named ` +
+                     `explicitly.`,
+               );
+            }
+         }
+         break;
+      }
       case "duckdb":
          if (!connection.duckdbConnection) {
             throw new Error("DuckDB connection configuration is missing.");
@@ -410,10 +510,46 @@ function validateConnectionShape(connection: ApiConnection): void {
          {
             const attached =
                connection.duckdbConnection.attachedDatabases ?? [];
+            // AttachedDatabase reuses the BigqueryConnection schema, but the
+            // ATTACH path builds a DuckDB BIGQUERY secret from key JSON — the
+            // DuckDB extension takes a key, not a token — so an impersonation
+            // request here would be accepted and silently ignored. Refuse it
+            // with the limitation named, rather than the generic "service
+            // account key required" it would otherwise hit later.
+            for (const attachedDb of attached) {
+               if (
+                  attachedDb.type === "bigquery" &&
+                  attachedDb.bigqueryConnection?.impersonateServiceAccount
+               ) {
+                  throw new Error(
+                     `Attached database '${attachedDb.name}' on DuckDB connection ` +
+                        `'${connection.name}' sets impersonateServiceAccount, which ` +
+                        `is not supported on attached databases: DuckDB's BIGQUERY ` +
+                        `secret authenticates with a service account key, not a ` +
+                        `token. Use serviceAccountKeyJson for attached BigQuery ` +
+                        `databases.`,
+                  );
+               }
+            }
             if (attached.length === 0) {
                throw new Error(
                   `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
                );
+            }
+            // Shape only, deliberately not the whole credential check. This
+            // validator's throw fails the ENTIRE environment (assembleEnvironmentConnections
+            // has no per-connection recovery), and nothing here validates an attached
+            // database's credentials today — so demanding a key pair at load would turn
+            // configs that load-and-fail-late into configs that load nothing at all.
+            // These checks reject only shapes no path ever accepted, so no config that
+            // loads today stops loading.
+            for (const attachedDb of attached) {
+               if (attachedDb.type === "s3" && attachedDb.s3Connection) {
+                  validateS3ProviderShape(
+                     attachedDb.s3Connection,
+                     attachedDb.name ?? connection.name,
+                  );
+               }
             }
          }
          break;
@@ -423,6 +559,72 @@ function validateConnectionShape(connection: ApiConnection): void {
          }
          if (!connection.motherduckConnection.accessToken) {
             throw new Error("MotherDuck access token is required.");
+         }
+         break;
+      case "ducklake":
+         // Every field the ATTACH demands (see attachDuckLakeWithMode), checked
+         // together here rather than split between this validator and the pojo
+         // assembler below. `bucketUrl` was the one nobody checked: a destination
+         // is only attached at its first BUILD, so a missing bucket surfaced
+         // hours after the config change that caused it.
+         if (!connection.ducklakeConnection) {
+            throw new Error("DuckLake connection configuration is missing.");
+         }
+         if (!connection.ducklakeConnection.catalog?.postgresConnection) {
+            throw new Error(
+               `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
+            );
+         }
+         if (!connection.ducklakeConnection.storage?.bucketUrl) {
+            throw new Error(
+               `Storage bucketUrl is required for DuckLake: ${connection.name}`,
+            );
+         }
+         // Shape only, matching the duckdb branch above, and for the same reason:
+         // this validator's throw reaches assembleEnvironmentConnections, which has
+         // no per-connection recovery, so a rule enforced here fails the ENTIRE
+         // environment. The mutual-exclusion and enum guards are safe to apply
+         // because no config that loads today can violate them. The key-pair
+         // requirement is NOT applied here — a DuckLake carrying a present but
+         // incomplete s3Connection has always loaded and failed when used, and
+         // making it fail every other connection in the environment is a worse
+         // trade than reporting it late.
+         //
+         // A storage DESTINATION is different: validateStorageDestinations rejects
+         // one entry without touching the rest, so it can afford the full check and
+         // does it there. That is the case that motivated moving these guards at
+         // all — a destination is only attached at its first BUILD.
+         {
+            const storage = connection.ducklakeConnection.storage;
+            if (storage.s3Connection) {
+               validateS3ProviderShape(storage.s3Connection, connection.name);
+            }
+         }
+         // metadataSchema is optional, but when present it reaches the ATTACH as a
+         // quoted string literal AND the catalog-format preflight as a quoted
+         // identifier. Rather than escape one value for two grammars, restrict it
+         // to a plain identifier here — a deterministic config error, caught at
+         // load instead of at the connection's first attach.
+         //
+         // The typeof check is load-bearing, not defensive: the value arrives from
+         // untyped JSON, and RegExp.test() coerces its argument, so `true` and `null`
+         // both satisfy the pattern as "true"/"null" and would reach escapeSQL's
+         // String.replace as a non-string — a TypeError at the first attach, which is
+         // exactly the failure this check exists to turn into a config error.
+         if (
+            connection.ducklakeConnection.catalog.metadataSchema !== undefined
+         ) {
+            const schema = connection.ducklakeConnection.catalog.metadataSchema;
+            if (
+               typeof schema !== "string" ||
+               !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)
+            ) {
+               throw new Error(
+                  `DuckLake catalog metadataSchema must be a plain identifier ` +
+                     `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
+                     `${connection.name}`,
+               );
+            }
          }
          break;
       case "trino":
@@ -533,6 +735,299 @@ function validateConnectionShape(connection: ApiConnection): void {
    }
 }
 
+/**
+ * Warehouse types a storage destination may be DECLARED as. Deliberately
+ * narrower than the connection types: a destination is attached read-write by
+ * the build path, and every type admitted here is another way to define a
+ * warehouse that no connection endpoint audits.
+ *
+ * Narrower than `STORAGE_DESTINATION_TYPES` in materialization_build_session,
+ * which is what the build can materialize INTO and also accepts `duckdb`. Nothing
+ * can currently reach that branch with a `duckdb` destination, because this is the
+ * only way one gets configured — widen here, deliberately, if that changes.
+ */
+export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
+   new Set(["ducklake"]);
+
+/**
+ * Subdirectory of the environment root holding the local DuckDB files of
+ * storage destinations, keeping them out of the directory connection
+ * files derive into.
+ *
+ * Not cosmetic. A DuckDB instance is pooled by `databasePath` +
+ * `workingDirectory`, and the share key excludes the connection name
+ * (`buildDuckDBShareKey`, `duckdb-share-key-v2`) — while both lists derive that
+ * path as `<root>/<name>…duckdb`. The two namespaces are independent and may
+ * legitimately hold the same name, which would then derive the same path and
+ * share one pooled instance; since the attach is `ATTACH OR REPLACE … AS <name>`,
+ * one would silently replace the other's, and a query could read across the two.
+ * Separate roots make that unreachable rather than relying on names never
+ * coinciding. (If malloydata/malloy#3006 changes how the share key is computed,
+ * re-check that it still excludes the name before relying on anything narrower.)
+ *
+ * Dot-prefixed like `.staging`/`.retired`, so a walk that enumerates an
+ * environment for package trees cannot mistake it for one.
+ *
+ * ASYMMETRY, deliberate: a CONNECTION's local DuckDB file still derives directly
+ * into the environment root, where it sits among the package trees Publisher
+ * copies in. Nothing enumerates that directory today, so nothing is exposed by
+ * it — but moving those files would change every existing deployment's pooled
+ * instance identity, re-attaching each connection against a new empty local
+ * primary and orphaning the old file. That is a change worth making on its own,
+ * not as a side effect of adding this directory.
+ */
+export const STORAGE_DESTINATIONS_DIR = ".storage-destinations";
+
+/** Where {@link STORAGE_DESTINATIONS_DIR} sits for an environment. */
+export function storageDestinationRoot(environmentPath: string): string {
+   return path.join(environmentPath, STORAGE_DESTINATIONS_DIR);
+}
+
+/** An entry of a `storageDestinations` list that cannot be used, and why. */
+export type RejectedStorageDestination = {
+   /** Absent when the entry carried no usable name to attribute the defect to. */
+   name?: string;
+   /** The defect, as a sentence naming what is wrong with the entry. */
+   reason: string;
+};
+
+/**
+ * Sorts a `storageDestinations` list into the entries that may be built into and
+ * served from, and the entries that cannot be used. The one place destinations
+ * are checked, so no caller can seat an unvalidated destination on an
+ * Environment.
+ *
+ * Names are unique within the list and are NOT checked against the
+ * environment's connections. The two lists are separate namespaces: one
+ * environment may hold a connection and a destination that share a name and
+ * mean different warehouses, and both must keep working.
+ *
+ * Reports what it rejected rather than deciding what that means: a list read
+ * from config or from storage drops the bad entry and keeps serving
+ * ({@link processStorageDestinations}), while a list that arrived on a request
+ * body is refused whole ({@link processStorageDestinationsOrThrow}). Dropping is
+ * safe because it is not a substitution: build and serve resolve destinations
+ * only through this list, so a `storage=` build naming a dropped destination
+ * fails rather than falling through to a same-named connection.
+ */
+export function validateStorageDestinations(
+   destinations: ApiConnection[] = [],
+): {
+   accepted: ApiConnection[];
+   rejected: RejectedStorageDestination[];
+} {
+   const accepted: ApiConnection[] = [];
+   const rejected: RejectedStorageDestination[] = [];
+
+   if (!Array.isArray(destinations)) {
+      return {
+         accepted,
+         rejected: [{ reason: "the value is not a list of destinations." }],
+      };
+   }
+
+   const seen = new Set<string>();
+
+   for (const destination of destinations) {
+      if (!destination || typeof destination !== "object") {
+         rejected.push({ reason: "the entry is not an object." });
+         continue;
+      }
+
+      const { name, type } = destination;
+      if (!name || typeof name !== "string") {
+         rejected.push({
+            reason: `the "name" field is missing or not a string.`,
+         });
+         continue;
+      }
+      if (!type || !DECLARABLE_STORAGE_DESTINATION_TYPES.has(type)) {
+         rejected.push({
+            name,
+            reason:
+               `the type "${type}" is not a supported destination type ` +
+               `(supported: ${[...DECLARABLE_STORAGE_DESTINATION_TYPES].join(", ")}).`,
+         });
+         continue;
+      }
+      // A destination named `duckdb` could never be reached: the package
+      // connection lookup answers that name with the per-package :memory:
+      // sandbox before any environment list is consulted, so a serve compile
+      // would read an empty sandbox instead of the destination.
+      if (name === "duckdb") {
+         rejected.push({
+            name,
+            reason: `the name "duckdb" is reserved for per-package sandboxes.`,
+         });
+         continue;
+      }
+      if (seen.has(name)) {
+         rejected.push({
+            name,
+            reason: "an earlier entry already uses this name.",
+         });
+         continue;
+      }
+
+      try {
+         validateConnectionShape(destination);
+         // Stricter than validateConnectionShape is allowed to be. It stops at the
+         // credential SHAPE because its throw fails a whole environment; here a bad
+         // entry is rejected on its own, so the full check is affordable — and it is
+         // wanted, because a destination is only attached at its first BUILD, which
+         // is where a missing storage credential would otherwise surface, hours
+         // after the config change that caused it.
+         // Both arms, and in the attach path's own precedence (see
+         // attachDuckLakeWithMode, which takes s3 over gcs): a partial GCS
+         // credential is the same late failure as a partial S3 one, and
+         // resolveCloudStorageCredentials already enforces that pair too.
+         const storage = destination.ducklakeConnection?.storage;
+         if (storage?.s3Connection) {
+            resolveCloudStorageCredentials(
+               {
+                  name,
+                  type: "s3",
+                  s3Connection: storage.s3Connection,
+               },
+               // The OPERATOR's own configuration, not an author's: a managed
+               // storage tier running on the host's identity is the intended use
+               // of credential_chain, so `destinations-only` permits it here.
+               "storage-destination",
+            );
+         } else if (storage?.gcsConnection) {
+            resolveCloudStorageCredentials({
+               name,
+               type: "gcs",
+               gcsConnection: storage.gcsConnection,
+            });
+         }
+      } catch (error) {
+         rejected.push({ name, reason: (error as Error).message });
+         continue;
+      }
+
+      seen.add(name);
+      // `resource` addresses a connection endpoint. A destination has none, and
+      // carrying the field would make it look addressable to anything that
+      // reads one.
+      const { resource: _resource, ...body } = destination;
+      accepted.push(body);
+   }
+
+   return { accepted, rejected };
+}
+
+/** One rejection, as a phrase that reads inside a longer sentence. */
+function describeRejection(rejection: RejectedStorageDestination): string {
+   return rejection.name
+      ? `storage destination "${rejection.name}": ${rejection.reason}`
+      : `storage destination: ${rejection.reason}`;
+}
+
+/**
+ * The usable entries of a list whose source cannot be asked to fix it — the
+ * config file, or the rows restored from storage. An unusable entry is dropped
+ * with a warning rather than failing the whole environment, so one malformed
+ * destination does not take a tenant's packages offline.
+ */
+export function processStorageDestinations(
+   destinations: ApiConnection[] = [],
+): ApiConnection[] {
+   const { accepted, rejected } = validateStorageDestinations(destinations);
+   for (const rejection of rejected) {
+      logger.warn(`Invalid ${describeRejection(rejection)} Skipping.`);
+   }
+   return accepted;
+}
+
+/**
+ * The entries of a list that arrived on a request body, or a `BadRequestError`
+ * naming every defect. Nothing is applied unless the whole list is understood:
+ * the list has replace semantics and the caller's set becomes the set to
+ * reconcile stored rows against, so quietly dropping the part we could not read
+ * would un-register destinations the caller believes it just re-affirmed. A
+ * caller can be told, and can fix it.
+ *
+ * The rejection reasons reach that caller in an HTTP body, so a reason must name
+ * the defect without quoting a credential. The ones assembled here are literals,
+ * and the validator's own messages interpolate only a name, a type, or the
+ * offending identifier — keep it that way when adding one.
+ */
+export function processStorageDestinationsOrThrow(
+   destinations: ApiConnection[] = [],
+): ApiConnection[] {
+   const { accepted, rejected } = validateStorageDestinations(destinations);
+   if (rejected.length > 0) {
+      throw new BadRequestError(
+         `storageDestinations was not accepted — ${rejected
+            .map(describeRejection)
+            .join(" ")}`,
+      );
+   }
+   return accepted;
+}
+
+/**
+ * Whether two validated destination lists describe the same set of
+ * destinations, so a caller re-pushing its desired state can be recognized as a
+ * no-op instead of swapping every destination and dropping the serve shapes
+ * compiled against them.
+ *
+ * Neither the order a caller listed the destinations in nor the key order inside
+ * a config carries meaning: the list is a set keyed by name, and a config is
+ * plain JSON that may have been assembled or parsed in any order. Both are
+ * normalized away, so equality is decided by content alone.
+ *
+ * Compares every field rather than a chosen subset. A destination's config is
+ * what the build attaches — a different bucket, a different catalog host, a
+ * rotated credential — so anything less would let a real change go unapplied.
+ */
+export function storageDestinationsEqual(
+   left: ApiConnection[],
+   right: ApiConnection[],
+): boolean {
+   if (left.length !== right.length) {
+      return false;
+   }
+   return canonicalDestinationList(left) === canonicalDestinationList(right);
+}
+
+/**
+ * Content-determined, order-independent serialization of a destination list.
+ * Sorted by code unit rather than by collation, which is a strict total order on
+ * the distinct names a validated list holds and does not vary with the locale the
+ * process happens to run under.
+ */
+function canonicalDestinationList(destinations: ApiConnection[]): string {
+   return JSON.stringify(
+      [...destinations]
+         .sort((left, right) =>
+            (left.name ?? "") < (right.name ?? "") ? -1 : 1,
+         )
+         .map(canonicalizeJsonValue),
+   );
+}
+
+/**
+ * Rewrites a JSON value with every object's keys in sorted order, so
+ * `JSON.stringify` of the result depends only on content. Arrays keep their
+ * order: within a connection config an array's order is part of its meaning.
+ */
+function canonicalizeJsonValue(value: unknown): unknown {
+   if (Array.isArray(value)) {
+      return value.map(canonicalizeJsonValue);
+   }
+   if (value === null || typeof value !== "object") {
+      return value;
+   }
+   const entries = value as Record<string, unknown>;
+   const sorted: Record<string, unknown> = {};
+   for (const key of Object.keys(entries).sort()) {
+      sorted[key] = canonicalizeJsonValue(entries[key]);
+   }
+   return sorted;
+}
+
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
    environmentPath = "",
@@ -560,6 +1055,7 @@ export function assembleEnvironmentConnections(
       processedConnections.add(connection.name);
       validateDuckdbApiSurface(connection);
       validateConnectionShape(connection);
+      warnOnConnectionQueryMetadata(connection);
 
       const apiConnection = cloneApiConnection(connection);
       apiConnection.attributes = getStaticConnectionAttributes(connection.type);
@@ -623,12 +1119,34 @@ export function assembleEnvironmentConnections(
                   | string
                   | undefined,
             );
+            // Impersonation rides the config-overlay mechanism: the pojo
+            // carries a plain-JSON reference, and buildEnvironmentMalloyConfig
+            // registers the `gcpImpersonation` overlay that resolves it to a
+            // live Impersonated auth client. The property is opaque +
+            // overlay-sourced + mustHaveValue on the bigquery type, so a
+            // literal can never satisfy it and an unresolved reference errors
+            // instead of falling back to ambient ADC. The raw reference (which
+            // embeds the SA email) is also what core folds into the connection
+            // digest, giving per-identity BuildIDs.
+            const impersonateServiceAccount =
+               connection.bigqueryConnection?.impersonateServiceAccount;
             pojo.connections[connection.name] = {
                is: "bigquery",
                projectId:
                   connection.bigqueryConnection?.defaultProjectId ??
                   serviceAccountKey?.environment_id,
                serviceAccountKey,
+               // Spread rather than `authClient: x ?? undefined`: the property
+               // is mustHaveValue, and core keys off the property being SET —
+               // an `authClient: undefined` entry still counts as set and
+               // fails every plain connection with "no value arrived".
+               ...(impersonateServiceAccount
+                  ? {
+                       authClient: {
+                          gcpImpersonation: impersonateServiceAccount,
+                       },
+                    }
+                  : {}),
                location: connection.bigqueryConnection?.location,
                maximumBytesBilled:
                   connection.bigqueryConnection?.maximumBytesBilled,
@@ -645,17 +1163,37 @@ export function assembleEnvironmentConnections(
                is: "snowflake",
                account: connection.snowflakeConnection?.account,
                username: connection.snowflakeConnection?.username,
-               password: connection.snowflakeConnection?.password,
+               password: nullToUndefined(
+                  connection.snowflakeConnection?.password,
+               ),
                privateKey: connection.snowflakeConnection?.privateKey
                   ? normalizeSnowflakePrivateKey(
                        connection.snowflakeConnection.privateKey,
                     )
                   : undefined,
-               privateKeyPass: connection.snowflakeConnection?.privateKeyPass,
+               privateKeyPass: nullToUndefined(
+                  connection.snowflakeConnection?.privateKeyPass,
+               ),
                warehouse: connection.snowflakeConnection?.warehouse,
-               database: connection.snowflakeConnection?.database,
-               schema: connection.snowflakeConnection?.schema,
-               role: connection.snowflakeConnection?.role,
+               // An EXPLICIT `"database": null` in config (or a client that
+               // serializes unset optionals as null) survives to here; an omitted
+               // field arrives as `undefined` and was always fine. Malloy's
+               // `makeDigest` reads `.length` off each part and special-cases
+               // `undefined` only, so a surviving `null` throws
+               // "null is not an object (evaluating 'p.length')" on the first
+               // digest.
+               //
+               // Defense in depth rather than the load-bearing fix: Malloy's own
+               // connection lookup already drops nulls before building a
+               // connector, so this pojo path is covered upstream today. The fix
+               // that matters is `removeUndefined` in connection.ts, on the
+               // key-pair path that bypasses that lookup. Kept because the Malloy
+               // dependency is a caret range and core's guard is not a contract.
+               database: nullToUndefined(
+                  connection.snowflakeConnection?.database,
+               ),
+               schema: nullToUndefined(connection.snowflakeConnection?.schema),
+               role: nullToUndefined(connection.snowflakeConnection?.role),
                timeoutMs:
                   connection.snowflakeConnection?.responseTimeoutMilliseconds,
                // Pool sizing is server-owned policy (matches the values
@@ -725,14 +1263,7 @@ export function assembleEnvironmentConnections(
          }
 
          case "ducklake": {
-            if (!connection.ducklakeConnection) {
-               throw new Error("DuckLake connection configuration is missing.");
-            }
-            if (!connection.ducklakeConnection.catalog?.postgresConnection) {
-               throw new Error(
-                  `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
-               );
-            }
+            // Shape is validated up front by validateConnectionShape.
             pojo.connections[connection.name] = buildDuckdbEntry(
                connection.name,
                environmentPath,

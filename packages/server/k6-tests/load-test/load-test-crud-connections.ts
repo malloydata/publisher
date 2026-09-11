@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { check, group, sleep } from "k6";
 import type { Connection } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";
 import { ConnectionType as ConnectionTypeEnum } from "../clients/malloyPublisherSemanticModelServingAPI.schemas.ts";

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Edit } from "@mui/icons-material";
 import { ListItemIcon, ListItemText, MenuItem, Snackbar } from "@mui/material";
 import Button from "@mui/material/Button";

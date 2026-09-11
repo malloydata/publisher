@@ -3,17 +3,24 @@ id: security-endpoint-readonly
 tags: security
 package: sec2
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
-# Security: the connection sqlQuery endpoint is read-only for a storage destination
+# Security: the connection endpoints cannot reach a storage destination
 
-Besides Malloy, the publisher exposes `POST /connections/<c>/sqlQuery`. For a
-storage destination that connection is attached **read-only**, so DDL through the
-endpoint — qualified to actually target the lake — must be refused, and the
-materialized table must survive.
+Besides Malloy, the publisher exposes `POST /connections/<c>/sqlQuery`, and it
+takes a caller-supplied connection name that no layer above validates. A
+destination is not in that namespace — it lives in `storageDestinations`,
+which no connection endpoint reads — so DDL aimed at the lake through this route
+is refused before it becomes SQL, and the materialized table must survive.
 
-(Note: an *unqualified* `CREATE SCHEMA x` via this endpoint would land in the
-session's throwaway `:memory:` catalog and be harmless; these attacks qualify
-with `lake.` so they truly target the destination.)
+(Note: the attacks qualify with `lake.` so they would truly target the destination
+if they resolved at all; an *unqualified* `CREATE SCHEMA x` here would land in the
+session's throwaway `:memory:` catalog and be harmless either way. A read-only
+attach also backs the serve path, but that is not the guard being tested — an
+endpoint that cannot name the destination never gets that far.)
 
 ## Publisher
 
@@ -61,7 +68,7 @@ Expect:
 
 ## Connection lake (refused)
 
-DROP the materialized table through the endpoint — must be refused (read-only).
+DROP the materialized table through the endpoint — must be refused.
 
 ```sql
 DROP TABLE IF EXISTS lake.main.sec2_daily;
@@ -69,10 +76,19 @@ DROP TABLE IF EXISTS lake.main.sec2_daily;
 
 ## Connection lake (refused)
 
-CREATE a schema in the lake through the endpoint — must be refused (read-only).
+CREATE a schema in the lake through the endpoint — must be refused.
 
 ```sql
 CREATE SCHEMA lake.hacked_via_endpoint;
+```
+
+## Connection lake_probe (refused)
+
+A user connection of their own, pointing at the same catalog, is still attached
+read-only — so even where the name DOES resolve, the endpoint cannot write.
+
+```sql
+CREATE SCHEMA lake_probe.hacked_via_probe;
 ```
 
 ## Mutate orders_pg.sec2_orders

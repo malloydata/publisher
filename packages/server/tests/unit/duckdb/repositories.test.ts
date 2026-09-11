@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /// <reference types="bun-types" />
 
 // Round-trip tests for the DuckDB storage repositories against a REAL

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
 
 # Helper script to run k6 tests with OpenTelemetry output to Prometheus
 # Usage: ./run-with-otel.sh <test-file> [additional-k6-args...]

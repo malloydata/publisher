@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Writes a generated Malloy package to disk (publisher.json + model files) for
 // the server to load from its config `location`.
 

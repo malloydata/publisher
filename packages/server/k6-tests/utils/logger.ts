@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 function shouldLog(level: LogLevel): boolean {
    return (
       LEVEL_PRIORITY[level] !== undefined &&

@@ -3,8 +3,12 @@ id: schema-qualified-name
 tags: serve-correctness, naming
 package: sq
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
-# Schema-qualified persist name (name="analytics.daily_orders")
+# A schema-qualified `name=` builds and serves there — but the schema must already exist
 
 The persist `name=` may carry a schema (`analytics.daily_orders`). By design the
 storage tier does **not** auto-create the target schema — creating it is the

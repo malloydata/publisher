@@ -3,6 +3,10 @@ id: freshness-window
 tags: serve-correctness, freshness
 package: fr
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Freshness gate on the storage tier — enforced, uniform with in-warehouse
 

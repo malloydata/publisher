@@ -1,6 +1,11 @@
-# Integrating Malloy Publisher App
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
-This guide shows how to use the bundled Malloy Publisher App in another React project.
+# Integrating the Malloy Publisher Console
+
+This guide shows how to use the bundled Malloy Publisher Console (the `@malloy-publisher/app` package) in another React project.
 
 ## 1. Install in Your Project
 
@@ -13,7 +18,7 @@ bun add @malloy-publisher/app
 ```
 
 ## 3. Create Wrapper Component
-In this example we demonstrate wrapping the App with a small
+In this example we demonstrate wrapping the Console with a small
 header and Auth0 authentication.
 
 ```tsx

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { type Counter } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
 import type { NextFunction, Request, RequestHandler, Response } from "express";

@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 
 // Stub the missing optional dependency so db_utils.ts can be imported
 mock.module("@azure/identity", () => ({
@@ -20,6 +23,8 @@ mock.module("@google-cloud/bigquery", () => ({
 }));
 
 import { Connection } from "@malloydata/malloy";
+import { BadRequestError } from "../errors";
+import { logger } from "../logger";
 import { normalizeQueryArray } from "../query_param_utils";
 import {
    extractErrorDataFromError,
@@ -580,6 +585,258 @@ describe("getSchemasForConnection", () => {
       });
    });
 
+   describe("snowflake - database-less account listing", () => {
+      function snowflakeConn(
+         database?: string,
+         schema?: string,
+      ): ApiConnection {
+         return {
+            name: "test",
+            type: "snowflake",
+            snowflakeConnection: {
+               account: "acct",
+               username: "user",
+               password: "pw",
+               warehouse: "wh",
+               database,
+               schema,
+            },
+         };
+      }
+
+      it("scopes the query to the configured database", async () => {
+         const rows = [
+            {
+               CATALOG_NAME: "MYDB",
+               SCHEMA_NAME: "TEST_SCHEMA",
+               SCHEMA_OWNER: "SYSADMIN",
+            },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn("MYDB", "TEST_SCHEMA"),
+            m.conn,
+         );
+
+         // Qualified, because an unqualified INFORMATION_SCHEMA resolves
+         // against the session's current database.
+         expect(m.lastSQL).toContain("MYDB.INFORMATION_SCHEMA.SCHEMATA");
+         expect(m.lastSQL).toContain("CATALOG_NAME = 'MYDB'");
+         expect(m.lastSQL).toContain("SCHEMA_NAME = 'TEST_SCHEMA'");
+         expect(schemas).toHaveLength(1);
+         expect(schemas[0].name).toBe("MYDB.TEST_SCHEMA");
+         expect(schemas[0].isDefault).toBe(true);
+         expect(schemas[0].isHidden).toBe(false);
+      });
+
+      it("lists schemas across every database when none is configured", async () => {
+         // SHOW output is lower-case, unlike INFORMATION_SCHEMA's.
+         const rows = [
+            { database_name: "DB_B", name: "PUBLIC", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "SALES", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         // The LIMIT is stated rather than left to the server's implicit
+         // default, so that landing on the cap is detectable.
+         expect(m.lastSQL).toBe("SHOW SCHEMAS IN ACCOUNT LIMIT 10000");
+         expect(schemas.map((s) => s.name)).toEqual([
+            "DB_A.SALES",
+            "DB_B.PUBLIC",
+         ]);
+         expect(schemas.every((s) => s.isHidden === false)).toBe(true);
+      });
+
+      it("warns that the schema list is incomplete when SHOW hits its row cap", async () => {
+         // Passing the LIMIT trades Snowflake's above-10k error for a capped
+         // result, so truncation becomes possible where it previously was not.
+         // Landing on the cap is the only evidence available that schemas are
+         // missing, so silence here would present a partial list as complete.
+         const rows = Array.from({ length: 10_000 }, (_unused, i) => ({
+            database_name: "DB_A",
+            name: `SCHEMA_${i}`,
+            owner: "SYSADMIN",
+         }));
+         const m = mockConnection(rows);
+         const warnSpy = spyOn(logger, "warn");
+         try {
+            await getSchemasForConnection(
+               snowflakeConn(undefined, undefined),
+               m.conn,
+            );
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some((message) =>
+                  message.includes("hit the SHOW row limit"),
+               ),
+            ).toBe(true);
+         } finally {
+            warnSpy.mockRestore();
+         }
+      });
+
+      it("does not warn when the schema list is below the SHOW row cap", async () => {
+         const rows = [
+            { database_name: "DB_A", name: "PUBLIC", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const warnSpy = spyOn(logger, "warn");
+         try {
+            await getSchemasForConnection(
+               snowflakeConn(undefined, undefined),
+               m.conn,
+            );
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some((message) =>
+                  message.includes("hit the SHOW row limit"),
+               ),
+            ).toBe(false);
+         } finally {
+            warnSpy.mockRestore();
+         }
+      });
+
+      it("shows a shared database's schemas even though SHOW reports no owner", async () => {
+         // SHOW SCHEMAS reports a blank owner for any schema not local to the
+         // account, so every schema of an IMPORTED DATABASE (a Marketplace or
+         // partner share) looks system-owned. Hiding those drops a deliberately
+         // subscribed dataset from the picker.
+         const rows = [
+            { database_name: "SEC_FILINGS", name: "CYBERSYN", owner: "" },
+            { database_name: "SNOWFLAKE", name: "ACCOUNT_USAGE", owner: "" },
+            {
+               database_name: "SEC_FILINGS",
+               name: "INFORMATION_SCHEMA",
+               owner: "",
+            },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         const visible = schemas.filter((s) => !s.isHidden).map((s) => s.name);
+         expect(visible).toEqual(["SEC_FILINGS.CYBERSYN"]);
+         // The system database and INFORMATION_SCHEMA stay hidden on their own
+         // rules, so dropping the blank-owner test leaks no system noise.
+         expect(
+            schemas.find((s) => s.name === "SNOWFLAKE.ACCOUNT_USAGE")?.isHidden,
+         ).toBe(true);
+         expect(
+            schemas.find((s) => s.name === "SEC_FILINGS.INFORMATION_SCHEMA")
+               ?.isHidden,
+         ).toBe(true);
+      });
+
+      it("surfaces an unusable database name as a bad request, not an internal error", async () => {
+         // A rejected identifier is deterministically invalid, so classifying it
+         // as an internal fault tells the caller to retry a value that can never
+         // succeed. Matches the guard in getSchemasForTrino / Databricks.
+         const m = mockConnection([]);
+         await expect(
+            getSchemasForConnection(
+               snowflakeConn("bad-name", undefined),
+               m.conn,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+
+      it("warns rather than silently returning nothing when no row parses", async () => {
+         // A SHOW output whose columns we no longer recognise returns rows and
+         // yields no schemas, which is indistinguishable from an account with no
+         // schemas unless it is reported. This is the collapsed-signal case: the
+         // empty result carries evidence, the silent one does not.
+         const rows = [
+            { unexpected_column: "DB_A", another: "PUBLIC" },
+            { unexpected_column: "DB_B", another: "SALES" },
+         ];
+         const m = mockConnection(rows);
+         const warnSpy = spyOn(logger, "warn");
+         try {
+            const schemas = await getSchemasForConnection(
+               snowflakeConn(undefined, undefined),
+               m.conn,
+            );
+            expect(schemas).toHaveLength(0);
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some((message) =>
+                  message.includes("missing a database or schema name"),
+               ),
+            ).toBe(true);
+         } finally {
+            warnSpy.mockRestore();
+         }
+      });
+
+      it("ignores a configured schema when no database is set", async () => {
+         // The schema is a default for queries, not a filter: honoring it
+         // account-wide would return a same-named schema from every database
+         // and hide the rest.
+         const rows = [
+            { database_name: "DB_A", name: "PUBLIC", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "OTHER", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, "PUBLIC"),
+            m.conn,
+         );
+
+         expect(schemas).toHaveLength(2);
+         // No single schema can be the default without a database to scope it.
+         expect(schemas.every((s) => s.isDefault === false)).toBe(true);
+      });
+
+      it("hides system databases and INFORMATION_SCHEMA account-wide", async () => {
+         const rows = [
+            { database_name: "SNOWFLAKE", name: "ACCOUNT_USAGE", owner: "" },
+            {
+               database_name: "SNOWFLAKE_SAMPLE_DATA",
+               name: "TPCH_SF1",
+               owner: "SYSADMIN",
+            },
+            {
+               database_name: "DB_A",
+               name: "INFORMATION_SCHEMA",
+               owner: "SYSADMIN",
+            },
+            { database_name: "DB_A", name: "SALES", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         const visible = schemas.filter((s) => !s.isHidden);
+         expect(visible.map((s) => s.name)).toEqual(["DB_A.SALES"]);
+      });
+
+      it("drops rows that cannot form a DATABASE.SCHEMA name", async () => {
+         // A half-populated row would otherwise yield ".FOO" or "DB.", which
+         // listTablesForSchema parses into a database that does not exist.
+         const rows = [
+            { database_name: "", name: "ORPHAN", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "", owner: "SYSADMIN" },
+            { database_name: "DB_A", name: "SALES", owner: "SYSADMIN" },
+         ];
+         const m = mockConnection(rows);
+         const schemas = await getSchemasForConnection(
+            snowflakeConn(undefined, undefined),
+            m.conn,
+         );
+
+         expect(schemas.map((s) => s.name)).toEqual(["DB_A.SALES"]);
+      });
+   });
+
    describe("snowflake", () => {
       it("queries INFORMATION_SCHEMA.SCHEMATA with database filter", async () => {
          const conn: ApiConnection = {
@@ -1081,5 +1338,268 @@ describe("listTablesForSchema bigquery", () => {
       expect(bqDatasetCalls).toHaveLength(1);
       expect(bqDatasetCalls[0]?.id).toBe("myds");
       expect(bqDatasetCalls[0]?.options).toBeUndefined();
+   });
+});
+
+describe("SQL escaping and identifier validation", () => {
+   it("escapes backslashes for exactly the dialects that treat them as escapes", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      // From Malloy's own dialect layer (stringLiteralStyle). Getting this set
+      // wrong is what left Snowflake and Databricks injectable after the fix
+      // that was supposed to close them.
+      for (const dialect of ["mysql", "snowflake", "databricks"]) {
+         expect(sqlLiteral("x\\' OR 1=1 #", dialect)).toBe("x\\\\'' OR 1=1 #");
+      }
+      // Doubled dialects: a backslash is an ordinary character, so doubling it
+      // would corrupt a legitimate name like a Postgres schema `data\archive`.
+      for (const dialect of [
+         "postgres",
+         "duckdb",
+         "motherduck",
+         "ducklake",
+         "trino",
+      ]) {
+         expect(sqlLiteral("data\\archive", dialect)).toBe("data\\archive");
+      }
+      // Quote doubling applies everywhere, including with no dialect given.
+      expect(sqlLiteral("o'brien", "snowflake")).toBe("o''brien");
+      expect(sqlLiteral("o'brien")).toBe("o''brien");
+      expect(sqlLiteral("plain", "postgres")).toBe("plain");
+   });
+
+   it("refuses to build a BigQuery literal rather than mis-escaping one", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      // GoogleSQL is backslash-only: it does not read '' as an escaped quote,
+      // and it does not concatenate adjacent literals either, so the doubling
+      // this function always applies would not parse. Nothing reaches it today
+      // (BigQuery introspects through its client, building no SQL), so this
+      // pins the failure DIRECTION for whoever adds the first BigQuery SQL
+      // path: throw, rather than inherit an escape rule that does not hold.
+      expect(() => sqlLiteral("o'brien", "bigquery")).toThrow(
+         /Cannot build a SQL literal for "bigquery"/,
+      );
+   });
+
+   it("rejects an identifier that is not a plain name", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      // The payload that would otherwise reach a raw identifier position and
+      // return real row values from a tool that promises it returns none.
+      expect(() =>
+         assertSafeSqlIdentifier(
+            "(SELECT c1 AS TABLE_NAME FROM customers) x --",
+            "catalog name",
+         ),
+      ).toThrow();
+      expect(() => assertSafeSqlIdentifier("a.b", "catalog name")).toThrow();
+      expect(() => assertSafeSqlIdentifier("", "catalog name")).toThrow();
+      expect(() => assertSafeSqlIdentifier("1abc", "catalog name")).toThrow();
+   });
+
+   it("accepts the identifier shapes real catalogs use", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      for (const ok of ["memory", "my_catalog", "_x", "c$1"]) {
+         expect(assertSafeSqlIdentifier(ok, "catalog name")).toBe(ok);
+      }
+   });
+});
+
+describe("identifier rejection survives the dialect catch blocks", () => {
+   // The guard was wired INSIDE a try whose catch rewrapped everything as a
+   // plain Error, so on Snowflake, Trino and Databricks a rejected identifier
+   // reached the caller as an "unexpected internal error, try again later".
+   // Testing the helper alone (above) would not have caught that: all three
+   // call sites could be deleted and this file would stay green.
+   const dialects = [
+      { type: "snowflake", conn: { snowflakeConnection: { database: "db" } } },
+      { type: "trino", conn: { trinoConnection: {} } },
+      { type: "databricks", conn: { databricksConnection: {} } },
+   ] as const;
+
+   for (const { type, conn } of dialects) {
+      it(`surfaces an InvalidArgumentError, not a wrapped Error, on ${type}`, async () => {
+         const { listTablesForSchema } = await import("./db_utils");
+         const { BadRequestError, InvalidArgumentError } = await import(
+            "../errors"
+         );
+         const malloyConnection = {
+            runSQL: async () => {
+               throw new Error("should not be reached");
+            },
+         };
+         let thrown: unknown;
+         try {
+            await listTablesForSchema(
+               { name: "c", type, ...conn } as never,
+               // A catalog segment that is not a plain identifier.
+               "evil; DROP TABLE t; --.public",
+               malloyConnection as never,
+            );
+         } catch (error) {
+            thrown = error;
+         }
+         // The subclass is what keeps the MCP layer from answering a bad
+         // argument with Malloy syntax advice; the base class is what keeps it
+         // an HTTP 400. Both matter, so both are asserted.
+         expect(thrown).toBeInstanceOf(InvalidArgumentError);
+         expect(thrown).toBeInstanceOf(BadRequestError);
+      });
+   }
+});
+
+describe("catalog names in the schema listings are validated too", () => {
+   // The last instance of the raw-interpolation shape, in getSchemasForTrino
+   // and getSchemasForDatabricks. Config-derived rather than caller-derived, so
+   // not a vulnerability, but an untested fix is how the previous round's
+   // extracted-but-never-wired helper got through: assert runSQL is never
+   // reached, not merely that something threw.
+   const dialects = [
+      {
+         type: "trino",
+         conn: { trinoConnection: { catalog: "evil; DROP TABLE t; --" } },
+      },
+      {
+         type: "databricks",
+         conn: {
+            databricksConnection: { defaultCatalog: "evil; DROP TABLE t; --" },
+         },
+      },
+   ] as const;
+
+   for (const { type, conn } of dialects) {
+      it(`rejects an unsafe configured catalog on ${type} before running SQL`, async () => {
+         const { getSchemasForConnection } = await import("./db_utils");
+         const { InvalidArgumentError } = await import("../errors");
+         let ranSQL = false;
+         const malloyConnection = {
+            runSQL: async () => {
+               ranSQL = true;
+               return { rows: [] };
+            },
+         };
+         let thrown: unknown;
+         try {
+            await getSchemasForConnection(
+               { name: "c", type, ...conn } as never,
+               malloyConnection as never,
+            );
+         } catch (error) {
+            thrown = error;
+         }
+         expect(thrown).toBeInstanceOf(InvalidArgumentError);
+         expect(ranSQL).toBe(false);
+      });
+   }
+});
+
+describe("an unclassified dialect fails loudly", () => {
+   // The classification has been wrong three times in this file's history. A
+   // dialect added to the dispatch switch but not to either escape set must not
+   // inherit quote-doubling silently, because doubling alone on a
+   // backslash-escaping dialect is exploitable rather than merely cosmetic.
+   it("throws for a type that is given but unrecognised", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      expect(() => sqlLiteral("x", "some_new_warehouse")).toThrow(
+         /Unclassified SQL dialect/,
+      );
+   });
+
+   it("still doubles quotes when no dialect is supplied at all", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      expect(sqlLiteral("o'brien")).toBe("o''brien");
+   });
+
+   // Kyle verified this by hand in review, against api-doc.yaml, which is the
+   // right source but the wrong mechanism: the next dialect added to the enum
+   // would inherit quote-doubling silently and nobody would be checking. Read
+   // the enum rather than restating it, so the two cannot drift. Behavioural on
+   // purpose, so it needs no new exports from the module under test.
+   it("classifies every connection type in the api-doc enum", async () => {
+      const { sqlLiteral } = await import("./db_utils");
+      const { readFileSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      // Same resolution style as theme_key_parity.spec.ts, the other spec that
+      // reads this file as the shared contract.
+      const apiDoc = readFileSync(
+         resolve(import.meta.dir, "../../../../api-doc.yaml"),
+         "utf8",
+      );
+      const start = apiDoc.indexOf("      description: Database connection");
+      expect(start).toBeGreaterThan(-1);
+      const enumAt = apiDoc.indexOf("enum:", start);
+      const types = [
+         ...apiDoc
+            .slice(enumAt, apiDoc.indexOf("]", enumAt))
+            .matchAll(/^\s+(\w+),$/gm),
+      ].map((m) => m[1]);
+      // Guard the extraction itself: a regex that silently matched nothing
+      // would make this test vacuously pass.
+      expect(types).toContain("postgres");
+      expect(types).toContain("bigquery");
+      // A loose floor, not the exact count: pinning 10 would fail spuriously
+      // the day a dialect is legitimately removed, and the two names above
+      // already prove the extraction found the right block.
+      expect(types.length).toBeGreaterThan(5);
+
+      for (const type of types) {
+         // Either it produces a literal, or it refuses for a NAMED reason.
+         // "Unclassified" means nobody decided, which is the state this test
+         // exists to prevent.
+         try {
+            expect(typeof sqlLiteral("o'brien", type)).toBe("string");
+         } catch (error) {
+            expect((error as Error).message).toContain(
+               "Cannot build a SQL literal",
+            );
+            expect((error as Error).message).not.toContain("Unclassified");
+         }
+      }
+   });
+});
+
+describe("the identifier guard rejects the SQL comment token", () => {
+   // A hyphen was in the accepted charset and looked harmless. Two of them are
+   // the SQL line-comment token, so `a--b.public` executed as `FROM a` with the
+   // rest of the query commented away, which can return row values from a tool
+   // documented never to return one.
+   it("rejects a doubled hyphen, which comments out the rest of the query", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      expect(() => assertSafeSqlIdentifier("a--b", "catalog name")).toThrow();
+      expect(() =>
+         assertSafeSqlIdentifier("cat--x", "database name"),
+      ).toThrow();
+   });
+
+   it("rejects a single hyphen too, since no dialect reaching here accepts one bare", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      expect(() => assertSafeSqlIdentifier("MY-CAT", "catalog name")).toThrow();
+   });
+});
+
+describe("the rejection message matches what the guard actually accepts", () => {
+   // The charset lost its hyphen but this message kept advertising one, so an
+   // agent was told its rejected value matched the stated format and had no
+   // repair available: the retry loop, arriving through the error text. Three
+   // times in this feature's history the code changed and what it says about
+   // itself did not, so the two are pinned together here.
+   it("does not offer a character the guard rejects", async () => {
+      const { assertSafeSqlIdentifier } = await import("./db_utils");
+      let message = "";
+      try {
+         assertSafeSqlIdentifier("bad value", "catalog name");
+      } catch (error) {
+         message = (error as Error).message;
+      }
+      expect(message).toContain("plain identifier");
+      // Every character class the message names must genuinely be accepted.
+      for (const [named, sample] of [
+         ["letters", "abc"],
+         ["digits", "a1"],
+         ["underscore", "a_b"],
+         ["dollar", "a$b"],
+      ] as const) {
+         expect(message).toContain(named);
+         expect(assertSafeSqlIdentifier(sample, "x")).toBe(sample);
+      }
+      expect(message).not.toContain("hyphen");
    });
 });

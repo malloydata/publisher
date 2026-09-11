@@ -2,6 +2,10 @@
 name: malloy
 description: Index of all Malloy skills. Use when user asks "malloy help", "what malloy skills are available", "how do I use malloy", or needs guidance on which Malloy skill to use.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Malloy Skills Index
 
@@ -12,22 +16,74 @@ Say "model my data" and the agent will orchestrate the full modeling workflow au
 
 ## Skill Reference
 
+Every skill in this deployment, by what it is for. Start at a driver; it routes to the rest.
+
+This table is a catalogue of what exists, not of what is loaded. A host that installs one group takes that group's skills alone: `analysis`, `modeling`, or `eval`. A row naming a skill from a group you did not install says that the skill exists. It is not an instruction to load it, and it is written as a plain name rather than a `skill:` reference to say so.
+
+**Start here**
+
 | Skill | Use when... |
 |-------|-------------|
+| `skill:malloy-getting-started` | First contact with a Publisher: confirming the tools, finding what data exists, running a first grounded query |
 | `skill:malloy-modeling` | Building a semantic model from scratch (the modeling workflow driver) |
 | `skill:malloy-analysis` | Answering a data question or exploring data (the analysis workflow driver) |
+
+**Modeling phases** (driven by `skill:malloy-modeling`)
+
+| Skill | Use when... |
+|-------|-------------|
 | `skill:malloy-discover` | Silent data discovery: tables, schemas, distributions, prior art |
 | `skill:malloy-scope` | Presenting findings and proposing an analytical focus |
 | `skill:malloy-define` | Proposing the source plan and field definitions |
 | `skill:malloy-model` | Writing base and joined source .malloy files, review, curate (includes normalized schema support) |
-| `skill:malloy-analyze` | Exploratory data analysis: profiling, building views and dashboards |
+| `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
+| `skill:malloy-lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |
+
+**Analysis and presentation**
+
+| Skill | Use when... |
+|-------|-------------|
+| `skill:malloy-model-as-you-go` | After answering a question, writing down what it assumed: a `#(doc)`'d field in the model, an `extend` in the notebook, or a stated assumption plus snippet, depending on what the session can write |
+| `skill:malloy-analyze` | Open-ended exploration with no intent to keep anything: profiling, hypotheses, views |
 | `skill:malloy-charts` | Chart selection and renderer reference for Malloy visualizations |
 | `skill:malloy-notebooks` | Building Malloy notebooks (.malloynb) |
+| `skill:malloy-analysis-report` | Combining validated queries into a notebook report or dashboard |
+| `skill:malloy-analysis-pitfalls` | Checking a query and its results before presenting an answer |
+| `malloy-notebook-chat` | The chat is bound to a notebook or saved report; answer from its cells. Ships in `analysis`. |
+| `skill:malloy-phrase-detection` | Turning a plain-English question into search targets for the context tool |
+
+**Evaluating a model** (driven by `eval-loop`). These ship in the `eval` group, which neither `analysis` nor `modeling` includes.
+
+| Skill | Use when... |
+|-------|-------------|
+| `eval-loop` | Running the loop: baseline, noise band, diagnose, one edit, gate, checkpoint |
+| `eval-answer` | Scoring one answer against a verified golden, and what retrieval delivered |
+| `eval-diagnose` | Deciding why a case failed and which artifact owns the fix |
+| `eval-improve` | The smallest model edit for a diagnosed cluster, with probe receipts |
+
+**Writing correct Malloy** (read before writing, not after failing)
+
+| Skill | Use when... |
+|-------|-------------|
+| `skill:malloy-queries` | Query and view syntax: dates, aggregates, join paths, filters |
+| `skill:malloy-gotchas-modeling` | Before writing sources, dimensions, measures, joins |
+| `skill:malloy-gotchas-queries` | Before writing views, queries, notebooks |
+| `skill:malloy-gotchas-rendering` | Before adding chart annotations or formatting tags |
 | `skill:malloy-debug` | Fixing compile errors and interpreting diagnostics |
 | `skill:malloy-patterns` | Finding syntax/pattern docs: YoY, cohorts, percent-of-total, window functions |
-| `skill:malloy-document` | Adding `#(doc)` tags for discoverability |
+| `skill:malloy-review` | Reviewing, auditing, or critiquing existing Malloy |
+
+**Serving and operating a package**
+
+| Skill | Use when... |
+|-------|-------------|
 | `skill:malloy-publish` | Moving a finished model into a served package (local-to-served handoff) |
-| `skill:malloy-lookml-review` | Prior-art adapter for LookML (field extraction, derived tables, visibility, docs) |
+| `skill:malloy-dashboards` | Building a dashboard: a tagged `.malloy` file in a package's `dashboards/` directory, with filter controls and drill-through |
+| `skill:malloy-html-data-apps` | Building an in-package HTML data app (a `public/` directory the package serves) |
+| `skill:malloy-html-data-app-runtime` | Writing the JavaScript that drives that app |
+| `skill:malloy-html-data-app-embedding` | Embedding a served page into a host application |
+| `skill:malloy-materialization` | Persisting an expensive source so queries read a pre-built table |
+| `skill:malloy-materialization-tuning` | Tuning what to persist, and on what schedule, for cost and speed |
 
 > **Adapter pattern:** Each prior art adapter (LookML, future dbt) follows the same structure: a coordinator SKILL.md plus reference files under `reference/` dispatched by phase skills.
 
@@ -42,4 +98,4 @@ Publishing is out of scope for open-source Publisher v1. Self-hosters move a fin
 
 ## Syntax Help
 
-Call `malloy_searchDocs` with your question. Use `skill:malloy-patterns` to discover available topics.
+Call `search_malloy_docs` with your question. Use `skill:malloy-patterns` to discover available topics.

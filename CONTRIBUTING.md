@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 ## Project Committers
 
 Our committers are the following GitHub accounts:
@@ -39,6 +44,12 @@ information on using pull requests.
 
 This project follows
 [The Linux Foundation's Code of Conduct](https://lfprojects.org/policies/code-of-conduct/).
+
+## Security
+
+Report a security vulnerability privately rather than as a public issue.
+[SECURITY.md](SECURITY.md) has the reporting form, what's in scope, and when filing in the open is
+fine.
 
 ## Contributing to the Python SDK (`packages/python-client`)
 

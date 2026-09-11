@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * The real acceptance: scaffold a package, boot an actual Publisher server against
  * the generated config, and confirm it serves the package, compiles the model,
@@ -323,7 +326,7 @@ describe("generated project serves against a real server", () => {
       expect(rows[0].record_value[0].number_value).toBe(3);
    });
 
-   test("the MCP endpoint lists the five malloy tools", async () => {
+   test("the MCP endpoint lists the malloy tools", async () => {
       const client = new Client({ name: "cmp-e2e", version: "0.0.0" });
       const transport = new StreamableHTTPClientTransport(
          new URL(`http://localhost:${mcpPort}/mcp`),
@@ -332,11 +335,14 @@ describe("generated project serves against a real server", () => {
       const { tools } = await client.listTools();
       await client.close();
       expect(tools.map((t) => t.name).sort()).toEqual([
-         "malloy_compile",
-         "malloy_executeQuery",
-         "malloy_getContext",
-         "malloy_reloadPackage",
-         "malloy_searchDocs",
+         "compile_model",
+         "execute_query",
+         "get_context",
+         "get_status",
+         "list_packages",
+         "reload_package",
+         "search_database_schema",
+         "search_malloy_docs",
       ]);
    });
 });

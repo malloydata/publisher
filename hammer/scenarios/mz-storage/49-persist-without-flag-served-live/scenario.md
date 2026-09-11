@@ -3,8 +3,12 @@ id: persist-without-flag-served-live
 tags: eligibility, build-control, needs-attention
 package: pwf
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
-# Missing `##! experimental.persistence`: a `#@ persist` source is silently served live
+# Without `##! experimental.persistence`, a `#@ persist` source is served live and the package still loads
 
 The `#@ persist` machinery is gated behind Malloy's `##! experimental.persistence`
 model flag. Malloy's `getBuildPlan()` THROWS `Model must have ##!

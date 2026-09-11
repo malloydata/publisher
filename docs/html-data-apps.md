@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # In-package HTML data apps
 
 A package can ship a `public/` directory of plain web files next to its `.malloy`
@@ -17,18 +22,20 @@ user's data authority, so it is worth knowing exactly what you are loading.
 
 > **What this is:** a self-contained dashboard written in plain HTML/CSS/JS, shipped *inside* a
 > package and **served by Publisher** — no build step, no framework, no npm. It's the supported way to
-> ship a custom UI. (For zero-code exploration, use the [Publisher App](./publisher-app.md); to build
+> ship a custom UI. (For zero-code exploration, use the [Publisher Console](./console.md); to build
 > against the data programmatically, see the [REST/MCP APIs](./api-overview.md).)
 
 Reach for an HTML data app when you want a self-contained, custom dashboard that ships with the model
 and needs no toolchain. A page can also be *embedded* into another site as an auto-resizing iframe
 with `Publisher.embed` (see [Embedding](#embedding)).
 
-The bundled `storefront` package ships one — a Chart.js dashboard in
-[`examples/storefront/public/index.html`](../examples/storefront/public/index.html), backed entirely
-by `Publisher.query` calls against the model's views:
+The bundled `storefront` package ships one, a four-tab Chart.js dashboard in
+[`examples/storefront/public/index.html`](../examples/storefront/public/index.html) with its modules
+in [`public/app/`](../examples/storefront/public/app/), backed by `Publisher.query` /
+`Publisher.queryFull` calls against the model's views and filtered by the model's own
+[givens](givens.md):
 
-![The storefront HTML data app — KPI tiles, category and trend charts, filters, and a top-products table](screenshots/storefront-data-app.png)
+![The storefront HTML data app: a filter row, four KPI cards, revenue by month and by state, and a category performance table](screenshots/storefront-data-app.png)
 
 Filters run new Malloy queries and repaint the KPIs, charts, and table in place — here in the bundled [`html-data-app`](../examples/html-data-app/) SaaS-subscriptions example:
 
@@ -60,6 +67,15 @@ files, and `publisher.json` live outside it and are never served; the page
 reaches model data only through the query API, which goes through the same
 governance (filters, access modifiers, authorize annotations) as any other
 Publisher client.
+
+Note the `/environments/.../packages/...` prefix. The web UI opens a model at the
+shorter `/<env>/<pkg>/<file>.malloy`, so that form is an easy guess for a page
+too, and it is a different route. A server running the built app redirects the
+guess to the URL above rather than leaving you on an app page that cannot find
+the file, once that environment and package are loaded; before that, and during a
+cold start, you get a 404 page naming the URL, and following it loads them.
+Running the Vite dev server instead, every unmatched path is handed to Vite, so
+there you get the app shell and a page naming the URL to use.
 
 A package becomes a data app simply by having a `public/` directory. There is no
 flag to set in `publisher.json`.
@@ -180,18 +196,36 @@ The third argument, `opts`, is optional:
 
 | Option | Type | Effect |
 |---|---|---|
-| `sourceName` | string | Run against a named source instead of passing a full `run:` string |
-| `queryName` | string | Run a saved query by name |
+| `sourceName` | string | The source a `queryName` view hangs off. Not valid alone: `sourceName` without `queryName` is a 400 |
+| `queryName` | string | Run a saved query or view by name. Pair with `sourceName` for a view on a source; alone it runs a model-level query |
 | `environment`, `package` | string | Override the environment or package the query targets, for pages not served under `/environments/<env>/packages/<pkg>/` |
+| `givens` | object | A name→value map bound as Malloy [`given:`](./givens.md) runtime parameters for this query. Safe parameterization, not string interpolation |
 
-`sourceName` and `queryName` are alternatives to passing a `run:` string as the
-second argument; use one path or the other. For parameterized results, run a
-model-defined view or source that already encodes the logic (via `sourceName` /
-`queryName`) rather than assembling a `run:` string on the page. The no-build page
-runtime does not pass per-query [givens](./givens.md) values (model-declared given
-*defaults* still apply), so never interpolate untrusted input into a `run:`
-string — constrain it to a known set, or keep the filtering in model-defined
-views.
+`queryName` (with `sourceName` for a view on a source) is the alternative to
+passing a `run:` string as the second argument; use one path or the other, and
+note `sourceName` on its own is a 400. For parameterized results, pass `givens`
+alongside a model-defined view or query rather than assembling a `run:` string
+on the page: Publisher binds those values as typed parameters server-side, so
+they are never concatenated into query text.
+
+**Do not interpolate free-text or otherwise untrusted input into the query
+string.** Route it through `givens` instead. Two limits on that, both of which
+matter:
+
+- A `filter<T>`-typed given takes Malloy filter syntax _as its value_, so
+  validate it against a known set like any other input. Scalar givens carry no
+  syntax at all.
+- `givens` is safe **parameterization**, not an authorization boundary. A
+  client-supplied given is client-trusted unless a trusted tier upstream sets it
+  from verified identity. Publisher has no per-package control that strips or
+  finalizes one: identity-bound givens are a planned milestone, not a shipped
+  feature. See [row-level-access.md](./row-level-access.md) and
+  [authorize.md](./authorize.md).
+
+Where you must build query text from input, constrain it to a known set and
+escape it, or keep the filtering in model-defined views. The
+`malloy-html-data-app-runtime` skill covers the same ground for an agent writing
+the page.
 
 `Publisher.queryFull(...)` takes the same arguments but resolves to the full
 Malloy result envelope rather than just the rows. Use it when you want to hand
@@ -225,7 +259,7 @@ hook a host application uses to pass a signed token into an embedded page (see
 
 What the Publisher server enforces on these routes is the package's own model
 governance: filter and runtime-parameter (given) rules, access modifiers, and
-`#(authorize)` annotations are applied when the query compiles and runs. The static file, page-listing, and
+`#(authorize)` annotations are applied when the query compiles and runs. The static file, data-app-listing, and
 events routes themselves are open; treat anything you put under `public/` as
 world-readable to anyone who can reach the server, and keep secrets in the models
 and the database, behind the query API, not in the page.
@@ -293,13 +327,13 @@ page never reaches network idle, so a Playwright or Puppeteer check that waits f
 hangs. Wait on `load` plus a content selector instead. This holds with watch mode off too, since
 the stream still connects to hear `mode: disabled`.
 
-## Full-screen apps in the page viewer
+## Full-screen apps in the data app viewer
 
-When you open a page from inside the Publisher App (the package's Pages list), it
-is shown in an iframe wrapped in light chrome (a title and an "open standalone"
-link). By default that iframe is sized to the page's content height: the page's
-runtime measures how tall its content actually is and the viewer matches it, so
-an ordinary dashboard never gets a nested scrollbar.
+When you open a data app from inside the Publisher Console (the package's Data
+Apps list), it is shown in an iframe wrapped in light chrome (a title and an
+"open standalone" link). By default that iframe is sized to the page's content
+height: the page's runtime measures how tall its content actually is and the
+viewer matches it, so an ordinary dashboard never gets a nested scrollbar.
 
 A full-screen app, such as a slide deck that sizes itself to `100vh`, has no
 content height to measure, so the default sizing would clip it. Declare that the
@@ -313,15 +347,16 @@ The viewer then makes the iframe fill the available height, so the page's own
 `100vh` resolves against the real viewport and looks the same as it does opened
 standalone. Because the viewer reads this tag from the page's markup, it works
 even for a page that does not load `publisher.js`. The tag must sit near the top
-of `<head>` (within the first 4KB, the same window the title is read from). Pages
+of `<head>` (within the first 4KB, the same window the title is read from). Apps
 without it keep content-height sizing, so marking one app full-screen does not
 affect any other page, and opening a page directly at
 `/environments/<env>/packages/<pkg>/<file>` is unaffected either way.
 
-## Listing a package's pages
+## Listing a package's data apps
 
-`GET /api/v0/environments/<env>/packages/<pkg>/pages` returns the package's HTML
-pages, which the Publisher App uses to show what a package offers. Each entry is:
+`GET /api/v0/environments/<env>/packages/<pkg>/data-apps` returns the package's
+HTML data apps, which the Publisher Console uses to show what a package offers.
+Each entry is:
 
 ```json
 {
@@ -337,7 +372,7 @@ pages, which the Publisher App uses to show what a package offers. Each entry is
 the page's `<title>` tag, falling back to `path`. An entry also carries
 `fit: "viewport"` when the page opts into filling the viewer with
 `<meta name="publisher:fit" content="viewport">` (see
-[Full-screen apps in the page viewer](#full-screen-apps-in-the-page-viewer)), and
+[Full-screen apps in the data app viewer](#full-screen-apps-in-the-data-app-viewer)), and
 omits the field otherwise. The listing covers `.html` and `.htm` files up to
 three directories deep and is empty for a package with no `public/` directory.
 
@@ -367,8 +402,8 @@ the manifest field reference is [packages.md](packages.md).
   your pages (for example to your own app's origin), and do so for any page that
   shows sensitive data. All responses carry `X-Content-Type-Options: nosniff`.
 - The query API applies the model's governance (filters, access modifiers,
-  authorize annotations). The static, pages, and events routes do not add their
-  own auth, so do not place anything sensitive under `public/`.
+  authorize annotations). The static, data-apps, and events routes do not add
+  their own auth, so do not place anything sensitive under `public/`.
 
 ## Reference
 
@@ -379,7 +414,7 @@ Endpoints used by an HTML data app:
 | `GET /environments/<env>/packages/<pkg>/<file>` | Serve a file from `public/` |
 | `GET /sdk/publisher.js` | The page runtime |
 | `POST /api/v0/environments/<env>/packages/<pkg>/models/<model>/query` | Run a query (used by `Publisher.query`) |
-| `GET /api/v0/environments/<env>/packages/<pkg>/pages` | List the package's pages |
+| `GET /api/v0/environments/<env>/packages/<pkg>/data-apps` | List the package's data apps |
 | `GET /api/v0/environments/<env>/packages/<pkg>/events` | Live-reload stream |
 
 See also:

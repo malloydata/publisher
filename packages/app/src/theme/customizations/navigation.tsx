@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /* eslint-disable react/display-name */
 import * as React from "react";
 import { Theme, alpha, Components } from "@mui/material/styles";

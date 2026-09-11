@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # create-malloy-package
 
 Scaffold a [Malloy Publisher](https://github.com/malloydata/publisher) package and a
@@ -10,9 +15,32 @@ instructions, and the Malloy agent skills copied in), so you can go from nothing
 
 ```bash
 mkdir my-data && cd my-data
-npm create malloy-package sales
+npm create @malloy-publisher/malloy-package@latest sales
 npm start
 ```
+
+Keep the `@latest`. `npm create` and `npx` both resolve through npm's npx cache, and an
+unversioned name is satisfied by any copy already in it, so on a machine that has run
+the command before npm reuses that copy instead of asking the registry. Without
+`@latest` you can scaffold from an old scaffolder, which pins an old server, silently.
+
+Because that is silent, the scaffolder also checks for itself. After it has finished
+writing, it asks the npm registry which version is `latest` and prints a note if the one
+you are running is older. That is the only network request this package makes: a plain
+unauthenticated GET of a public package document, sending nothing about you or your
+files. It is bounded at 1.5 seconds and fails open, so no network, a proxy, or a
+registry outage costs you a moment of silence and nothing else.
+
+The request is not made at all when `CI` or `NO_UPDATE_NOTIFIER` is set, so a build
+never pays for advice nobody will read, and a machine that has already switched off
+update notices stays switched off. Anywhere else, `CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK`
+does the same thing:
+
+```bash
+CREATE_MALLOY_PACKAGE_NO_UPDATE_CHECK=1 npm create @malloy-publisher/malloy-package@latest sales
+```
+
+Set any of the three to a value other than `0` or `false`.
 
 The workspace files land in the current directory and the package in `./sales`, so you
 run `npm start` from where you created it (no need to `cd` into the package). The
@@ -47,6 +75,13 @@ package to a `publisher.config.json` that was already there, the environment is
 whatever that file names, and the generated agent briefing spells out the URLs for
 this workspace. That briefing is `AGENTS.md`, or `AGENTS.malloy.md` in a directory
 that already had an `AGENTS.md` of its own; see "Running it again" below.
+
+A directory nobody has trusted yet is a second gate, separate from connecting the MCP
+server: Claude Code lists the Malloy tools and then refuses every call, and a
+`.claude/settings.json` allowlist is discarded rather than merged. Start Claude Code
+interactively in the directory once and answer the trust prompt, which is asked once per
+directory. A headless run is never asked, so it cannot clear the gate either. You will
+know it worked when the agent's first Malloy query returns data.
 
 ## Query it
 
@@ -86,12 +121,13 @@ no route falls through to the web app and answers `200` with an HTML page, which
 as success until you look at the body.
 
 Agents should reach the same models through MCP rather than curl, which buys them
-schema discovery, compile checks and a reload that needs no restart. The generated
-briefing lists those tools.
+schema discovery and compile checks. The generated briefing lists those tools. It also
+gives the REST route that recompiles a package after an edit, for an agent with nobody
+around to reconnect its MCP client.
 
 ## What it creates
 
-Running `npm create malloy-package sales` in an empty directory produces:
+Running `npm create @malloy-publisher/malloy-package@latest sales` in an empty directory produces:
 
 ```
 publisher.config.json    the server config, with your package registered
@@ -104,6 +140,10 @@ CLAUDE.md / AGENTS.md    short, package-scoped agent instructions
 .claude/skills/          the Malloy agent skills, copied in as real files
 sales/                   the package
   publisher.json         the manifest
+  malloy-config.json     for the VS Code/Cursor Malloy extension, whose relative-path
+                         resolution differs from Publisher's (machine-specific
+                         absolute path; drop it and open the editor at sales/ instead
+                         if you commit the package)
   sales.malloy           a starter model over the sample data
   data/sales.csv         the sample data
 ```
@@ -282,7 +322,7 @@ and binds `0.0.0.0`. Write the flag and the address with a space between them.
 ## Options
 
 ```bash
-npm create malloy-package [name] -- [options]
+npm create @malloy-publisher/malloy-package@latest [name] -- [options]
 ```
 
 `npm create` parses the command line with npm's own config parser before handing
@@ -291,26 +331,26 @@ it npm swallows `--force` as one of its own settings and turns `--data mydata.cs
 into two stray positional arguments:
 
 ```bash
-npm create malloy-package sales -- --data mydata.csv
-npm create malloy-package sales -- --client cursor
-npm create malloy-package sales -- --force
+npm create @malloy-publisher/malloy-package@latest sales -- --data mydata.csv
+npm create @malloy-publisher/malloy-package@latest sales -- --client cursor
+npm create @malloy-publisher/malloy-package@latest sales -- --force
 ```
 
 Running the published bin directly takes the flags as-is, with no separator:
 
 ```bash
-npx create-malloy-package sales --data mydata.csv
+npx @malloy-publisher/create-malloy-package@latest sales --data mydata.csv
 ```
 
 - `name` (positional): the package name. Omit it to only set up the agent workspace in
   the current directory (write the MCP connection, agent instructions, and skills)
   without scaffolding a package.
-- `--data <file>`: seed the package from your own CSV, Parquet, or XLSX file instead of
-  the built-in sample. The file is copied into the package and the starter model points
-  at it. DuckDB reads all three formats in place; an Excel file is read as its first
-  sheet. It seeds a new package, so it requires a package name: it cannot be combined
-  with the setup-only mode above, and passing it without a name is an error rather than
-  a silently ignored flag.
+- `--data <file>`: seed the package from your own CSV, Parquet, JSON, NDJSON, or XLSX
+  file instead of the built-in sample. The file is copied into the package and the
+  starter model points at it. DuckDB reads all of them in place, so nothing needs
+  converting first; an Excel file is read as its first sheet. It seeds a new package,
+  so it requires a package name: it cannot be combined with the setup-only mode above,
+  and passing it without a name is an error rather than a silently ignored flag.
 - `--client <claude-code|cursor>`: which agent client to wire up. Defaults to
   `claude-code`. `AGENTS.md` and the skills in `.claude/skills/` are written for every
   client; the MCP config file (`.mcp.json` for Claude Code, `.cursor/mcp.json` for
@@ -330,17 +370,32 @@ package's built-in DuckDB sandbox, so no database credentials are required.
 
 ### The workspace path
 
-Create the workspace somewhere whose full path is made only of letters, digits, `-`,
-`_`, `.` and `/`. DuckDB cannot read a data file under a path containing a space, a
-parenthesis, an apostrophe, or any non-ASCII character, and Publisher resolves the
-model's relative table path against the workspace directory before that check runs. So
-a single space anywhere above the package makes every model in it fail to load, with
-the server still reporting healthy and the only visible symptom an empty package list.
+Spaces, apostrophes, and quotes in the workspace path are fine for querying data: the
+model's data references are relative (`data/sales.csv`) and Publisher's per-package
+DuckDB sandbox resolves them against the package's working directory, so the workspace
+path never reaches DuckDB's path parser on that path. `~/Documents/My Projects`,
+`~/Google Drive`, `~/OneDrive - Company`, and a `2026-08-13 Project Name` directory all
+work — verified end-to-end (load and query a CSV) under paths containing a space, an
+apostrophe, and a double quote. An earlier version of this tool refused all of them on a
+premise that does not hold against the current server.
 
-Common directories that trip it: `~/Documents/My Projects`, `~/Google Drive`,
-`~/OneDrive - Company`, and any home directory whose username carries an accent. The
-scaffolder checks this before writing anything and refuses to run in such a directory,
-naming the offending character. Move to a path like `~/malloy-workspace` and run again.
+One server code path is an exception: the databases endpoint's schema probe builds an
+absolute path literal and does reach the path parser, so a spaced/quoted workspace path
+still loses row counts and column types there (the package still loads and queries
+correctly). Pre-existing server behavior, tracked separately — not a reason to avoid
+these paths.
+
+What is refused is a path outside **printable ASCII** — an accent, an emoji, any
+non-ASCII character, and every control character. This is the server's own rule, not
+DuckDB's: Publisher checks an environment path against `[\x20-\x7E]` before mounting a
+package from it, so a workspace under `~/josé` loads nothing. The server still reports
+`serving`, with the environment missing and the reason only in the `loadErrors` of
+`/api/v0/status`, so the scaffolder refuses up front instead — before anything is
+written, naming the character. Control characters are refused for the additional reason
+that they corrupt the commands and briefing files the scaffold writes verbatim.
+
+So a home directory whose username carries an accent needs the workspace somewhere
+else, such as `~/malloy-workspace`.
 
 ## License
 

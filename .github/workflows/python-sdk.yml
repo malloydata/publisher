@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 name: python-sdk
 
 on:
@@ -6,18 +9,242 @@ on:
     paths:
       - "api-doc.yaml"
       - "packages/python-client/**"
+      - ".github/workflows/python-sdk.yml"
   pull_request:
     paths:
       - "api-doc.yaml"
       - "packages/python-client/**"
+      # This file, so a change to `check_version` below is exercised by the PR
+      # that makes it — the same reason skills-npm.yml and
+      # create-malloy-package-npm.yml list their own files. It does mean a
+      # YAML-only edit also runs `build`, which installs uv and regenerates the
+      # client; that is a few minutes on a rare kind of PR, and the alternative
+      # is a check nothing ever runs before it is relied on.
+      - ".github/workflows/python-sdk.yml"
   workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# The GITHUB_TOKEN is read-only for every job here; a job that needs more
+# declares it itself.
+permissions:
+  contents: read
+
 jobs:
+  # The sibling of skills-npm.yml's and create-malloy-package-npm.yml's bump
+  # checks, against PyPI instead of npm. Same predicate, same fail-closed
+  # behaviour, different registry and a different place to read the version from
+  # (`[project] version` in pyproject.toml, not a package.json).
+  #
+  # READ THIS BEFORE TRUSTING IT: today this check cannot catch a missing bump,
+  # because `malloy-publisher-sdk` is not on PyPI at all. The `publish` job below
+  # is gated on a `refs/tags/sdk-python-*` ref, but this workflow's `on: push`
+  # names `branches:` and no `tags:` — so a tag push does not trigger the
+  # workflow and that job has never run. Nothing has ever been published, the
+  # project URL 404s, and this check reads that as "the version is free", which
+  # is the correct answer to the question it asks. It is here so the rule is
+  # uniform across all three published trains and so the coverage exists the
+  # day the Python client actually ships; it is NOT evidence that anything is
+  # currently guarded. It can still go red — an unreadable pyproject.toml, a
+  # version that is not major.minor.patch, or a registry answering neither 200
+  # nor 404 — so a green here is "nothing to check", not "nothing to fix".
+  # `.github/workflows/CONTEXT.md` records the trigger gap, including the one
+  # way that publish job IS reachable today (a `workflow_dispatch` on a tag ref).
+  check_version:
+    name: Require a version bump when the published content changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # This job only asks a registry two questions. Every call it makes is
+    # --max-time bounded, but a bound per call is not a bound on the job, and
+    # without this a hung step would sit on a runner for GitHub's 6-hour default
+    # blocking a PR on a check that can neither pass nor fail.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The check diffs this PR against its base, which needs the merge base
+          # in the clone. The default depth-1 checkout of a pull_request is a
+          # merge commit with no parents fetched, so `origin/<base>` does not
+          # resolve and the diff cannot be computed.
+          fetch-depth: 0
+
+      # For tomllib, which is stdlib from 3.11. The same reason and the same
+      # version the build job below pins.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check the version against PyPI
+        env:
+          # Through env rather than interpolated into the script body, as every
+          # other registry-facing step in this repo does.
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          # Scoped to what the published wheel is built FROM, which for a
+          # generated client is two things: the package directory, and the
+          # OpenAPI spec it is generated out of (build-python-sdk.sh runs
+          # openapi-python-client against ../../api-doc.yaml). This workflow file
+          # is in the `paths:` trigger and deliberately not here: editing it
+          # changes no published byte.
+          PATHS=(api-doc.yaml packages/python-client)
+
+          # Assert every entry exists: `git diff -- does/not/exist` exits 0 with
+          # EMPTY output, which lands in the skip branch below and reports "no
+          # published content changed", so a typo or a rename silently switches
+          # this check off for good while the trigger keeps firing.
+          for p in "${PATHS[@]}"; do
+            [ -e "$p" ] && continue
+            echo "::error title=Version::watched path '${p}' does not exist in this checkout, so the scoping diff can never match it and this check would silently pass everything. Fix the PATHS list in this workflow."
+            exit 1
+          done
+
+          # Fails CLOSED: if the diff cannot be computed the check RUNS, it does
+          # not skip. A skip is the outcome that lets an unbumped change through,
+          # so it has to be reached deliberately and never by accident.
+          SCOPED=1
+          CHANGED=""
+          if ! git rev-parse --verify --quiet "origin/${BASE_REF}" >/dev/null; then
+            echo "::warning title=Version::could not resolve origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
+            SCOPED=0
+          elif ! CHANGED="$(git diff --name-only "origin/${BASE_REF}...HEAD" -- "${PATHS[@]}")"; then
+            echo "::warning title=Version::could not diff against origin/${BASE_REF}, so this PR's changed paths are unknown; checking the version regardless"
+            SCOPED=0
+          fi
+
+          if [ "$SCOPED" = 1 ] && [ -z "$CHANGED" ]; then
+            echo "::notice title=Version::no published python-client content changed in this PR (checked ${PATHS[*]}); no version bump required"
+            exit 0
+          fi
+
+          # The same tomllib read build-python-sdk.sh uses for the version it
+          # stamps into __init__.py, so the two cannot disagree about where the
+          # version lives. Name, version and the URL slug in one interpreter
+          # start; the slug is PEP 503 normalisation (runs of `-_.` collapse to a
+          # single `-`, lowercased). `tr -s '_.-' '-'` would do that correctly, but
+          # the name has to come out of the TOML anyway, so a second process buys
+          # only a second place for the normalisation to drift from the spec — and
+          # a slug that is subtly wrong builds a URL that 404s for the wrong
+          # reason, which this check would then read as "nothing published".
+          read -r NAME DECLARED SLUG <<<"$(python -c '
+          import re, tomllib
+          with open("packages/python-client/pyproject.toml", "rb") as f:
+              p = tomllib.load(f)["project"]
+          print(p["name"], p["version"], re.sub(r"[-_.]+", "-", p["name"]).lower())
+          ')"
+          if [ -z "$NAME" ] || [ -z "$DECLARED" ] || [ -z "$SLUG" ]; then
+            echo "::error title=Version::could not read name and version from packages/python-client/pyproject.toml"
+            exit 1
+          fi
+
+          # VALIDATED before it reaches a URL, a `sort -V` or an annotation, the
+          # same way the npm siblings validate theirs, and for the same three
+          # reasons. It is interpolated into the PyPI URL below, so a value with a
+          # slash or a `?` asks a different question than the one this check
+          # reports. It is echoed into ::error lines, and it comes from the PR's
+          # own pyproject.toml, so a newline plus `::` forges workflow commands.
+          # And `sort -V` needs two comparable versions or the ahead-of-latest
+          # test is meaningless.
+          #
+          # Byte-for-byte the npm siblings' pattern, deliberately, so "what is a
+          # version here" has one answer across all three trains. PEP 440 is much
+          # wider (`1!2.0`, `0.2.0.post1`, `1.0b2`) and every one of those is
+          # refused: the release machinery derives and compares plain
+          # major.minor.patch, and `sort -V` does not implement PEP 440 ordering,
+          # so a version this lets through would be ranked by rules nobody
+          # intended. Widen it here, in the npm siblings and in release.yml
+          # together, or not at all.
+          if [[ ! "$DECLARED" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            printf '%s\n' "$DECLARED" | sed 's/^/[pyproject] /'
+            echo "::error title=Version::the version in packages/python-client/pyproject.toml (logged above) is not a plain major.minor.patch with an optional -prerelease or +build, so it cannot be compared with PyPI"
+            exit 1
+          fi
+
+          # Only the status code is ever printed; a JSON body would be untrusted
+          # text. No `--fail`: a 404 is an ANSWER here, not a failure, so the
+          # code is read rather than the exit status. A transport failure prints
+          # 000, and `${code:-000}` covers a curl that printed nothing at all.
+          pypi_status() {
+            local code
+            # --max-time, like every other registry call in these workflows.
+            # Without it a PyPI edge that accepts the connection and never
+            # answers hangs this step, and a job-level timeout-minutes only
+            # caps the damage at 10 minutes rather than preventing it — a bound
+            # per call is what turns a hang into a diagnosable failure.
+            code="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' \
+              "https://pypi.org/pypi/$1/json" 2>/dev/null)" || true
+            printf '%s' "${code:-000}"
+          }
+
+          # Nothing published at all. Distinguished from "this version is free"
+          # because it is the state today and a reader who sees a green check
+          # should know which of the two it means.
+          PROJECT_STATUS="$(pypi_status "$SLUG")"
+          if [ "$PROJECT_STATUS" = "404" ]; then
+            echo "::notice title=Version::$NAME is not on PyPI at all, so $DECLARED is free. Nothing is currently enforced by this check — see the comment on this job."
+            exit 0
+          fi
+          if [ "$PROJECT_STATUS" != "200" ]; then
+            echo "::error title=Version::PyPI answered $PROJECT_STATUS for $NAME; an unanswered registry is not a green light"
+            exit 1
+          fi
+
+          # Named once, so the error below cannot claim this PR touched published
+          # content when the scoping diff is the very thing that failed.
+          if [ "$SCOPED" = 1 ]; then
+            WHY="this PR changes published python-client content"
+          else
+            WHY="this PR's changed paths could not be determined"
+          fi
+
+          # Is this exact version already released? Per-version 404 is the
+          # free-version answer, the same shape as npm's E404.
+          VERSION_STATUS="$(pypi_status "$SLUG/$DECLARED")"
+          if [ "$VERSION_STATUS" = "200" ]; then
+            echo "::error title=Version::${WHY}, and $NAME $DECLARED is already on PyPI. Bump the version in packages/python-client/pyproject.toml."
+            exit 1
+          fi
+          if [ "$VERSION_STATUS" != "404" ]; then
+            echo "::error title=Version::PyPI answered $VERSION_STATUS for $NAME $DECLARED; an unanswered registry is not a green light"
+            exit 1
+          fi
+
+          # And is it above the latest release? A free version can still be below
+          # it, and publishing that would leave `pip install malloy-publisher-sdk`
+          # resolving something newer than what this repo declares.
+          if ! LATEST="$(curl -sS --max-time 20 "https://pypi.org/pypi/$SLUG/json" \
+                 | python -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')" \
+             || [ -z "$LATEST" ]; then
+            echo "::error title=Version::could not read $NAME's latest version from PyPI"
+            exit 1
+          fi
+          # Same `sort -V` prerelease inversion as the npm siblings (it ranks
+          # 0.2.0-rc.1 above 0.2.0), and the same resolution — skip the test
+          # rather than implement semver ordering in shell. The reason it is safe
+          # differs, though, and is weaker: python-sdk.yml has NO dist-tag
+          # routing, so nothing here withholds a prerelease from being "latest"
+          # the way npm-sdk.yml does. What holds instead is on the consumer side:
+          # pip does not install a prerelease unless asked with --pre. If this
+          # package ever ships a prerelease, verify that assumption first.
+          if [[ "$DECLARED" == *-* ]]; then
+            echo "::notice title=Version::$NAME $DECLARED is free; skipping the above-latest test because it is a prerelease"
+            exit 0
+          fi
+
+          if [ "$DECLARED" != "$(printf '%s\n%s\n' "$LATEST" "$DECLARED" | sort -V | tail -1)" ]; then
+            echo "::error title=Version::packages/python-client/pyproject.toml declares $DECLARED, which is BELOW PyPI's latest ($LATEST). Bump above $LATEST."
+            exit 1
+          fi
+
+          echo "::notice title=Version::$NAME $DECLARED is free and above PyPI's latest ($LATEST)"
+
   build:
     runs-on: ubuntu-latest
+    # Runs the same generation-and-test script as publish, minus the upload.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +263,29 @@ jobs:
         run: packages/python-client/scripts/build-python-sdk.sh
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/sdk-python-')
+    name: Publish to PyPI
+    # The job holding PYPI_TOKEN and doing the most work: uv install, client
+    # generation, tests, build, the importability guard, then twine. Bounded for
+    # the reason its siblings are, and generously, because it is the one job here
+    # whose failure mode is an unusable upload rather than a red check.
+    timeout-minutes: 30
+    # The same gate skills-npm.yml and create-malloy-package-npm.yml carry, and
+    # for the same reason: workflow_dispatch offers every branch in the ref
+    # dropdown, and the definition that runs is the one on the ref you pick, so
+    # `needs: build` is no protection — that job would build the same branch.
+    # release.yml's publish-packages dispatches this workflow on main, so the
+    # guard holds on that path too.
+    #
+    # This REPLACED `startsWith(github.ref, 'refs/tags/sdk-python-')`, which had
+    # never run once: `on: push` named `branches: [main]` and no `tags:`, so a
+    # tag push did not trigger this workflow at all and the job was unreachable.
+    # It is not repaired as a tag trigger, it is replaced, because a tag push
+    # cannot be made to work here without giving up the `paths:` filter above —
+    # a tag pointed at a commit already on main pushes no new commits, so a
+    # `paths` filter has no changed files to match and would filter the run out.
+    # Publishing now goes the same way the other two trains go: dispatched on
+    # main by publish-packages, or dispatched on main by hand.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -47,11 +296,168 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Build wheel and sdist
+      # The sibling of skills-npm.yml's "Verify this version is not already
+      # published", and the reason is stronger here, not weaker: a PyPI filename
+      # can never be reused even after a delete, so a second upload of a version
+      # is refused for good rather than overwritten.
+      #
+      # This is for the human path. release.yml asks the same question before it
+      # dispatches and simply does not dispatch a version already on PyPI. First
+      # publish of a project answers 404 here and proceeds, which is correct and
+      # is the one run where nothing has been proven end to end before — see
+      # CONTEXT.md on the first publish.
+      - name: Verify this version is not already published
         run: |
-          pip install build
+          read -r NAME DECLARED SLUG <<<"$(python -c '
+          import re, tomllib
+          with open("packages/python-client/pyproject.toml", "rb") as f:
+              p = tomllib.load(f)["project"]
+          print(p["name"], p["version"], re.sub(r"[-_.]+", "-", p["name"]).lower())
+          ')"
+          if [ -z "$NAME" ] || [ -z "$DECLARED" ] || [ -z "$SLUG" ]; then
+            echo "::error title=Version::could not read name and version from packages/python-client/pyproject.toml"
+            exit 1
+          fi
+          # Same pattern as the bump check above and as the npm siblings, so what
+          # counts as a version has one answer across all three trains.
+          if [[ ! "$DECLARED" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            printf '%s\n' "$DECLARED" | sed 's/^/[pyproject] /'
+            echo "::error title=Version::the version in packages/python-client/pyproject.toml (logged above) is not a plain major.minor.patch with an optional -prerelease or +build"
+            exit 1
+          fi
+          # The STATUS is the answer; no --fail, because a 404 is an answer and
+          # not a failure. A transport failure makes curl print 000, which falls
+          # through to "did not answer" rather than to a green light.
+          STATUS="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+            "https://pypi.org/pypi/${SLUG}/${DECLARED}/json" 2>&1)" || STATUS=000
+          case "$STATUS" in
+            404)
+              echo "::notice title=Version::$NAME $DECLARED is not on PyPI; publishing"
+              ;;
+            200)
+              echo "::error title=Version::$NAME $DECLARED is already on PyPI, and a PyPI filename can never be reused. Bump the version in packages/python-client/pyproject.toml."
+              exit 1
+              ;;
+            *)
+              printf '%s\n' "$STATUS" | sed 's/^/[pypi] /'
+              echo "::error title=Version::PyPI answered ${STATUS} for $NAME $DECLARED; an unanswered registry is not a green light"
+              exit 1
+              ;;
+          esac
+
+      # `pip install build && python -m build` is NOT enough here, and got this
+      # wrong for as long as the job was unreachable. Almost none of this package
+      # is in git: packages/python-client/.gitignore is `malloy_publisher_sdk/*`
+      # with `!malloy_publisher_sdk/__init__.py`, so a checkout contains exactly
+      # ONE tracked python file, and that file's line 6 is
+      # `from .client import AuthenticatedClient, Client` — a module generated
+      # from api-doc.yaml and never committed. `needs: build` does not help: that
+      # job regenerates on its own runner and shares no artifact.
+      #
+      # Measured against a `git archive` of the tracked tree: `python -m build`
+      # SUCCEEDS, the wheel installs, and `import malloy_publisher_sdk` raises
+      # ModuleNotFoundError: No module named 'malloy_publisher_sdk.client'. So the
+      # first upload would have been a dead package under a filename PyPI can
+      # never reuse.
+      #
+      # Run the one script that knows how to produce this package instead, the
+      # same one the build job runs. BUILD_PACKAGE=true is what makes its step 9
+      # emit dist/, and it validates the spec, regenerates the client, formats it
+      # and runs the tests on the way.
+      - name: Install uv via pip
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          # Quoted, unlike the copy in `build` above. Same step otherwise: the
+          # two jobs run the same script and cannot share steps without a
+          # composite action.
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Generate the client and build wheel and sdist
+        env:
+          BUILD_PACKAGE: "true"
+        run: packages/python-client/scripts/build-python-sdk.sh
+
+      # The guard that makes the above impossible to regress silently. Asserting
+      # "we remembered to regenerate" is what failed before; this asserts the
+      # artifact, by installing the actual wheel into a throwaway venv and
+      # importing it. That import is exactly what a user's first `pip install`
+      # does, it is the statement that was broken, and it costs seconds.
+      #
+      # Deliberately BEFORE twine, because a PyPI filename cannot be reused: a
+      # check afterwards would only tell you which version you had burned.
+      - name: Verify the wheel is importable before uploading it
+        run: |
+          set -euo pipefail
           cd packages/python-client
-          python -m build
+          # A glob array, not `ls`: shellcheck's SC2012, and it also makes the
+          # count and the chosen file come from one expansion so they cannot
+          # disagree.
+          shopt -s nullglob
+          WHEELS=(dist/*.whl)
+          if [ "${#WHEELS[@]}" -eq 0 ]; then
+            echo "::error title=Publish::no wheel in packages/python-client/dist/, so there is nothing to verify or upload"
+            exit 1
+          fi
+          # Exactly one, or the check attests to a file `twine upload dist/*` may
+          # not be uploading. build-python-sdk.sh does `rm -rf dist/` first, so
+          # more than one means something else put a wheel there.
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            printf '[dist] %s\n' "${WHEELS[@]}"
+            echo "::error title=Publish::expected exactly one wheel in dist/, found ${#WHEELS[@]}; it is not clear which one would be published"
+            exit 1
+          fi
+          WHEEL="${WHEELS[0]}"
+
+          # The sdist too, because `twine upload dist/*` ships BOTH and a PyPI
+          # filename can never be reused for either. Almost nothing resolves an
+          # sdist for a pure-python wheel, which is why this is a containment
+          # check rather than an install: it asserts the generated client is
+          # actually inside the tarball, which is the failure that motivated all
+          # of this. One sdist, for the same reason as one wheel.
+          SDISTS=(dist/*.tar.gz)
+          if [ "${#SDISTS[@]}" -ne 1 ]; then
+            printf '[dist] %s\n' "${SDISTS[@]}"
+            echo "::error title=Publish::expected exactly one sdist in dist/, found ${#SDISTS[@]}"
+            exit 1
+          fi
+          # Listed ONCE into a variable rather than piped into `grep -q`, and
+          # that is not a style preference. `grep -q` exits on its first match;
+          # malloy_publisher_sdk/client.py is the SECOND of ~230 entries, so tar
+          # takes EPIPE on its next write, `pipefail` reports the pipeline as
+          # failed, and the check announces the file is missing WHILE LOGGING IT
+          # AS PRESENT. It is a race — whether tar has already emptied its
+          # listing into the pipe buffer decides it — which is why the harness
+          # for this step passed and the first real run failed with
+          # `tar: stdout: write error` above a listing containing client.py.
+          # Reading it once also makes the logged listing the same bytes the
+          # check ran against, rather than a second tar that could differ.
+          # Captured through `if !` rather than left to `set -e`, so a tarball
+          # that cannot be read at all still gets an annotation naming what
+          # happened. Left bare, that case aborts the step with only tar's
+          # stderr, and "missing client" would have been the wrong diagnosis
+          # for it anyway.
+          if ! SDIST_LISTING="$(tar -tzf "${SDISTS[0]}")"; then
+            echo "::error title=Publish::${SDISTS[0]} could not be listed as a gzipped tarball, so the sdist that would be uploaded is unreadable. NOTHING was uploaded."
+            exit 1
+          fi
+          if ! grep -qE '/malloy_publisher_sdk/client\.py$' <<<"$SDIST_LISTING"; then
+            while IFS= read -r entry; do printf '[sdist] %s\n' "$entry"; done <<<"$SDIST_LISTING"
+            echo "::error title=Publish::${SDISTS[0]} does not contain malloy_publisher_sdk/client.py, so the sdist is missing the generated client (logged above). NOTHING was uploaded."
+            exit 1
+          fi
+          python -m venv /tmp/wheelcheck
+          /tmp/wheelcheck/bin/pip install --quiet "$WHEEL"
+          # From /tmp, so the source tree on disk cannot satisfy the import and
+          # make an empty wheel look fine.
+          if ! (cd /tmp && /tmp/wheelcheck/bin/python -c '
+          import malloy_publisher_sdk as m
+          from malloy_publisher_sdk import AuthenticatedClient, Client
+          print("import ok:", m.__name__)
+          '); then
+            echo "::error title=Publish::the built wheel ${WHEEL} does not import. The generated client is almost certainly missing — packages/python-client/malloy_publisher_sdk/ is gitignored except __init__.py, so the wheel must be built by scripts/build-python-sdk.sh and not by a bare \`python -m build\` on a checkout. NOTHING was uploaded."
+            exit 1
+          fi
 
       - name: Publish to PyPI
         env:
@@ -60,4 +466,4 @@ jobs:
         run: |
           pip install twine
           cd packages/python-client
-          twine upload dist/* --non-interactive 
+          twine upload dist/* --non-interactive

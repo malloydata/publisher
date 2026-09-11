@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { publisherMeter } from "../telemetry";
 
 import type { MemoryGovernorConfig } from "../config";

@@ -1,0 +1,5 @@
+{
+   "name": "dashboards-lint",
+   "version": "1.0.0",
+   "description": "Fixture whose dashboards/ is deliberately broken, to pin the load-time lint"
+}

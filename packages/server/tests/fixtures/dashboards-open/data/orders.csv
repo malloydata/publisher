@@ -1,0 +1,7 @@
+id,region,brand,amount,ordered_at
+1,US,Levi's,100,2024-01-15
+2,US,Nike,200,2024-02-10
+3,US,Levi's,50,2024-03-05
+4,EU,Nike,300,2024-01-20
+5,EU,Levi's,400,2024-02-25
+6,EU,Nike,500,2024-03-30

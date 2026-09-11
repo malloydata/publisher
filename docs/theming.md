@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Theming
 
 > What this is: how to control Publisher's light/dark theme and chart palette. For the full public

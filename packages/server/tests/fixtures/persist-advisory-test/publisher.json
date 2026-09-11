@@ -1,0 +1,5 @@
+{
+   "name": "persist-advisory-test",
+   "version": "1.0.0",
+   "description": "DuckDB persist fixture whose only #@ persist finding is an ADVISORY (an unrecognized key). The other side of the incremental gate's severity split: it loads, serves, and carries the finding on the package's warnings."
+}

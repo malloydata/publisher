@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 name: Publish Docker Image to Docker Hub
 
 on:
@@ -15,6 +18,11 @@ on:
 env:
   REGISTRY_IMAGE: ms2data/malloy-publisher
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# The GITHUB_TOKEN is read-only for every job here; a job that needs more
+# declares it itself.
+permissions:
+  contents: read
 
 jobs:
   build:

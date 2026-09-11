@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Malloy Publisher CLI
 
 Command-line interface for managing Malloy Publisher resources.

@@ -1,6 +1,10 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 
+import type { components } from "../api";
 import { BadRequestError } from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
 import { PackageController } from "./package.controller";
@@ -19,6 +23,8 @@ describe("PackageController.addPackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
@@ -57,6 +63,8 @@ describe("PackageController.addPackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => invalidMsg,
          formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       // installPackage mimics the real contract: invoke the validator and, if it
@@ -107,6 +115,8 @@ describe("PackageController.addPackage explores validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const addPackage = sinon.stub().resolves(mockPackage);
@@ -146,6 +156,8 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const unloadPackage = sinon.stub().resolves(undefined);
@@ -176,6 +188,8 @@ describe("PackageController.addPackage persistence policy validation", () => {
       const mockPackage = {
          formatInvalidExplores: () => "",
          formatInvalidPersistencePolicy: () => cronMsg,
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const installPackage = sinon
@@ -214,6 +228,79 @@ describe("PackageController.addPackage persistence policy validation", () => {
    });
 });
 
+describe("PackageController.addPackage incremental policy validation", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   it("joins the incremental gate into the same 400 as the other publish gates", async () => {
+      // The incremental-refresh gate is the fourth strict-at-publish check. A
+      // publish that trips two gates must report BOTH — the author fixes one
+      // round-trip, not one message at a time.
+      const cronMsg =
+         'materialization.schedule (cron) in publisher.json requires "scope": ' +
+         '"version".';
+      const incrementalMsg =
+         '#@ persist source "daily_revenue" declares refresh="incremental" but ' +
+         "no watermark=.";
+      const mockPackage = {
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => cronMsg,
+         formatInvalidIncrementalPolicy: () => incrementalMsg,
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      };
+      const unloadPackage = sinon.stub().resolves(undefined);
+      const addPackage = sinon.stub().resolves(mockPackage);
+      const getEnvironment = sinon
+         .stub()
+         .resolves({ addPackage, unloadPackage });
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+
+      const error = await controller
+         .addPackage("env", { name: "pkg", description: "test" })
+         .then(
+            () => undefined,
+            (err: unknown) => err as Error,
+         );
+
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error!.message).toBe(`${cronMsg}\n${incrementalMsg}`);
+      expect(unloadPackage.calledOnceWith("pkg")).toBe(true);
+      expect(addPackageToDatabase.called).toBe(false);
+   });
+
+   it("publishes when the incremental declaration is the only thing declared and it is valid", async () => {
+      const mockPackage = {
+         formatInvalidExplores: () => "",
+         formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
+         formatPersistenceCollisionRejections: () => "",
+      };
+      const addPackage = sinon.stub().resolves(mockPackage);
+      const getEnvironment = sinon.stub().resolves({ addPackage });
+      const addPackageToDatabase = sinon.stub().resolves(undefined);
+      const environmentStore = {
+         publisherConfigIsFrozen: false,
+         getEnvironment,
+         addPackageToDatabase,
+      } as unknown as EnvironmentStore;
+
+      const controller = new PackageController(environmentStore);
+      await controller.addPackage("env", { name: "pkg", description: "test" });
+
+      expect(addPackageToDatabase.calledOnceWith("env", "pkg")).toBe(true);
+   });
+});
+
 describe("PackageController.updatePackage explores validation", () => {
    afterEach(() => {
       sinon.restore();
@@ -231,6 +318,8 @@ describe("PackageController.updatePackage explores validation", () => {
          formatInvalidExplores: (override?: string[]) =>
             override?.includes("nope.malloy") ? invalidMsg : "",
          formatInvalidPersistencePolicy: () => "",
+         formatInvalidIncrementalPolicy: () => "",
+         formatInvalidPreaggregatePolicy: () => "",
          formatPersistenceCollisionRejections: () => "",
       };
       const installPackage = sinon
@@ -269,5 +358,83 @@ describe("PackageController.updatePackage explores validation", () => {
       // The rejected swap never reached the metadata-apply / persist steps.
       expect(updatePackage.called).toBe(false);
       expect(addPackageToDatabase.called).toBe(false);
+   });
+});
+
+/** The schema's own type, so a stubbed status cannot drift from the real one. */
+type EmbeddingIndex =
+   | components["schemas"]["PackageEmbeddingIndex"]
+   | undefined;
+
+describe("PackageController.getPackage embeddingIndex", () => {
+   afterEach(() => {
+      sinon.restore();
+   });
+
+   /**
+    * A controller whose package metadata is fixed and whose index lookup is
+    * stubbed to a known status. The index lookup is not the oracle here — the
+    * defect being pinned is control flow in the controller, where the
+    * enrichment sat below a `reload` early return, so `?reload=true` answered
+    * without the field. Stubbing it is what lets both branches be compared
+    * without an embedding provider, which `getPackageEmbeddingStatus`
+    * otherwise short-circuits on.
+    */
+   const controllerWithIndex = (embeddingIndex: EmbeddingIndex) => {
+      const metadata = { name: "pkg", resource: "/pkg" };
+      const _package = { getPackageMetadata: () => metadata };
+      const getPackage = sinon.stub().resolves(_package);
+      const environment = { getPackage };
+      const getEnvironment = sinon.stub().resolves(environment);
+      const environmentStore = {
+         getEnvironment,
+      } as unknown as EnvironmentStore;
+      const controller = new PackageController(environmentStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               embeddingIndexStatus: () => Promise<unknown>;
+            },
+            "embeddingIndexStatus",
+         )
+         .resolves(embeddingIndex);
+      return { controller, getPackage };
+   };
+
+   it("reports the index on a plain GET and on a reload alike", async () => {
+      const status: EmbeddingIndex = { status: "indexing" };
+
+      const plain = controllerWithIndex(status);
+      const withoutReload = await plain.controller.getPackage(
+         "env",
+         "pkg",
+         false,
+      );
+
+      const reloaded = controllerWithIndex(status);
+      const withReload = await reloaded.controller.getPackage(
+         "env",
+         "pkg",
+         true,
+      );
+
+      // Same resource, same field, whichever way it was asked for. A reload
+      // is exactly when a caller starts polling `status`, because a reload
+      // invalidates the index — so this was the one response that omitted it.
+      expect(withoutReload.embeddingIndex).toEqual(status);
+      expect(withReload.embeddingIndex).toEqual(status);
+
+      // And the reload really did reload: `getPackage(name, true)` is the
+      // in-place recompile, so this is not the plain path in disguise.
+      expect(reloaded.getPackage.calledWith("pkg", true)).toBe(true);
+   });
+
+   it("omits the field entirely when there is no index to describe", async () => {
+      // `undefined` is how a server with no embedding provider answers. The
+      // key must be ABSENT rather than null: the schema documents absence as
+      // "no provider", so an explicit null would report a different fact.
+      const { controller } = controllerWithIndex(undefined);
+      const pkg = await controller.getPackage("env", "pkg", true);
+      expect("embeddingIndex" in pkg).toBe(false);
    });
 });

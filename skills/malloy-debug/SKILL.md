@@ -2,6 +2,10 @@
 name: malloy-debug
 description: Fix Malloy compile errors and understand error messages. Use when encountering errors in .malloy files, user says "fix this error", "malloy error", "compile error", "syntax error", or sees 20+ cascading errors.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Debugging Malloy Errors
 
@@ -9,11 +13,12 @@ description: Fix Malloy compile errors and understand error messages. Use when e
 
 ## Get Diagnostics
 
-**Claude Code (in VS Code terminal):** Call `mcp__ide__getDiagnostics` with the file URI.
+Hosts expose errors differently, so take the best path you actually have:
 
-**VS Code Copilot / Cursor:** Use the `ReadLints` tool on the file path, or open the file and check lints in the editor.
+1. **An editor-diagnostics tool**, if your host offers one - call it on the file and read the errors straight out.
+2. **Otherwise, compile by running.** Run any query against the source with your query tool and read the error it returns. Every host that can run Malloy can do this, including chat surfaces with no editor.
 
-**Claude Code (standalone terminal):** No IDE diagnostics available. Ask the user to open the file in VS Code with the Malloy extension and report the errors.
+Only ask the user to open the file in an editor when you know they have the model open in one. On a hosted chat surface there is no local checkout to open, and the query path above is the one that works.
 
 ## Strategy
 
@@ -32,9 +37,11 @@ description: Fix Malloy compile errors and understand error messages. Use when e
 | "Can't use type string" | Cast: `field::number` |
 | "Aggregate not allowed in where" | Use `having:` instead |
 | 20+ random errors | Backtick reserved word (`` `Date` ``, `` `Hour` ``, `` `number` ``) |
-| "Can't find field" with `rename:` | Never use `rename:`. It's incompatible with `include {}`. Use `internal:` + `dimension:` instead |
+| `Can't find field 'X' to set access modifier` | An `include {}` sits before the `extend { rename: }`. Rename first, then `include {}` naming the field by its new name (see `skill:malloy-gotchas-modeling` § Field Management) |
+| `IO Error: No files found that match the pattern "data/x.csv"` | Data-file path, not the model. Relative `duckdb.table()` paths resolve against the DuckDB `workingDirectory`; Publisher sets it to the package root, but a relative `workingDirectory` in `malloy-config.json` resolves against the process cwd. Make it absolute (see `skill:malloy-gotchas-modeling` § Relative Data-File Paths). The "not defined" errors under it are cascade, not real |
 | Import path errors | Check paths: `import "orders.malloy"`. All files should be in the same directory (flat layout) |
-| `from()` errors | Verify the source query returns the expected columns, check that imported sources are defined |
+| `unexpected 'from'` | `from()` was removed from the language. Use the query directly: `source: x is q extend {...}`, or `source: x is (q -> {...}) extend {...}` |
+| Query-based source errors | Verify the source query returns the expected columns, check that imported sources are defined |
 | "Cannot redefine 'X'" | Field already exists from query-based source (`-> { group_by, aggregate }`). Remove the dimension, add only NEW derived fields in `extend {}`. Use `include {}` to add `#(doc)` tags to existing fields. |
 
 ## Gotchas Checklist
@@ -118,4 +125,4 @@ a / b                           a / nullif(b, 0)
 | "Can't find source X" | Add `import "X.malloy"` at top of file (all files in same directory) |
 | Wrong import path | All `.malloy` files should be in the package root (flat layout). Use `import "orders.malloy"`, not `import "../sources/orders.malloy"` |
 | Circular imports | Source A imports Source B which imports Source A. Restructure to break the cycle |
-| `from()` "Can't find field" | Verify the source query's GROUP BY and aggregate fields match what you reference in `extend {}` |
+| Query-based source "Can't find field" | Verify the source query's GROUP BY and aggregate fields match what you reference in `extend {}` |

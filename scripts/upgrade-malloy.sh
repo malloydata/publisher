@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
 
 if [ $# -gt 1 ]; then
   echo "Usage: $0 [NEW_VERSION]"

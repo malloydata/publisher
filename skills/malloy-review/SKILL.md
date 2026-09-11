@@ -2,6 +2,10 @@
 name: malloy-review
 description: Malloy semantic-model code review. Invoke when the user asks to review, audit, or critique a `.malloy` file, a folder of Malloy models, or a GitHub PR that touches Malloy. Enforces project modeling standards and emits a navigable review file.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Malloy Code Review
 

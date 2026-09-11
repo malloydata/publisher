@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Real-compiler + real-DuckDB contract for the virtual-source serve transform.
 // The declared serve-shape schema is trusted on faith by the compiler (it does
 // NOT type-check a virtual source's columns), so the generate -> compile ->
@@ -20,10 +23,12 @@ import {
    buildVirtualMap,
    deriveServeBindings,
    duckdbTypeToMalloy,
+   groupAliasesByName,
    extractJoins,
    extractRefinements,
    extractViews,
    narrowSchemaToPublic,
+   serveShapeDiagnostics,
    sliceSourceRange,
    type ServeBinding,
 } from "./materialization_serve_transform";
@@ -60,7 +65,7 @@ describe("buildServeShapeModel", () => {
    it("emits the flag, a double-colon type shape, and the virtual source line", () => {
       const binding: ServeBinding = {
          sourceName: "mz_orders",
-         connectionName: "lake",
+         destinationName: "lake",
          virtualHandle: "mz_orders__g1",
          tablePath: "analytics.mz_orders",
          schema: [
@@ -87,7 +92,7 @@ describe("buildServeShapeModel", () => {
    it("backtick-quotes a field name that is not a bare identifier", () => {
       const { modelText } = buildServeShapeModel("s", {
          sourceName: "s",
-         connectionName: "lake",
+         destinationName: "lake",
          virtualHandle: "h",
          tablePath: "t",
          schema: [{ name: "odd name", type: "VARCHAR" }],
@@ -101,14 +106,14 @@ describe("buildVirtualMap", () => {
       const map = buildVirtualMap([
          {
             sourceName: "a",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h1",
             tablePath: "analytics.a",
             schema: [],
          },
          {
             sourceName: "b",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h2",
             tablePath: "b",
             schema: [],
@@ -124,7 +129,7 @@ describe("buildVirtualMap", () => {
       const map = buildVirtualMap([
          {
             sourceName: "a",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h",
             tablePath: '"My Table"',
             schema: [],
@@ -161,7 +166,7 @@ describe("serve transform end-to-end (generate -> compile -> bind -> run)", () =
       }));
       return {
          sourceName: "mz",
-         connectionName: "duckdb",
+         destinationName: "duckdb",
          virtualHandle: "mz_handle",
          tablePath: "mz_physical",
          schema,
@@ -203,7 +208,7 @@ describe("serve transform end-to-end (generate -> compile -> bind -> run)", () =
       // connection must exist, so an unknown connection fails compilation.
       const binding: ServeBinding = {
          sourceName: "mz",
-         connectionName: "does_not_exist",
+         destinationName: "does_not_exist",
          virtualHandle: "h",
          tablePath: "t",
          schema: [{ name: "amount", type: "BIGINT" }],
@@ -240,7 +245,7 @@ describe("join serve end-to-end (two virtual sources, join runs in DuckDB)", () 
       const bindings: ServeBinding[] = [
          {
             sourceName: "regions",
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "regions_h",
             tablePath: "regions_phys",
             schema: [
@@ -250,7 +255,7 @@ describe("join serve end-to-end (two virtual sources, join runs in DuckDB)", () 
          },
          {
             sourceName: "orders",
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "orders_h",
             tablePath: "orders_phys",
             schema: [
@@ -297,55 +302,247 @@ describe("join serve end-to-end (two virtual sources, join runs in DuckDB)", () 
    });
 });
 
+describe("groupAliasesByName", () => {
+   const plan = (
+      ...pairs: [name: string, address: string][]
+   ): { name?: string; sourceEntityId?: string }[] =>
+      pairs.map(([name, sourceEntityId]) => ({ name, sourceEntityId }));
+
+   it("groups the sources that share one address, keyed by each of their names", () => {
+      const byName = groupAliasesByName(
+         plan(["daily", "X"], ["daily_with_avg", "X"], ["monthly", "Y"]),
+      );
+      expect(byName["daily"]).toEqual(["daily", "daily_with_avg"]);
+      expect(byName["daily_with_avg"]).toEqual(["daily", "daily_with_avg"]);
+      expect(byName["monthly"]).toEqual(["monthly"]);
+   });
+
+   it("drops a name declared at more than one address", () => {
+      // Source names are not unique in a package — the wire plan is keyed by
+      // sourceID for exactly this reason. `ext` here could mean either table, so
+      // it cannot be resolved by name and must alias nothing; picking one by map
+      // order would eventually bind one name to two tables, put two
+      // `source: ext` declarations in one serve shape, and take the storage tier
+      // out for every model in the package.
+      const byName = groupAliasesByName(
+         plan(["daily", "X"], ["ext", "X"], ["other", "Z"], ["ext", "Z"]),
+      );
+      expect(byName["ext"]).toBeUndefined();
+      // The unambiguous names keep their (now narrower) groups.
+      expect(byName["daily"]).toEqual(["daily"]);
+      expect(byName["other"]).toEqual(["other"]);
+   });
+
+   it("is independent of the order sources arrive in", () => {
+      const forward = groupAliasesByName(
+         plan(["daily", "X"], ["ext", "X"], ["other", "Z"], ["ext", "Z"]),
+      );
+      const reversed = groupAliasesByName(
+         plan(["ext", "Z"], ["other", "Z"], ["ext", "X"], ["daily", "X"]),
+      );
+      expect(reversed).toEqual(forward);
+   });
+
+   it("skips sources missing a name or an address", () => {
+      const byName = groupAliasesByName([
+         { name: "daily", sourceEntityId: "X" },
+         { name: undefined, sourceEntityId: "X" },
+         { name: "nameless", sourceEntityId: undefined },
+      ]);
+      expect(byName).toEqual({ daily: ["daily"] });
+   });
+});
+
 describe("deriveServeBindings", () => {
    it("binds only storage entries, keying the handle on sourceEntityId", () => {
-      const bindings = deriveServeBindings({
-         se_storage: {
-            sourceEntityId: "se_storage",
-            sourceName: "mz",
-            physicalTableName: "mz_g003",
-            connectionName: "wh",
-            storageConnectionName: "lake",
-            schema: [{ name: "amount", type: "BIGINT" }],
-            dataAsOf: "2026-07-20T00:00:00Z",
-            realization: "COPY",
-            rowCount: null,
+      const bindings = deriveServeBindings(
+         {
+            se_storage: {
+               sourceEntityId: "se_storage",
+               sourceName: "mz",
+               physicalTableName: "mz_g003",
+               connectionName: "wh",
+               storageDestinationName: "lake",
+               schema: [{ name: "amount", type: "BIGINT" }],
+               dataAsOf: "2026-07-20T00:00:00Z",
+               realization: "COPY",
+               rowCount: null,
+            },
+            se_pathC: {
+               // In-warehouse (no storage): served via the manifest, not the
+               // transform — must NOT produce a binding.
+               sourceEntityId: "se_pathC",
+               sourceName: "orders",
+               physicalTableName: "orders_v1",
+               connectionName: "wh",
+               realization: "COPY",
+               rowCount: null,
+            },
+            se_noschema: {
+               // Storage but no captured schema — skipped (can't declare a shape).
+               sourceEntityId: "se_noschema",
+               sourceName: "x",
+               physicalTableName: "lake.x",
+               connectionName: "wh",
+               storageDestinationName: "lake",
+               schema: [],
+               realization: "COPY",
+               rowCount: null,
+            },
          },
-         se_pathC: {
-            // In-warehouse (no storage): served via the manifest, not the
-            // transform — must NOT produce a binding.
-            sourceEntityId: "se_pathC",
-            sourceName: "orders",
-            physicalTableName: "orders_v1",
-            connectionName: "wh",
-            realization: "COPY",
-            rowCount: null,
-         },
-         se_noschema: {
-            // Storage but no captured schema — skipped (can't declare a shape).
-            sourceEntityId: "se_noschema",
-            sourceName: "x",
-            physicalTableName: "lake.x",
-            connectionName: "wh",
-            storageConnectionName: "lake",
-            schema: [],
-            realization: "COPY",
-            rowCount: null,
-         },
-      });
+         {},
+      );
       expect(bindings).toEqual([
          {
             sourceName: "mz",
-            connectionName: "lake",
+            // An entry with no `origin` describes an authored `#@ persist`
+            // source, which is what the wire default means and what every entry
+            // written before the field existed can only have been.
+            origin: "persist",
+            destinationName: "lake",
             virtualHandle: "se_storage",
             tablePath: "lake.mz_g003",
             schema: [{ name: "amount", type: "BIGINT" }],
             freshAsOf: "2026-07-20T00:00:00Z",
+            freshnessWindowSeconds: undefined,
+            freshnessFallback: undefined,
          },
       ]);
       // The table path is qualified with the destination catalog (attach alias)
       // so the serve reads <store>.<table>, not an unqualified name.
       expect(bindings[0].tablePath).toBe("lake.mz_g003");
+   });
+
+   it("binds every source sharing an address, not just the one that built it", () => {
+      // A base and its `extend` share a content address and therefore one entry
+      // and one table. The extension must not get a table of its own, but it must
+      // READ the base's — so both names bind, to the same virtual handle. Binding
+      // only `entry.sourceName` left the other silently serving live.
+      const entry = {
+         sourceEntityId: "se_shared",
+         sourceName: "daily",
+         physicalTableName: "daily_g001",
+         connectionName: "wh",
+         storageDestinationName: "lake",
+         schema: [{ name: "total_amount", type: "BIGINT" }],
+         realization: "COPY" as const,
+         rowCount: null,
+      };
+
+      const bindings = deriveServeBindings(
+         { se_shared: entry },
+         { daily: ["daily", "daily_with_avg"] },
+      );
+
+      expect(bindings.map((b) => b.sourceName)).toEqual([
+         "daily",
+         "daily_with_avg",
+      ]);
+      // One table, one handle: several sources resolving to one virtual table is
+      // what the identity-scoped handle is for.
+      expect(new Set(bindings.map((b) => b.virtualHandle))).toEqual(
+         new Set(["se_shared"]),
+      );
+      expect(new Set(bindings.map((b) => b.tablePath))).toEqual(
+         new Set(["lake.daily_g001"]),
+      );
+   });
+
+   it("does not duplicate the builder's own name", () => {
+      // The builder's name is normally in the address group too, so the naive
+      // concatenation would bind it twice and push a duplicate source declaration
+      // into the serve model.
+      const bindings = deriveServeBindings(
+         {
+            se_shared: {
+               sourceEntityId: "se_shared",
+               sourceName: "daily",
+               physicalTableName: "daily_g001",
+               connectionName: "wh",
+               storageDestinationName: "lake",
+               schema: [{ name: "total_amount", type: "BIGINT" }],
+               realization: "COPY",
+               rowCount: null,
+            },
+         },
+         { daily: ["daily"] },
+      );
+
+      expect(bindings.map((b) => b.sourceName)).toEqual(["daily"]);
+   });
+   it("binds aliases even when the entry carries a HOST-assigned identity", () => {
+      // An instructed build stamps the CALLER's sourceEntityId on its entry
+      // (`executeInstructedBuild` treats it as opaque, so a host may derive it any
+      // way it likes) while `entries` is keyed by the publisher's content address.
+      // Grouping aliases by the entry's id would therefore work only for a host
+      // that hashes exactly as the publisher does, and would silently fall back to
+      // one-alias routing for any other — the bug this pins. The group is keyed by
+      // NAME, which both sides mean the same thing by.
+      const bindings = deriveServeBindings(
+         {
+            // map key = publisher content address; entry id = host's scheme
+            "publisher-content-address": {
+               sourceEntityId: "host-opaque-id-zzz",
+               sourceName: "daily",
+               physicalTableName: "daily__shared__g007__tok",
+               connectionName: "wh",
+               storageDestinationName: "lake",
+               schema: [{ name: "total_amount", type: "BIGINT" }],
+               realization: "COPY",
+               rowCount: null,
+            },
+         },
+         { daily: ["daily", "daily_with_avg"] },
+      );
+
+      expect(bindings.map((b) => b.sourceName)).toEqual([
+         "daily",
+         "daily_with_avg",
+      ]);
+      // The handle still comes from the entry, so it keeps agreeing with whatever
+      // the build wrote into the virtual map.
+      expect(new Set(bindings.map((b) => b.virtualHandle))).toEqual(
+         new Set(["host-opaque-id-zzz"]),
+      );
+   });
+   it("never lets an alias claim a name another entry OWNS", () => {
+      // Two tables. `ext` is an alias of `daily`'s table, and also the source
+      // that built its own. Binding it for both would put two `source: ext`
+      // declarations in one serve shape — which fails to compile and drops the
+      // storage tier for every model in the package, silently, since base-only is
+      // the tier the ladder trusts without probing. The owner wins its name.
+      const entry = (
+         sourceEntityId: string,
+         sourceName: string,
+         table: string,
+      ) => ({
+         sourceEntityId,
+         sourceName,
+         physicalTableName: table,
+         connectionName: "wh",
+         storageDestinationName: "lake",
+         schema: [{ name: "total_amount", type: "BIGINT" }],
+         realization: "COPY" as const,
+         rowCount: null,
+      });
+
+      const bindings = deriveServeBindings(
+         {
+            X: entry("X", "daily", "daily_t"),
+            Z: entry("Z", "ext", "ext_t"),
+         },
+         // A stale/ambiguous group that still offers `ext` as an alias of X.
+         { daily: ["daily", "ext"], ext: ["ext"] },
+      );
+
+      expect(bindings.map((b) => b.sourceName).sort()).toEqual([
+         "daily",
+         "ext",
+      ]);
+      // `ext` resolves to the table it OWNS, not to daily's.
+      const ext = bindings.filter((b) => b.sourceName === "ext");
+      expect(ext).toHaveLength(1);
+      expect(ext[0].tablePath).toBe("lake.ext_t");
    });
 });
 
@@ -427,7 +624,7 @@ describe("buildServeShapeModelForBindings with refinements", () => {
       const { modelText } = buildServeShapeModelForBindings([
          {
             sourceName: "daily",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h",
             tablePath: "lake.daily",
             schema: [
@@ -455,7 +652,7 @@ describe("buildServeShapeModelForBindings with refinements", () => {
       const { modelText } = buildServeShapeModelForBindings([
          {
             sourceName: "orders",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h",
             tablePath: "lake.orders",
             schema: [
@@ -494,7 +691,7 @@ describe("buildServeShapeModelForBindings with refinements", () => {
       const { modelText } = buildServeShapeModelForBindings([
          {
             sourceName: "orders",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "o",
             tablePath: "lake.orders",
             schema: [{ name: "region_id", type: "VARCHAR" }],
@@ -510,7 +707,7 @@ describe("buildServeShapeModelForBindings with refinements", () => {
          },
          {
             sourceName: "regions",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "r",
             tablePath: "lake.regions",
             schema: [{ name: "region_id", type: "VARCHAR" }],
@@ -596,6 +793,89 @@ describe("narrowSchemaToPublic", () => {
       // to live rather than risk exposing a hidden column.
       expect(narrowSchemaToPublic(schema, undefined)).toEqual([]);
       expect(narrowSchemaToPublic(schema, [])).toEqual([]);
+   });
+
+   it("matches an UPPERCASE captured name and emits the author's spelling", () => {
+      // What an upper-folding warehouse (Snowflake, Oracle, Redshift, Teradata)
+      // reports from DESCRIBE. An exact match intersects to NOTHING here, and the
+      // caller drops an empty-schema binding — so the source leaves the serve
+      // shape and every query on it falls back live.
+      const captured = [
+         { name: "ID", type: "BIGINT" },
+         { name: "SSN", type: "VARCHAR" },
+         { name: "AMOUNT", type: "BIGINT" },
+      ];
+      const fields = [{ name: "id" }, { name: "amount" }];
+      expect(narrowSchemaToPublic(captured, fields)).toEqual([
+         { name: "id", type: "BIGINT" },
+         { name: "amount", type: "BIGINT" },
+      ]);
+   });
+
+   it("still hides a non-public column when the captured name differs in case", () => {
+      // The security property must not ride on the case matching: folding decides
+      // which PHYSICAL column can match an author field, never which author fields
+      // exist. `ssn` is access-restricted, so `SSN` has nothing public to match.
+      const captured = [
+         { name: "ID", type: "BIGINT" },
+         { name: "SSN", type: "VARCHAR" },
+      ];
+      const fields = [
+         { name: "id" },
+         { name: "ssn", accessModifier: "private" },
+      ];
+      expect(narrowSchemaToPublic(captured, fields).map((c) => c.name)).toEqual(
+         ["id"],
+      );
+   });
+
+   it("prefers an EXACT hit over a fold, so a folding dimension cannot steal a column", () => {
+      // Malloy permits two fields differing only in case: a `TitleCase` dimension
+      // over a `snake_case` column. On a case-PRESERVING warehouse the captured
+      // name already is the author's, so folding first let the dimension's name
+      // win the physical column — the shape declared the stored column as `Total`,
+      // the duplicate against the re-emitted dimension failed the shape down to
+      // base-only, and `group_by: Total` served the raw column (1) instead of the
+      // computed one (other * 10 = 20). Wrong rows, reported `servedFrom: storage`.
+      const captured = [
+         { name: "total", type: "BIGINT" },
+         { name: "other", type: "BIGINT" },
+      ];
+      const fields = [
+         { name: "total" },
+         { name: "other" },
+         { name: "Total", code: "other * 10", expressionType: "scalar" },
+      ];
+      expect(narrowSchemaToPublic(captured, fields)).toEqual([
+         { name: "total", type: "BIGINT" },
+         { name: "other", type: "BIGINT" },
+      ]);
+   });
+
+   it("drops a captured column that several author fields fold onto", () => {
+      // The upper-folded version of the case above: nothing here can tell which of
+      // `total`/`Total` the warehouse's `TOTAL` came from, and guessing is the bug
+      // the test above pins. Dropping sends a query touching it to live, where the
+      // author's own names still distinguish the two.
+      const captured = [{ name: "TOTAL", type: "BIGINT" }];
+      const fields = [
+         { name: "total" },
+         { name: "Total", code: "other * 10", expressionType: "scalar" },
+      ];
+      expect(narrowSchemaToPublic(captured, fields)).toEqual([]);
+   });
+
+   it("emits a case-colliding author field once rather than failing the shape", () => {
+      // Two physical columns folding onto one author field: declaring the name
+      // twice is a duplicate that fails the whole shape model, which would cost
+      // storage serving for every source in the model. First wins.
+      const captured = [
+         { name: "AMOUNT", type: "BIGINT" },
+         { name: "amount", type: "VARCHAR" },
+      ];
+      expect(narrowSchemaToPublic(captured, [{ name: "amount" }])).toEqual([
+         { name: "amount", type: "BIGINT" },
+      ]);
    });
 });
 
@@ -767,7 +1047,7 @@ describe("buildServeShapeModelForBindings with a view", () => {
       const { modelText } = buildServeShapeModelForBindings([
          {
             sourceName: "orders",
-            connectionName: "lake",
+            destinationName: "lake",
             virtualHandle: "h",
             tablePath: "lake.orders",
             schema: [{ name: "amount", type: "BIGINT" }],
@@ -817,7 +1097,7 @@ describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
       const bindings: ServeBinding[] = [
          {
             sourceName: "regions",
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "vr",
             tablePath: "v_regions",
             schema: [
@@ -827,7 +1107,7 @@ describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
          },
          {
             sourceName: "orders",
-            connectionName: "duckdb",
+            destinationName: "duckdb",
             virtualHandle: "vo",
             tablePath: "v_orders",
             schema: [
@@ -880,7 +1160,7 @@ describe("view serve end-to-end (view over a join runs in DuckDB)", () => {
 describe("buildChainedStorageBuildModel (stack-on-parent transient build model)", () => {
    const parent: ServeBinding = {
       sourceName: "daily_orders",
-      connectionName: "lake",
+      destinationName: "lake",
       virtualHandle: "daily_h",
       tablePath: "lake.daily_orders__mabc",
       schema: [
@@ -999,5 +1279,42 @@ describe("buildChainedStorageBuildModel (stack-on-parent transient build model)"
          ]),
       );
       expect(byMonth).toEqual({ "2026-01": 375, "2026-02": 99 });
+   });
+});
+
+describe("serveShapeDiagnostics", () => {
+   const binding = (sourceName: string): ServeBinding => ({
+      sourceName,
+      destinationName: "credible",
+      virtualHandle: `${sourceName}#h`,
+      tablePath: `main.${sourceName}`,
+      schema: [{ name: "n", type: "BIGINT" }],
+   });
+
+   // Both live failures this exists for produce the SAME compiler error, so the
+   // sets are what separate them. Asserted as a pair for that reason: either one
+   // alone leaves the two indistinguishable, which is the state this replaces.
+   it("distinguishes a source that is not materialized from one withheld as stale", () => {
+      const all = [binding("_fact"), binding("rollup")];
+
+      // Nothing stale: everything bound is in the shape. A query naming
+      // `wrapper` finds it in neither set -- it carries no `#@ persist`.
+      const allFresh = serveShapeDiagnostics(all, all);
+      expect(allFresh.shapeSources).toEqual(["_fact", "rollup"]);
+      expect(allFresh.staleSources).toEqual([]);
+
+      // `rollup` is bound but past its freshness window, so it is absent from
+      // the shape for a reason the compiler's message cannot express.
+      const oneStale = serveShapeDiagnostics(all, [binding("_fact")]);
+      expect(oneStale.shapeSources).toEqual(["_fact"]);
+      expect(oneStale.staleSources).toEqual(["rollup"]);
+   });
+
+   it("reports every bound source as stale when the gate withholds them all", () => {
+      const all = [binding("a"), binding("b")];
+      expect(serveShapeDiagnostics(all, [])).toEqual({
+         shapeSources: [],
+         staleSources: ["a", "b"],
+      });
    });
 });

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
 
 /**
  * Pre-download ("bake") the DuckDB extensions the server loads at runtime so

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Filter hooks and types
 export {
    useDimensionFilters,
@@ -34,8 +37,10 @@ export {
 
 // Givens hooks and types
 export { useModelGivens } from "./useModelGivens";
+export { type GivenValue } from "./givenValue";
 export {
-   useGivensForm,
-   type GivenValue,
-   type UseGivensFormResult,
-} from "./useGivensForm";
+   useGivensState,
+   type UseGivensStateOptions,
+   type UseGivensStateResult,
+} from "./useGivensState";
+export { useSuggestOptions } from "./useSuggestOptions";

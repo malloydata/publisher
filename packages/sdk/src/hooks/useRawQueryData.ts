@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useServer } from "../components/ServerProvider";
 import { parseResourceUri } from "../utils/formatting";
 import { useQueryWithApiError } from "./useQueryWithApiError";

@@ -1,0 +1,14 @@
+##! experimental.givens
+import { BRAND } from './givens.malloy'
+
+source: orders is duckdb.table('data/orders.csv') extend {
+   primary_key: id
+   dimension: brand_name is brand
+   measure: total_amount is sum(amount)
+
+   view: by_brand is {
+      where: brand_name ~ $BRAND
+      group_by: brand_name
+      aggregate: total_amount
+   }
+}

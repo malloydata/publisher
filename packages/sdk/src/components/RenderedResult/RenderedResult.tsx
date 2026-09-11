@@ -1,12 +1,35 @@
-import { Box } from "@mui/material";
-import React, { Suspense, useEffect, useLayoutEffect, useRef } from "react";
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { Box, useTheme } from "@mui/material";
+import React, {
+   Suspense,
+   useCallback,
+   useEffect,
+   useLayoutEffect,
+   useMemo,
+   useRef,
+} from "react";
 import { buildMalloyExplicitTheme } from "../../theme/buildMalloyExplicitTheme";
-import { buildTableCssVars } from "../../theme/buildTableCssVars";
+import {
+   buildTableCssVars,
+   DASHBOARD_CARD_PADDING_PX,
+   type DashboardCardGeometry,
+} from "../../theme/buildTableCssVars";
 import { buildVegaThemeOverride } from "../../theme/buildVegaThemeOverride";
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
+import {
+   DRILL_CELL_CLASS,
+   moveDrillStop,
+   drillableFieldNames,
+   markDrillableCells,
+   type DrillMetadataSource,
+} from "../drill/markDrillableCells";
+import type { DrillClickPayload } from "../drill/resolveDrill";
+import type { DrillBinding } from "../drill/useDrill";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;
 
@@ -16,7 +39,16 @@ type MalloyRenderElement = HTMLElement & Record<string, unknown>;
  * declared on the renderer's public type. Keep in sync with
  * `@malloydata/render` if more methods are needed.
  */
-interface MalloyVizHandle {
+interface MalloyVizHandle extends DrillMetadataSource {
+   // Narrowed from `DrillMetadataSource`, which only declares the part the
+   // drill affordance reads. `getRootField().renderAs()` is what decides
+   // whether one measurement is enough; see `sizesToContent`.
+   getMetadata: () =>
+      | (NonNullable<ReturnType<DrillMetadataSource["getMetadata"]>> & {
+           getRootField: () => { renderAs: () => string };
+        })
+      | null
+      | undefined;
    setResult: (result: unknown) => void;
    render: (element: HTMLElement) => void;
    remove: () => void;
@@ -43,12 +75,17 @@ interface RenderedResultProps {
    height?: number;
    isFillElement?: (boolean) => void;
    onSizeChange?: (height: number) => void;
-   onDrill?: (element: unknown) => void;
+   /**
+    * Makes `# drill` cells clickable, and makes them look it. From `useDrill`
+    * on the host surface, which decides where a click may go; omitted where
+    * nothing can act on one, and then the result renders inert.
+    */
+   drill?: DrillBinding;
 }
 
 const createRenderer = async (
    theme: ResolvedTheme,
-   onDrill?: (element: unknown) => void,
+   onClick?: DrillBinding["onClick"],
 ): Promise<MalloyVizHandle> => {
    if (typeof window === "undefined") {
       throw new Error("MalloyRenderer can only be used in browser environment");
@@ -56,7 +93,7 @@ const createRenderer = async (
 
    const { MalloyRenderer } = await import("@malloydata/render");
    const renderer = new MalloyRenderer({
-      onClick: onDrill,
+      onClick,
       vegaConfigOverride: buildVegaThemeOverride(theme),
       // Pass the explicit theme so table chrome and dashboard tiles
       // pick up the operator's colours directly. Without this the
@@ -130,28 +167,43 @@ async function extractChartThemeOverride(parsed: unknown) {
    }
 }
 
-function applyTableCssVars(element: HTMLElement, theme: ResolvedTheme): void {
-   const vars = buildTableCssVars(theme);
+function applyTableCssVars(
+   element: HTMLElement,
+   theme: ResolvedTheme,
+   card: DashboardCardGeometry,
+): void {
+   const vars = buildTableCssVars(theme, card);
    for (const [key, value] of Object.entries(vars)) {
       element.style.setProperty(key, value);
    }
 }
 
 /**
- * The renderer puts its DOM inside a Shadow Root (attachShadow), so a
- * `<style>` tag in `document.head` cannot reach `.dashboard-item` or any
- * of the renderer's other internal classes — Shadow DOM blocks selector
- * matching across the boundary. CSS variables DO cross the boundary
- * (that's why `--malloy-render--background` already paints the top-level
- * `.malloy-render` container), but selectors don't.
+ * CSS overrides for the renderer's own hardcoded colours.
  *
- * The renderer's own API for "add a stylesheet that takes effect inside
- * the shadow root" is `MalloyViz.addStylesheet()`. We register our
- * overrides through that path once, at module load, before any viz is
- * constructed. The renderer dedupes by identity, so calling it multiple
- * times in dev (HMR) is safe.
+ * These are appended as a `<style>` in `document.head` by
+ * `injectRendererOverrides` below, which is the mechanism actually in use and
+ * is described where it happens. An earlier version of this block said the
+ * renderer puts its DOM in a Shadow Root and that we register through
+ * `MalloyViz.addStylesheet()`. Neither is true of this code: nothing here calls
+ * that API, and were the boundary real a `document.head` stylesheet could not
+ * reach `.malloy-dashboard` at all, which is precisely what these rules do and
+ * what the theming tests check. Selectors are written at higher specificity
+ * than the renderer's own so they win regardless of stylesheet order.
  */
 const PUBLISHER_RENDERER_OVERRIDES_CSS = `
+/* Card geometry, through the renderer's OWN theme vars rather than over the top
+   of them. It declares --malloy-theme--dashboard-* on .malloy-render itself and
+   passes each through to the --malloy-render--* the card CSS reads, so a value
+   inherited from our wrapper loses to that declaration however early it is set:
+   this has to be a rule on the same element, at higher specificity. Doubling the
+   class does that, and then no !important is needed — which matters, because
+   !important here also lands on .dashboard-item-borderless and repaints a card
+   the author asked to have no card. */
+.malloy-render.malloy-render {
+   --malloy-theme--dashboard-card-radius: var(--publisher-dashboard-card-radius);
+   --malloy-theme--dashboard-card-padding: var(--publisher-dashboard-card-padding);
+}
 /* dashboard.css hardcodes background: #f7f9fc on .malloy-dashboard
    and .dashboard-row-header, which would paint light grey in dark
    mode and also bleed an operator-picked palette.background across
@@ -186,11 +238,16 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    background: var(--publisher-dashboard-root) !important;
    background-color: var(--publisher-dashboard-root) !important;
 }
-.malloy-render .malloy-dashboard .dashboard-item {
+.malloy-render .malloy-dashboard .dashboard-item:not(.dashboard-item-borderless) {
    /* Tile padding around each chart / table. Uses our custom
       --malloy-render--tile-background so the operator can theme the
       tile separately from the table header row (which paints from
-      --malloy-render--table-pinned-background below). */
+      --malloy-render--table-pinned-background below).
+
+      A flat bordered card rather than the renderer's shadow ring, which is what
+      makes it match the composite tile's Paper. :not(borderless) because
+      # borderless asks for no card at all, and an !important background and
+      border drew one anyway. */
    background: var(--malloy-render--tile-background) !important;
    color: var(--malloy-render--table-body-color) !important;
    box-shadow: none !important;
@@ -223,6 +280,31 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
 .malloy-render .cell-content.header {
    color: var(--malloy-render--table-header-color) !important;
 }
+/* A cell whose column declares a "# drill" this surface can honor, marked
+   by markDrillableCells. Ordinary text with a pointer cursor until hovered,
+   then it reads as a link: the same affordance Malloyyo gives the same tag,
+   and the only thing that tells a reader a cell navigates. Kept off the
+   resting state deliberately: a column painted blue competes with the data.
+   (No backticks in here: this is inside a template literal.) */
+.malloy-render .${DRILL_CELL_CLASS} {
+   cursor: pointer;
+}
+.malloy-render .${DRILL_CELL_CLASS}:hover > .cell-content {
+   color: var(--publisher-drill-link) !important;
+   text-decoration: underline;
+}
+/* Keyboard focus reads the same as hover, plus a ring: a hover colour is not
+   something a keyboard user can produce, and a focus ring is not something a
+   mouse user sees. focus-visible rather than focus, so a click does not leave a
+   ring behind it. (No backticks in here: this is inside a template literal.) */
+.malloy-render .${DRILL_CELL_CLASS}:focus-visible {
+   outline: 2px solid var(--publisher-drill-link);
+   outline-offset: -2px;
+}
+.malloy-render .${DRILL_CELL_CLASS}:focus-visible > .cell-content {
+   color: var(--publisher-drill-link) !important;
+   text-decoration: underline;
+}
 `;
 
 /**
@@ -246,13 +328,77 @@ function injectRendererOverrides(): void {
    document.head.appendChild(style);
 }
 
+/**
+ * Whether the renderer's top-level output sizes itself to its CONTENT rather
+ * than to the box it was handed, which decides whether measuring it once is
+ * enough.
+ *
+ * It is not, for a table. The renderer signals `onReady` as soon as it knows it
+ * can paint, and for a table that is immediately — a chart waits for a non-zero
+ * parent size, a table does not — so the single measurement taken there lands
+ * before the table's virtualized grid has laid out, and reads a height the
+ * table never keeps.
+ *
+ * Re-measuring a table TERMINATES: `.malloy-table.root` is
+ * `height: fit-content; max-height: 100%` in the renderer's own CSS and the
+ * wrappers between it and the container add no padding, so shrinking the
+ * container to the table's content height is the exact point at which the cap
+ * stops binding and the next measurement reports the same number.
+ *
+ * A root that FILLS its container stays on the one-shot path deliberately: a
+ * chart draws itself inset from the box it is given, so feeding its height back
+ * as the new container height would ratchet the container down by that inset
+ * every pass and never converge.
+ *
+ * A table is the only root that needs this, and the reason is the virtualized
+ * grid rather than the sizing strategy it shares with a `# size=` chart: that
+ * chart takes its dimensions from a lookup synchronously, so its first
+ * measurement is already right. Measured, for every size value and spelling.
+ */
+function sizesToContent(viz: MalloyVizHandle): boolean {
+   try {
+      return viz.getMetadata()?.getRootField().renderAs() === "table";
+   } catch {
+      // Metadata unavailable: measure once, which is the behavior every
+      // non-table root gets anyway.
+      return false;
+   }
+}
+
 function RenderedResultInner({
    result,
    height: inputHeight,
-   onDrill,
+   drill,
    onSizeChange,
 }: RenderedResultProps) {
    const ref = useRef<HTMLDivElement>(null);
+   // The renderer binds its click handler at construction, so a changing
+   // `drill` identity would otherwise re-run the render effect and rebuild the
+   // chart: undoing the no-flicker swap below every time the parent
+   // re-renders. Read the latest binding through a ref instead, and keep
+   // `drill` out of the effect's dependencies, so callers can pass an inline
+   // one safely.
+   const drillRef = useRef(drill);
+   drillRef.current = drill;
+   const handleDrillClick = useCallback((payload: DrillClickPayload) => {
+      drillRef.current?.onClick(payload);
+   }, []);
+   // Whether any drill is wired at all, which is what the effect reacts to: a
+   // surface that gains or loses the capability has to (re)mark its cells, but
+   // a new inline binding with the same capability must not rebuild anything.
+   //
+   // KNOWN LIMITATION, and the narrower alternative is worse. `canDrill` decides
+   // WHICH cells get marked and is read once per render pass, so a predicate
+   // that changes while the result stays put leaves the previous pass's marks in
+   // place. Depending on the predicate's identity instead was tried and reverted:
+   // `canDrill` chains back to the notebook's parameters, so every control edit
+   // tore down and rebuilt every chart, which is the flicker this component was
+   // fixed for. The stale case needs a host whose predicate resolves after first
+   // paint against an unchanged result; it cannot happen in the notebook, where
+   // anything that changes the declared givens also rebuilds the cells. Fixing
+   // it properly means re-marking without re-rendering, which is a change to the
+   // marking pass rather than to this dependency list.
+   const drillable = drill !== undefined;
    const hasMeasuredRef = useRef(false);
    // The chart currently painted into the container, held across renders. A
    // new render paints into a fresh offscreen stage and only swaps in (and
@@ -266,6 +412,19 @@ function RenderedResultInner({
    // bails, so overlapping renders can't leave two charts or leak a viz.
    const renderGenRef = useRef(0);
    const { theme: baseTheme, layers, mode } = usePublisherTheme();
+   // The host app's card radius, so a dashboard card reads as a card of the app
+   // it is embedded in rather than as the renderer's 8px on a 4px page. Both
+   // cards take it from here; see DashboardTile, which is the other one.
+   const cardRadius = useTheme().shape.borderRadius;
+   // Memoized because it is a dependency of the render effect below, and a fresh
+   // object each render would re-render the chart on every render.
+   const cardGeometry = useMemo<DashboardCardGeometry>(
+      () => ({
+         radius: `${cardRadius}px`,
+         padding: `${DASHBOARD_CARD_PADDING_PX}px`,
+      }),
+      [cardRadius],
+   );
 
    // Dispose the last live viz on unmount only. Deliberately NOT done in the
    // render effect's cleanup: a re-run must keep the old chart until the new
@@ -291,8 +450,18 @@ function RenderedResultInner({
       // if this render is superseded before it swaps itself into `liveRef`.
       let stage: HTMLDivElement | undefined;
       let viz: MalloyVizHandle | undefined;
+      let drillObserver: MutationObserver | null = null;
+      let drillFrame = 0;
+      let drillKeydown: ((event: KeyboardEvent) => void) | null = null;
+      let drillKeyup: ((event: KeyboardEvent) => void) | null = null;
+      let drillFocusIn: ((event: FocusEvent) => void) | null = null;
       let observer: MutationObserver | null = null;
       let measureTimeout: NodeJS.Timeout | null = null;
+      // Keeps a table's height honest after `onReady` has lied about it; see
+      // `sizesToContent` above.
+      let sizeObserver: ResizeObserver | null = null;
+      let observedNode: HTMLElement | null = null;
+      let lastReportedHeight = 0;
       // Safety net so a render that never signals ready (an async renderer
       // error that only reaches onError) can't leave a previous chart showing
       // stale data forever; see the setTimeout below.
@@ -304,12 +473,21 @@ function RenderedResultInner({
       // wraps the renderer output) and report it up. Same grandchild/dashboard
       // HACK as before, just anchored on the stage wrapper.
       const measureRenderedSize = (root: HTMLElement) => {
-         if (hasMeasuredRef.current || cancelled || !root.firstElementChild)
-            return;
+         if (cancelled || !root.firstElementChild) return;
          const child = root.firstElementChild as HTMLElement;
          const grandchild = child.firstElementChild as HTMLElement;
          if (!grandchild) return;
+         // A table reports a height of its own, so it keeps being measured
+         // even after the first one lands. Everything else measures once.
+         const contentSized = viz !== undefined && sizesToContent(viz);
+         if (hasMeasuredRef.current && !contentSized) return;
          const greatgrandchild = grandchild.firstElementChild as HTMLElement;
+         // `scrollHeight` is the CONTENT height, so this assumes the box adds
+         // no chrome of its own. True today: `.malloy-table.root` has no
+         // border, and a horizontal scrollbar costs no layout where scrollbars
+         // overlay. A wide table clipped by a few pixels on a platform that
+         // draws classic scrollbars would be this assumption breaking, and the
+         // fix is `+ (offsetHeight - clientHeight)`.
          let renderedHeight =
             grandchild.scrollHeight || grandchild.offsetHeight || 0;
 
@@ -326,9 +504,19 @@ function RenderedResultInner({
 
          if (renderedHeight > 0) {
             hasMeasuredRef.current = true;
-            if (onSizeChange) {
+            if (onSizeChange && renderedHeight !== lastReportedHeight) {
+               lastReportedHeight = renderedHeight;
                onSizeChange(renderedHeight);
             }
+         }
+         // Watch the table from here on. Attached after the first measurement
+         // rather than at render time because the node does not exist until
+         // the renderer builds it, and this is the callback that first sees it.
+         if (contentSized && observedNode !== grandchild) {
+            observedNode = grandchild;
+            sizeObserver?.disconnect();
+            sizeObserver = new ResizeObserver(() => measureRenderedSize(root));
+            sizeObserver.observe(grandchild);
          }
       };
 
@@ -349,7 +537,7 @@ function RenderedResultInner({
          if (!isCurrent()) return;
 
          try {
-            viz = await createRenderer(effectiveTheme, onDrill);
+            viz = await createRenderer(effectiveTheme, handleDrillClick);
          } catch (error) {
             console.error("Failed to create renderer:", error);
             return;
@@ -374,7 +562,7 @@ function RenderedResultInner({
          // child of the container, so writing the new per-chart CSS vars there
          // would repaint the old chart's chrome to the new theme before it is
          // swapped out. Scoping the vars to this stage keeps each chart stable.
-         applyTableCssVars(stage, effectiveTheme);
+         applyTableCssVars(stage, effectiveTheme, cardGeometry);
          if (previous) {
             element.style.position = "relative";
             stage.style.position = "absolute";
@@ -390,7 +578,18 @@ function RenderedResultInner({
             if (measureTimeout) clearTimeout(measureTimeout);
             measureTimeout = setTimeout(() => {
                measureRenderedSize(stageNode);
-               observer?.disconnect();
+               // Only once a measurement actually landed. Disconnecting
+               // unconditionally gave up on a stage whose renderer output was
+               // still empty at the first settle, leaving nothing to measure it
+               // later.
+               //
+               // Staying connected cannot loop the way the version this
+               // disconnect was first added to guard (#531) could: THAT
+               // observer watched the container, with `attributes: true`, so
+               // reporting a height re-triggered it through the container's own
+               // style. This one watches `stage`, a descendant, which that
+               // style write is outside of.
+               if (hasMeasuredRef.current) observer?.disconnect();
             }, 100);
          });
          observer.observe(stage, {
@@ -428,6 +627,187 @@ function RenderedResultInner({
             // in the SDK to avoid pinning to the malloy core types here.
             viz.setResult(parsed);
             viz.render(stage);
+
+            // Mark the cells a `# drill` makes clickable, so they read as
+            // links. The names come from the result's field metadata, which is
+            // complete as soon as it is set, but the DOM is not: a
+            // `# dashboard` result builds its cards over later frames, so a
+            // one-shot pass right after render() would miss every table that
+            // appears after it. Hence the observer, which re-marks (batched to
+            // a frame) as cards arrive.
+            const binding = drillRef.current;
+            // Isolated from the render above. The chart has already rendered by
+            // this point, and a throw in here would reach the same catch and
+            // replace a working result with an error message: the affordance
+            // would be taking the chart down with it. `drillableFieldNames`
+            // already guards its own metadata read on the same principle.
+            try {
+               if (binding) {
+                  const names = drillableFieldNames(viz, binding.canDrill);
+                  // Guarded INSIDE, not just at the first call. The try
+                  // below wraps this function's definition, not the frames the
+                  // observer schedules it on, so a throw on a re-mark escaped
+                  // to the window and the isolation only ever covered the
+                  // synchronous pass.
+                  const mark = () => {
+                     try {
+                        markDrillableCells(stageNode, names);
+                     } catch (markError) {
+                        console.warn("Drill affordance skipped:", markError);
+                     }
+                  };
+                  mark();
+                  // Enter and Space fire the drill for a focused cell. Delegated
+                  // on the stage rather than bound per cell, because the
+                  // renderer rebuilds cells as a dashboard's cards arrive and a
+                  // per-cell listener would be lost with them; this one outlives
+                  // every re-mark.
+                  //
+                  // It synthesises a CLICK rather than calling the drill handler
+                  // directly, so the payload comes from the renderer's own click
+                  // path. Building one here would mean re-deriving which field
+                  // and value a cell represents, which is exactly the mapping
+                  // this module has no access to and the reason the affordance
+                  // is matched on rendered text in the first place.
+                  //
+                  // The click goes to the cell's INNER `.cell-content`, not to
+                  // the cell. Measured, because dispatching on the cell looked
+                  // right and silently did nothing: a real mouse click lands on
+                  // `.cell-content` and the renderer reads the event target to
+                  // identify the field, so a click on the outer cell reaches the
+                  // handler with a target it does not recognise and is dropped
+                  // without a sound. Falls back to the cell for a shape that has
+                  // no inner content node.
+                  //
+                  // Enter fires on keydown and Space on keyUP, which is the
+                  // native button rule and is load-bearing here rather than
+                  // pedantry. Firing Space on keydown opened the drill menu and
+                  // then the SAME keypress's keyup landed on the now-focused
+                  // first menu item and chose it, so a Space drill navigated
+                  // straight past the menu it had just opened. Measured: the
+                  // menu was visible while the key was held and gone, with the
+                  // URL already changed, once it was released.
+                  //
+                  // Dispatched with the cell's own coordinates rather than
+                  // through `HTMLElement.click()`, which reports `clientX/Y` as
+                  // 0. A drill offering two destinations anchors its menu on
+                  // those numbers (`useDrill` holds no ref into the renderer's
+                  // DOM), so a keyboard-opened menu appeared in the corner of
+                  // the viewport instead of beside the cell it came from.
+                  const fire = (cell: Element) => {
+                     const content =
+                        cell.querySelector<HTMLElement>(".cell-content");
+                     const target = content ?? (cell as HTMLElement);
+                     const rect = target.getBoundingClientRect();
+                     target.dispatchEvent(
+                        new MouseEvent("click", {
+                           bubbles: true,
+                           cancelable: true,
+                           view: target.ownerDocument.defaultView,
+                           clientX: Math.round(rect.left + rect.width / 2),
+                           clientY: Math.round(rect.bottom),
+                        }),
+                     );
+                  };
+                  const drillCell = (event: KeyboardEvent) =>
+                     (
+                        event.target as HTMLElement | null
+                     )?.closest?.<HTMLElement>(`.${DRILL_CELL_CLASS}`) ?? null;
+                  // Move the single tab stop within a drillable column.
+                  // `markDrillableCells` gives a column one stop rather than one
+                  // per cell, so these keys are how a reader reaches the other
+                  // rows; without them the affordance would only ever fire on
+                  // whichever row held the stop. Clamped rather than wrapping,
+                  // which is what a table's rows read as.
+                  const rove = (
+                     cell: HTMLElement,
+                     to: number | "first" | "last",
+                  ) => {
+                     // The move lives in `markDrillableCells` beside the column
+                     // rule, because it has to hold the same invariant the
+                     // marking does: exactly one stop per column. Doing it here
+                     // by clearing the focused cell assumed that cell HELD the
+                     // stop, which a click-focused `tabindex="-1"` cell does not.
+                     moveDrillStop(cell, to)?.focus();
+                  };
+                  drillKeydown = (event: KeyboardEvent) => {
+                     const cell = drillCell(event) as HTMLElement | null;
+                     if (!cell) return;
+                     const roveKey =
+                        event.key === "ArrowDown"
+                           ? 1
+                           : event.key === "ArrowUp"
+                             ? -1
+                             : event.key === "Home"
+                               ? ("first" as const)
+                               : event.key === "End"
+                                 ? ("last" as const)
+                                 : undefined;
+                     if (roveKey !== undefined) {
+                        // Prevented whether or not the move happened, so the
+                        // first and last rows do not scroll the page out from
+                        // under a reader who is still inside the column.
+                        event.preventDefault();
+                        rove(cell, roveKey);
+                        return;
+                     }
+                     if (event.key === "Enter") {
+                        // Otherwise Enter submits an enclosing form on an
+                        // embedding host.
+                        event.preventDefault();
+                        fire(cell);
+                     } else if (event.key === " ") {
+                        // Held Space scrolls the page; the activation itself
+                        // waits for keyup.
+                        event.preventDefault();
+                     }
+                  };
+                  drillKeyup = (event: KeyboardEvent) => {
+                     if (event.key !== " ") return;
+                     const cell = drillCell(event);
+                     if (!cell) return;
+                     event.preventDefault();
+                     fire(cell);
+                  };
+                  // Focus and the tab stop have to agree however focus got
+                  // there. The arrow handler moves the stop, but a
+                  // `tabindex="-1"` cell is still CLICK-focusable, so without
+                  // this a reader who clicked row 5, tabbed away and tabbed back
+                  // landed on row 0. That is the same asymmetry the arrow path
+                  // already fixes, for the one way of arriving that does not go
+                  // through it. `moveDrillStop(cell, 0)` resolves to the cell
+                  // itself, so it just makes that cell the column's stop.
+                  drillFocusIn = (event: FocusEvent) => {
+                     const cell = (
+                        event.target as HTMLElement | null
+                     )?.closest?.<HTMLElement>(`.${DRILL_CELL_CLASS}`);
+                     if (cell) moveDrillStop(cell, 0);
+                  };
+                  stageNode.addEventListener("keydown", drillKeydown);
+                  stageNode.addEventListener("keyup", drillKeyup);
+                  stageNode.addEventListener("focusin", drillFocusIn);
+                  if (
+                     names.size > 0 &&
+                     typeof MutationObserver !== "undefined"
+                  ) {
+                     drillObserver = new MutationObserver(() => {
+                        cancelAnimationFrame(drillFrame);
+                        drillFrame = requestAnimationFrame(mark);
+                     });
+                     // childList only: marking writes classes, and observing
+                     // attributes would have it retrigger itself every frame.
+                     drillObserver.observe(stageNode, {
+                        childList: true,
+                        subtree: true,
+                     });
+                  }
+               }
+            } catch (drillError) {
+               // No affordance, and the result stands. Clicks still resolve,
+               // because the renderer routes those itself.
+               console.warn("Drill affordance skipped:", drillError);
+            }
+
             viz.onReady(promote);
             // If onReady never fires (an async render error that only reaches
             // the renderer's onError), force the swap after a bounded wait so
@@ -437,6 +817,8 @@ function RenderedResultInner({
          } catch (error) {
             console.error("Error rendering visualization:", error);
             observer?.disconnect();
+            sizeObserver?.disconnect();
+            drillObserver?.disconnect();
             viz.remove();
             viz = undefined;
             if (stageNode.parentNode === element) {
@@ -448,12 +830,37 @@ function RenderedResultInner({
       return () => {
          cancelled = true;
          observer?.disconnect();
+         sizeObserver?.disconnect();
          if (measureTimeout) clearTimeout(measureTimeout);
          if (readyFallback) clearTimeout(readyFallback);
          // If this render built a stage but never swapped it into `liveRef`
          // (superseded, or unmounted mid-render), tear it down so it can't
          // leak a viz or leave an orphan node behind.
          if (stage && liveRef.current?.node !== stage) {
+            // The keyboard listeners go with the stage, and ONLY with the
+            // stage. Removing them unconditionally tied their lifetime to the
+            // effect RUN instead, while the stage's is tied to `liveRef`: a
+            // re-run tore them off the chart that is still on screen, which
+            // keeps its `tabindex` and `role="button"` and so still says Enter
+            // and Space do something. Usually that window closes when the new
+            // render promotes, but a render that never gets that far (a parse
+            // failure, a renderer that throws) leaves the visible chart
+            // permanently keyboard-dead while still advertising otherwise.
+            // Left on a promoted stage they are collected with the node when
+            // `promote` removes it, so nothing leaks by keeping them.
+            if (drillKeydown)
+               stage.removeEventListener("keydown", drillKeydown);
+            if (drillKeyup) stage.removeEventListener("keyup", drillKeyup);
+            if (drillFocusIn)
+               stage.removeEventListener("focusin", drillFocusIn);
+            // The re-marker is scoped the same way, and for the same reason.
+            // Disconnecting it unconditionally tied it to the effect RUN: a
+            // re-run while a `# dashboard` was still building its cards stopped
+            // the LIVE stage being re-marked, so cards arriving after that point
+            // never became drillable. Like the listeners, it is collected with
+            // the node once a promoted stage is dropped.
+            drillObserver?.disconnect();
+            cancelAnimationFrame(drillFrame);
             viz?.remove();
             if (stage.parentNode === element) {
                element.removeChild(stage);
@@ -464,7 +871,16 @@ function RenderedResultInner({
             element.style.position = "";
          }
       };
-   }, [result, onDrill, onSizeChange, baseTheme, layers, mode]);
+   }, [
+      result,
+      handleDrillClick,
+      drillable,
+      onSizeChange,
+      baseTheme,
+      layers,
+      mode,
+      cardGeometry,
+   ]);
 
    // Malloy renderer requires explicit pixel height to render visualizations
    return (

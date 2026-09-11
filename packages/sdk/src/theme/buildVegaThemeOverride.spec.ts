@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { buildVegaThemeOverride } from "./buildVegaThemeOverride";
 import { resolveTheme } from "./resolveTheme";

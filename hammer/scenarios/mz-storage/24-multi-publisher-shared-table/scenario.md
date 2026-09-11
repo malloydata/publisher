@@ -3,8 +3,12 @@ id: multi-publisher-shared-table
 tags: orchestration, cluster
 package: cl
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
-# Cluster: build on one publisher, bind the manifest to another
+# A source built on one publisher serves on another, from the same table
 
 A real deployment runs a cluster of stateless publishers sharing one DuckLake
 tier. The orchestrator materializes a source ONCE (on any worker), then hands the

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { registerReloadPackageTool } from "./reload_package_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
@@ -78,7 +81,7 @@ function storeWithInstallLocation(installed: Record<string, unknown>): {
 
 const args = { environmentName: "malloy-samples", packageName: "ecommerce" };
 
-describe("malloy_reloadPackage tool", () => {
+describe("reload_package tool", () => {
    it("returns status reloaded with the package name", async () => {
       const handler = captureHandler(storeReturning({ name: "ecommerce" }));
       const result = await handler(args);
@@ -94,7 +97,7 @@ describe("malloy_reloadPackage tool", () => {
       const warnings = [
          {
             model: "ecommerce.malloy",
-            target: "top_categories",
+            subject: "top_categories",
             severity: "error",
          },
       ];

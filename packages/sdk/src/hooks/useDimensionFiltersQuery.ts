@@ -1,7 +1,11 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useCallback, useMemo, useState } from "react";
 import { createEmbeddedQueryResult } from "../components/QueryResult";
 import { encodeResourceUri } from "../utils/formatting";
 import { FilterSelection, FilterValuePrimitive } from "./useDimensionFilters";
+import { escapeMalloyString } from "../utils/malloyString";
 
 /**
  * Parameters for the useDimensionFiltersQuery hook
@@ -37,13 +41,6 @@ export interface DimensionFiltersQueryResult {
    executeQuery: () => void;
    /** Whether a query can be executed (has filter selections) */
    canExecute: boolean;
-}
-
-/**
- * Escapes special characters in strings for Malloy queries
- */
-function escapeMalloyString(value: string): string {
-   return value.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
 }
 
 /**

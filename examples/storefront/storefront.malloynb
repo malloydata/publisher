@@ -61,3 +61,11 @@ run: order_items -> top_brands
 run: order_items -> top_products
 >>>malloy
 run: order_items -> top_customers
+
+>>>markdown
+## A two-row table
+
+The smallest table there is: the cell should be as tall as these two rows and
+nothing more.
+>>>malloy
+run: order_items -> top_products + { limit: 2 }

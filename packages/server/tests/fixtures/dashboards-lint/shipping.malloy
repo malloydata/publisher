@@ -1,0 +1,30 @@
+##! experimental.givens
+import { REGION } from './givens.malloy'
+
+// Nothing in `dashboards/` imports this file — only the notebook beside it
+// does. Its `# drill` tags are still checked, which is the point: drill is
+// declared on a model dimension and fires from any result that groups by it,
+// so the scan covers every model rather than only the dashboard files.
+source: shipping is duckdb.table('data/orders.csv') extend {
+   // Same failure as orders.region_name, but reachable only from a notebook.
+   # drill { to=["ghost"] }
+   dimension: carrier_name is brand
+
+   // to=self naming a given that is declared, so this one is silent.
+   # drill { to=self given=REGION }
+   dimension: ships_from is region
+
+   // to=self with no `given=`, so the given is the dimension name verbatim,
+   // `warehouse`, which nothing in this package declares. The clicked value has
+   // nowhere to land on any surface, so the tag is dead everywhere it could
+   // fire, and that is provable without knowing which document was clicked.
+   # drill { to=self }
+   dimension: warehouse is region
+
+   measure: shipment_count is count()
+
+   view: by_carrier is {
+      group_by: carrier_name
+      aggregate: shipment_count
+   }
+}

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type {} from "@mui/material/themeCssVarsAugmentation";
 import { ThemeOptions, PaletteMode } from "@mui/material/styles";
 import { getDesignTokens } from "./themePrimitives";

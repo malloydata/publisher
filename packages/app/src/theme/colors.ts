@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 export const colors = {
    white: "#FFFFFF",
    offWhite: "#F8F8F6",

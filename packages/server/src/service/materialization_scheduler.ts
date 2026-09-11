@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { MaterializationSchedulerConfig } from "../config";
 import { MaterializationConflictError } from "../errors";
 import { logger } from "../logger";

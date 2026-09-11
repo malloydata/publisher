@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # SDK Tree-Shaking and Code Splitting Guide
 
 This document explains how to use the Malloy Publisher SDK's optimized packaging for better tree-shaking and code splitting.

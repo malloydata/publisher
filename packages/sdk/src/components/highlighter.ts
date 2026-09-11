@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { HighlighterCore } from "shiki/core";
 

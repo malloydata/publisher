@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Contract test for the Malloy property explore visibility relies on when
 // `explores` is declared: `ModelDef.exports`. The within-file curation in
 // service/model.ts lists only the names in `exports`, so if a Malloy upgrade

@@ -1,8 +1,12 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isCredible, isExcluded } from "../scripts/exclusions";
+import { manifestSkillNames } from "../scripts/manifest";
 import { listSkills, skillsDir } from "./index";
 
 /** The repo's top-level skills/, which copy-skills.ts copies into this package. */
@@ -18,11 +22,12 @@ function skillNamesIn(dir: string): string[] {
 }
 
 describe("@malloy-publisher/skills", () => {
-   it("ships every publishable skill in the repo's skills/ directory", () => {
-      const publishable = skillNamesIn(sourceDir).filter(
-         (name) => !isExcluded(name),
-      );
-      expect(skillNamesIn(skillsDir)).toEqual(publishable);
+   it("ships exactly the skills the manifest names", () => {
+      // The manifest, not a glob of skills/: what the copy filters on is the
+      // only honest expectation here, or the first skill the manifest holds
+      // back fails this test while pointing at the copy. That the manifest in
+      // turn covers the whole tree is manifest.spec.ts's job.
+      expect(skillNamesIn(skillsDir)).toEqual(manifestSkillNames());
    });
 
    /**
@@ -71,8 +76,9 @@ describe("@malloy-publisher/skills", () => {
    // The reason this package exists: reference/ files reach no npm consumer
    // today, so the pointers to them in the MCP prompt bodies dangle.
    it("brings each skill's reference/ files along", () => {
+      const shipping = new Set(manifestSkillNames());
       const withReference = skillNamesIn(sourceDir)
-         .filter((name) => !isExcluded(name))
+         .filter((name) => shipping.has(name))
          .filter((name) =>
             fs.existsSync(path.join(sourceDir, name, "reference")),
          );
@@ -85,6 +91,45 @@ describe("@malloy-publisher/skills", () => {
             .readdirSync(path.join(sourceDir, name, "reference"))
             .filter((file) => !isExcluded(`${name}/reference/${file}`));
          expect(shipped.sort()).toEqual(original.sort());
+      }
+   });
+
+   /**
+    * The stamp is what makes a months-old install identifiable on disk, and it
+    * is applied by the copy rather than committed, so nothing else would notice
+    * it silently stopping. Counting the key matters as much as reading it: a
+    * second `version:` makes the frontmatter a duplicate-key YAML error, which
+    * strict hosts reject by dropping the skill entirely.
+    */
+   it("stamps every shipped skill's frontmatter with the package version", () => {
+      const { version } = JSON.parse(
+         fs.readFileSync(
+            path.join(import.meta.dir, "..", "package.json"),
+            "utf8",
+         ),
+      ) as { version: string };
+      const shipped = skillNamesIn(skillsDir);
+      expect(shipped.length).toBeGreaterThan(0);
+      for (const name of shipped) {
+         const text = fs.readFileSync(
+            path.join(skillsDir, name, "SKILL.md"),
+            "utf8",
+         );
+         const front = text.slice(4, text.indexOf("\n---", 4));
+         expect(front.match(/^version:.*$/gm)).toEqual([`version: ${version}`]);
+      }
+   });
+
+   /** Pack-time only, so the upstream-sync copies stay byte-identical. */
+   it("leaves the repo's source skills unstamped", () => {
+      for (const name of skillNamesIn(sourceDir)) {
+         const text = fs.readFileSync(
+            path.join(sourceDir, name, "SKILL.md"),
+            "utf8",
+         );
+         expect(text.slice(0, text.indexOf("\n---", 4))).not.toMatch(
+            /^version:/m,
+         );
       }
    });
 

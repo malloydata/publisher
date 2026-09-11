@@ -1,8 +1,13 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { ClientSecretCredential } from "@azure/identity";
 import { ContainerClient } from "@azure/storage-blob";
 import { BigQuery } from "@google-cloud/bigquery";
+import { Impersonated } from "google-auth-library";
 import { Connection, TableSourceDef } from "@malloydata/malloy";
 import { components } from "../api";
+import { BadRequestError, InvalidArgumentError } from "../errors";
 import { logger } from "../logger";
 import {
    CloudStorageCredentials,
@@ -13,7 +18,11 @@ import {
    parseCloudUri,
    s3ConnectionToCredentials,
 } from "./gcs_s3_utils";
+import { getImpersonatedAuthClient } from "./gcp_impersonation";
 import { ApiConnection } from "./model";
+import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
+
+export { sqlLiteral };
 
 type ApiSchema = components["schemas"]["Schema"];
 type ApiTable = components["schemas"]["Table"];
@@ -23,10 +32,60 @@ type ApiAzureConnection = components["schemas"]["AzureConnection"];
  * Build a SQL `AND column IN (...)` fragment for optional table-name filtering.
  * Returns an empty string when `values` is undefined or empty.
  */
-export function sqlInFilter(columnName: string, values?: string[]): string {
+export function sqlInFilter(
+   columnName: string,
+   values?: string[],
+   connectionType?: string,
+): string {
    if (!values || values.length === 0) return "";
-   const escaped = values.map((v) => `'${v.replace(/'/g, "''")}'`);
+   const escaped = values.map((v) => `'${sqlLiteral(v, connectionType)}'`);
    return `AND ${columnName} IN (${escaped.join(", ")})`;
+}
+
+/**
+ * A catalog or database name safe to splice into an identifier position.
+ *
+ * Escaping cannot help here: these land where a table reference goes
+ * (`FROM <catalog>.INFORMATION_SCHEMA.COLUMNS`), not inside a string, and the
+ * quoting rules differ per dialect. So this REJECTS rather than encodes.
+ *
+ * Two kinds of value reach it. The caller's `schemaName` split on its first dot
+ * is the one that matters, because `search_database_schema` takes that
+ * straight from a model-controlled MCP argument. Trino and Databricks catalog
+ * names also pass through it; those come from config or from SHOW CATALOGS, so
+ * they are not attacker-controlled, and validating them is for consistency
+ * rather than safety. In the SHOW CATALOGS loop a rejected name is warned and
+ * skipped, which is what an unquotable name did before anyway: spliced bare it
+ * produced a SQL parse error the same catch swallowed. Hyphenated Trino
+ * catalogs (`hive-prod`) are common and are the case this shuts out; quoting
+ * identifiers per dialect is the real fix whenever someone gets to it.
+ *
+ * Left raw, a schemaName of
+ * `(SELECT c1 AS TABLE_NAME, ... FROM customers) x -- .public` comments out the
+ * rest of the query and returns real ROW VALUES in the response, from a tool
+ * whose documented invariant is that it never returns one.
+ *
+ * The pattern is deliberately narrow: real catalog names are plain identifiers,
+ * and a name needing more than this is better rejected than silently mangled.
+ *
+ * NO HYPHEN. It was in this class and looked harmless, but two of them are the
+ * SQL line-comment token: `a--b.public` splices as `FROM a--b.information_schema
+ * .columns WHERE ...`, which executes as `FROM a` with the WHERE and ORDER BY
+ * commented away, and can return row values from whatever `a` resolves to. It
+ * bought nothing either: Snowflake, Trino and Unity Catalog all require quoting
+ * for a hyphenated name, so one spliced bare fails regardless, and BigQuery,
+ * the one dialect whose names really do carry hyphens, never reaches this
+ * function because it introspects through its client API.
+ */
+const SAFE_SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+
+export function assertSafeSqlIdentifier(value: string, what: string): string {
+   if (!SAFE_SQL_IDENTIFIER.test(value)) {
+      throw new InvalidArgumentError(
+         `Invalid ${what} "${value}": expected a plain identifier (letters, digits, underscore or dollar, not starting with a digit).`,
+      );
+   }
+   return value;
 }
 
 /**
@@ -54,7 +113,9 @@ function groupColumnRowsIntoTables(
    return tables;
 }
 
-function createBigQueryClient(connection: ApiConnection): BigQuery {
+async function createBigQueryClient(
+   connection: ApiConnection,
+): Promise<BigQuery> {
    if (!connection.bigqueryConnection) {
       throw new Error("BigQuery connection is required");
    }
@@ -63,12 +124,26 @@ function createBigQueryClient(connection: ApiConnection): BigQuery {
       projectId: string;
       credentials?: object;
       keyFilename?: string;
+      authClient?: Impersonated;
    } = {
       projectId: connection.bigqueryConnection.defaultProjectId || "",
    };
 
-   // Add service account key if provided
-   if (connection.bigqueryConnection.serviceAccountKeyJson) {
+   // Discovery must run as the same identity as query execution. For an
+   // impersonated connection that means the shared Impersonated client from
+   // gcp_impersonation.ts — falling through to ambient ADC here would silently
+   // read schemas as the publisher's own (broad) credential, the exact
+   // identity impersonation exists to stop using.
+   if (connection.bigqueryConnection.impersonateServiceAccount) {
+      config.authClient = await getImpersonatedAuthClient(
+         connection.bigqueryConnection.impersonateServiceAccount,
+      );
+      if (!config.projectId) {
+         throw new Error(
+            "BigQuery project ID is required. Set defaultProjectId on the connection when using impersonateServiceAccount.",
+         );
+      }
+   } else if (connection.bigqueryConnection.serviceAccountKeyJson) {
       let credentials: Record<string, unknown>;
       try {
          credentials = JSON.parse(
@@ -142,7 +217,7 @@ async function getSchemasForBigQuery(
       throw new Error("BigQuery connection is required");
    }
    try {
-      const bigquery = createBigQueryClient(connection);
+      const bigquery = await createBigQueryClient(connection);
       const [datasets] = await bigquery.getDatasets();
 
       return await Promise.all(
@@ -177,7 +252,8 @@ async function getSchemasForPostgres(
    try {
       // Wrap in row_to_json because the Malloy Postgres driver's runSQL
       // de-JSONs each row via row.row (matching Malloy-generated queries).
-      const result = await malloyConnection.runSQL(
+      const result = await runIntrospectionSQL(
+         malloyConnection,
          "SELECT row_to_json(t) as row FROM (SELECT schema_name FROM information_schema.schemata ORDER BY schema_name) t",
       );
       const rows = standardizeRunSQLResult(result);
@@ -220,6 +296,158 @@ async function getSchemasForMySQL(
    ];
 }
 
+/**
+ * Snowflake-managed databases, hidden from an account-wide schema listing.
+ *
+ * SNOWFLAKE is the account's metadata share and SNOWFLAKE_SAMPLE_DATA is the
+ * sample share every account gets; neither is user data, and between them they
+ * contribute the large majority of schemas on an otherwise-empty account.
+ */
+const SNOWFLAKE_SYSTEM_DATABASES = new Set([
+   "SNOWFLAKE",
+   "SNOWFLAKE_SAMPLE_DATA",
+]);
+
+/** One schema row, normalized across the two sources that can produce it. */
+interface SnowflakeSchemaRow {
+   catalogName: string;
+   schemaName: string;
+   owner: string;
+}
+
+/**
+ * Schemas within one configured database, via that database's
+ * INFORMATION_SCHEMA. Column names come back upper-case.
+ */
+async function listSnowflakeSchemasInDatabase(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+   database: string,
+   // `null` as well as `undefined`: the API contract declares the optional
+   // Snowflake fields nullable, so an omitted schema arrives as either.
+   schema: string | null | undefined,
+): Promise<SnowflakeSchemaRow[]> {
+   const filters = [
+      `CATALOG_NAME = '${sqlLiteral(database, connection.type)}'`,
+   ];
+   if (schema) {
+      filters.push(`SCHEMA_NAME = '${sqlLiteral(schema, connection.type)}'`);
+   }
+   // Identifier position, so this is validated rather than escaped. Previously
+   // spliced bare; a database name is operator-supplied config rather than
+   // caller input, so this is consistency with the Trino/Databricks catalog
+   // handling rather than a new trust boundary.
+   assertSafeSqlIdentifier(database, "database name");
+   const result = await runIntrospectionSQL(
+      malloyConnection,
+      `SELECT CATALOG_NAME, SCHEMA_NAME, SCHEMA_OWNER FROM ${database}.INFORMATION_SCHEMA.SCHEMATA WHERE ${filters.join(
+         " AND ",
+      )} ORDER BY SCHEMA_NAME`,
+   );
+   return standardizeRunSQLResult(result).map((row: unknown) => {
+      const r = row as Record<string, unknown>;
+      return {
+         catalogName: String(r.CATALOG_NAME ?? r.catalog_name ?? ""),
+         schemaName: String(r.SCHEMA_NAME ?? r.schema_name ?? ""),
+         owner: String(r.SCHEMA_OWNER ?? r.schema_owner ?? ""),
+      };
+   });
+}
+
+/**
+ * Snowflake's maximum for the `LIMIT` clause of a SHOW command.
+ *
+ * Stated explicitly rather than omitted, because the two behaviors differ and
+ * only one of them is recoverable. Per Snowflake's SHOW SCHEMAS documentation,
+ * omitting `LIMIT` makes the command ERROR when the result set exceeds ten
+ * thousand rows, which fails the whole listing and returns no schemas at all.
+ * Passing the limit instead caps the result, so a large account still gets a
+ * usable (if partial) list rather than a 500.
+ *
+ * The cap in {@link runIntrospectionSQL} cannot substitute for this. That one is
+ * a driver-side `RunSQLOptions.rowLimit`, which the Snowflake driver applies by
+ * slicing the array it already fetched, so it never reaches the server and never
+ * changes what SHOW itself decides to return or reject.
+ *
+ * Trading the error for a cap makes truncation possible, so the caller warns
+ * when a result lands on the limit: a silently partial schema list is
+ * indistinguishable from a complete one, and a table that exists would simply
+ * never appear.
+ *
+ * 10,000 is Snowflake's own ceiling, not a number chosen here -- `LIMIT 10001`
+ * is rejected -- so this cannot be raised to page further. An account above it
+ * needs a different instrument: SHOW per database, the `FROM '<name>'` cursor
+ * sub-clause, or SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA with its elevated grants and
+ * ~2h lag.
+ */
+const SNOWFLAKE_SHOW_ROW_LIMIT = 10_000;
+
+/**
+ * Every role-visible schema in the account, for a connection with no configured
+ * database.
+ *
+ * SHOW is a metadata command rather than a SELECT, so it needs no current
+ * database. Its output columns are LOWER-case (`database_name`, `name`,
+ * `owner`) where INFORMATION_SCHEMA's are upper-case; reading it with the
+ * upper-case keys yields empty owners, which the caller's `isHidden` rule treats
+ * as a system schema and would hide every row.
+ *
+ * The alternative source, SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA, is rejected on
+ * purpose: it needs elevated grants and lags reality by up to ~2 hours, so a
+ * just-created schema would be missing.
+ */
+async function listSnowflakeSchemasInAccount(
+   malloyConnection: Connection,
+): Promise<SnowflakeSchemaRow[]> {
+   // The row cap in runIntrospectionSQL cannot cover this: it is passed to the
+   // driver as a RunSQLOptions.rowLimit, which the Snowflake driver applies by
+   // slicing the returned array, so it never reaches the server and never
+   // constrains what SHOW itself decides to return.
+   const result = await runIntrospectionSQL(
+      malloyConnection,
+      `SHOW SCHEMAS IN ACCOUNT LIMIT ${SNOWFLAKE_SHOW_ROW_LIMIT}`,
+   );
+   const returnedRows = standardizeRunSQLResult(result);
+   if (returnedRows.length >= SNOWFLAKE_SHOW_ROW_LIMIT) {
+      logger.warn(
+         "Snowflake account-wide schema listing hit the SHOW row limit; the schema list is incomplete and some tables will not be discoverable",
+         {
+            rowLimit: SNOWFLAKE_SHOW_ROW_LIMIT,
+            returnedRows: returnedRows.length,
+         },
+      );
+   }
+   const parsed = returnedRows.map((row: unknown) => {
+      const r = row as Record<string, unknown>;
+      return {
+         catalogName: String(r.database_name ?? r.DATABASE_NAME ?? ""),
+         schemaName: String(r.name ?? r.NAME ?? ""),
+         owner: String(r.owner ?? r.OWNER ?? ""),
+      };
+   });
+   // A row missing either half cannot form a usable DATABASE.SCHEMA name, and
+   // listTablesForSnowflake would mis-parse it. Drop it rather than emit a name
+   // that fails later at the point of use.
+   const usable = parsed.filter((r) => r.catalogName && r.schemaName);
+   if (usable.length < parsed.length) {
+      // Dropping silently would collapse two very different situations into the
+      // same empty list: an account with no schemas, and a SHOW output whose
+      // columns we no longer recognise (a renamed column, or a role that cannot
+      // see them). The second returns rows and still yields nothing, so without
+      // this the endpoint reports "no schemas" for what is really a parse or
+      // permissions failure.
+      logger.warn(
+         "Dropped Snowflake schema rows missing a database or schema name; the schema list is incomplete",
+         { dropped: parsed.length - usable.length, returned: parsed.length },
+      );
+   }
+   return usable.sort(
+      (a, b) =>
+         a.catalogName.localeCompare(b.catalogName) ||
+         a.schemaName.localeCompare(b.schemaName),
+   );
+}
+
 async function getSchemasForSnowflake(
    connection: ApiConnection,
    malloyConnection: Connection,
@@ -231,40 +459,68 @@ async function getSchemasForSnowflake(
       const database = connection.snowflakeConnection.database;
       const schema = connection.snowflakeConnection.schema;
 
-      const filters: string[] = [];
-      if (database) {
-         filters.push(`CATALOG_NAME = '${database}'`);
-      }
-      if (schema) {
-         filters.push(`SCHEMA_NAME = '${schema}'`);
-      }
-      const whereClause =
-         filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
+      // INFORMATION_SCHEMA.SCHEMATA is PER-DATABASE in Snowflake, and an
+      // unqualified reference to it resolves against the session's current
+      // database. A connection with no configured database has no current
+      // database, so the unqualified form does not merely return the wrong rows,
+      // it fails outright ("Cannot perform SELECT. This session does not have a
+      // current database"). There is also no qualified form that spans
+      // databases. So the two cases need different instruments:
+      //
+      //   database configured -> <db>.INFORMATION_SCHEMA.SCHEMATA, as before.
+      //   no database         -> SHOW SCHEMAS IN ACCOUNT, which needs no current
+      //                          database and reports every role-visible schema.
+      //
+      // Both branches emit the same `DATABASE.SCHEMA` name, which is the shape
+      // listTablesForSnowflake parses back apart, so the two-part contract holds
+      // either way.
+      const rows = database
+         ? await listSnowflakeSchemasInDatabase(
+              connection,
+              malloyConnection,
+              database,
+              schema,
+           )
+         : await listSnowflakeSchemasInAccount(malloyConnection);
 
-      const result = await malloyConnection.runSQL(
-         `SELECT CATALOG_NAME, SCHEMA_NAME, SCHEMA_OWNER FROM ${database ? `${database}.` : ""}INFORMATION_SCHEMA.SCHEMATA ${whereClause} ORDER BY SCHEMA_NAME`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return rows.map((row: unknown) => {
-         const typedRow = row as Record<string, unknown>;
-         const catalogName = String(
-            typedRow.CATALOG_NAME ?? typedRow.catalog_name ?? "",
-         );
-         const schemaName = String(
-            typedRow.SCHEMA_NAME ?? typedRow.schema_name ?? "",
-         );
-         const owner = String(
-            typedRow.SCHEMA_OWNER ?? typedRow.schema_owner ?? "",
-         );
-         return {
-            name: `${catalogName}.${schemaName}`,
-            isHidden:
-               ["SNOWFLAKE", ""].includes(owner) ||
-               schemaName === "INFORMATION_SCHEMA",
-            isDefault: schema ? schemaName === schema : false,
-         };
-      });
+      return rows.map(({ catalogName, schemaName, owner }) => ({
+         name: `${catalogName}.${schemaName}`,
+         isHidden:
+            owner === "SNOWFLAKE" ||
+            // A BLANK owner counts as system-owned only within a configured
+            // database. Account-wide it does not: SHOW SCHEMAS reports a blank
+            // owner for any schema that is not local to the account, which
+            // includes every schema of an IMPORTED DATABASE -- a Marketplace or
+            // partner share the operator deliberately subscribed to. Treating
+            // those as system schemas drops them from the Connection Explorer
+            // picker by default and tells an agent its tables are elsewhere.
+            //
+            // Nothing is lost by scoping it: account-wide, every other
+            // blank-owner schema is either INFORMATION_SCHEMA (caught by name,
+            // one per database) or inside a Snowflake-managed database (caught
+            // by the set below, which is what actually carries the sample-data
+            // share -- itself blank-owner).
+            (Boolean(database) && owner === "") ||
+            schemaName === "INFORMATION_SCHEMA" ||
+            // Account-wide listing surfaces Snowflake's own databases, which are
+            // noise in a schema picker. They are only reachable in the
+            // no-database branch; a connection explicitly pointed at one still
+            // lists it, because there the operator asked for it by name.
+            (!database && SNOWFLAKE_SYSTEM_DATABASES.has(catalogName)),
+         // Scoped to the configured database on purpose. Account-wide, a bare
+         // `schemaName === schema` marks a same-named schema in EVERY database
+         // as the default, so N databases with a `PUBLIC` schema would yield N
+         // defaults. Without a database there is no one default to point at.
+         isDefault:
+            Boolean(database) && Boolean(schema) && schemaName === schema,
+      }));
    } catch (error) {
+      // A rejected database name is the config's to fix, not an internal fault.
+      // Flattened into a generic Error it classifies as "unexpected internal
+      // error, retry later", so a caller retries a deterministically-invalid
+      // value forever. Matches getSchemasForTrino, getSchemasForDatabricks and
+      // listTablesForSnowflake, which guard the same way for the same reason.
+      if (error instanceof BadRequestError) throw error;
       logger.error(
          `Error getting schemas for Snowflake connection ${connection.name}`,
          { error },
@@ -288,8 +544,12 @@ async function getSchemasForTrino(
 
       if (connection.trinoConnection.catalog) {
          const catalog = connection.trinoConnection.catalog;
-         const result = await malloyConnection.runSQL(
-            `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+               catalog,
+               "catalog name",
+            )}.information_schema.schemata ORDER BY schema_name`,
          );
          const rows = standardizeRunSQLResult(result);
          allRows = rows.map((row: unknown) => {
@@ -300,7 +560,10 @@ async function getSchemasForTrino(
             };
          });
       } else {
-         const catalogsResult = await malloyConnection.runSQL(`SHOW CATALOGS`);
+         const catalogsResult = await runIntrospectionSQL(
+            malloyConnection,
+            `SHOW CATALOGS`,
+         );
          const catalogNames = standardizeRunSQLResult(catalogsResult).map(
             (row: unknown) => {
                const r = row as Record<string, unknown>;
@@ -310,8 +573,12 @@ async function getSchemasForTrino(
 
          for (const catalog of catalogNames) {
             try {
-               const result = await malloyConnection.runSQL(
-                  `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+               const result = await runIntrospectionSQL(
+                  malloyConnection,
+                  `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+                     catalog,
+                     "catalog name",
+                  )}.information_schema.schemata ORDER BY schema_name`,
                );
                const rows = standardizeRunSQLResult(result);
                for (const row of rows) {
@@ -343,6 +610,11 @@ async function getSchemasForTrino(
          };
       });
    } catch (error) {
+      // A rejected catalog name is the caller's/config's to fix, not an
+      // internal fault. Flattened into a generic Error it classifies as
+      // "unexpected internal error, retry later", which is the retry-forever
+      // loop this PR exists to remove.
+      if (error instanceof BadRequestError) throw error;
       logger.error(
          `Error getting schemas for Trino connection ${connection.name}`,
          { error },
@@ -366,8 +638,12 @@ async function getSchemasForDatabricks(
 
       if (connection.databricksConnection.defaultCatalog) {
          const catalog = connection.databricksConnection.defaultCatalog;
-         const result = await malloyConnection.runSQL(
-            `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+               catalog,
+               "catalog name",
+            )}.information_schema.schemata ORDER BY schema_name`,
          );
          const rows = standardizeRunSQLResult(result);
          allRows = rows.map((row: unknown) => {
@@ -378,7 +654,10 @@ async function getSchemasForDatabricks(
             };
          });
       } else {
-         const catalogsResult = await malloyConnection.runSQL(`SHOW CATALOGS`);
+         const catalogsResult = await runIntrospectionSQL(
+            malloyConnection,
+            `SHOW CATALOGS`,
+         );
          const catalogNames = standardizeRunSQLResult(catalogsResult).map(
             (row: unknown) => {
                const r = row as Record<string, unknown>;
@@ -388,8 +667,12 @@ async function getSchemasForDatabricks(
 
          for (const catalog of catalogNames) {
             try {
-               const result = await malloyConnection.runSQL(
-                  `SELECT schema_name FROM ${catalog}.information_schema.schemata ORDER BY schema_name`,
+               const result = await runIntrospectionSQL(
+                  malloyConnection,
+                  `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+                     catalog,
+                     "catalog name",
+                  )}.information_schema.schemata ORDER BY schema_name`,
                );
                const rows = standardizeRunSQLResult(result);
                for (const row of rows) {
@@ -419,6 +702,11 @@ async function getSchemasForDatabricks(
          };
       });
    } catch (error) {
+      // A rejected catalog name is the caller's/config's to fix, not an
+      // internal fault. Flattened into a generic Error it classifies as
+      // "unexpected internal error, retry later", which is the retry-forever
+      // loop this PR exists to remove.
+      if (error instanceof BadRequestError) throw error;
       logger.error(
          `Error getting schemas for Databricks connection ${connection.name}`,
          { error },
@@ -437,9 +725,9 @@ async function getSchemasForDuckDB(
       throw new Error("DuckDB connection is required");
    }
    try {
-      const result = await malloyConnection.runSQL(
+      const result = await runIntrospectionSQL(
+         malloyConnection,
          "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
-         { rowLimit: 1000 },
       );
 
       const rows = standardizeRunSQLResult(result);
@@ -531,8 +819,11 @@ async function getSchemasForMotherDuck(
    }
    try {
       const database = connection.motherduckConnection.database;
-      const whereClause = database ? `WHERE catalog_name = '${database}'` : "";
-      const result = await malloyConnection.runSQL(
+      const whereClause = database
+         ? `WHERE catalog_name = '${sqlLiteral(database, connection.type)}'`
+         : "";
+      const result = await runIntrospectionSQL(
+         malloyConnection,
          `SELECT DISTINCT schema_name FROM information_schema.schemata ${whereClause} ORDER BY schema_name`,
       );
       const rows = standardizeRunSQLResult(result);
@@ -566,10 +857,10 @@ async function getSchemasForDuckLake(
 ): Promise<ApiSchema[]> {
    try {
       // The catalog is attached with the connection name (see attachDuckLake in connection.ts)
-      const catalogName = connection.name;
-      const result = await malloyConnection.runSQL(
-         `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${catalogName}' ORDER BY schema_name`,
-         { rowLimit: 1000 },
+      const catalogName = connection.name ?? "";
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName, connection.type)}' ORDER BY schema_name`,
       );
       const rows = standardizeRunSQLResult(result);
 
@@ -900,6 +1191,19 @@ function isDataFile(key: string): boolean {
    );
 }
 
+/** These builders always run against DuckDB, whatever connection reached them. */
+const DUCKDB_DIALECT = "duckdb";
+
+/**
+ * DESCRIBE a single remote data file.
+ *
+ * `fileUri` is caller-controlled: `listTablesForDuckDB` routes any `schemaName`
+ * beginning with `https://`, `abfss://` or `az://` here, and that argument comes
+ * straight from an MCP tool argument on the bundled config, with no warehouse
+ * credentials needed. It is escaped for the same reason the information_schema
+ * literals are; it was missed when they were done. DuckDB follows the ANSI rule,
+ * so quote-doubling is the correct escape here.
+ */
 async function describeRemoteFile(
    malloyConnection: Connection,
    fileUri: string,
@@ -910,23 +1214,23 @@ async function describeRemoteFile(
    let describeQuery: string;
    switch (fileType) {
       case "csv":
-         describeQuery = `DESCRIBE SELECT * FROM read_csv('${fileUri}', auto_detect=true) LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_csv('${sqlLiteral(fileUri, DUCKDB_DIALECT)}', auto_detect=true) LIMIT 1`;
          break;
       case "parquet":
-         describeQuery = `DESCRIBE SELECT * FROM read_parquet('${fileUri}') LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_parquet('${sqlLiteral(fileUri, DUCKDB_DIALECT)}') LIMIT 1`;
          break;
       case "json":
-         describeQuery = `DESCRIBE SELECT * FROM read_json('${fileUri}', auto_detect=true) LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(fileUri, DUCKDB_DIALECT)}', auto_detect=true) LIMIT 1`;
          break;
       case "jsonl":
-         describeQuery = `DESCRIBE SELECT * FROM read_json('${fileUri}', format='newline_delimited', auto_detect=true) LIMIT 1`;
+         describeQuery = `DESCRIBE SELECT * FROM read_json('${sqlLiteral(fileUri, DUCKDB_DIALECT)}', format='newline_delimited', auto_detect=true) LIMIT 1`;
          break;
       default:
          logger.warn(`Unsupported file type for file: ${fileUri}`);
          return { resource: fileUri, columns: [] };
    }
 
-   const result = await malloyConnection.runSQL(describeQuery);
+   const result = await runIntrospectionSQL(malloyConnection, describeQuery);
    const rows = standardizeRunSQLResult(result);
    const columns = rows.map((row: unknown) => {
       const typedRow = row as Record<string, unknown>;
@@ -1076,7 +1380,7 @@ async function listTablesForBigQuery(
    tableNames?: string[],
 ): Promise<ApiTable[]> {
    try {
-      const bigquery = createBigQueryClient(connection);
+      const bigquery = await createBigQueryClient(connection);
       // A 3-segment table reference ("project.dataset.table") reaches here with a
       // project-qualified schema ("project.dataset"). bigquery.dataset() takes a
       // BARE dataset id plus an optional projectId, so passing "project.dataset" as
@@ -1151,8 +1455,9 @@ async function listTablesForMySQL(
       throw new Error("Mysql connection is required");
    }
    try {
-      const result = await malloyConnection.runSQL(
-         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("TABLE_NAME", tableNames, connection.type)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1179,8 +1484,9 @@ async function listTablesForPostgres(
    try {
       // Wrap in row_to_json because the Malloy Postgres driver's runSQL
       // de-JSONs each row via row.row (matching Malloy-generated queries).
-      const result = await malloyConnection.runSQL(
-         `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position) t`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position) t`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1223,9 +1529,12 @@ async function listTablesForSnowflake(
          );
       }
 
+      // Identifier position below, so this is validated, not escaped.
+      assertSafeSqlIdentifier(databaseName, "database name");
       const qualifiedSchema = `${databaseName}.${schemaOnly}`;
-      const result = await malloyConnection.runSQL(
-         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${schemaOnly}' ${sqlInFilter("TABLE_NAME", tableNames)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("TABLE_NAME", tableNames, connection.type)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${qualifiedSchema}.${t}`);
@@ -1234,6 +1543,11 @@ async function listTablesForSnowflake(
          `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
          { error },
       );
+      // A bad argument must stay a bad argument: rewrapping it as a plain
+      // Error sends it to the internal-fault classifier, whose advice is "try
+      // again later", so an agent retries a deterministically-invalid argument
+      // forever. Only DuckDB escaped that, because its throw sits outside a try.
+      if (error instanceof BadRequestError) throw error;
       throw new Error(
          `Failed to get tables for Snowflake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
       );
@@ -1261,7 +1575,10 @@ async function listTablesForTrino(
       } else {
          const dotIdx = schemaName.indexOf(".");
          if (dotIdx > 0) {
-            catalogPrefix = `${schemaName.substring(0, dotIdx)}.`;
+            catalogPrefix = `${assertSafeSqlIdentifier(
+               schemaName.substring(0, dotIdx),
+               "catalog name",
+            )}.`;
             schemaOnly = schemaName.substring(dotIdx + 1);
          } else {
             catalogPrefix = "";
@@ -1270,8 +1587,9 @@ async function listTablesForTrino(
          resourcePrefix = schemaName;
       }
 
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${schemaOnly}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
@@ -1280,6 +1598,11 @@ async function listTablesForTrino(
          `Error getting tables for Trino schema ${schemaName} in connection ${connection.name}`,
          { error },
       );
+      // A bad argument must stay a bad argument: rewrapping it as a plain
+      // Error sends it to the internal-fault classifier, whose advice is "try
+      // again later", so an agent retries a deterministically-invalid argument
+      // forever. Only DuckDB escaped that, because its throw sits outside a try.
+      if (error instanceof BadRequestError) throw error;
       throw new Error(
          `Failed to get tables for Trino schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
       );
@@ -1307,7 +1630,10 @@ async function listTablesForDatabricks(
       } else {
          const dotIdx = schemaName.indexOf(".");
          if (dotIdx > 0) {
-            catalogPrefix = `${schemaName.substring(0, dotIdx)}.`;
+            catalogPrefix = `${assertSafeSqlIdentifier(
+               schemaName.substring(0, dotIdx),
+               "catalog name",
+            )}.`;
             schemaOnly = schemaName.substring(dotIdx + 1);
          } else {
             catalogPrefix = "";
@@ -1316,8 +1642,9 @@ async function listTablesForDatabricks(
          resourcePrefix = schemaName;
       }
 
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${schemaOnly}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
@@ -1326,6 +1653,11 @@ async function listTablesForDatabricks(
          `Error getting tables for Databricks schema ${schemaName} in connection ${connection.name}`,
          { error },
       );
+      // A bad argument must stay a bad argument: rewrapping it as a plain
+      // Error sends it to the internal-fault classifier, whose advice is "try
+      // again later", so an agent retries a deterministically-invalid argument
+      // forever. Only DuckDB escaped that, because its throw sits outside a try.
+      if (error instanceof BadRequestError) throw error;
       throw new Error(
          `Failed to get tables for Databricks schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
       );
@@ -1402,16 +1734,20 @@ async function listTablesForDuckDB(
    // Regular DuckDB schema — query information_schema.columns
    const dotIdx = schemaName.indexOf(".");
    if (dotIdx < 0) {
-      throw new Error(
-         `DuckDB schema name must be qualified as "catalog.schema", got "${schemaName}"`,
+      // InvalidArgumentError, not Error: this is a deterministic bad argument,
+      // and as a plain Error it was classified as an internal fault whose advice
+      // was "try the request again later", which an agent then does forever.
+      throw new InvalidArgumentError(
+         `DuckDB schema name must be qualified as "catalog.schema", got "${schemaName}". List this connection's schemas and use one of those names verbatim.`,
       );
    }
    const catalogName = schemaName.substring(0, dotIdx);
    const actualSchemaName = schemaName.substring(dotIdx + 1);
 
    try {
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${actualSchemaName}' AND table_catalog = '${catalogName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1436,8 +1772,9 @@ async function listTablesForMotherDuck(
       throw new Error("MotherDuck connection is required");
    }
    try {
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${schemaName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
@@ -1467,8 +1804,9 @@ async function listTablesForDuckLake(
    const catalogName = schemaName.split(".")[0];
    const actualSchemaName = schemaName.split(".")[1];
    try {
-      const result = await malloyConnection.runSQL(
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${actualSchemaName}' AND table_catalog = '${catalogName}' ${sqlInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);

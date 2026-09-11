@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { MalloyExplicitTheme } from "@malloydata/render";
 import type { ResolvedTheme } from "./types";
 

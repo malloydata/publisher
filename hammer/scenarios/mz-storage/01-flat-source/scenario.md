@@ -3,8 +3,12 @@ id: flat-source
 tags: serve-correctness
 package: d0
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
-# Flat persist source: Postgres → DuckLake
+# A persisted source is served from its snapshot, not recomputed live
 
 A single aggregate is persisted into DuckLake and served routed at `mode=on`.
 This is the baseline: build → serve → correct values → prove it was served from

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
 import { Storage } from "@google-cloud/storage";
 import { Mutex } from "async-mutex";
@@ -26,9 +29,14 @@ import {
    EnvironmentNotFoundError,
    FrozenConfigError,
    PackageNotFoundError,
+   PublisherConfigError,
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
+import {
+   deleteEnvironmentEmbeddings,
+   deletePackageEmbeddings,
+} from "../mcp/tools/embedding_index";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    assertSafeEnvironmentPath,
@@ -40,6 +48,7 @@ import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 type ApiEnvironment = components["schemas"]["Environment"];
+type ApiConnection = components["schemas"]["Connection"];
 type LoadError = NonNullable<
    components["schemas"]["ServerStatus"]["loadErrors"]
 >[number];
@@ -534,6 +543,14 @@ export class EnvironmentStore {
                name: environment.name,
                resource: `${API_PREFIX}/environments/${environment.name}`,
                connections: environment.connections,
+               // Only asserted when the config declares destinations: an empty
+               // list is an instruction to clear, and this call reaches
+               // `Environment.update` for an environment that is already loaded.
+               ...(environment.storageDestinations.length
+                  ? {
+                       storageDestinations: environment.storageDestinations,
+                    }
+                  : {}),
                packages: environment.packages,
             },
             true,
@@ -624,13 +641,13 @@ export class EnvironmentStore {
                            .then(() => true)
                            .catch(() => false);
 
+                        const environmentConfig =
+                           environmentManifest.environments.find(
+                              (p) => p.name === dbEnvironment.name,
+                           );
+
                         if (!environmentExists) {
                            // Try to find in config and reload
-                           const environmentConfig =
-                              environmentManifest.environments.find(
-                                 (p) => p.name === dbEnvironment.name,
-                              );
-
                            if (environmentConfig) {
                               const environmentInstance =
                                  await this.addEnvironment(
@@ -639,9 +656,24 @@ export class EnvironmentStore {
                                        resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
                                        connections:
                                           environmentConfig.connections,
+                                       storageDestinations:
+                                          environmentConfig.storageDestinations,
                                        packages: environmentConfig.packages,
                                     },
                                     true,
+                                    // The config is a fallback here, not the set
+                                    // of record: it is read because the
+                                    // directory was missing, and a config
+                                    // declaring no destinations normalizes to an
+                                    // empty list, which the sync would otherwise
+                                    // read as "clear them" and prune every
+                                    // destination registered over the API. A
+                                    // missing directory is transient; that
+                                    // deletion is not. Omitting the field would
+                                    // not help — this call CREATES the
+                                    // environment, and the constructor seats an
+                                    // authoritative empty list either way.
+                                    { storageDestinationsAreFallback: true },
                                  );
 
                               // Update database with new path
@@ -666,6 +698,40 @@ export class EnvironmentStore {
                            dbEnvironment.id,
                         );
 
+                        // Destinations the same way, so one registered over the
+                        // API outlives the restart that would otherwise leave
+                        // every materialized query for it falling back to live.
+                        // The config file seeds only an environment the database
+                        // holds none for, which is how a destination added to
+                        // publisher.config.json after first boot still loads.
+                        //
+                        // Not fatal to the environment: a build naming a
+                        // destination that did not load fails loudly and its
+                        // materialized queries serve live, which is a better
+                        // outcome than dropping every package in the environment.
+                        let destinations =
+                           environmentConfig?.storageDestinations;
+                        let destinationsRead = true;
+                        try {
+                           const stored =
+                              await repository.listStorageDestinations(
+                                 dbEnvironment.id,
+                              );
+                           if (stored.length) {
+                              destinations = stored.map((row) => ({
+                                 name: row.name,
+                                 type: row.type as ApiConnection["type"],
+                                 ...row.config,
+                              }));
+                           }
+                        } catch (error) {
+                           destinationsRead = false;
+                           logger.error(
+                              `Error reading storage destinations for "${dbEnvironment.name}"; continuing without the stored ones`,
+                              { error },
+                           );
+                        }
+
                         const environmentInstance = await Environment.create(
                            dbEnvironment.name,
                            dbEnvironment.path,
@@ -675,7 +741,14 @@ export class EnvironmentStore {
                               resource: `${API_PREFIX}/connections/${conn.name}`,
                               ...conn.config,
                            })),
+                           destinations,
                         );
+                        // Whatever we ended up with is a fallback, not the set of
+                        // record, so the sync must not reconcile the stored rows
+                        // against it — see markStorageDestinationsUnknown.
+                        if (!destinationsRead) {
+                           environmentInstance.markStorageDestinationsUnknown();
+                        }
                         environmentInstance.setMemoryGovernor(
                            this.memoryGovernor,
                         );
@@ -819,6 +892,13 @@ export class EnvironmentStore {
       // Sync connections
       await this.addConnections(environment, dbEnvironment.id, repository);
 
+      // Sync storage destinations
+      await this.syncStorageDestinations(
+         environment,
+         dbEnvironment.id,
+         repository,
+      );
+
       // Sync packages
       await this.addPackages(environment, dbEnvironment.id, repository);
 
@@ -828,6 +908,10 @@ export class EnvironmentStore {
    public async deleteEnvironmentFromDatabase(
       environmentName: string,
    ): Promise<void> {
+      // Before the metadata lookup, for the same reason as the package
+      // variant: the cleanup needs only the name, never the row.
+      this.cleanupEnvironmentEmbeddings(environmentName);
+
       const repository = this.storageManager.getRepository();
 
       // Get the environment from database
@@ -996,6 +1080,68 @@ export class EnvironmentStore {
       }
    }
 
+   /**
+    * Mirrors an environment's destination list into the database so it survives a
+    * restart, the same way its connections do.
+    *
+    * Unlike {@link addConnections} this also deletes the rows for destinations
+    * the environment no longer holds. The list has replace semantics — an update
+    * hands over the whole set, there is no per-destination delete endpoint — so a
+    * left-behind row would silently resurrect a destination that had been removed
+    * the next time the environment loaded from the database.
+    */
+   private async syncStorageDestinations(
+      environment: Environment,
+      environmentId: string,
+      repository: ReturnType<typeof this.storageManager.getRepository>,
+   ): Promise<void> {
+      try {
+         const destinations = environment.listStorageDestinations();
+         const kept = new Set<string>();
+
+         for (const destination of destinations) {
+            if (!destination.name || !destination.type) {
+               continue;
+            }
+            kept.add(destination.name);
+            await repository.upsertStorageDestination({
+               environmentId,
+               name: destination.name,
+               type: destination.type,
+               config: destination,
+            });
+         }
+
+         // Pruning is only safe against a list that IS the desired state. When a
+         // load could not read the stored destinations the list is unknown rather
+         // than empty, and reconciling to it would delete every registration over
+         // a transient read error — permanently, since the next restart then has
+         // nothing to restore. Upserting what we do hold stays safe either way.
+         if (!environment.hasAuthoritativeStorageDestinations()) {
+            logger.warn(
+               `Not reconciling stored storage destinations for "${environment.metadata?.name}": this environment's destinations were never read, so the in-memory list is not the desired state`,
+            );
+            return;
+         }
+
+         const stored = await repository.listStorageDestinations(environmentId);
+         for (const row of stored) {
+            if (!kept.has(row.name)) {
+               await repository.deleteStorageDestination(row.id);
+               logger.info(
+                  `Removed storage destination ${row.name} from environment ${environment.metadata?.name}`,
+               );
+            }
+         }
+      } catch (err: unknown) {
+         const error = err as Error;
+         logger.error(
+            `Error syncing storage destinations for "${environment.metadata?.name}":`,
+            error,
+         );
+      }
+   }
+
    public async addConnection(
       conn: ReturnType<Environment["listApiConnections"]>[number],
       environmentId: string,
@@ -1097,6 +1243,11 @@ export class EnvironmentStore {
       environmentName: string,
       packageName: string,
    ): Promise<void> {
+      // Before the metadata lookups: embeddings are written off the
+      // in-memory environment, which can outlive a lost metadata row,
+      // so the cleanup must not sit behind the missing-row early return.
+      this.cleanupPackageEmbeddings(environmentName, packageName);
+
       const repository = this.storageManager.getRepository();
 
       // Get the environment ID from database
@@ -1117,6 +1268,64 @@ export class EnvironmentStore {
       if (existingPackage) {
          await repository.deletePackage(existingPackage.id);
          logger.info(`Deleted package "${packageName}" from database`);
+      }
+   }
+
+   /**
+    * Best-effort, non-blocking: drop a deleted package's cached entity
+    * embeddings so package churn does not grow publisher.db forever.
+    * Not awaited by callers: the cleanup queues on the package's sync
+    * mutex, which an in-flight bulk embed can hold for minutes, and a
+    * DELETE response must not stall behind it. Needs only the names, so
+    * it runs regardless of whether the metadata row still exists. An
+    * orphaned row is inert (reads are scoped by environment + package),
+    * so failure is logged, never propagated.
+    */
+   private cleanupPackageEmbeddings(
+      environmentName: string,
+      packageName: string,
+   ): void {
+      try {
+         deletePackageEmbeddings(
+            this.storageManager.getDuckDbConnection(),
+            environmentName,
+            packageName,
+         ).catch((error: unknown) => {
+            logger.warn("Failed to clean up entity embeddings for package", {
+               environmentName,
+               packageName,
+               error: error instanceof Error ? error.message : String(error),
+            });
+         });
+      } catch (error) {
+         logger.warn("Failed to clean up entity embeddings for package", {
+            environmentName,
+            packageName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
+   }
+
+   /** Environment-wide variant of {@link cleanupPackageEmbeddings}. */
+   private cleanupEnvironmentEmbeddings(environmentName: string): void {
+      try {
+         deleteEnvironmentEmbeddings(
+            this.storageManager.getDuckDbConnection(),
+            environmentName,
+         ).catch((error: unknown) => {
+            logger.warn(
+               "Failed to clean up entity embeddings for environment",
+               {
+                  environmentName,
+                  error: error instanceof Error ? error.message : String(error),
+               },
+            );
+         });
+      } catch (error) {
+         logger.warn("Failed to clean up entity embeddings for environment", {
+            environmentName,
+            error: error instanceof Error ? error.message : String(error),
+         });
       }
    }
 
@@ -1255,6 +1464,24 @@ export class EnvironmentStore {
                message,
             });
          }
+         // Stale packages are SERVING (they still appear in environments, and
+         // the readiness counters still count them), but the model answering
+         // queries is older than the files on disk because the latest reload
+         // failed to compile. Reported here so the failure is visible off-box:
+         // without it a broken watch-mode save is stderr-only and /status
+         // keeps reading healthy while queries answer from the previous model.
+         for (const [
+            packageName,
+            stale,
+         ] of environment.getStaleCompileErrors()) {
+            loadErrors.push({
+               environment: environmentName,
+               package: packageName,
+               message: stale.message,
+               stale: true,
+               failedAt: stale.failedAt,
+            });
+         }
       }
       // Left unset when nothing failed, so the key is absent from the response
       // and a healthy server's status body is byte-for-byte what it was before
@@ -1318,13 +1545,30 @@ export class EnvironmentStore {
             name: environmentName,
             resource: `${API_PREFIX}/environments/${environmentName}`,
             connections: environmentConfig?.connections || [],
+            // Only asserted when the config declares destinations. A `reload=true`
+            // on an environment whose destinations were registered over the API
+            // would otherwise carry an empty list, which reads as "clear them".
+            ...(environmentConfig?.storageDestinations?.length
+               ? {
+                    storageDestinations: environmentConfig.storageDestinations,
+                 }
+               : {}),
          });
       });
    }
 
+   /**
+    * `storageDestinationsAreFallback` says the destinations on this payload are
+    * the best guess available rather than the desired state, so the database sync
+    * below must not reconcile the stored rows against them. It has to be decided
+    * here rather than by the caller afterwards: this method syncs before it
+    * returns, so by the time a caller holds the instance the pruning has already
+    * happened.
+    */
    public async addEnvironment(
       environment: ApiEnvironment,
       skipInitialization: boolean = false,
+      { storageDestinationsAreFallback = false } = {},
    ) {
       if (!skipInitialization) {
          await this.finishedInitialization;
@@ -1343,6 +1587,9 @@ export class EnvironmentStore {
          const updatedEnvironment =
             await existingEnvironment.update(environment);
          this.environments.set(environmentName, updatedEnvironment);
+         if (storageDestinationsAreFallback) {
+            updatedEnvironment.markStorageDestinationsUnknown();
+         }
          await this.addEnvironmentToDatabase(updatedEnvironment);
          return updatedEnvironment;
       }
@@ -1377,6 +1624,7 @@ export class EnvironmentStore {
          environmentName,
          absoluteEnvironmentPath,
          environment.connections || [],
+         environment.storageDestinations || [],
       );
       newEnvironment.setMemoryGovernor(this.memoryGovernor);
 
@@ -1405,6 +1653,9 @@ export class EnvironmentStore {
          }
       });
 
+      if (storageDestinationsAreFallback) {
+         newEnvironment.markStorageDestinationsUnknown();
+      }
       await this.addEnvironmentToDatabase(newEnvironment);
 
       return newEnvironment;
@@ -1416,10 +1667,21 @@ export class EnvironmentStore {
       logger.info(
          `Detected zip file at "${absoluteEnvironmentPath}". Unzipping...`,
       );
-      const unzippedEnvironmentPath = absoluteEnvironmentPath.replace(
-         ".zip",
-         "",
+      // The archive extracts to a sibling directory named for it. Resolve the
+      // target and check it lexically against the archive's directory, in
+      // the one shape CodeQL's js/path-injection query accepts as a barrier
+      // (an unconditional startsWith on the resolved value it later sinks),
+      // so the target provably stays beside the archive.
+      const archiveDir = path.resolve(path.dirname(absoluteEnvironmentPath));
+      const unzippedEnvironmentPath = path.resolve(
+         archiveDir,
+         path.basename(absoluteEnvironmentPath, ".zip"),
       );
+      if (!unzippedEnvironmentPath.startsWith(archiveDir + path.sep)) {
+         throw new BadRequestError(
+            `Refusing to unzip "${absoluteEnvironmentPath}": target escapes its directory`,
+         );
+      }
       await fs.promises.rm(unzippedEnvironmentPath, {
          recursive: true,
          force: true,
@@ -1519,11 +1781,23 @@ export class EnvironmentStore {
          return getProcessedPublisherConfig(serverRootPath);
       } catch (error) {
          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-            logger.error(
-               `Error reading ${PUBLISHER_CONFIG_NAME}. Generating from directory`,
-               { error },
-            );
-            return { frozenConfig: false, environments: [] };
+            // A file the operator wrote that Publisher cannot honour: malformed
+            // JSON, a rejected shape, or a `${VAR}` naming an unset variable.
+            // Raised, not absorbed. This used to log and return an EMPTY
+            // manifest, which meant a single typo produced a server that
+            // printed PUBLISHER_READY, reported operationalState "serving" and
+            // an empty loadErrors, and served no environment at all -- with the
+            // cause reduced to `{"error":{}}`, since an Error has no enumerable
+            // fields to serialize. loadErrors is the field operators and agents
+            // are told to check, and it cannot carry this: it is keyed by
+            // environment and there are no environments to key by.
+            //
+            // Boot turns this into PUBLISHER_INIT_FAILED via initialize()'s
+            // handler, which is the documented terminal signal. A server
+            // already serving keeps serving: getEnvironment returns a loaded
+            // environment before reaching here, so only an explicit reload
+            // pays, and it answers with the reason rather than with silence.
+            throw new PublisherConfigError(PUBLISHER_CONFIG_NAME, error);
          } else {
             // If publisher.config.json is missing, generate the manifest from directories
             try {
@@ -1542,13 +1816,19 @@ export class EnvironmentStore {
                            },
                         ],
                         connections: [],
+                        storageDestinations: [],
                      });
                   }
                }
                return { frozenConfig: false, environments };
             } catch (lsError) {
+               // `{ error }` alone serializes an Error to {}, since its fields
+               // are not enumerable, so the message has to be lifted out.
                logger.error(`Error listing directories in ${serverRootPath}`, {
-                  error: lsError,
+                  error:
+                     lsError instanceof Error
+                        ? lsError.message
+                        : String(lsError),
                });
                return { frozenConfig: false, environments: [] };
             }

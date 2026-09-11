@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
 
 /**
  * Keep the root `pg` resolution equal to the version @malloydata/db-postgres

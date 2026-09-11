@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Integration test: Explore Visibility.
  *
@@ -164,8 +167,8 @@ export { customers }`,
       writeManifest({ explores: ["index.malloy"] });
       fs.writeFileSync(
          path.join(tempDir, "base.malloy"),
-         `#(authorize) "1 = 1"
-source: base_source is duckdb.sql("select 1 as id")`,
+         `#(authorize) true
+source: base_source is duckdb.sql("select 1 as id") extend {}`,
       );
       fs.writeFileSync(
          path.join(tempDir, "index.malloy"),
@@ -190,7 +193,7 @@ export { customers }`,
          ]);
 
          // Enforcement: the hidden source's gate is still in force.
-         expect(model.getAuthorize("base_source")).toEqual(["1 = 1"]);
+         expect(model.getAuthorize("base_source")).toEqual(["true"]);
       } finally {
          await duckdb.close();
       }
@@ -362,12 +365,18 @@ export { customers }`,
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const warnings = pkg.emptyDiscoveryWarnings();
          expect(warnings.length).toBe(1);
-         expect(warnings[0]).toBe(
-            `Model "consumer.malloy" is listed but exposes nothing: it only ` +
-               `imports other files and re-exports none of their sources. ` +
-               `Add e.g. 'export { source_name }' to surface sources on ` +
-               `this model.`,
+         expect(warnings[0].model).toBe("consumer.malloy");
+         expect(warnings[0].message).toContain(
+            `Model "consumer.malloy" is listed in explores but exposes nothing`,
          );
+         expect(warnings[0].message).toContain("export { source_name }");
+         // Advisory warnings also ride the package metadata (the QA gap:
+         // exploresWarnings said none while a listed file surfaced nothing).
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).some(
+               (w) => w.model === "consumer.malloy",
+            ),
+         ).toBe(true);
          expect(pkg.formatInvalidExplores()).toBe("");
 
          fs.writeFileSync(

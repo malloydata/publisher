@@ -1,17 +1,36 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import sinon from "sinon";
 import { components } from "../api";
 import {
+   attachDuckLakeReadWrite,
+   buildCloudStorageSecretSQL,
+   buildEnvironmentMalloyConfig,
    buildProxiedSslQuery,
    createEnvironmentConnections,
    resolveProxiedTls,
    testConnectionConfig,
+   isExpiredCredentialError,
 } from "./connection";
+import {
+   DEFAULT_S3_CREDENTIAL_CHAIN,
+   resolveCloudStorageCredentials,
+} from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
+import { UnsupportedCatalogFormatError } from "../errors";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -1337,6 +1356,367 @@ describe("connection integration tests", () => {
                   /DuckLake connection configuration is missing/,
                );
             });
+
+            // ── catalog.metadataSchema ──────────────────────────────────────
+            //
+            // Several independent DuckLake catalogs may share ONE catalog
+            // database when each attaches its own metadata schema. These use a
+            // LOCAL directory as DATA_PATH rather than S3/GCS, so they need only
+            // the Postgres service and are not skipped for want of object-store
+            // credentials.
+            describe("catalog.metadataSchema", () => {
+               const pgCatalog = () => ({
+                  host: process.env.POSTGRES_TEST_HOST,
+                  port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+                  userName: process.env.POSTGRES_TEST_USER!,
+                  password: process.env.POSTGRES_TEST_PASSWORD!,
+                  databaseName: process.env.POSTGRES_TEST_DATABASE,
+               });
+
+               const pgConnString = () => {
+                  const pg = pgCatalog();
+                  return (
+                     `host=${pg.host} port=${pg.port} user=${pg.userName} ` +
+                     `password=${pg.password}` +
+                     (pg.databaseName ? ` dbname=${pg.databaseName}` : "")
+                  );
+               };
+
+               // A unique schema per test AND per run: the catalog database is
+               // shared across the specs in this file, and (locally) across runs,
+               // so a fixed name would let one test observe another's metadata.
+               const runId = Math.random().toString(36).slice(2, 8);
+               let schemaSeq = 0;
+               const createdSchemas: string[] = [];
+               const uniqueSchema = (label: string) => {
+                  const schema = `dl_meta_${label}_${runId}_${++schemaSeq}`;
+                  createdSchemas.push(schema);
+                  return schema;
+               };
+
+               // Leave the catalog database as we found it. These schemas are
+               // created by DuckLake inside a database shared with the other
+               // specs in this file, and enough of them makes a sibling test's
+               // schema enumeration miss `public`.
+               afterAll(async () => {
+                  if (
+                     !hasPostgresCredentials() ||
+                     createdSchemas.length === 0
+                  ) {
+                     return;
+                  }
+                  const workDir = await fs.mkdtemp(
+                     path.join(os.tmpdir(), "dl-cleanup-"),
+                  );
+                  const conn = new DuckDBConnection(
+                     "dl_cleanup",
+                     ":memory:",
+                     workDir,
+                  );
+                  try {
+                     await conn.runSQL(`INSTALL postgres`);
+                     await conn.runSQL(`LOAD postgres`);
+                     await conn.runSQL(
+                        `ATTACH '${pgConnString()}' AS cleanup (TYPE postgres);`,
+                     );
+                     for (const schema of createdSchemas) {
+                        // Quoted, because at least one test registers a mixed-case
+                        // schema and an unquoted identifier would not match it. And
+                        // reported rather than swallowed: a silently failing drop
+                        // leaks one schema per run into the shared catalog database,
+                        // which is the accumulation this hook exists to prevent.
+                        await conn
+                           .runSQL(`DROP SCHEMA cleanup."${schema}" CASCADE;`)
+                           .catch((error: unknown) =>
+                              console.warn(
+                                 `Failed to drop test schema "${schema}":`,
+                                 error,
+                              ),
+                           );
+                     }
+                  } catch (error) {
+                     console.warn("DuckLake schema cleanup failed:", error);
+                  } finally {
+                     await conn.close().catch(() => undefined);
+                  }
+               });
+
+               const duckLakeConfig = async (
+                  name: string,
+                  metadataSchema?: string,
+               ) => {
+                  const dataDir = path.join(
+                     testEnvironmentPath,
+                     `${name}_data`,
+                  );
+                  await fs.mkdir(dataDir, { recursive: true });
+                  return {
+                     catalog: {
+                        postgresConnection: pgCatalog(),
+                        ...(metadataSchema ? { metadataSchema } : {}),
+                     },
+                     storage: { bucketUrl: `${dataDir}/` },
+                  } as components["schemas"]["DucklakeConnection"];
+               };
+
+               // Bootstrap a catalog the way a BUILD does — a read-WRITE attach.
+               // The read-only serve attach cannot create one ("creating a new
+               // DuckLake is explicitly disabled"), so anything exercising the
+               // serve path needs this first. Also the natural place to assert
+               // that the build path carries METADATA_SCHEMA.
+               const bootstrapCatalog = async (
+                  dbName: string,
+                  cfg: components["schemas"]["DucklakeConnection"],
+               ): Promise<DuckDBConnection> => {
+                  const workDir = await fs.mkdtemp(
+                     path.join(os.tmpdir(), `dl-boot-${dbName}-`),
+                  );
+                  const conn = new DuckDBConnection(
+                     `bootstrap_${dbName}`,
+                     ":memory:",
+                     workDir,
+                  );
+                  createdConnections.push(conn);
+                  await attachDuckLakeReadWrite(conn, dbName, cfg);
+                  return conn;
+               };
+
+               const connect = async (defs: ApiConnection[]) => {
+                  const { malloyConnections } =
+                     await createEnvironmentConnections(
+                        defs,
+                        testEnvironmentPath,
+                     );
+                  const out = new Map<string, DuckDBConnection>();
+                  for (const def of defs) {
+                     const c = malloyConnections.get(
+                        def.name!,
+                     ) as DuckDBConnection;
+                     createdConnections.push(c);
+                     out.set(def.name!, c);
+                  }
+                  return out;
+               };
+
+               const firstValue = (rows: Record<string, unknown>[]) =>
+                  Number(Object.values(rows[0])[0]);
+
+               it(
+                  "puts DuckLake metadata in the configured schema, creating it",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const schema = uniqueSchema("lands");
+                     const cfg = await duckLakeConfig("dl_lands", schema);
+                     const c = await bootstrapCatalog("dl_lands", cfg);
+                     await c.runSQL(
+                        `CREATE OR REPLACE TABLE dl_lands.t AS SELECT 1 AS x`,
+                     );
+
+                     // Read the catalog database directly: the ducklake_*
+                     // bookkeeping tables must be in `schema`, which DuckLake
+                     // created on attach (this test never created the schema).
+                     await c.runSQL(
+                        `ATTACH '${pgConnString()}' AS insp (TYPE postgres, READ_ONLY);`,
+                     );
+                     const found = await c.runSQL(
+                        `SELECT count(*) AS n FROM insp.${schema}.ducklake_metadata;`,
+                     );
+                     expect(firstValue(found.rows)).toBeGreaterThan(0);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "isolates two catalogs sharing one catalog database",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     const a = await bootstrapCatalog(
+                        "dl_a",
+                        await duckLakeConfig("dl_a", uniqueSchema("a")),
+                     );
+                     const b = await bootstrapCatalog(
+                        "dl_b",
+                        await duckLakeConfig("dl_b", uniqueSchema("b")),
+                     );
+
+                     await a.runSQL(
+                        `CREATE OR REPLACE TABLE dl_a.only_in_a AS SELECT 1`,
+                     );
+                     await b.runSQL(
+                        `CREATE OR REPLACE TABLE dl_b.only_in_b AS SELECT 2`,
+                     );
+
+                     const tablesOf = async (
+                        conn: DuckDBConnection,
+                        db: string,
+                     ) => {
+                        const r = await conn.runSQL(
+                           `SELECT table_name FROM duckdb_tables() WHERE database_name = '${db}';`,
+                        );
+                        return r.rows.map((row) => Object.values(row)[0]);
+                     };
+
+                     // Each catalog sees its own table and NOT the other's —
+                     // the whole point of a per-catalog metadata schema. Both
+                     // live in ONE catalog database.
+                     expect(await tablesOf(a, "dl_a")).toEqual(["only_in_a"]);
+                     expect(await tablesOf(b, "dl_b")).toEqual(["only_in_b"]);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "serves read-only from a catalog in a non-default schema",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     // The read-only serve attach must pass METADATA_SCHEMA too:
+                     // without it the attach looks in the catalog's default
+                     // schema, finds nothing, and fails outright, because a
+                     // read-only attach may not create a catalog.
+                     const schema = uniqueSchema("serve");
+                     const cfg = await duckLakeConfig("dl_serve", schema);
+                     const boot = await bootstrapCatalog("dl_serve", cfg);
+                     await boot.runSQL(
+                        `CREATE OR REPLACE TABLE dl_serve.t AS SELECT 7 AS x`,
+                     );
+
+                     const conns = await connect([
+                        {
+                           name: "dl_serve",
+                           type: "ducklake",
+                           ducklakeConnection: cfg,
+                        } as ApiConnection,
+                     ]);
+                     const served = conns.get("dl_serve")!;
+                     const r = await served.runSQL(`SELECT x FROM dl_serve.t;`);
+                     expect(firstValue(r.rows)).toBe(7);
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "keeps the catalog-format preflight working for a non-default schema",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     // The preflight reads `ducklake_metadata`, which lives in
+                     // the configured schema. Read unqualified it would MISS,
+                     // and the preflight fails SOFT (logs and returns) — so the
+                     // range check would silently stop protecting exactly the
+                     // catalogs setting this option. Poisoning the recorded
+                     // version proves the read resolves: an unqualified read
+                     // finds nothing and so raises nothing.
+                     const schema = uniqueSchema("preflight");
+                     const cfg = await duckLakeConfig("dl_pf", schema);
+                     const boot = await bootstrapCatalog("dl_pf", cfg);
+                     await boot.runSQL(
+                        `ATTACH '${pgConnString()}' AS poison (TYPE postgres);`,
+                     );
+                     await boot.runSQL(
+                        `UPDATE poison.${schema}.ducklake_metadata ` +
+                           `SET value = '9999.0' WHERE key = 'version';`,
+                     );
+
+                     // A fresh attach of the same catalog must now refuse with
+                     // the clean typed range error rather than proceeding.
+                     let err: unknown;
+                     try {
+                        await bootstrapCatalog("dl_pf_again", cfg);
+                     } catch (e) {
+                        err = e;
+                     }
+                     // The TYPE matters: converting a deep DuckDB failure into
+                     // this typed refusal is the preflight's whole job, so a
+                     // message match alone could not tell the two apart.
+                     expect(err).toBeInstanceOf(UnsupportedCatalogFormatError);
+                     // And it must be THIS catalog's poisoned format. Asserting
+                     // the value keeps the test honest if some other schema in
+                     // the shared catalog database holds a valid catalog: an
+                     // unqualified read would report that one's format instead,
+                     // which is exactly the bug being guarded against.
+                     expect((err as Error).message).toContain("9999.0");
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "round-trips a mixed-case metadataSchema through the preflight",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     // The validator accepts mixed case but nothing exercised it, so
+                     // this covers the create -> preflight -> attach round-trip for
+                     // such a name. Honest scope: it does NOT discriminate on the
+                     // preflight's identifier quoting — measured, unquoted resolves
+                     // too, because DuckDB matches identifiers case-insensitively.
+                     // Poisoning the version is what proves the preflight read THIS
+                     // catalog's metadata rather than missing silently.
+                     const schema = `DlMixedCase_${runId}`;
+                     createdSchemas.push(schema);
+                     const cfg = await duckLakeConfig("dl_mixed", schema);
+                     const boot = await bootstrapCatalog("dl_mixed", cfg);
+                     await boot.runSQL(
+                        `ATTACH '${pgConnString()}' AS poison_mixed (TYPE postgres);`,
+                     );
+                     await boot.runSQL(
+                        `UPDATE poison_mixed."${schema}".ducklake_metadata ` +
+                           `SET value = '9999.0' WHERE key = 'version';`,
+                     );
+
+                     let err: unknown;
+                     try {
+                        await bootstrapCatalog("dl_mixed_again", cfg);
+                     } catch (e) {
+                        err = e;
+                     }
+                     expect(err).toBeInstanceOf(UnsupportedCatalogFormatError);
+                     expect((err as Error).message).toContain("9999.0");
+                  },
+                  { timeout: 60000 },
+               );
+
+               it(
+                  "attaches without a metadataSchema exactly as before",
+                  async () => {
+                     if (!hasPostgresCredentials()) {
+                        console.log("Skipping: PostgreSQL not configured");
+                        return;
+                     }
+                     // Back-compat: the option is a conditional append, so an
+                     // absent value emits the pre-existing ATTACH verbatim and
+                     // DuckLake uses the catalog connection's default schema.
+                     const cfg = await duckLakeConfig("dl_default");
+                     const c = await bootstrapCatalog("dl_default", cfg);
+                     await c.runSQL(
+                        `CREATE OR REPLACE TABLE dl_default.t AS SELECT 7 AS x`,
+                     );
+                     const r = await c.runSQL(`SELECT x FROM dl_default.t;`);
+                     expect(firstValue(r.rows)).toBe(7);
+
+                     await c.runSQL(
+                        `ATTACH '${pgConnString()}' AS insp2 (TYPE postgres, READ_ONLY);`,
+                     );
+                     const inPublic = await c.runSQL(
+                        `SELECT count(*) AS n FROM insp2.public.ducklake_metadata;`,
+                     );
+                     expect(firstValue(inPublic.rows)).toBeGreaterThan(0);
+                  },
+                  { timeout: 60000 },
+               );
+            });
          });
 
          it("should throw error if DuckDB connection name conflicts with attached database", async () => {
@@ -1464,6 +1844,67 @@ describe("connection integration tests", () => {
                expect(connection.connOptions.privateKey).toContain(
                   "BEGIN PRIVATE KEY",
                );
+            } finally {
+               await releaseConnections();
+            }
+         });
+
+         it("should drop explicitly-null Snowflake options from private-key connOptions", async () => {
+            // This is the path that actually throws. A key-pair connection
+            // bypasses the core connection registry (which strips nulls itself)
+            // and is built directly by buildSnowflakePrivateKeyConnection, where
+            // cloneApiConnection's shallow spread leaves nulls intact. A
+            // surviving null reaches SnowflakeConnection.getDigest(), whose
+            // makeDigest reads `.length` off each part and special-cases only
+            // `undefined` -- so the digest throws, and because it is taken by the
+            // package-load worker's metadata RPC, the symptom is a whole package
+            // failing to load rather than a connection error.
+            //
+            // The fixture above omits these fields, making them `undefined`,
+            // which never reproduced the bug. They must be explicitly null here.
+            const { malloyConnections, releaseConnections } =
+               await createEnvironmentConnections(
+                  [
+                     {
+                        name: "sf_private_key_nulls",
+                        type: "snowflake",
+                        snowflakeConnection: {
+                           account: "test-account",
+                           username: "test-user",
+                           privateKey:
+                              "-----BEGIN PRIVATE KEY-----MIIB-----END PRIVATE KEY-----",
+                           warehouse: "test-warehouse",
+                           database: null,
+                           schema: null,
+                           role: null,
+                           password: null,
+                           privateKeyPass: null,
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+
+            try {
+               const connection = malloyConnections.get(
+                  "sf_private_key_nulls",
+               ) as unknown as {
+                  connOptions: Record<string, unknown>;
+                  getDigest: () => string;
+               };
+               // Absent, not null: `null` is what breaks the digest.
+               for (const field of [
+                  "database",
+                  "schema",
+                  "role",
+                  "password",
+                  "privateKeyPass",
+               ]) {
+                  expect(connection.connOptions[field]).toBeUndefined();
+               }
+               // The real oracle: the digest is what threw, so compute it.
+               expect(() => connection.getDigest()).not.toThrow();
+               expect(typeof connection.getDigest()).toBe("string");
             } finally {
                await releaseConnections();
             }
@@ -2235,5 +2676,326 @@ describe("resolveProxiedTls", () => {
          servername: "db.internal.example.com",
          rejectUnauthorized: true,
       });
+   });
+});
+
+describe("resolveCloudStorageCredentials", () => {
+   const s3 = (
+      s3Connection: components["schemas"]["S3Connection"],
+   ): AttachedDatabase => ({ name: "root", type: "s3", s3Connection });
+
+   it("requires a key pair when no provider is given", () => {
+      expect(() =>
+         resolveCloudStorageCredentials(s3({ region: "us-east-1" })),
+      ).toThrow(/accessKeyId and secretAccessKey are required for: root/);
+   });
+
+   it("requires a key pair under provider 'config'", () => {
+      expect(() =>
+         resolveCloudStorageCredentials(
+            s3({ provider: "config", accessKeyId: "AKIA" }),
+         ),
+      ).toThrow(/accessKeyId and secretAccessKey are required for: root/);
+   });
+
+   it("accepts a keyless connection under provider 'credential_chain'", () => {
+      const credentials = resolveCloudStorageCredentials(
+         s3({ provider: "credential_chain", region: "eu-west-2" }),
+      );
+      expect(credentials.provider).toBe("credential_chain");
+      expect(credentials.accessKeyId).toBe("");
+      expect(credentials.secretAccessKey).toBe("");
+      expect(credentials.region).toBe("eu-west-2");
+   });
+
+   // A key that is present and unused is a misconfiguration: it reads as the
+   // thing granting access while the host role actually does.
+   it.each([
+      ["accessKeyId", { accessKeyId: "AKIA" }],
+      ["secretAccessKey", { secretAccessKey: "shhh" }],
+      ["sessionToken", { sessionToken: "token" }],
+   ])("rejects a %s supplied alongside 'credential_chain'", (_field, extra) => {
+      expect(() =>
+         resolveCloudStorageCredentials(
+            s3({ provider: "credential_chain", ...extra }),
+         ),
+      ).toThrow(
+         /must not be set when provider is 'credential_chain' for: root/,
+      );
+   });
+
+   it("rejects a chain named under key-based auth", () => {
+      expect(() =>
+         resolveCloudStorageCredentials(
+            s3({
+               accessKeyId: "AKIA",
+               secretAccessKey: "shhh",
+               chain: "env;instance",
+            }),
+         ),
+      ).toThrow(
+         /chain is only valid when provider is 'credential_chain' for: root/,
+      );
+   });
+
+   it("carries an explicit chain through", () => {
+      const credentials = resolveCloudStorageCredentials(
+         s3({ provider: "credential_chain", chain: "env;instance" }),
+      );
+      expect(credentials.chain).toBe("env;instance");
+   });
+
+   it("still rejects a missing s3Connection", () => {
+      expect(() =>
+         resolveCloudStorageCredentials({ name: "root", type: "s3" }),
+      ).toThrow(/S3 connection configuration missing for: root/);
+   });
+});
+
+describe("buildCloudStorageSecretSQL", () => {
+   const chainSQL = (
+      s3Connection: components["schemas"]["S3Connection"],
+   ): string =>
+      buildCloudStorageSecretSQL(
+         "s3_root",
+         resolveCloudStorageCredentials({
+            name: "root",
+            type: "s3",
+            s3Connection,
+         }),
+      );
+
+   describe("provider 'credential_chain'", () => {
+      it("emits PROVIDER credential_chain and no static credential", () => {
+         const sql = chainSQL({ provider: "credential_chain" });
+         expect(sql).toContain("PROVIDER credential_chain");
+         expect(sql).not.toContain("KEY_ID");
+         expect(sql).not.toContain("SECRET '");
+         expect(sql).not.toContain("SESSION_TOKEN");
+      });
+
+      // Omitting CHAIN is not neutral: DuckDB then resolves against `config`
+      // alone, a credentials file no container image has.
+      it("names Publisher's default chain when the caller gives none", () => {
+         expect(chainSQL({ provider: "credential_chain" })).toContain(
+            `CHAIN '${DEFAULT_S3_CREDENTIAL_CHAIN}'`,
+         );
+      });
+
+      it("covers a projected service-account token by default", () => {
+         expect(DEFAULT_S3_CREDENTIAL_CHAIN.split(";")).toContain(
+            "web_identity",
+         );
+      });
+
+      it("honours an explicit chain", () => {
+         const sql = chainSQL({
+            provider: "credential_chain",
+            chain: "env;sso",
+         });
+         expect(sql).toContain("CHAIN 'env;sso'");
+         expect(sql).not.toContain(DEFAULT_S3_CREDENTIAL_CHAIN);
+      });
+
+      it("falls back to the default chain for a blank one", () => {
+         expect(
+            chainSQL({ provider: "credential_chain", chain: "   " }),
+         ).toContain(`CHAIN '${DEFAULT_S3_CREDENTIAL_CHAIN}'`);
+      });
+
+      // The secret holds the credentials the chain resolved, not a live
+      // reference to the provider, so without a working REFRESH a serve attach
+      // stops reading about an hour after it was created.
+      //
+      // `auto` is the only value that arms it. The aws extension stores the
+      // `refresh_info` that makes a secret refreshable under `if (refresh ==
+      // "auto")`, and httpfs declines to refresh a secret that has none, so any
+      // other value is accepted and silently does nothing. Asserting the VALUE
+      // rather than the presence of the clause is the point: this suite
+      // previously required only a `REFRESH` clause and passed against `REFRESH
+      // true`, which disables the thing the test is named for.
+      it("arms refresh with the only value that enables it", () => {
+         const sql = chainSQL({ provider: "credential_chain" });
+         expect(sql).toContain("REFRESH 'auto'");
+         expect(sql).not.toContain("REFRESH true");
+      });
+
+      it("composes with a custom endpoint", () => {
+         const sql = chainSQL({
+            provider: "credential_chain",
+            endpoint: "https://minio.internal:9000",
+         });
+         expect(sql).toContain("PROVIDER credential_chain");
+         expect(sql).toContain("ENDPOINT 'https://minio.internal:9000'");
+         expect(sql).toContain("URL_STYLE 'path'");
+         expect(sql).not.toContain("KEY_ID");
+      });
+
+      it("escapes a chain containing a quote", () => {
+         expect(
+            chainSQL({ provider: "credential_chain", chain: "en'v" }),
+         ).toContain("CHAIN 'en''v'");
+      });
+   });
+
+   // The regression guard for the three pre-existing shapes. Asserted as whole
+   // statements, not substrings: chain auth added a branch ahead of these, and
+   // the point is that nothing downstream of it moved.
+   describe("key-based shapes are unchanged", () => {
+      const keys = { accessKeyId: "AKIA", secretAccessKey: "shhh" };
+
+      it("plain", () => {
+         expect(chainSQL({ ...keys, region: "us-west-2" })).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2'
+            );
+         `);
+      });
+
+      it("custom endpoint", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "https://mi.no",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'https://mi.no',
+               URL_STYLE 'path'
+            );
+         `);
+      });
+
+      it("session token", () => {
+         expect(chainSQL({ ...keys, region: "us-west-2", sessionToken: "tok" }))
+            .toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               SESSION_TOKEN 'tok'
+            );
+         `);
+      });
+
+      it("omitted provider takes the plain shape, not the chain one", () => {
+         const sql = chainSQL({ ...keys });
+         expect(sql).not.toContain("PROVIDER");
+         expect(sql).toContain("KEY_ID 'AKIA'");
+      });
+
+      it("gcs is untouched by the S3 provider selector", () => {
+         const sql = buildCloudStorageSecretSQL(
+            "gcs_root",
+            resolveCloudStorageCredentials({
+               name: "root",
+               type: "gcs",
+               gcsConnection: { keyId: "GOOG", secret: "shhh" },
+            }),
+         );
+         expect(sql).toBe(`
+         CREATE OR REPLACE SECRET gcs_root (
+            TYPE gcs,
+            KEY_ID 'GOOG',
+            SECRET 'shhh'
+         );
+      `);
+      });
+   });
+});
+
+// The attach run is cached per connection object so concurrent lookups share one
+// ATTACH. Caching a REJECTED run is different: every attach handler reaches the
+// network, so one blip would otherwise be replayed for the life of the process.
+describe("attach retry after a transient failure", () => {
+   const envPath = path.join(process.cwd(), "test-attach-retry");
+
+   beforeEach(async () => {
+      await fs.mkdir(envPath, { recursive: true });
+   });
+   afterEach(async () => {
+      sinon.restore();
+      await fs.rm(envPath, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("retries the attach on a later lookup instead of replaying the error", async () => {
+      let secretAttempts = 0;
+      sinon
+         .stub(DuckDBConnection.prototype, "runSQL")
+         .callsFake(async (sql: string) => {
+            if (/CREATE OR REPLACE SECRET/i.test(String(sql))) {
+               secretAttempts += 1;
+               if (secretAttempts === 1) {
+                  throw new Error("temporary failure in name resolution");
+               }
+            }
+            return { rows: [] } as never;
+         });
+
+      const config = buildEnvironmentMalloyConfig(
+         [
+            {
+               name: "duckdb_retry",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "root",
+                        type: "s3",
+                        s3Connection: { provider: "credential_chain" },
+                     },
+                  ],
+               },
+            },
+         ] as never,
+         envPath,
+      );
+
+      await expect(
+         config.malloyConfig.connections.lookupConnection("duckdb_retry"),
+      ).rejects.toThrow(/temporary failure in name resolution/);
+
+      // The retry is the point: a second lookup must run the attach again.
+      await config.malloyConfig.connections.lookupConnection("duckdb_retry");
+      expect(secretAttempts).toBe(2);
+
+      await config.releaseConnections().catch(() => {});
+   });
+});
+
+describe("isExpiredCredentialError", () => {
+   it("matches an expired credential and nothing else", () => {
+      // The remedy this gates -- re-resolve and retry -- is right for a credential
+      // that aged out and wrong for one that was never valid: retrying a bad key
+      // hides a misconfiguration behind a silent second attempt.
+      expect(
+         isExpiredCredentialError(
+            new Error(
+               "HTTP 400 ... ExpiredToken: The provided token has expired.",
+            ),
+         ),
+      ).toBe(true);
+      expect(
+         isExpiredCredentialError(new Error("InvalidAccessKeyId: no such key")),
+      ).toBe(false);
+      expect(
+         isExpiredCredentialError(new Error("AccessDenied: not authorized")),
+      ).toBe(false);
+      expect(
+         isExpiredCredentialError(new Error("HTTP 404 no such bucket")),
+      ).toBe(false);
+      expect(isExpiredCredentialError(undefined)).toBe(false);
+      expect(isExpiredCredentialError("ExpiredToken as a bare string")).toBe(
+         true,
+      );
    });
 });

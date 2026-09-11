@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // TODO(jjs) - Export to .malloynb
 // TOOD(jjs) - Import via Publisher API that parses whole NB
 

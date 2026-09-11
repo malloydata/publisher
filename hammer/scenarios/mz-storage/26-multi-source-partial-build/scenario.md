@@ -3,6 +3,10 @@ id: multi-source-partial-build
 tags: build-control
 package: mspb
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Partial build: `sources=` builds one persist source, leaves the others live
 

@@ -1,7 +1,12 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Tutorial: materialize a source into DuckLake and serve it back
 
 Malloy Publisher can materialize a `#@ persist` source into a **store you choose**
-— a registered DuckDB or DuckLake connection — instead of the source's own
+— a registered DuckLake storage destination — instead of the source's own
 warehouse, and then serve queries against that source **straight from the
 materialized table**, cross-dialect, with no changes to your model. The query
 you already run keeps working; behind it, the rows now come from the
@@ -18,7 +23,9 @@ do. Every step here was run against a real server; the outputs shown are real.
 > annotation. The default (no `storage=`) is a **colocated** materialization: the
 > source materializes into and serves from its own warehouse, unchanged. This
 > tutorial is about **external** materialization — materialize into a _separate_
-> DuckDB/DuckLake store and serve from there.
+> DuckLake store and serve from there. That store is a **storage destination**:
+> declared in `storageDestinations`, alongside `connections` rather than in it, so
+> it is not a name any model, notebook cell, or query can resolve.
 
 ---
 
@@ -28,8 +35,9 @@ do. Every step here was run against a real server; the outputs shown are real.
   The build pushes the compiled query to the source warehouse via a native
   passthrough; supported source types are `postgres`, `bigquery`, and
   `snowflake`. Postgres is the easiest to run locally.
-- A **DuckLake** connection — a catalog (a Postgres database) plus a local data
-  directory — that you create and materialize into. (A cloud deployment would
+- A **DuckLake** storage destination — a catalog (a Postgres database)
+  plus a local data directory — that you create and materialize into. (A cloud
+  deployment would
   point `bucketUrl` at `s3://`/`gs://`; locally a filesystem path is enough and
   no object-storage secret is created. Publisher disables DuckLake's small-table
   inlining on materialization writes, so data always lands as Parquet in the
@@ -48,7 +56,7 @@ bun run build          # bakes the DuckDB extensions the build/serve path needs
 ```
 
 The REST API is at `http://localhost:4000/api/v0`. Everything here also works
-over the MCP endpoint (`malloy_executeQuery` / `malloy_reloadPackage`); REST is
+over the MCP endpoint (`execute_query` / `reload_package`); REST is
 used so every step is a copy-pasteable `curl` you can inspect.
 
 ---
@@ -88,15 +96,21 @@ PERSIST_STORAGE_MODE=off bun run start        # REST :4000, MCP :4040
 curl -s http://localhost:4000/api/v0/status | jq -r .operationalState   # -> "serving"
 ```
 
-A clone serves the bundled `examples` environment; we'll add our connections and
-package to it.
+A clone serves the bundled `examples` environment; we'll add our source
+connection, our destination, and the package to it.
 
 ---
 
-## 3. Register the two connections
+## 3. Register the source connection and the destination
 
-`POST /environments/{env}/connections/{name}` — the name is in the path, the
-body carries the type-specific config. (The response is a success message.)
+These are two different things, registered two different ways. The warehouse your
+model queries is a **connection**. The lake you materialize into is a
+**storage destination** — a separate list that models cannot name, so a
+`storage=` target can never be read or written by a query. (See
+[connections.md](connections.md#storage-destinations).)
+
+`POST /environments/{env}/connections/{name}` registers a connection — the name
+is in the path, the body carries the type-specific config:
 
 ```bash
 # Postgres source
@@ -106,18 +120,46 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/connections/o
     "postgresConnection":{"host":"localhost","port":5432,"databaseName":"tutorial","userName":"tutorial","password":"tutorial"}
   }'
 
-# DuckLake destination: catalog = the ducklake_catalog DB, storage = a local dir
-curl -s -X POST http://localhost:4000/api/v0/environments/examples/connections/lake \
-  -H 'content-type: application/json' -d '{
-    "name":"lake","type":"ducklake",
-    "ducklakeConnection":{
-      "catalog":{"postgresConnection":{"host":"localhost","port":5432,"databaseName":"ducklake_catalog","userName":"tutorial","password":"tutorial"}},
-      "storage":{"bucketUrl":"/tmp/publisher-tutorial-lake"}
-    }
-  }'
-
 curl -s http://localhost:4000/api/v0/environments/examples/connections | jq '[.[].name]'
-# -> [ ..., "orders_pg", "lake" ]
+# -> [ ..., "orders_pg" ]
+```
+
+Destinations are set on the environment, as a list:
+
+```bash
+# DuckLake destination: catalog = the ducklake_catalog DB, storage = a local dir
+curl -s -X PATCH http://localhost:4000/api/v0/environments/examples \
+  -H 'content-type: application/json' -d '{
+    "name":"examples",
+    "storageDestinations":[{
+      "name":"lake","type":"ducklake",
+      "ducklakeConnection":{
+        "catalog":{"postgresConnection":{"host":"localhost","port":5432,"databaseName":"ducklake_catalog","userName":"tutorial","password":"tutorial"}},
+        "storage":{"bucketUrl":"/tmp/publisher-tutorial-lake"}
+      }
+    }]
+  }' | jq '.storageDestinations'
+# -> [ { "name": "lake", "type": "ducklake" } ]
+```
+
+Reads report a destination's name and type only — never its config, which holds
+warehouse credentials. The status endpoint reports the same, which is how you
+confirm what a server picked up:
+
+```bash
+curl -s http://localhost:4000/api/v0/status \
+  | jq '.environments[] | select(.name=="examples") | .storageDestinations'
+# -> [ { "name": "lake", "type": "ducklake" } ]
+```
+
+`lake` is deliberately absent from the connection list above. Asking the
+connection endpoints for it returns 404, exactly as for a name that was never
+registered:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  http://localhost:4000/api/v0/environments/examples/connections/lake
+# -> 404
 ```
 
 ---
@@ -152,7 +194,8 @@ source: daily_orders is orders -> {
 }
 MALLOY
 
-# Register the package (connections must already exist so the source compiles).
+# Register the package. The source connection must already exist so the model
+# compiles; the destination is resolved at build and serve time, not at compile.
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
   -H 'content-type: application/json' -d '{"name":"persist-tutorial"}' \
   | jq '{name, sources: (.buildPlan.sources|keys|map(split("@")[0])), warnings}'
@@ -208,7 +251,7 @@ table:
 ```bash
 MZID=$(curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations | jq -r '.[0].id')
 curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/$MZID \
-  | jq '{status, entry: (.manifest.entries|to_entries[0].value|{sourceName, storageConnectionName, physicalTableName, schema})}'
+  | jq '{status, entry: (.manifest.entries|to_entries[0].value|{sourceName, storageDestinationName, physicalTableName, schema})}'
 ```
 
 ```json
@@ -216,7 +259,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
   "status": "MANIFEST_FILE_READY",
   "entry": {
     "sourceName": "daily_orders",
-    "storageConnectionName": "lake",
+    "storageDestinationName": "lake",
     "physicalTableName": "daily_orders",
     "schema": [
       { "name": "order_date", "type": "DATE" },
@@ -324,7 +367,7 @@ curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tuto
   "storageServeBindings": [
     {
       "sourceName": "daily_orders",
-      "storageConnectionName": "lake",
+      "storageDestinationName": "lake",
       "tablePath": "lake.daily_orders"
     }
   ],
@@ -403,10 +446,12 @@ is a brief window where the running server's serve binding still describes the
 old columns, until it rebinds on the build's auto-load — and the two directions
 differ. A query that reaches a **newly added** field fails the serve-shape
 compile and falls back to serving live (safe). A query over a **removed** field
-still compiles against the stale binding and then errors at run against the new
-table — there is no run-time fallback (see "Compile-time fallback only" in the
-release notes). So a column-removing rebuild can surface transient query errors
-until the binding refreshes; it does not return wrong data. Explicit generation
+still compiles against the stale binding and then fails at run against the new
+table. What happens next depends on the binding's `fallback`: `live` recomputes
+the source from the warehouse and answers correctly, while `fail` (and the
+`stale_ok` default) surface the error. So a column-removing rebuild can surface
+transient query errors until the binding refreshes unless the source declares
+`fallback=live`; either way it does not return wrong data. Explicit generation
 management — immutable generations, a staged cutover, rollback — that closes this
 window is the job of a caller that assigns physical names per build and
 distributes serve bindings (the orchestrated build path), not of the auto-run
@@ -425,7 +470,7 @@ curl -s -X DELETE \
 ```
 
 ```
-info: Dropped materialized storage table on delete { physicalTableName: "daily_orders", storageConnectionName: "lake" }
+info: Dropped materialized storage table on delete { physicalTableName: "daily_orders", storageDestinationName: "lake" }
 ```
 
 ---
@@ -498,7 +543,7 @@ and `daily_fresh` returns current rows — the same stale-vs-fresh check used in
 Use it when a reader must not serve stale rows. The cost is the point of the
 feature: an opted-out source recomputes its upstream in the warehouse on every
 query, so it gives up the savings the materialization exists for. If freshness is
-the concern for *every* reader, a `freshness` policy on the persisted source
+the concern for _every_ reader, a `freshness` policy on the persisted source
 itself is usually the better tool — it bounds staleness without giving up the
 stored table.
 
@@ -634,13 +679,24 @@ just the stored columns; it's the floor that guarantees the captured schema
 forms a valid DuckDB source.
 
 These are the checks derivable from the compiled source and the built schema
-alone. One more belongs here and is **not yet enforced**: a source protected by
-`#(authorize)` — directly, or transitively through a join or derivation — should
-not be materialized into a shared store, because the serve path rebinds it to a
-virtual source whose shape carries no `#(authorize)` annotation, so the gate
-can't be evaluated on the served table. Until that refusal lands (alongside the
-upstream transitive-`#(authorize)` enforcement it reuses), do not materialize an
-authorize-gated source; serve it live.
+alone. One more belongs here and **is enforced**: a source protected by
+`#(authorize)` — directly, or transitively through a join or derivation — is
+refused, because the serve path rebinds it to a virtual source whose shape
+carries no `#(authorize)` annotation, so the gate can't be evaluated on the
+served table. The check walks the compiled source for the gate and fails
+closed: a source it cannot prove gate-free is refused.
+
+A colocated `#@ persist` is a different case, and the difference is worth stating because it is easy
+to over-claim. A colocated build has no virtual source: the substitution replaces only the source's
+relation SQL, while the gate is applied as the reading query's own `WHERE`, so the two compose and
+rows do come back filtered. The gate is not absent — which is why a colocated source is admitted when
+the compiler can _prove_ the gate is the entry point's own row-level filter and nothing else is
+reachable beneath it, and refused otherwise (an unattributed or join-only gate, an unclassifiable one,
+or one that doesn't reduce to a row filter at all). When admitted, what is frozen is the data the gate
+DECIDES AGAINST — the gating column's values are whatever they were at build time, so a row that
+changes hands keeps being served to its former owner until the next rebuild. See
+[materialization.md](materialization.md) for the author-facing refusal and the freshness contract that
+follows from it.
 
 ### Field-level hiding and the materialized table
 
@@ -669,22 +725,44 @@ Everything you need is on the package status and the logs:
   - `storageServeBindings`: the sources bound to serve from a `storage=` store,
     with their destination connection and table. Present once a build has bound
     them.
-  - `warnings`: a `{model, target, message}` entry for any `storage=` source not
+  - `warnings`: a `{model, subject, message}` entry for any `storage=` source not
     served from storage — mode `off` (ignored) or `write-only` (built, served
     live). Empty when everything routes.
 - `GET …/materializations/{id}` → run status and, on success, the manifest entry
-  with `storageConnectionName` and the captured `schema`.
-- Server logs → `info` when a query serves from storage; `debug` when a query
-  falls back to live.
+  with `storageDestinationName` and the captured `schema`.
+- Server logs → `info` when a query serves from storage, and `info` when it
+  falls back to live, carrying the compile error that made the shape ineligible.
+  That fallback line is the only per-query account of a storage-tier miss, since
+  the response reports it as a bare `null` (see the caveat below).
 - Metrics (OpenTelemetry, under the `publisher` meter):
-  - `publisher_storage_serve_routing_total{outcome=storage|live_fallback}` — the
-    serve hit rate; the headline signal for "is the tier actually serving?"
-  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_refused}`
+  - `publisher_storage_serve_routing_total{outcome=storage|live_fallback|runtime_live_fallback}`
+    — the serve hit rate; the headline signal for "is the tier actually serving?"
+    `runtime_live_fallback` is the one to watch: the query **routed** and then the
+    store failed under it, so the caller still got a correct answer from the
+    warehouse while the tier is broken. The hit rate alone will not show that.
+
+    Two things to get right before building a dashboard on this. **It covers the
+    `storage=` tier only** — a colocated `#@ persist` hit never reaches the
+    routing decision, so it is in neither the numerator nor the denominator; the
+    rate is silent about that tier, not pessimistic about it. And **`live_fallback`
+    here is not `QueryResult.servedFrom`'s `live_fallback`.** This label means the
+    transform was *ineligible*, which the field reports as `null`; the run-time
+    store failure the field calls `live_fallback` is `runtime_live_fallback` here.
+    Correlating the two on the token is wrong in both directions.
+  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_refused|infra_failure}`
     — for a chained source, whether it built by reading its parent's stored table
-    (`parent_reuse`) or fell back to recompute-from-raw.
-  - `malloy_model_query_duration` tags storage-served queries with
-    `served_from=storage` (the attribute is absent otherwise, so an `off`
-    deployment's histogram is unchanged), isolating storage-served latency.
+    (`parent_reuse`) or fell back to recompute-from-raw. `infra_failure` is a
+    destination that was unreachable, kept distinct from the shape limits so a
+    store outage is not read as an un-carriable query.
+  - `malloy_model_query_duration` tags a routed query with
+    `served_from=storage`, or `served_from=live_fallback` when a run-time store
+    failure degraded it to live (so a fallback never counts as a storage hit).
+    Note this attribute follows `QueryResult.servedFrom`'s vocabulary, not the
+    counter's directly above it — so `served_from=live_fallback` and
+    `outcome=live_fallback` are different events despite sitting two bullets
+    apart.
+    The attribute is absent for a query that never routed, so an `off`
+    deployment's histogram is unchanged.
 
 `PERSIST_STORAGE_MODE` (`off` default | `write-only` | `on`) is read at startup;
 change it by restarting. It's a kill switch: moving it **down** never fails a

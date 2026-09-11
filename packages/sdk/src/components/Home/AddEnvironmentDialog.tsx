@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { AddCircleRounded } from "@mui/icons-material";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";

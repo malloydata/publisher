@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import {
    InMemoryURLReader,
    type LookupConnection,
@@ -95,8 +98,23 @@ export type SourceRefinement =
 export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
    sourceName: string;
-   /** The DuckDB/DuckLake connection the physical table lives in. */
-   connectionName: string;
+   /**
+    * What the source this table was built for IS: `persist` for one the modeler
+    * annotated, `preaggregate` for a rollup the publisher synthesized from
+    * `#@ preaggregate` measures. Absent means `persist`, which is what an entry
+    * written before the field existed means.
+    *
+    * Load-bearing rather than decorative, because the two are shaped differently
+    * and a rollup handled as an ordinary binding fails in both directions. Its
+    * `sourceName` names no source in any model file, so the author-model lookups
+    * that give an ordinary binding its refinements and its public column set find
+    * nothing; and its stored columns are partial aggregates that no source
+    * publicly exposes, so narrowing them against an author source would strip
+    * exactly the columns its measures read. See {@link rollupServeBindings}.
+    */
+   origin?: "persist" | "preaggregate";
+   /** The storage destination the physical table lives in. */
+   destinationName: string;
    /** The virtualMap handle for this source (its build-posture identity). */
    virtualHandle: string;
    /** Logical (unquoted) physical table path; quoted for DuckDB at bind time. */
@@ -128,10 +146,62 @@ export interface ServeBinding {
 }
 
 /**
+ * For each persist source in a build plan, the sources that materialize into its
+ * table — the `aliasesBySourceName` argument {@link deriveServeBindings} takes.
+ *
+ * Grouped BY content address, because that is what decides which sources really
+ * share a table, then keyed BY name, because a name is the only identifier a
+ * manifest entry carries that means the same thing whoever built it (an
+ * instructed build stamps the caller's `sourceEntityId` on its entry).
+ *
+ * A name declared at more than ONE address is dropped from aliasing entirely.
+ * Source names are not unique in a package — two models may each declare `daily`,
+ * which is why the wire plan is keyed by sourceID — so such a name cannot be
+ * resolved to a table by name at all, and picking one by map order would
+ * eventually bind the same name to two different tables. Two `source: daily`
+ * declarations then land in one serve shape, which fails to compile and takes the
+ * storage tier out for EVERY model in the package (bindings are pushed
+ * package-wide), silently: base-only is the tier the ladder trusts without a
+ * probe, so the failure surfaces per query rather than at shape build where the
+ * tier-drop metric would see it. Dropping the ambiguous name costs that one source
+ * its routing and keeps everything else correct.
+ *
+ * The source that OWNS a name still binds it — see the builder rule in
+ * {@link deriveServeBindings}. Only aliasing is withheld.
+ */
+export function groupAliasesByName(
+   planSources: { name?: string; sourceEntityId?: string }[],
+): Record<string, string[]> {
+   const namesByAddress = new Map<string, string[]>();
+   for (const source of planSources) {
+      if (!source.sourceEntityId || !source.name) continue;
+      const group = namesByAddress.get(source.sourceEntityId);
+      if (!group) namesByAddress.set(source.sourceEntityId, [source.name]);
+      else if (!group.includes(source.name)) group.push(source.name);
+   }
+
+   const addressesPerName = new Map<string, number>();
+   for (const group of namesByAddress.values()) {
+      for (const name of group) {
+         addressesPerName.set(name, (addressesPerName.get(name) ?? 0) + 1);
+      }
+   }
+
+   const byName: Record<string, string[]> = {};
+   for (const group of namesByAddress.values()) {
+      const unambiguous = group.filter(
+         (name) => addressesPerName.get(name) === 1,
+      );
+      for (const name of unambiguous) byName[name] = unambiguous;
+   }
+   return byName;
+}
+
+/**
  * Derive the publisher's self-maintained serve bindings from a build's manifest
  * entries — the standalone half of the injectable binding seam (a host/control
  * plane can supply {@link ServeBinding}s directly instead). Only entries that
- * were materialized into a storage destination (carrying `storageConnectionName`
+ * were materialized into a storage destination (carrying `storageDestinationName`
  * and a captured `schema`) produce a binding; colocated entries do
  * not (they serve through the same-connection manifest, not the transform).
  *
@@ -141,16 +211,48 @@ export interface ServeBinding {
  * in the mapped table path (`physicalTableName`), not the handle. This is the one
  * hard cross-producer contract: whoever supplies the binding (this function, or
  * a host) must key the handle the same way the build did.
+ *
+ * An entry can serve MORE THAN ONE source. `#@ persist` is inherited and `extend`
+ * does not change a source's materialization SQL, so a base and its extension
+ * share a content address and therefore one entry and one table — the extension
+ * correctly gets no table of its own, but it still has to READ the base's. An
+ * entry names only the source that BUILT it, so `aliasesBySourceName` supplies the
+ * rest, and every one of them is bound to the same virtual handle. That is the
+ * handle's purpose: it is identity-scoped, so several sources resolving to one
+ * virtual table is the design rather than a collision.
+ *
+ * Without it exactly one alias routes and the others silently serve live, chosen
+ * by whichever source happened to build the table.
+ *
+ * Keyed by source NAME, deliberately, not by `entry.sourceEntityId`. That field
+ * carries the identity the BUILDER stamped, which on an instructed build is the
+ * caller's — `executeInstructedBuild` treats an instruction's `sourceEntityId` as
+ * opaque precisely so a host may derive it any way it likes — while the alias
+ * grouping has to be computed from the publisher's own content addresses. Keying
+ * on the entry's id would agree with the group only while the host happened to
+ * hash exactly as the publisher does, and would silently degrade to one-alias
+ * routing the moment it did not. A name is the one identifier both sides mean the
+ * same thing by.
  */
 export function deriveServeBindings(
    entries: Record<string, ManifestEntry>,
+   aliasesBySourceName: Record<string, string[]>,
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
+   // Every name that OWNS a table in this manifest. An alias never claims one:
+   // the owner is the source whose SQL produced that table, and a name bound
+   // twice — once as its owner, once as someone else's alias — puts two
+   // `source: <name>` declarations in one serve shape.
+   const builders = new Set(
+      Object.values(entries)
+         .map((entry) => entry.sourceName)
+         .filter((name): name is string => !!name),
+   );
    for (const entry of Object.values(entries)) {
       // Need the source name to rebind it, plus a storage destination + table.
       if (
          !entry.sourceName ||
-         !entry.storageConnectionName ||
+         !entry.storageDestinationName ||
          !entry.physicalTableName
       ) {
          continue;
@@ -160,20 +262,36 @@ export function deriveServeBindings(
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string }));
       if (schema.length === 0) continue;
-      bindings.push({
-         sourceName: entry.sourceName,
-         connectionName: entry.storageConnectionName,
-         virtualHandle: entry.sourceEntityId,
-         // Qualify the table with the destination catalog (the attach alias) so
-         // the serve reads `<store>.<table>` — the build wrote it there, and an
-         // unqualified name would resolve against the serve session's default
-         // catalog, not the attached store.
-         tablePath: `${entry.storageConnectionName}.${entry.physicalTableName}`,
-         schema,
-         freshAsOf: entry.dataAsOf,
-         freshnessWindowSeconds: entry.freshnessWindowSeconds,
-         freshnessFallback: entry.freshnessFallback,
-      });
+      // The builder's own name first, so it wins any ordering downstream; the
+      // aliases follow. Deduplicated because the builder's name is normally in
+      // the address group too.
+      const names = [
+         entry.sourceName,
+         ...(aliasesBySourceName[entry.sourceName] ?? []).filter(
+            (name) => !builders.has(name),
+         ),
+      ].filter((name, i, all) => all.indexOf(name) === i);
+      for (const sourceName of names) {
+         bindings.push({
+            sourceName,
+            // Carried rather than inferred: a manifest travels without its build
+            // plan, so this is the only thing that says a table belongs to a
+            // source that appears in no model file.
+            origin:
+               entry.origin === "preaggregate" ? "preaggregate" : "persist",
+            destinationName: entry.storageDestinationName,
+            virtualHandle: entry.sourceEntityId,
+            // Qualify the table with the destination catalog (the attach alias) so
+            // the serve reads `<store>.<table>` — the build wrote it there, and an
+            // unqualified name would resolve against the serve session's default
+            // catalog, not the attached store.
+            tablePath: `${entry.storageDestinationName}.${entry.physicalTableName}`,
+            schema,
+            freshAsOf: entry.dataAsOf,
+            freshnessWindowSeconds: entry.freshnessWindowSeconds,
+            freshnessFallback: entry.freshnessFallback,
+         });
+      }
    }
    return bindings;
 }
@@ -304,7 +422,7 @@ export function buildServeShapeModel(
 type: ${shapeTypeName} is {
 ${fields}
 }
-source: ${sourceName} is ${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}
+source: ${sourceName} is ${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}
 `;
    return { modelText, shapeTypeName };
 }
@@ -321,7 +439,7 @@ function serveShapeFragment(binding: ServeBinding): string {
       .join(",\n");
    let source =
       `source: ${binding.sourceName} is ` +
-      `${binding.connectionName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
+      `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
    // Re-declare the source's refinements on the virtual base so queries that use
    // them are computed from the stored tables at serve time (the wrapper) rather
    // than falling back to live. Emission order matters for resolution: joins
@@ -364,15 +482,94 @@ function serveShapeFragment(binding: ServeBinding): string {
  * join/view that reaches a non-materialized source) does not compile against
  * this model, and the serve path falls back to serving it live.
  */
-export function buildServeShapeModelForBindings(bindings: ServeBinding[]): {
+/**
+ * The two source sets that explain a serve-shape fallback.
+ *
+ * The compiler names the symbol it could not resolve, which is a symptom shared
+ * by both reasons a source can be missing from the shape: it carries no
+ * `#@ persist`, or the freshness gate withheld it. "Reference to undefined
+ * object" reads identically either way, so the sets are reported next to it.
+ *
+ * A name the query wants that appears in NEITHER is not materialized at all.
+ */
+export function serveShapeDiagnostics(
+   allBindings: ServeBinding[],
+   freshBindings: ServeBinding[],
+): { shapeSources: string[]; staleSources: string[] } {
+   const shapeSources = freshBindings.map((b) => b.sourceName);
+   const fresh = new Set(shapeSources);
+   return {
+      shapeSources,
+      staleSources: allBindings
+         .map((b) => b.sourceName)
+         .filter((name) => !fresh.has(name)),
+   };
+}
+
+export function buildServeShapeModelForBindings(
+   bindings: ServeBinding[],
+   /**
+    * Pre-aggregation groups, each re-exposing one base source name over its
+    * rollup members. Their members are NOT in `bindings`: a rollup is bound under
+    * a synthesized name nothing queries, and it reaches the shape only through
+    * its group.
+    */
+   rollupGroups: RollupShapeGroup[] = [],
+): {
    modelText: string;
 } {
    const fragments = orderBindingsByJoinDeps(bindings)
       .map(serveShapeFragment)
       .join("\n");
+   // Rollup groups last. Nothing above can reference a group's base name — a join
+   // is emitted only when its target is itself a bound source, and a rollup's base
+   // is not one — so no ordering constraint reaches across this boundary.
+   //
+   // That exclusion is correct rather than merely convenient: joining TO a
+   // rollup-backed source would join to pre-aggregated rows, which is not what the
+   // author's join means. A query using such a join does not compile against this
+   // shape and is served live, which is the right answer.
+   const groups = rollupGroups.map(rollupServeShapeFragment).join("\n");
+   // `composite_sources` only when a composite is actually emitted, so a package
+   // with no rollups produces byte-identical text to before this existed — an
+   // unused experimental flag should not be a difference anyone has to reason
+   // about when reading a shape that has no composites in it.
+   const flags = rollupGroups.length
+      ? "##! experimental { virtual_source composite_sources }"
+      : "##! experimental.virtual_source";
    return {
-      modelText: `##! experimental.virtual_source\n${fragments}\n`,
+      modelText: groups
+         ? `${flags}\n${fragments}\n${groups}\n`
+         : `${flags}\n${fragments}\n`,
    };
+}
+
+/** One base source re-exposed over its rollup members. */
+export interface RollupShapeGroup {
+   baseSourceName: string;
+   members: ServeBinding[];
+}
+
+/**
+ * The fragment that re-exposes ONE base source name over its rollups: each member
+ * as its own virtual source, then a `compose()` binding the author's name to them.
+ *
+ * `compose()` even for a single member, deliberately. A one-member composite
+ * compiles and routes identically to a direct rebind (pinned in
+ * preaggregation_virtual_compose_spike.spec.ts), so treating one grain and several
+ * as one code path removes a branch that would otherwise be the only difference
+ * between the common case and the general one — and a branch there is exactly
+ * where a "works with one grain, silently stops with two" bug would live.
+ *
+ * The composite is NOT total: there is no base member, because the base lives on
+ * the source warehouse and every member of a composite must share a connection.
+ * So a query no rollup covers fails to compile against this model and falls back
+ * to live, which is the fallback the serve path relies on.
+ */
+function rollupServeShapeFragment(group: RollupShapeGroup): string {
+   const members = group.members.map(serveShapeFragment).join("\n");
+   const names = group.members.map((m) => m.sourceName).join(", ");
+   return `${members}\nsource: ${group.baseSourceName} is compose(${names})`;
 }
 
 /**
@@ -405,6 +602,25 @@ export function buildChainedStorageBuildModel(params: {
    downstreamDefText: string;
    destinationName: string;
 }): string {
+   // A rollup is never an upstream — nothing can reference one, its name being
+   // synthesized and absent from every model file — so one arriving here means a
+   // caller widened its set without deciding to.
+   //
+   // Asserted rather than filtered, and the distinction matters. Filtering would
+   // make a rollup here harmless, which it already is: `deriveServeBindings`
+   // attaches no refinements, so the fragments are bare virtual sources nothing
+   // references. But that is the SAME assumption that expired on the serve path,
+   // where these bindings later acquired refinements — at which point a rollup's
+   // merged measures would start entering BUILD models. An assertion fails loudly
+   // when the assumption stops holding; a filter would keep the damage silent.
+   const rollup = params.upstreams.find((b) => b.origin === "preaggregate");
+   if (rollup) {
+      throw new Error(
+         `buildChainedStorageBuildModel received a pre-aggregation rollup as an ` +
+            `upstream (${rollup.sourceName}). Rollups are not referenceable, so a ` +
+            `caller has widened its binding set without filtering by origin.`,
+      );
+   }
    const upstreamFragments = orderBindingsByJoinDeps(params.upstreams)
       .map(serveShapeFragment)
       .join("\n");
@@ -513,7 +729,12 @@ function isAccessRestricted(field: unknown): boolean {
  * the source's own visibility always applies). A column is kept only if it names
  * a publicly-visible field of the compiled source; an `except:`-ed column is
  * absent from the field list, and an access-restricted one is caught by
- * {@link isAccessRestricted} — both are dropped. Dropped columns stay physically
+ * {@link isAccessRestricted} — both are dropped. A captured name is matched
+ * EXACTLY first and only then case-insensitively, and the surviving column is
+ * emitted under the AUTHOR's spelling, because the captured name is in the
+ * source warehouse's identifier case rather than the author's. An ambiguous
+ * fold — several author fields folding onto one captured column — is dropped
+ * rather than guessed. See the body for why each of those three is load-bearing. Dropped columns stay physically
  * in the table but become unreachable through the source: a query that
  * references one fails the shape compile and falls back to live, where the
  * source's visibility rules are enforced (fail-safe). This mirrors the
@@ -524,14 +745,72 @@ export function narrowSchemaToPublic(
    schema: { name: string; type: string }[],
    fields: readonly unknown[] | undefined,
 ): { name: string; type: string }[] {
-   const publicNames = new Set<string>();
+   // Two lookups, tried in that order, because the two sides of this
+   // intersection are in different namespaces: `fields` carries the names the
+   // author WROTE, while `schema` carries what DESCRIBE reported for the built
+   // table -- and a warehouse that folds unquoted identifiers (Snowflake, Oracle,
+   // Redshift and Teradata all upper-fold) reports them in ITS case, not the
+   // author's. Matching only exactly intersects to nothing there, and an empty
+   // narrowed schema is not a partial failure: the caller drops such a binding
+   // entirely, so the source vanishes from the serve shape and every query on it
+   // dies at "Reference to undefined object" and falls back live. Silently -- the
+   // rows are correct, only the tier is lost -- so it reads as "materialization
+   // did nothing" rather than as a bug.
+   const exactNames = new Set<string>();
+   const byFoldedName = new Map<string, string[]>();
    for (const f of fields ?? []) {
       const name = (f as { name?: unknown }).name;
       if (typeof name === "string" && !isAccessRestricted(f)) {
-         publicNames.add(name);
+         exactNames.add(name);
+         const folded = name.toLowerCase();
+         const sameFold = byFoldedName.get(folded);
+         if (sameFold) {
+            sameFold.push(name);
+         } else {
+            byFoldedName.set(folded, [name]);
+         }
       }
    }
-   return schema.filter((c) => publicNames.has(c.name));
+   const emitted = new Set<string>();
+   const out: { name: string; type: string }[] = [];
+   for (const c of schema) {
+      let authorName: string | undefined;
+      if (exactNames.has(c.name)) {
+         // An exact hit is authoritative and must be tried FIRST. On a
+         // case-PRESERVING warehouse the captured name already is the author's,
+         // and Malloy permits two fields whose names differ only in case -- a
+         // `TitleCase` dimension over a `snake_case` column. Folding first would
+         // let the dimension's name win the physical column, so the shape declared
+         // the stored column under the dimension's name, the duplicate failed the
+         // shape down to base-only, and the query served the raw column in place
+         // of the computed one. Wrong rows, `servedFrom: storage`, no warning.
+         authorName = c.name;
+      } else {
+         const candidates = byFoldedName.get(c.name.toLowerCase());
+         // Exactly one, or not at all. Several author fields folding onto one
+         // captured column cannot be resolved from here, and guessing is the
+         // failure above; dropping sends a query that touches it to live, where
+         // the author's own names still distinguish them.
+         if (candidates?.length === 1) {
+            authorName = candidates[0];
+         }
+      }
+      // Absent from the public surface (`except:`-ed or access-restricted) in
+      // either namespace: dropped, exactly as before. Neither lookup can invent
+      // an author field, so a hidden one stays hidden.
+      if (authorName === undefined) {
+         continue;
+      }
+      // Two captured columns can still reach one author field (a folded hit plus
+      // an exact one). Declaring the name twice fails the whole shape, so the
+      // first in captured order wins and the rest drop.
+      if (emitted.has(authorName)) {
+         continue;
+      }
+      emitted.add(authorName);
+      out.push({ name: authorName, type: c.type });
+   }
+   return out;
 }
 
 export function extractRefinements(
@@ -702,7 +981,7 @@ export function extractViews(
 }
 
 /**
- * Assemble the per-call `virtualMap` (`connectionName -> handle -> canonical
+ * Assemble the per-call `virtualMap` (`destinationName -> handle -> canonical
  * table path`) core resolves a virtual source through. The table path is quoted
  * canonical for DuckDB — core validates every entry is canonical SQL for some
  * dialect and then pastes it verbatim (it does not quote it), so an unquoted or
@@ -720,10 +999,10 @@ export function buildVirtualMap(
 ): Map<string, Map<string, string>> {
    const map = new Map<string, Map<string, string>>();
    for (const b of bindings) {
-      let inner = map.get(b.connectionName);
+      let inner = map.get(b.destinationName);
       if (!inner) {
          inner = new Map<string, string>();
-         map.set(b.connectionName, inner);
+         map.set(b.destinationName, inner);
       }
       inner.set(b.virtualHandle, quoteManifestTablePath(b.tablePath, "duckdb"));
    }

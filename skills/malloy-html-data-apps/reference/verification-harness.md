@@ -1,15 +1,19 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 # Headless Verification Harness
 
-> Scaffolding to verify a finished data app end-to-end without a live warehouse. Referenced from `SKILL.md` ("Verify before you call it done"). You are building for someone who cannot tell a correct dashboard from a broken one — this harness is how you check, so they don't have to.
+> Scaffolding to verify a finished data app end-to-end without a live warehouse. Referenced from `SKILL.md` ("Verify before you call it done"). You are building for someone who cannot tell a correct dashboard from a broken one; this harness is how you check, so they don't have to.
 
 The app talks to the world through exactly one seam: `window.Publisher.query(modelPath, malloy)`. Mock that seam and you can load the real page in a real browser with canned data, then assert on what actually rendered.
 
 ## 1. Mock `sdk/publisher.js`
 
-Serve a stand-in at the same root-relative path the page loads (`/sdk/publisher.js`). It returns canned rows keyed by `(modelPath, query)`, and — this is the part that bites — it reproduces the **async delay** of the real runtime, so your assertions exercise the loading→loaded transition instead of racing a synchronous stub.
+Serve a stand-in at the same root-relative path the page loads (`/sdk/publisher.js`). It returns canned rows keyed by `(modelPath, query)`, and (this is the part that bites) it reproduces the **async delay** of the real runtime, so your assertions exercise the loading→loaded transition instead of racing a synchronous stub.
 
 ```js
-// mock/sdk/publisher.js — served at /sdk/publisher.js during verification
+// mock/sdk/publisher.js: served at /sdk/publisher.js during verification
 (function () {
   // Key canned data by "modelPath::query" (exact strings from tiles.js).
   const FIXTURES = {
@@ -53,7 +57,7 @@ trap 'kill "$server" 2>/dev/null; rm -rf "$webroot"' EXIT   # always tear the se
 ## 2. Drive it with Playwright and assert on the rendered DOM
 
 ```js
-// verify.mjs — node verify.mjs   (assumes the server above is on :4173)
+// verify.mjs: node verify.mjs   (assumes the server above is on :4173)
 import { chromium } from "playwright";
 
 const browser = await chromium.launch();
@@ -64,12 +68,12 @@ page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 
 await page.goto("http://localhost:4173/index.html", { waitUntil: "load" });
 // publisher.js holds an SSE stream open (even with watch off), so networkidle NEVER fires.
-// Wait on CONTENT — and for ALL tiles to RESOLVE, not just the first to appear.
+// Wait on CONTENT, and for ALL tiles to RESOLVE, not just the first to appear.
 // Asserting after only the first .value renders races the others and yields a
 // false "stuck skeleton" / "empty value" FAIL. "Resolved" = every tile has a
 // value and no skeleton remains. This single wait subsumes the DELAY_MS delay
 // AND the stuck-skeleton check; if it times out, a tile really is stuck.
-// NOTE: assumes a NON-lazy page — every tile loads on open. For a lazy-loaded
+// NOTE: assumes a NON-lazy page, every tile loads on open. For a lazy-loaded
 // page (reference/lazy-load.md) below-fold tiles legitimately keep their
 // skeletons until scrolled in, so this wait would (correctly) time out. Test a
 // lazy page with the scroll-and-assert loop in lazy-load.md instead.
@@ -110,12 +114,12 @@ if (errors.length) problems.push(`console/page errors: ${errors.join(" | ")}`);
 
 await browser.close();
 if (problems.length) { console.error("FAIL:\n- " + problems.join("\n- ")); process.exit(1); }
-console.log(`OK — all ${tileReport.length} tiles rendered content`);
+console.log(`OK: all ${tileReport.length} tiles rendered content`);
 ```
 
 ## Gotchas (each cost a real debugging cycle)
 
-- **Wait out the mock's async delay before asserting.** Asserting immediately after `load` reads the skeleton, not the resolved tile, and reports a false "stuck skeleton." Wait until every tile shows its own resolved content (the per-tile `waitForFunction` above), never on `networkidle` — `publisher.js` keeps the live-reload SSE stream open, so the page never reaches network idle.
+- **Wait out the mock's async delay before asserting.** Asserting immediately after `load` reads the skeleton, not the resolved tile, and reports a false "stuck skeleton." Wait until every tile shows its own resolved content (the per-tile `waitForFunction` above), never on `networkidle`, because `publisher.js` keeps the live-reload SSE stream open, so the page never reaches network idle.
 - **A missing fixture is a test bug, not empty data.** Reject on an unknown `(model, query)` key so a drifted query string fails loudly, instead of returning `[]` and masquerading as a real empty state.
 - **Assert on the rendered DOM, not on `Publisher.query` return values.** The bugs live in the render path (NaN formatting, wrong column read, `|| 0` faking a zero). Reading the query result back proves nothing the model didn't already prove.
 - Match the selectors (`.tile .value`, `.is-error`, `.kit-skeleton`, `canvas`) to whatever your app actually emits.

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import Drawer from "@mui/material/Drawer";
 import { ReactElement } from "react";
 import Sidebar from "../Sidebar/Sidebar";

@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { alpha, Theme, Components } from "@mui/material/styles";
 import { gray } from "../themePrimitives";
 

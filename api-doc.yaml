@@ -1,33 +1,47 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 openapi: 3.1.0
 info:
   title: Malloy Publisher - Semantic Model Serving API
   description: |
-    The Malloy Publisher - Semantic Model Serving API provides comprehensive access to Malloy packages and their associated resources.
-    A Malloy package is a directory containing Malloy models (.malloy files), Malloy notebooks (.malloynb files), and embedded databases
-    (.parquet, .csv, and .xlsx files) with a malloy-publisher.json manifest at the package's root directory.
+    The Malloy Publisher - Semantic Model Serving API provides access to Malloy packages and everything they contain.
+    A Malloy package is a directory with a `publisher.json` manifest at its root, holding Malloy models (`.malloy` files),
+    notebooks (`.malloynb` files), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
+    under `public/`.
 
     ## Key Features
 
-    - **Environment Management**: Create and manage environments with their associated packages and connections
-    - **Package Lifecycle**: Full CRUD operations for Malloy packages and their versions
-    - **Model & Notebook Access**: Retrieve and execute Malloy models and notebooks
-    - **Connection Management**: Secure database connection configuration and testing
-    - **Query Execution**: Execute queries against models and retrieve results
-    - **Watch Mode**: Real-time file watching for development workflows
+    - **Discovery**: List environments, packages, and the models, notebooks, data apps, and data a package contains
+    - **Query Execution**: Run queries against models, execute notebooks a cell at a time, and compile-check Malloy without running it
+    - **Data Apps**: In-package HTML data apps served from a package's `public/` directory
+    - **Materializations**: Persist Malloy sources as tables, on a schedule or on demand
+    - **Connection Management**: Configure and test warehouse connections, and browse their schemas and tables
+    - **Watch Mode**: File watching, and a change-event stream for development workflows
 
     ## Resource Hierarchy
 
     The API follows a hierarchical resource structure:
     ```
-    Environments
-    ├── Connections
-    └── Packages
-        ├── Models
-        ├── Notebooks
-        └── Databases
+    Server
+    ├── /status, /theme               server state, and the UI theme
+    ├── /connections/test             validate a connection config
+    ├── /watch-mode/…                 development file watching
+    └── Environments
+        ├── Connections               schemas, tables, and ad-hoc SQL
+        └── Packages
+            ├── Models                query and compile
+            ├── Notebooks             execute a cell at a time
+            ├── Data Apps             static HTML data apps from public/
+            ├── Databases             embedded data files
+            ├── Materializations      persisted sources
+            ├── Connections           package-scoped connection access
+            └── Events                SSE stream of file changes
     ```
 
-    For examples, see the Malloy samples packages (https://github.com/malloydata/malloy-samples) repository.
+    For worked examples, see the packages this server bundles
+    (https://github.com/malloydata/publisher/tree/main/examples); the package format is documented in
+    docs/packages.md (https://github.com/malloydata/publisher/blob/main/docs/packages.md).
   version: v0
 
 servers:
@@ -53,8 +67,14 @@ tags:
     description: Malloy model access and compilation operations
   - name: notebooks
     description: Malloy notebook access and execution operations
-  - name: pages
-    description: Static HTML pages (in-package data apps)
+  - name: dashboards
+    description:
+      Discovery and manifests for `# artifact` dashboards - layout, tiles, and
+      the given specs behind their controls
+  - name: data-apps
+    description:
+      In-package HTML data apps (static pages served from a package's public/
+      directory)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -171,6 +191,10 @@ paths:
         Retrieves a list of all environments currently hosted on this Malloy Publisher server.
         Each environment contains metadata about its packages, connections, and configuration.
         This endpoint is typically used to discover available environments and their basic information.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-environment: use `GET /environments/{environmentName}?reload=true`.
       responses:
         "200":
           description: A list of all available environments
@@ -180,6 +204,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -208,6 +234,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -234,7 +262,13 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: reload
           in: query
-          description: Load / reload the environment before returning result
+          description: |
+            Load / reload the environment before returning result.
+
+            Only the two spellings OpenAPI serializes a boolean as are accepted:
+            `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
+            parameter repeated) is refused with 400 rather than read as `false`,
+            which would answer 200 without recompiling.
           required: false
           schema:
             type: boolean
@@ -245,6 +279,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -282,6 +318,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -693,6 +731,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -741,6 +781,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -792,6 +834,22 @@ paths:
                 options:
                   type: string
                   description: Options
+                queryMetadata:
+                  $ref: "#/components/schemas/QueryMetadata"
+                  description: >-
+                    Per-query metadata to attach to this statement, overriding
+                    the connection default property by property. A bag that
+                    violates the contract is rejected with 400.
+                    (`options.queryMetadata` is honored too, since `options` is
+                    forwarded as `RunSQLOptions`, but this field is the
+                    documented surface and wins when both are present.)
+                queryClass:
+                  $ref: "#/components/schemas/QueryClass"
+                  description: >-
+                    What class of work this statement belongs to, attached as the
+                    `class` property. Defaults to `ops`: raw SQL against a
+                    connection is platform maintenance unless the caller says
+                    otherwise.
       responses:
         "200":
           description: Query execution results
@@ -1035,6 +1093,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1089,6 +1149,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1142,6 +1204,22 @@ paths:
                 options:
                   type: string
                   description: Options
+                queryMetadata:
+                  $ref: "#/components/schemas/QueryMetadata"
+                  description: >-
+                    Per-query metadata to attach to this statement, overriding
+                    the connection default property by property. A bag that
+                    violates the contract is rejected with 400.
+                    (`options.queryMetadata` is honored too, since `options` is
+                    forwarded as `RunSQLOptions`, but this field is the
+                    documented surface and wins when both are present.)
+                queryClass:
+                  $ref: "#/components/schemas/QueryClass"
+                  description: >-
+                    What class of work this statement belongs to, attached as the
+                    `class` property. Defaults to `ops`: raw SQL against a
+                    connection is platform maintenance unless the caller says
+                    otherwise.
       responses:
         "200":
           description: Query execution results
@@ -1230,6 +1308,10 @@ paths:
         Retrieves a list of all Malloy packages within the specified environment. Each package
         contains models, notebooks, databases, and other resources. This endpoint is useful
         for discovering available packages and their basic metadata.
+
+        This endpoint does not reload. A `reload` query parameter is rejected with 400 rather
+        than ignored, because answering 200 here reads as a reload that worked. Reload is
+        per-package: use `GET /environments/{environmentName}/packages/{packageName}?reload=true`.
       parameters:
         - name: environmentName
           in: path
@@ -1246,6 +1328,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -1326,7 +1410,13 @@ paths:
             $ref: "#/components/schemas/VersionIdPattern"
         - name: reload
           in: query
-          description: Load / reload the package before returning result
+          description: |
+            Load / reload the package before returning result.
+
+            Only the two spellings OpenAPI serializes a boolean as are accepted:
+            `true` and `false`. Any other value (`1`, `yes`, `TRUE`, or the
+            parameter repeated) is refused with 400 rather than read as `false`,
+            which would answer 200 without recompiling.
           required: false
           schema:
             type: boolean
@@ -1337,6 +1427,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Package"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1356,6 +1448,21 @@ paths:
         Updates the configuration and metadata of an existing package. This allows you to
         modify package settings, update the description, change the location, or update other
         package-level properties. The package must exist and be accessible.
+
+        A supplied `materialization` block REPLACES the one on disk, so re-send every
+        field of it you want to keep. Two exceptions are preserved when omitted:
+        `scope`, which is a top-level field and not expressible in the block at all,
+        and `queryMetadata`, which is orthogonal to the schedule and freshness policy
+        this call usually carries — a client setting a schedule has no reason to
+        re-send the package's tags, and dropping them silently untags every statement
+        the package issues.
+
+        `queryMetadata` has two homes: the top-level field, which is canonical, and
+        `materialization.queryMetadata`, which is DEPRECATED and still accepted. The
+        canonical field wins if a request sends both, and both are populated on read.
+        At EITHER home, omitting it preserves the package's tags and so does sending
+        null — a client that serializes unset fields as null must not untag a package
+        by accident. Send an empty object to clear.
       parameters:
         - name: environmentName
           in: path
@@ -1651,6 +1758,150 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/dashboards:
+    get:
+      tags:
+        - dashboards
+      operationId: list-dashboards
+      summary: List package dashboards
+      description: |
+        Lists the dashboards in the specified package — every `.malloy` file in
+        the package's `dashboards/` directory that carries an `# artifact` (or
+        model-level `## artifact`) annotation. A file in that directory with no
+        artifact tag is a shared include and is not listed, whether or not it
+        compiles.
+
+        A tagged dashboard that failed to compile is listed carrying its
+        `error` where that state can arise at all, so a broken dashboard is
+        visibly broken rather than silently absent. In practice it rarely does:
+        a package whose model fails to compile is not loaded, and a reload that
+        would break one is refused and leaves the previously loaded package
+        serving, so `error` is only reachable on the paths that keep per-model
+        placeholders. Treat it as present-but-uncommon rather than the normal
+        way a broken dashboard surfaces. When the package curates its query surface
+        (`queryableSources: "declared"`), a dashboard whose entry file is not in
+        `explores` is omitted, because its query and given names would not be
+        runnable; the omission is reported in the package's `warnings` as of the
+        last load. A metadata `PATCH` that TIGHTENS curation takes effect on
+        this listing immediately; one that relaxes it takes effect on the next
+        package reload, because the withheld dashboards were never built into
+        the cached set. Either way the matching warning is computed at load, so
+        after a `PATCH` it appears only once the package reloads.
+
+        Where the boundary is active at all, which needs `explores` declared
+        AND `queryableSources` left at `"declared"`, being listed does not by
+        itself guarantee the dashboard runs: the queryable sources are the
+        union of every listed file's `export {}` closure, so a dashboard whose
+        tiles read a source that only an UNLISTED file exports is still served
+        while those queries are refused. The fix is to list that file too, or
+        to re-export the source from one already listed. It is served rather
+        than withheld because withholding on a guess would hide dashboards that
+        do work. Under `"all"` nothing is refused, so the situation does not
+        arise.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: A list of dashboards in the package
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Dashboard"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/dashboards/{dashboardName}:
+    get:
+      tags:
+        - dashboards
+      operationId: get-dashboard
+      summary: Get a dashboard manifest
+      description: |
+        Retrieves everything a viewer needs to render one dashboard: the artifact
+        tag's declarations plus the control contract derived from the givens its
+        query references. Running the dashboard needs no further endpoint — its
+        query, each tile, and each control's suggest query all run
+        through the model query endpoint with `givens`, using the manifest's
+        `path` as the model.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: dashboardName
+          in: path
+          description: >-
+            The dashboard's name: its filename basename. Conventionally letters,
+            digits, "-" and "_", and a package is warned when one of its SERVED
+            dashboards falls outside that. A dashboard withheld by curation gets
+            no naming finding, because the naming check runs after the curation
+            gate and a withheld dashboard is already reported as withheld. It is NOT constrained to it, because
+            the name comes from a filename rather than being chosen: a file such
+            as `dashboards/v1.2.malloy` is served, and its published `resource`
+            carries the name percent-encoded. Send it percent-encoded.
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: The dashboard manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardManifest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/notebooks:
     get:
       tags:
@@ -1819,7 +2070,12 @@ paths:
               - "false"
         - name: givens
           in: query
-          description: JSON-encoded given values keyed by given name
+          description:
+            A `GivenValues` object, JSON-encoded so it can travel in a query
+            string. Values are typed as `GivenValues` describes them, not
+            string-encoded as `EncodedGivenValues` would be. The parameter keeps
+            its name for compatibility; the schema it carries is the one named
+            here.
           required: false
           schema:
             type: string
@@ -1896,21 +2152,22 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/pages:
+  /environments/{environmentName}/packages/{packageName}/data-apps:
     get:
       tags:
-        - pages
-      operationId: list-pages
-      summary: List package pages
+        - data-apps
+      operationId: list-data-apps
+      summary: List package data apps
       description: |
-        Retrieves a list of all static HTML pages (in-package data apps) within
-        the specified package. Each page entry includes the relative path, the
-        package name, a canonical resource URL, and the page title (extracted
-        from the file's <title> tag, falling back to the path). Used by the
-        Publisher SPA to surface a clickable "Pages" section on the package
-        detail view, and by anyone who wants to discover in-package data apps
-        programmatically without scraping the directory. Recursive depth is
-        capped server-side to keep this cheap on large packages.
+        Retrieves a list of all in-package HTML data apps (static pages served
+        from the package's public/ directory) within the specified package. Each
+        entry includes the relative path, the package name, a canonical resource
+        URL, and the title (extracted from the file's <title> tag, falling back
+        to the path). Used by the Publisher SPA to surface a clickable "Data
+        Apps" section on the package detail view, and by anyone who wants to
+        discover a package's data apps programmatically without scraping the
+        directory. Recursive depth is capped server-side to keep this cheap on
+        large packages.
       parameters:
         - name: environmentName
           in: path
@@ -1926,13 +2183,13 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
       responses:
         "200":
-          description: A list of pages in the package
+          description: A list of data apps in the package
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/Page"
+                  $ref: "#/components/schemas/DataApp"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -2300,12 +2557,18 @@ paths:
             When true, also drop the physical tables recorded in the
             materialization's manifest before deleting the record. Defaults to
             false (record-only delete; the caller owns table GC).
+
+            Only `true` and `false` are accepted. Any other value is refused
+            with 400 rather than read as `false`, which would delete the record,
+            leave the tables on disk, and still answer 204.
           schema:
             type: boolean
             default: false
       responses:
         "204":
           description: Materialization deleted
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -2383,16 +2646,26 @@ components:
             $ref: "#/components/schemas/Error"
     PayloadTooLarge:
       description: |
-        The request was well-formed but the response exceeds a server-side
-        size cap. Two caps can fire:
-          * PUBLISHER_MAX_QUERY_ROWS (default 100000) — too many rows.
-          * PUBLISHER_MAX_RESPONSE_BYTES (default 50 MB) — JSON-serialized
-            response too large.
-        The error message identifies which cap fired. Refine the query (add
-        a LIMIT, more selective WHERE, project fewer columns) or raise the
-        relevant cap; retrying without changes will not succeed. The
-        per-cap rejection counter is exported as
-        publisher_query_cap_exceeded_total{cap_type, source}.
+        The request was well-formed but the response is too large to return.
+        Three cases, and the message says which:
+          * PUBLISHER_MAX_QUERY_ROWS (default 100000) exceeded: too many rows.
+          * PUBLISHER_MAX_RESPONSE_BYTES (default 50 MB) exceeded: the
+            JSON-serialized response measured over the cap. What is measured is
+            the shape the request asked for, so on the model-query endpoint two
+            requests differing only in compactJson reach this cap at different
+            result sizes.
+          * The response could not be serialized at all, past the JavaScript
+            engine's own limit (V8 refuses the string; JSC fails the
+            allocation). No cap was necessarily exceeded here, and raising one
+            does not help. This third case applies to the model-query and
+            notebook-cell endpoints; the connection SQL endpoints have no such
+            guard and answer 500.
+        In every case, refine the query (add a LIMIT, a more selective WHERE,
+        project fewer columns, or filter out wide values); retrying unchanged
+        will not succeed. Raising the relevant cap is an option for the first
+        two only. The rejection counter is exported as
+        publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
+        rows, bytes, or unserializable.
       content:
         application/json:
           schema:
@@ -2459,17 +2732,18 @@ components:
           description:
             Configured packages and environments that did not load, and why. A
             load failure is not fatal to the server, so operationalState stays
-            serving and the affected packages are simply absent from
-            environments; this is the only place that difference is reported, so
-            check it before treating a serving server as complete. Present only
-            when something failed to load, so a healthy server omits the field.
+            serving and the affected packages are absent from environments,
+            unless the entry carries stale = true, in which case the package is
+            still listed and still serving its last successful compile. This is
+            the only place either difference is reported, so check it before
+            treating a serving server as complete or current. Present only when
+            something failed, so a healthy server omits the field.
           items:
             type: object
             properties:
               environment:
                 type: string
-                description:
-                  Name of the configured environment the failure belongs to.
+                description: Name of the configured environment the failure belongs to.
               package:
                 type: string
                 description:
@@ -2481,6 +2755,24 @@ components:
               message:
                 type: string
                 description: Why it did not load.
+              stale:
+                type: boolean
+                description:
+                  When true, the package did load earlier and is still serving
+                  that last successful compile; the message is why its most
+                  recent reload (a watch-mode save, reload_package, or
+                  reload=true) failed. The served model is older than the files
+                  on disk. Absent on ordinary load failures. This array is the
+                  only place staleness is reported, because the package's entry
+                  under environments, and its own package resource, both read
+                  SERVING; join on the package name here to tell a current
+                  package from a stale one.
+              failedAt:
+                type: string
+                format: date-time
+                description:
+                  When the failed reload happened. Only present alongside
+                  stale = true.
         frozenConfig:
           type: boolean
           description:
@@ -2488,12 +2780,14 @@ components:
             true, all mutation operations are disabled.
         theme:
           $ref: "#/components/schemas/Theme"
-          description: Instance-wide default theme for the Malloy renderer and the
+          description:
+            Instance-wide default theme for the Malloy renderer and the
             Publisher app shell.
 
     Theme:
       type: object
-      description: Visual theme applied to Malloy renderer output (chart palette,
+      description:
+        Visual theme applied to Malloy renderer output (chart palette,
         fonts, table chrome) and to the Publisher app shell. Cascade order is
         instance → per-chart Malloy annotation, with later layers overriding
         earlier ones for the keys they set. (A per-environment layer is reserved
@@ -2501,12 +2795,13 @@ components:
       properties:
         defaultMode:
           type: string
-          enum: [ "light", "dark", "auto" ]
+          enum: ["light", "dark", "auto"]
           description: Initial color mode for new viewers. "auto" follows the
             browser's prefers-color-scheme until the viewer overrides.
         allowUserToggle:
           type: boolean
-          description: When true, the Publisher app renders a light/dark toggle and
+          description:
+            When true, the Publisher app renders a light/dark toggle and
             persists the viewer's choice to localStorage. When false, the
             defaultMode is enforced.
         palette:
@@ -2515,7 +2810,8 @@ components:
           properties:
             series:
               type: array
-              description: Ordered list of hex colors used by multi-series charts
+              description:
+                Ordered list of hex colors used by multi-series charts
                 (passed to Vega's `range.category`). Shared across light
                 and dark modes so the brand palette stays consistent
                 when viewers switch modes.
@@ -2588,7 +2884,8 @@ components:
                   type: string
         font:
           type: object
-          description: Typography overrides applied to both the app shell and the
+          description:
+            Typography overrides applied to both the app shell and the
             Malloy renderer (Vega text marks). Shared across light and
             dark modes because font choice is a brand decision, not a
             mode-specific one.
@@ -2625,6 +2922,31 @@ components:
           description: List of database connections configured for this environment
           items:
             $ref: "#/components/schemas/Connection"
+        storageDestinations:
+          type: array
+          description: |
+            Warehouses that materialization builds write to and that
+            materialized queries are served from. A disjoint set from
+            `connections` - a destination is never resolvable by name from a
+            model, and never listed or fetchable through the connection
+            endpoints. Names are independent of `connections`, so the same name
+            may appear in both lists and mean two different warehouses.
+
+            Reads (including the status endpoint) report only `name` and `type`,
+            never the config - a destination's warehouse credentials are the
+            operator's, not any caller's. Writes carry the full config and
+            replace the stored list; omitting the field leaves it untouched. An
+            entry that names a stored destination and carries no config is read
+            as "keep this one", so echoing back what a read returned does not
+            strip the stored configs.
+
+            A write is all-or-nothing: because the list replaces what is stored,
+            a value that is not a list of usable destinations is refused with
+            400 naming every defect, and none of it is applied - on create as
+            well as on update. Sending an empty list is the way to clear the
+            destinations.
+          items:
+            $ref: "#/components/schemas/Connection"
         packages:
           type: array
           description: List of Malloy packages in this environment
@@ -2653,8 +2975,19 @@ components:
         location:
           type: string
           description:
-            Package location, can be an absolute path or URI (e.g. github, s3,
-            gcs, etc.)
+            Package location. A LOCAL path must start with `./`, `../`, `~/`,
+            or `/`; a `./` or `../` path resolves against the config file's
+            directory, and `~/` against the home directory. Anything else is
+            read as a remote URI (github, s3, gcs, https), so a bare name like
+            `sales` is not local and the package is skipped with
+            "Invalid package path" in the server's loadErrors. At boot a local
+            package is COPIED into publisher_data/ and the copy is served, so
+            edits to the source directory are not read; starting the server
+            with `--watch-env <env>` mounts local packages in place (symlink)
+            and live-reloads them instead. The mount is chosen when the
+            environment is first loaded from config, so adding `--watch-env`
+            to a later boot needs `--init` to re-mount a package already
+            copied.
         scope:
           type: string
           enum:
@@ -2663,7 +2996,7 @@ components:
           default: package
           description: >-
             Package-level Malloy Persistence scope mode, declared once at the
-            malloy-publisher.json root and applied uniformly to every persist
+            publisher.json root and applied uniformly to every persist
             source and index in the package. `package` (the default) =
             persisted artifacts are package-scoped: reused across the package's
             published versions whenever they still satisfy freshness. `version`
@@ -2704,37 +3037,153 @@ components:
           type: array
           readOnly: true
           description: >-
-            Non-fatal render-tag findings collected when the package loaded: a
-            render annotation (e.g. `# big_value` or `# currency`) misconfigured
+            Non-fatal findings collected when the package loaded, none of which
+            stop the model compiling or the package loading. Render-tag
+            findings: a render annotation (e.g. `# big_value`, `# currency` or
+            `# colspan`) the renderer cannot apply as written, either malformed
             for the field it sits on, so it renders as "[object Object]" or an
-            inline error at query time but does not stop the model compiling or
-            the package loading. Server-computed and read-only: ignored on
+            inline error at query time, or inert where it sits and silently
+            ignored. Materialization
+            findings: a `storage=` source not served from storage, a `#@ persist`
+            source that was not recognized as materializable, a persist-target
+            collision, and materialization-config problems that degrade
+            attribution. Discovery findings: a model listed in `explores` whose
+            export closure surfaces no sources or named queries, so it lists as
+            empty and renders a blank page. Dashboard findings: a
+            `dashboards/` file whose `# artifact` tag does not parse or does not
+            describe a dashboard, a tile or suggest query that does not resolve,
+            a `# drill` naming a destination that is not a dashboard, and a
+            dashboard held back from the listing because its entry file is not
+            in `explores`. Two dashboard findings are about Publisher rather
+            than about the package: one when a file carrying an artifact tag
+            could not be read and so is not served at all, and one when the lint
+            stops early, in which case the list must be read as incomplete
+            rather than as a clean package. Server-computed and read-only:
+            ignored on
             create/update requests and only returned in responses. Present only
             when there are such findings.
+
+
+            **Almost every `#@ preaggregate` that cannot be honored REJECTS A
+            PUBLISH — a 400 at publish or PATCH — and fails a load thereafter.**
+            The two access-modifier violations are the exception: they warn at
+            BOTH gates and appear in this array. See the split below.
+            Rejected are a `#@ preaggregate` anywhere but on a measure;
+            a `#@ preaggregate` with no `grain=`;
+            a grain naming anything but a dimension the base source itself
+            declares, which rules out an inline time truncation such as
+            `order_time.day`; a measure that cannot be correctly
+            re-aggregated to a coarser grain, whether because its aggregate has no
+            exact merge function (`count(distinct)`, `median`, percentiles, `mode`,
+            and `avg` until it is decomposed) or because it carries its own filter,
+            an ungrouping (`all`, `exclude`), or a required group-by; a measure
+            whose expression cannot be POSITIVELY classified as re-aggregatable,
+            which fails closed rather than being guessed at; a base source with a
+            FAN-OUT join (`join_many` or `join_cross`), which can multiply rows,
+            while a `join_one` is permitted and a measure aggregating through one
+            is served normally; a base source that already fails persist eligibility (unbound
+            parameters, `given` references, `#(authorize)` gates); `sharing=` or
+            `schedule=` at the resource level; and a synthesized rollup name that
+            collides with an existing model object.
+
+
+            WARNED rather than rejected, at publish and at load alike, is a
+            `#@ preaggregate` on a measure the source does not publicly expose, or
+            a grain naming a hidden dimension — a rollup STORES its grain and each
+            measure's partial, and the stored table is served under the base's name without
+            the source's field visibility applying to it. Each names the measure
+            and the fix.
+
+
+            Refusing rather than silently dropping the measure is the deliberate
+            choice. A dropped measure is not served from the rollup at ANY grain,
+            so the declaration would have no effect whatsoever while still reading
+            as applied — and the build cost of the rollup would still be paid. An
+            author who writes `#@ preaggregate` on a measure that cannot be rolled
+            up has made a modeling mistake, and an error is where a mistake
+            belongs.
+
+
+            The same verdict is enforced at LOAD for every violation EXCEPT the
+            two access-modifier ones, so a package whose declarations stopped
+            being honorable does not load at all: it is absent from its
+            environment and reported in `ServerStatus.loadErrors`. Worth knowing
+            because whether a measure can be re-aggregated is derived from the
+            compiled model, so a Malloy version change can in principle reclassify
+            a measure that published cleanly long before. That surfaces as a
+            package that stops loading rather than as a package quietly serving
+            without its rollups — louder, and deliberately so, since the
+            alternative is paying for rollups that answer nothing.
+
+
+            The two access-modifier violations are the deliberate exception, and
+            for two reasons rather than a lesser severity. They WARN at publish and
+            at load alike and appear in this array. First, a package annotating a
+            hidden field published and loaded before this rule existed — refusing
+            it would stop an already-published package from doing either because a
+            new validation was
+            added, which is not a thing a server upgrade may do. Second, the
+            refusal was unfollowable: an annotation INHERITED onto a source that
+            then hides the measure raises it, while that source produces no plan at
+            all and nothing is exposed, so the advice to make the field public or
+            drop the annotation asks an author to give up either the hiding or the
+            rollup over a model that was already safe.
+
+
+            Warning is safe here and would not be for the others: what keeps a
+            hidden field out of a rollup is that the planner refuses to plan one at
+            all, so no table is built and nothing can be served whether or not
+            anyone reads the message. For the other violations the refusal IS the
+            enforcement, which is why they stay fatal.
           items:
             type: object
             properties:
               model:
                 type: string
                 description: >-
-                  Package-relative path of the model the finding is on.
-              target:
+                  Package-relative path of the model the finding is on. Absent
+                  for a package-wide finding.
+              subject:
                 type: string
                 description: >-
-                  The query or view the finding sits on, e.g. `by_carrier` or
-                  `flights -> by_carrier`.
+                  What the finding is about: the query or view a render finding
+                  sits on (`by_carrier`, `flights -> by_carrier`), the source a
+                  materialization finding belongs to, or, for a dashboard
+                  finding, the dashboard's name or the `source.dimension` a
+                  `# drill` is declared on. Absent when a finding sits on none
+                  of those, either because it spans several, in which case the
+                  message names them, or because it is about the lint itself
+                  rather than about any one dashboard.
               message:
                 type: string
-                description: The render validator's description of the problem.
+                description: A description of the problem.
               severity:
                 type: string
                 enum:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Currently only `error`-severity render
-                  findings are surfaced here; lower-severity findings remain on
-                  the query-time `renderLogs` surface.
+                  Finding severity. Render-tag findings use both: `error` for
+                  a tag malformed for the field it sits on, which renders as
+                  "[object Object]" or an inline error at query time, and `warn`
+                  for one that is well-formed but inert where it sits and so is
+                  silently ignored (e.g. `# colspan` outside
+                  `# dashboard { columns=N }`), where nothing looks broken at
+                  query time and the layout simply is not what was written.
+                  Those are the only two severities the renderer emits, so no
+                  render finding is withheld. Materialization and dashboard
+                  findings use both: `error` for something that cannot work as
+                  written, such as a tile naming a view the source does not
+                  have, and `warn` for something that works but not as the
+                  author probably intended, such as a dashboard held back by
+                  curation. The two findings about Publisher rather than about
+                  the package split across both: a file that carries an artifact
+                  tag and could not be read is `error`, because the dashboard it
+                  should have produced does not exist, and a lint that stopped
+                  early is `warn`, because the lint failing is not itself a
+                  defect in the package. That `warn` does NOT mean the package is
+                  free of `error`-severity findings, since the ones the lint
+                  never reached are exactly what it cannot report.
         queryableSources:
           type: string
           enum:
@@ -2743,28 +3192,67 @@ components:
           description: >-
             Controls whether the discovery surface is also a query boundary.
             `"declared"` (the default) makes queryable == discoverable: when
-            `explores` is declared, only `explores` model files — and within
-            them only the `export {}` closure — are valid top-level query
-            targets; every other source still compiles, imports, joins, and
-            extends but is not directly queryable (denied with 404). `"all"`
-            decouples them: `explores`/`export {}` gate discovery only and every
-            compiled source stays directly queryable. When `explores` is absent
-            there is no curated surface, so both modes are equivalent
-            (everything queryable). Invalid values fall back to `"declared"`.
-            Identity-based access is a separate concern — see `#(authorize)`.
+            `explores` is declared, only `explores` model files are valid query
+            entry points, and the queryable sources are the union of those
+            files' `export {}` closures — so a source exported by any listed
+            file stays queryable whichever listed model path the request
+            addresses it through. Admission is by declaration, not by name: a
+            request clears only when the model it names resolves the name to the
+            very source a listed file exported, so a same-named source declared
+            in a hidden file is not admitted by the coincidence. Every other
+            source still compiles, imports, joins, and extends but is not
+            directly queryable (denied with 404).
+            The `/compile` endpoint is exempt (compile is the authoring loop;
+            the boundary is discovery curation, not access control — for
+            confidentiality use `#(authorize)`, which gates compile too). A
+            source that is both hidden and `#(authorize)`-gated still answers
+            `/compile` with the generic 404, so the exemption cannot be used to
+            enumerate gated names.
+            `"all"` decouples the axes: `explores`/`export {}` gate discovery
+            only and every compiled source stays directly queryable. When
+            `explores` is absent there is no curated surface, so both modes are
+            equivalent (everything queryable). Invalid values fall back to
+            `"declared"`. Identity-based access is a separate concern — see
+            `#(authorize)`.
         manifestLocation:
           type: ["string", "null"]
           description: |
             URI (gs:// or s3://) of the externally-computed manifest for this package.
             On (re)load the publisher reads it and binds persist references
             (sourceEntityId -> physicalTableName). Null = serve live.
+        queryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: |
+            The package-level layer of per-query metadata. Applies to every
+            statement the package's sources issue — a served query as much as a
+            build — and is overridden per property by a model-file, source or
+            per-request declaration.
+
+            **This is the canonical home, here and in `publisher.json`.**
+            `materialization.queryMetadata` is the original one and is
+            DEPRECATED: the properties are not a build setting, so carrying them
+            inside the build-policy block described a scope the feature does not
+            have.
+
+            Both are populated on read and both are accepted on write, so a
+            client can migrate on its own schedule. On write the canonical field
+            wins if a request sends both; in the manifest, the two declaring
+            different bags warns and the root wins, rather than failing the load
+            the way a conflicting `scope` does — a tag is observability only and
+            must never be the reason a package refuses to load.
+
+            Omitting this on a PATCH preserves the package's existing tags, and
+            so does sending null — a client that serializes unset fields as null
+            must not untag a package by accident. Send an empty object to clear.
         materialization:
           oneOf:
             - $ref: "#/components/schemas/PackageMaterializationConfig"
             - type: "null"
           description: |
             Package-level Malloy Persistence policy declared in
-            malloy-publisher.json. The control plane reads it to drive scheduled
+            publisher.json. The control plane reads it to drive scheduled
             re-materialization. The object is present whenever the package has
             loaded — with `schedule: null` when the manifest declares no
             schedule — so the caller can treat object-present as the
@@ -2779,21 +3267,69 @@ components:
             - bound
             - live_fallback
           description: >-
-            Server-computed, read-only: whether the configured build manifest
-            is currently bound to this package's served models. `unbound` = no
-            manifest configured, so the package serves live. `bound` = a manifest
-            was fetched and applied, so persist sources route to their
-            materialized physical tables. `live_fallback` = a `manifestLocation`
-            is configured but the fetch/bind failed or timed out, so the package
-            is serving live despite intending to be materialized-routed. Lets the
-            caller confirm the publisher actually bound the configured manifest
-            rather than inferring it from logs.
+            Server-computed, read-only: whether the CONFIGURED build manifest is
+            currently bound to this package's served models. `unbound` = no
+            manifest configured, so the package serves live. `bound` = the
+            configured manifest was fetched and applied. `live_fallback` = a
+            `manifestLocation` is configured but its fetch/bind failed or timed
+            out, so the configured manifest is NOT applied. Lets the caller
+            confirm the publisher actually bound the configured manifest rather
+            than inferring it from logs.
+
+            `bound` reports that the bind ran to completion, NOT that any query
+            routes to a materialized table: an entry whose source fails the
+            eligibility gate is dropped, and the storage tier serves live under a
+            `PERSIST_STORAGE_MODE` that is not `on`. Read `manifestEntryCount`
+            and `storageServeBindings` for what actually bound.
+
+            An EMPTY manifest is a bind like any other: it is fetched and applied,
+            binds nothing, and reports `bound` with `manifestEntryCount` 0 and no
+            `storageServeBindings`, while the package serves entirely live. That
+            combination is the signature — `bound` with neither tier populated
+            means the manifest carried nothing, not that the bind was missed.
+
+            `live_fallback` does NOT imply the package is serving live. It says
+            the configured manifest was not applied — not that nothing is. A
+            failed FIRST bind leaves nothing bound (`boundManifestUri` null), but
+            a failed REBIND leaves the previously bound manifest in place: its
+            colocated substitutions stay compiled in, its storage serve bindings
+            stay installed, and `boundManifestUri`, `manifestEntryCount` and
+            `storageServeBindings` all continue to describe it.
+
+            That rebind guarantee covers a failure BEFORE either tier applies —
+            the manifest fetch failing or timing out, which is what produces
+            `live_fallback` in practice. A failure partway through the recompile,
+            after the new models are installed but before the binding is
+            recorded, is out of scope: the new substitutions would be live while
+            these fields still described the previous manifest.
+
+            So the invariant to hold, whatever the status says: a non-null
+            `boundManifestUri` is a LIVE reference to the manifest whose tables
+            this package is currently serving from. A caller reclaiming
+            superseded physical tables must treat it as one regardless of
+            `manifestBindingStatus` — reading `live_fallback` as "not serving
+            from manifest tables" and reclaiming that generation would drop
+            tables out from under a package actively serving them.
+
+            Note this value is not the `live_fallback` on a query result's
+            `servedFrom`, which reports that ONE query degraded to the warehouse.
+            This one is about the package's binding, and as above does not imply
+            any query ran live.
         manifestEntryCount:
           type: integer
           readOnly: true
           description: >-
             Server-computed, read-only: number of sourceEntityId -> physical-table
-            entries currently bound (0 when unbound or on live fallback).
+            entries currently bound for the COLOCATED (same-connection tableName
+            substitution) tier only. 0 when unbound, or when the bound manifest
+            carried no colocated entries — so a fully bound `storage=`-only
+            manifest reports `bound` with a count of 0. Corroborate a
+            cross-connection bind with `storageServeBindings`, not this count.
+
+            Describes whatever is CURRENTLY bound, not the configured manifest: on
+            a failed rebind this keeps the previously bound manifest's count (as
+            `boundManifestUri` keeps its URI), because those entries really are
+            still bound.
         boundManifestUri:
           type: ["string", "null"]
           readOnly: true
@@ -2802,6 +3338,13 @@ components:
             served models. Usually equals `manifestLocation`, but can differ
             after an in-memory auto-load following a materialization build (no
             URI), in which case it is null. Null whenever the package is unbound.
+
+            It also diverges after a FAILED REBIND: `manifestLocation` then names
+            the configured manifest that did not apply, while this names the
+            manifest still bound and still served from. So a non-null value here
+            is a live reference regardless of `manifestBindingStatus` — see that
+            field for the invariant a caller reclaiming superseded physical
+            tables has to hold.
         storageServeBindings:
           type: array
           readOnly: true
@@ -2814,17 +3357,47 @@ components:
             query actually routes to these tables additionally depends on
             `PERSIST_STORAGE_MODE=on`; under `off`/`write-only` the bindings may
             be present but the serve path still runs live (see `warnings`).
+
+            Like `boundManifestUri`, this describes whatever is CURRENTLY bound
+            rather than the configured manifest: after a failed rebind it goes on
+            listing the previously bound manifest's sources, which are still
+            serving.
+
+
+            "Bound" is not the same as "serving", and an entry with
+            `origin: preaggregate` is where the two most often part: a rollup is
+            listed here once its table exists, but it is only offered to a query
+            through a composite re-exposing its base's name, so it does not serve
+            when something else already claims that name. Read `origin` before
+            treating a row as evidence that queries are being accelerated.
           items:
             type: object
             properties:
               sourceName:
                 type: string
-                description: The materialized source served from storage.
-              storageConnectionName:
+                description: >-
+                  The materialized source served from storage.
+
+
+                  **It may name no source in any model file**, exactly as
+                  `ManifestEntry.sourceName` may: a pre-aggregation rollup is a
+                  persist source the publisher synthesized, so its name is
+                  generated. Check `origin` rather than resolving this against a
+                  package's models and reading a miss as corruption.
+              origin:
+                type: string
+                enum: [persist, preaggregate]
+                default: persist
+                description: >-
+                  What the bound source IS: `persist` for one a modeler annotated,
+                  which is the meaning of an absent value, and `preaggregate` for
+                  a rollup the publisher synthesized from `#@ preaggregate`
+                  measures. Mirrors `ManifestEntry.origin`.
+              storageDestinationName:
                 type: string
                 description: >-
-                  The registered DuckDB/DuckLake connection the physical table
-                  lives in.
+                  The storage destination the physical table lives in (an entry
+                  in `storageDestinations`, not a connection).
               tablePath:
                 type: string
                 description: The physical table the source is served from.
@@ -2846,11 +3419,81 @@ components:
             (package version, connection config). Returned by default whenever the
             package is compiled; null only when the package declares no persist
             source.
+        embeddingIndex:
+          oneOf:
+            - $ref: "#/components/schemas/PackageEmbeddingIndex"
+            - type: "null"
+          readOnly: true
+          description: >-
+            Server-computed, read-only: the state of this package's semantic
+            discovery index, which is what `get_context` ranks against
+            when an embedding provider is configured. Absent when the server
+            has no provider, because there is no index to describe.
+
+
+    PackageEmbeddingIndex:
+      type: object
+      readOnly: true
+      description: >-
+        State of a package's semantic discovery index. Poll `status` until
+        `ready` to know retrieval is warm - before this, that state existed
+        only as a server log line, so anything waiting on a warm index had to
+        scrape logs. Every count is scoped to the embedding model currently
+        configured, matching what the search path reads, so a server pointed
+        at a new model reports the index as not yet ready rather than
+        reporting rows retrieval would reject. Reading it takes no locks, so
+        polling cannot perturb an indexing run; note that the first read after
+        a package loads or reloads builds the package's entity index, which is
+        work a metadata read would not otherwise do.
+      properties:
+        status:
+          type: string
+          enum:
+            - indexing
+            - ready
+            - cooldown
+            - too-many-entities
+          description: >-
+            `indexing` = at least one current entity has no usable vector yet.
+            Retrieval answers lexically meanwhile. This clears once a
+            `get_context` question triggers a sync, which is what builds
+            the index; it does not clear on its own for a package nothing has
+            queried. `ready` = every entity the package exposes has a vector
+            under the current model and the cache is serving semantic ranking.
+            `cooldown` = the provider failed recently, so the semantic path is
+            short-circuited for a window. `too-many-entities` = the package has
+            more entities than the embedding cap, so it stays lexical
+            permanently rather than transiently. The same vocabulary as
+            `get_context`'s `retrieval_reason`, deliberately.
+        embeddedRows:
+          type: integer
+          description: >-
+            Cached vectors for this package under the current embedding model.
+            An entity contributes one row for its name plus one per chunk of
+            its documentation, so this exceeds `totalEntities` on a documented
+            model and is not a count of entities.
+        totalEntities:
+          type: integer
+          description: Entities the package currently exposes to retrieval.
+        embeddedEntities:
+          type: integer
+          description: >-
+            Of `totalEntities`, how many have at least one usable vector. The
+            two are equal exactly when `status` is `ready`. Reported because a
+            row count cannot show a model edit that removes two entities and
+            adds two others: the row total is unchanged while the new entities
+            have no vector at all.
+        lastSyncedAt:
+          type: string
+          format: date-time
+          description: >-
+            Most recent write to this package's vectors. Absent when nothing
+            has been embedded yet.
 
     PackageMaterializationConfig:
       type: object
       description: >-
-        Package-level Malloy Persistence policy from malloy-publisher.json's
+        Package-level Malloy Persistence policy from publisher.json's
         `materialization` block. Surfaced verbatim so the control plane can drive
         scheduled version-level re-materialization without re-reading the package
         files. The object is emitted whenever the package is loaded, even when no
@@ -2882,11 +3525,30 @@ components:
             `fallback` is the declared query-time behavior when the objective
             is missed. The publisher only surfaces the values — the control
             plane owns the scheduling and gating logic.
+        queryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: >-
+            DEPRECATED home for the package's per-query metadata; read
+            `Package.queryMetadata`, which is canonical. Null = none declared.
+
+            NOT the manifest's `materialization.queryMetadata` verbatim: it is
+            the RESOLVED winner across both manifest homes, and it is synthesized
+            for a package whose manifest has no `materialization` block at all —
+            a package that declares tags the canonical way has no build policy to
+            carry them, and its tags must not be lost for want of one. Both homes
+            are populated on read, so this and `Package.queryMetadata` agree.
+
+            The package-level layer of per-query metadata: it applies to every
+            statement the package's sources issue — a build and a served query
+            alike — and a model-file, source or per-request declaration overrides
+            it property by property.
 
     Freshness:
       type: object
       description: >-
-        Freshness policy declared in malloy-publisher.json's
+        Freshness policy declared in publisher.json's
         `materialization.freshness` block. Fields are surfaced verbatim;
         invalid values are dropped (reported as absent), never defaulted.
       properties:
@@ -2924,32 +3586,249 @@ components:
       type: object
       description: Malloy notebook metadata and status information
       properties:
-        resource:
+        environmentName:
           type: string
-          description: Resource path to the notebook
+          description: Name of the environment containing this notebook
         packageName:
           type: string
           description: Name of the package containing this notebook
         path:
           type: string
           description: Relative path to the notebook file within its package directory
+        title:
+          type: string
+          description:
+            Human title, resolved from the notebook's own `## title="…"`, then
+            its `#"` doc comment, then its first markdown heading. Absent when
+            none of those resolve, leaving the caller to show the path.
+        description:
+          type: string
+          description: The notebook's `#"` doc comment, when it has one
         error:
           type: string
           description: Error message if the notebook failed to compile or load
 
-    Page:
+    Dashboard:
       type: object
-      description: Static HTML page (in-package data app) within a Malloy package
+      description: |
+        A dashboard within a Malloy package: a self-contained `.malloy` file in
+        the package's `dashboards/` directory carrying an `# artifact` (or
+        model-level `## artifact`) annotation. The list entry; see
+        DashboardManifest for the detail a viewer needs to render one.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the dashboard
+        packageName:
+          type: string
+          description: Name of the package containing this dashboard
+        name:
+          type: string
+          description:
+            The dashboard's slug — its filename basename. Addresses it in a URL
+            and as a `# drill` target.
+        path:
+          type: string
+          description:
+            Relative path to the dashboard file within its package directory
+            (`dashboards/<name>.malloy`)
+        title:
+          type: string
+          description:
+            Human title from the artifact tag, falling back to the file's `#"`
+            doc comment and then to the slug
+        description:
+          type: string
+          description: The file's `#"` doc comment, when it has one
+        error:
+          type: string
+          description: Error message if the dashboard file failed to compile
+
+    DashboardManifest:
+      type: object
+      description: |
+        Everything a viewer needs to render one dashboard: the artifact tag's
+        declarations plus the control contract derived from the givens its query
+        references. Running needs no dashboard-specific endpoint — the query,
+        each tile, and each control's suggest query all run through
+        the ordinary model query endpoint with `givens`.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the dashboard
+        packageName:
+          type: string
+          description: Name of the package containing this dashboard
+        name:
+          type: string
+          description:
+            The dashboard's slug — its filename basename. Addresses it in a URL
+            and as a `# drill` target.
+        path:
+          type: string
+          description: |
+            Relative path to the dashboard file within its package directory
+            (`dashboards/<name>.malloy`). This is also the model to POST to:
+            `query`, each tile, and each control's suggest query all run through
+            `POST /environments/{environmentName}/packages/{packageName}/models/{path}/query`
+            with `givens`, which is why there is no dashboard-specific run
+            endpoint.
+        title:
+          type: string
+          description:
+            Human title from the artifact tag, falling back to the file's `#"`
+            doc comment and then to the slug
+        description:
+          type: string
+          description: The file's `#"` doc comment, when it has one
+        error:
+          type: string
+          description: Error message if the dashboard file failed to compile
+        query:
+          type: string
+          description: >-
+            Name of the tagged query whose single result IS the page. Set when the
+            `# artifact` tag sits on a `query:`; a dashboard authored the ordinary
+            way carries `tiles` instead and leaves this absent. A NAME rather than
+            an expression, so it goes in the `queryName` field of a
+            `POST …/models/{path}/query` body. A tile's `query` is the other shape
+            and is not interchangeable with this one; see `DashboardTile.query`.
+        tiles:
+          type: array
+          description: >-
+            The dashboard's tiles, each run as its own query and combined into one
+            grid. This is how a dashboard is normally authored, and the only form
+            that can span sources. Absent when the `# artifact` tag sits on a
+            `query:` instead, in which case `query` is set.
+          items:
+            $ref: "#/components/schemas/DashboardTile"
+        dashboardColumns:
+          type: integer
+          description: >-
+            Grid width, from the `# dashboard {columns=N}` render tag beside the
+            artifact tag. One spelling wherever the artifact tag sits: Publisher
+            reads it at model level to lay out `tiles`, and `@malloydata/render`
+            reads the same tag off a tagged `query:`. Absent means the viewer's
+            default.
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Per-dashboard starting values for controls, from the artifact tag.
+            URL parameters override these, which is why the two share a shape.
+        autorun:
+          type: boolean
+          description:
+            False batches control changes behind an Apply button instead of
+            re-running on every change. Defaults to true.
+        givens:
+          type: array
+          description: |
+            The control row. Normally one entry per given the dashboard runs
+            with: the union over `tiles`, or what `query` references when the tag
+            sits on a query, and which the entry file
+            can bind. The row widens to
+            every given the entry file surfaces when any tile is one discovery
+            cannot resolve, because that tile's givens are otherwise absent from
+            the row it filters by; see `DashboardTile.givenNames`. So an entry
+            here is always bindable, but on a widened row it is not necessarily
+            referenced by any tile. A given reachable only
+            through an import chain the entry file does not import itself
+            cannot be bound at query time, so no control is offered for it and
+            it stays at its default; that case is reported in the package's
+            `warnings` rather than represented here by an unusable entry. Plain
+            `Given`s, because the presentation a control takes is declared on
+            the given itself, so a dashboard and a notebook render the same
+            control for the same given, `#(description=…)` helper text
+            included.
+
+            ONE DELIBERATE DIVERGENCE from `Given` as the model surface sends
+            it: `default` here is the value the QUERY ENDPOINT takes, not the
+            Malloy source literal. A `filter<…>` given declared `f'West'`
+            publishes `West`. As the literal it could not be used as a default
+            at all, since sending it back verbatim matches zero rows silently,
+            with no error to search for. Only filter-typed givens are unwrapped,
+            so a plain string default that merely reads like `f'x'` is
+            untouched. `startingGivens` uses the same shape for the same reason.
+          items:
+            $ref: "#/components/schemas/Given"
+
+    DashboardTile:
+      type: object
+      description: One tile of a dashboard
+      properties:
+        query:
+          type: string
+          description: >-
+            The run expression exactly as written in `tiles=[…]`, for example
+            "orders -> by_month". An EXPRESSION rather than a name, so it goes in
+            the `query` field of a `POST …/models/{path}/query` body, prefixed
+            with `run:`. Sending it in `queryName`, the field
+            `DashboardManifest.query` takes, is rejected.
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: |
+            Names of the givens this tile references. This is a scoping hint,
+            not a binding constraint: it tells a caller which tiles a changed
+            control actually needs to re-run. Running a tile with the
+            dashboard's whole control row also works, because an unreferenced
+            given is ignored. Absent when the tile expression is not one
+            discovery can resolve, a refinement or a multi-stage pipeline for
+            instance, in which case send the whole control row. One such tile
+            widens `DashboardManifest.givens` to every given the entry file
+            surfaces, rather than the union over the resolvable tiles, so that
+            the row actually contains the givens that tile filters by.
+        label:
+          type: string
+          description: >-
+            Heading for the tile, from a `# label` on the view or query it names.
+            Absent when it carries none, in which case a viewer derives one from
+            the run expression.
+        subtitle:
+          type: string
+          description:
+            Second line under the heading, from a `# subtitle` on the view or
+            query it names.
+        colspan:
+          type: integer
+          description: >-
+            Grid columns this tile spans, from a `# colspan=N` on the view or
+            query it names. Clamped to `dashboardColumns` at render time. Absent
+            means one column.
+        break:
+          type: boolean
+          description: >-
+            Start a new grid row at this tile, from a `# break` on the view or
+            query it names. Named for the tag, so every per-tile field on this
+            schema is spelled the way an author writes it. A generated client
+            escapes the attribute where the word is reserved (the Python client
+            exposes `break_`) while the wire key stays `break`.
+        borderless:
+          type: boolean
+          description: >-
+            Draw the result with no card around it, from a `# borderless` on the
+            view or query it names. Together with `label`, `subtitle`, `colspan`
+            and `break` this is the whole per-child tag set `@malloydata/render`
+            resolves for a `# dashboard` nest child, read the same way here so one
+            view presents identically as a tile and as a nest.
+
+    DataApp:
+      type: object
+      description:
+        An in-package HTML data app within a Malloy package - a static page
+        served from the package's public/ directory
       properties:
         resource:
           type: string
           description:
-            Canonical URL to the served page. Root-relative and does NOT
-            carry the /api/v0 prefix, because pages are static assets served off
-            the server root rather than API resources.
+            Canonical URL to the served data app. Root-relative and does
+            NOT carry the /api/v0 prefix, because a data app is a static asset
+            served off the server root rather than an API resource.
         packageName:
           type: string
-          description: Name of the package containing this page
+          description: Name of the package containing this data app
         path:
           type: string
           description: Relative path to the HTML file within its package directory
@@ -2964,27 +3843,31 @@ components:
             - viewport
           description:
             Layout hint read from a <meta name="publisher:fit"> tag in the
-            page <head>. "viewport" tells the embedded page viewer to fill the
-            available height instead of auto-sizing to the page's content
-            height, for full-screen apps like slide decks. Omitted for ordinary
-            content pages, which keep content-height auto-sizing.
+            page <head>. "viewport" tells the embedded viewer to fill the
+            available height instead of auto-sizing to the content height, for
+            full-screen apps like slide decks. Omitted for an ordinary
+            content-driven app, which keeps content-height auto-sizing.
 
     RawNotebook:
       type: object
       description: Raw Malloy notebook with unexecuted cell contents
       properties:
-        resource:
+        type:
           type: string
-          description: Resource path to the notebook
+          description: Always `notebook`. Distinguishes the payload from the
+            compiled-model shape returned by the model endpoint.
         packageName:
           type: string
           description: Name of the package containing this notebook
-        path:
+        modelPath:
           type: string
           description: Relative path to the notebook file within its package directory
         malloyVersion:
           type: string
           description: Version of the Malloy compiler used to generate the notebook data
+        modelInfo:
+          type: string
+          description: JSON string containing model metadata and structure information
         notebookCells:
           type: array
           description: Array of notebook cells containing raw markdown and code content
@@ -2995,11 +3878,31 @@ components:
           description: Array of file-level (##) annotations attached to the notebook
           items:
             type: string
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Starting values for the notebook's controls, declared at its file
+            level. URL parameters override these, which is why the two share a
+            shape. Omitted when the notebook declares none.
+        autorun:
+          type: boolean
+          description:
+            False batches control changes behind an Apply button instead of
+            re-running on every change. Defaults to true. The same flag, with
+            the same default, that `DashboardManifest.autorun` carries, so a
+            notebook's `## autorun=false` and a dashboard's
+            `# artifact { autorun=false }` arrive identically.
         sources:
           type: array
           description: Sources defined in the notebook's model
           items:
             $ref: "#/components/schemas/Source"
+        queries:
+          type: array
+          description: Named queries defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Query"
 
     CompiledModel:
       type: object
@@ -3044,6 +3947,16 @@ components:
             `given:` keyword
           items:
             $ref: "#/components/schemas/Given"
+        sourceText:
+          type: string
+          description: >-
+            The model file's Malloy text, verbatim, so a client can show the
+            code beside the compiled view of the same file without a second,
+            differently-shaped fetch. Named `sourceText`, not `source`, because
+            `sources` on this same object are the model's Malloy sources.
+            Optional twice over: absent from servers that predate it, and
+            omitted (with a server-side warning) when the file cannot be read,
+            so a compiled model is never withheld for want of its text.
 
     View:
       type: object
@@ -3112,10 +4025,26 @@ components:
 
     Given:
       type: object
-      description:
+      description: |
         A given (runtime parameter) declared on a Malloy model via the
         `given:` keyword. Surfaced on `CompiledModel.givens` and `Source.givens`
         so callers can introspect what runtime values a model accepts.
+
+        `givens` always names a collection of these declarations. Values keyed
+        by given name are `GivenValues` (or `EncodedGivenValues` in the form
+        that survives a URL), and a bare list of names is spelled `givenNames`.
+
+        It also carries how the given should be presented as an input control
+        (`label`, `description`, `control`, `rangeMin`, `rangeMax`, `suggest`),
+        derived from the declaration's own tags. That contract belongs to the
+        given rather than to any one surface, which is what lets a notebook and
+        an SDK host render the same control without restating it. Each of those
+        six is present only when the declaration carries the tag it reads, so a
+        given tagged with none of them carries none of them. A tag whose value is
+        not one this contract accepts is dropped the same way rather than
+        reported, so an unrecognized `control`, or a `rangeMin`/`rangeMax` that is
+        not a number, is absent here and indistinguishable from never having been
+        written.
       properties:
         name:
           type: string
@@ -3136,14 +4065,96 @@ components:
             the model. Omitted when the given declares no default. Consumers
             render or prefill it per the given's `type` (e.g. unquote a string
             literal for a text input).
+        label:
+          type: string
+          description: Display label from the declaration's `# label=` tag
+        description:
+          type: string
+          description:
+            Helper text from the declaration's `# description=` tag. Distinct
+            from the older `#(description="…")` annotation, which is not derived
+            into this field and instead stays on `annotations` for the client
+            that already parses it. The tag form is also the one that compiles
+            without a `malformed-route` warning, because Malloy reads an
+            annotation's route up to the first whitespace.
+        control:
+          type: string
+          enum:
+            - select
+            - multiselect
+          description:
+            How the control renders when the choice is between a single-pick and
+            a multi-pick list. Omitted means infer from the given's type. A
+            slider is not one of these values; it is signalled by `rangeMin` and
+            `rangeMax` instead, per the rule on those fields.
+        rangeMin:
+          type: number
+          description:
+            Slider lower bound from `# range_min=`. The two bounds are what
+            signal a slider, so a `number` or `filter<number>` given renders as
+            one when BOTH are present and as a plain number input otherwise, so
+            a lone bound changes nothing about the control.
+        rangeMax:
+          type: number
+          description:
+            Slider upper bound from `# range_max=`. See `rangeMin` for the rule
+            that turns the pair into a slider.
+        suggest:
+          $ref: "#/components/schemas/GivenSuggest"
 
-    Givens:
+    GivenSuggest:
       type: object
-      description: Per-query given values that override model defaults. Keys are
-        given names declared in the model's `given:` block. Values must match
-        the declared type (string, number, boolean, date, etc.). See Malloy
-        givens documentation for accepted value shapes.
+      description: |
+        Where a select or multiselect control gets its options: a named `query`,
+        a `source` + `dimension` pair, or a `query` with a `dimension` naming
+        which of its columns to read. All three run through the ordinary query
+        endpoint.
+
+        With `query` alone the first column of each row is used, so a
+        single-column `group_by` needs no `dimension`. Give `dimension`
+        alongside `query` when the query returns more than one column.
+      properties:
+        query:
+          type: string
+        source:
+          type: string
+        dimension:
+          type: string
+
+    GivenValues:
+      type: object
+      description: |
+        Given *values* keyed by given name: what a caller sends, as distinct
+        from `Given`, which describes what the model *accepts*. A collection of
+        declarations is a plain array of `Given`, never this.
+
+        Values are decoded and must match the declared type: a `number` given
+        takes a JSON number, a `date` takes a bare `YYYY-MM-DD` string, a
+        `timestamp` an ISO string with no zone, a `timestamptz` a full ISO
+        string. `EncodedGivenValues` is the string-encoded counterpart.
       additionalProperties: true
+
+    EncodedGivenValues:
+      type: object
+      description: |
+        The same values as `GivenValues`, string-encoded: the form that survives
+        a URL. Every value is a string regardless of the given's declared type,
+        and a `filter<…>` value is the filter body rather than the `f'…'`
+        literal.
+
+        The role it names: a surface's URL parameters and the starting values a
+        document declares share this shape, so the two can merge and then be
+        decoded once against the declarations and sent as `GivenValues`.
+        `RawNotebook.startingGivens` and `DashboardManifest.startingGivens` are
+        both typed as it and both populated, so this schema now describes live
+        traffic rather than only the contract. A `filter<…>` value is unwrapped
+        to its body and every other type is published as declared, keyed on the
+        declared type, so a plain string default that reads like `f'x'` survives
+        untouched. The
+        `givens` query parameter is not an instance of it: that carries a
+        JSON-encoded `GivenValues`, with values typed rather than stringified.
+      additionalProperties:
+        type: string
 
     Source:
       type: object
@@ -3179,14 +4190,39 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expressions declared on this source via
-            `#(authorize)` / `##(authorize)` annotations — file-level expressions
-            first, then the source's own. Each is a Malloy boolean expression over
-            declared givens, evaluated as a disjunction (OR) and enforced at query
-            time. A request that reads this source is denied with HTTP 403 unless
-            at least one expression evaluates true for the supplied givens; an
-            empty or absent list means unrestricted. Givens are caller-asserted, so
-            this is a boundary only behind a trusted tier — see docs/authorize.md.
+            Effective authorize expression gating this source: normally the
+            author's `#(authorize)` expression as written, whether declared on
+            this source itself or carried in from elsewhere (the source it
+            extends, a query-source base, a composite member). Enforced at
+            query time as a row filter grafted onto the source the query
+            enters through. An empty or absent list means unrestricted. Where
+            the gate registry cannot attribute an expression to a declaring
+            source it reports `"false"` instead — a fail-closed placeholder,
+            not something the author wrote, and one more reason to read this
+            list only as "gated" rather than as a predicate.
+
+            Every gate is enforced as a row filter, whether or not its
+            expression reads a row field. A caller the gate admits nowhere
+            therefore gets HTTP 200 with zero rows, not a 403. Do not treat a
+            200 with zero rows as "no gate applied". A 403 means the gate
+            could not be applied at all: the entry point renamed or dropped a
+            field the gate reads, or a given the gate names was not supplied.
+            Both are denials, but only one is visible as a status code.
+
+            IMPORTANT for anything re-implementing the decision: this flat
+            list is not a predicate you can evaluate, and it is not a count of
+            one. A source may declare at most one gate of its OWN, but the
+            list flattens every gate carried in, so several elements are
+            normal — a query source over a composite reports the same
+            authored gate twice, once from its base and once from the resolved
+            member. Expressions that came from different declaring sources are
+            AND-ed rather than OR-ed. Treat the list as "at least these
+            constraints apply": use it to decide THAT a source is gated, not
+            to recompute WHETHER a given caller passes. Reading it as a pure
+            disjunction grants where Publisher denies.
+
+            Givens are caller-asserted, so this is a boundary only behind a
+            trusted tier — see docs/authorize.md.
           items:
             type: string
 
@@ -3201,15 +4237,28 @@ components:
             set, the queryName parameter must be empty.
         sourceName:
           type: string
-          description:
+          description: |
             Name of the source in the model to use for queryName, search, and
             topValue requests.
+
+            A NAME, not Malloy code: a single source name exactly as the model
+            response's `sources` listing returns it. The server quotes it as a
+            Malloy identifier, so a name that needs quoting (a hyphen, a space,
+            a reserved word, a leading digit) works as-is and must be sent bare
+            — do not add backticks of your own. Anything richer than one name
+            (a parameterized source, an inline extension, a second statement)
+            belongs in `query`, and here is refused as an unresolvable name.
         queryName:
           type: string
-          description:
+          description: |
             Name of a query to execute on a source in the model. Requires the
             sourceName parameter is set. If the queryName parameter is set, the
             query parameter must be empty.
+
+            A NAME, not Malloy code, on the same terms as `sourceName`: one
+            view name as the model response lists it, quoted for you, sent
+            bare. A dotted path, a refinement (`by_carrier + { limit: 10 }`),
+            or any additional statement belongs in `query`.
         compactJson:
           type: boolean
           default: false
@@ -3242,7 +4291,31 @@ components:
 
             When true, skip server-side `#(filter)` injection entirely.
         givens:
-          $ref: "#/components/schemas/Givens"
+          $ref: "#/components/schemas/GivenValues"
+        queryMetadata:
+          $ref: "#/components/schemas/QueryMetadata"
+          description: >-
+            Per-request metadata to attach to the statements this query issues —
+            the most specific author layer, overriding the connection default and
+            any package/model/source declaration property by property. Rejected
+            with 400 when it violates the contract (see `QueryMetadata`), so a
+            caller learns at the boundary rather than having a backend refuse the
+            statement.
+        queryClass:
+          $ref: "#/components/schemas/QueryClass"
+          description: >-
+            What class of work this request represents, attached as the `class`
+            property. Defaults to `interactive`.
+
+    QueryClass:
+      type: string
+      enum: [interactive, materialize, index, ops]
+      description: >-
+        The class of work a statement belongs to, attached as the `class`
+        query-metadata property: `interactive` (a user or application query),
+        `materialize` (a persist-source build), `index` (an index build or scan),
+        `ops` (platform maintenance). Attribution's primary axis — a backend bill
+        separates traffic from builds only if every statement says which it is.
 
     NotebookCell:
       type: object
@@ -3290,6 +4363,53 @@ components:
           items:
             type: string
 
+    QueryMetadata:
+      type: object
+      additionalProperties:
+        type: string
+      description: >-
+        Per-query metadata: a flat bag of string properties attached to the
+        statements a query issues, for the backend's own reporting — cost
+        attribution, workload classification, tracing. Each backend applies it
+        through a per-query mechanism: Snowflake a per-statement `QUERY_TAG`
+        (the bag as JSON, so its properties are queryable in `QUERY_HISTORY`) —
+        except on a `storage=` build, whose read goes through DuckDB's
+        query-passthrough and so sets the tag for the SESSION, which means the
+        driver's own connection probes carry the build's bag too,
+        BigQuery per-job `labels` (queryable in `INFORMATION_SCHEMA.JOBS`), and
+        every other backend a leading SQL comment (`-- team="finance"`, visible
+        in query history / `pg_stat_activity`). It never affects results, and it
+        is excluded from connection fingerprints and from build identity, so
+        changing a property never re-addresses or rebuilds anything.
+
+        The contract, which every backend can render and which the connector
+        enforces at dispatch: property names are ASCII alphanumerics and
+        underscore (<=128 chars), values are printable ASCII without `"`
+        (<=256 chars), and a bag holds at most 20 properties. Declare a name
+        starting with a LETTER: BigQuery drops a name it cannot fit to its label
+        grammar while other backends keep it.
+
+        Layers, most specific wins per property: connection default < package
+        `queryMetadata` < model-file `## queryMetadata.*` < source
+        `#@ queryMetadata.*` < per-request `queryMetadata`. The `materialization.`
+        spellings of the package and model-file layers are deprecated and still
+        read; where a file declares both, the canonical one wins per property. The publisher's own context (`class`,
+        `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
+        `query_id`, `version`) is applied on top and cannot be overwritten — it
+        is what the server is actually doing, and a caller must not be able to
+        relabel it. Those names are also RESERVED against a MODEL-SIDE
+        declaration: a package block, a model file or a `#@ persist` annotation
+        declaring one has it DROPPED rather than attached. Context only
+        overwrites a name it has a value for, and a served query has no
+        `source`, `trigger` or `run_id` — so a declared one would otherwise ride
+        interactive traffic and read, in the backend's own history, exactly like
+        a build. A connection default and a per-request bag are not covered: a
+        request setting `queryClass` is a caller describing its own call, while a
+        model-side declaration rides every query against that source, including
+        ones its author never sees. Put no secrets or personal data here: a tag is visible to
+        anyone who can read the backend's query history, and on a backend with no
+        native tag mechanism it is visible in the statement text.
+
     QueryResult:
       type: object
       description: Results from executing a Malloy query
@@ -3302,6 +4422,26 @@ components:
         resource:
           type: string
           description: Resource path to the query result
+        queryCorrelationId:
+          type: ["string", "null"]
+          description: >-
+            Id the server minted for this query and attached to its statements as
+            the `query_id` query-metadata property — the join key back to the
+            backend's own record of the query. Find the same value in
+            `QUERY_HISTORY.query_tag` (Snowflake, inside the JSON tag),
+            `INFORMATION_SCHEMA.JOBS.labels` (BigQuery), or the statement text
+            (every other backend), and you have the warehouse-side row for this
+            API call: its cost, its duration, its plan.
+
+            Minted by the server rather than taken from the request because it is
+            the platform's join key — a caller-supplied value can be omitted or
+            reused, leaving a response with nothing to hand back. To carry your
+            own id as well, declare it in `queryMetadata` under your own property
+            name (`query_id` is reserved).
+
+            Null when no metadata was attached — which is every query until a
+            deployment sets `PUBLISHER_QUERY_METADATA=on`, since query metadata
+            ships off by default.
         renderLogs:
           type: array
           description:
@@ -3309,6 +4449,141 @@ components:
             query preparation
           items:
             $ref: "#/components/schemas/LogMessage"
+        queryRowLimit:
+          type: integer
+          description:
+            Row cap pushed into the SQL for this query, taken from the query's
+            own limit/top when it has one and otherwise from the server default.
+            A caller cannot derive it, since it depends on server configuration
+            as well as the query, and without it a result that the cap cut off
+            is indistinguishable from a complete one.
+        queryRowLimitSource:
+          type: string
+          enum: [query, server_default]
+          description:
+            Which of the two queryRowLimit came from. Only server_default means
+            rows were probably left behind; a deliberate limit or top returning
+            exactly that many rows is a complete answer.
+        servedFrom:
+          type: ["string", "null"]
+          enum: [storage, live_fallback, null]
+          description: >-
+            How this answer was produced, when the query reached the storage
+            routing decision at all.
+
+            `storage` — served from a materialized table in a `storage=`
+            destination, via the virtual-source transform. The source's own
+            warehouse was not queried.
+
+            `live_fallback` — the query DID route to storage and the store then
+            failed underneath it, and the source's freshness fallback allowed it
+            to degrade to the live warehouse. **The rows are correct and the
+            request succeeded**, which is why this needs its own value: it is
+            indistinguishable from a storage hit at the call site, and treating it
+            as one would report a healthy hit rate for a broken store. This value
+            is NOT the same event as the `live_fallback` label on
+            `publisher_storage_serve_routing_total` — see the warning below.
+
+            **This field describes the `storage=` tier and nothing else.** It
+            records how the storage routing decision came out, so it says nothing
+            about the colocated `#@ persist` tier, which answers a query by
+            substituting the materialized table into the model and never reaches
+            that decision.
+
+            **Null is three different outcomes**, and they are worth telling
+            apart because two of them mean materialization worked and one means
+            it silently did not:
+
+            1. The query never had a storage binding to consider — every query on
+               a deployment with no `storage=` sources, which is the default.
+            2. It was answered from a **colocated** materialized table. The
+               query never reached the routing decision, so a fully materialized
+               answer reports the same null a fully live one does.
+            3. The storage transform was **ineligible** for this query, so it was
+               served live. The query DID reach the routing decision and the tier
+               declined it — a storage-tier miss, reported identically to "no
+               materialization exists anywhere."
+
+            Case 3 is the one that costs time, because nothing about the response
+            distinguishes it from case 1. The server does log it: one
+            `storage serve-shape ineligible for this query; serving live` line at
+            INFO per routed query, carrying the compile error that made the shape
+            ineligible, plus `shapeSources` (what the shape offered) and
+            `staleSources` (bound, but withheld by the freshness gate). The
+            compile error alone does not separate those: `Reference to undefined
+            object 'x'` reads identically whether `x` carries no `#@ persist` at
+            all or is materialized and merely past its freshness window. That log
+            is currently the only per-query account of a storage-tier miss. It is not a hypothetical shape — a source
+            warehouse that folds unquoted identifiers to upper case made every
+            query on every `storage=` source in a package ineligible, and the
+            whole tier reported null for months while looking exactly like a
+            deployment that had never enabled it.
+
+            For the colocated tier there is no per-query signal at all. The
+            package-grain fields are the nearest thing —
+            `manifestBindingStatus`, `manifestEntryCount` and
+            `storageServeBindings` — but read what each actually claims:
+            `bound` reports that the bind ran to completion, explicitly NOT that
+            any query routes to a materialized table, and `manifestEntryCount`
+            counts colocated entries only, so a package whose sources are all
+            `storage=` reports 0 while being fully bound.
+
+            ⚠️ **`live_fallback` names two different things across two surfaces,
+            and correlating them on the token is wrong in both directions.** On
+            this field it means the store failed at run time. On
+            `publisher_storage_serve_routing_total{outcome}` it means the
+            transform was ineligible — this field's null case 3 — and that
+            metric spells the run-time failure `runtime_live_fallback`. So the
+            field's `live_fallback` is the metric's `runtime_live_fallback`, and
+            the metric's `live_fallback` is this field's `null`. A third surface,
+            `manifestBindingStatus`, uses the same token for a third thing: a
+            configured `manifestLocation` whose fetch or bind failed. Each
+            surface is internally consistent; none of them means what the others
+            do.
+        executionTimeMs:
+          type: integer
+          description: >-
+            Wall-clock milliseconds from the start of query handling through the
+            end of execution.
+
+            Covers compile, authorize, storage routing, prepare and the warehouse
+            round trip. Narrower than the HTTP round trip — it excludes
+            serialization and transport, so it reads lower than a caller's own
+            stopwatch — and it is the same span the `malloy_model_query_duration`
+            histogram records, so the two are directly comparable. Use it to
+            attribute ONE query, which an aggregate histogram cannot do; use the
+            histogram for rates and percentiles.
+        queryCostBytes:
+          type: ["integer", "null"]
+          description: >-
+            Warehouse bytes this query SCANNED, as reported by the backend that
+            ran it. Not what it is billed — see below.
+
+            **Null is not zero.** It means the backend did not report a figure,
+            and there are two very different reasons for that. Either the backend
+            has no inline equivalent — BigQuery returns `totalBytesProcessed` in
+            the job metadata the driver already fetches, while Snowflake exposes
+            bytes only in `QUERY_HISTORY` keyed by query id (join it later on the
+            `query_id` query-metadata property rather than paying a round trip per
+            query) and Postgres has none at all. Or the query touched no warehouse,
+            which is the case for every `servedFrom: storage` answer. Check
+            `servedFrom` before reading a null as "free".
+
+            Where it is reported it is the executed job's ACTUAL bytes
+            processed, i.e. bytes SCANNED — not an estimate, and not what the
+            query is billed. BigQuery bills a 10MB minimum per query, so a small
+            read is billed well above this figure. Good for comparing queries
+            against each other; not a spend number.
+
+            Named `cost` rather than `scanned` because it carries Malloy's own
+            `runStats.queryCostBytes` through verbatim — the name follows the
+            figure back to its source.
+
+            One asymmetry worth knowing on BigQuery: the connector reports a
+            genuinely-zero scan as absent rather than as 0, so a fully cached
+            query is indistinguishable here from a backend that cannot say. Free
+            and unknown are the same value, and a savings calculation built on
+            this will treat free queries as unmeasured rather than as free.
 
     LogMessage:
       type: object
@@ -3392,7 +4667,14 @@ components:
           description: Resource path to the connection
         name:
           type: string
-          description: Name of the connection
+          description:
+            Name of the connection. The name `duckdb` is RESERVED for the
+            per-package DuckDB sandbox every loaded package gets automatically;
+            declaring an environment-level connection with that name fails the
+            whole environment at init. A flat-file (CSV/Parquet/XLSX) package
+            needs no connection entry at all — its models reach the sandbox as
+            `duckdb.table('data/…')`. Name an environment-level DuckDB
+            connection something else (e.g. `shared_duckdb`).
         type:
           type: string
           description: Type of database connection
@@ -3423,7 +4705,44 @@ components:
             actually changes; consumers should treat it as an opaque token and
             use the supplied value verbatim rather than deriving their own. This
             field is optional — when omitted, a connection identity is derived
-            locally instead.
+            locally instead. Because the fingerprint replaces the derived digest
+            verbatim, it must vary with anything that changes which data the
+            connection can reach — including the impersonated identity: two
+            environments on the same project with different
+            impersonateServiceAccount values but the same fingerprint would
+            share persisted-table ids.
+        queryMetadata:
+          $ref: "#/components/schemas/QueryMetadata"
+          description: >-
+            Default per-query metadata for every statement this connection
+            issues — the least specific layer, overridden per property by a
+            package/model/source declaration or a per-request value. Use it for
+            properties that are true of the whole connection (which deployment,
+            which team owns it). Not a secret: it round-trips like any plain
+            field and is never redacted.
+        queryMetadataEnforced:
+          $ref: "#/components/schemas/QueryMetadata"
+          description: >-
+            Per-query metadata this deployment owns: applied to every statement
+            the connection issues, NOT overridable by a package, model-file,
+            source or per-request declaration, and given up only after every
+            declared property when a bag has to shrink.
+
+            For the properties a host is billed or audited by, in a deployment
+            where writing a connection is an operator's to do and publishing a
+            package is not — so a host running one Publisher for several tenants
+            can label a connection's traffic without a tenant relabelling it as
+            someone else's, or pushing the label out of the bag by declaring
+            twenty properties of its own. That split lives in whatever fronts
+            this API: Publisher does not authenticate it, so on an unfronted
+            server the same caller can write both. The server's own context
+            (`class`, `environment`, `query_id`, …) still wins over these,
+            because it describes what the server is actually doing.
+
+            Same contract as `queryMetadata`, counted against the same
+            20-property budget. Rejected with 400 on a connection write when it
+            violates the contract, and reported as a warning when a stored config
+            loads.
         attributes:
           $ref: "#/components/schemas/ConnectionAttributes"
         proxy:
@@ -3613,25 +4932,62 @@ components:
       type: object
       description: AWS S3 connection configuration for DuckDB
       properties:
+        # No schema `default:` here on purpose, though the reason is narrower than
+        # it looks: at the pinned openapi-typescript (6.x) a defaulted property
+        # still generates as optional, so a `default:` would be harmless today. It
+        # is at 7.x that a default makes the property REQUIRED, which would force
+        # every caller to name a provider. Omitted for robustness across that bump,
+        # not to avoid a present-day break. Note `region` below carries a default
+        # and so already has that exposure — a 7.x upgrade has to deal with it
+        # either way. The default is stated in the description and applied when the
+        # connection is attached.
+        provider:
+          type: string
+          enum:
+            - config
+            - credential_chain
+          description: >-
+            How credentials are obtained; defaults to `config` when omitted.
+            `config` uses the accessKeyId and secretAccessKey on this object,
+            which are then required.
+            `credential_chain` resolves them from the host instead — an instance
+            profile, a web-identity token, or the environment — so no key is
+            stored, and supplying one is rejected. Chain resolution happens when
+            the connection is attached, so a host that cannot supply credentials
+            fails there rather than on first object access.
+        chain:
+          type: string
+          description: >-
+            Ordered list of credential providers to try, semicolon-separated,
+            for `provider: credential_chain` (DuckDB's CHAIN). Recognized
+            providers are env, config, sts, instance, sso, process, and
+            web_identity. Omit to use Publisher's default order, which covers
+            the environment, a web-identity token, and an instance profile.
+            Rejected under `provider: config`, where the key pair beside it
+            is what grants access.
         accessKeyId:
           type: string
-          description: AWS access key ID
+          description: "AWS access key ID (required for `provider: config`)"
         secretAccessKey:
           type: string
-          description: AWS secret access key
+          description: "AWS secret access key (required for `provider: config`)"
         region:
           type: string
-          description: AWS region (e.g., us-east-1)
-          default: us-east-1
+          description: >-
+            AWS region (e.g., us-east-1). Optional, and Publisher falls back to
+            us-east-1 when it is absent — but the fallback is applied in code, not
+            by this schema: a `default:` here would be documentation only, since
+            the generated clients leave an omitted property undefined rather than
+            filling it. Stated this way so a caller reading the schema does not
+            conclude the wire supplies it. A remote root in another region MUST
+            set this; omitting it reaches us-east-1 and fails as a missing bucket
+            rather than as a misconfiguration.
         endpoint:
           type: string
           description: Custom S3-compatible endpoint URL (optional, for MinIO, etc.)
         sessionToken:
           type: string
           description: AWS session token for temporary credentials (optional)
-      required:
-        - accessKeyId
-        - secretAccessKey
 
     AzureConnection:
       type: object
@@ -3701,6 +5057,39 @@ components:
             postgresConnection:
               $ref: "#/components/schemas/PostgresConnection"
               description: PostgreSQL connection for DuckLake metadata catalog
+            metadataSchema:
+              type: string
+              description: >-
+                Optional schema in the catalog database holding this DuckLake's
+                metadata (`ducklake_*`) tables, passed to ATTACH as
+                METADATA_SCHEMA. Absent means DuckLake's default — the catalog
+                connection's default schema, typically `public` — which is the
+                pre-existing behavior. Set it to run several independent DuckLake
+                catalogs against ONE catalog database: each keeps its metadata in
+                its own schema, so a catalog reads only the tables recorded in the
+                schema it names. DuckLake creates the schema on a read-write attach
+                if it does not exist; a read-only attach cannot, and fails until it
+                does. Separating metadata does not separate data — give each catalog
+                its own `storage.bucketUrl` prefix as well, since data-path-based
+                maintenance (e.g. `ducklake_delete_orphaned_files`) treats a
+                co-tenant catalog's files under a shared prefix as orphaned.
+
+                This is an ORGANIZATIONAL boundary, not an access-control one. The
+                separation is which schema a configuration names, so any config
+                whose catalog role can reach a sibling schema could name it and
+                read that catalog's metadata — and therefore its data-file paths.
+                Where catalogs must be isolated from one another rather than merely
+                kept tidy, grant each its own role with `USAGE` limited to its own
+                schema; a database-per-catalog remains the strongest separation.
+
+                Setting this on a catalog whose metadata already lives elsewhere
+                does not move it: a read-write attach CREATES a new empty catalog
+                in the named schema (and materializes into it), while a read-only
+                attach fails because there is nothing there yet. Must be a plain
+                identifier (`[A-Za-z_][A-Za-z0-9_]*`) — the value reaches both a
+                quoted string literal in the ATTACH and an identifier position in
+                the catalog-format preflight, so it is validated at config load
+                rather than escaped for two different contexts.
           required:
             - postgresConnection
       required:
@@ -3722,6 +5111,19 @@ components:
         serviceAccountKeyJson:
           type: string
           description: JSON string containing Google Cloud service account credentials
+        impersonateServiceAccount:
+          type: string
+          description: >-
+            Email of a Google Cloud service account this connection impersonates
+            for every BigQuery call, via short-lived tokens from the IAM Service
+            Account Credentials API. The publisher's own credential (ADC) must
+            hold roles/iam.serviceAccountTokenCreator on the target service
+            account, and iamcredentials.googleapis.com must be enabled in the
+            calling project. Mutually exclusive with serviceAccountKeyJson; set
+            billingProjectId explicitly, since project auto-detection resolves
+            through the impersonated credential. Not supported on DuckDB
+            attachedDatabases entries or federated builds from a BigQuery
+            source through DuckDB, which require a service account key.
         maximumBytesBilled:
           type: string
           description: Maximum bytes to bill for query execution (prevents runaway costs)
@@ -3740,25 +5142,31 @@ components:
           type: string
           description: Snowflake username for authentication
         password:
-          type: string
+          type: ["string", "null"]
           description: Snowflake password for authentication
         privateKey:
           type: string
           description: Snowflake private key for authentication
         privateKeyPass:
-          type: string
+          type: ["string", "null"]
           description: Passphrase for the Snowflake private key
         warehouse:
           type: string
           description: Snowflake warehouse name
         database:
-          type: string
-          description: Snowflake database name
+          type: ["string", "null"]
+          description:
+            Snowflake database name. Omitted or null connects with no current
+            database, so names must be fully qualified as
+            DATABASE.SCHEMA.TABLE and schema discovery spans the account.
         schema:
-          type: string
-          description: Snowflake schema name
+          type: ["string", "null"]
+          description:
+            Snowflake schema name. Sets the session default schema and forms part
+            of the connection's identity, so it determines what a materialization
+            build runs as. It does not restrict which schemas are discoverable.
         role:
-          type: string
+          type: ["string", "null"]
           description: Snowflake role name
         responseTimeoutMilliseconds:
           type: integer
@@ -3936,17 +5344,45 @@ components:
         # Pass result as an opaque JSON string that is malloyVersion dependent.
         data:
           type: string
+        queryCorrelationId:
+          type: ["string", "null"]
+          description: >-
+            Id the server minted for this statement and attached as the
+            `query_id` property. Same contract and correlation use as
+            `QueryResult.queryCorrelationId`.
 
     Error:
       type: object
       description: Standard error response format
       properties:
+        code:
+          type: integer
+          description: HTTP status code, repeated in the body for convenience
         message:
           type: string
           description: Human-readable error message describing what went wrong
         details:
           type: string
           description: Additional error details or context
+        reason:
+          type: string
+          description: |
+            Machine-readable discriminator, for callers that must branch on
+            which error they got rather than on prose. Absent unless a caller is
+            expected to act on it, so treat absence as "no special handling".
+
+            TABLE_NOT_FOUND distinguishes a table that is not in the database
+            from the other conditions that also answer 404 on these routes --
+            an environment or connection this server does not host. The former
+            says nothing about whether the caller reached the right server; the
+            latter is a routing problem worth retrying elsewhere.
+
+            Deliberately an open string rather than an enum. Generators render
+            an enum closed, so adding a second value here would break every
+            client generated before it -- on the one field whose purpose is to
+            grow. Callers must treat an unrecognized value as absent.
+
+            Known values: TABLE_NOT_FOUND.
       required:
         - message
 
@@ -4025,18 +5461,39 @@ components:
       properties:
         source:
           type: string
-          description: Malloy source code to compile
+          description:
+            Malloy source code to compile; never executed. Required at scope
+            "append" and "file"; optional at scope "package", where it acts as
+            a what-if replacement for the model in the URL.
+        scope:
+          type: string
+          enum: ["append", "file", "package"]
+          default: append
+          description:
+            What the source means, and how far the check reaches. "append"
+            (default, the historical behavior) appends the source to the model
+            in the URL and compiles it in that namespace — right for NEW
+            definitions; an edit to an existing definition collides ("Cannot
+            redefine"), and diagnostic positions land in the concatenated
+            virtual file. "file" compiles the source AS that model, replacing
+            its on-disk content for the check — validates an edit before
+            saving, at true file coordinates. "package" runs the same worker
+            compiler and file selection as reload over every .malloy and
+            .malloynb file, without swapping the result into the served
+            package; with a source, importers compile against the replacement.
+            Package diagnostics can name files hidden from discovery. No rows
+            or SQL are returned, and caller-provided source remains subject to
+            authorize gates. includeSql is not available at "package". An
+            invalid value is rejected with a 400 naming the valid set.
         includeSql:
           type: boolean
           default: false
           description:
             If true, returns the generated SQL alongside compilation results
-            (only available when compilation succeeds and the source contains a
-            runnable query).
+            (only available at scope "append"/"file", when compilation succeeds
+            and the source contains a runnable query).
         givens:
-          $ref: "#/components/schemas/Givens"
-      required:
-        - source
+          $ref: "#/components/schemas/GivenValues"
 
     CompileResult:
       type: object
@@ -4073,6 +5530,14 @@ components:
         code:
           type: string
           description: Machine-readable error code
+        model:
+          type: string
+          description:
+            Package-relative path of the model file the problem points at,
+            derived from `at.url`. Load-bearing at scope "package", where one
+            array carries every file's problems; elsewhere it says when a
+            diagnostic points at pre-existing content rather than the
+            submitted source. Absent when the location is not a package file.
         at:
           type: object
           description: Source location of the problem
@@ -4108,8 +5573,36 @@ components:
         forceRefresh:
           type: boolean
           default: false
-          description:
-            Build a new table even when a source's sourceEntityId is unchanged.
+          description: >-
+            Build a new table even when a source's sourceEntityId is unchanged —
+            that is, defeat skip-if-unchanged, which would otherwise carry the
+            existing table forward and run no SQL for that source.
+
+            It means ONLY that. It never re-seeds a source declaring
+            `refresh="incremental"`: such a source is exempt from
+            skip-if-unchanged anyway (its content address does not move when its
+            data does), so there is nothing here for the flag to change, and
+            reading it as "rebuild from scratch" would make a forced run — which
+            is every scheduled fire — a full rebuild that no delta could ever
+            follow. Ask for a rebuild with `reseed`.
+
+            Has no effect at all on an orchestrated build: the host decides what
+            gets built by instructing it, so no carry-forward runs.
+        reseed:
+          type: boolean
+          default: false
+          description: >-
+            Rebuild every in-scope source declaring `refresh="incremental"` from
+            scratch, ignoring its recorded `covered_through` boundary, and
+            re-derive the boundary from the table each rebuild writes. The escape
+            hatch for a boundary or a table that is no longer trusted. Narrow it
+            with `sourceNames`.
+
+            Unlike `forceRefresh` this is about HOW an incremental source is
+            built, not whether it is built at all, which is why the two are
+            separate flags rather than one. An orchestrated caller can instead
+            set `reseed` per source on each BuildInstruction, and the two are
+            OR-ed: either asks for that source to rebuild.
         sourceNames:
           type: array
           items:
@@ -4117,6 +5610,36 @@ components:
           description:
             Restrict the plan/build to these persist source names. Omit = all
             persist sources.
+        runContext:
+          oneOf:
+            - $ref: "#/components/schemas/RunContext"
+            - type: "null"
+          description: >-
+            What the caller knows about this run and the publisher does not,
+            attached as query metadata to every statement the build issues so the
+            backend's own reporting can attribute the build. Omit when there is
+            nothing to add.
+
+    RunContext:
+      type: object
+      description: >-
+        Caller-supplied context for one materialization run, folded into the
+        per-query metadata of the statements it issues (see `QueryMetadata`).
+        Observability only — it never affects what gets built or how anything is
+        addressed.
+      properties:
+        trigger:
+          type: string
+          enum: [publish, on_demand, scheduler]
+          description: >-
+            What started this run, attached as the `trigger` property: a package
+            publish, an explicit request, or the caller's scheduler.
+        runId:
+          type: string
+          description: >-
+            The caller's id for this run, attached as the `run_id` property so
+            every statement of one build groups together in the backend's query
+            history.
 
     MaterializationStatus:
       type: string
@@ -4181,7 +5704,11 @@ components:
       properties:
         graphs:
           type: array
-          description: Dependency-ordered build graphs, one per connection.
+          description: >-
+            Dependency-ordered build graphs. One per connection per model, not one
+            per connection: a model contributes a graph for each connection its ROOT
+            persist sources use, and a package's plan concatenates every model's, so
+            the same source appears in the graph of every model that imports it.
           items:
             $ref: "#/components/schemas/BuildGraph"
         sources:
@@ -4189,6 +5716,92 @@ components:
           description: Map of sourceID ("sourceName@modelURL") to per-source plan.
           additionalProperties:
             $ref: "#/components/schemas/PersistSourcePlan"
+        refusedSources:
+          type: object
+          description: >-
+            Map of sourceID ("sourceName@modelURL") to the sources the package
+            declared `#@ persist` on but that are ineligible to build, so they
+            carry no entry in `sources`. A SEPARATE collection rather than a
+            field on `PersistSourcePlan`: constructing that plan entry requires
+            the source's SQL and content address, and a free-parameter or
+            given-referencing source cannot produce either, so a refused
+            source needs a wire shape that requires neither. Lets a host
+            distinguish "this package declares no persist source" (both maps
+            empty) from "every persist source was refused" (empty `sources`,
+            populated `refusedSources`) — silence otherwise reads as the
+            former.
+          additionalProperties:
+            $ref: "#/components/schemas/RefusedSource"
+
+    RefusedSource:
+      type: object
+      description: >-
+        One `#@ persist` source refused at compile time, and why. Computed
+        from the SAME tier-appropriate eligibility assert the build path
+        itself enforces (the colocated tier's post-relaxation admission for a
+        proven row-level, fully-attributed `#(authorize)` gate applies here
+        too), so a source this reports as refused is refused for the tier it
+        would actually build under — never the unconditional
+        `storage=`-destination check applied to a source that declares no
+        `storage=`. A `preaggregate`-tier entry can coexist with an entry of
+        the same sourceID in `BuildPlan.sources` — the one tier where
+        refused-and-present-in-sources is the correct, intended state, unlike
+        `storage`/`colocated` where a refusal means absence from `sources`.
+      required: [name, sourceID, tier, reason, message]
+      properties:
+        name:
+          type: string
+          description: The source's declared name.
+        sourceID:
+          type: string
+          description: "sourceName@modelURL — matches this entry's map key."
+        modelPath:
+          type: string
+          description: >-
+            Package-relative path of the `.malloy` model that declares this
+            source, mirroring `PersistSourcePlan.modelPath`. Absent if the
+            model path could not be resolved.
+        tier:
+          type: string
+          enum: [storage, colocated, preaggregate]
+          description: >-
+            Which build path this source was evaluated against: `storage` for
+            a source declaring `#@ persist storage=<ref>` (evaluated against
+            the full storage-destination eligibility gate, which never
+            admits an `#(authorize)`-gated source); `colocated` for a plain
+            `#@ persist` (evaluated against the colocated gate, which admits
+            a proven row-level, fully-attributed gate); `preaggregate` for a
+            `#@ preaggregate` rollup (evaluated against the pre-aggregation
+            gate, which refuses unconditionally when the rollup's base is
+            `#(authorize)`-gated — rollups group away the gate column, so
+            there is no row-level admission the way colocated has).
+        reason:
+          type: string
+          enum:
+            [
+              free_parameter,
+              given,
+              authorize,
+              partition,
+              not_duckdb_portable,
+              public_surface_unknown,
+            ]
+          description: >-
+            The bounded refusal reason. Only `free_parameter`, `given`,
+            `authorize` and `partition` can appear here — those are the only
+            reasons the two compile-time eligibility asserts this collection is
+            computed from produce. `not_duckdb_portable` is decided against the
+            post-build captured schema, which does not exist at compile time,
+            and `public_surface_unknown` is raised by the build-time narrowing
+            of a stored table to the source's public columns; both are listed
+            only because they share the enum the runtime eligibility metric
+            uses.
+        message:
+          type: string
+          description: >-
+            The full, human-readable refusal message the eligibility assert
+            produced — the same text a build attempting this source would 422
+            with.
 
     BuildGraph:
       type: object
@@ -4231,6 +5844,45 @@ components:
           type: string
         dialect:
           type: string
+        origin:
+          type: string
+          enum: [persist, preaggregate]
+          default: persist
+          description: >-
+            Which authoring annotation produced this plan entry. `persist` — the
+            modeler wrote `#@ persist` on the source; every entry on a deployment
+            that uses no pre-aggregation, and the meaning of an absent value.
+            `preaggregate` — the modeler wrote `#@ preaggregate` on measures of
+            `preaggregate.baseSourceName`, and the publisher SYNTHESIZED this
+            rollup source to serve them.
+
+
+            Note that BOTH kinds carry a `#@ persist` annotation by the time they
+            reach this plan, because synthesis emits one (see `annotationFields`).
+            So this reports which surface the AUTHOR used, not which annotation
+            sits on the source — which is the question worth answering, since a
+            `preaggregate` entry's `name` appears in no model file and without
+            this field an operator or orchestrator sees a source nobody wrote with
+            no way to tell it from one they did.
+
+
+            Everything downstream is deliberately indifferent to it: a synthesized
+            entry is built, identified, manifested, shared and garbage-collected
+            exactly like a hand-written one.
+        preaggregate:
+          oneOf:
+            - $ref: "#/components/schemas/PreaggregatePlan"
+            - type: "null"
+          description: >-
+            What the synthesized rollup covers: the base source it was derived
+            from, the one grain it is built at, and the measures served there.
+            Present only when `origin` is `preaggregate`; null otherwise.
+
+
+            Coverage is complete by construction — a measure that cannot be
+            correctly re-aggregated is refused at publish rather than dropped
+            from the rollup — so there is no per-measure omission list to
+            reconcile against the model.
         sourceEntityId:
           type: string
           description: >-
@@ -4248,9 +5900,15 @@ components:
         refresh:
           type: ["string", "null"]
           description: >-
-            The source's declared `#@ persist ... refresh=...` value
-            ("full" | "incremental"), reported verbatim; null = unset.
-            Metadata pass-through — inert to the publisher today.
+            The source's declared `#@ persist ... refresh=...` value, reported
+            verbatim; null = unset (which means "full"). Read and VALIDATED by
+            the publisher, no longer an inert pass-through: a value outside
+            {"full", "incremental"} is a publish rejection, and
+            `refresh="incremental"` additionally requires a `watermark=` naming
+            one output dimension (see `annotationFields`). An incremental source
+            advances its serving table by a bounded delta in place instead of
+            being rebuilt, so the mode also governs the build path — which is why
+            it is validated rather than passed through.
         freshness:
           oneOf:
             - $ref: "#/components/schemas/Freshness"
@@ -4263,6 +5921,38 @@ components:
             scope modes. (Per-source `sharing`/`schedule` were retired: scope is
             a single package-level mode and a schedule is package-root-only —
             declaring either on a source is a publish-time manifest error.)
+
+
+            A synthesized rollup (`origin: preaggregate`) declares nothing of its
+            own and gets no freshness policy of its own: it INHERITS its base's,
+            so what is reported here is the base source's effective objective
+            resolved by the rule above. A rollup and its base therefore go stale
+            together, which is what makes "serve the base when the rollup is
+            stale" a safe degradation rather than a change of answer.
+        queryMetadata:
+          oneOf:
+            - $ref: "#/components/schemas/QueryMetadata"
+            - type: "null"
+          description: >-
+            The source's EFFECTIVE per-query metadata after most-specific-wins
+            resolution per property (`#@ queryMetadata.*` > model-file
+            `## queryMetadata.*` > package `queryMetadata`; the deprecated
+            `materialization.` spellings of the last two are still read and lose
+            to the canonical ones). Null = declared at no level. The
+            publisher attaches it — merged under its own context — to every
+            statement it issues while building this source AND to every query
+            served from it, and reports it here so a caller can see how the
+            source's traffic will be tagged. Reported as DECLARED, not as
+            attached: a property whose name the server owns (`class`,
+            `environment`, `package`, `model`, `source`, `trigger`, `run_id`,
+            `query_id`, `version`) appears here and is then dropped rather than
+            attached. Copying this bag onto a request does NOT reproduce that
+            drop: the reservation covers a MODEL-SIDE declaration only, so a
+            `source`, `trigger` or `run_id` sent on a request layer ATTACHES, and
+            the statement then reads, in the backend's own history, exactly like
+            a build of this source. Strip the server-owned names before reusing
+            it. Observability only: excluded from `sourceEntityId`, so editing it
+            never re-addresses the source or orphans its table.
         columns:
           type: array
           description: Output schema of the source.
@@ -4272,20 +5962,172 @@ components:
           type: object
           additionalProperties:
             type: string
-          description:
+          description: >-
             All key=value fields of the source's `#@ persist` annotation (e.g.
             `name`, `realization`). The control plane uses `name` as the
             materialized table name (it may carry a dialect container path like
             `dataset.table`). Returned as the full set so new persist directives
-            need no publisher change.
+            need no publisher change; an unrecognized key rides through here and
+            is reported as a package warning, never a rejection.
+
+
+            Recognized keys beyond `name`/`realization`/`storage`, both read from
+            the EFFECTIVE merged tag (a source extending a persisted parent
+            inherits the parent's keys, and its own keys merge over them per key):
+
+
+            * `watermark` — one output dimension name, monotone non-decreasing.
+            Required by `refresh="incremental"`; the platform derives each
+            refresh's half-open range from it. Must be a single quoted string
+            naming a column of `columns`.
+
+
+            * `merge_key` — comma-separated output dimension names, none of them
+            the watermark. Declares row identity for a source whose rows are
+            restated with a LATER watermark value, which selects a MERGE apply;
+            omitted, the delta replaces the range instead. Compound keys go in one
+            quoted string (`merge_key="order_id, region"`).
+
+
+            Both are validated at publish against the compiled output schema, so
+            a dangling or stale name is rejected rather than deferred to a build.
+            Neither participates in `sourceEntityId`: adding a watermark to an
+            existing source must not re-address its table.
+
+
+            For a synthesized rollup (`origin: preaggregate`) the annotation was
+            generated by the publisher rather than authored, so this reports what
+            synthesis emitted. It is still the annotation that governs the build,
+            which is why it is reported the same way: a rollup is an ordinary
+            persist source whose `#@ persist` nobody typed.
         modelPath:
           type: string
-          description:
+          description: >-
             Package-relative path of the `.malloy` model that declares this
             source (e.g. `order_rollup.malloy`). The source's sourceID embeds an
             absolute `file://` modelURL with no package boundary, so this is the
             only place the relative path is exposed; callers use it to deep-link
             the source back to its model.
+
+
+            A synthesized rollup (`origin: preaggregate`) is declared by no model,
+            so this is the model of its base — the file holding the
+            `#@ preaggregate` annotations it was synthesized from, which is where
+            an author would go to change it.
+
+    PreaggregatePlan:
+      type: object
+      description: >-
+        Provenance for a rollup source synthesized from `#@ preaggregate`
+        annotations. A query never names a rollup, never changes shape because one
+        exists, and gets the same answer whether one is used or not, so this is
+        the only place the set of rollups and the coverage of each is visible at
+        all.
+
+
+        **This object describes ONE rollup table, at ONE grain.** A rollup is a
+        single `GROUP BY`, so a grain is a property of the table, not of the
+        individual measures in it: `grainDimensions` lists the dimensions of that
+        one grain, and `measures` are the measures served at it.
+
+
+        That inverts how the grain was authored, which is worth knowing before
+        reading a plan. The modeler declares per measure — `#@ preaggregate
+        grain="order_day, category"` — and may declare a measure at SEVERAL grains
+        by writing several annotation lines on it, each of which is its own rollup.
+        The publisher then packs every measure declaring the same (grain,
+        connection, base source) into a single synthesized source, because ten
+        measures at one grain should be one table and one CTAS rather than ten. So
+        the plan has one entry per DISTINCT grain declared anywhere on the source,
+        which is neither the number of annotated measures nor the number of
+        annotations: a measure declared at two grains appears in two entries, and
+        two measures sharing a grain appear in one. To recover the per-measure view
+        that was written, iterate `buildPlan.sources`, keep the `origin:
+        preaggregate` entries, and invert each entry's grain-to-measures pairing.
+
+
+        Choosing between two rollups and one at the combined grain is a size
+        judgement, not a correctness one — see `grainDimensions`.
+      required: [baseSourceName, grainDimensions, measures]
+      properties:
+        baseSourceName:
+          type: string
+          description: >-
+            The source whose measures carry the `#@ preaggregate` annotations this
+            rollup was synthesized from. Queries name THIS source; the rollup is
+            selected behind it, or bypassed, per grain coverage.
+        grainDimensions:
+          type: array
+          items:
+            type: string
+          description: >-
+            The dimensions of the ONE grain this rollup is built at — the parsed
+            form of a single `grain=` annotation value, so `grain="order_day,
+            category"` reports as two entries here and not as two grains.
+
+
+            **Every entry is a dimension the base source itself declares**, never
+            a truncation written inline. `grain="order_time.day"` is refused at
+            publish: a stored column of truncated values either shadows the base's
+            own `order_time` and answers untruncated queries from truncated rows,
+            or is named something no query references and serves nothing. So time
+            grains are reached by declaring `dimension: order_day is
+            order_time.day` on the source and naming `order_day` here.
+
+
+            **Sorted, and canonically so.** Synthesis derives the rollup's name
+            and identity from the sorted grain, so two authors who write the same
+            dimensions in different orders get one table rather than two. Compare
+            grains as sets using this list; never by the annotation's original
+            string, which is not canonical.
+
+
+            A query can be answered here only if this grain covers it: every
+            dimension the query groups by is in this list, or is a coarser
+            truncation of one (a `month` of a stored `order_day` is derivable and
+            does route; a `day` of a stored `order_month` is not). Which makes the
+            set of grains ACROSS a package the whole performance story, and the
+            reason adding a rollup per query shape is the documented way to spend
+            more on builds than you save.
+
+
+            Note that covering does not require an exact match: a query grouping
+            by a SUBSET of these dimensions — or by none of them — is served here
+            too, by re-aggregating across the ones it omits. So one rollup at the
+            finest grain an author needs does subsume every coarser one, and a
+            combined grain is often the economical choice.
+
+
+            That subsumption is about coverage, though, not cost, and it is why a
+            measure may still be declared at several grains. A combined grain has
+            roughly the PRODUCT of its dimensions' cardinalities, so
+            `customer_id, order_day` can approach the base table's row count and
+            save almost nothing, while `order_day` alone is tiny. Two rollups then
+            beat one, each query reading the smallest that covers it, at the price
+            of two tables to build and refresh. Correctness is identical either
+            way; the choice is size against build cost.
+        measures:
+          type: array
+          items:
+            type: string
+          description: >-
+            The measures served at this rollup's grain, under their original names
+            — the names a query uses, not the names of the partial-aggregate
+            columns stored to serve them. A query using only these, at a grain
+            this rollup covers, is eligible to be served from its table.
+
+
+            These are the measures whose `#@ preaggregate` named THIS grain. A
+            measure declared at a different grain is not missing: it is in the
+            plan entry for that grain. Do not read this list as the base source's
+            full set of pre-aggregated measures — that is the union of these lists
+            across every entry sharing a `baseSourceName`.
+
+
+            **Every measure that declared this grain is here.** There is no
+            partial rollup and no per-measure omission to check: a measure that
+            cannot be correctly re-aggregated is refused at publish, so a rollup
+            that exists carries everything that asked to be in it.
 
     Realization:
       type: string
@@ -4321,6 +6163,28 @@ components:
             in referenceManifest fails the build (compiler strict mode) instead
             of silently recomputing it live. Per-unit dispatch should set this
             true.
+        ledger:
+          type: array
+          items:
+            $ref: "#/components/schemas/LedgerEntry"
+          description: >-
+            The incremental ledger for this run, supplied by the caller: each
+            entry is a `ManifestEntry.ledger` an earlier run reported, returned
+            unmodified.
+
+            Absent, the publisher uses its own ledger store — today's behavior,
+            every existing caller. Present (even empty), it IS the ledger for
+            this run: boundaries are read from here, the local store is neither
+            read nor written, and an incremental source with no entry here
+            seeds. An entry that does not validate against this run is a 400
+            (see `LedgerEntry`); an entry for a source being `reseed`-ed is
+            ignored.
+
+            For an orchestrator that dispatches one package's refreshes across
+            interchangeable workers: the local store is per-process, so a
+            refresh landing on a worker that has never built the table would
+            otherwise re-seed a source whose whole purpose is not being
+            rebuilt.
 
     ManifestReference:
       type: object
@@ -4383,17 +6247,130 @@ components:
         destination:
           type: string
           description: >-
-            Optional name of a registered DuckDB/DuckLake connection to
-            materialize INTO (the `storage=` authoring axis). Absent means build
-            into the persist source's own warehouse — the default, unchanged
-            (colocated) path. When present, the build runs
+            Optional name of a storage destination to materialize INTO (the
+            `storage=` authoring axis) — an entry in the environment's
+            `storageDestinations`, which is a disjoint set from `connections`.
+            Absent means build into the persist source's own warehouse — the
+            default, unchanged (colocated) path. When present, the build runs
             a native per-engine query-passthrough CTAS on a build-scoped session
-            for this connection (the source computes; only results cross), and
-            the manifest records the destination connection + captured schema so
-            the source can later be served cross-dialect from the destination.
+            for that destination (the source computes; only results cross), and
+            the manifest records the destination + captured schema so
+            the source can later be served cross-dialect from it.
             The name resolves generically against registered connections; any
             managed-tier alias is resolved by the host upstream and never
             reaches the publisher.
+        reseed:
+          type: boolean
+          default: false
+          description: >-
+            Rebuild this source from scratch even if it declares
+            `refresh="incremental"` and has a recorded `covered_through`
+            boundary: the build runs the ordinary full CTAS and the boundary is
+            re-derived from the table it writes. The escape hatch for a boundary
+            or a table that is no longer trusted.
+
+            Per-source rather than only per-request because re-seeding is a
+            per-source decision: a host may want one source rebuilt while the
+            rest advance by delta in the same run. OR-ed with the request-level
+            `reseed`, so either asks for this source to rebuild. Ignored for a
+            source that is not incremental (such a source is always built in
+            full).
+
+            Note `forceRefresh` is NOT how you ask for this, in any mode: it
+            only defeats skip-if-unchanged, which does not even run for an
+            orchestrated build.
+
+    LedgerEntry:
+      type: object
+      description: >-
+        One incremental source's `covered_through` boundary: the table it
+        belongs to, the boundary itself, and the source definition it was
+        measured under. Reported on the manifest entry of every incrementally
+        refreshed source. A caller that owns the ledger stores each one and
+        returns it verbatim in `BuildInstructions.ledger` on the next run —
+        only the publisher derives these values.
+
+        A returned entry is validated at create time: one naming a table the
+        run does not instruct, or whose `sourceEntityId` is no longer the
+        source's, is a 400. After a publish or rollback that changes the
+        source, delete the entry (the source seeds) or set `reseed`.
+      required:
+        [
+          connectionName,
+          physicalTableName,
+          coveredThrough,
+          coveredThroughType,
+          watermark,
+          strategy,
+          sourceEntityId,
+        ]
+      properties:
+        connectionName:
+          type: string
+          description: >-
+            The connection whose SQL computes the table's rows. With
+            `physicalTableName` — and `storageDestinationName`, when the table is
+            in a storage destination — the table the boundary belongs to.
+        physicalTableName:
+          type: string
+          description: The table's logical (unquoted) name, as the manifest reports it.
+        storageDestinationName:
+          type: string
+          description: >-
+            The storage destination the table lives in, when the source was
+            materialized into one — an entry in `storageDestinations`, NOT a
+            connection, exactly as on `ManifestEntry`. Absent means the table
+            lives in `connectionName`'s own warehouse.
+
+            Part of the table's IDENTITY, not a description of it, so it must be
+            returned verbatim like every other field here. A source keeps both its
+            physical name and its content address when `storage=` is added or
+            removed (an annotation enters neither), so without this field a
+            boundary measured on the stored table is indistinguishable from one
+            measured on a colocated table of the same name — and a delta computed
+            from the wrong one can skip rows.
+
+            A caller that has never recorded this field may omit it. An entry that
+            omits it for a source this run materializes into a destination
+            describes a different table, so that source SEEDS rather than being
+            rejected: the entry is stale, not wrong, and a seed is always correct.
+            An entry that names a DIFFERENT destination than the run instructs is
+            a caller error and is rejected like any other mismatched entry.
+        coveredThrough:
+          type: string
+          description: >-
+            Exclusive upper end of the watermark range the table holds, as
+            canonical scalar text. The next delta starts here.
+        coveredThroughType:
+          type: string
+          description: >-
+            The Malloy type of `coveredThrough` (`date`, `timestamp`, `number`,
+            `string`).
+        watermark:
+          type: string
+          description: The source's `watermark=` dimension the boundary measures.
+        mergeKeys:
+          type: array
+          items:
+            type: string
+          description: >-
+            The source's `merge_key=` dimensions, in declared order. Absent for
+            a keyless (range-replace) source.
+        strategy:
+          type: string
+          enum: [merge, range_replace]
+          description: >-
+            How a delta is applied — `merge` when the source declares
+            `merge_key=`, `range_replace` otherwise.
+        sourceEntityId:
+          type: string
+          description: >-
+            The publisher's CONTENT address for the source when the boundary was
+            measured (`PersistSourcePlan.sourceEntityId`, a fingerprint of the
+            build SQL) — NOT the caller-assigned
+            `BuildInstruction.sourceEntityId`. The match is what guarantees a
+            boundary is never applied to a table whose definition has moved on
+            since it was measured.
 
     BuildManifest:
       type: object
@@ -4408,20 +6385,131 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ManifestEntry"
-          description: Map of sourceEntityId to manifest entry.
+          description: >-
+            Map of sourceEntityId to manifest entry. Every source that BUILT is
+            here. A source that FAILED is reported in `failures`, and during the
+            `ManifestEntry.error` deprecation window is also mirrored here
+            carrying that field -- so a consumer resolving an entry to a real
+            table must skip entries whose `error` is set until the field is
+            removed, after which `entries` is built-only.
+        failures:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/SourceFailure"
+          description: >-
+            Map of sourceEntityId to the reason that source failed to
+            materialize, for the sources that did NOT build. A build that loses
+            some of its sources still returns the ones that succeeded in
+            `entries`, so this is how a consumer tells a partial failure from a
+            clean run and learns which source failed. Empty or absent on a run
+            where every source built.
         strict:
           type: boolean
           description: Whether unresolved references should error.
 
+    SourceFailure:
+      type: object
+      description: >-
+        One source that failed to materialize, and why. Kept beside `entries`
+        rather than inside a manifest entry because a failed source names no
+        table that exists: an entry carries a required `physicalTableName`, so
+        putting a failure there would hand every consumer a table name it must
+        know not to resolve.
+      required: [sourceEntityId, reason]
+      properties:
+        sourceEntityId:
+          type: string
+          description: The source's content address, as `entries` would have keyed it.
+        sourceName:
+          type: string
+          description: The persist source's declared name, for reporting.
+        reason:
+          type: string
+          description: >-
+            Why this source failed, in the words the warehouse or compiler
+            reported, redacted against that source's own connection.
+        materializedTableId:
+          type: string
+          description: >-
+            Echoes the caller-assigned id from the BuildInstruction, so an
+            orchestrator can match this failure to the row it dispatched without
+            deriving the content address itself.
+        physicalTableName:
+          type: string
+          description: >-
+            The table this source was HEADED for, echoing the instruction. NOT a
+            table that exists -- the build that would have created it is what
+            failed, and a source that failed a REBUILD leaves the prior
+            generation's table in place under this same name, so resolving it
+            serves stale data rather than missing. Present for correlating the
+            failure with the request; a consumer must never resolve or read it.
+        connectionName:
+          type: string
+          description: >-
+            The persist source's own connection (the source warehouse),
+            mirroring `ManifestEntry.connectionName`. Without this a failure-only
+            source carries no destination discriminator at all, so a consumer
+            cannot tell a colocated failure from a `storage=` one and, lacking
+            `storageDestinationName`, would resolve a destination-scoped claim
+            against the wrong key.
+        storageDestinationName:
+          type: string
+          description: >-
+            When the source was instructed to build into a `storage=`
+            destination, the destination name, mirroring
+            `ManifestEntry.storageDestinationName`. Absent for a colocated
+            failure. A consumer computes the same destination key a successful
+            build would (`storageDestinationName ?? connectionName`) whether the
+            source built or failed.
+
     ManifestEntry:
       type: object
-      description: A single entry in the build manifest.
+      description: >-
+        A single entry in the build manifest. An entry describing a source that
+        BUILT names a table that exists; `error` marks the one exception, kept for
+        one deprecation cycle (see that field).
       required: [sourceEntityId, physicalTableName]
       properties:
         sourceEntityId:
           type: string
+        error:
+          type: [string, "null"]
+          deprecated: true
+          description: >-
+            DEPRECATED -- read `BuildManifest.failures` instead, which is where a
+            failed source is now reported. Mirrors `SourceFailure.reason` for the
+            same source, so a consumer written against 0.0.245-0.0.246 keeps
+            working unchanged; it will be removed once those consumers have moved.
+            An entry carrying this describes a source that FAILED, so its
+            `physicalTableName` names a table the build did not create -- which is
+            the defect the `failures` collection exists to remove, because the
+            field is required and a consumer resolving an entry to a real table has
+            no way to know it must check here first.
         sourceName:
           type: string
+          description: >-
+            The persist source this table was built for. Convenience only:
+            `sourceEntityId` is the identity, and this is the human-readable label
+            beside it.
+
+
+            **It may name no source in any model file.** A pre-aggregation rollup
+            is a persist source the publisher synthesized, so its name is
+            generated (see `PersistSourcePlan.origin`). Match on
+            `sourceEntityId`; do not resolve this against a package's models and
+            treat a miss as a corrupt manifest.
+        origin:
+          type: string
+          enum: [persist, preaggregate]
+          default: persist
+          description: >-
+            Mirrors `PersistSourcePlan.origin` for the source this entry was built
+            from: `persist` for a source the modeler wrote `#@ persist` on, which
+            is the meaning of an absent value, and `preaggregate` for a rollup
+            synthesized from `#@ preaggregate` measures. Repeated here because a
+            manifest travels without its build plan, and a consumer holding only
+            the manifest otherwise cannot tell why it holds a table for a source
+            that does not appear in the package.
         materializedTableId:
           type: string
           description: Echoes the caller-assigned id from the BuildInstruction.
@@ -4436,16 +6524,16 @@ components:
           description: >-
             The persist source's own connection (the source warehouse). For a
             `storage=`-materialized entry this is where the data is READ FROM;
-            the physical table lives in `storageConnectionName`.
-        storageConnectionName:
+            the physical table lives in `storageDestinationName`.
+        storageDestinationName:
           type: string
           description: >-
             When the source was materialized into a `storage=` destination, the
-            name of the registered DuckDB/DuckLake connection the physical table
-            physically lives in (distinct from `connectionName`, the source
-            warehouse). Absent for the default in-warehouse path, where the table
-            lives in `connectionName`. The serve path resolves and reads the
-            table on this connection.
+            name of the storage destination the physical table physically lives
+            in — an entry in `storageDestinations`, NOT a connection (distinct
+            from `connectionName`, the source warehouse). Absent for the default
+            in-warehouse path, where the table lives in `connectionName`. The
+            serve path resolves and reads the table on that destination.
         schema:
           type: array
           description: >-
@@ -4462,6 +6550,66 @@ components:
           $ref: "#/components/schemas/Realization"
         rowCount:
           type: ["integer", "null"]
+        buildDurationMs:
+          type: ["integer", "null"]
+          description: >-
+            Wall-clock milliseconds spent building this one source's table —
+            measured around the build itself, so it excludes planning, manifest
+            distribution, and anything the orchestrator does around it.
+
+            Null when no build ran, which is the normal case for an incremental
+            source whose refresh SKIPPED because its boundary already covered the
+            requested range. Null rather than 0 on purpose: a zero would average
+            into build-duration series as an implausibly fast build.
+
+            Per SOURCE, where a run-level duration is per instruction. A run that
+            builds five sources reports five of these, and their sum is less than
+            the run's duration by whatever the orchestration cost.
+        queryCostBytes:
+          type: ["integer", "null"]
+          description: >-
+            Warehouse bytes SCANNED by the read that produced this table — the
+            recurring cost of keeping the source materialized, and the debit
+            against whatever materializing it saves on the read side.
+
+            Bytes scanned, never bytes billed. The two differ by up to BigQuery's
+            10MB-per-query floor, and materialization refreshes are mostly small
+            reads, so a field carrying one on some paths and the other elsewhere
+            would be unsummable across a package's sources.
+
+            **Null is not zero**, and which paths report a figure differs.
+
+            A COLOCATED build reports one, taken from the Malloy connection's own
+            statistics.
+
+            A plain `storage=` build reports one when its warehouse read carried
+            query metadata, and null otherwise. That read goes through DuckDB's
+            query-passthrough rather than a Malloy connector, so the figure is
+            read back from the warehouse's own accounting afterwards — which needs
+            an identifier for the job, and obtaining one is part of how a TAGGED
+            read is issued. An untagged read is issued the older way, which yields
+            no such identifier, and reports null. A read whose connection cannot
+            reach its own job records also reports null; that case is counted by
+            `publisher_storage_build_attribution_skipped_total`.
+
+            A COLOCATED incremental delta reports null because its statements do
+            not run through a single call whose result reaches here. A delta
+            into a `storage=` destination reports whatever its own bounded read
+            reported: that read is issued through the same call a full build's
+            is, so a tagged one is costed and an untagged one is not. A
+            SNOWFLAKE source reports null on a delta even though its full build
+            reports a figure — Snowflake does not return one with the read, so
+            the full build looks it up afterwards by matching the statement
+            text, and a delta's text is the bounded, projected wrapper rather
+            than the build SQL that lookup keys on. Summing this field across
+            refreshes therefore understates a Snowflake source; it does not mean
+            those reads were free. A chained `storage=` build reports null
+            because it read its parent's already-materialized table and touched
+            no warehouse at all. A POSTGRES source reports null on every path:
+            the label that makes a read reportable is BigQuery's, and Postgres
+            has no per-statement tag to carry one. And a bag whose every
+            property is unusable as a BigQuery label key renders no label, so
+            such a read is issued the untagged way and reports null too.
         dataAsOf:
           type: string
           format: date-time
@@ -4479,6 +6627,39 @@ components:
           description: >-
             Per-version read-time policy when the entry is stale. Never combined
             across versions; each version's entries carry its own declared fallback.
+        ledger:
+          $ref: "#/components/schemas/LedgerEntry"
+          description: >-
+            For a source refreshed incrementally, the `covered_through` boundary
+            now in force — where the next refresh starts. Present whether the
+            source advanced, rebuilt, or had nothing to do, so incremental
+            progress is something a caller reads rather than infers: a
+            `coveredThrough` that moved between runs is a delta that applied.
+
+            Absent for a non-incremental source, and for an incremental one
+            whose source is empty (no boundary is derivable, so none is
+            recorded).
+        refresh:
+          type: string
+          enum: [delta, full, none]
+          description: >-
+            What this run's refresh DID to the table, for a source declaring
+            `refresh="incremental"`: advanced it in place by a bounded range
+            (`delta`), rebuilt it (`full`), or applied nothing because the
+            watermark had not moved (`none`, which leaves the boundary in
+            `ledger` in force).
+
+            Reported because it cannot be inferred: every fallback the publisher
+            applies — no recorded boundary, a table the delta path cannot build
+            on, `reseed` — answers success and rebuilds, so a source quietly
+            rebuilding on every run is otherwise indistinguishable from one
+            advancing.
+
+            Present exactly when the source is refreshed incrementally, so
+            absent means only that it is not: a source declaring
+            `refresh="full"`, or one whose declaration the delta path cannot act
+            on at all (an unsupported source dialect), which the publish
+            gate rejects anyway.
 
   parameters:
     environmentName:

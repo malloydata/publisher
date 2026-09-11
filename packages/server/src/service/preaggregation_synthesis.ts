@@ -1,0 +1,585 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * Synthesis: turn validated `#@ preaggregate` declarations into a rollup plan and
+ * the Malloy text that implements it (handoff Work item 3).
+ *
+ * ## The shape of the output, and why it is a separate model
+ *
+ * The synthesized text does not edit the author's model. It is a NEW model that
+ * imports the base under an alias, rolls it up, and re-exposes the original name
+ * as a composite:
+ *
+ * ```malloy
+ * import { orders__preagg_base is orders } from "orders.malloy"
+ *
+ * #@ persist
+ * source: orders__preagg__category__1a2b3c4d is orders__preagg_base -> {
+ *   group_by: category
+ *   aggregate: total__partial is total
+ * } extend {
+ *   measure: total is total__partial.sum()
+ * }
+ *
+ * source: orders is compose(orders__preagg__category__1a2b3c4d, orders__preagg_base)
+ * ```
+ *
+ * Three things fall out of that and each one is load-bearing:
+ *
+ *  - **No text surgery.** Making `orders` a composite requires the original under
+ *    another name, and `import { new is old }` provides exactly that, so nothing
+ *    parses or rewrites the author's source. Rewriting it would be real surgery —
+ *    the risk this approach exists to avoid — and with rename-on-import there is
+ *    no surgery to get wrong.
+ *  - **No discovery leak.** The author's model is untouched, so the model the API
+ *    introspects still exports `orders` alone. The rollup exists only in this
+ *    second model, which is compiled for the build plan and for the transient
+ *    serve model and is never the discoverable one.
+ *  - **The base's own measures are referenced BY NAME** (`total__partial is
+ *    total`), never re-printed from IR. So a measure that aggregates through a
+ *    join needs no special handling — the join comes along with the base — and
+ *    there is no expression printer to disagree with the compiler.
+ *
+ * ## Determinism is a correctness property here, not tidiness
+ *
+ * The build leg and the serve leg each synthesize (that is the seam decision), so
+ * both must produce byte-identical text: the rollup's `sourceEntityId` is derived
+ * from its compiled definition, and if the two legs disagree the serve model binds
+ * to a table the build leg never created and every query silently falls back to
+ * live. Hence: grain dimensions sorted, measures sorted, plans sorted, and the
+ * name derived from the canonical grain rather than from authoring order.
+ *
+ * Pure: takes compiled IR, returns a plan and a string, touches no I/O.
+ */
+
+import { Annotations } from "@malloydata/malloy";
+import { createHash } from "node:crypto";
+import {
+   readPreaggregateAnnotation,
+   type AnnotatableMeasure,
+} from "./preaggregation_annotation";
+import {
+   classifyMeasureAdditivity,
+   type ReaggregateFunction,
+} from "./preaggregation_classifier";
+import type { ValidatableSource } from "./preaggregation_validation";
+
+/** The alias the base is imported under, and the last compose() member. */
+export const BASE_ALIAS_SUFFIX = "__preagg_base";
+
+/** Suffix on the stored partial-aggregate column for a measure. */
+export const PARTIAL_SUFFIX = "__partial";
+
+/** One measure served by a rollup, with the merge to apply to its partial. */
+export interface RollupMeasure {
+   /** The measure's name on the base, and on the rollup member. */
+   name: string;
+   /** The stored column holding the partial aggregate. */
+   partialName: string;
+   /** The aggregate applied to `partialName` to merge it. */
+   reaggregate: ReaggregateFunction;
+}
+
+/** One synthesized rollup: one base, one grain, one table, one `GROUP BY`. */
+export interface RollupPlan {
+   /** The source whose measures were annotated. Queries name this. */
+   baseSourceName: string;
+   /** The synthesized `#@ persist` source's name. Deterministic. */
+   rollupSourceName: string;
+   /**
+    * The namespace the rollup's table is created in: this grain's own
+    * `#@ preaggregate namespace=`, else everything before the last dot of the
+    * base's `#@ persist name=`, else undefined when neither names one.
+    *
+    * A rollup of X belongs where X lives, unless its author said otherwise. It
+    * also decides whether the rollup can be built at all on a dialect that
+    * requires qualification: BigQuery rejects an unqualified CREATE, so a bare
+    * name is not a cosmetic difference there.
+    */
+   namespace?: string;
+   /**
+    * The storage destination this rollup is built into and served from — this
+    * grain's own `#@ preaggregate storage=`, and only ever that. Undefined for a
+    * colocated rollup built into the base's own warehouse.
+    *
+    * NOT inherited from the base's `#@ persist storage=`; see
+    * {@link basePersistNamespace} for why a destination cannot usefully be.
+    *
+    * Mutually exclusive with {@link namespace}: placement inside a destination is
+    * derived rather than authored, so the combination is refused at publish
+    * (`namespace_with_storage`). {@link emitRollup} enforces the same precedence
+    * anyway, so a plan that somehow carried both cannot emit a
+    * destination-qualified name the destination has no schema for.
+    */
+   storage?: string;
+   /** The one grain, canonically sorted. */
+   grainDimensions: string[];
+   /** The measures served here, sorted by name. */
+   measures: RollupMeasure[];
+}
+
+/**
+ * A short digest of the canonical grain, appended to the rollup's name.
+ *
+ * Needed because the readable part is lossy: a grain of `[a_b, c]` and one of
+ * `[a, b_c]` both slug to `a_b_c`, and two rollups sharing a name would collapse
+ * into one table serving the wrong queries. The digest is over the joined grain
+ * with a separator that cannot appear in a Malloy identifier, so it distinguishes
+ * them.
+ */
+function grainDigest(grainDimensions: string[]): string {
+   return createHash("sha256")
+      .update(grainDimensions.join("\u0000"))
+      .digest("hex")
+      .slice(0, 8);
+}
+
+/** How much of the grain goes in the readable part of the name. */
+const NAME_SLUG_LIMIT = 40;
+
+/**
+ * The rollup's source name: readable enough to recognize in a build plan, a
+ * manifest and a log line, and unique by digest.
+ */
+export function rollupSourceName(
+   baseSourceName: string,
+   grainDimensions: string[],
+): string {
+   // Dots are folded out of the readable part, which keeps the generated name a
+   // single unqualified identifier.
+   //
+   // That matters downstream rather than here: the name IS the rollup's physical
+   // table name (the build self-assigns it, there being no `name=`), and a
+   // consumer that reads a dotted physical name as schema-qualified would refuse
+   // it or address the wrong thing. A grain naming anything dotted — a join path
+   // or an inline truncation — is already refused at publish and fails the load,
+   // so a dotted slug cannot reach a build plan anyway; folding it makes that a
+   // property of the name rather than of a gate somewhere else agreeing to hold.
+   //
+   // A no-op for every grain that can legally reach here, so it renames nothing.
+   // The digest is computed over the RAW dimensions, so `a.b` and `a_b` still
+   // land on different names rather than colliding once folded.
+   const slug = grainDimensions
+      .join("_")
+      .replace(/\./g, "_")
+      .slice(0, NAME_SLUG_LIMIT);
+   return `${baseSourceName}__preagg__${slug}__${grainDigest(grainDimensions)}`;
+}
+
+/**
+ * One segment of a namespace: a plain identifier, plus the hyphen.
+ *
+ * The house rule for a bare-spliced identifier is {@link assertSafeSqlIdentifier}'s
+ * `[A-Za-z_][A-Za-z0-9_$]*`, and this is that with one addition. Its own reasoning
+ * is why: hyphens were left out because Snowflake, Trino and Unity Catalog all need
+ * a hyphenated name quoted, "and BigQuery, the one dialect whose names really do
+ * carry hyphens, never reaches this function". A rollup namespace DOES reach
+ * BigQuery, where a hyphenated project id is ordinary, so excluding it would refuse
+ * `my-project.analytics` — a name the dialect this feature broke on requires.
+ *
+ * Everything else is out: a space or a quote cannot be spliced bare, and a name
+ * needing quotes cannot be joined to a generated table name (see
+ * {@link persistNamespace}).
+ */
+const NAMESPACE_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$-]*$/;
+
+/**
+ * Whether every dot-separated segment can be spliced into a generated name.
+ *
+ * Dots are the one separator that survives: BigQuery addresses a dataset as
+ * `project.dataset`, so a namespace is a path, not a single identifier.
+ *
+ * An empty string is refused by the per-segment test, which `""` fails.
+ */
+export function isSpliceableNamespace(namespace: string): boolean {
+   return namespace.split(".").every((s) => NAMESPACE_SEGMENT.test(s));
+}
+
+/** The alias the author's base source is imported under. */
+export function baseAlias(baseSourceName: string): string {
+   return `${baseSourceName}${BASE_ALIAS_SUFFIX}`;
+}
+
+/**
+ * The namespace half of a `#@ persist name=` — everything before the LAST dot.
+ *
+ * `analytics.orders` yields `analytics`; `proj.analytics.orders` yields
+ * `proj.analytics`; a bare `orders` yields undefined. Split on the last dot
+ * rather than the first because BigQuery names can carry a project as well as a
+ * dataset, and the rollup belongs beside the base in whichever of those it names.
+ *
+ * **A quoted name yields nothing, deliberately.** Splitting one on a dot is not
+ * sound — `"My.Schema"` is a single identifier containing a dot, and the last-dot
+ * rule tears it into `"My`. Even a well-formed `"A"."B"` would give a quoted
+ * prefix that this then joins to an unquoted derived segment, and the two sides of
+ * the bind disagree about a mixed path: `quoteManifestTablePath` passes anything
+ * already carrying a quote through untouched, while the CREATE side quotes every
+ * segment. That disagreement is a known defect for authored names
+ * (`quoted-persist-name-colocated`); a derived name must not extend it. Such an
+ * author names the rollup's namespace explicitly instead.
+ *
+ * A trailing dot yields nothing either: the base's own table segment is empty, so
+ * the name is malformed and inventing a namespace from it would hide that.
+ */
+export function persistNamespace(
+   persistName: string | undefined,
+): string | undefined {
+   if (!persistName) return undefined;
+   const lastDot = persistName.lastIndexOf(".");
+   if (lastDot <= 0) return undefined;
+   if (persistName.slice(lastDot + 1).trim() === "") return undefined;
+   const candidate = persistName.slice(0, lastDot);
+   return isSpliceableNamespace(candidate) ? candidate : undefined;
+}
+
+/**
+ * Order two rollups on one base so the COARSER is offered first.
+ *
+ * The composite resolver takes the first member that covers a query, so member
+ * order decides which of several covering rollups answers it. Ordering by
+ * generated name — which is what this did — resolved that by a grain digest,
+ * which is to say arbitrarily: with `grain="b"` and `grain="a, b"`, a query
+ * grouping by `b` alone read the `a, b` table because `a_b` sorts first, even
+ * though the `b` table is the smaller read and covers it exactly.
+ *
+ * Fewer grain dimensions therefore win, and that single rule is enough. It might
+ * look as though a strict-subset test is also needed — a subset is provably
+ * coarser, where a dimension count is only a proxy for one — but subset is
+ * SUBSUMED by it: a strict subset always has fewer elements than its superset,
+ * so the two rules can never disagree, and the count also orders grains that are
+ * not comparable at all (`{a}` before `{b, c}`), which subset alone leaves
+ * undecided. The weaker rule would be dead weight beside the stronger one.
+ *
+ * A dimension count is still only a proxy for cardinality — three tiny
+ * dimensions can product out smaller than one large one. Ordering on the
+ * manifest's `rowCount` would be the accurate version and is deliberately NOT
+ * used: member order would then depend on the bound manifest, so the build leg
+ * and the serve leg would synthesize different text and it would change on every
+ * refresh. Both legs producing byte-identical text is the property the whole
+ * mechanism rests on (see this module's header), and it is not worth narrowing
+ * for a sharper proxy.
+ *
+ * The generated name remains the final tie-break, so the order stays total and
+ * deterministic for grains of equal breadth.
+ */
+export function compareRollupBreadth(a: RollupPlan, b: RollupPlan): number {
+   return (
+      a.grainDimensions.length - b.grainDimensions.length ||
+      a.rollupSourceName.localeCompare(b.rollupSourceName)
+   );
+}
+
+/**
+ * Group one source's `#@ preaggregate` declarations into rollups — one per
+ * distinct grain, because ten measures at one grain should be one table and one
+ * `GROUP BY`, not ten.
+ *
+ * Assumes the source has already passed {@link validateSourcePreaggregation}: a
+ * declaration that would be refused at publish is skipped here rather than
+ * re-reported, so the two never disagree about what is buildable.
+ */
+/**
+ * The namespace a rollup inherits from its base's `#@ persist name=`, or undefined
+ * when there is none to inherit.
+ *
+ * Read from the source's annotations rather than from a build plan: synthesis runs
+ * before one exists, and the rollup's text has to carry the name it will be built
+ * under. Unreadable annotations are treated as absent for the same reason
+ * {@link readPreaggregateAnnotation} does — a malformed line must not take the
+ * package down.
+ *
+ * **A `storage=` base lends nothing — not its destination, and not a namespace.**
+ *
+ * Not lending the DESTINATION is a deliberate limit rather than an oversight. A
+ * rollup of X does belong where X's rows live, so inheriting it reads as obviously
+ * right, and it is not. Two cases, and they are exhaustive because inheritance
+ * requires `#@ persist` on the base:
+ *
+ *  - **The base is query-shaped**, so it builds a stored table of its own. The
+ *    serve shape rebinds by author NAME, so that table's binding claims the name
+ *    its rollups need and they are dropped from the shape. The rollups are built,
+ *    refreshed, and unreadable.
+ *  - **The base is not query-shaped** — a table extended with measures, the usual
+ *    case. The annotation PARSES here, so nothing in this function stops it; what
+ *    stops it is the build, which refuses the whole run when a `#@ persist` source
+ *    was dropped from the plan (`materialization_service.ts`, the
+ *    `relevantDropped` backstop). Nothing is built at all, rollups included.
+ *
+ * Stating the second case by its real mechanism on purpose. "A base can only carry
+ * `#@ persist storage=` if it is query-shaped" is true in outcome and wrong about
+ * why: an author can write it anywhere, and a reader checking that claim against
+ * the parser would find it parses fine and conclude the limit is unfounded.
+ *
+ * The destination is therefore written on the `#@ preaggregate` line, where the
+ * base is typically an unpersisted table source and nothing claims the name.
+ *
+ * (The colocated tier has no such problem, and the difference is not about
+ * inheritance: its companion composes members synthesis itself names, with the
+ * base under an import alias, so nothing is keyed on the author's source name.
+ * That is why a `name=` namespace inherits usefully and a destination does not.)
+ *
+ * Not lending the NAMESPACE is the older rule and unchanged: the base's `name=` is
+ * a name in the destination's catalog, so "beside it" has no shared meaning in the
+ * source warehouse where the rollup is built. Such an author names the namespace
+ * explicitly.
+ */
+function basePersistNamespace(source: ValidatableSource): string | undefined {
+   if (!source.annotations) return undefined;
+   try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tag = new Annotations(source.annotations as any).parseAsTag(
+         "@",
+      ).tag;
+      if (!tag.has("persist")) return undefined;
+      // `#@ persist name="x"` parses as two SIBLING keys, not a nested one — the
+      // same shape `readPreaggregateAnnotation` handles for `grain`. Nested form
+      // first so a future nested spelling wins, sibling as the documented fallback.
+      const storage = tag.text("persist", "storage") ?? tag.text("storage");
+      if (storage !== undefined && storage.trim() !== "") return undefined;
+      return persistNamespace(tag.text("persist", "name") ?? tag.text("name"));
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * A field the source does not publicly expose.
+ *
+ * Mirrors `isAccessRestricted` in materialization_serve_transform.ts and the
+ * predicate of the same name in preaggregation_validation.ts, and fails CLOSED in
+ * the same way: anything that is not exactly `public` is hidden, so a modifier
+ * kind added later is refused rather than admitted by default. `undefined` is a
+ * field with no modifier at all, which is public.
+ */
+function isHidden(field: { accessModifier?: unknown } | undefined): boolean {
+   return field?.accessModifier != null && field.accessModifier !== "public";
+}
+
+export function planSourcePreaggregation(
+   baseSourceName: string,
+   source: ValidatableSource,
+): RollupPlan[] {
+   const inheritedNamespace = basePersistNamespace(source);
+   /** Resolve a grain dimension back to the field it names, if it names one. */
+   const fieldNamed = (name: string) =>
+      (source.fields ?? []).find((f) => (f.as ?? f.name) === name);
+   // Canonical grain -> the measures declared at it. Keyed on the sorted grain so
+   // two authors writing the same dimensions in either order land in one entry.
+   const byGrain = new Map<
+      string,
+      {
+         grainDimensions: string[];
+         measures: RollupMeasure[];
+         namespace?: string;
+         storage?: string;
+      }
+   >();
+
+   for (const field of source.fields ?? []) {
+      const declaration = readPreaggregateAnnotation(
+         field as AnnotatableMeasure,
+      );
+      if (!declaration.declared || declaration.errors.length > 0) continue;
+
+      // Hidden measures never reach a rollup, and neither do hidden grain
+      // dimensions (below). Refused at publish too, but the skip here is not
+      // merely keeping the planner and the validator in agreement — it IS the
+      // access control. The publish refusal is a message; this is what guarantees
+      // no plan exists, and therefore that no table is built and nothing is
+      // served, however the refusal is surfaced.
+      if (isHidden(field)) continue;
+
+      const additivity = classifyMeasureAdditivity(field as never);
+      if (!additivity.additive) continue;
+
+      // A measure may be declared at several grains, which is several rollups:
+      // the finest grain that covers a query is often far larger than a coarser
+      // one, so one combined rollup would cover the same queries while saving
+      // much less. It joins each grain's group here.
+      for (const grain of declaration.grains) {
+         const grainDimensions = grain.dimensions;
+         if (grainDimensions.length === 0) continue;
+         // A grain is STORED, so a hidden dimension in it would be written into
+         // the rollup's table and re-declared on the serve shape — reachable
+         // through the source that hides it. Checked per grain rather than per
+         // measure: a measure may be declared at several grains and only one of
+         // them may name a hidden field.
+         //
+         // A dimension that resolves to no field is left alone, which keeps the
+         // planner's existing posture for a grain the validator refuses as
+         // unknown: absence is not the same as hidden, and inventing a skip here
+         // would silently change what an unknown grain does.
+         if (grainDimensions.some((d) => isHidden(fieldNamed(d)))) continue;
+
+         const key = grainDimensions.join("\u0000");
+         const entry = byGrain.get(key) ?? { grainDimensions, measures: [] };
+         const name = field.as ?? field.name;
+         entry.measures.push({
+            name,
+            partialName: `${name}${PARTIAL_SUFFIX}`,
+            reaggregate: additivity.reaggregate,
+         });
+         // First one named wins, in the field order the IR reports. Safe to be
+         // arbitrary only because two measures at ONE grain naming different
+         // namespaces is refused at publish (`conflicting_namespace`): the grain is
+         // a single table, so it cannot honour both. Across grains there is no
+         // conflict to resolve — each entry carries its own.
+         entry.namespace ??= grain.namespace;
+         // Same rule and the same justification as `namespace` above: two
+         // measures at ONE grain naming different destinations is refused at
+         // publish (`conflicting_storage`), because the grain is a single table
+         // and cannot be built in two stores.
+         entry.storage ??= grain.storage;
+         byGrain.set(key, entry);
+      }
+   }
+
+   return [...byGrain.values()]
+      .map(({ grainDimensions, measures, namespace, storage }) => ({
+         baseSourceName,
+         rollupSourceName: rollupSourceName(baseSourceName, grainDimensions),
+         // Author's choice first, the base's namespace as the fallback: a rollup of
+         // X belongs where X lives unless its author said otherwise.
+         namespace: namespace ?? inheritedNamespace,
+         // The grain's own, and only the grain's own: a destination is never
+         // inherited from the base (see basePersistNamespace).
+         storage,
+         grainDimensions,
+         // Sorted so the emitted text does not depend on field order in the IR.
+         measures: [...measures].sort((a, b) => a.name.localeCompare(b.name)),
+      }))
+      .sort(compareRollupBreadth);
+}
+
+/**
+ * Plan every source in a compiled model's contents.
+ *
+ * Sorted by base source name so the plan — and therefore the synthesized text —
+ * does not depend on the order the model happened to declare its sources in.
+ */
+export function planModelPreaggregation(
+   contents: Record<string, unknown>,
+): RollupPlan[] {
+   return Object.entries(contents)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .flatMap(([name, object]) => {
+         if (!object || typeof object !== "object") return [];
+         return planSourcePreaggregation(name, object as ValidatableSource);
+      });
+}
+
+/** One rollup's `#@ persist source: …` declaration. */
+function emitRollup(plan: RollupPlan): string {
+   const alias = baseAlias(plan.baseSourceName);
+   const partials = plan.measures
+      .map((m) => `    ${m.partialName} is ${m.name}`)
+      .join("\n");
+   // The re-declared measure keeps the base's NAME, so a query asking for
+   // `total` finds it on the member; only the stored column is renamed.
+   const merged = plan.measures
+      .map((m) => `    ${m.name} is ${m.partialName}.${m.reaggregate}()`)
+      .join("\n");
+   // The destination is QUOTED. Unquoted, the tag parser splits a name at its
+   // first non-identifier character and does so SILENTLY — measured:
+   // `storage=my-lake` yields `storage="my"` plus a stray `lake` tag and an empty
+   // parse log, so the rollup would target a destination called `my` with nothing
+   // anywhere saying so. The author's own annotation may have been quoted and
+   // read back correctly; it is this re-emit that would lose it.
+   //
+   // A destination wins, and takes NO `name=`. Placement inside a destination is
+   // derived rather than authored: the resolver refuses a dotted `name=` outright
+   // because a freshly provisioned catalog has no schema and the build emits a
+   // bare `CREATE OR REPLACE TABLE`. Emitting one here would produce a refusal
+   // naming a generated source and a `name=` the author never wrote.
+   //
+   // Bare is safe: the build self-assigns the physical name from the source name
+   // (`selfAssignTableName`), identically for both tiers, and a rollup's source
+   // name carries the grain digest — so it is unique per grain without a `name=`
+   // to make it so.
+   //
+   // Otherwise the colocated rule, unchanged: named only when a namespace was
+   // named or inherited, since the build self-assigns from the source name, which
+   // is what every dialect but BigQuery accepts, and inventing one would be a
+   // guess.
+   const persist = plan.storage
+      ? `#@ persist storage=${JSON.stringify(plan.storage)}`
+      : plan.namespace
+        ? `#@ persist name="${plan.namespace}.${plan.rollupSourceName}"`
+        : "#@ persist";
+   return `${persist}
+source: ${plan.rollupSourceName} is ${alias} -> {
+  group_by:
+${plan.grainDimensions.map((d) => `    ${d}`).join("\n")}
+  aggregate:
+${partials}
+} extend {
+  measure:
+${merged}
+}`;
+}
+
+/**
+ * The synthesized model text for one author model.
+ *
+ * `importPath` is what the emitted `import` statement resolves against — the
+ * author's model as the compiler will see it from the synthesized model's own
+ * URL. Returns `undefined` when nothing was declared, so a caller can skip the
+ * extra compile entirely rather than compiling a model that adds nothing.
+ *
+ * `experimentalFlags` are re-declared because `##!` flags do not cross an import:
+ * the synthesized model uses `compose()` and `#@ persist` in its own right.
+ */
+export function synthesizePreaggregationModel(
+   plans: RollupPlan[],
+   importPath: string,
+   experimentalFlags = "persistence composite_sources",
+): string | undefined {
+   if (plans.length === 0) return undefined;
+
+   // One import line per base, even when it has several grains.
+   const bases = [...new Set(plans.map((p) => p.baseSourceName))].sort();
+   const imports = bases
+      .map(
+         (base) =>
+            `import { ${baseAlias(base)} is ${base} } from ${JSON.stringify(importPath)}`,
+      )
+      .join("\n");
+
+   // The base LAST in every compose(), so it is the fallback member: the resolver
+   // takes the first member that covers the query, and the base covers everything.
+   //
+   // A `storage=` rollup is DECLARED above (it must be, or it is never built) but is
+   // NOT a member here. This composite is the colocated serve path, and its members
+   // are resolved through the same-connection build manifest — which deliberately
+   // carries no storage entries, since those tables live on another engine. So a
+   // storage-bound member can never be substituted: the resolver would pick it for
+   // a query it covers, find no table, and recompute the rollup from the base.
+   //
+   // That costs more than it sounds. Ordering members by grain breadth means a
+   // narrow storage-bound grain is offered BEFORE a wider colocated one, so in a
+   // model mixing the two it wins queries the colocated rollup covers and has a
+   // built table for — turning a table read into a GROUP BY of the base. Under
+   // `PERSIST_STORAGE_MODE=off` the storage rollup has no table anywhere, so it is
+   // not a transient cost that a build clears; it is permanent.
+   //
+   // Filtering the MEMBER list rather than the plan list is the whole of the fix:
+   // the rollup's own `#@ persist` declaration stays, so the build still builds it
+   // and both legs still synthesize identical text.
+   const composites = bases
+      .map((base) => {
+         const members = plans
+            .filter((p) => p.baseSourceName === base && !p.storage)
+            .map((p) => p.rollupSourceName);
+         return `source: ${base} is compose(${[...members, baseAlias(base)].join(", ")})`;
+      })
+      .join("\n");
+
+   return `##! experimental { ${experimentalFlags} }
+${imports}
+
+${plans.map(emitRollup).join("\n\n")}
+
+${composites}
+`;
+}

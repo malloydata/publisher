@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Scope Resolution
 
 Every `/malloy-review` invocation must resolve to a **bounded, explicit scope** before any reviewer runs. This file is the single source of truth for how that resolution happens and why.

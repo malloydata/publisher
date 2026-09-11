@@ -1,9 +1,12 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 /**
  * Centralized telemetry for materialization builds.
  *
  * Operators need to answer "are builds completing, how long do they take, and
  * where are they failing?" without grepping logs. The run counter carries
- * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`failed`|`cancelled`);
+ * `mode` (`auto`|`orchestrated`) and `outcome` (`success`|`partial`|`failed`|`cancelled`);
  * the run-duration histogram carries `mode` so a dashboard can render auto-run
  * vs orchestrated build latency side by side.
  *
@@ -16,7 +19,16 @@ import { type Counter, type Histogram } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
 
 export type MaterializationMode = "auto" | "orchestrated";
-export type MaterializationOutcome = "success" | "failed" | "cancelled";
+/**
+ * `partial` is a run that committed a manifest while some of its sources failed:
+ * distinct from `success` because the manifest is missing tables a consumer
+ * expected, and from `failed` because the sources that did build are usable.
+ */
+export type MaterializationOutcome =
+   | "success"
+   | "partial"
+   | "failed"
+   | "cancelled";
 /** Manifest bind outcome: timeout is split out from generic failure on purpose. */
 export type ManifestBindOutcome = "success" | "failure" | "timeout";
 /**
@@ -24,14 +36,26 @@ export type ManifestBindOutcome = "success" | "failure" | "timeout";
  * warehouse (colocated, in-warehouse CTAS) or a DuckDB/DuckLake `storage=`
  * destination (federated passthrough CTAS). The two have very different latency
  * and failure profiles, so build/drop metrics are labeled with it rather than
- * pooling the two into one series.
+ * pooling the two into one series. `delta` is an incremental refresh advancing
+ * an in-warehouse table in place — typically far cheaper than a CTAS, which is
+ * why it gets its own series instead of skewing `in_warehouse`.
+ *
+ * `delta_storage` is the same advance applied to a `storage=` table, kept apart
+ * from `delta` for the reason `storage` is kept apart from `in_warehouse`: its
+ * rows cross an egress boundary and its DML runs on a different engine, so
+ * pooling the two would average two different cost profiles into one number.
  */
-export type StorageBuildEngine = "storage" | "in_warehouse";
+export type StorageBuildEngine =
+   | "storage"
+   | "in_warehouse"
+   | "delta"
+   | "delta_storage";
 /** Why a source was refused materialization into a storage destination. */
 export type EligibilityRefusalReason =
    | "free_parameter"
    | "given"
    | "authorize"
+   | "partition"
    | "not_duckdb_portable"
    | "public_surface_unknown";
 /**
@@ -47,7 +71,12 @@ export type EligibilityRefusalReason =
 export type ChainedStorageBuildOutcome =
    | "parent_reuse"
    | "inline_fallback"
-   | "strict_refused";
+   | "strict_refused"
+   // The parent-reuse attempt failed on infrastructure (attach, CTAS, the
+   // destination being unreachable) rather than on shape. Distinct from
+   // `inline_fallback` because it is an outage, not a modelling limit: the build
+   // fails rather than recomputing from raw against the same destination.
+   | "infra_failure";
 
 const resetHooks: (() => void)[] = [];
 
@@ -79,7 +108,7 @@ function lazyHistogram(
 
 const runCounter = lazyCounter(
    "publisher_materialization_runs_total",
-   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'failed'|'cancelled').",
+   "Materialization builds completed. Labels: mode ('auto'|'orchestrated'), outcome ('success'|'partial'|'failed'|'cancelled').",
 );
 const runDuration = lazyHistogram(
    "publisher_materialization_run_duration_ms",
@@ -88,12 +117,28 @@ const runDuration = lazyHistogram(
 );
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
-   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused').",
+   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused'|'failed').",
+);
+const incrementalStepCounter = lazyCounter(
+   "publisher_materialization_incremental_step_total",
+   'Refreshes of a source declared refresh="incremental". Labels: step ' +
+      "('delta'|'seed'|'skip'), and for seed/skip a bounded reason code " +
+      "(IncrementalStepReasonCode). A 'seed' is a full rebuild the delta path " +
+      "declined, so a rising seed rate means the feature is not engaging — and " +
+      "the reason label says why without a log dive.",
 );
 const buildPlanComputeDuration = lazyHistogram(
    "publisher_materialization_build_plan_compute_duration_ms",
    "Wall-clock duration of compiling a package's build plan (Package.buildPlan).",
    "ms",
+);
+const buildPlanComputeFailedCounter = lazyCounter(
+   "publisher_materialization_build_plan_compute_failed_total",
+   "Package loads whose build plan failed to compute. The ROOT-CAUSE signal for " +
+      "colocated_bind_dropped{reason='build_plan_unavailable'}, which fires only " +
+      "per dropped entry per load -- a package that loads once and is never " +
+      "reloaded ticks that counter once and then sits with its colocated tier " +
+      "off and a flat total, indistinguishable from healthy.",
 );
 const autoLoadCounter = lazyCounter(
    "publisher_materialization_auto_load_total",
@@ -114,6 +159,32 @@ const manifestBindDegradedCounter = lazyCounter(
       "(build-side seed). A misconfiguration that breaks the source on a " +
       "case-folding engine (Snowflake); alertable.",
 );
+const duplicateTargetSkipCounter = lazyCounter(
+   "publisher_materialization_duplicate_target_skipped_total",
+   "Sources skipped because the physical table they name was already built in " +
+      "this run. Ordinary for a package that extends a persisted source; a " +
+      "rising count against a package with no extension means the plan is " +
+      "enumerating one table under more names than expected.",
+);
+const sharedAddressInstructionCounter = lazyCounter(
+   "publisher_materialization_shared_address_instructions_total",
+   "Content addresses that arrived with more than one instruction naming a " +
+      "DIFFERENT physical table. The host minted a table per source where " +
+      "several sources share one artifact. With a sourceID on each instruction " +
+      "every table is built and only one is recorded, so the rest are orphaned; " +
+      "without one the last instruction wins and the earlier names are never " +
+      "built. Wasteful, not wrong — the table's CONTENT is the same either way.",
+);
+const tableCollisionCounter = lazyCounter(
+   "publisher_materialization_table_collision_total",
+   "Two definitions with DIFFERENT content addresses materializing into ONE " +
+      "physical table. Each build overwrites the other's rows while both " +
+      "addresses resolve to the table at serve time, so a query is answered " +
+      "from another source's data. A wrong answer, not wasted work — page on " +
+      "this one. Refused instead of counted-and-continued when " +
+      "PERSIST_COLLISION_ENFORCE is set, so a non-zero rate here is also the " +
+      "measure of what flipping that flag would start refusing.",
+);
 const sourceBuildDuration = lazyHistogram(
    "publisher_materialization_source_build_duration_ms",
    "Wall-clock duration of building a single persist source.",
@@ -130,12 +201,43 @@ const scheduledFireCounter = lazyCounter(
 );
 const storageServeRoutingCounter = lazyCounter(
    "publisher_storage_serve_routing_total",
-   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback').",
+   "storage= serve routing decisions. Label: outcome ('storage'|'live_fallback'|" +
+      "'runtime_live_fallback'|'blocked_by_row_level_gate'). Covers the storage= " +
+      "tier only; a colocated #@ persist hit is in neither the numerator nor the " +
+      "denominator. NOTE 'live_fallback' here means the transform was INELIGIBLE, " +
+      "which QueryResult.servedFrom reports as null - that field's " +
+      "'live_fallback' is this counter's 'runtime_live_fallback'.",
+);
+const storageTableRetainedCounter = lazyCounter(
+   "publisher_storage_tables_retained_total",
+   "Tables a FAILED run left in a storage= destination and deliberately did not " +
+      "reclaim, because the source is refreshed incrementally and the name may be " +
+      "the one it serves from. Label: destination. Not all of these are orphans — " +
+      "a rebuild at a fresh generational name is, a seed on the live serving name " +
+      "is not, and the manifest entry cannot separate them — so read this as an " +
+      "upper bound on what is accumulating rather than a leak count. It is the " +
+      "only accounting there is until reclaiming a destination exists, which is " +
+      "why it is a counter and not just a log line: the question is a rate, not " +
+      "whether it ever happened.",
 );
 const storageBuildFailureCounter = lazyCounter(
    "publisher_storage_build_failures_total",
    "storage= build failures (federation/passthrough/attach/CTAS), distinct from " +
-      "in-warehouse build failures. Label: destination (connection name).",
+      "in-warehouse build failures. Labels: destination (connection name), " +
+      "reason ('build_failed'|'billed_read_not_captured'). The second is the " +
+      "expensive one: the warehouse read ran and was charged, and the rows could " +
+      "not be captured — so a re-drive pays for it again. Worth alerting on " +
+      "separately from a failure that costs only a retry.",
+);
+const attributionSkippedCounter = lazyCounter(
+   "publisher_storage_build_attribution_skipped_total",
+   "storage= builds whose warehouse read went out UNATTRIBUTED while tagging was " +
+      "on. Label: reason ('job_listing_unavailable'|'tag_failed'|" +
+      "'read_row_not_found'|'read_row_ambiguous'|'cost_query_failed'). " +
+      "The read still ran and the " +
+      "build still succeeded — what was lost is the label in the customer's own " +
+      "query history, and the cost on this side. Without this an operator who " +
+      "turns tagging on and sees nothing has a single log line to go on.",
 );
 const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
@@ -160,6 +262,16 @@ const chainedStorageBuildCounter = lazyCounter(
       "upstream). Label: outcome ('parent_reuse'|'inline_fallback'|" +
       "'strict_refused'). The parent_reuse share is the headline signal for how " +
       "far the stack-on-the-parent path gets us vs recompute-from-raw.",
+);
+const colocatedBindDroppedCounter = lazyCounter(
+   "publisher_materialization_colocated_bind_dropped_total",
+   "Colocated serve-manifest entries dropped by bindColocatedServeManifest. " +
+      "Label: reason ('build_plan_unavailable' when the package's build plan " +
+      "failed to compute, so no source was examined at all; 'refused' when the " +
+      "source itself was examined and found ineligible). 'build_plan_unavailable' " +
+      "is a whole-package regression -- colocated is the default tier and is NOT " +
+      "gated by PERSIST_STORAGE_MODE, so every colocated binding for the package " +
+      "reverts to live recompute until a load succeeds.",
 );
 
 /**
@@ -189,11 +301,26 @@ export function recordMaterializationRun(
  * the main lever on materialization cost.
  */
 export function recordSourcesOutcome(
-   outcome: "built" | "reused",
+   outcome: "built" | "reused" | "failed",
    count: number,
 ): void {
    if (count <= 0) return;
    sourcesCounter().add(count, { outcome });
+}
+
+/**
+ * Record what one incremental source's refresh actually did. The delta:seed
+ * ratio is the health signal for the feature: a source that declares incremental
+ * refresh but keeps seeding is being rebuilt in full every run, which is correct
+ * but costs exactly what the declaration was meant to save. The `reason` label
+ * (seed/skip only) is the bounded code for why; the free-text specifics stay in
+ * the accompanying warn log.
+ */
+export function recordIncrementalStep(
+   step: "delta" | "seed" | "skip",
+   reason?: string,
+): void {
+   incrementalStepCounter().add(1, reason ? { step, reason } : { step });
 }
 
 /**
@@ -203,6 +330,15 @@ export function recordSourcesOutcome(
  */
 export function recordBuildPlanComputeDuration(durationMs: number): void {
    buildPlanComputeDuration().record(durationMs);
+}
+
+/**
+ * Record that a package's build plan failed to compute at load. The package
+ * name stays in the accompanying warn log rather than becoming a label, as
+ * everywhere else in this file.
+ */
+export function recordBuildPlanComputeFailed(): void {
+   buildPlanComputeFailedCounter().add(1);
 }
 
 /**
@@ -221,6 +357,34 @@ export function recordAutoLoadOutcome(outcome: "success" | "failure"): void {
  */
 export function recordConnectionDigestSkipped(): void {
    connectionDigestSkipCounter().add(1);
+}
+
+/**
+ * Record a source skipped because its physical table was already built in this
+ * run. Expected whenever several sources map onto one artifact — a base and its
+ * `extend` share a content address — so this is a volume signal, not a fault.
+ */
+export function recordDuplicateTargetSkipped(): void {
+   duplicateTargetSkipCounter().add(1);
+}
+
+/**
+ * Record a content address that arrived with instructions naming more than one
+ * physical table. The publisher cannot resolve this — the host asked for both
+ * tables — so it builds each and records one, leaving the others unreferenced.
+ */
+export function recordSharedAddressInstructions(): void {
+   sharedAddressInstructionCounter().add(1);
+}
+
+/**
+ * Record two definitions materializing into one physical table. Distinct from
+ * {@link recordSharedAddressInstructions}: that one is a host minting more tables
+ * than an artifact needs (wasteful), this one is two different relations sharing a
+ * table (serve-time wrong data).
+ */
+export function recordTableCollision(): void {
+   tableCollisionCounter().add(1);
 }
 
 /**
@@ -263,12 +427,39 @@ export function recordDropTables(
 }
 
 /**
+ * Record a stored table a failed run left behind without reclaiming. Counted per
+ * destination so accumulation is attributable to a store rather than to the fleet.
+ */
+export function recordStorageTableRetained(destination: string): void {
+   storageTableRetainedCounter().add(1, { destination });
+}
+
+/**
  * Record a `storage=` build failure (federation / passthrough / attach / CTAS),
  * counted separately from in-warehouse build failures because the storage path
  * has its own failure modes and destination axis.
  */
-export function recordStorageBuildFailure(destination: string): void {
-   storageBuildFailureCounter().add(1, { destination });
+export function recordStorageBuildFailure(
+   destination: string,
+   reason: "build_failed" | "billed_read_not_captured" = "build_failed",
+): void {
+   storageBuildFailureCounter().add(1, { destination, reason });
+}
+
+/**
+ * Record a build that ran its warehouse read WITHOUT attribution, despite tagging
+ * being on. Not a failure — the build succeeded and the rows are correct — which
+ * is exactly why it needs a counter: nothing else about the run looks wrong.
+ */
+export function recordAttributionSkipped(
+   reason:
+      | "job_listing_unavailable"
+      | "tag_failed"
+      | "read_row_not_found"
+      | "read_row_ambiguous"
+      | "cost_query_failed",
+): void {
+   attributionSkippedCounter().add(1, { reason });
 }
 
 /**
@@ -309,14 +500,64 @@ export function recordServeShapeTypeFallback(
  * Record a `storage=` serve-routing decision: `storage` = the query was served
  * from the materialized table via the virtual-source transform; `live_fallback`
  * = the transform was ineligible for this query (a refinement it can't
- * reproduce, an unbound source, mode not `on`) so it was served live. This hit
- * rate is the headline KPI of the storage tier — otherwise the fallback side is
- * only a DEBUG log.
+ * reproduce, an unbound source, mode not `on`) so it was served live;
+ * `runtime_live_fallback` = the query DID route to storage and the store then
+ * failed underneath it, and every binding's `freshnessFallback=live` allowed it
+ * to degrade. That last one is the operationally interesting label: it means the
+ * tier is broken while queries still succeed, which is invisible in the hit rate
+ * alone. `blocked_by_row_level_gate` = a row-level-gated entry point vetoed
+ * BOTH the storage and pre-aggregation tiers before either was attempted — the
+ * one outcome with no compile attempt behind it, so without this label a
+ * blocked query recorded nothing at all rather than reading as a fallback.
+ * This hit rate is the headline KPI of the storage tier; the fallback side also
+ * logs its reason per query at INFO — the compile error, plus the sources the
+ * shape offered and the ones the freshness gate withheld, which is what
+ * separates "never materialized" from "materialized but stale". That is the only
+ * per-query account of a miss there is.
+ *
+ * ⚠️ `live_fallback` here is NOT `QueryResult.servedFrom`'s `live_fallback`, and
+ * joining a dashboard across the two on that token is wrong in both directions.
+ * This label means the transform was ineligible, which that field reports as
+ * `null`; the run-time store failure that field calls `live_fallback` is
+ * `runtime_live_fallback` here. (`manifestBindingStatus` spends the same token on
+ * a third thing again — a configured `manifestLocation` whose fetch or bind
+ * failed.) Each surface is internally consistent and none means what the others
+ * do.
+ *
+ * Scope worth knowing before reading the hit rate as "did materialization work":
+ * this counter covers the `storage=` tier only. A COLOCATED `#@ persist` hit
+ * never reaches the routing decision, so it is absent from the numerator AND the
+ * denominator rather than counted as a miss — the rate is silent about that tier
+ * rather than pessimistic about it, which the "headline KPI" framing otherwise
+ * invites you to assume.
+ *
+ * `origin` separates the two kinds of storage hit. A lake-served pre-aggregation
+ * rollup routes through the SAME serve shape as an authored `storage=` source, so
+ * it is counted as a storage hit either way — the label makes the two SPLITTABLE,
+ * it does not stop the total from including rollups. A consumer summing by
+ * `outcome` alone therefore starts counting rollup hits in the headline rate
+ * without changing anything; it has to group by `origin` to get what it had
+ * before. `persist` is an authored source, `preaggregate` a
+ * query answered by a rollup, and the label is absent for outcomes where the
+ * distinction has no meaning (nothing routed, so nothing has an origin).
+ *
+ * An attribute rather than a new `outcome` value on purpose: an outcome enum is
+ * mirrored into consumers that generate strict clients from it, where an
+ * unexpected value throws on the consuming hop. An added attribute breaks no
+ * consumer.
  */
 export function recordStorageServeRouting(
-   outcome: "storage" | "live_fallback",
+   outcome:
+      | "storage"
+      | "live_fallback"
+      | "runtime_live_fallback"
+      | "blocked_by_row_level_gate",
+   origin?: "persist" | "preaggregate",
 ): void {
-   storageServeRoutingCounter().add(1, { outcome });
+   storageServeRoutingCounter().add(1, {
+      outcome,
+      ...(origin ? { origin } : {}),
+   });
 }
 
 /**
@@ -329,6 +570,17 @@ export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,
 ): void {
    chainedStorageBuildCounter().add(1, { outcome });
+}
+
+/**
+ * Record one colocated serve-manifest entry dropped by
+ * `Package.bindColocatedServeManifest`. See {@link colocatedBindDroppedCounter}
+ * for why `build_plan_unavailable` is the label worth alerting on.
+ */
+export function recordColocatedBindDropped(
+   reason: "build_plan_unavailable" | "refused",
+): void {
+   colocatedBindDroppedCounter().add(1, { reason });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

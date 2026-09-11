@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { useMemo } from "react";
 import { Given, RawNotebook } from "../client";
 

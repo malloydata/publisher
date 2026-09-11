@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Box, Button, Snackbar, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";

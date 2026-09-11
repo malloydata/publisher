@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Access Modifiers: Curate the Interface
 
 Add `##! experimental.access_modifiers` at the top of base source files.

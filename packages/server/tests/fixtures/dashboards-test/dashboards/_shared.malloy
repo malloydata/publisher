@@ -1,0 +1,7 @@
+// A file in dashboards/ with no artifact tag is a shared include, not a
+// dashboard: discovery skips it rather than erroring.
+import { orders } from '../orders.malloy'
+
+source: recent_orders is orders extend {
+   where: ordered_at > @2024-02-01
+}

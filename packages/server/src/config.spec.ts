@@ -1,7 +1,15 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
 import {
+   convertConnectionsToApiConnections,
+   DEFAULT_EMBEDDING_MIN_SIMILARITY,
+   getEmbeddingConfig,
+   getPersistCollisionEnforce,
+   getProcessedPublisherConfig,
    getPublisherConfig,
    getPublisherConfigDir,
    type PublisherConfig,
@@ -968,6 +976,131 @@ describe("Config legacy 'projects' key back-compat", () => {
    });
 });
 
+describe("getProcessedPublisherConfig credential logging", () => {
+   const testServerRoot = path.join(
+      process.cwd(),
+      "test-temp-config-log-redaction",
+   );
+   const configPath = path.join(testServerRoot, PUBLISHER_CONFIG_NAME);
+
+   beforeEach(() => {
+      if (!fs.existsSync(testServerRoot)) {
+         fs.mkdirSync(testServerRoot, { recursive: true });
+      }
+   });
+
+   afterEach(() => {
+      if (fs.existsSync(configPath)) {
+         fs.unlinkSync(configPath);
+      }
+      if (fs.existsSync(testServerRoot)) {
+         fs.rmdirSync(testServerRoot, { recursive: true });
+      }
+      delete process.env.TEST_LOG_REDACTION_PASSWORD;
+   });
+
+   it("keeps connection credentials out of the log when an environment is missing its name", async () => {
+      // The entry is skipped for a missing `name`, but it still carries every
+      // connection and storage destination, and `${VAR}` references are already
+      // substituted by the time the skip is logged. Nothing downstream saves it:
+      // redactSensitive is a call-site helper, not a winston format.
+      const secret = "pg-password-that-must-not-be-logged";
+      process.env.TEST_LOG_REDACTION_PASSWORD = secret;
+
+      const config = {
+         frozenConfig: false,
+         environments: [
+            {
+               // `name` deliberately absent: this is the path under test.
+               packages: [{ name: "p1", location: "./packages/p1" }],
+               connections: [
+                  {
+                     name: "pg",
+                     type: "postgres",
+                     postgresConnection: {
+                        password: "${TEST_LOG_REDACTION_PASSWORD}",
+                     },
+                  },
+               ],
+            },
+         ],
+      };
+
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+      const { logger } = await import("./logger");
+      const originalWarn = logger.warn;
+      const calls: unknown[][] = [];
+      logger.warn = ((...args: unknown[]) => {
+         calls.push(args);
+         return logger;
+      }) as typeof logger.warn;
+
+      try {
+         const result = getProcessedPublisherConfig(testServerRoot);
+
+         expect(result.environments.length).toBe(0);
+
+         const skipWarning = calls.find(
+            (args) =>
+               typeof args[0] === "string" &&
+               args[0].includes('missing or invalid "name" field'),
+         );
+         expect(skipWarning).toBeDefined();
+
+         // Asserts on the whole payload rather than on the absence of one key,
+         // so re-introducing the config under a different key still fails here.
+         expect(JSON.stringify(skipWarning)).not.toContain(secret);
+      } finally {
+         logger.warn = originalWarn;
+      }
+   });
+
+   it("keeps connection credentials out of the log when a connection is missing its name", async () => {
+      // Sibling of the environment case above: a connection skipped for a
+      // missing `name` reaches the warning with its `${VAR}` references already
+      // substituted, so logging the entry logs the credential.
+      const secret = "conn-password-that-must-not-be-logged";
+
+      const { logger } = await import("./logger");
+      const originalWarn = logger.warn;
+      const calls: unknown[][] = [];
+      logger.warn = ((...args: unknown[]) => {
+         calls.push(args);
+         return logger;
+      }) as typeof logger.warn;
+
+      try {
+         const result = convertConnectionsToApiConnections([
+            {
+               // `name` deliberately absent: this is the path under test.
+               type: "postgres",
+               postgresConnection: { password: secret },
+            },
+         ] as unknown as Parameters<
+            typeof convertConnectionsToApiConnections
+         >[0]);
+
+         expect(result.length).toBe(0);
+
+         const skipWarning = calls.find(
+            (args) =>
+               typeof args[0] === "string" &&
+               args[0].includes('missing or invalid "name" field'),
+         );
+         expect(skipWarning).toBeDefined();
+
+         // Whole-payload assertion, for the same reason as the environment case.
+         expect(JSON.stringify(skipWarning)).not.toContain(secret);
+         // The type still identifies the offending entry, since the name is
+         // exactly what is missing.
+         expect(JSON.stringify(skipWarning)).toContain("postgres");
+      } finally {
+         logger.warn = originalWarn;
+      }
+   });
+});
+
 describe("Committed example configs", () => {
    const serverDir = path.resolve(__dirname, "..");
 
@@ -1492,5 +1625,117 @@ describe("getPublisherConfigDir", () => {
       // server root, which is what this did before the anchor moved.
       process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
       expect(getPublisherConfigDir(testRoot)).toBeNull();
+   });
+});
+
+describe("PERSIST_COLLISION_ENFORCE", () => {
+   // The flag decides whether a persist-target collision blocks a publish, so
+   // mis-parsing it leaves the check warn-only — failing open in exactly the
+   // direction it exists to prevent. An ad-hoc `=== "true"` did that for `1`,
+   // `yes` and `on`.
+   const prev = process.env.PERSIST_COLLISION_ENFORCE;
+   afterEach(() => {
+      if (prev === undefined) delete process.env.PERSIST_COLLISION_ENFORCE;
+      else process.env.PERSIST_COLLISION_ENFORCE = prev;
+   });
+
+   it("defaults to warn-only when unset or empty", () => {
+      delete process.env.PERSIST_COLLISION_ENFORCE;
+      expect(getPersistCollisionEnforce()).toBe(false);
+      process.env.PERSIST_COLLISION_ENFORCE = "   ";
+      expect(getPersistCollisionEnforce()).toBe(false);
+   });
+
+   it("enforces for every spelling of true an operator might use", () => {
+      for (const raw of ["true", "TRUE", " True ", "1", "yes", "on"]) {
+         process.env.PERSIST_COLLISION_ENFORCE = raw;
+         expect(getPersistCollisionEnforce()).toBe(true);
+      }
+   });
+
+   it("stays warn-only for every spelling of false", () => {
+      for (const raw of ["false", "FALSE", "0", "no", "off"]) {
+         process.env.PERSIST_COLLISION_ENFORCE = raw;
+         expect(getPersistCollisionEnforce()).toBe(false);
+      }
+   });
+
+   it("throws on a value that is neither, rather than guessing", () => {
+      process.env.PERSIST_COLLISION_ENFORCE = "enabled";
+      expect(() => getPersistCollisionEnforce()).toThrow(/expected a boolean/i);
+   });
+});
+
+describe("EMBEDDING_MIN_SIMILARITY", () => {
+   // The floor is a property of the embedding model, not of Publisher:
+   // cosine similarity is not calibrated across models, so an operator
+   // pointing EMBEDDING_API_BASE at a different endpoint needs to retune it
+   // without a rebuild. It is an env var rather than a publisher.config.json
+   // field because picking up a config change needs --init, which wipes
+   // publisher_data and the embedding cache with it -- a full paid re-embed
+   // on every tuning pass, for a value meant to be tuned iteratively.
+   const saved = { ...process.env };
+   beforeEach(() => {
+      process.env.EMBEDDING_API_KEY = "test-key";
+   });
+   afterEach(() => {
+      process.env = { ...saved };
+   });
+
+   it("defaults to 0.20, the hosted pipeline's min_score", () => {
+      delete process.env.EMBEDDING_MIN_SIMILARITY;
+      expect(getEmbeddingConfig()?.minSimilarity).toBe(
+         DEFAULT_EMBEDDING_MIN_SIMILARITY,
+      );
+      expect(DEFAULT_EMBEDDING_MIN_SIMILARITY).toBe(0.2);
+   });
+
+   it("takes an operator override", () => {
+      process.env.EMBEDDING_MIN_SIMILARITY = "0.35";
+      expect(getEmbeddingConfig()?.minSimilarity).toBe(0.35);
+   });
+
+   it("accepts 0, which disables the floor rather than meaning unset", () => {
+      process.env.EMBEDDING_MIN_SIMILARITY = "0";
+      expect(getEmbeddingConfig()?.minSimilarity).toBe(0);
+   });
+
+   // Rejected, never clamped and never ignored: a floor of 1 returns nothing
+   // and a negative one returns everything, and both read as a broken index
+   // rather than a bad setting. An invalid value must not go on to drive
+   // retrieval.
+   it.each([
+      ["1", /in \[0, 1\)/],
+      ["1.5", /in \[0, 1\)/],
+      ["-0.1", /in \[0, 1\)/],
+      ["high", /expected a finite number/i],
+   ])("rejects %s at startup", (value, message) => {
+      process.env.EMBEDDING_MIN_SIMILARITY = value;
+      expect(() => getEmbeddingConfig()).toThrow(message);
+   });
+
+   it.each(["0.5abc", "0.5 0.6", "0x10", "1abc"])(
+      "rejects %s rather than reading a prefix of it",
+      (value) => {
+         // Number.parseFloat stops at the first character it cannot read, so
+         // these used to yield 0.5, 0.5, 0 and 1 -- an invalid setting that
+         // went on to drive retrieval, which is exactly what the docs promise
+         // does not happen.
+         process.env.EMBEDDING_MIN_SIMILARITY = value;
+         expect(() => getEmbeddingConfig()).toThrow(/expected a finite number/);
+      },
+   );
+
+   it.each(["0.50", ".5", "5e-1"])("accepts %s", (value) => {
+      // The forms a round-trip check like parseIntEnv's would wrongly reject.
+      process.env.EMBEDDING_MIN_SIMILARITY = value;
+      expect(getEmbeddingConfig()?.minSimilarity).toBeCloseTo(0.5, 6);
+   });
+
+   it("names the variable and a working value in the error", () => {
+      process.env.EMBEDDING_MIN_SIMILARITY = "2";
+      expect(() => getEmbeddingConfig()).toThrow(
+         /EMBEDDING_MIN_SIMILARITY.*Fix: EMBEDDING_MIN_SIMILARITY=0\.35/s,
+      );
    });
 });

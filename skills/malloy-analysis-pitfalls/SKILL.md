@@ -2,6 +2,11 @@
 name: malloy-analysis-pitfalls
 description: Common data analysis pitfalls to watch for during query construction and result interpretation. Reference this checklist when verifying queries and results to catch errors before presenting an answer.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # Data Analysis Pitfalls
 
 Watch for these common mistakes throughout the analysis workflow. When you encounter one, fix it before presenting results.

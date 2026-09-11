@@ -1,3 +1,8 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
 # AGENTS.md: building an in-package HTML data app
 
 Guidance for an AI coding agent working in this package. It mirrors the Malloy

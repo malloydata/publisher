@@ -3,6 +3,10 @@ id: package-unload-while-serving
 tags: lifecycle
 package: puw
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Deleting a package while it serves from storage stops serving
 

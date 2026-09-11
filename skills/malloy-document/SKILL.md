@@ -1,7 +1,11 @@
 ---
 name: malloy-document
-description: Add documentation with #(doc) tags to Malloy models so fields and sources are described in plain language. Use when user asks to "add documentation", "add doc tags", "document the model", or wants fields and sources described for natural-language search and discovery. For declaring parameterizable filters with #(filter), see the malloy-model skill. Filters are a runtime/modeling construct (governance, latency, correctness), not a documentation tag.
+description: 'Add documentation with #(doc) tags to Malloy models so fields and sources are described in plain language. Use when user asks to "add documentation", "add doc tags", "document the model", or wants fields and sources described for natural-language search and discovery. For declaring parameterizable filters with #(filter), see the malloy-model skill. Filters are a runtime/modeling construct (governance, latency, correctness), not a documentation tag.'
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # Documenting a Malloy Model
 
@@ -10,7 +14,7 @@ Add `#(doc)` tags to describe sources and fields in plain language so they are e
 | Tag | Purpose | Goes on |
 |-----|---------|---------|
 | `#(doc)` | Plain-language description for natural-language search | source, dimension, measure, view, join |
-| `#(filter)` | Declare a parameterizable filter (runtime/modeling concern, see `malloy-model`) | source |
+| `#(filter)` | Deprecated, prefer `given:`. Parameterizable filter (runtime/modeling concern, see `malloy-model`) | source |
 
 `#(doc)` is a standard Malloy annotation. It documents a field or source with a human-readable description that downstream tools can surface and search against.
 
@@ -39,7 +43,8 @@ measure:
 Doc strings power natural-language search: users type plain-English questions and the system matches against your `#(doc)` strings. Write descriptions that match how analysts would search:
 
 - **Include business meaning**, not code mechanics: what it represents, not how it's implemented
-- **Include units** (USD, count, percentage) and valid values for categorical fields
+- **Include units** (USD, count, percentage): a unit is part of what a number means. For counts, name the unit being counted and say whether it counts distinct entities or events: "total students enrolled" on a subject×term-grain measure counts enrolments, not students, and a student taking four subjects counts four times. If the model cannot answer the distinct-entity version, say so in the doc.
+- **List a categorical field's values only while the list stays short** (roughly ten or fewer). A handful of values makes a description concrete; past that, say what the field captures instead, because the dump crowds out the meaning and goes stale the moment someone adds a value. Treat ten as a rule of thumb, not a hard cap.
 - **Avoid Malloy jargon**: never use "filterable", "groupable", "dimension", "measure", "aggregation"
 
 **Good examples:**
@@ -52,9 +57,29 @@ Doc strings power natural-language search: users type plain-English questions an
 - `#(doc) Groupable by region`: "groupable" is a system concept
 - `#(doc) Aggregation of total sales`: "aggregation" doesn't match natural queries
 
-## #(filter): see `malloy-model`
+### Mark conventions as conventions
 
-`#(filter)` is also a `#(...)`-shaped annotation, but unlike `#(doc)` it's a **runtime/modeling construct**: it shapes governance, query latency, and correctness, not discoverability. The full reference (syntax, filter types, `required` / `implicit` flags, and when each applies) lives in `malloy-model` § Parameterizable Filters with `#(filter)` alongside the other source-authoring constructs.
+A `#(doc)` must let a reader tell a **measured fact** from a **choice someone made**. Any dimension or measure encoding a threshold, bucket boundary, or business definition that the user did not explicitly confirm must say so in its own doc string:
+
+```malloy
+// WRONG - a chosen cutoff stated as fact
+#(doc) Popularity band: Hit (70+), Popular (40-69), Moderate (15-39), Obscure (<15)
+
+// RIGHT - the choice is visible and auditable
+#(doc) Popularity band: Hit (70+), Popular (40-69), Moderate (15-39), Obscure (<15).
+#(doc) 70 follows the source dataset's own high-popularity cutoff; 40 and 15 are
+#(doc) working boundaries for this model, not settled by the data.
+```
+
+These are governed models: a threshold nobody confirmed is an assumption, and an unlabeled assumption reads as a fact to everyone downstream, including the agents that answer questions from these docs. The hedge in the `#(doc)` is the artifact-time record; the "Flag Ambiguous Descriptions" table below is the conversation-time surface for getting them confirmed, and `modeling-notes.md`'s "Open decisions" section (see `skill:malloy-modeling`) is where they wait for a subject-matter expert.
+
+Do not hedge measured facts: `avg_energy is avg(energy)` needs no caveat. Hedge only where a domain expert could reasonably choose differently.
+
+## #(filter): deprecated, see `malloy-model`
+
+`#(filter)` is deprecated in favour of native Malloy `given:` parameters. Do not add new `#(filter)` annotations; the two exceptions are `required` and `implicit`, which `given:` cannot cover yet. See `skill:malloy-model` § Legacy: Parameterizable Filters.
+
+`#(filter)` is also a `#(...)`-shaped annotation, but unlike `#(doc)` it's a **runtime/modeling construct**: it shapes governance, query latency, and correctness, not discoverability. The full reference (syntax, filter types, `required` / `implicit` flags, and when each applies) lives in `malloy-model` § Legacy: Parameterizable Filters alongside the other source-authoring constructs, next to the `given:` guidance that replaces it.
 
 One rule worth knowing here: filters live on the source, never on the consumer. Ad-hoc reports and notebooks that import a source inherit its filters automatically; they do not (and cannot) declare new ones.
 
@@ -158,7 +183,7 @@ After writing `#(doc)` tags, present any that required judgment to the user for 
 | `total` | "Total order amount in USD" | Medium | Could be gross or net, verified with sample query |
 | `status` | "Order status: pending, shipped, delivered" | High | Values confirmed via a query of distinct values |
 
-Only flag fields where the description required assumptions about business meaning, units, or valid values. When in doubt about valid values, run a quick query against the data to confirm them before writing the description. Use `malloy_getContext` to ground yourself in the package's sources and fields and `malloy_executeQuery` to check distinct values, for example `run: source -> { group_by: status }`.
+Only flag fields where the description required assumptions about business meaning, units, or valid values. When in doubt about valid values, run a quick query against the data to confirm them before writing the description. Use `get_context` to ground yourself in the package's sources and fields and `execute_query` to check distinct values, for example `run: source -> { group_by: status }`.
 
 ## Done
 

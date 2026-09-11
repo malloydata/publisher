@@ -1,0 +1,16 @@
+>>>markdown
+# Shipping
+
+The only file that imports `shipping.malloy`. Its drill tags are reachable from
+this notebook and from no dashboard, which is what pins that the load-time lint
+covers notebooks too.
+>>>malloy
+// A doc comment and no `## title=`, so the title falls back to this rather than
+// to the "Shipping" heading above — the middle step of the chain.
+##" Carrier volumes
+##" Shipments per carrier, refreshed nightly.
+import "shipping.malloy"
+>>>markdown
+## By carrier
+>>>malloy
+run: shipping -> by_carrier

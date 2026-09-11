@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Lives under `tests/unit/` (not `src/`) on purpose: a sibling spec
 // (environment_store.spec.ts) calls
 // `mock.module("../storage/StorageManager", ...)`. Bun's module mocks

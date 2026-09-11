@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { components } from "../api";
 
 /**
@@ -53,6 +56,20 @@ export interface ResourceRepository {
    ): Promise<Connection>;
    deleteConnection(id: string): Promise<void>;
 
+   // Storage destinations
+   listStorageDestinations(
+      environmentId: string,
+   ): Promise<StorageDestination[]>;
+   getStorageDestinationByName(
+      environmentId: string,
+      name: string,
+   ): Promise<StorageDestination | null>;
+   upsertStorageDestination(
+      destination: Omit<StorageDestination, "id" | "createdAt" | "updatedAt">,
+   ): Promise<StorageDestination>;
+   deleteStorageDestination(id: string): Promise<void>;
+   deleteStorageDestinationsByEnvironmentId(id: string): Promise<void>;
+
    // Materializations
    listMaterializations(
       environmentId: string,
@@ -83,6 +100,19 @@ export interface ResourceRepository {
       updates: MaterializationUpdate,
    ): Promise<Materialization>;
    deleteMaterialization(id: string): Promise<void>;
+
+   // Incremental ledger
+   getIncrementalLedgerEntry(
+      environmentId: string,
+      table: LedgerTableIdentity,
+   ): Promise<IncrementalLedgerEntry | null>;
+   upsertIncrementalLedgerEntry(
+      entry: Omit<IncrementalLedgerEntry, "createdAt" | "advancedAt">,
+   ): Promise<IncrementalLedgerEntry>;
+   deleteIncrementalLedgerEntry(
+      environmentId: string,
+      table: LedgerTableIdentity,
+   ): Promise<void>;
 }
 
 export interface Environment {
@@ -116,6 +146,25 @@ export interface Connection {
    updatedAt: Date;
 }
 
+/**
+ * A warehouse materialization builds write to and materialized queries are
+ * served from. Stored apart from {@link Connection} because it is not one: it is
+ * never resolvable by name from a model, and its name lives in its own namespace
+ * (so a row here and a connection row may share a name and mean two different
+ * warehouses). `type` is a plain string rather than a union because the set of
+ * warehouses a destination may be is enforced where destinations are validated,
+ * not by the store.
+ */
+export interface StorageDestination {
+   id: string;
+   environmentId: string;
+   name: string;
+   type: string;
+   config: Record<string, unknown>;
+   createdAt: Date;
+   updatedAt: Date;
+}
+
 // Wire types for the build protocol, kept in sync with the OpenAPI spec via
 // the generated `api.ts`.
 export type MaterializationStatus =
@@ -126,6 +175,13 @@ export type ManifestEntry = components["schemas"]["ManifestEntry"];
 export type BuildInstruction = components["schemas"]["BuildInstruction"];
 export type ManifestReference = components["schemas"]["ManifestReference"];
 export type Realization = components["schemas"]["Realization"];
+/**
+ * One incremental source's `covered_through` boundary as it travels on the
+ * wire: reported on `ManifestEntry.ledger`, and returned verbatim in
+ * `BuildInstructions.ledger` by a caller that owns the ledger. The store-row
+ * counterpart is {@link IncrementalLedgerEntry}.
+ */
+export type LedgerEntry = components["schemas"]["LedgerEntry"];
 
 export interface Materialization {
    id: string;
@@ -140,6 +196,121 @@ export interface Materialization {
    metadata: Record<string, unknown> | null;
    createdAt: Date;
    updatedAt: Date;
+}
+
+/**
+ * The durable boundary of one incrementally-refreshed source lineage: the
+ * EXCLUSIVE upper end of the watermark range its serving table is known to
+ * contain. A delta run starts exactly here and advances it only after its DML
+ * commits, so a crash in between costs a repeated (idempotent) range rather than
+ * a gap.
+ *
+ * The declarations are recorded, not merely described. A change to `watermark=`
+ * or `merge_key=` changes the DML the publisher would issue WITHOUT moving the
+ * source's content address, so the address cannot detect it; comparing these
+ * against the plan's current declaration is what forces a re-seed instead of a
+ * delta computed under one set of rules being applied under another.
+ */
+export interface IncrementalLedgerEntry {
+   environmentId: string;
+   /** Whoever last advanced this boundary. Recorded, not part of the key. */
+   packageName: string;
+   /**
+    * The source's content address, as of the build that last advanced this
+    * boundary. Recorded, not part of the key — and therefore COMPARED on read
+    * (see ledgerLineageMismatch), because a table whose definition changed keeps
+    * its name in a standalone publisher and a delta must not be applied across
+    * that change.
+    */
+   sourceEntityId: string;
+   /**
+    * Canonical scalar text of the boundary (ISO-8601 for temporal types,
+    * decimal for numbers, the value itself for strings) — NOT a pre-rendered
+    * literal, because a boundary outlives any one statement's spelling of it and
+    * has to be COMPARED to the next run's frontier, not just pasted into SQL.
+    */
+   coveredThroughValue: string;
+   /** The watermark's Malloy type, which decides how the value is rendered. */
+   coveredThroughType: string;
+   /** The `watermark=` dimension the boundary was computed over. */
+   watermarkDimension: string;
+   /** The `merge_key=` dimensions, in declared order; empty for range replace. */
+   mergeKeyDimensions: string[];
+   derivedStrategy: IncrementalStrategy;
+   /**
+    * The table the boundary is a fact about. With `environmentId` and
+    * `connectionName` this is the row's KEY, which is what makes a boundary
+    * survive a package being presented under a different (version-qualified)
+    * name between refreshes.
+    */
+   physicalTableName: string;
+   connectionName: string;
+   /**
+    * The storage destination the table lives in, absent when it lives in
+    * `connectionName`'s own warehouse. Part of the table's identity: a
+    * destination and a connection are separate namespaces that may share a name,
+    * and a source keeps its physical name when it moves between them.
+    */
+   storageDestinationName?: string;
+   /** Audit: which run last advanced this boundary, and when. */
+   advancedByMaterializationId: string | null;
+   advancedAt: Date;
+   createdAt: Date;
+}
+
+/**
+ * Which physical table a boundary belongs to. Three fields rather than two
+ * because where a table LIVES is not implied by the connection that computes it:
+ * a `storage=` source is read from its warehouse and materialized into a
+ * destination, so the pair (connection, table) does not identify it.
+ */
+export interface LedgerTableIdentity {
+   /** The connection whose SQL computes the table's rows. */
+   connectionName: string;
+   /** The storage destination holding it, absent when colocated. */
+   storageDestinationName?: string;
+   /** The table's logical (unquoted) name, as the manifest reports it. */
+   physicalTableName: string;
+}
+
+/** How a delta advances the serving table. */
+export type IncrementalStrategy = "merge" | "range_replace";
+
+/**
+ * One source that failed to build, reported beside `entries` rather than inside
+ * one.
+ *
+ * A failure carries the identifying fields it was instructed with, including the
+ * `physicalTableName` it was HEADED for, so a table name here is not evidence a
+ * table exists. Keeping these out of `entries` is what lets a consumer that
+ * resolves an entry to a real table -- serve bindings, reuse decisions, seeds for
+ * a downstream build -- do so without a per-entry check.
+ */
+export type SourceFailure = components["schemas"]["SourceFailure"];
+
+/**
+ * Whether a manifest entry records a FAILED source, in the deprecated shape.
+ *
+ * Two things make this necessary rather than redundant with `failures`, and both
+ * end when `ManifestEntry.error` is removed:
+ *
+ *  - 0.0.245 and 0.0.246 wrote a failed source INTO `entries`, with the required
+ *    `physicalTableName` naming a table the build never created. Those manifests
+ *    are at rest in `publisher.db` and in bound manifest files, and they outlive
+ *    the upgrade -- so a read boundary that trusted `entries` to be built-only
+ *    would bind that name. Auto-run physical names are stable
+ *    (`selfAssignTableName`), which makes it the PREVIOUS generation's real table:
+ *    served as though fresh, not a miss.
+ *  - This build mirrors the failure into `entries` for the same window, so the
+ *    shape is produced as well as read.
+ *
+ * Applied at the READ boundaries a persisted manifest enters through, not at each
+ * consumer: `splitManifestEntries` (both the host-manifest fetch and the
+ * local-store rebind) and `getMostRecentManifestEntries` (reuse and reference
+ * resolution). Delete this with the field.
+ */
+export function isLegacyFailedEntry(entry: { error?: string | null }): boolean {
+   return Boolean(entry?.error);
 }
 
 export interface MaterializationUpdate {

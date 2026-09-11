@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import "@malloydata/malloy-explorer/styles.css";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";

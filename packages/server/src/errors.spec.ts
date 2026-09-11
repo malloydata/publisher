@@ -1,13 +1,20 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import {
    AccessDeniedError,
    BadRequestError,
    ConnectionAuthError,
    ConnectionError,
+   InvalidArgumentError,
+   TableNotFoundError,
    internalErrorToHttpError,
    ModelCompilationError,
+   NotImplementedError,
    NotQueryableError,
    PayloadTooLargeError,
+   ResponseUnserializableError,
    QueryTimeoutError,
    ServiceUnavailableError,
 } from "./errors";
@@ -62,18 +69,51 @@ describe("internalErrorToHttpError", () => {
       expect(json).toEqual({ code: 424, message: "compile failed" });
    });
 
-   it("maps ConnectionError to 502 (distinct from auth, still retryable)", () => {
+   it("maps TableNotFoundError to 404 with a machine-readable reason", () => {
+      const { status, json } = internalErrorToHttpError(
+         new TableNotFoundError("Not found: Table proj:ds.missing"),
+      );
+      expect(status).toBe(404);
+      expect(json).toEqual({
+         code: 404,
+         message: "Not found: Table proj:ds.missing",
+         reason: "TABLE_NOT_FOUND",
+      });
+   });
+
+   it("maps InvalidArgumentError to 400", () => {
+      const { status, json } = internalErrorToHttpError(
+         new InvalidArgumentError("Improper table path: sal"),
+      );
+      expect(status).toBe(400);
+      expect(json).toEqual({ code: 400, message: "Improper table path: sal" });
+   });
+
+   it("omits reason entirely on errors that carry none", () => {
+      const { json } = internalErrorToHttpError(
+         new ConnectionError("upstream broken"),
+      );
+      expect(json).not.toHaveProperty("reason");
+   });
+
+   it("maps ConnectionError to 502 (distinct from auth, still retryable) with a generic body", () => {
       const { status, json } = internalErrorToHttpError(
          new ConnectionError("upstream broken"),
       );
       expect(status).toBe(502);
-      expect(json).toEqual({ code: 502, message: "upstream broken" });
+      // The driver/connection detail is logged server-side, not echoed to the
+      // client (a 502 message can name the internal host or leak a driver oracle).
+      expect(json.code).toBe(502);
+      expect(json.message).not.toContain("upstream broken");
    });
 
-   it("falls through to 500 for unrecognized errors", () => {
+   it("falls through to 500 for unrecognized errors with a generic body", () => {
       const { status, json } = internalErrorToHttpError(new Error("boom"));
       expect(status).toBe(500);
-      expect(json.message).toBe("boom");
+      // An unrecognized internal error's message can carry a stack/path/SQL
+      // fragment, so it is logged server-side and the client gets a generic body.
+      expect(json.code).toBe(500);
+      expect(json.message).not.toContain("boom");
    });
 
    it("maps PayloadTooLargeError to 413", () => {
@@ -90,6 +130,26 @@ describe("internalErrorToHttpError", () => {
       });
    });
 
+   it("maps ResponseUnserializableError to 413 as well, by inheritance", () => {
+      // The subclass exists only so the MCP surface can drop the "raise the
+      // cap" suggestion; REST must keep answering 413, not fall through to 500.
+      const { status, json } = internalErrorToHttpError(
+         new ResponseUnserializableError(
+            "Query response could not be serialized: the 25356-row result is too large to turn into JSON (byte cap: 50000000). Project fewer columns, add a LIMIT, or filter wide values.",
+         ),
+      );
+      expect(status).toBe(413);
+      expect(json.code).toBe(413);
+   });
+
+   it("names both payload-size classes, so logs can tell them apart", () => {
+      // A subclass that logs as its parent defeats the point of having one.
+      expect(new PayloadTooLargeError("x").name).toBe("PayloadTooLargeError");
+      expect(new ResponseUnserializableError("x").name).toBe(
+         "ResponseUnserializableError",
+      );
+   });
+
    it("maps ServiceUnavailableError to 503 (load shedding / back-pressure)", () => {
       const { status, json } = internalErrorToHttpError(
          new ServiceUnavailableError(
@@ -100,6 +160,20 @@ describe("internalErrorToHttpError", () => {
       expect(json).toEqual({
          code: 503,
          message: "Pod at max concurrent queries (32); retry later.",
+      });
+   });
+
+   it("maps NotImplementedError to 501, not the 500 default", () => {
+      // The only thrower is the versionId guard, and every route declaring that
+      // parameter documents 501. Without a branch here it fell through to 500,
+      // reporting an unbuilt feature as an internal failure.
+      const { status, json } = internalErrorToHttpError(
+         new NotImplementedError("Version IDs not implemented."),
+      );
+      expect(status).toBe(501);
+      expect(json).toEqual({
+         code: 501,
+         message: "Version IDs not implemented.",
       });
    });
 

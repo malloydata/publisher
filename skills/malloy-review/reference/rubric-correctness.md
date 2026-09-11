@@ -1,3 +1,7 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 # Rubric: Correctness (Semantic Hazards Only)
 
 **Dimension:** `correctness-join | correctness-aggregation | correctness-type | correctness-filter`
@@ -80,18 +84,16 @@ For every rule, the linked instruction-skill section is the canonical source for
 
 ---
 
-## C-06: Don't combine `rename:` with `include {}` access-modifier blocks
+## C-06: `rename:` and `include {}` compose in one order only
 
 - **Severity:** major (blocking) · **Category:** correctness-syntax · machine-checkable (conditional)
-- **Detection:** find every `rename:` occurrence; flag ONLY when the same `source:` block also contains an `include {…}` clause. A `rename:` in a source without `include {}` is fine and must not be flagged.
-- **Why this is wrong:** `include {}` and `rename:` don't compose. `rename:` runs first at parse time, so by the time `include` tries to attach an access modifier the original column name is gone, Malloy errors `Can't find field 'X' to set access modifier`.
-- **Fix template, `include {}` is the curated default; only drop it when `rename:` is unavoidable:**
-  - **Preferred, preserve `include {}` (the curated default).** Eliminate the `rename:` so `include {}` can stay. Most often this means renaming the colliding *measure* (e.g., `measure: revenue` → `measure: total_revenue`) or splitting the source into a base + computed source. `include {}` is the canonical curated mode for documented base sources, it's the only way to attach `#(doc)` tags to raw columns and the recommended way to hide empty/garbage/duplicate columns via `internal:`. See `malloy-model/reference/access-modifiers.md`. Keep it whenever you can.
-  - **Fallback, drop `include {}` when the rename is unavoidable.** Some renames can't be eliminated without a downstream-breaking change: most commonly `sql()` → `table()` migrations where the original SQL alias matches a measure name that's already in heavy use across notebooks/dashboards. In that case, drop `include {}` and curate the source with `extend { except: a, b, c }` + `rename: raw_X is X` instead. You forfeit `#(doc)` on raw columns and the `public/internal/private` tiers, but keep column gating and the rename.
+- **Detection:** find every `source:` block containing BOTH a `rename:` and an `include {…}`. Flag only when the composition order is wrong - either the `include {}` precedes the `extend { rename: }`, or the `include {}` names the field by its PRE-rename name. A source with the `extend { rename: }` first and `include {}` naming the post-rename field is correct and must NOT be flagged. Neither is a `rename:` in a source with no `include {}`.
+- **Why the wrong order fails:** the rename is applied first, so `include {}` runs against names that no longer exist. Reversed order errors `Can't find field 'X' to set access modifier` (currently surfaced as an internal compiler error); naming the pre-rename column inside `include {}` errors `` `X` not found ``.
+- **Fix template:** put the renaming `extend {}` before the `include {}` and name the field by its new name inside `include {}`. You do not have to give up `include {}` to get a rename - the curated surface, `#(doc)` on raw columns, and the `public`/`internal`/`private` tiers all survive. See `malloy-model/reference/access-modifiers.md`.
 - **Compile-error notes (validated):**
-  - `include { ... } extend { rename: A is B }` errors with `Can't find field 'B' to set access modifier` because `rename:` runs first and leaves no `B` for `include` to set a modifier on.
-  - `include { internal: X } extend { measure: X is ... }` errors with `Cannot redefine 'X'` because internal columns and measures share a namespace, Malloy disallows shadowing even for internal-tagged columns. The collision is what usually drives someone to add `rename:` in the first place.
-- **See:** `skill:malloy-gotchas-modeling` § Field Management, `extend {}` vs `include {}` Don't Compose · `malloy-model/reference/access-modifiers.md` (for the `include {}` capability tradeoffs)
+  - `include { ... } extend { rename: A is B }` errors with `Can't find field 'B' to set access modifier`: `include` ran before the rename freed the name.
+  - `include { internal: X } extend { measure: X is ... }` errors with `Cannot redefine 'X'` because internal columns and measures share a namespace - Malloy disallows shadowing even for `internal`-tagged columns. This collision is the usual reason a `rename:` is introduced: rename the raw column out of the way (`rename: raw_X is X`), then `measure: X is raw_X.sum()`.
+- **See:** `skill:malloy-gotchas-modeling` § Field Management: `extend {}` and `include {}`, in that order · `malloy-model/reference/access-modifiers.md` (for the `include {}` capability tradeoffs)
 
 ---
 
@@ -133,10 +135,10 @@ For every rule, the linked instruction-skill section is the canonical source for
   - `COALESCE(a, b)` → `a ?? b`
   - `CAST(x AS y)` → `x::y`
   - Dialect-specific scalar functions Malloy doesn't model → `function_name!return_type(args)` (raw-SQL function escape; does NOT require `conn.sql()`)
-- **The `rename:` chain pattern.** When the original SQL re-used column names via a swap (e.g., `SELECT cash_month AS payment_date, payment_date AS payment_day`), Malloy supports the same swap as two ordered `rename:` clauses: `rename: payment_day is payment_date` (frees the name), then `rename: payment_date is cash_month` (re-uses it). Malloy evaluates renames in source-block order. (`rename:` works inside `extend {}` alongside `except:` / `accept:` but **not** alongside `include {}`, see C-06.)
+- **The `rename:` chain pattern.** When the original SQL re-used column names via a swap (e.g., `SELECT cash_month AS payment_date, payment_date AS payment_day`), Malloy supports the same swap as two ordered `rename:` clauses: `rename: payment_day is payment_date` (frees the name), then `rename: payment_date is cash_month` (re-uses it). Malloy evaluates renames in source-block order. (`rename:` works inside `extend {}` alongside `except:` / `accept:`, and composes with `include {}` provided the renaming `extend {}` comes first - see C-06.)
 - **Fix:** propose the equivalent Malloy when expressible, **preserving the column gating** discovered in the pre-check step. When not expressible, the rule doesn't fire, leave `conn.sql()` alone.
 - **Worked cautionary example:** A reviewer once tier-classified a 6-CTE 148-line `sql()` block (forecast pipeline with multi-key joins, latest-snapshot, custom-frame window function, conditional pivot, transfer-math `GREATEST/LEAST` chains) as "justified, Malloy can't express the window function with `ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING` cleanly." They never called `search_malloy_docs`. After actually searching, the equivalent is `sum_cumulative(x) - x { partition_by: ... }`, eight lines. The port came out 160 lines (12 more than the SQL), byte-identical across 2,160 cells of test data. The "Malloy can't do this" intuition was wrong, and the cost was duplicated review work plus several years of avoidable `conn.sql()` maintenance burden. **If you (the reviewer) catch yourself writing "this is awkward in Malloy" without having searched, stop and search.**
-- **See:** `skill:malloy-gotchas-modeling` § Never Use `conn.sql()` When Malloy Has a Native Pattern (canonical equivalence table) · `skill:malloy-gotchas-modeling` § Field Management, `extend {}` vs `include {}` Don't Compose
+- **See:** `skill:malloy-gotchas-modeling` § Never Use `conn.sql()` When Malloy Has a Native Pattern (canonical equivalence table) · `skill:malloy-gotchas-modeling` § Field Management: `extend {}` and `include {}`, in that order
 
 ---
 

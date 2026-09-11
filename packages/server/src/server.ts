@@ -1,3 +1,13 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// Refuse to run on an unsupported Node. Imported first, and importing nothing
+// but node:fs itself, so the check pulls no application code into the graph.
+// It does not run before that graph: ESM evaluates every import ahead of this
+// module's body, and the bundler inlines this entry last, so the call below
+// runs after each dependency's top-level code. What it does precede is
+// everything this process chooses to do.
+import { assertSupportedNodeVersion } from "./node_version_check";
 // Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
 import type { GivenValue } from "@malloydata/malloy";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -11,6 +21,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
+import { DashboardController } from "./controller/dashboard.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -32,21 +43,40 @@ import {
    getPrometheusMetricsHandler,
    httpMetricsMiddleware,
 } from "./instrumentation";
-import { logger, loggerMiddleware } from "./logger";
+import { logger, loggerMiddleware, redactSensitive } from "./logger";
 
 import {
+   assertDuckDBResourceConfig,
+   getDuckDBMemoryLimit,
+   getDuckDBTempDirectory,
+   getEmbeddingConfig,
    getExtensionFetchPolicy,
    getMaterializationSchedulerConfig,
    getMemoryGovernorConfig,
+   isDuckDBMemoryLimitDisabled,
+   getPersistCollisionEnforce,
    getPersistStorageMode,
+   getQueryMetadataMode,
 } from "./config";
+import { readBypassAuthorize } from "./authorize_bypass_header";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
+import {
+   addCommand,
+   ensureMcpConfig,
+   logMcpConfigOutcome,
+   MCP_CONFIG_FILENAME,
+   mcpConfigEnabled,
+   mcpEndpoint,
+   resolveBoundPort,
+   resolveClientHost,
+} from "./mcp_config";
 import { registerLegacyRoutes } from "./server-old";
+import { processStorageDestinationsOrThrow } from "./service/connection_config";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
@@ -54,9 +84,29 @@ import {
    normalizeQueryArray,
    parseNonNegativeIntParam,
 } from "./query_param_utils";
+import {
+   booleanParamOr400,
+   optionalBooleanParamOr400,
+   setCollectionReloadError,
+} from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
+import { classifySpaFallback } from "./spa_fallback";
+import {
+   RATE_LIMIT_ENV,
+   parseRateLimit,
+   rateLimitMiddleware,
+} from "./rate_limit";
+
+// The first statement this module runs. On an unsupported Node this exits
+// non-zero here, before any argument parsing, any storage init, and any
+// listener. The floor is a support policy (see node_version_check.ts): the
+// failure that exposed it surfaced only on the first query, as a 500 naming
+// neither Node nor a version, on a server whose boot log read completely
+// healthy. Bun is exempt, or the Docker image and `start:dev` would refuse to
+// boot.
+assertSupportedNodeVersion();
 
 // Parse command line arguments
 function parseArgs() {
@@ -93,6 +143,8 @@ function parseArgs() {
          i++;
       } else if (arg === "--init") {
          process.env.INITIALIZE_STORAGE = "true";
+      } else if (arg === "--no-mcp-config") {
+         process.env.PUBLISHER_NO_MCP_CONFIG = "true";
       } else if (arg === "--watch-env" && args[i + 1]) {
          // Append (don't overwrite) so multiple --watch-env flags compose
          // and so an explicit env var pre-set still wins.
@@ -130,6 +182,9 @@ function parseArgs() {
          );
          console.log(
             "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
+         );
+         console.log(
+            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written, so an agent opened here finds this server; skipped when the directory already has one, is your home directory or the filesystem root, is inside a git working tree, or the MCP port bound is not the one requested)",
          );
          console.log(
             "  --watch-env <name>     Enable dev-mode watch for the named environment.",
@@ -170,10 +225,25 @@ parseArgs();
 // package-metadata call (storageWarnings), on every deployment regardless of
 // whether the tier is used. Reading it once here surfaces a typo at startup.
 getPersistStorageMode();
+// Same for PERSIST_COLLISION_ENFORCE, whose only other caller is the publish
+// path — so a typo would otherwise surface as a failed publish request rather
+// than a failed boot.
+getPersistCollisionEnforce();
+
+// Same hazard, wider blast radius: getQueryMetadataMode() throws on an invalid
+// value and is read while resolving EVERY statement, so a typo'd off switch
+// ("false", "0", "disabled") would boot clean and then fail every query and
+// every build — the one thing the metadata path promises never to do.
+getQueryMetadataMode();
 
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+// Resolved here rather than in the listen callback: parseBoolEnv throws on a
+// typo, which is the convention for flags in this server, but a throw inside a
+// listen callback is an uncaughtException that kills a server which has already
+// bound both ports. At module scope it is an ordinary startup failure.
+const MCP_CONFIG_ENABLED = mcpConfigEnabled();
 const MCP_ENDPOINT = "/mcp";
 const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
    process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
@@ -192,6 +262,10 @@ const isDevelopment = process.env["NODE_ENV"] === "development";
 export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
+// Opt-in per-client rate limiting (PUBLISHER_RATE_LIMIT). Mounted before any
+// route so the static-file, query, and SPA-fallback handlers are all behind
+// it; probes and /metrics are exempt inside the middleware.
+app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
 // Probe the V8 heap ceiling once at startup and warn if it's below
 // the recommended floor. The row/byte caps from Steps 1–3 still
 // bound per-request memory; this is a "your --max-old-space-size
@@ -213,6 +287,44 @@ const modelController = new ModelController(environmentStore);
 // an operator relying on `local-only` for a no-network guarantee. Logging the
 // resolved policy also records the posture the server booted with.
 logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
+// Validated and materialized here, not on the first session that opens one:
+// `/health` and `/health/readiness` never touch DuckDB, so a malformed limit or
+// an uncreatable spill directory would leave the pod reporting ready while every
+// query and package load failed. Also creates the directory, since
+// `SET temp_directory` accepts one that does not exist and only fails at the
+// first spill.
+assertDuckDBResourceConfig();
+const duckDBMemoryLimit = getDuckDBMemoryLimit();
+if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
+   // Warned rather than defaulted. A flat value that suits one container size
+   // badly constrains another, so the safe value is the operator's to pick — but
+   // an operator who never reads a release note would otherwise have no way to
+   // learn that this process runs several DuckDB instances which each size
+   // themselves against the whole container independently.
+   logger.warn(
+      "PUBLISHER_DUCKDB_MEMORY_LIMIT is unset: every DuckDB instance in this " +
+         "process sizes its memory_limit from the container independently, so " +
+         "their combined budget exceeds it and the process can be OOM-killed " +
+         "while each instance believes it is within budget. See " +
+         "docs/configuration.md.",
+   );
+} else {
+   logger.info(
+      `DuckDB session limits: memory_limit=${duckDBMemoryLimit ?? "off (explicitly disabled)"} ` +
+         `temp_directory=${getDuckDBTempDirectory() ?? "<duckdb default>"}`,
+   );
+}
+// Resolve the embedding config at boot so a malformed EMBEDDING_API_BASE /
+// EMBEDDING_DIMENSIONS fails loudly at startup (getEmbeddingConfig throws),
+// matching the sibling getters above, rather than surfacing as a warn on the
+// first getContext call that reaches tier 4 — or never. Logs the posture the
+// server booted with; the host only, never the key.
+const embeddingConfig = getEmbeddingConfig();
+if (embeddingConfig) {
+   logger.info(
+      `Semantic get_context enabled: model ${embeddingConfig.model} at ${new URL(embeddingConfig.baseUrl).host}`,
+   );
+}
 const memoryGovernorConfig = getMemoryGovernorConfig();
 const memoryGovernor = memoryGovernorConfig
    ? new PackageMemoryGovernor(memoryGovernorConfig)
@@ -220,6 +332,7 @@ const memoryGovernor = memoryGovernorConfig
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
 const packageController = new PackageController(environmentStore);
+const dashboardController = new DashboardController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
@@ -355,7 +468,7 @@ mcpApp.all(MCP_ENDPOINT, async (req, res) => {
 //   - `/api/v0/.../events`    → live-reload SSE (registered in API routes
 //                                below; this comment is the cross-reference)
 
-// Serve the runtime helper that in-package HTML pages load via
+// Serve the runtime helper that in-package HTML data apps load via
 // <script src="/sdk/publisher.js">. Path resolved once at module load.
 const PUBLISHER_RUNTIME_PATH = path.join(
    path.dirname(__filename_esm),
@@ -390,6 +503,24 @@ app.get("/sdk/publisher.js", (_req, res) => {
 // the publisher.json manifest live outside it and are never reachable here, so
 // nothing can be downloaded around the per-model #(authorize) and query
 // controls. The data stays reachable through the permission-checked query path.
+
+// Body for this route's 404s. Static because this route is reached with a
+// resolved environment and package, so echoing the path back would confirm which
+// of them exists; the SPA fallback's own 404 does echo it (escaped), because it
+// is reached before anything has been resolved and the path is all it knows.
+// An empty 404 is honest but leaves a blank page, and someone arriving here has
+// usually guessed at the URL form, so it names the form.
+const PACKAGE_FILE_NOT_FOUND_HTML = `<!doctype html><meta charset="utf-8">
+<title>Not found</title>
+<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}code{background:#f4f4f5;padding:1px 4px;border-radius:3px}</style>
+<h1>Not found</h1>
+<p>This package does not serve that file. Only files inside the package's
+<code>public/</code> directory are web-served, at
+<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>, where <code>&lt;file&gt;</code> is
+relative to <code>public/</code> and does not include it.</p>
+<p>Models and notebooks are not served here; they open in the web UI at
+<code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code>. <a href="/">Publisher home</a> lists what
+this server has.</p>`;
 
 async function serveFromPackage(
    req: express.Request,
@@ -441,7 +572,7 @@ async function serveFromPackage(
          if (!res.headersSent) {
             // Generic 404 with no reflected request input (avoids reflecting
             // user-controlled path/package name into the response body).
-            res.status(404).end();
+            res.status(404).type("text/html").send(PACKAGE_FILE_NOT_FOUND_HTML);
          }
          return;
       }
@@ -472,7 +603,9 @@ async function serveFromPackage(
             // catch-all that may error.
             if (!res.headersSent) {
                // Generic 404, no reflected request input (see above).
-               res.status(404).end();
+               res.status(404)
+                  .type("text/html")
+                  .send(PACKAGE_FILE_NOT_FOUND_HTML);
             }
          }
       });
@@ -493,11 +626,42 @@ async function serveFromPackage(
 // matching also catches the trailing-slash form here, so only redirect URLs that
 // don't already end with `/`.
 //
-// Build the target from the validated route params and the parsed query, not
-// from the raw request URL, so it is always this same canonical, same-origin
-// path with a trailing slash. That removes any open-redirect / header-injection
-// surface from user-controlled input, with the slash placed before any query
-// string (e.g. ?embed_token=...).
+// Build the PATH from the validated route params, so it is always this same
+// canonical, same-origin path with a trailing slash, and place the slash before
+// any query string (e.g. ?embed_token=...). That is what removes the
+// open-redirect surface; the query itself is spliced verbatim and percent-encoded
+// by `res.redirect`, which is what removes the header-injection surface. See
+// withRequestQuery.
+/**
+ * Re-attach the request's query string to a redirect target. Spliced verbatim off
+ * the request target rather than rebuilt from the parsed query, because rebuilding
+ * flattens anything the parser turned into a structure and silently corrupts it.
+ *
+ * What keeps this safe is not the rebuild: it is that the PATH is assembled from
+ * validated segments and always starts `/environments/`, so the target cannot
+ * change origin, and that `res.redirect` runs the value through `encodeurl` on the
+ * way into the header, which percent-encodes CR, LF, space and quotes. Shared with
+ * the SPA fallback's redirect, where dropping the query would strip an embedded
+ * page's `?embed_token=...` on the way to the right path.
+ */
+function withRequestQuery(req: express.Request, target: string): string {
+   // Taken verbatim off the request target rather than rebuilt from the parsed
+   // query. Rebuilding flattens anything the parser turned into a structure:
+   // Express's default `extended` parser reads `?filter[a]=1` as an object, and
+   // `String(value)` then emits `filter=[object Object]`, so a page arrives with
+   // a corrupted parameter rather than an intact one. The path is still built
+   // from validated segments, which is what keeps the Location same-origin;
+   // Express percent-encodes the result on the way into the header.
+   // Cut the fragment first: a non-browser client can send `#x?y=1`, and taking
+   // the first `?` in the whole target would promote fragment text into the
+   // redirect's query, handing the page a parameter the caller never put there.
+   const hash = req.originalUrl.indexOf("#");
+   const target_ =
+      hash === -1 ? req.originalUrl : req.originalUrl.slice(0, hash);
+   const marker = target_.indexOf("?");
+   return marker === -1 ? target : target + target_.slice(marker);
+}
+
 app.get(
    "/environments/:environmentName/packages/:packageName",
    (req, res, next) => {
@@ -505,16 +669,7 @@ app.get(
       const canonical =
          `/environments/${encodeURIComponent(req.params.environmentName)}` +
          `/packages/${encodeURIComponent(req.params.packageName)}/`;
-      const query = new URLSearchParams();
-      for (const [key, value] of Object.entries(req.query)) {
-         if (Array.isArray(value)) {
-            for (const v of value) query.append(key, String(v));
-         } else if (value !== undefined) {
-            query.append(key, String(value));
-         }
-      }
-      const qs = query.toString();
-      res.redirect(308, qs ? `${canonical}?${qs}` : canonical);
+      res.redirect(308, withRequestQuery(req, canonical));
    },
 );
 
@@ -523,18 +678,18 @@ app.get(
    serveFromPackage,
 );
 
-// List the static HTML pages bundled inside a package. Used by the SPA's
-// package-detail view to surface a clickable list, and by anyone who wants
-// to discover pages programmatically without scraping the directory.
+// List the in-package HTML data apps bundled inside a package. Used by the
+// SPA's package-detail view to surface a clickable list, and by anyone who
+// wants to discover them programmatically without scraping the directory.
 //
-// Returns a `Page[]` (see api-doc.yaml) — each item carries the relative
-// `path`, the `packageName`, the page `title` (from its <title> tag), and a
+// Returns a `DataApp[]` (see api-doc.yaml) — each item carries the relative
+// `path`, the `packageName`, the `title` (from its <title> tag), and a
 // `resource` URL. `resource` is the root-relative static-serve URL (NOT under
-// `${API_PREFIX}`) because pages are static assets served off the server root,
-// unlike API resources such as `Package.resource`.
+// `${API_PREFIX}`) because a data app is a static asset served off the server
+// root, unlike API resources such as `Package.resource`.
 // Recursive depth is capped to keep this cheap for huge package directories.
-const PAGES_DEPTH_CAP = 3;
-type PageItem = {
+const DATA_APPS_DEPTH_CAP = 3;
+type DataAppItem = {
    resource: string;
    packageName: string;
    path: string;
@@ -565,13 +720,13 @@ function stripNonTagText(input: string): string {
    return current;
 }
 
-async function listPackagePages(
+async function listPackageDataApps(
    environmentName: string,
    packageName: string,
    publicRoot: string,
-): Promise<PageItem[]> {
+): Promise<DataAppItem[]> {
    const fs = await import("fs/promises");
-   const out: PageItem[] = [];
+   const out: DataAppItem[] = [];
 
    // Resolve the public/ root once and reject any entry whose realpath escapes
    // it. Same containment defense as serveFromPackage: catches symlinks inside
@@ -586,7 +741,7 @@ async function listPackagePages(
    }
 
    async function walk(dir: string, depth: number) {
-      if (depth > PAGES_DEPTH_CAP) return;
+      if (depth > DATA_APPS_DEPTH_CAP) return;
       let entries: import("fs").Dirent[];
       try {
          entries = await fs.readdir(dir, { withFileTypes: true });
@@ -677,7 +832,7 @@ async function listPackagePages(
    return out;
 }
 
-// NOTE: route registration for /pages moved below the CORS middleware so
+// NOTE: route registration for /data-apps moved below the CORS middleware so
 // cross-origin SDK consumers (e.g. a customer's React app pointing at
 // `<ServerProvider baseURL="https://publisher.example.com/api/v0">`) get
 // the proper CORS headers. See the registration after `app.use(cors(...))`.
@@ -739,10 +894,10 @@ try {
 // Register draining guard middleware - must be after health endpoints but before other routes
 app.use(drainingGuard);
 
-// /pages — registered here (post-CORS, post-body-parser, post-draining) so
+// /data-apps — registered here (post-CORS, post-body-parser, post-draining) so
 // cross-origin SDK consumers and authenticated requests both work.
 app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/pages`,
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/data-apps`,
    async (req, res) => {
       try {
          const environment = await environmentStore.getEnvironment(
@@ -753,14 +908,14 @@ app.get(
             req.params.packageName,
             false,
          );
-         const pages = await listPackagePages(
+         const dataApps = await listPackageDataApps(
             req.params.environmentName,
             req.params.packageName,
             path.join(pkg.getPackagePath(), "public"),
          );
-         res.json(pages);
+         res.json(dataApps);
       } catch (error) {
-         logger.error("Failed to list package pages", { error });
+         logger.error("Failed to list package data apps", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
@@ -914,7 +1069,14 @@ app.get(
    },
 );
 
-app.get(`${API_PREFIX}/environments`, async (_req, res) => {
+app.get(`${API_PREFIX}/environments`, async (req, res) => {
+   if (req.query.reload !== undefined) {
+      setCollectionReloadError(
+         res,
+         `${API_PREFIX}/environments/{environmentName}`,
+      );
+      return;
+   }
    try {
       res.status(200).json(await environmentStore.listEnvironments());
    } catch (error) {
@@ -926,7 +1088,21 @@ app.get(`${API_PREFIX}/environments`, async (_req, res) => {
 
 app.post(`${API_PREFIX}/environments`, async (req, res) => {
    try {
-      logger.info("Adding environment", { body: req.body });
+      // Redacted like every other body-bearing log line (loggerMiddleware): the
+      // body carries connection and storage-destination configs, and a
+      // destination's catalog password would otherwise land in the log verbatim.
+      logger.info("Adding environment", { body: redactSensitive(req.body) });
+      // Strict where the author is waiting, lenient where a config is being
+      // loaded — the same split `validateAdminAuthoredConnection` draws for a
+      // connection. Here rather than in `addEnvironment`, which the boot and
+      // restore paths also call: a destination this body fails to describe must
+      // not come back as a 200 whose response quietly omits it, while a bad row
+      // or config entry must still leave an environment serving.
+      //
+      // A bare validation is enough on create, unlike the update path: there is
+      // no stored list yet, so every entry has to carry its own config and none
+      // can be a reference to keep.
+      processStorageDestinationsOrThrow(req.body?.storageDestinations ?? []);
       const environment = await environmentStore.addEnvironment(req.body);
       res.status(200).json(await environment.serialize());
    } catch (error) {
@@ -937,10 +1113,14 @@ app.post(`${API_PREFIX}/environments`, async (req, res) => {
 });
 
 app.get(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
+   const reload = booleanParamOr400(req, res, "reload");
+   if (reload === undefined) {
+      return;
+   }
    try {
       const environment = await environmentStore.getEnvironment(
          req.params.environmentName,
-         req.query.reload === "true",
+         reload,
       );
       res.status(200).json(await environment.serialize());
    } catch (error) {
@@ -1256,6 +1436,11 @@ app.post(
                req.params.connectionName,
                req.body.sqlStatement as string,
                req.body?.options as string,
+               undefined,
+               {
+                  queryMetadata: req.body?.queryMetadata,
+                  queryClass: req.body?.queryClass,
+               },
             ),
          );
       } catch (error) {
@@ -1278,6 +1463,10 @@ app.post(
                req.body.sqlStatement as string,
                req.body?.options as string,
                req.params.packageName,
+               {
+                  queryMetadata: req.body?.queryMetadata,
+                  queryClass: req.body?.queryClass,
+               },
             ),
          );
       } catch (error) {
@@ -1334,6 +1523,13 @@ app.get(
    async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
+         return;
+      }
+      if (req.query.reload !== undefined) {
+         setCollectionReloadError(
+            res,
+            `${API_PREFIX}/environments/${req.params.environmentName}/packages/{packageName}`,
+         );
          return;
       }
 
@@ -1398,13 +1594,17 @@ app.get(
          setVersionIdError(res);
          return;
       }
+      const reload = booleanParamOr400(req, res, "reload");
+      if (reload === undefined) {
+         return;
+      }
 
       try {
          res.status(200).json(
             await packageController.getPackage(
                req.params.environmentName,
                req.params.packageName,
-               req.query.reload === "true",
+               reload,
             ),
          );
       } catch (error) {
@@ -1502,6 +1702,53 @@ app.get(
 );
 
 app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.listDashboards(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards/:dashboardName`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.getDashboard(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.dashboardName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks`,
    async (req, res) => {
       if (req.query.versionId) {
@@ -1559,8 +1806,13 @@ app.get(
                return;
             }
          }
-         const bypassFilters =
-            req.query.bypass_filters === "true" ? true : undefined;
+         // Absence must stay distinguishable from an explicit `false` here:
+         // the Deprecation header below fires on `bypassFilters !== undefined`.
+         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
+         if (!bypass.ok) {
+            return;
+         }
+         const bypassFilters = bypass.value;
 
          let givens: Record<string, GivenValue> | undefined;
          if (typeof req.query.givens === "string") {
@@ -1647,6 +1899,16 @@ app.post(
                | undefined,
             req.body.bypassFilters === true ? true : undefined,
             req.body.givens as Record<string, GivenValue> | undefined,
+            {
+               queryMetadata: req.body?.queryMetadata,
+               queryClass: req.body?.queryClass,
+               versionId: req.body?.versionId as string | undefined,
+            },
+            // Disables the author's `#(authorize)` gates. From a HEADER, never the
+            // body, and nothing in Publisher bounds who may send it — the
+            // deployment must strip it at its edge. See
+            // authorize_bypass_header.ts and docs/authorize-bypass-deployment.md.
+            readBypassAuthorize(req),
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,
@@ -1697,6 +1959,10 @@ app.post(
             req.body.source,
             req.body.includeSql === true,
             req.body.givens as Record<string, GivenValue> | undefined,
+            // Scope defaults to "append" (the historical behavior); an
+            // invalid value is rejected by compileSource with a 400 naming
+            // the valid set, never silently consumed.
+            req.body.scope ?? "append",
          );
          res.status(200).json(result);
       } catch (error) {
@@ -1793,12 +2059,16 @@ app.post(
 app.delete(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
    async (req, res) => {
+      const dropTables = booleanParamOr400(req, res, "dropTables");
+      if (dropTables === undefined) {
+         return;
+      }
       try {
          await materializationController.deleteMaterialization(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables: req.query.dropTables === "true" },
+            { dropTables },
          );
          res.status(204).send();
       } catch (error) {
@@ -1825,7 +2095,134 @@ registerLegacyRoutes(app, {
 // Modify the catch-all route to only serve index.html in production
 if (!isDevelopment) {
    const SPA_INDEX = path.resolve(ROOT, "index.html");
+   const escapeHtml = (value: string) =>
+      value.replace(
+         /[<>&]/g,
+         (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c,
+      );
+   // `req.path` arrives percent-encoded, while environment names are stored
+   // decoded. A malformed escape is not a name we know, so it compares as one
+   // that will not match rather than throwing.
+   const decodeSegment = (segment: string | undefined) => {
+      if (segment === undefined) return "";
+      try {
+         return decodeURIComponent(segment);
+      } catch {
+         return segment;
+      }
+   };
    app.get("*", (req, res) => {
+      // Not everything unmatched is an app route. A request that names a file
+      // gets a real answer rather than the app shell with a 200, which reads as
+      // success and then leaves the app blaming the file for a wrong path. See
+      // classifySpaFallback for why the decision is by extension.
+      let fallback = classifySpaFallback(req.path, API_PREFIX);
+      // The classifier only sees the shape of a path, and several real things
+      // share a shape with a package asset. Resolve the names against what is
+      // actually loaded before acting on its guess.
+      //
+      // Deliberately the in-memory lists rather than `getEnvironment`, which
+      // resolves from storage: this is the last handler before the app shell and
+      // it answers unauthenticated traffic for any path nothing else claimed, so
+      // it must not do I/O a caller can trigger by guessing. That also keeps this
+      // handler synchronous. The cost is real and worth stating precisely: an
+      // environment OR package that is not loaded yet gets the 404 page instead
+      // of a redirect. That covers a cold start, and an environment resolved
+      // lazily by the static route (which loads its packages on demand, so they
+      // can be absent here while that URL serves them). In those cases the page
+      // names the canonical URL and following it does load them. The exception is
+      // a package that fails to compile: it is absent here, and the canonical URL
+      // answers 424, so there the page leads somewhere that reports the real
+      // problem rather than somewhere that works.
+      const loadedEnvironment = (name: string) =>
+         environmentStore
+            .getLoadedEnvironments()
+            .find((environment) => environment.getEnvironmentName() === name);
+      if (fallback.kind === "redirect") {
+         // `/assets/foo/bar.js` has the same shape as `/<env>/<pkg>/<file>`.
+         // Redirecting it lands on the static route, which answers a name it
+         // cannot resolve with JSON naming an internal failure ("Environment ...
+         // could not be resolved", "Package nope not found", or a 400 for a
+         // malformed name) and echoes the segment back, which the static route's
+         // own 404s deliberately avoid doing. BOTH names have to be real, not
+         // just the environment: a good environment with a bad package reaches
+         // exactly that reflected JSON.
+         const environment = loadedEnvironment(
+            decodeSegment(fallback.environmentName),
+         );
+         const packageName = decodeSegment(fallback.packageName);
+         const known = environment
+            ?.getLoadedPackages()
+            .some((pkg) => pkg.getPackageName() === packageName);
+         if (!known) {
+            // Null, not the names: a redirect candidate whose names did not
+            // resolve is not an app route either, so it must not be rescued into
+            // the app shell by the branch below.
+            fallback = {
+               kind: "assetNotFound",
+               path: req.path,
+               appRouteCandidate: null,
+            };
+         }
+      }
+      if (fallback.kind === "assetNotFound" && fallback.appRouteCandidate) {
+         // `/<env>` or `/<env>/<pkg>` where a name merely ends in a servable
+         // extension, which names may: `report.html` is a legal package name. It
+         // is an app route after all, but only if these are things this server
+         // actually has. Checking the package too is what keeps
+         // `/examples/style.css` a 404: without it, any asset request under a real
+         // environment went back to answering with the app shell and a 200, which
+         // is the whole defect this handler removes.
+         const { environmentName, packageName } = fallback.appRouteCandidate;
+         const environment = loadedEnvironment(decodeSegment(environmentName));
+         const isAppRoute =
+            environment !== undefined &&
+            (packageName === undefined ||
+               environment
+                  .getLoadedPackages()
+                  .some(
+                     (pkg) =>
+                        pkg.getPackageName() === decodeSegment(packageName),
+                  ));
+         if (isAppRoute) fallback = { kind: "spa" };
+      }
+      if (fallback.kind === "redirect") {
+         // 302, not a permanent redirect: this maps a mistaken URL onto the
+         // right one, and a path the app may later claim as a route of its own
+         // must not be cached against it in every browser that guessed once.
+         res.redirect(302, withRequestQuery(req, fallback.location));
+         return;
+      }
+      if (fallback.kind === "apiNotFound") {
+         // A caller that asked the API for something gets JSON when it is not
+         // there, not the HTML app shell it cannot parse.
+         res.status(404).json({
+            code: 404,
+            // No method in the message: this handler is registered on app.get, so
+            // it could only ever say GET. Other verbs already 404 through
+            // Express's own default, which is why the 200-plus-shell defect was
+            // GET-only in the first place.
+            message: `Unknown API endpoint: ${fallback.path}. See /api-doc.yaml for the endpoints this server serves.`,
+         });
+         return;
+      }
+      if (fallback.kind === "assetNotFound") {
+         res.status(404)
+            .type("text/html")
+            .send(
+               `<!doctype html><meta charset="utf-8">
+<title>Not found</title>
+<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}code{background:#f4f4f5;padding:1px 4px;border-radius:3px}</style>
+<h1>Not found</h1>
+<p>Nothing is served at <code>${escapeHtml(fallback.path)}</code>.</p>
+<p>A file inside a package is served from that package's <code>public/</code> directory at
+<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>, where <code>&lt;file&gt;</code> is relative to
+<code>public/</code> and does not include it. Models and notebooks open in the web UI at
+<code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code> and <code>.malloynb</code>.</p>
+<p><a href="/">Publisher home</a> lists the environments and packages this server has.</p>`,
+            );
+         return;
+      }
       res.sendFile(SPA_INDEX, (err) => {
          if (!err) return;
          // The SPA bundle isn't built. This happens when running directly
@@ -1881,7 +2278,17 @@ mainServer.timeout = 600000;
 mainServer.keepAliveTimeout = 600000;
 mainServer.headersTimeout = 600000;
 
+// Resolved from the REST listen callback. The .mcp.json write below waits on
+// it, so a process whose REST port fails (the listener that dies is the one
+// bound SECOND to a busy port pair) can never leave a fresh .mcp.json behind
+// pointing at a server that is about to exit.
+let resolveRestBound: () => void = () => {};
+const restBound = new Promise<void>((resolve) => {
+   resolveRestBound = resolve;
+});
+
 mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
+   resolveRestBound();
    const address = mainServer.address() as AddressInfo;
    logger.info(
       `Publisher server listening at http://${address.address}:${address.port}`,
@@ -1930,9 +2337,116 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
       }
    }
 });
-const mcpServer = mcpApp.listen(MCP_PORT, PUBLISHER_HOST, () => {
-   logger.info(`MCP server listening at http://${PUBLISHER_HOST}:${MCP_PORT}`);
-});
+const mcpServer = mcpApp.listen(
+   MCP_PORT,
+   PUBLISHER_HOST,
+   function (this: import("net").Server) {
+      // Read back rather than reusing MCP_PORT, which is only what was requested.
+      // `--mcp_port 0` asks for any free port, and under bun a non-numeric value
+      // binds an ephemeral one too, so the requested value can be 0 or NaN while
+      // a real port is listening. The listening line uses it as well, which is
+      // why it no longer reads `http://127.0.0.1:0`.
+      const boundPort = resolveBoundPort(this.address(), MCP_PORT);
+      // The BIND address, bracketed when it is an IPv6 literal so the URL
+      // parses. Deliberately not resolveClientHost: create-malloy-package's
+      // README and AGENTS template both tell readers these two listening lines
+      // are "the addresses it really bound", and use them to catch a mistyped
+      // --hostt that silently falls back to 0.0.0.0. Mapping the wildcard to
+      // loopback here would confirm the mistake instead of revealing it. The
+      // dialable form belongs in .mcp.json and in the advice, not here.
+      const bound = this.address();
+      const boundHost =
+         typeof bound === "object" && bound ? bound.address : PUBLISHER_HOST;
+      logger.info(
+         `MCP server listening at http://${boundHost.includes(":") ? `[${boundHost}]` : boundHost}:${boundPort}`,
+      );
+      // Checked before process.cwd(), which can throw: someone who turned the
+      // feature off should not get a warning about it.
+      if (MCP_CONFIG_ENABLED) {
+         // Deferred until the REST listener has ALSO bound. Both listens are
+         // issued back-to-back, so this callback can run while the REST port is
+         // about to fail EADDRINUSE; writing here used to leave a .mcp.json
+         // pointing at a process that died moments later, and the next boot on
+         // fresh ports skips the rewrite (create-never-edit), so the stale file
+         // silently broke the NEXT agent session.
+         const boundAddress = this.address();
+         void restBound.then(() => {
+            // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
+            // raises ENOENT once the working directory has been removed. A throw
+            // here would be an unhandled rejection on a server that has already
+            // bound both ports. Everything the call needs is built inside the
+            // try for that reason, including the endpoint: it is the newest and
+            // least-exercised code in this block.
+            try {
+               // The host an agent should dial, which is NOT `localhost`: that name
+               // resolves to both loopback families while the server binds only one,
+               // so another local process can hold the same port on the other family
+               // and receive the agent's traffic instead.
+               const endpoint = mcpEndpoint(
+                  resolveClientHost(boundAddress, PUBLISHER_HOST),
+                  boundPort,
+               );
+               // cwd, not server_root: the file is for whoever opens an agent here.
+               logMcpConfigOutcome(
+                  ensureMcpConfig({
+                     dir: process.cwd(),
+                     endpoint,
+                     requestedPort: MCP_PORT,
+                     boundPort,
+                  }),
+               );
+            } catch (error) {
+               logger.info(
+                  `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(boundAddress, PUBLISHER_HOST), boundPort))}`,
+               );
+            }
+         });
+      }
+   },
+);
+
+// One actionable line and a clean exit for a listener that cannot bind,
+// instead of the raw uncaught-'error' crash dump (a ~40-line stack trace with
+// os.loadavg and memoryUsage for what is usually just a busy port). Closing
+// the sibling listener matters beyond tidiness: the two listens race, so the
+// OTHER port may already be bound and half a server must not linger.
+// (Line comments, not a JSDoc, and no star-slash sequence anywhere in them:
+// authorize_bypass_header.spec.ts strips block comments from this file with a
+// regex that pairs a route string's slash-star with the next closer, so a
+// block comment after the route table swallows the getQuery call it asserts
+// on.)
+function fatalListenError(
+   label: string,
+   requestedPort: number,
+   flag: string,
+   sibling: http.Server,
+): (error: NodeJS.ErrnoException) => void {
+   return (error) => {
+      if (error.code === "EADDRINUSE") {
+         logger.error(`Port ${requestedPort} in use; pass ${flag} <n>`);
+      } else {
+         logger.error(
+            `${label} listener failed on port ${requestedPort}: ${error.message}`,
+         );
+      }
+      try {
+         sibling.close();
+      } catch {
+         // Best effort: the process is exiting either way.
+      }
+      process.exit(1);
+   };
+}
+// Attached after both servers exist (an 'error' event is emitted on a later
+// tick, never synchronously out of listen(), so nothing is missed).
+mainServer.on(
+   "error",
+   fatalListenError("REST", PUBLISHER_PORT, "--port", mcpServer),
+);
+mcpServer.on(
+   "error",
+   fatalListenError("MCP", MCP_PORT, "--mcp_port", mainServer),
+);
 
 mcpServer.timeout = 600000;
 mcpServer.keepAliveTimeout = 600000;

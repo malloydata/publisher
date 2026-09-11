@@ -1,18 +1,42 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Spawns the REAL Publisher server from source (`bun src/server.ts`) on isolated
 // ports and an isolated server root, pointed at a generated config. Waits for
 // operationalState === "serving". `PERSIST_STORAGE_MODE` is read at startup, so
 // each mode needs its own server instance.
 
 import path from "path";
-import { existsSync } from "fs";
+import { existsSync, readdirSync, statSync } from "fs";
 import type { Subprocess } from "bun";
 import { log, run, runOrThrow, sleep, waitFor } from "./util";
+
+/** Newest mtime under `dir`, or 0 if it does not exist. Skips build output. */
+function newestMtimeMs(dir: string): number {
+   let newest = 0;
+   const walk = (current: string): void => {
+      for (const entry of readdirSync(current, { withFileTypes: true })) {
+         if (entry.name === "node_modules" || entry.name === "dist") continue;
+         const full = path.join(current, entry.name);
+         if (entry.isDirectory()) walk(full);
+         else newest = Math.max(newest, statSync(full).mtimeMs);
+      }
+   };
+   if (!existsSync(dir)) return 0;
+   walk(dir);
+   return newest;
+}
 
 /**
  * Build the server (server-only: API + baked DuckDB extensions, no SPA) so the
  * spawned `dist/server.mjs` has the ducklake/postgres_scanner extensions baked in
- * rather than autoinstalling them at first attach. Skipped when a dist already
- * exists unless `force`.
+ * rather than autoinstalling them at first attach.
+ *
+ * An existing dist is reused only when it is NEWER than every server source file
+ * and the API spec. Reusing on mere existence meant that editing the server and
+ * running the suite silently exercised the previous binary — a green run that
+ * proved nothing about the change under test, which is the worst failure a test
+ * harness can have.
  */
 export async function buildServerIfNeeded(
    repoRoot: string,
@@ -21,8 +45,18 @@ export async function buildServerIfNeeded(
    const serverDir = path.join(repoRoot, "packages", "server");
    const distEntry = path.join(serverDir, "dist", "server.mjs");
    if (!force && existsSync(distEntry)) {
-      log.ok(`reusing existing server build (${distEntry})`);
-      return;
+      const builtAt = statSync(distEntry).mtimeMs;
+      const sourceAt = Math.max(
+         newestMtimeMs(path.join(serverDir, "src")),
+         existsSync(path.join(repoRoot, "api-doc.yaml"))
+            ? statSync(path.join(repoRoot, "api-doc.yaml")).mtimeMs
+            : 0,
+      );
+      if (builtAt >= sourceAt) {
+         log.ok(`reusing existing server build (${distEntry})`);
+         return;
+      }
+      log.step("server build is older than the sources — rebuilding");
    }
    log.step("building server (bun run build:server-only) — one-time, ~1-2 min");
    await runOrThrow(["bun", "run", "build:server-only"], { cwd: serverDir });
@@ -100,12 +134,32 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       stderr: opts.inheritStdio ? "inherit" : "pipe",
    });
 
+   // The server prints one PUBLISHER_READY line the moment it reaches `serving`
+   // (PUBLISHER_INIT_FAILED instead if initialization failed). Watching for it is
+   // exact, where polling /status can only resolve to its own interval — and since
+   // every mode switch costs a boot, that interval was a real share of a run.
+   let signalReady: (() => void) | undefined;
+   let signalFailed: ((why: string) => void) | undefined;
+   const readySignal = new Promise<void>((resolve, reject) => {
+      signalReady = resolve;
+      signalFailed = (why): void => reject(new Error(why));
+   });
+
    // Drain captured output to the log file so a hang/crash is diagnosable.
    if (!opts.inheritStdio && logSink) {
+      let tail = "";
       const pump = async (stream: ReadableStream): Promise<void> => {
          for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
             logSink.write(chunk);
             logSink.flush();
+            // The marker can straddle a chunk boundary, so keep a short tail.
+            tail = (tail + new TextDecoder().decode(chunk)).slice(-4096);
+            if (tail.includes("PUBLISHER_READY")) signalReady?.();
+            else if (tail.includes("PUBLISHER_INIT_FAILED")) {
+               signalFailed?.(
+                  `server reported PUBLISHER_INIT_FAILED (see ${opts.logFile ?? "stdio"})`,
+               );
+            }
          }
       };
       if (proc.stdout instanceof ReadableStream) void pump(proc.stdout);
@@ -129,25 +183,30 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
       await logSink?.end();
    };
 
+   // The poll is the backstop: it covers inheritStdio (nothing to watch) and any
+   // build predating the ready line. Whichever resolves first wins.
+   const poll = waitFor(
+      "server operationalState=serving",
+      async () => {
+         if (exited)
+            throw new Error(
+               `server process exited early (see ${opts.logFile ?? "stdio"})`,
+            );
+         const res = await fetch(`${baseUrl}/api/v0/status`);
+         if (!res.ok) return false;
+         const body = (await res.json()) as { operationalState?: string };
+         return body.operationalState === "serving";
+      },
+      { timeoutMs: 180_000, intervalMs: 750 },
+   );
    try {
-      await waitFor(
-         "server operationalState=serving",
-         async () => {
-            if (exited)
-               throw new Error(
-                  `server process exited early (see ${opts.logFile ?? "stdio"})`,
-               );
-            const res = await fetch(`${baseUrl}/api/v0/status`);
-            if (!res.ok) return false;
-            const body = (await res.json()) as { operationalState?: string };
-            return body.operationalState === "serving";
-         },
-         { timeoutMs: 180_000, intervalMs: 750 },
-      );
+      await Promise.race([readySignal, poll]);
    } catch (e) {
       await stop();
       throw e;
    }
+   // Keep the loser from surfacing as an unhandled rejection after we've moved on.
+   void poll.catch(() => undefined);
 
    log.ok(`server serving (mode=${opts.mode})`);
    return { baseUrl, mcpUrl, mode: opts.mode, stop };

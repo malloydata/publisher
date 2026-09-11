@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, test, expect, mock, beforeEach } from "bun:test";
 import { PublisherClient } from "../api/client";
 import * as notebookCommands from "../commands/notebooks";

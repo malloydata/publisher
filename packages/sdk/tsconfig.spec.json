@@ -1,0 +1,22 @@
+// Typechecks the test files tsconfig.json excludes from the build.
+//
+// They must be excluded there, because that config drives the declaration
+// build. But excluded also meant unchecked: `bun test` strips types without
+// checking them and eslint here is not type-aware, so a type error in a spec
+// reached no gate. The root `typecheck:sdk` runs this config as its second
+// half. Keep the four patterns in step with the exclude list next door.
+{
+   "extends": "./tsconfig.json",
+   "compilerOptions": {
+      "noEmit": true,
+      "declaration": false
+   },
+   "include": [
+      "src/**/*.spec.*",
+      "src/**/*.test.*",
+      "src/**/*_spec.*",
+      "src/**/*_test.*",
+      "test/**/*"
+   ],
+   "exclude": []
+}

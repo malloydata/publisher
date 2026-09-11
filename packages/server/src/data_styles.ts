@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { URLReader } from "@malloydata/malloy";
 import { DataStyles } from "@malloydata/render";
 import { logger } from "./logger";

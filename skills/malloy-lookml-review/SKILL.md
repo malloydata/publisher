@@ -2,6 +2,10 @@
 name: malloy-lookml-review
 description: Analyze LookML files as prior art for Malloy modeling. Used during Step 1 (DISCOVER) when .lkml files are present. Coordinates reference files that extract business logic, relationships, and curation decisions. Works with or without a database connection.
 ---
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
 
 # LookML Review
 

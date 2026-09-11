@@ -1,3 +1,6 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
 # Makefile for malloydata/publisher.
 # Assumes `mise` (or `asdf`) has activated the versions pinned in .tool-versions.
 # Run `make` or `make help` for the target list.

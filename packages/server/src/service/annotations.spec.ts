@@ -1,10 +1,15 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, it } from "bun:test";
 import type { ModelDef } from "@malloydata/malloy";
 import {
    annotationTexts,
    isReservedRoute,
    modelAnnotations,
+   ownModelNotes,
 } from "./annotations";
+import { containsAuthorizeAnnotationTag } from "./authorize";
 
 // Minimal `ModelDef` carrying only what `modelAnnotations` reads: `modelID`
 // and the `modelAnnotations` registry (modelID → { ownNotes, inheritsFrom }).
@@ -78,19 +83,24 @@ describe("modelAnnotations", () => {
 
    it("falls back to an imported model's notes when the local model has no own `##` (authorize must not fail open)", () => {
       // Regression: a `##(authorize)` declared in an imported file must still
-      // flow into the importing file's file-level gate even when the importing
-      // file declares no `##` of its own. An earlier fold kept an empty local
-      // link at the top, so `.notes` returned [] and the gate failed open.
+      // be detected (and refused — file-level `##(authorize)` is deprecated)
+      // even when the importing file declares no `##` of its own. An earlier
+      // fold kept an empty local link at the top, so `.notes` returned [] and
+      // the stray annotation escaped detection entirely.
+      //
+      // The fixture is the real `##(authorize)` spelling, not `## (authorize)`:
+      // the latter is route `''` (a plain MOTLY tag), so the detector never
+      // matched it and this test asserted only the note folding it was named
+      // for. Detection is asserted below, which is the half that fails open.
       const def = makeModelDef("local", {
          local: { ownNotes: {}, inheritsFrom: ["base"] },
          base: {
-            ownNotes: { notes: ['## (authorize) request.user == "admin"'] },
+            ownNotes: { notes: ["##(authorize) \"$ROLE = 'admin'\""] },
             inheritsFrom: [],
          },
       });
-      expect(noteTexts(def)).toEqual([
-         '## (authorize) request.user == "admin"',
-      ]);
+      expect(noteTexts(def)).toEqual(["##(authorize) \"$ROLE = 'admin'\""]);
+      expect(containsAuthorizeAnnotationTag(noteTexts(def))).toBe(true);
    });
 
    it("surfaces the local model's notes at the top when both local and import have `##`", () => {
@@ -114,5 +124,114 @@ describe("modelAnnotations", () => {
       });
       expect(modelAnnotations(def)).toEqual({});
       expect(noteTexts(def)).toEqual([]);
+   });
+});
+
+describe("ownModelNotes", () => {
+   it("returns the model's own `##`, block notes first", () => {
+      const def = makeModelDef("local", {
+         local: {
+            ownNotes: { notes: ['## title="Sales"'], blockNotes: ["##! x"] },
+            inheritsFrom: [],
+         },
+      });
+      expect(ownModelNotes(def)).toEqual(["##! x", '## title="Sales"']);
+   });
+
+   it("does not inherit an imported model's `##`", () => {
+      // The point of the function. `modelAnnotations` folds the lineage on
+      // purpose, so that an imported `##(authorize)` is still DETECTED (and
+      // refused) through the importer; every other model-level tag describes
+      // one document. A shared include
+      // carrying `## artifact` must not turn its importers into dashboards,
+      // and an imported `## title=` must not retitle every notebook.
+      const def = makeModelDef("file:///pkg/local.malloy", {
+         "file:///pkg/local.malloy": {
+            ownNotes: {},
+            inheritsFrom: ["file:///pkg/shared.malloy"],
+         },
+         "file:///pkg/shared.malloy": {
+            ownNotes: {
+               notes: ['## artifact { title="Shared" }', '## title="Shared"'],
+            },
+            inheritsFrom: [],
+         },
+      });
+      expect(ownModelNotes(def)).toEqual([]);
+      // The inheriting reader still sees it, which is what authorize needs.
+      expect(noteTexts(def)).toEqual([
+         '## artifact { title="Shared" }',
+         '## title="Shared"',
+      ]);
+   });
+
+   it("does not inherit an import reached over a non-`file:` scheme", () => {
+      // The walk is an allowlist (`modelID` or `internal://`) rather than a
+      // denylist on `file:`. The worker's URL reader proxies any non-`file:`
+      // URL to the main thread (`package_load_worker.ts`, makeWorkerUrlReader),
+      // so a `gs://` or `https://` import is reachable today; under a
+      // `!startsWith("file:")` test its `##` would have folded back in with
+      // nothing failing.
+      const def = makeModelDef("file:///pkg/local.malloy", {
+         "file:///pkg/local.malloy": {
+            ownNotes: { notes: ["## local"] },
+            inheritsFrom: ["gs://bucket/shared.malloy"],
+         },
+         "gs://bucket/shared.malloy": {
+            ownNotes: { notes: ['## title="Remote"'] },
+            inheritsFrom: [],
+         },
+      });
+      expect(ownModelNotes(def)).toEqual(["## local"]);
+      // Still inherited by the folded reader, which is what authorize needs.
+      expect(annotationTexts(modelAnnotations(def))).toEqual([
+         '## title="Remote"',
+         "## local",
+      ]);
+   });
+
+   it("returns the local notes only when both the model and its import have `##`", () => {
+      const def = makeModelDef("file:///pkg/local.malloy", {
+         "file:///pkg/local.malloy": {
+            ownNotes: { notes: ["## local"] },
+            inheritsFrom: ["file:///pkg/base.malloy"],
+         },
+         "file:///pkg/base.malloy": {
+            ownNotes: { notes: ["## base"] },
+            inheritsFrom: [],
+         },
+      });
+      expect(ownModelNotes(def)).toEqual(["## local"]);
+   });
+
+   it("collects a notebook's cells, which are internal nodes rather than files", () => {
+      // A `.malloynb` compiles a cell at a time: its `##` lands on an
+      // `internal://loadModel` node, and the `internal://extendModel` node that
+      // `modelID` names inherits it with no notes of its own. Reading only
+      // `modelID` would find nothing on every notebook.
+      const def = makeModelDef("internal://extendModel/2", {
+         "internal://extendModel/2": {
+            ownNotes: {},
+            inheritsFrom: ["internal://loadModel/1"],
+         },
+         "internal://loadModel/1": {
+            ownNotes: { notes: ["## autorun=false", '## title="Orders"'] },
+            inheritsFrom: ["file:///pkg/orders.malloy"],
+         },
+         "file:///pkg/orders.malloy": {
+            ownNotes: { notes: ['## title="Not this one"'] },
+            inheritsFrom: [],
+         },
+      });
+      expect(ownModelNotes(def)).toEqual([
+         "## autorun=false",
+         '## title="Orders"',
+      ]);
+   });
+
+   it("returns an empty list for a model with no annotation registry", () => {
+      expect(ownModelNotes({ modelID: "x" } as unknown as ModelDef)).toEqual(
+         [],
+      );
    });
 });

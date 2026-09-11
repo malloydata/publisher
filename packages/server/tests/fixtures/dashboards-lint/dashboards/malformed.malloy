@@ -1,0 +1,5 @@
+// An unclosed `tiles=[` makes the tag unparseable, and MOTLY discards the whole
+// tag on a syntax error. Without a lint finding this file would simply not be a
+// dashboard: absent from the listing, 404 at its URL, no error anywhere.
+## artifact { title="Malformed" tiles=[ }
+import { orders } from '../orders.malloy'

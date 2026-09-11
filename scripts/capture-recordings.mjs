@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 // Short screen recordings for the docs, captured with Playwright and converted
 // to optimized GIFs with ffmpeg. Requires a Publisher server running on
 // localhost:4000 serving the `examples` environment, plus `ffmpeg` on PATH.

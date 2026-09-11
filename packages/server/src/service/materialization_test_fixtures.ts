@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import type { PersistSource } from "@malloydata/malloy";
 import {
    BuildInstruction,
@@ -80,32 +83,76 @@ interface FakeFreshnessSchedule {
    freshness?: { window?: string; fallback?: string };
 }
 
+/** A nested tag tree: scalar leaves and property collections. */
+type FakeTagTree = { [key: string]: string | FakeTagTree };
+
 /**
- * Build a fake Malloy `Tag` supporting both readers the build plan uses:
- * `entries()` (scalar `#@ persist` key=value pairs, for deriveAnnotationFields)
- * and the path-based `text(...at)` (dotted `freshness.window`, for
- * resolveFreshness).
+ * Build a fake Malloy `Tag` over a nested tree, supporting all three readers the
+ * build plan uses: `entries()` (scalar `#@ persist` key=value pairs, for
+ * deriveAnnotationFields), the path-based `text(...at)` (dotted
+ * `freshness.window`, for resolveFreshness) and `tag(...at)` (a property
+ * collection — `queryMetadata { … }`, or the `materialization` envelope).
  */
-function fakeTag(
-   fields: Record<string, string> | undefined,
-   fs: FakeFreshnessSchedule | undefined,
-) {
+function fakeTagFromTree(tree: FakeTagTree) {
+   const walk = (at: string[]): string | FakeTagTree | undefined => {
+      let node: string | FakeTagTree | undefined = tree;
+      for (const segment of at) {
+         if (node === undefined || typeof node !== "object") return undefined;
+         node = node[segment];
+      }
+      return node;
+   };
    return {
-      *entries() {
-         for (const [key, value] of Object.entries(fields ?? {})) {
-            yield [key, { text: () => value }];
+      *entries(): Generator<[string, { text(): string | undefined }]> {
+         for (const [key, value] of Object.entries(tree)) {
+            yield [
+               key,
+               { text: () => (typeof value === "string" ? value : undefined) },
+            ];
          }
       },
       text(...at: string[]): string | undefined {
-         if (at.length === 1) {
-            return fields?.[at[0]];
-         }
-         if (at.length === 2 && at[0] === "freshness") {
-            return fs?.freshness?.[at[1] as "window" | "fallback"];
-         }
-         return undefined;
+         const node = walk(at);
+         return typeof node === "string" ? node : undefined;
+      },
+      tag(...at: string[]) {
+         const node = walk(at);
+         return node !== undefined && typeof node === "object"
+            ? fakeTagFromTree(node)
+            : undefined;
       },
    };
+}
+
+/** Assemble one tag layer's tree from the pieces a fake source declares. */
+function tagTree(pieces: {
+   fields?: Record<string, string>;
+   freshness?: FakeFreshnessSchedule;
+   queryMetadata?: Record<string, string>;
+   /** Contents of the `materialization` envelope (model-file layer). */
+   materialization?: {
+      freshness?: FakeFreshnessSchedule;
+      queryMetadata?: Record<string, string>;
+   };
+}): FakeTagTree {
+   const tree: FakeTagTree = { ...(pieces.fields ?? {}) };
+   if (pieces.freshness?.freshness) {
+      tree.freshness = { ...pieces.freshness.freshness } as FakeTagTree;
+   }
+   if (pieces.queryMetadata) tree.queryMetadata = { ...pieces.queryMetadata };
+   if (pieces.materialization) {
+      const envelope: FakeTagTree = {};
+      if (pieces.materialization.freshness?.freshness) {
+         envelope.freshness = {
+            ...pieces.materialization.freshness.freshness,
+         } as FakeTagTree;
+      }
+      if (pieces.materialization.queryMetadata) {
+         envelope.queryMetadata = { ...pieces.materialization.queryMetadata };
+      }
+      tree.materialization = envelope;
+   }
+   return tree;
 }
 
 export function fakeSource(opts: {
@@ -118,8 +165,17 @@ export function fakeSource(opts: {
    annotationFields?: Record<string, string>;
    /** Source-level (`#@`) freshness (dotted keys). */
    freshnessSchedule?: FakeFreshnessSchedule;
-   /** Model-file-level (`##`) freshness default. */
+   /** Model-file-level (`##`) freshness default, in the deprecated bare form. */
    modelFreshnessSchedule?: FakeFreshnessSchedule;
+   /** Model-file-level (`## materialization.*`) envelope declarations. */
+   modelMaterialization?: {
+      freshness?: FakeFreshnessSchedule;
+      queryMetadata?: Record<string, string>;
+   };
+   /** Source-level (`#@ persist queryMetadata.*`) per-query metadata. */
+   queryMetadata?: Record<string, string>;
+   /** Model-file-level bare (`## queryMetadata.*`) per-query metadata. */
+   modelQueryMetadata?: Record<string, string>;
    /**
     * Spy on the args Malloy's SQL generation is handed — chiefly the
     * `buildManifest` that resolves upstream persist references — so a test can
@@ -132,6 +188,12 @@ export function fakeSource(opts: {
     * runs for `storage=` sources, so colocated fakes never touch it.
     */
    sourceDef?: unknown;
+   /**
+    * The source's compiled output columns, which deriveColumns reads off
+    * `_explore.intrinsicFields`. An incremental delta names these in its DML, so
+    * a test exercising that path has to declare them.
+    */
+   columns?: string[];
 }): PersistSource {
    const fields = opts.annotationFields;
    return {
@@ -140,6 +202,13 @@ export function fakeSource(opts: {
       connectionName: opts.connectionName ?? "duckdb",
       dialectName: opts.dialectName ?? "duckdb",
       _sourceDef: opts.sourceDef ?? {},
+      _explore: {
+         intrinsicFields: (opts.columns ?? []).map((name) => ({
+            name,
+            type: "string",
+            isAtomicField: () => true,
+         })),
+      },
       makeBuildId: () => opts.sourceEntityId,
       getSQL: (sqlOpts?: unknown) => {
          opts.onGetSQL?.(sqlOpts);
@@ -147,12 +216,24 @@ export function fakeSource(opts: {
       },
       annotations: {
          parseAsTag: () => ({
-            tag: fakeTag(fields, opts.freshnessSchedule),
+            tag: fakeTagFromTree(
+               tagTree({
+                  fields,
+                  freshness: opts.freshnessSchedule,
+                  queryMetadata: opts.queryMetadata,
+               }),
+            ),
          }),
       },
       modelAnnotations: {
          parseAsTag: () => ({
-            tag: fakeTag(undefined, opts.modelFreshnessSchedule),
+            tag: fakeTagFromTree(
+               tagTree({
+                  freshness: opts.modelFreshnessSchedule,
+                  queryMetadata: opts.modelQueryMetadata,
+                  materialization: opts.modelMaterialization,
+               }),
+            ),
          }),
       },
    } as unknown as PersistSource;
@@ -162,11 +243,16 @@ export function fakeSource(opts: {
  * Assemble a {@link CompiledBuildPlan} from a sources map and dependency
  * levels (one connection, "duckdb"). `connections` is supplied by the caller
  * because build vs. plan-derivation tests need different connection mocks.
+ * `sourceGateOutcomes` is left undefined unless a test explicitly supplies
+ * one — a fixture that doesn't set it exercises the fail-closed default (no
+ * compile-time gate outcome ⇒ the colocated authorize relaxation never
+ * applies, same as before that outcome existed).
  */
 export function compiledWith(
    sources: Record<string, PersistSource>,
    levels: string[][],
    connections: CompiledBuildPlan["connections"] = new Map(),
+   sourceGateOutcomes?: CompiledBuildPlan["sourceGateOutcomes"],
 ): CompiledBuildPlan {
    return {
       graphs: [
@@ -180,5 +266,6 @@ export function compiledWith(
       sources,
       connectionDigests: { duckdb: "dig" },
       connections,
+      sourceGateOutcomes,
    };
 }

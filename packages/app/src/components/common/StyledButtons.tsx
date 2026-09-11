@@ -1,3 +1,6 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
 import { Button, ButtonProps, Chip, ChipProps, styled } from "@mui/material";
 import { forwardRef, ReactElement } from "react";
 
