@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test } from "@playwright/test";
+import { RELOAD_SECRET } from "../../playwright.config";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -60,7 +61,11 @@ run: products_with_given -> by_code
 
 async function reloadPackage(baseURL: string): Promise<void> {
    const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}?reload=true`;
-   const res = await fetch(url);
+   // The reload route is authorization-gated; without the secret this setup
+   // step takes a 403 and every test in the file fails on missing fixtures.
+   const res = await fetch(url, {
+      headers: { "x-publisher-reload-secret": RELOAD_SECRET },
+   });
    if (!res.ok) {
       throw new Error(`Package reload failed: ${res.status} ${res.statusText}`);
    }

@@ -18,6 +18,12 @@ import { defineConfig, devices } from "@playwright/test";
 const BASE_URL = process.env.PUBLISHER_URL ?? "http://localhost:4000";
 const USE_WEB_SERVER = process.env.PLAYWRIGHT_USE_WEBSERVER !== "0";
 const IS_CI = !!process.env.CI;
+// `?reload=true` is authorization-gated now, and three specs reload the
+// storefront package to pick up fixture files they write. Give the spawned
+// server a secret and hand the same value to those specs, so their setup
+// authenticates instead of taking the 403 the gate returns.
+export const RELOAD_SECRET =
+   process.env.PUBLISHER_RELOAD_SECRET ?? "playwright-reload-secret";
 
 export default defineConfig({
    testDir: "./tests/playwright",
@@ -67,6 +73,7 @@ export default defineConfig({
            // downloads fixture packages, marks ready when done).
            command: "npm run start:init",
            cwd: "../../",
+           env: { PUBLISHER_RELOAD_SECRET: RELOAD_SECRET },
            url: `${BASE_URL}/api/v0/status`,
            reuseExistingServer: true,
            timeout: 300_000,
