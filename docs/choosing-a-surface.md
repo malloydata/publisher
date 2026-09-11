@@ -9,6 +9,13 @@ SPDX-License-Identifier: MIT
 > (`.malloynb`), **dashboards** (`dashboards/*.malloy`), and **HTML data apps** (`public/`), with
 > the pros, cons, and decision rules for each.
 
+> **This page describes what you can author today, and today has three surfaces.**
+> [malloy-apps-v2.md](malloy-apps-v2.md) proposes reducing that to two, by merging notebooks and
+> dashboards into one `.malloy` **app** where a `## app { layout=grid | flow }` tag decides the
+> reading mode — so the notebook-or-dashboard question below becomes one tag rather than two
+> formats. It is a design, not shipped code: keep choosing between the three surfaces here until it
+> lands, and read that document before authoring new guidance on this axis.
+
 All three are artifacts that live _inside a package_, ship with the model, and run on the same
 engine: the same governed query endpoints, the same [givens](givens.md), the same
 `@malloydata/render` renderer, the same query caps. Ask any of them the same question and the numbers

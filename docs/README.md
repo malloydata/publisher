@@ -82,6 +82,7 @@ there for the primitive, then follow the application you need.
 | [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                |
 | [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                    |
 | [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.       |
+| [malloy-apps-v2.md](malloy-apps-v2.md)                         | _Design doc:_ one editable `.malloy` **app** replacing notebooks, dashboards and workbooks.   |
 
 ## Full public docs
 
