@@ -116,17 +116,24 @@ describe("collection routes refuse ?reload", () => {
    });
 
    it("the per-resource routes still accept reload", async () => {
-      // These honor `reload`, so they must get past the guard and fail on the
-      // environment instead — 404, not the collection's 400. Pinning the status
-      // rather than just the message is what catches the guard being attached
-      // to the wrong route.
-      for (const path of [
-         `/api/v0/environments/${MISSING_ENV}?reload=true`,
-         `/api/v0/environments/${MISSING_ENV}/packages/nope?reload=true`,
-      ]) {
+      // These honor `reload`, so they must get past the COLLECTION guard, whose
+      // refusal is a 400. Pinning the status rather than just the message is
+      // what catches that guard being attached to the wrong route.
+      //
+      // The environment route reaches the lookup and 404s. The package route
+      // now stops earlier, at the reload authorization gate, which answers 403
+      // because this server starts with no reload secret configured -- see
+      // reload_authorization.ts. Either way it is past the collection guard,
+      // which is what this case exists to prove; 400 here would mean the guard
+      // is on a route that should honor reload.
+      const cases: Array<[string, number]> = [
+         [`/api/v0/environments/${MISSING_ENV}?reload=true`, 404],
+         [`/api/v0/environments/${MISSING_ENV}/packages/nope?reload=true`, 403],
+      ];
+      for (const [path, expected] of cases) {
          const { status, json } = await body(path);
-         expect(status).toBe(404);
-         expect(json.message).toContain(MISSING_ENV);
+         expect(status).toBe(expected);
+         if (expected === 404) expect(json.message).toContain(MISSING_ENV);
       }
    });
 

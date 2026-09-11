@@ -31,70 +31,47 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — the authorize bypass, the MCP bind, and package reload are closed by default
+## [0.2.7] — bound how far the Snowflake driver reads ahead of a slow consumer
 
-Three controls that were open on a naive deployment now require an operator to
-enable them. Each flips a **default**, so a deployment relying on the previous
-behaviour has a migration step below. All three are unauthenticated surfaces
-today, which is why the default moves rather than the capability disappearing.
+The Docker image now installs a small shim in front of the ADBC Snowflake driver
+that can set `adbc.rpc.result_queue_size` on every Snowflake statement. It is
+**opt-in**: with `ADBC_RESULT_QUEUE_SIZE` unset — the default — the shim is a
+pass-through and the driver behaves exactly as upstream ships it. The image itself
+is different (the extension now loads the shim, which loads the upstream driver
+beside it), but with the variable unset the shim sets nothing and forwards every
+call. Set `ADBC_RESULT_QUEUE_SIZE=1` on the deployment to turn the bound on. Non-Docker installs are unaffected either way, because the
+`snowflake` extension has no way to set this option and the server process does
+not touch it.
 
-**The `#(authorize)` bypass header now needs a validated secret.** Presence
-alone used to be enough: any caller who could send
-`x-publisher-bypass-authorize: true` ran with the author's `#(authorize)` gates
-skipped, so whether a gate held was a property of the deployment's edge rather
-than of Publisher. The header now carries a shared secret, compared in constant
-time against `PUBLISHER_BYPASS_AUTHORIZE_SECRET`. With that variable unset or
-blank there is no value any caller could present, so every bypass request is
-refused.
+Why: the driver prefetches result chunks ahead of the consumer with no bound tied
+to consumption — a chunk's goroutine releases its concurrency slot as soon as its
+download finishes, while the decoded records stay queued. Whenever a
+`snowflake_query()` stream is consumed more slowly than the network delivers it,
+which is what a `CREATE TABLE AS` into DuckLake on object storage does, the
+*remaining result set* accumulates in memory outside DuckDB's buffer manager,
+where `PUBLISHER_DUCKDB_MEMORY_LIMIT` neither sees nor bounds it. On a ~140M-row
+materialization that was an 8 GiB worker OOM-killed on every attempt; the two
+DuckLake write bounds shipped in 0.2.3 and 0.2.4 raise the consumer's throughput
+and are still load-bearing, but could never close a gap whose other side is
+unbounded.
 
-_Migration._ If a data-management caller (an indexer, or anything scanning a
-gated source) relies on the bypass, set `PUBLISHER_BYPASS_AUTHORIZE_SECRET` to a
-long random value and have that caller send exactly that value in the header
-instead of `true`. Treat it as a credential: keep it in a secret store and
-rotate it. Keep stripping the header at your edge — the secret makes a forwarded
-header useless to a caller who does not know it, but it does not make the header
-safe to forward. If nothing needs a bypass, set nothing; the refusal is the new
-default. See [docs/authorize-bypass-deployment.md](docs/authorize-bypass-deployment.md).
+Measured on `TPCH_SF100.ORDERS LIMIT 20M` with a deliberately slow writer, peak
+cgroup `anon`: 3325 MiB at the driver default — the whole result resident with
+1% consumed — against 286 MiB flat at `1`, byte-identical output. On a fast
+100M-row aggregate the bound cost nothing measurable and removed the 400–1000 MiB
+the default buffered there too. `adbc.snowflake.rpc.prefetch_concurrency`
+(`ADBC_PREFETCH_CONCURRENCY`) is exposed alongside but left at its default, since
+it is the throughput knob rather than the memory one.
 
-**The MCP server binds loopback by default.** It previously shared
-`PUBLISHER_HOST` with the REST server and so defaulted to `0.0.0.0`, publishing
-an unauthenticated endpoint that exposes every MCP tool on every interface. It
-now binds `127.0.0.1` unless told otherwise, which matches the guidance already
-in `AGENTS.md`. Setting `--host` / `PUBLISHER_HOST` explicitly still moves both
-listeners together, so an operator who deliberately widened the bind keeps it;
-the new `MCP_HOST` / `--mcp_host` sets the MCP bind on its own. The REST server's
-own default is unchanged.
-
-Cross-origin access to the MCP endpoint is now opt-in as well. It was bare
-permissive CORS, which reflected any origin back and let a browser page on any
-site read a response. `MCP_CORS_ORIGINS` takes a comma-separated allowlist (or
-`*`), and defaults to no cross-origin access.
-
-_Migration._ If an MCP client connects from another host, set `MCP_HOST=0.0.0.0`
-(or `--mcp_host 0.0.0.0`) and put an authenticating gateway in front of the port.
-If a browser page calls the MCP endpoint from another origin, list that origin in
-`MCP_CORS_ORIGINS`. A non-browser MCP client sends no `Origin` and needs no
-allowlist entry.
-
-**`?reload=true` on a package GET now requires a secret.** An unauthenticated
-`GET /…/packages/{pkg}?reload=true` triggered a full package recompile, replacing
-the served model and — on a package with an install `location` — re-fetching over
-on-disk edits. It now requires the secret in `PUBLISHER_RELOAD_SECRET`, presented
-in the `x-publisher-reload-secret` header, and answers `403` while no secret is
-configured. The legacy `/projects/…` alias is gated identically, since it reaches
-the same reload.
-
-Reading package metadata **without** `?reload=true` is unchanged and needs no
-secret, and the MCP `reload_package` tool is unaffected — it does not pass through
-the HTTP boundary, and its endpoint is now loopback by default.
-
-_Migration._ If a deploy hook, CI step, or watch script calls `?reload=true`, set
-`PUBLISHER_RELOAD_SECRET` and send the header. For local model iteration, prefer
-the MCP `reload_package` tool, which needs no secret.
+This is an interim, and `packages/server/adbc-shim/README.md` says exactly when
+it comes out: when the extension exposes the options
+([iqea-ai/duckdb-snowflake#66](https://github.com/iqea-ai/duckdb-snowflake/issues/66))
+or the driver bounds its read-ahead by consumption as its documentation already
+implies ([adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/issues/197)).
 
 ---
 
-## [Unreleased] — 500 and 502 responses no longer echo the internal error
+## [0.2.7] — 500 and 502 responses no longer echo the internal error
 
 A 500 or a 502 returned `error.message` verbatim. That message is not always
 something a caller should see: an unrecognised internal failure carries a stack
