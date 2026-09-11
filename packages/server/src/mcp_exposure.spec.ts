@@ -194,7 +194,12 @@ describe("MCP host resolution", () => {
       // and `notebooks/*` wildcards), and a lazy `/\/\*[\s\S]*?\*\//` reads one
       // of those as a comment opener and deletes ~39KB of live code up to the
       // next `*` + `/`. Matching the raw text cannot be fooled that way.
-      const withoutComments = source.replace(/^\s*\/\/.*$/gm, "");
+      // CRLF first: the repo pins no .gitattributes, so a Windows checkout has
+      // \r\n and the multi-line needles below (which spell \n) match nothing.
+      // That is a false failure on one platform for source that is correct.
+      const withoutComments = source
+         .replace(/\r\n/g, "\n")
+         .replace(/^\s*\/\/.*$/gm, "");
 
       it("defaults MCP_HOST to loopback, falling back to PUBLISHER_HOST", () => {
          expect(withoutComments).toContain(
