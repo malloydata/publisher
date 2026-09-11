@@ -4,6 +4,7 @@
   python3 verify_goldens.py --set evals/ecommerce --publisher http://localhost:4811
   python3 verify_goldens.py --set ... --qid ecom_profit          # one case
   python3 verify_goldens.py --set ... --refresh                  # rewrite drifted values
+  python3 verify_goldens.py --set ... --promote                  # provisional -> verified
 
 A golden that cannot be re-derived is not a golden, it is a number somebody
 typed once. This runs whenever the data changes, a golden is repaired, or the
@@ -63,6 +64,18 @@ WHAT IT CHECKS, AND WHAT EACH CATCHES
                  key untouched, and no run said anything. Hard. A case with no
                  stamp is skipped, not failed: `import_cases.py --stamp` in
                  `skill:eval-import` is what writes one.
+
+PROMOTION
+
+`--promote` is the only thing in this toolchain that writes `golden.status`.
+Without it, `skill:eval-import` stamps `provisional` on every golden holding a
+value, `skill:eval-answer` refuses a verdict on one, and nothing closes the
+loop: an imported set is unscorable forever and no file says why. A golden
+promotes only when its value re-derived cleanly from the truth package on THIS
+run and a second, differently shaped derivation exists -- the standard
+`ledger-schema.md` already states. `invalid` and `ambiguous` never promote;
+those are judgements a re-derivation cannot make, and they go through the
+golden side door. Every golden left alone is reported with the reason.
 
 Only check 1 needs the truth server. 2 to 6 read the cases, the gold artifacts
 and the model text, so they run whether or not the set names a truthPackage --
@@ -284,14 +297,75 @@ def _walk_strings(v: Any):
 
 # ---------------------------------------------------------------- 3. verification axis
 
+def has_second_derivation(case: dict[str, Any], set_dir: pathlib.Path) -> bool:
+    """Does a second, differently shaped derivation of this golden exist?
+
+    `ledger-schema.md`: "A golden is written only after two differently shaped
+    derivations agree". This is the mechanical half of that sentence -- either
+    an inline `golden.verification` block, or a `gold/<qid>.json` carrying
+    `verifyRows` beside the truth rows. Whether the second derivation varies a
+    USEFUL axis is `axis_findings`' job.
+    """
+    ver = (case.get("golden") or {}).get("verification") or {}
+    side = set_dir / "gold" / f"{case['qid']}.json"
+    return bool(ver) or (side.exists()
+                         and "verifyRows" in json.loads(side.read_text()))
+
+
+PROMOTED_BY = "verify_goldens.py --promote"
+
+
+def promotion_blocker(case: dict[str, Any], set_dir: pathlib.Path) -> str | None:
+    """Why this golden may not be promoted to `verified`, or None if it may.
+
+    The gap this closes: NOTHING in this toolchain ever wrote `golden.status`.
+    `skill:eval-import` stamps `provisional` on every golden that holds a value
+    and enforces it, `skill:eval-answer` refuses a verdict on one, and no script
+    and no doc said how a golden stops being provisional. A freshly imported set
+    could therefore never be scored without hand-editing `cases.jsonl`, and
+    nothing said so. This is the promotion, and it enforces the standard
+    `ledger-schema.md` already states rather than inventing a softer one.
+
+    Four conditions, each of them a way a key gets called verified without
+    having earned it:
+
+    - Only `provisional` promotes. `invalid` and `ambiguous` are judgements
+      about the QUESTION or the key that a re-derivation cannot answer; they go
+      through the golden side door and a person settles them.
+    - The golden must hold a value. A `criteria` or `unanswerable` golden is
+      already verified on arrival and has nothing to re-derive.
+    - The value check must have re-derived it from the TRUTH package this run,
+      cleanly. Caller's job; this function is told.
+    - A second, differently shaped derivation must exist. One query agreeing
+      with itself is not agreement, and `verifiedBy: authored_query` is the
+      author's own query, which is why `skill:eval-import` keeps that case
+      provisional even when the number matches.
+    """
+    g = case.get("golden") or {}
+    status = g.get("status")
+    if status == "verified":
+        return "already verified"
+    if status != "provisional":
+        return (f"status is {status!r}, not 'provisional'; invalid and "
+                "ambiguous keys are settled by a person through the golden "
+                "side door, not by re-derivation")
+    if g.get("kind") in ("criteria", "unanswerable"):
+        return f"kind {g.get('kind')!r} holds no value to re-derive"
+    if g.get("value") is None and not g.get("path"):
+        return "holds no value to re-derive"
+    if not has_second_derivation(case, set_dir):
+        return ("no second derivation: a golden is verified only after two "
+                "differently shaped derivations agree (golden.verification, "
+                "or gold/<qid>.json with verifyRows)")
+    return None
+
+
 def axis_findings(case: dict[str, Any], set_dir: pathlib.Path) -> list[str]:
     g = case.get("golden") or {}
     if g.get("kind") == "unanswerable":
         return []
     ver = g.get("verification") or {}
-    side = set_dir / "gold" / f"{case['qid']}.json"
-    has_second = bool(ver) or (side.exists() and "verifyRows" in json.loads(side.read_text()))
-    if not has_second:
+    if not has_second_derivation(case, set_dir):
         return []
     axis = ver.get("variesAxis")
     primary = ver.get("primaryAxis")
@@ -517,10 +591,19 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
 
 def verify(set_dir: pathlib.Path, publisher: str, environment: str,
            *, qids: set[str] | None = None, model: pathlib.Path | None = None,
-           refresh: bool = False, cases_file: str = "cases.jsonl",
+           refresh: bool = False, promote: bool = False,
+           target_package: str | None = None,
+           cases_file: str = "cases.jsonl",
            quiet: bool = False) -> dict[str, Any]:
     """Run every check. Returns a summary; `drifted` is the count that should
-    stop a run."""
+    stop a run.
+
+    `target_package` names the package under test, for the isolation guard. It
+    falls back to `set.json`'s `targetPackage`, which for a long time was the
+    only way to supply it -- and that field is written by nothing and appears
+    in no schema, so the guard was dead on every set. Callers that know the
+    package pass it.
+    """
     meta = json.loads((set_dir / "set.json").read_text()) if (set_dir / "set.json").exists() else {}
     a = argparse.Namespace(
         publisher=publisher, environment=environment,
@@ -549,6 +632,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     tally: dict[str, int] = {}
     findings: list[str] = []
     refreshed: list[str] = []
+    promoted: list[str] = []
+    promotion_notes: list[str] = []
     # Everything down to the value loop reads the cases, the gold artifacts and
     # the model text. No server is involved, so none of it is gated.
     for c in chosen:
@@ -559,8 +644,9 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     findings += question_drift_findings(chosen)
 
     if not skipped:
-        findings += truth_isolation_findings(publisher, environment,
-                                             meta.get("targetPackage"))
+        findings += truth_isolation_findings(
+            publisher, environment,
+            target_package or meta.get("targetPackage"))
     if skipped and not quiet:
         print(f"  ! {skipped}; running only the checks that need no server")
     # `[] if skipped else chosen` rather than an `if` block: the guard belongs
@@ -571,6 +657,23 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         tally[status] = tally.get(status, 0) + 1
         if not quiet:
             print(f"  {status.upper():7s} {c['qid']:34s} {detail}")
+        # Promotion rides on the value check because it IS the evidence: a
+        # golden re-derived cleanly from the truth package this run, with a
+        # second derivation beside it, has met the standard the schema states.
+        # Anything else is reported rather than promoted, so a caller learns
+        # WHY a key it expected to promote did not.
+        if promote:
+            if status != "ok":
+                promotion_notes.append(
+                    f"{c['qid']}: not promoted, value check says {status}")
+            else:
+                why = promotion_blocker(c, set_dir)
+                if why:
+                    promotion_notes.append(f"{c['qid']}: not promoted, {why}")
+                else:
+                    c["golden"]["status"] = "verified"
+                    c["golden"]["verifiedBy"] = PROMOTED_BY
+                    promoted.append(c["qid"])
         if status == "diff":
             findings.append(f"{c['qid']}: {detail}")
             if refresh and rows is not None:
@@ -588,19 +691,31 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                 c["goldenRevision"] = int(c.get("goldenRevision") or 1) + 1
                 refreshed.append(c["qid"])
 
-    if refreshed:
+    rewritten = set(refreshed) | set(promoted)
+    if rewritten:
         by_qid = {c["qid"]: c for c in cases}
         out = []
         for l in lines:
             if not l.strip():
                 continue
             q = json.loads(l)["qid"]
-            out.append(json.dumps(by_qid[q]) if q in refreshed else l)
+            out.append(json.dumps(by_qid[q]) if q in rewritten else l)
         path.write_text("\n".join(out) + "\n")
-        if not quiet:
-            print(f"\n  refreshed {len(refreshed)} golden(s): {', '.join(refreshed)} "
-                  f"-- goldenRevision bumped; bump set.json datasetVersion and note "
-                  f"that runs before it are not comparable")
+    if refreshed and not quiet:
+        print(f"\n  refreshed {len(refreshed)} golden(s): {', '.join(refreshed)} "
+              f"-- goldenRevision bumped; bump set.json datasetVersion and note "
+              f"that runs before it are not comparable")
+    if promoted and not quiet:
+        # No goldenRevision bump: the VALUE did not move, so scores taken
+        # against it are still comparable. Only its standing changed, from a
+        # number nobody had re-derived to one two derivations agree on.
+        print(f"\n  promoted {len(promoted)} golden(s) to verified: "
+              f"{', '.join(promoted)} -- value unchanged, so goldenRevision is "
+              f"not bumped and earlier scores stay comparable")
+    if promotion_notes and not quiet:
+        print(f"\n  {len(promotion_notes)} golden(s) not promoted:")
+        for n in promotion_notes:
+            print(f"    {n}")
 
     drifted = tally.get("diff", 0) + tally.get("error", 0)
     if not quiet:
@@ -627,7 +742,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     # {"skipped": N}, because check_value already returns a per-case status
     # spelled "skipped" and one word may not mean two things in one dict.
     return {"skipped": skipped, "tally": tally, "drifted": drifted,
-            "findings": findings, "refreshed": refreshed}
+            "findings": findings, "refreshed": refreshed,
+            "promoted": promoted, "promotionNotes": promotion_notes}
 
 
 # "The check you asked for did not happen." Two ways in: an unanticipated
@@ -662,11 +778,22 @@ def main() -> int:
                     help="rewrite each drifted golden's value from the fresh rows "
                          "and bump its goldenRevision. For drift, not for a wrong "
                          "canonical query -- read the diff first")
+    ap.add_argument("--promote", action="store_true",
+                    help="mark `provisional` goldens `verified` where the value "
+                         "re-derived cleanly from the truth package AND a second "
+                         "derivation exists. This is the ONLY thing that writes "
+                         "golden.status; without it an imported set stays "
+                         "unscorable forever. Prints why each unpromoted golden "
+                         "was left alone")
+    ap.add_argument("--target-package",
+                    help="the package under test, for the isolation guard. "
+                         "Falls back to set.json's `targetPackage`")
     args = ap.parse_args()
 
     r = verify(args.set_dir, args.publisher, args.environment,
                qids=set(args.qid) if args.qid else None, model=args.model,
-               refresh=args.refresh, cases_file=args.cases)
+               refresh=args.refresh, promote=args.promote,
+               target_package=args.target_package, cases_file=args.cases)
     if r.get("skipped"):
         print(f"\n{r['skipped']}")
     # Drift and findings both fail: a golden that cannot be re-derived is a

@@ -177,10 +177,20 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
     # which silently verified against the wrong environment on any other set.
     cmd = [sys.executable, str(script.resolve()),
            "--set", str(a.set_dir.resolve()),
-           "--publisher", a.truth_publisher,
            "--environment", a.environment]
+    # Appended only when set: passing None here is a TypeError inside
+    # subprocess.run, and the two excepts below catch OSError and a timeout,
+    # not that -- so it would have crashed improve.py AFTER the model edit,
+    # losing the receipts. Omitted, the verifier skips the value check and
+    # exits 3, which `couldNotRun` already reads correctly.
+    if a.truth_publisher:
+        cmd += ["--publisher", a.truth_publisher]
     if model:
         cmd += ["--model", str(model)]
+    # The isolation guard needs to know what is under test; without it the
+    # guard reads `set.json`'s `targetPackage`, which nothing writes.
+    if a.package:
+        cmd += ["--target-package", a.package]
     try:
         # No cwd: `--set` is absolute and the verifier resolves `--cases` and
         # the gold artifacts under it, so nothing here is relative any more.
@@ -306,11 +316,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--environment", default="samples")
     ap.add_argument("--package", default="ecommerce")
     ap.add_argument("--mcp-url", default="http://localhost:4040/mcp")
-    ap.add_argument("--truth-publisher", default="http://localhost:4811",
+    # No default. It WAS http://localhost:4811 -- which `run_baseline.py` uses
+    # as the default `--publisher`, the server holding the model under test --
+    # so the help text below stated the invariant and the default beside it
+    # broke it. `verify_goldens.py` removed the same default from its own
+    # `--publisher` for the same reason and both callers kept it. Unset now
+    # means the value check does not happen, the verifier exits 3, and the
+    # acceptance gate blocks with "did not run" rather than passing an audit
+    # that re-derived goldens from the model they are meant to check.
+    ap.add_argument("--truth-publisher", default=None,
                     help="the Publisher serving the TRUTH package, for the "
                          "golden re-derivation after an edit. The model under "
                          "test cannot verify its own goldens, which is the "
-                         "whole point of the second server")
+                         "whole point of the second server. Without it the "
+                         "value check does not run and the acceptance check "
+                         "blocks")
     ap.add_argument("--max-turns", type=int, default=60)
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--retries", type=int, default=1)

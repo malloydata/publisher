@@ -274,7 +274,9 @@ class GoldenStatusGate(unittest.TestCase):
         v = self.judge({"status": "provisional", "value": 4200000})
         self.assertIsNone(v["verdict"])
         self.assertEqual(v["reason"], "golden_provisional")
-        self.assertEqual(v["gold_status"], "provisional")
+        # NOT carried into `gold_status`: that field is documented in the
+        # judge's vocabulary, which has no `provisional`. The reason says it.
+        self.assertIsNone(v["gold_status"])
 
     def test_invalid_and_ambiguous_are_refused(self):
         for st in ("invalid", "ambiguous"):
@@ -324,6 +326,60 @@ class GoldenStatusGate(unittest.TestCase):
                          ("provisional", "invalid", "ambiguous"))
 
 
+class UnscorablePreflight(unittest.TestCase):
+    """A set of bare questions is a supported set, not a set to refuse.
+
+    `skill:eval-import`: "A question with no golden is a case, not a reject...
+    the answers it produces are what the keys get derived from." An earlier
+    version of this guard refused to start on exactly that set, which broke the
+    documented way to bootstrap keys.
+    """
+
+    def cases(self, *goldens):
+        return [{"qid": f"q{i}", "golden": g}
+                for i, g in enumerate(goldens, 1)]
+
+    def refuse(self, *goldens):
+        return rb.unscorable_preflight(self.cases(*goldens), "s")[2]
+
+    def test_a_set_of_bare_questions_runs(self):
+        self.assertIsNone(self.refuse(None, None, None))
+
+    def test_one_bare_question_among_underived_keys_still_runs(self):
+        # That one case gets an answer a key can be derived from, which is the
+        # whole reason not to refuse.
+        prov = {"status": "provisional", "value": 1}
+        self.assertIsNone(self.refuse(prov, prov, None))
+
+    def test_a_set_of_wholly_underived_keys_is_refused(self):
+        prov = {"status": "provisional", "value": 1}
+        self.assertIsNotNone(self.refuse(prov, prov))
+
+    def test_the_refusal_names_both_ways_forward(self):
+        msg = self.refuse({"status": "provisional", "value": 1})
+        self.assertIn("--promote", msg)
+        self.assertIn("check_coverage.py", msg)
+
+    def test_the_refusal_does_not_send_anyone_to_refresh(self):
+        # `--refresh` rewrites a drifted VALUE and never touches status, so
+        # naming it here was an instruction that could not work.
+        msg = self.refuse({"status": "provisional", "value": 1})
+        self.assertIn("does not change a golden's status", msg)
+
+    def test_a_scorable_set_is_not_refused(self):
+        self.assertIsNone(self.refuse({"status": "verified", "value": 1}))
+
+    def test_an_empty_set_is_not_refused_here(self):
+        self.assertIsNone(rb.unscorable_preflight([], "s")[2])
+
+    def test_the_counts_separate_derivable_from_underived(self):
+        unscorable, derivable, _ = rb.unscorable_preflight(
+            self.cases(None, {"status": "provisional", "value": 1},
+                       {"status": "verified", "value": 2}), "s")
+        self.assertEqual(len(unscorable), 2)
+        self.assertEqual(derivable, ["q1"])
+
+
 class GoldenCheckDoesNotClaimZero(unittest.TestCase):
     """`goldenCheck` may not assert a clean result for a check that never ran.
 
@@ -334,22 +390,30 @@ class GoldenCheckDoesNotClaimZero(unittest.TestCase):
     """
 
     def test_the_stale_count_reaches_the_claim(self):
-        self.assertEqual(
+        self.assertIn(
+            "2 stale entity name(s)",
             rb.golden_check_note("49 ok, 0 drifted, 0 other finding(s)",
-                                 ["shipped_at", "total_sales_2021"], True),
-            "49 ok, 0 drifted, 0 other finding(s), 2 stale entity name(s)")
+                                 ["shipped_at", "total_sales_2021"], True))
 
     def test_a_clean_lint_says_zero_rather_than_nothing(self):
         # Silence would read the same as the bug: the point is that the field
         # now says which check produced the zero.
-        self.assertTrue(
+        self.assertIn(
+            "0 stale entity name(s)",
             rb.golden_check_note("49 ok, 0 drifted, 0 other finding(s)",
-                                 [], True).endswith("0 stale entity name(s)"))
+                                 [], True))
 
-    def test_no_model_text_says_the_lint_did_not_run(self):
+    def test_the_rubric_audit_is_named_as_not_run(self):
+        # The missing `--model` silences check 4 as well as check 5, and only
+        # check 5 has an in-arm substitute. A zero must not stand for check 4.
+        got = rb.golden_check_note("49 ok, 0 drifted, 0 other finding(s)",
+                                   [], True)
+        self.assertIn("rubric-claim audit not run", got)
+
+    def test_no_model_text_says_neither_audit_ran(self):
         got = rb.golden_check_note("49 ok, 0 drifted, 0 other finding(s)",
                                    [], False)
-        self.assertIn("entity-name lint not run", got)
+        self.assertIn("model-text audits not run", got)
         self.assertNotIn("stale entity name(s)", got)
 
     def test_a_check_that_already_says_it_did_not_run_is_left_alone(self):
@@ -496,11 +560,22 @@ class RunSummary(unittest.TestCase):
     def test_an_untrustworthy_score_is_flagged_above_the_detail(self):
         # A doubted golden is a DATASET problem. Read after the retrieval
         # numbers it looks like one more measurement.
-        lines = self.lines(doubted=[("q7", "suspect", "note")])
-        self.assertLess(self.index_of(lines, "does not believe"),
+        lines = self.lines(doubted=[("q7", "suspect", "note", "judge")])
+        self.assertLess(self.index_of(lines, "not believed"),
                         self.index_of(lines, "COVERAGE & RETRIEVAL"))
         self.assertIn("NOT model failures",
-                      lines[self.index_of(lines, "does not believe")])
+                      lines[self.index_of(lines, "not believed")])
+
+    def test_each_doubted_golden_says_who_doubted_it(self):
+        # A status the SET declared is a key somebody already settled, not an
+        # opinion the judge formed this run. Attributing both to the judge
+        # claimed a judgement that never happened.
+        judged = self.lines(doubted=[("q7", "suspect", "n", "judge")])
+        declared = self.lines(doubted=[("q7", "verified_wrong", "n", "set")])
+        self.assertIn("the judge says",
+                      judged[self.index_of(judged, "q7")])
+        self.assertIn("the set declares",
+                      declared[self.index_of(declared, "q7")])
 
     def test_a_clean_run_raises_no_alarms(self):
         self.assertFalse([l for l in self.lines() if l.startswith("!")])

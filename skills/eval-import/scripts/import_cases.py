@@ -157,12 +157,28 @@ def check_case(case: dict[str, Any], where: str) -> tuple[list[str], list[str]]:
                             "`golden.rubric`. The clauses ARE the key, so "
                             "there is nothing to judge against")
     elif status == "verified" and holds_value(golden):
-        if not golden.get("verifiedBy"):
+        by = golden.get("verifiedBy")
+        # This skill's rule is flat: "No golden holding a VALUE imports as
+        # `verified`." Gating the finding on a MISSING `verifiedBy` let through
+        # the one shape step 3 names explicitly -- their query, their number,
+        # agreeing -- which step 3 then says to keep `provisional`, because the
+        # query ran against the model under test and a model bug certifies its
+        # own golden. So the validator accepted exactly what the skill forbids,
+        # and that was the only route out of the provisional deadlock.
+        #
+        # `authored_query` and an absent value are both import-time claims. A
+        # re-derivation through the truth package is not, which is why
+        # verify_goldens' own markers pass: a mature set whose keys were
+        # promoted must keep validating.
+        if by in (None, "", "authored_query", "authored_number"):
+            claim = (f"`verifiedBy: {by}`" if by else "no `verifiedBy`")
             findings.append(
                 f"{where} {qid}: a golden holding a value claims `verified` "
-                "with no `verifiedBy`. Nothing an import can do makes a value "
-                "verified. Fix: `provisional`, and re-derive it through the "
-                "truth package")
+                f"with {claim}. Nothing an import can do makes a value "
+                "verified -- their own query agreeing proves the number came "
+                "from that query, not that the query is right. Fix: "
+                "`provisional`, then re-derive through the truth package and "
+                "promote (verify_goldens.py --promote)")
 
     if golden.get("verifiedBy") == "authored_query" and not golden.get("canonicalQuery"):
         findings.append(f"{where} {qid}: `verifiedBy: authored_query` with no "

@@ -33,7 +33,18 @@ python3 skills/eval-loop/scripts/serve.py --publisher-dir <publisher>/packages/s
 #     golden was re-derived, and 0 would have claimed otherwise.
 python3 skills/eval-answer/scripts/verify_goldens.py \
   --set <repo>/evals/ecommerce --publisher http://localhost:4881 \
-  --model <repo>/ecommerce
+  --model <repo>/ecommerce --target-package ecommerce
+
+# 2b. ONLY on a set whose keys are still provisional -- an imported one is,
+#     throughout, by design. Nothing else in this toolchain writes
+#     golden.status, so without this the set scores 0 of 0 forever and
+#     run_baseline refuses to start. It promotes only what re-derived cleanly
+#     AND carries a second derivation, and prints the reason for every golden
+#     it left alone. `--refresh` is NOT this: it rewrites a drifted value and
+#     never touches a status.
+python3 skills/eval-answer/scripts/verify_goldens.py \
+  --set <repo>/evals/ecommerce --publisher http://localhost:4881 \
+  --target-package ecommerce --promote
 
 # 2. smoke one case first ($0.13), then the arm. Goldens are re-derived from
 #    the truth server before either starts; a drifted set refuses to run.
@@ -67,7 +78,7 @@ python3 skills/eval-loop/scripts/flip_table.py \
 python3 skills/eval-loop/scripts/check_judge.py \
   --set <repo>/evals/ecommerce --repeat 3
 
-# 4. FIRST: any golden the judge did not believe. `jq .doubtedGoldens
+# 4. FIRST: any golden in doubt, from the judge or the set. `jq .doubtedGoldens
 #    results/<arm>/run.json` -- non-empty means settle those through the golden
 #    side door before diagnosing, or you send a modelling agent at a model that
 #    is already right.

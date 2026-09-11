@@ -13,9 +13,10 @@ import unittest
 import unittest.mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import verify_goldens  # noqa: E402
 from verify_goldens import (  # noqa: E402
-    model_text, question_drift_findings, truth_isolation_findings,
-    unknown_name_findings, verify)
+    model_text, promotion_blocker, question_drift_findings,
+    truth_isolation_findings, unknown_name_findings, verify)
 
 MODEL = """
 source: order_items is duckdb.table('data/order_items.parquet') extend {
@@ -329,9 +330,41 @@ class TruthIsolation(unittest.TestCase):
                 truth_isolation_findings("http://x", "samples", "ecommerce"), [])
 
     def test_a_set_naming_no_target_package_is_silent(self):
+        # Silent HERE is correct -- the function cannot guess what is under
+        # test. What was wrong is that `targetPackage` was the only way to
+        # supply it, and that field is written by nothing, appears in no
+        # schema and is on no set, so the guard never fired anywhere. The
+        # caller now passes it; see the two below.
         with self.fake_listing(["ecommerce", "ecommerce-truth"]):
             self.assertEqual(
                 truth_isolation_findings("http://x", "samples", None), [])
+
+    def test_verify_takes_the_target_package_from_its_caller(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            (tmp / "set.json").write_text('{"truthPackage": "ecommerce-truth"}')
+            (tmp / "cases.jsonl").write_text("")
+            with self.fake_listing(["ecommerce", "ecommerce-truth"]):
+                r = verify(tmp, "http://x", "samples",
+                           target_package="ecommerce", quiet=True)
+            self.assertTrue([f for f in r["findings"]
+                             if "not an isolated truth server" in f])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_set_json_still_supplies_it_when_the_caller_does_not(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            (tmp / "set.json").write_text(
+                '{"truthPackage": "ecommerce-truth", '
+                '"targetPackage": "ecommerce"}')
+            (tmp / "cases.jsonl").write_text("")
+            with self.fake_listing(["ecommerce", "ecommerce-truth"]):
+                r = verify(tmp, "http://x", "samples", quiet=True)
+            self.assertTrue([f for f in r["findings"]
+                             if "not an isolated truth server" in f])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_an_unreachable_server_is_not_a_golden_finding(self):
         # It must not turn a connection problem into evidence about goldens:
@@ -345,6 +378,120 @@ class TruthIsolation(unittest.TestCase):
         with unittest.mock.patch.object(vg_mod, "get_json", boom):
             self.assertEqual(
                 truth_isolation_findings("http://x", "samples", "ecommerce"), [])
+
+
+
+
+class Promotion(unittest.TestCase):
+    """`--promote` is the ONLY thing that writes `golden.status`.
+
+    Without it the loop was closed: `skill:eval-import` stamps `provisional` on
+    every golden holding a value and enforces it on write, `skill:eval-answer`
+    refuses a verdict on one, and nothing promoted -- so an imported set was
+    unscorable forever and no file said why. These pin the standard it enforces
+    rather than a softer one.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "set.json").write_text(
+            '{"name": "s", "truthPackage": "truth"}')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def case(self, **golden):
+        g = {"status": "provisional", "kind": "scalar", "value": 42}
+        g.update(golden)
+        return {"qid": "q1", "question": "x", "golden": g}
+
+    def write(self, case):
+        (self.tmp / "cases.jsonl").write_text(json.dumps(case) + "\n")
+
+    def run_promote(self, case, value_status="ok"):
+        self.write(case)
+        with unittest.mock.patch.object(
+                verify_goldens, "check_value",
+                return_value=(value_status, "", [{"x": 42}])):
+            r = verify(self.tmp, "http://truth", "samples", promote=True,
+                       quiet=True)
+        stored = json.loads((self.tmp / "cases.jsonl").read_text())
+        return r, stored
+
+    SECOND = {"verification": {"primaryAxis": "day", "variesAxis": "region"}}
+
+    def test_a_re_derived_golden_with_a_second_derivation_promotes(self):
+        r, stored = self.run_promote(self.case(**self.SECOND))
+        self.assertEqual(r["promoted"], ["q1"])
+        self.assertEqual(stored["golden"]["status"], "verified")
+        self.assertEqual(stored["golden"]["verifiedBy"],
+                         "verify_goldens.py --promote")
+
+    def test_promotion_does_not_bump_goldenRevision(self):
+        # The VALUE did not move, so scores taken against it stay comparable.
+        # Bumping would have read as a golden repair and invalidated them.
+        case = self.case(**self.SECOND)
+        case["goldenRevision"] = 3
+        _, stored = self.run_promote(case)
+        self.assertEqual(stored["goldenRevision"], 3)
+
+    def test_one_derivation_agreeing_with_itself_does_not_promote(self):
+        r, stored = self.run_promote(self.case())
+        self.assertEqual(r["promoted"], [])
+        self.assertEqual(stored["golden"]["status"], "provisional")
+        self.assertIn("no second derivation", r["promotionNotes"][0])
+
+    def test_a_drifted_value_does_not_promote(self):
+        r, stored = self.run_promote(self.case(**self.SECOND),
+                                     value_status="diff")
+        self.assertEqual(r["promoted"], [])
+        self.assertEqual(stored["golden"]["status"], "provisional")
+
+    def test_their_own_query_agreeing_is_not_enough(self):
+        # The exact shape eval-import step 3 describes: their query, their
+        # number, agreeing. It ran against the model under test, so a model bug
+        # would certify its own golden.
+        r, _ = self.run_promote(
+            self.case(verifiedBy="authored_query", canonicalQuery="run: a"))
+        self.assertEqual(r["promoted"], [])
+
+    def test_invalid_and_ambiguous_never_promote(self):
+        # Judgements about the key that a re-derivation cannot make. They go
+        # through the golden side door and a person settles them.
+        for status in ("invalid", "ambiguous"):
+            with self.subTest(status):
+                r, stored = self.run_promote(
+                    self.case(status=status, **self.SECOND))
+                self.assertEqual(r["promoted"], [])
+                self.assertEqual(stored["golden"]["status"], status)
+
+    def test_nothing_is_written_without_the_flag(self):
+        self.write(self.case(**self.SECOND))
+        with unittest.mock.patch.object(
+                verify_goldens, "check_value",
+                return_value=("ok", "", [{"x": 42}])):
+            r = verify(self.tmp, "http://truth", "samples", quiet=True)
+        self.assertEqual(r["promoted"], [])
+        self.assertEqual(
+            json.loads((self.tmp / "cases.jsonl").read_text())["golden"]["status"],
+            "provisional")
+
+    def test_every_unpromoted_golden_says_why(self):
+        # A caller that asked for promotion and got none must learn the reason,
+        # or it is back to guessing at an invisible gate.
+        r, _ = self.run_promote(self.case())
+        self.assertEqual(len(r["promotionNotes"]), 1)
+        self.assertIn("q1", r["promotionNotes"][0])
+
+    def test_blocker_reasons_are_distinct_per_cause(self):
+        s = pathlib.Path(self.tmp)
+        self.assertIn("already verified",
+                      promotion_blocker(self.case(status="verified"), s))
+        self.assertIn("holds no value",
+                      promotion_blocker(
+                          {"qid": "q1", "golden": {"status": "provisional",
+                                                   "kind": "criteria"}}, s))
+        self.assertIsNone(promotion_blocker(self.case(**self.SECOND), s))
 
 
 if __name__ == "__main__":

@@ -25,9 +25,11 @@ cannot be delivered by any run, so it reads as a model failure on every case
 it touches: five copied ids cost a real set two days.
 
 On `set.json`: `name`, `description`, `datasetVersion: 1`,
-`targetModelPath`, and a `sourceNote` saying where the questions came from and
-what shape they arrived in. `truthPackage` is usually absent at import, and
-until it exists no golden can reach `verified`. `init_truth_package.py` in
+`targetModelPath`, `targetPackage` (the package under test -- it arms the
+guard that refuses a "truth" server also serving it), and a `sourceNote` saying
+where the questions came from and what shape they arrived in. `truthPackage` is
+usually absent at import, and until it exists no golden can reach `verified`;
+`verify_goldens.py --promote` is what takes it there afterwards. `init_truth_package.py` in
 `skill:eval-answer` scaffolds one.
 
 ## Their field names will not be your field names

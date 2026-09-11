@@ -8,6 +8,18 @@ Bad and ambiguous goldens show up immediately. That is not improve. A
 checkpoint that mixes model edits and silent golden rewrites is useless for
 rollback. Keep hold and repair here, outside the five steps.
 
+## A key nobody has derived yet is not a bad golden
+
+Keep the two apart. `provisional` means nobody has re-derived the value; it is
+the state every imported key starts in and the fix is mechanical --
+`verify_goldens.py --promote`, once a truth package exists and a second
+derivation agrees. That is not this door.
+
+`invalid` and `ambiguous` ARE this door. No re-derivation can settle them,
+because the problem is the key or the question rather than the arithmetic, and
+promotion deliberately refuses both. So does a `suspect` or `verified_wrong`
+status the judge assigns. Those wait here for a person.
+
 ## Repair a bad golden
 
 This is **your** job as conductor, after `eval-diagnose` writes

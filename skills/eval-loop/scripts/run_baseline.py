@@ -944,10 +944,17 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     # Alarms next, and phrased as dataset problems, because acting on them as
     # model failures is the most expensive wrong turn available here.
     if doubted:
-        lines += ["", f"! {len(doubted)} golden(s) the judge does not believe. "
+        # "the judge does not believe" was true of every row until a status the
+        # SET declared could reach this list. It can now, and a set-declared
+        # `verified_wrong` is a key somebody already settled, not an opinion the
+        # judge formed this run -- so each row says which, and the header no
+        # longer attributes all of them to the judge.
+        lines += ["", f"! {len(doubted)} golden(s) not believed. "
                       f"Dataset issues, NOT model failures:"]
-        for qid, status, note in doubted:
-            lines += [f"    {status:15s} {qid}", f"      {note}"]
+        for qid, status, note, source in doubted:
+            whose = "the set declares" if source == "set" else "the judge says"
+            lines += [f"    {status:15s} {qid}  ({whose})",
+                      f"      {note or '(no note)'}"]
         lines += ["  Route via the golden side door in skill:eval-loop before "
                   "improving."]
     if vetoed:
@@ -1016,21 +1023,25 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
 
 def golden_check_note(golden_check: str, stale: list[str],
                       has_model_text: bool) -> str:
-    """`goldenCheck` with the in-arm entity-name lint's own result appended.
+    """`goldenCheck` with the in-arm lint's result and what it could not cover.
 
-    `run_baseline` calls `verify()` without `model=`, and verify_goldens'
-    set-name audit opens `if not text: return []`. So check 5 does not run
-    during an arm, and `goldenCheck` read "49 ok, 0 drifted, 0 other
-    finding(s)" -- a clean result asserted for a check that never happened,
-    while the same run depressed its own recall by exactly the stale names.
-    That is the two-day bug the audit was added to remove, reported by the
-    manifest as zero.
+    `run_baseline` calls `verify()` without `model=`, and BOTH model-text
+    audits short-circuit on empty text: check 5 (set names) opens
+    `if not text: return []`, and check 4 (stale rubric claims) reads an empty
+    definition map and can match nothing. So `goldenCheck` read "49 ok, 0
+    drifted, 0 other finding(s)" -- a clean result asserted for two checks that
+    never happened, while the same run depressed its own recall by exactly the
+    stale names it had not looked for.
 
-    The lint above this call is the in-arm substitute, so its count goes where
-    the claim is. It does not block the arm: only the step-2a and improve.py
-    callers pass `--model`, and wiring `--model` through `run_baseline` needs a
-    decision about what it should point at. Silent is one thing; a manifest
-    claiming the check came back clean is another, and this is that half.
+    Two different repairs, because only one of the two has a substitute. The
+    lint above this call covers check 5 in-arm, so its count goes where the
+    claim is. Nothing in-arm covers check 4, so the field says so outright
+    rather than letting a zero stand for it.
+
+    Neither blocks the arm: only the step-2a and improve.py callers pass
+    `--model`, and wiring it through `run_baseline` needs a decision about what
+    it should point at. Silent is one thing; a manifest claiming the checks came
+    back clean is another, and this is that half.
 
     A `goldenCheck` that already says it did not run is left alone: there is no
     claim in it to correct.
@@ -1038,8 +1049,9 @@ def golden_check_note(golden_check: str, stale: list[str],
     if not golden_check or golden_check.startswith(("skipped", "not run")):
         return golden_check
     if not has_model_text:
-        return golden_check + ", entity-name lint not run (no model text)"
-    return golden_check + f", {len(stale)} stale entity name(s)"
+        return golden_check + ", model-text audits not run (no model text)"
+    return (golden_check + f", {len(stale)} stale entity name(s)"
+            + ", rubric-claim audit not run in-arm")
 
 
 def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
@@ -1568,6 +1580,11 @@ def case_model_src(a, case: dict[str, Any], default: str) -> str:
 # nobody has established what the right answer is.
 GOLDEN_UNSCORABLE = ("provisional", "invalid", "ambiguous")
 
+# What `gold_status` is documented to hold (ledger-schema.md). The case file's
+# `golden.status` is a DIFFERENT vocabulary that happens to share two values;
+# only the shared ones may travel into this field.
+JUDGE_GOLD_STATUS = ("verified", "verified_benign", "suspect", "verified_wrong")
+
 
 def golden_refusal(golden: dict[str, Any] | None) -> str | None:
     """The reason a verdict cannot be issued against this answer key, if any.
@@ -1604,6 +1621,47 @@ def golden_refusal(golden: dict[str, Any] | None) -> str | None:
     return None
 
 
+def unscorable_preflight(cases: list[dict[str, Any]], set_name: str
+                         ) -> tuple[list[str], list[str], str | None]:
+    """(unscorable qids, of those the ones with no golden, refusal or None).
+
+    A case with NO golden is not the same as a case whose key nobody has
+    derived, and only one of them makes a run pointless.
+
+    `skill:eval-import` is explicit that a question with no golden is a case and
+    not a reject: such a set "already measures whether the model can express an
+    answer at all, and the answers it produces are what the keys get derived
+    from". Running it is how a set gets keys, so a run with any golden-less case
+    proceeds and only says what will not be scored. Refusing to start on one
+    broke the documented way to bootstrap a set.
+
+    A set whose every case HOLDS an underived key is the other thing. No answer
+    this run produces can promote those -- only a re-derivation through the
+    truth package can -- so it would spend in full to print "0 of 0 decided".
+    """
+    refusals = {c["qid"]: golden_refusal(c.get("golden")) for c in cases}
+    unscorable = [q for q, why in refusals.items() if why]
+    derivable = [q for q, why in refusals.items() if why == "golden_missing"]
+    if not cases or len(unscorable) != len(cases) or derivable:
+        return unscorable, derivable, None
+    return unscorable, derivable, (
+        f"every one of the {len(cases)} goldens in {set_name} holds a key "
+        "nobody has established (provisional, invalid or ambiguous), so no "
+        "case can take a verdict and no answer this run produces can change "
+        "that. Two ways forward, and they are different jobs:\n"
+        "  - Establish the keys: re-derive them through the truth package and "
+        "promote what agrees --\n"
+        "      python3 verify_goldens.py --set <set> --publisher <truth> "
+        "--promote\n"
+        "    (`--refresh` rewrites a drifted VALUE; it does not change a "
+        "golden's status.)\n"
+        "  - Measure what the model can express at all, which needs no keys "
+        "and no answerer --\n"
+        "      python3 check_coverage.py --set <set> --model <package>\n"
+        "    `skill:eval-import` names this as the honest day-one number for a "
+        "set of underived keys.")
+
+
 def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
               art: pathlib.Path, rubric: str, model_src: str,
               reexec: bool) -> dict[str, Any]:
@@ -1624,8 +1682,13 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # word so the summary and the ledger row agree about why.
     refusal = golden_refusal(case.get("golden"))
     if refusal:
+        declared = (case.get("golden") or {}).get("status")
         return {"verdict": None, "reason": refusal, "confidence": None,
-                "gold_status": (case.get("golden") or {}).get("status")}
+                # Same rule as the fallback below: the reason already says
+                # `golden_provisional`, so the status field stays in its own
+                # vocabulary rather than carrying a second one.
+                "gold_status": (declared if declared in JUDGE_GOLD_STATUS
+                                else None)}
 
     if a.rebuild and not a.rejudge:
         saved = art / case["qid"] / "judge.md"
@@ -1924,8 +1987,14 @@ def main(argv: list[str] | None = None) -> int:
         # however it likes; assuming it reuses the model server's environment
         # name made the check report "nothing to re-derive against" on a truth
         # package that was serving correctly two ports away.
+        # `target_package` makes the isolation guard live. It reads
+        # `set.json`'s `targetPackage` otherwise -- a field written by nothing,
+        # named in no schema and present on no set, so the guard that catches a
+        # "truth" server also serving the package under test had never once
+        # fired. This caller knows the package, so it says so.
         r = verify_goldens.verify(a.set_dir, truth,
                                   a.truth_environment or a.environment,
+                                  target_package=a.package,
                                   quiet=True)
         # The audits run with or without a truth package, so their findings are
         # read on BOTH paths. Taking the skip branch and dropping `findings`
@@ -2054,26 +2123,33 @@ def main(argv: list[str] | None = None) -> int:
         print("  ! expected entities not linted against the model (platform target "
               "serves no model text)")
 
-    # Before a dollar is spent. A set whose every golden is unestablished can
-    # produce no verdict on any case, so the answerer and the judge would run
-    # in full and print "0 of 0 decided". `skill:eval-import` writes
-    # `provisional` on every imported golden, so a freshly imported set is
-    # exactly this set until its keys are re-derived.
-    unscorable_goldens = [c["qid"] for c in cases
-                          if golden_refusal(c.get("golden"))]
-    if cases and len(unscorable_goldens) == len(cases):
-        raise SystemExit(
-            f"every one of the {len(cases)} goldens in {a.set_dir.name} is "
-            "unscorable (missing, provisional, invalid or ambiguous), so no "
-            "case can take a verdict and the run would spend on nothing. "
-            "Fix: re-derive the keys and mark them verified "
-            "(verify_goldens.py --refresh), or point --set at a set whose "
-            "keys are established.")
+    # Before a dollar is spent -- but a case with NO golden is not the same as
+    # a case whose key nobody has derived, and only one of them makes a run
+    # pointless.
+    #
+    # `skill:eval-import` is explicit that a question with no golden is a case
+    # and not a reject: such a set "already measures whether the model can
+    # express an answer at all, and the answers it produces are what the keys
+    # get derived from". Running it is how the set gets keys. Refusing to start
+    # on one broke the documented way to bootstrap a set, so a run that has any
+    # golden-less case proceeds and only says what will not be scored.
+    #
+    # A set whose every case HOLDS an underived key is the other thing. No
+    # answer can promote those -- only a re-derivation through the truth
+    # package can -- so the run would spend in full to print "0 of 0 decided".
+    unscorable_goldens, derivable, refuse = unscorable_preflight(
+        cases, a.set_dir.name)
+    if refuse:
+        raise SystemExit(refuse)
     if unscorable_goldens:
-        print(f"  ! {len(unscorable_goldens)} of {len(cases)} goldens are "
-              f"unscorable and will take no verdict: "
+        print(f"  ! {len(unscorable_goldens)} of {len(cases)} cases will take "
+              f"no verdict (no established golden): "
               f"{', '.join(unscorable_goldens[:8])}"
               f"{' ...' if len(unscorable_goldens) > 8 else ''}")
+        if derivable:
+            print(f"    {len(derivable)} of those have no golden at all, which "
+                  f"is what this run is for: their answers are what keys get "
+                  f"derived from.")
 
     golden_check = golden_check_note(golden_check, stale, bool(model_src))
 
@@ -2250,9 +2326,23 @@ def main(argv: list[str] | None = None) -> int:
             # `wrong_gold` below, which reads `verdicts`, never saw a status
             # the set had declared: a key marked `verified_wrong` in the case
             # file stayed in the aggregates unless the judge said so too.
-            v["gold_status"] = (v.get("gold_status")
-                                or (c.get("golden") or {}).get("status"))
-            sc = {k: x for k, x in v.items() if k != "judge_cost_usd"}
+            #
+            # Only a status in the JUDGE's vocabulary falls back, because that
+            # is the vocabulary this field is documented in. The case file's
+            # own vocabulary overlaps it on `verified` and `verified_wrong`
+            # and diverges on `provisional`/`invalid`/`ambiguous`, and letting
+            # those through wrote a value into `gold_status` that its schema
+            # row does not list and nothing downstream matches on. The refusal
+            # reason already carries them, spelled `golden_<status>`.
+            if not v.get("gold_status"):
+                declared = (c.get("golden") or {}).get("status")
+                if declared in JUDGE_GOLD_STATUS:
+                    v["gold_status"] = declared
+                    v["gold_status_from"] = "set"
+            # `gold_status_from` is for this run's own report and is not a
+            # ledger field: a score event's schema does not have it.
+            sc = {k: x for k, x in v.items()
+                  if k not in ("judge_cost_usd", "gold_status_from")}
             # The schema: a score copies the attempt's contamination flag and
             # a contaminated attempt carries no verdict. This was hardcoded
             # "false" until 2026-09-01, so a flagged attempt could still pass.
@@ -2287,7 +2377,8 @@ def main(argv: list[str] | None = None) -> int:
     # Printed rather than left in the ledger: a doubted answer key sends the
     # next agent to fix a model that is already right, and the whole point of
     # asking the judge was to catch that before anyone acts on the run.
-    doubted = sorted((q, v.get("gold_status"), (v.get("gold_note") or "")[:150])
+    doubted = sorted((q, v.get("gold_status"), (v.get("gold_note") or "")[:150],
+                      v.get("gold_status_from") or "judge")
                      for q, v in verdicts.items()
                      if v.get("gold_status") in ("suspect", "verified_wrong"))
 
@@ -2332,8 +2423,8 @@ def main(argv: list[str] | None = None) -> int:
                       reExecution=reexecution_summary(
                           art, [c["qid"] for c in cases]),
                       doubtedGoldens=[{"qid": q, "gold_status": st,
-                                       "gold_note": note}
-                                      for q, st, note in doubted],
+                                       "gold_note": note, "declaredBy": src}
+                                      for q, st, note, src in doubted],
                       status="aborted" if aborted else "complete")
     return 0
 

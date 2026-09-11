@@ -193,5 +193,55 @@ class Counting(unittest.TestCase):
         self.assertEqual(out[0], "1 cases from 50 lines")
 
 
+class VerifiedNeedsMoreThanTheirOwnQuery(unittest.TestCase):
+    """"No golden holding a VALUE imports as `verified`" -- flatly.
+
+    Gating the finding on a MISSING `verifiedBy` let through the one shape
+    step 3 names explicitly: their query, their number, agreeing. Step 3 then
+    says to keep that `provisional`, because the query ran against the model
+    under test and a model bug would certify its own golden. So the validator
+    accepted exactly what this skill forbids -- and that was the only route out
+    of the provisional deadlock, which made it look like a feature.
+    """
+
+    def check(self, golden):
+        f, _ = ic.check_case(
+            {"qid": "q", "question": "x", "split": "dev", "golden": golden},
+            "cases.jsonl:1")
+        return f
+
+    def test_their_query_agreeing_does_not_make_it_verified(self):
+        f = self.check({"status": "verified", "kind": "scalar", "value": 42,
+                        "verifiedBy": "authored_query",
+                        "canonicalQuery": "run: a"})
+        self.assertTrue(f)
+        self.assertIn("--promote", f[0])
+
+    def test_a_bare_verified_claim_is_still_caught(self):
+        self.assertTrue(
+            self.check({"status": "verified", "kind": "scalar", "value": 42}))
+
+    def test_a_truth_package_promotion_validates(self):
+        # A mature set whose keys were promoted has to keep validating, or the
+        # rule would make the supported path unusable.
+        for by in ("verify_goldens.py --promote",
+                   "verify_goldens.py --refresh", "replay"):
+            with self.subTest(by):
+                self.assertFalse(
+                    self.check({"status": "verified", "kind": "scalar",
+                                "value": 42, "verifiedBy": by}))
+
+    def test_provisional_with_their_query_is_the_right_shape(self):
+        self.assertFalse(
+            self.check({"status": "provisional", "kind": "scalar", "value": 42,
+                        "verifiedBy": "authored_query",
+                        "canonicalQuery": "run: a"}))
+
+    def test_criteria_verified_on_arrival_still_validates(self):
+        self.assertFalse(
+            self.check({"status": "verified", "kind": "criteria",
+                        "rubric": "breaks the total out by region"}))
+
+
 if __name__ == "__main__":
     unittest.main()

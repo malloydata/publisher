@@ -65,7 +65,14 @@ Two rules over the whole table:
 differently shaped derivations agreed through the truth package, and an import
 has performed neither. `provisional` goldens are unscorable by design:
 `skill:eval-answer` issues `verdict: null` on them. That is not a gap to work
-around. A set that arrives with 60 typed numbers genuinely has 60 unverified
+around.
+
+It is also not a dead end, and it used to read like one. The way out is
+`verify_goldens.py --promote`, which marks a `provisional` golden `verified`
+once its value re-derives cleanly from the truth package and a second
+derivation exists. It is the only thing anywhere that writes `golden.status`.
+Tell the user that command when you hand over a set of provisionals, because
+until it is run the set scores nothing. A set that arrives with 60 typed numbers genuinely has 60 unverified
 numbers, and the number it can honestly produce on day one is a coverage score.
 
 The exception is a golden that holds no value at all, and there are two
@@ -195,6 +202,12 @@ Then tell the user, in these terms, what arrived:
   29 provisional (21 with their query, 5 a number alone, 3 nothing to compare yet)
   6 no golden (question only)
 ```
+
+Say what turns the 29 into scorable cases, in the same breath: a truth package
+(`init_truth_package.py`), then `verify_goldens.py --set <set> --publisher
+<truth> --promote`. A reader told only the counts has no way to know the set is
+not simply broken, and the provisional bucket is the one that looks like
+progress and is not.
 
 The three provisional buckets are three different amounts of work, which is
 why they are counted apart. "With their query" needs a re-run. "A number

@@ -307,7 +307,15 @@ the run measure something other than what it names:
    is the single source of truth, versioned by `datasetVersion` in
    `set.json`.
 
-5. Review goldens before you score. A verified golden that holds a value but
+5. Review goldens before you score. **Check how many cases can take a verdict
+   at all**, not just how many cases there are: a golden the set stamps
+   `provisional`, `invalid` or `ambiguous`, or a case with no golden, scores
+   `verdict: null` and stays out of the pass rate. An imported set is
+   `provisional` throughout by design (`skill:eval-import`), and the only thing
+   that changes that is `verify_goldens.py --promote` after a re-derivation
+   through the truth package. A run whose every key is underived is refused
+   rather than spent; a set of bare questions runs, because its answers are
+   what keys get derived from. A verified golden that holds a value but
    no local artifact stays verified by provenance and is not scorable until you
    have rows or a scalar to compare (the judge needs both sides). A `criteria`
    golden is the exception: it holds no value, so its clauses are both sides. If diagnosis later marks
