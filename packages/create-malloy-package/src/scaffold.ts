@@ -1544,7 +1544,9 @@ function isSingleServerInvocation(script: string): boolean {
  * `} else if (arg === "--host" && args[i + 1]) {`, a strict equality against a
  * separate argv entry. `--host=127.0.0.1` matches no branch in that chain, and
  * the chain has no unknown-flag error, so the flag is dropped in silence and
- * PUBLISHER_HOST falls back to "0.0.0.0" for both the REST and the MCP listener.
+ * PUBLISHER_HOST falls back to "0.0.0.0" for the REST listener. The MCP listener
+ * reads MCP_HOST first and defaults to loopback on its own, so a dropped --host
+ * exposes REST and leaves MCP where it was.
  *
  * Accepting the `=` form here was worse than useless: it made the one shape that
  * looks private and is not the one shape this tool called safest, suppressing the
@@ -1561,6 +1563,7 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--server_root",
    "--config",
    "--mcp_port",
+   "--mcp_host",
    "--shutdown_drain_duration_seconds",
    "--shutdown_graceful_close_timeout_seconds",
    "--watch-env",

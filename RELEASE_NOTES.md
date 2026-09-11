@@ -31,6 +31,32 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] - two server defaults now close instead of open
+
+Two settings that were open by default are closed. Both are silent until
+something that relied on the old default stops working, so each needs a
+deliberate step if you were depending on it.
+
+**The authorize bypass now requires a secret.** `x-publisher-bypass-authorize`
+disabled every `#(authorize)` gate on the presence of the header alone, with no
+value to know. It now requires `PUBLISHER_BYPASS_AUTHORIZE_SECRET` to be set and
+the header to carry that value; with the variable unset the bypass is refused
+outright rather than allowed. If you relied on the bypass, set the variable and
+send it as the header value, or stop relying on it.
+
+**MCP binds loopback and no longer allows every origin.** The MCP server bound
+`0.0.0.0` with a bare `cors()`, so it accepted connections from the network and
+cross-origin requests from anywhere. It now binds `127.0.0.1` and reads allowed
+origins from `MCP_CORS_ORIGINS`, defaulting to none. A remote MCP client that
+could reach port 4040 can no longer do so: set `MCP_HOST=0.0.0.0` to restore the
+old bind, and put a gateway in front of it (see `docs/security-posture.md`).
+
+MCP gets its own host knob rather than reusing `PUBLISHER_HOST`, because that
+variable drove both the REST and MCP listeners -- defaulting it to loopback would
+have moved the REST port to localhost too. Precedence is `MCP_HOST`, then an
+explicit `PUBLISHER_HOST` so `--host` still moves both together, then
+`127.0.0.1`. The REST default is unchanged.
+
 ## [0.2.7] — bound how far the Snowflake driver reads ahead of a slow consumer
 
 The Docker image now installs a small shim in front of the ADBC Snowflake driver
