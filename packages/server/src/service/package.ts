@@ -1040,6 +1040,14 @@ export class Package {
       });
    }
 
+   /**
+    * ON THE `/status` POLL PATH: this runs for every package in every
+    * environment, every few seconds, because `EnvironmentStore.getStatus()`
+    * serializes each environment through `listPackages()`. Anything added to the
+    * computed spreads below must be trivially cheap or memoized on the Model --
+    * an unmemoized walk over model fields here reached seconds of synchronous
+    * CPU per poll and blocked the event loop for every other request.
+    */
    public getPackageMetadata(): ApiPackage {
       // Overlay the server-computed fields onto the stored metadata: the
       // explores misconfig warnings (loading is fail-safe — the package still

@@ -31,7 +31,47 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] — 500 and 502 responses no longer echo the internal error
+## [0.2.7] — bound how far the Snowflake driver reads ahead of a slow consumer
+
+The Docker image now installs a small shim in front of the ADBC Snowflake driver
+that can set `adbc.rpc.result_queue_size` on every Snowflake statement. It is
+**opt-in**: with `ADBC_RESULT_QUEUE_SIZE` unset — the default — the shim is a
+pass-through and the driver behaves exactly as upstream ships it. The image itself
+is different (the extension now loads the shim, which loads the upstream driver
+beside it), but with the variable unset the shim sets nothing and forwards every
+call. Set `ADBC_RESULT_QUEUE_SIZE=1` on the deployment to turn the bound on. Non-Docker installs are unaffected either way, because the
+`snowflake` extension has no way to set this option and the server process does
+not touch it.
+
+Why: the driver prefetches result chunks ahead of the consumer with no bound tied
+to consumption — a chunk's goroutine releases its concurrency slot as soon as its
+download finishes, while the decoded records stay queued. Whenever a
+`snowflake_query()` stream is consumed more slowly than the network delivers it,
+which is what a `CREATE TABLE AS` into DuckLake on object storage does, the
+*remaining result set* accumulates in memory outside DuckDB's buffer manager,
+where `PUBLISHER_DUCKDB_MEMORY_LIMIT` neither sees nor bounds it. On a ~140M-row
+materialization that was an 8 GiB worker OOM-killed on every attempt; the two
+DuckLake write bounds shipped in 0.2.3 and 0.2.4 raise the consumer's throughput
+and are still load-bearing, but could never close a gap whose other side is
+unbounded.
+
+Measured on `TPCH_SF100.ORDERS LIMIT 20M` with a deliberately slow writer, peak
+cgroup `anon`: 3325 MiB at the driver default — the whole result resident with
+1% consumed — against 286 MiB flat at `1`, byte-identical output. On a fast
+100M-row aggregate the bound cost nothing measurable and removed the 400–1000 MiB
+the default buffered there too. `adbc.snowflake.rpc.prefetch_concurrency`
+(`ADBC_PREFETCH_CONCURRENCY`) is exposed alongside but left at its default, since
+it is the throughput knob rather than the memory one.
+
+This is an interim, and `packages/server/adbc-shim/README.md` says exactly when
+it comes out: when the extension exposes the options
+([iqea-ai/duckdb-snowflake#66](https://github.com/iqea-ai/duckdb-snowflake/issues/66))
+or the driver bounds its read-ahead by consumption as its documentation already
+implies ([adbc-drivers/snowflake#197](https://github.com/adbc-drivers/snowflake/issues/197)).
+
+---
+
+## [0.2.7] — 500 and 502 responses no longer echo the internal error
 
 A 500 or a 502 returned `error.message` verbatim. That message is not always
 something a caller should see: an unrecognised internal failure carries a stack
