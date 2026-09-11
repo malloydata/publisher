@@ -146,8 +146,13 @@ Malloyyo model repo says what it lost instead of quietly laying out at the defau
 
 Publisher also reads the renderer's per-child dashboard tags (`# colspan`, `# break`, `# subtitle`,
 `# borderless`, and `# label`) off the view a tile names, and lays its own grid out from them.
-Malloyyo's composite has no per-tile layout, so this is additive: a model using it renders as
-Malloyyo does today, plus the layout.
+Malloyyo's composite had no per-tile layout when this was written, so this read as additive. **That
+is no longer true.** Since Malloyyo 0.2.19 its client-side tile combiner lifts a tile result's own
+render annotations — `# colspan` and `# break` among them — onto that tile's card, so both products
+honor per-tile layout now. What still diverges is the grid width alone, above, which narrows what the
+shared-home conversation has to settle. Note that `malloydata/malloyyo#160` does not track this: it is
+about the `dashboard_columns` spelling and it repeats the stale claim, so it needs amending rather
+than citing.
 
 Both belong in the shared-home conversation. If that package keeps `dashboard_columns`, Publisher
 re-adds the reader; the enumeration lint is what makes either direction visible to an author.
@@ -257,6 +262,16 @@ Merging the formats themselves is a non-goal, now and later: the principle is sh
 not converged documents. It also cuts the other way — future work on either surface (new control
 kinds, new drill destinations, richer lint) belongs in the shared layer first, so neither
 document type drifts ahead of the other.
+
+> **Superseded on this point by [malloy-apps-v2.md](malloy-apps-v2.md).** That design does merge the
+> formats, into one `.malloy` **app** whose `## app { layout=grid | flow }` tag makes reading mode a
+> property of the document. The reasoning above still holds on its own terms — the two reading modes
+> are genuinely different, and folding one into the other would have broken Malloyyo compatibility.
+> What changed is the price: a WYSIWYG editor, write-back storage, an agent patch protocol and an
+> embedding contract would each have to be built twice, and none of those four was on the table when
+> this was written. Read v2's §13 for the argument, and everything in this document below the
+> document-type question — the given control contract, `# drill`, the shared controls, the load-time
+> lint, the per-tile layout tags — as still current.
 
 ## Architecture
 
