@@ -91,10 +91,10 @@ worth testing a candidate rule against:
 Count `Skill` invocations in the answerer transcripts for the run. Measured on
 one 35-case run with a 12-skill manifest: `malloy-analysis` loaded 34 times,
 `malloy-charts` once, **the other ten zero times** -- including two that
-`malloy-analysis` names in the imperative ("Load `skill:malloy-queries`").
-Cross-skill references do not reliably fire. A recommendation to edit a file
-the agent never opens is not actionable, so name the file the transcripts show
-it reading.
+`malloy-analysis` tells the agent outright to load, by reference, before it
+writes a query. Cross-skill references do not reliably fire. A recommendation
+to edit a file the agent never opens is not actionable, so name the file the
+transcripts show it reading.
 
 `construction` requires proving the needed entities and governing guidance were
 in the returned context. A server trace proves what Publisher returned, not what

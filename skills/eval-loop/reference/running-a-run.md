@@ -118,7 +118,12 @@ model. Measured per-arm figures for a given set belong in that set's
 `CALIBRATION.md`.
 
 `--rebuild` re-derives the ledger from saved transcripts without calling a model,
-and `--rebuild --rejudge` re-scores existing answers in place. `--from <run>
+and `--rebuild --rejudge` re-scores existing answers in place. Re-deriving can
+CHANGE an attempt's `final_query` -- a fix to the query capture is exactly such
+a change -- so the re-executed prediction is keyed on the query and is re-run
+whenever the derived query differs from the cached one. That needs the server
+up; without it the judge is told the prediction was not re-executed rather than
+being handed rows from the previous query. `--from <run>
 --out <new>` does the same into a NEW run directory -- the answers copied, the
 judge fresh, the old verdicts untouched -- which is what a golden repair or a
 rubric change calls for. Use them after a scoring or schema change; re-running

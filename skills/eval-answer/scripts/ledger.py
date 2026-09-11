@@ -165,6 +165,7 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "judgeSkills", "diagnoserManifest",
                 "improverManifest", "doubtedGoldens",
                 "packageSha", "servedRevision", "datasetSha",
+                "staleEntityNames",
                 "retrievalMode", "retrievalCalls", "reExecution",
                 "modelRepo"} | RUN_RECOMMENDED
 

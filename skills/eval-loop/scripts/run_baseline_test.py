@@ -171,7 +171,33 @@ class ReExecution(unittest.TestCase):
         got = rb.reexecution_summary(self.tmp,
                                      ["ok1", "bad", "none", "skip", "absent"])
         self.assertEqual(got, {"attempted": 2, "ok": 1, "failed": 1,
-                               "noQuery": 1})
+                               "noQuery": 1, "notReExecuted": 1, "missing": 1})
+
+    def test_every_case_lands_in_exactly_one_bucket(self):
+        # The denominator. `notReExecuted` and `missing` used to `continue`
+        # without counting, so summing the buckets against the case count was
+        # short by however many cases took those two paths, with nothing
+        # naming them.
+        self.pred("ok1", "run: a", "| total |\n| 1 |")
+        self.pred("bad", "run: b", "(re-execution failed: no such field)")
+        self.pred("none", None, "(nothing to re-execute)")
+        self.pred("skip", "run: d", "(not re-executed: the server is not "
+                                    "serving the model)")
+        qids = ["ok1", "bad", "none", "skip", "absent"]
+        got = rb.reexecution_summary(self.tmp, qids)
+        self.assertEqual(
+            got["ok"] + got["failed"] + got["noQuery"]
+            + got["notReExecuted"] + got["missing"],
+            len(qids))
+        # `attempted` is the derived one, outside the partition.
+        self.assertEqual(got["attempted"], got["ok"] + got["failed"])
+
+    def test_unreadable_prediction_counts_as_missing(self):
+        d = self.tmp / "junk"
+        d.mkdir(parents=True)
+        (d / "prediction.json").write_text("{not json")
+        got = rb.reexecution_summary(self.tmp, ["junk"])
+        self.assertEqual(got["missing"], 1)
 
 
 class JudgeGate(unittest.TestCase):
@@ -186,9 +212,14 @@ class JudgeGate(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def judge(self, att):
-        return rb.run_judge({"qid": "q", "question": "?", "golden": {}},
-                            att, self.a, self.tmp, "", "", False)
+    def judge(self, att, golden=None):
+        # A verified golden, so this class tests the submission gate alone. An
+        # empty `golden` is its own refusal now (GoldenStatusGate below), and
+        # leaving it empty here made these tests pass through the wrong gate.
+        case = {"qid": "q", "question": "?",
+                "golden": golden if golden is not None
+                else {"status": "verified", "value": 1}}
+        return rb.run_judge(case, att, self.a, self.tmp, "", "", False)
 
     def test_neither_text_nor_query_is_not_submitted(self):
         v = self.judge({"answer_text": "", "submitted": False})
@@ -205,6 +236,191 @@ class JudgeGate(unittest.TestCase):
     def test_a_query_with_no_prose_is_still_judged(self):
         v = self.judge({"answer_text": "", "submitted": True})
         self.assertEqual(v["reason"], "no_saved_verdict")
+
+    def test_an_unstamped_golden_still_reaches_the_judge(self):
+        # Sets that predate `golden.status` are unguarded, not unscorable.
+        # Refusing them would zero the pass rate of every set that has one.
+        v = self.judge({"answer_text": "1830000", "submitted": True},
+                       golden={"value": 1830000})
+        self.assertEqual(v["reason"], "no_saved_verdict")
+
+
+class GoldenStatusGate(unittest.TestCase):
+    """A verdict is refused against a key nobody has established.
+
+    `skill:eval-answer` has said since it was written that no verdict issues
+    "when the golden is missing, provisional, invalid, or ambiguous". Only the
+    attempt half of that sentence was implemented: `golden.status` was read
+    once, into a COPY of the verdict, so the set's own word never reached the
+    aggregate. Every such case was judged in full and counted in the rate.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.a = argparse.Namespace(rebuild=True, rejudge=False)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def judge(self, golden):
+        return rb.run_judge({"qid": "q", "question": "?", "golden": golden},
+                            {"answer_text": "4.2M", "submitted": True},
+                            self.a, self.tmp, "", "", False)
+
+    def test_provisional_is_refused_and_says_so(self):
+        # The one that matters now: eval-import writes `provisional` on every
+        # imported golden and enforces it on write, so the importer
+        # manufactures exactly the sets this would have scored.
+        v = self.judge({"status": "provisional", "value": 4200000})
+        self.assertIsNone(v["verdict"])
+        self.assertEqual(v["reason"], "golden_provisional")
+        self.assertEqual(v["gold_status"], "provisional")
+
+    def test_invalid_and_ambiguous_are_refused(self):
+        for st in ("invalid", "ambiguous"):
+            with self.subTest(st):
+                v = self.judge({"status": st, "value": 1})
+                self.assertIsNone(v["verdict"])
+                self.assertEqual(v["reason"], f"golden_{st}")
+
+    def test_a_key_the_set_marks_wrong_is_refused(self):
+        v = self.judge({"status": "verified_wrong", "value": 1})
+        self.assertIsNone(v["verdict"])
+        self.assertEqual(v["reason"], "golden_verified_wrong")
+
+    def test_no_golden_at_all_is_refused(self):
+        for g in ({}, None):
+            with self.subTest(g):
+                v = self.judge(g)
+                self.assertIsNone(v["verdict"])
+                self.assertEqual(v["reason"], "golden_missing")
+
+    def test_verified_passes_the_gate(self):
+        v = self.judge({"status": "verified", "value": 1})
+        self.assertEqual(v["reason"], "no_saved_verdict")
+
+    def test_a_criteria_golden_with_no_value_passes_the_gate(self):
+        # `criteria` holds no value by design; its clauses are the comparison.
+        # Refusing a value-less golden would drop every such case, and every
+        # deliberately-unanswerable case with it.
+        v = self.judge({"status": "verified", "kind": "criteria",
+                        "criteria": ["breaks the total out by region"]})
+        self.assertEqual(v["reason"], "no_saved_verdict")
+
+    def test_refusal_is_decided_before_a_saved_verdict_is_reused(self):
+        # `--rebuild` without `--rejudge` returns the saved judge.md. A saved
+        # verdict against an unestablished key is not evidence either.
+        (self.tmp / "q").mkdir(parents=True)
+        (self.tmp / "q" / "judge.md").write_text("VERDICT: match\n")
+        v = self.judge({"status": "provisional", "value": 1})
+        self.assertEqual(v["reason"], "golden_provisional")
+
+    def test_the_refusals_are_exactly_the_documented_four(self):
+        # Pinned against the contract's own sentence rather than restated.
+        skill = (pathlib.Path(rb.__file__).parent.parent.parent
+                 / "eval-answer" / "SKILL.md").read_text()
+        self.assertIn("missing, provisional, invalid, or ambiguous", skill)
+        self.assertEqual(rb.GOLDEN_UNSCORABLE,
+                         ("provisional", "invalid", "ambiguous"))
+
+
+class GoldenCheckDoesNotClaimZero(unittest.TestCase):
+    """`goldenCheck` may not assert a clean result for a check that never ran.
+
+    `run_baseline` calls `verify()` without `model=`, so verify_goldens' check
+    5 returns `[]` on an empty model text and the manifest wrote
+    "0 other finding(s)" -- while the run depressed its own recall by exactly
+    the stale names it did not look for.
+    """
+
+    def test_the_stale_count_reaches_the_claim(self):
+        self.assertEqual(
+            rb.golden_check_note("49 ok, 0 drifted, 0 other finding(s)",
+                                 ["shipped_at", "total_sales_2021"], True),
+            "49 ok, 0 drifted, 0 other finding(s), 2 stale entity name(s)")
+
+    def test_a_clean_lint_says_zero_rather_than_nothing(self):
+        # Silence would read the same as the bug: the point is that the field
+        # now says which check produced the zero.
+        self.assertTrue(
+            rb.golden_check_note("49 ok, 0 drifted, 0 other finding(s)",
+                                 [], True).endswith("0 stale entity name(s)"))
+
+    def test_no_model_text_says_the_lint_did_not_run(self):
+        got = rb.golden_check_note("49 ok, 0 drifted, 0 other finding(s)",
+                                   [], False)
+        self.assertIn("entity-name lint not run", got)
+        self.assertNotIn("stale entity name(s)", got)
+
+    def test_a_check_that_already_says_it_did_not_run_is_left_alone(self):
+        for gc in ("skipped", "skipped by --skip-golden-check",
+                   "not run (rebuild)"):
+            with self.subTest(gc):
+                self.assertEqual(rb.golden_check_note(gc, ["x"], True), gc)
+
+
+class PredictionCacheKey(unittest.TestCase):
+    """The cache is keyed on the query, because `--rebuild` changes the query.
+
+    `--rebuild` re-derives `final_query` from the saved transcript, so a fix to
+    the derivation is exactly a change that makes a recorded attempt's query go
+    from null to a real one -- the named-view capture is that fix. Keyed on the
+    qid alone the old file won, and the judge was handed "the answerer ran no
+    query" for an attempt that now has one.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.a = argparse.Namespace(
+            publisher="http://localhost:1", environment="e", package="p",
+            model_path="model.malloy")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def cached(self, query, rendered):
+        d = self.tmp / "q"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "prediction.json").write_text(
+            json.dumps({"query": query, "rendered": rendered}))
+
+    def ask(self, final_query, reexec=False):
+        return rb.prediction_for({"qid": "q"}, {"final_query": final_query},
+                                 self.a, self.tmp, reexec)
+
+    def test_the_same_query_reuses_the_cache(self):
+        # The reason the cache exists: a re-judge must not need the server up,
+        # and re-running one query per rubric iteration is waste.
+        self.cached("run: a", "| total |")
+        self.assertEqual(self.ask("run: a"), "| total |")
+
+    def test_a_newly_derived_query_does_not_reuse_a_no_query_file(self):
+        self.cached(None, "(the answerer ran no query, so there is nothing "
+                          "to re-execute)")
+        got = self.ask("run: order_items -> sales_summary_yoy")
+        self.assertNotIn("ran no query", got)
+        self.assertIn("not re-executed", got)
+
+    def test_a_changed_query_does_not_reuse_the_old_rows(self):
+        self.cached("run: a", "| total |\n| 1 |")
+        self.assertNotIn("| 1 |", self.ask("run: b"))
+
+    def test_a_file_from_before_the_key_existed_is_not_reused(self):
+        d = self.tmp / "q"
+        d.mkdir(parents=True)
+        (d / "prediction.json").write_text(json.dumps({"rendered": "| old |"}))
+        self.assertNotIn("| old |", self.ask("run: a"))
+
+    def test_no_query_either_side_still_reuses(self):
+        self.cached(None, "(the answerer ran no query, so there is nothing "
+                          "to re-execute)")
+        self.assertIn("ran no query", self.ask(None))
+
+    def test_the_rewritten_file_records_the_query_it_holds(self):
+        self.cached(None, "(nothing to re-execute)")
+        self.ask("run: a")
+        c = json.loads((self.tmp / "q" / "prediction.json").read_text())
+        self.assertEqual(c["query"], "run: a")
 
 
 class PlatformMcpUrl(unittest.TestCase):
@@ -250,7 +466,8 @@ class RunSummary(unittest.TestCase):
         args = dict(
             out=pathlib.Path("results/r1"), set_dir=pathlib.Path("evals/e"),
             events_n=10, attempted=69, decided=49, passed=36, near=10, human=3,
-            doubted=[], vetoed=[], alt_path=0, retrieval_mode="semantic",
+            doubted=[], vetoed=[], alt_path=0, unscorable=0,
+            retrieval_mode="semantic",
             tally={"semantic": 5, "lexical": 0, "unreported": 2},
             rs={"retrieval_scored": 49, "mean_recall": 0.842,
                 "complete_retrievals": 41,

@@ -50,6 +50,7 @@ import pathlib
 import re
 import sys
 import time
+from collections.abc import Iterable
 from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
@@ -89,6 +90,28 @@ COMPONENTS = ("dataset", "agent-call", "get_context/model",
               "get_context/retrieval", "construction", "model-definition")
 OWNERS = ("model", "retrieval", "agent-skill", "dataset")
 SUFFICIENCY = ("sufficient", "insufficient", "unknown")
+SEVERITY = ("low", "medium", "high")
+
+
+def worst(values: Iterable[str | None], vocab: tuple[str, ...],
+          fallback: str) -> str:
+    """The last-listed value present, with anything off-vocabulary read as
+    `fallback`.
+
+    `validate()` says outright that these fields can come back wrong -- it
+    appends them to `bad` -- but `bad` only sets `_invalid`, and the clustering
+    input is filtered on `error`, so an off-vocabulary value reaches the
+    aggregate. A bare `[...].index` then raises, after every per-case call AND
+    the clustering call have been paid for and before a single event is
+    written, so one agent typing "partial" costs the whole diagnose run.
+
+    The fallback is per field rather than "treat it as the worst". An
+    unreadable `sufficiency` must not read as probed, and `unknown` is that.
+    An unreadable `severity` is not evidence of a high one, so it takes the
+    same `low` the missing-value default already takes.
+    """
+    ranked = [v if v in vocab else fallback for v in values]
+    return max(ranked, key=vocab.index) if ranked else fallback
 
 
 
@@ -557,18 +580,16 @@ def main(argv: list[str] | None = None) -> int:
                  for x in (m.get("contributing_codes") or [])}
                 | set(codes_seen)),
             component=c.get("component"), owner=c.get("owner"),
-            severity=max((m.get("severity") or "low" for m in members),
-                         key=["low", "medium", "high"].index),
+            severity=worst((m.get("severity") for m in members),
+                           SEVERITY, "low"),
             confidence=c.get("confidence") or "medium",
             # Worst case across the members, the way `severity` above already
             # aggregates, not `members[0]`. This value now travels to the
             # improve step, so a cluster whose first member happened to be
             # probed must not read as probed when a later one was not: a
             # cluster is `sufficient` only when every member is.
-            sufficiency=max((m.get("sufficiency") or "unknown"
-                             for m in members),
-                            key=["sufficient", "insufficient",
-                                 "unknown"].index),
+            sufficiency=worst((m.get("sufficiency") for m in members),
+                              SUFFICIENCY, "unknown"),
             traceIds=[], diagnosis=c.get("rootCause"),
             evidence=c.get("evidence"),
             diagnosedBy=a.model, clusteredBy=a.cluster_model,

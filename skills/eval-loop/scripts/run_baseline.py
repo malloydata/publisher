@@ -906,6 +906,7 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
 def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   attempted: int, decided: int, passed: int, near: int,
                   human: int, doubted: list, vetoed: list, alt_path: int,
+                  unscorable: int,
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
                   publisher: str, environment: str) -> list[str]:
@@ -932,6 +933,11 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
              f"RESULTS  {out.name}  ({attempted} cases)",
              f"  passed        {passed} of {decided} decided{pct}",
              f"  neither       {near} near_match, {human} needs_human",
+             # On its own line rather than folded into `neither`: an
+             # undecided case is a run result, and a case whose answer key
+             # nobody has established is a DATASET state that no answerer can
+             # change. A rate over the wrong denominator hid both.
+             f"  unscorable    {unscorable} (no established golden)",
              f"  cost          ${answerer_cost:.2f} answerer"
              + (f" + ${judge_cost:.2f} judge" if judge_cost else "")]
 
@@ -1008,6 +1014,34 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
     return lines
 
 
+def golden_check_note(golden_check: str, stale: list[str],
+                      has_model_text: bool) -> str:
+    """`goldenCheck` with the in-arm entity-name lint's own result appended.
+
+    `run_baseline` calls `verify()` without `model=`, and verify_goldens'
+    set-name audit opens `if not text: return []`. So check 5 does not run
+    during an arm, and `goldenCheck` read "49 ok, 0 drifted, 0 other
+    finding(s)" -- a clean result asserted for a check that never happened,
+    while the same run depressed its own recall by exactly the stale names.
+    That is the two-day bug the audit was added to remove, reported by the
+    manifest as zero.
+
+    The lint above this call is the in-arm substitute, so its count goes where
+    the claim is. It does not block the arm: only the step-2a and improve.py
+    callers pass `--model`, and wiring `--model` through `run_baseline` needs a
+    decision about what it should point at. Silent is one thing; a manifest
+    claiming the check came back clean is another, and this is that half.
+
+    A `goldenCheck` that already says it did not run is left alone: there is no
+    claim in it to correct.
+    """
+    if not golden_check or golden_check.startswith(("skipped", "not run")):
+        return golden_check
+    if not has_model_text:
+        return golden_check + ", entity-name lint not run (no model text)"
+    return golden_check + f", {len(stale)} stale entity name(s)"
+
+
 def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
                         ) -> dict[str, int]:
     """How many predictions were actually re-executed, from the cached files.
@@ -1015,16 +1049,28 @@ def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
     `predictionsReExecuted` is one bool for the whole run meaning "the server
     was serving the bytes this run is pinned to", which reads far stronger than
     it is: it says nothing about whether any given query ran, or returned rows.
-    These four counts do.
+    These counts do.
+
+    Every case lands in exactly one of `ok`, `failed`, `noQuery`,
+    `notReExecuted` and `missing`, so those five sum to the case count and a
+    reader can check them against it. `attempted` is not one of the five: it is
+    `ok + failed`, kept because it is the number anyone asks for first. Two
+    paths used to fall out of the buckets entirely -- a prediction file that is
+    absent or unreadable, and one carrying the "not re-executed" notice -- and
+    summing the four against the case count gave the wrong denominator with
+    nothing saying which cases were unaccounted for.
     """
-    out = {"attempted": 0, "ok": 0, "failed": 0, "noQuery": 0}
+    out = {"attempted": 0, "ok": 0, "failed": 0, "noQuery": 0,
+           "notReExecuted": 0, "missing": 0}
     for qid in qids:
         f = art / qid / "prediction.json"
         if not f.exists():
+            out["missing"] += 1
             continue
         try:
             c = json.loads(f.read_text())
         except json.JSONDecodeError:
+            out["missing"] += 1
             continue
         rendered = c.get("rendered") or ""
         if not c.get("query"):
@@ -1033,7 +1079,7 @@ def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
             out["attempted"] += 1
             out["failed"] += 1
         elif rendered.startswith("(not re-executed"):
-            continue
+            out["notReExecuted"] += 1
         else:
             out["attempted"] += 1
             out["ok"] += 1
@@ -1459,13 +1505,24 @@ def prediction_for(case: dict[str, Any], att: dict[str, Any],
 
     Cached per attempt: a re-judge must not depend on the server still being up,
     and re-running the same query for every rubric iteration is waste.
+
+    Keyed on the QUERY, not on the qid alone. `--rebuild` re-derives
+    `final_query` from the saved transcript, so a fix to the derivation is
+    precisely a change that makes a recorded attempt's query go from null to a
+    real one -- the named-view capture is that fix. Keyed on the qid, the old
+    file won: the judge was handed "the answerer ran no query" for an attempt
+    that now has one, and graded prose. A cache that cannot say which query it
+    holds is not a cache of that query.
     """
+    q = att.get("final_query")
     cache = art / case["qid"] / "prediction.json"
     if cache.exists():
         c = json.loads(cache.read_text())
-        return c.get("rendered") or "(no prediction)"
+        # A file written before this key existed has no `query`, so it is not
+        # reusable for any query: re-execute rather than trust it.
+        if "query" in c and c.get("query") == q:
+            return c.get("rendered") or "(no prediction)"
 
-    q = att.get("final_query")
     if not q:
         rendered = "(the answerer ran no query, so there is nothing to re-execute)"
     elif not reexec:
@@ -1506,6 +1563,47 @@ def case_model_src(a, case: dict[str, Any], default: str) -> str:
     return _MODEL_SRC_CACHE[mp]
 
 
+# The statuses a set may stamp on a golden (eval-import's `STATUSES`). Only
+# `verified` is an answer key; the other three each say, in their own way, that
+# nobody has established what the right answer is.
+GOLDEN_UNSCORABLE = ("provisional", "invalid", "ambiguous")
+
+
+def golden_refusal(golden: dict[str, Any] | None) -> str | None:
+    """The reason a verdict cannot be issued against this answer key, if any.
+
+    `skill:eval-answer` has always said a verdict is withheld "when the golden
+    is missing, provisional, invalid, or ambiguous". Only the attempt half of
+    that sentence was implemented: `golden.status` was read in exactly one
+    place and assigned into a COPY of the verdict, so the case file's standing
+    status never reached the aggregate. A key the set itself marks
+    `verified_wrong` was excluded only when the judge independently said so,
+    and a `provisional` one was scored in full and printed as a rate.
+
+    That matters most now that `skill:eval-import` writes `provisional` on
+    every imported golden and enforces it on write: the importer manufactures
+    exactly the sets this would have scored and published a number for.
+
+    A golden with NO status is unguarded, not unscorable. Existing sets do not
+    all stamp one, and refusing them would zero the pass rate of every set that
+    predates the field -- the same trap the questionSha prefix comparison
+    avoids. A golden holding no value is not refused either: that is how an
+    unanswerable case is written, and a `criteria` golden has clauses instead
+    of a value.
+    """
+    if not golden:
+        return "golden_missing"
+    status = golden.get("status")
+    if status in GOLDEN_UNSCORABLE:
+        return f"golden_{status}"
+    if status == "verified_wrong":
+        # Kept separate from the three above: this one is a key the set has
+        # established IS wrong, and `wrong_gold` drops it from the aggregates
+        # entirely rather than counting it as undecided.
+        return "golden_verified_wrong"
+    return None
+
+
 def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
               art: pathlib.Path, rubric: str, model_src: str,
               reexec: bool) -> dict[str, Any]:
@@ -1519,6 +1617,15 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # cases exist to measure.
     if not att["answer_text"] and not att.get("submitted"):
         return {"verdict": None, "reason": "not_submitted", "confidence": None}
+
+    # Before the judge is paid for, and before a saved verdict is reused: a
+    # verdict against a key nobody has established is not cheaper to keep than
+    # to refuse, it is just less honest. `gold_status` carries the set's own
+    # word so the summary and the ledger row agree about why.
+    refusal = golden_refusal(case.get("golden"))
+    if refusal:
+        return {"verdict": None, "reason": refusal, "confidence": None,
+                "gold_status": (case.get("golden") or {}).get("status")}
 
     if a.rebuild and not a.rejudge:
         saved = art / case["qid"] / "judge.md"
@@ -1929,6 +2036,7 @@ def main(argv: list[str] | None = None) -> int:
     # them (the set was written against a later package) which read as misses
     # until someone checked by hand. No model text on a platform target, so
     # the lint is skipped there and the report has to say so.
+    stale: list[str] = []
     if model_src:
         names = {e.split(":")[-1] for c in cases
                  for g in (c.get("expectedEntities") or {}).get("required", [])
@@ -1945,6 +2053,29 @@ def main(argv: list[str] | None = None) -> int:
     elif a.target == "platform":
         print("  ! expected entities not linted against the model (platform target "
               "serves no model text)")
+
+    # Before a dollar is spent. A set whose every golden is unestablished can
+    # produce no verdict on any case, so the answerer and the judge would run
+    # in full and print "0 of 0 decided". `skill:eval-import` writes
+    # `provisional` on every imported golden, so a freshly imported set is
+    # exactly this set until its keys are re-derived.
+    unscorable_goldens = [c["qid"] for c in cases
+                          if golden_refusal(c.get("golden"))]
+    if cases and len(unscorable_goldens) == len(cases):
+        raise SystemExit(
+            f"every one of the {len(cases)} goldens in {a.set_dir.name} is "
+            "unscorable (missing, provisional, invalid or ambiguous), so no "
+            "case can take a verdict and the run would spend on nothing. "
+            "Fix: re-derive the keys and mark them verified "
+            "(verify_goldens.py --refresh), or point --set at a set whose "
+            "keys are established.")
+    if unscorable_goldens:
+        print(f"  ! {len(unscorable_goldens)} of {len(cases)} goldens are "
+              f"unscorable and will take no verdict: "
+              f"{', '.join(unscorable_goldens[:8])}"
+              f"{' ...' if len(unscorable_goldens) > 8 else ''}")
+
+    golden_check = golden_check_note(golden_check, stale, bool(model_src))
 
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(
         runId=a.out.name, label=label, target=a.target,
@@ -1985,6 +2116,12 @@ def main(argv: list[str] | None = None) -> int:
         mcpUrl=a.mcp_url, publisher=a.publisher,
         predictionsReExecuted=reexec,
         goldenCheck=golden_check,
+        # The names themselves, not only a count: each one depresses recall on
+        # every case that lists it, and a reader of run.json otherwise has no
+        # way to tell a stale set from a model that really is missing them.
+        # `null` when there was no model text to lint against, which is a
+        # different fact from an empty list.
+        staleEntityNames=(stale if model_src else None),
     ), indent=2))
 
     if a.rebuild:
@@ -2105,11 +2242,17 @@ def main(argv: list[str] | None = None) -> int:
             if mnu["hits"]:
                 vetoed.append((qid, mnu["hits"]))
 
-            sc = {k: x for k, x in v.items() if k != "judge_cost_usd"}
             # The judge's read when it has one, the case's standing status
-            # when it does not.
-            sc["gold_status"] = (sc.get("gold_status")
-                                 or (c.get("golden") or {}).get("status"))
+            # when it does not -- and written into the verdict, the way the
+            # `mustNotUse` override above is, so the run summary and the
+            # retrieval attribution see the same outcome a reader of
+            # events.jsonl does. Assigning it into the `sc` copy meant
+            # `wrong_gold` below, which reads `verdicts`, never saw a status
+            # the set had declared: a key marked `verified_wrong` in the case
+            # file stayed in the aggregates unless the judge said so too.
+            v["gold_status"] = (v.get("gold_status")
+                                or (c.get("golden") or {}).get("status"))
+            sc = {k: x for k, x in v.items() if k != "judge_cost_usd"}
             # The schema: a score copies the attempt's contamination flag and
             # a contaminated attempt carries no verdict. This was hardcoded
             # "false" until 2026-09-01, so a flagged attempt could still pass.
@@ -2165,11 +2308,14 @@ def main(argv: list[str] | None = None) -> int:
               and not r["failed"] and r["verdict"] is not None)
     judge_cost = sum((v.get("judge_cost_usd") or 0) for v in verdicts.values())
     mode, tally = retrieval_summary(attempts.values())
+    unscorable = sum(1 for v in verdicts.values()
+                     if (v.get("reason") or "").startswith("golden_"))
 
     for line in summary_lines(
             out=a.out, set_dir=a.set_dir, events_n=len(events),
             attempted=len(cases), decided=conf, passed=ok, near=near,
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
+            unscorable=unscorable,
             retrieval_mode=mode, tally=tally, rs=rs,
             answerer_cost=cost, judge_cost=judge_cost,
             publisher=a.publisher, environment=a.environment):

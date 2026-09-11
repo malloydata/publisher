@@ -46,6 +46,11 @@ include {
   public: reexec_failed
   #(doc) Attempts with no query to re-execute at all.
   public: reexec_no_query
+  #(doc) Predictions skipped because the server was serving other bytes.
+  public: reexec_not_re_executed
+  #(doc) Cases with no readable prediction file. These five partition the
+  #(doc) cases and sum to the case count; reexec_attempted is ok + failed.
+  public: reexec_missing
 }
 extend {
   primary_key: run_id

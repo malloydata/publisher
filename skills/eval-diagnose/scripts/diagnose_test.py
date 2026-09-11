@@ -131,9 +131,10 @@ class SufficiencyReachesImprove(unittest.TestCase):
 
     @staticmethod
     def worst(*values):
-        # The expression used in cluster assembly, kept in one place so the
-        # test fails if the ordering changes rather than silently agreeing.
-        return max(values, key=["sufficient", "insufficient", "unknown"].index)
+        # The function cluster assembly calls, not a copy of it: a test that
+        # re-implemented the ordering agreed with the code by construction and
+        # could not have caught the crash below.
+        return diagnose.worst(values, diagnose.SUFFICIENCY, "unknown")
 
     def test_one_unprobed_member_makes_the_cluster_unprobed(self):
         self.assertEqual(self.worst("sufficient", "unknown"), "unknown")
@@ -145,8 +146,61 @@ class SufficiencyReachesImprove(unittest.TestCase):
 
     def test_cluster_assembly_uses_that_ordering_not_the_first_member(self):
         src = (pathlib.Path(diagnose.__file__)).read_text()
-        self.assertIn('key=["sufficient", "insufficient",', src)
+        self.assertIn("sufficiency=worst(", src)
         self.assertNotIn('sufficiency=members[0]', src)
+
+
+class OffVocabularyValuesDoNotLoseTheRun(unittest.TestCase):
+    """`validate()` says these fields can come back wrong; the aggregate has to
+    survive one that did.
+
+    `good` is filtered on `error`, not on `_invalid`, so a per-case agent
+    emitting `sufficiency: "partial"` reaches cluster assembly. A bare
+    `[...].index` raised `ValueError` there -- after every per-case call and the
+    clustering call were paid for, and before `replace_events` and
+    `diagnoses.jsonl` were written, so the whole diagnose spend was lost to a
+    traceback."""
+
+    def test_an_off_vocabulary_sufficiency_does_not_raise(self):
+        self.assertEqual(
+            diagnose.worst(["sufficient", "partial"], diagnose.SUFFICIENCY,
+                           "unknown"),
+            "unknown")
+
+    def test_an_off_vocabulary_severity_does_not_raise(self):
+        self.assertEqual(
+            diagnose.worst(["low", "catastrophic"], diagnose.SEVERITY, "low"),
+            "low")
+
+    def test_an_unreadable_severity_is_not_evidence_of_a_high_one(self):
+        # Read as the worst value it could be, an unreadable severity would
+        # escalate a backlog item on a typo. It takes the same `low` the
+        # missing-value default already took.
+        self.assertEqual(
+            diagnose.worst(["catastrophic"], diagnose.SEVERITY, "low"), "low")
+        self.assertEqual(
+            diagnose.worst(["medium", "catastrophic"], diagnose.SEVERITY,
+                           "low"),
+            "medium")
+
+    def test_a_missing_value_still_reads_as_the_fallback(self):
+        self.assertEqual(
+            diagnose.worst([None, "sufficient"], diagnose.SUFFICIENCY,
+                           "unknown"),
+            "unknown")
+        self.assertEqual(
+            diagnose.worst([None, "high"], diagnose.SEVERITY, "low"), "high")
+
+    def test_no_members_reads_as_the_fallback_rather_than_raising(self):
+        self.assertEqual(
+            diagnose.worst([], diagnose.SUFFICIENCY, "unknown"), "unknown")
+
+    def test_the_result_is_always_in_vocabulary(self):
+        # What lands in the ledger. Ranking an off-vocabulary value last and
+        # then RETURNING it would have written "partial" into an issue event.
+        self.assertIn(
+            diagnose.worst(["partial"], diagnose.SUFFICIENCY, "unknown"),
+            diagnose.SUFFICIENCY)
 
     def test_improve_passes_sufficiency_to_the_editing_agent(self):
         # The whole point: the value has to reach the step that acts on it.
