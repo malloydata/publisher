@@ -112,6 +112,7 @@ import {
    resolvePackageScope,
 } from "../service/package_manifest";
 import {
+   collectSourceInfos,
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
 } from "../service/source_extraction";
@@ -506,11 +507,24 @@ async function readPackageMetadata(packagePath: string): Promise<{
    };
 }
 
+/**
+ * Every file in the package, package-relative, sorted.
+ *
+ * Sorted because `recursive-readdir` pushes each path from inside its
+ * `fs.stat` callback, so the order is libuv completion order — not readdir
+ * order, and not stable between two servers on identical bytes or between two
+ * reloads of one server. This order becomes `Package.models` insertion order
+ * and therefore `listModels()`, so anything downstream keyed on "first model
+ * wins" was deciding by a race. Nothing should be keyed that way, but a stable
+ * listing costs one line and removes the class.
+ */
 async function listPackageFiles(packagePath: string): Promise<string[]> {
    const files = await recursive(packagePath, [ignoreDotfiles]);
-   return files.map((full: string) =>
-      path.relative(packagePath, full).replace(/\\/g, "/"),
-   );
+   return files
+      .map((full: string) =>
+         path.relative(packagePath, full).replace(/\\/g, "/"),
+      )
+      .sort((a, b) => a.localeCompare(b));
 }
 
 function filterModelPaths(allRelative: string[]): string[] {
@@ -549,59 +563,6 @@ interface ApiQueryWire {
    annotations?: string[];
 }
 type ApiGivenWire = MalloyGivenApi;
-
-async function collectImportedSourceInfos(
-   modelDef: ModelDef,
-   runtime: Runtime,
-   importBaseURL: URL,
-): Promise<{
-   sourceInfos: Malloy.SourceInfo[];
-   importedNames: Set<string>;
-}> {
-   const sourceInfos: Malloy.SourceInfo[] = [];
-   const importedNames = new Set<string>();
-   const imports = modelDef.imports ?? [];
-   for (const importLocation of imports) {
-      try {
-         const modelString = await runtime.urlReader.readURL(
-            new URL(importLocation.importURL),
-         );
-         const importedModelDef = (
-            await runtime
-               .loadModel(modelString as string, { importBaseURL })
-               .getModel()
-         )._modelDef;
-         const importedInfo = modelDefToModelInfo(importedModelDef);
-         const importedSources = importedInfo.entries.filter(
-            (entry) => entry.kind === "source",
-         ) as Malloy.SourceInfo[];
-         for (const source of importedSources) {
-            if (!importedNames.has(source.name)) {
-               sourceInfos.push(source);
-               importedNames.add(source.name);
-            }
-         }
-      } catch {
-         // Best-effort, matches the in-process Model.create behaviour
-         // of warning-and-skipping when an import can't be loaded.
-      }
-   }
-   return { sourceInfos, importedNames };
-}
-
-function appendLocalSourceInfos(
-   modelDef: ModelDef,
-   target: Malloy.SourceInfo[],
-   importedNames: Set<string>,
-): void {
-   const localInfo = modelDefToModelInfo(modelDef);
-   const localSources = localInfo.entries.filter(
-      (entry) => entry.kind === "source",
-   ) as Malloy.SourceInfo[];
-   for (const source of localSources) {
-      if (!importedNames.has(source.name)) target.push(source);
-   }
-}
 
 // Source / query introspection is shared with the in-process path; see
 // service/source_extraction.ts. The worker has no logger, so a filter parse
@@ -714,12 +675,11 @@ async function compileMalloyModel(
          ? malloyGivens.map((g) => malloyGivenToApi(g as MalloyGiven))
          : undefined;
 
-   const { sourceInfos, importedNames } = await collectImportedSourceInfos(
-      modelDef,
-      runtime,
-      importBaseURL,
-   );
-   appendLocalSourceInfos(modelDef, sourceInfos, importedNames);
+   // Every source this file can resolve, attributed to nothing but itself.
+   // See collectSourceInfos: the old import walk pulled in every source of
+   // every imported FILE, including names a selective import never brought
+   // into this namespace.
+   const sourceInfos = collectSourceInfos(modelDef);
 
    const {
       sources,
@@ -852,7 +812,6 @@ async function compileNotebookModel(
       },
    );
 
-   const oldImports: string[] = [];
    const oldSources: Record<string, Malloy.SourceInfo> = {};
    const notebookCells: SerializedNotebookCell[] = [];
    for (let i = 0; i < parse.statements.length; i++) {
@@ -871,37 +830,13 @@ async function compileNotebookModel(
       }
       const currentModelDef = (await localMM.getModel())._modelDef;
 
-      // newSources via the import chain — mirrors in-process logic.
-      let newSources: Malloy.SourceInfo[] = [];
-      const newImports = currentModelDef.imports?.slice(oldImports.length);
-      if (newImports) {
-         for (const importLocation of newImports) {
-            try {
-               const modelString = await runtime.urlReader.readURL(
-                  new URL(importLocation.importURL),
-               );
-               const importModel = (
-                  await runtime
-                     .loadModel(modelString as string, { importBaseURL })
-                     .getModel()
-               )._modelDef;
-               const importInfo = modelDefToModelInfo(importModel);
-               newSources = importInfo.entries
-                  .filter((e) => e.kind === "source")
-                  .filter(
-                     (s) => !(s.name in oldSources),
-                  ) as Malloy.SourceInfo[];
-               oldImports.push(importLocation.importURL.toString());
-            } catch {
-               // Same best-effort policy as the in-process path.
-            }
-         }
-      }
+      // Sources this cell added, imports included: the cell's namespace minus
+      // what earlier cells already surfaced. `collectSourceInfos` reads the
+      // accumulated `contents`, so an `import { … }` contributes exactly the
+      // names it selected and re-loading the imported file is unnecessary.
       const currentInfo = modelDefToModelInfo(currentModelDef);
-      newSources = newSources.concat(
-         currentInfo.entries
-            .filter((e) => e.kind === "source")
-            .filter((s) => !(s.name in oldSources)) as Malloy.SourceInfo[],
+      const newSources = collectSourceInfos(currentModelDef).filter(
+         (s) => !(s.name in oldSources),
       );
       for (const s of newSources) oldSources[s.name] = s;
 
@@ -965,17 +900,7 @@ async function compileNotebookModel(
          malloyGivens.length > 0
             ? malloyGivens.map((g) => malloyGivenToApi(g as MalloyGiven))
             : undefined;
-      const collected = await collectImportedSourceInfos(
-         finalModelDef,
-         runtime,
-         importBaseURL,
-      );
-      appendLocalSourceInfos(
-         finalModelDef,
-         collected.sourceInfos,
-         collected.importedNames,
-      );
-      finalSourceInfos = collected.sourceInfos;
+      finalSourceInfos = collectSourceInfos(finalModelDef);
       const extracted = extractSources(finalModelDef, finalGivens);
       finalSources = extracted.sources;
       finalFilterMap = extracted.filterMap;

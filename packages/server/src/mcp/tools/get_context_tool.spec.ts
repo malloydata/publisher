@@ -1689,6 +1689,59 @@ describe("get_context semantic retrieval", () => {
          }),
       );
 
+   it("returns every resolving model path, like the lexical path does", async () => {
+      // The vector cache holds ONE row per (kind, source, name) -- the text is
+      // identical whichever file resolves the source -- and the scan fans that
+      // hit back out to every live entity sharing the key. The merge that
+      // follows has to keep those apart: keyed on the bare name it collapsed
+      // them straight back to one and kept whichever landed last, so the same
+      // question answered with one model_path on semantic and all of them on
+      // lexical. lunr never had the bug because its ref is the per-path id.
+      const provider = stubProviderFor({
+         shared: [1, 0],
+         "shared: A source two files resolve.": [1, 0],
+         amount: [1, 0],
+         "the shared source": [1, 0],
+      });
+      _setEmbeddingProviderForTests(provider);
+
+      const sharedSource = {
+         name: "shared",
+         annotations: ["#(doc) A source two files resolve."],
+         schema: {
+            fields: [{ kind: "dimension", name: "amount", annotations: [] }],
+         },
+      };
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [
+               { path: "defs.malloy" },
+               { path: "uses.malloy" },
+            ],
+            // Both files resolve `shared`, so it is queryable under both.
+            getModel: () => ({
+               getSourceInfos: () => [sharedSource],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const params = {
+         search_targets: [
+            { target_type: "source", search_text: "the shared source" },
+         ],
+         scopes: [{ environment: "specs", package: "multipath" }],
+      };
+      const payload = await callUntilSemantic(handler, params);
+
+      const paths = payload.sources.map(
+         (c: { source_info: { resource_id: { model_path: string } } }) =>
+            c.source_info.resource_id.model_path,
+      );
+      expect([...paths].sort()).toEqual(["defs.malloy", "uses.malloy"]);
+      expect(payload.returned).toBe(2);
+      expect(payload.total_available).toBe(2);
+   });
+
    it("embeds every target in ONE provider request and scans once", async () => {
       // The claim the multi-target design rests on: N targets cost one round
       // trip, not N. embedBatch already batches and the scan cross-joins the
@@ -2867,11 +2920,19 @@ describe("get_context duplicate and visibility handling", () => {
       },
    };
 
-   it("indexes a re-exported source once, from the same model every time", async () => {
-      // A package can expose one source from several models (an import, or a
-      // model that extends another). Only the first is kept, so which model
-      // that is has to be a property of the package rather than of the order
-      // the filesystem happened to list it in.
+   it("reports a source under every model that resolves it", async () => {
+      // A source is queryable at every model path that resolves it -- its own
+      // file and every file importing it -- so each pairing is its own card
+      // with its own resource_id, and a caller can query the one it prefers.
+      //
+      // This deliberately reverses an earlier decision to keep only the first
+      // model. That rule made the OTHER valid paths unreachable, and picked
+      // its survivor before `collectSourceInfos` existed, when a model also
+      // claimed sources it could not resolve -- so "first sorted model" could
+      // name a file the source did not compile in. With the namespace fixed,
+      // every path here is a path that compiles, and returning them all
+      // matches the comparable retrieval service, which keys its result set
+      // the same way.
       const pathsFor = async (models: string[]) => {
          const handler = captureHandler({
             getEnvironment: async () =>
@@ -2889,12 +2950,22 @@ describe("get_context duplicate and visibility handling", () => {
                scopes: [{ environment: "specs", package: "dup" }],
             }),
          );
-         expect(payload.sources).toHaveLength(1);
-         return payload.sources[0].source_info.resource_id.model_path;
+         return payload.sources
+            .map(
+               (s: { source_info: { resource_id: { model_path: string } } }) =>
+                  s.source_info.resource_id.model_path,
+            )
+            .sort();
       };
-      expect(await pathsFor(["a.malloy", "b.malloy"])).toBe("a.malloy");
-      // Reversed listing, same answer: the choice does not follow the order.
-      expect(await pathsFor(["b.malloy", "a.malloy"])).toBe("a.malloy");
+      expect(await pathsFor(["a.malloy", "b.malloy"])).toEqual([
+         "a.malloy",
+         "b.malloy",
+      ]);
+      // Reversed listing, same answer: the set does not follow the order.
+      expect(await pathsFor(["b.malloy", "a.malloy"])).toEqual([
+         "a.malloy",
+         "b.malloy",
+      ]);
    });
 
    it("never returns a join declared inside another join's target", async () => {
