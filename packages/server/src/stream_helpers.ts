@@ -30,7 +30,7 @@ import type {
    StreamingConnection,
 } from "@malloydata/malloy";
 
-import { PayloadTooLargeError } from "./errors";
+import { BadRequestError, PayloadTooLargeError } from "./errors";
 import { recordQueryCapExceeded } from "./query_cap_metrics";
 
 /**
@@ -91,6 +91,14 @@ export async function streamSqlWithBudget(
    sql: string,
    runSQLOptions: RunSQLOptions,
    budget: StreamBudget,
+   /**
+    * Message for a nullish row (see the guard below). The caller supplies it
+    * because the reason is a property of the connection's dialect, which this
+    * helper deliberately knows nothing about, and supplies it lazily so the
+    * success path -- every proxied query -- does not build a string it throws
+    * away.
+    */
+   nullRowMessage?: () => string,
 ): Promise<MalloyQueryData> {
    const { maxRows, maxBytes } = budget;
    const capAc = new AbortController();
@@ -127,6 +135,21 @@ export async function streamSqlWithBudget(
          ...runSQLOptions,
          abortSignal: composedSignal,
       })) {
+         // A nullish row is never data. It means the connector unwrapped a
+         // column the statement did not project -- the dialect/connector
+         // final-stage contract (see service/final_stage_sql.ts), which
+         // `sqlQuery` cannot always satisfy on the caller's behalf. Caught
+         // here rather than left to the byte cap's
+         // `Buffer.byteLength(JSON.stringify(undefined))`, which throws a
+         // TypeError about a "string" argument that names nothing the caller
+         // can act on -- and which does not throw at all when the byte cap is
+         // disabled, leaving a response full of nulls.
+         if (row === null || row === undefined) {
+            throw new BadRequestError(
+               nullRowMessage?.() ??
+                  "The statement returned rows the driver could not read.",
+            );
+         }
          rows.push(row);
          if (maxBytes > 0) {
             // Measure exactly what the eventual response body will
@@ -155,7 +178,10 @@ export async function streamSqlWithBudget(
       // versions. Swallow it iff we triggered the abort ourselves —
       // otherwise it's a real connection error (or the caller's
       // timeout, which the controller's runWithQueryTimeout will
-      // surface as a 504) that the controller must see.
+      // surface as a 504) that the controller must see. A
+      // BadRequestError is ours and always propagates: it is a verdict
+      // on the statement, not a transport failure.
+      if (err instanceof BadRequestError) throw err;
       if (!overflowMessage) throw err;
    }
 

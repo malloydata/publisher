@@ -802,6 +802,16 @@ paths:
         Executes a SQL statement against the specified database connection and returns the results.
         The results include data, metadata, and execution information.
 
+        Some dialects finalize a query by collapsing its result into a single
+        JSON column named `row`, and their connectors unwrap that column on the
+        way back out (Postgres is the only one today). An eligible statement is
+        finalized for them on the way in, so a plain `SELECT 1` returns a row.
+        A statement that cannot be finalized -- DDL, `SET`, `EXPLAIN`, a
+        data-modifying CTE, or one that already projects the column, which is
+        what a `publisher` proxy connection forwards -- is run exactly as sent.
+        When such a statement produces rows the driver cannot read, the response
+        is 400 naming the wrapper to apply by hand.
+
         Rows returned are capped at PUBLISHER_MAX_QUERY_ROWS (default 100,000).
         The cap is forwarded to the connector as a rowLimit on RunSQLOptions;
         queries that return more rows than the cap fail with HTTP 413 rather
@@ -1170,8 +1180,8 @@ paths:
         Executes a SQL statement against the specified database connection,
         resolved in the context of the named package, and returns the results.
 
-        Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap as the
-        environment-level sqlQuery endpoint.
+        Subject to the same PUBLISHER_MAX_QUERY_ROWS row cap, and the same
+        dialect finalization, as the environment-level sqlQuery endpoint.
       parameters:
         - name: environmentName
           in: path

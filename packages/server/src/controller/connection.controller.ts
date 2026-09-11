@@ -27,6 +27,11 @@ import {
    listTablesForSchema,
 } from "../service/db_utils";
 import {
+   finalStageContractMessage,
+   shouldWrapFinalStage,
+   wrapFinalStage,
+} from "../service/final_stage_sql";
+import {
    mergeQueryMetadata,
    mintCorrelationId,
    parseQueryClass,
@@ -751,6 +756,17 @@ export class ConnectionController {
          );
       }
 
+      // Finalize the statement for dialects whose connector unwraps a `row`
+      // column from every row, so a caller's plain SELECT survives the round
+      // trip. Not every statement is eligible, and the ones that are not are
+      // sent through untouched -- service/final_stage_sql.ts carries the
+      // reasoning, including why a proxied Malloy query must never be wrapped
+      // a second time.
+      const dialectName = malloyConnection.dialectName;
+      const sqlToRun = shouldWrapFinalStage(dialectName, sqlStatement)
+         ? wrapFinalStage(dialectName, sqlStatement)
+         : sqlStatement;
+
       // Streaming-capable connections (Postgres, DuckDB, ...) go through
       // streamSqlWithBudget so the byte cap can fire mid-stream. Other
       // connections fall back to the buffered path; client-side byte
@@ -771,12 +787,16 @@ export class ConnectionController {
             try {
                return await streamSqlWithBudget(
                   malloyConnection,
-                  sqlStatement,
+                  sqlToRun,
                   optionsWithSignal,
                   { maxRows, maxBytes },
+                  () => finalStageContractMessage(dialectName),
                );
             } catch (error) {
                if (error instanceof PayloadTooLargeError) throw error;
+               // A verdict on the caller's statement, not a driver failure:
+               // keep its 400 rather than reporting it as an upstream 502.
+               if (error instanceof BadRequestError) throw error;
                // If runWithQueryTimeout is about to wrap this in a
                // QueryTimeoutError (because the timer fired), the
                // ConnectionError we'd throw here is discarded — the
@@ -794,10 +814,7 @@ export class ConnectionController {
             abortSignal: signal,
          };
          try {
-            return await malloyConnection.runSQL(
-               sqlStatement,
-               optionsWithSignal,
-            );
+            return await malloyConnection.runSQL(sqlToRun, optionsWithSignal);
          } catch (error) {
             throw new ConnectionError((error as Error).message);
          }
