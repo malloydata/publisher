@@ -5,6 +5,7 @@ import { components } from "../api";
 import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
+import { mergeConnectionUpdate } from "./connection_public_view";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -189,9 +190,16 @@ export class ConnectionService {
       await runEnvironmentConnectionUpdate(environment, async () => {
          const existingConnections = environment.listApiConnections();
 
+         // A caller cannot echo back a credential the response never gave it,
+         // so an update that sends only the fields it can see must not be read
+         // as clearing the rest. mergeConnectionUpdate carries forward exactly
+         // what the response withholds; an explicitly sent value still wins,
+         // including an empty one, which is how a credential is cleared.
          const updatedConnection = {
-            ...dbConnection.config,
-            ...connection,
+            ...mergeConnectionUpdate(
+               dbConnection.config as ApiConnection,
+               connection,
+            ),
             name: connectionName,
          };
 
