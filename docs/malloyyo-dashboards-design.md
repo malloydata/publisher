@@ -65,6 +65,12 @@ still waits on is the loader conventions in §Open questions, not the dashboards
 The whole design is governed by one principle — **one engine, two document types**
 (§[Guiding design principle](#guiding-design-principle-one-engine-two-document-types)).
 
+> **Superseded on that one point.** [malloy-apps-v2.md](malloy-apps-v2.md) reverses "two document
+> types" on the reading-mode axis: one `.malloy` **app** whose `## app { layout=grid | flow }` tag
+> selects dashboard or narrative rendering. Everything below still describes shipped behavior, and
+> the reversal does not extend to notebooks used as incremental modeling scratch. See the note in
+> §Guiding design principle for the argument.
+
 Dashboards also ship as **standard React SDK components, usable separately from the Publisher
 UI**: the `Dashboard` component (and the pieces it composes) are public exports of
 `@malloy-publisher/sdk` that any React app can render against a Publisher server. The Publisher
@@ -263,9 +269,12 @@ not converged documents. It also cuts the other way — future work on either su
 kinds, new drill destinations, richer lint) belongs in the shared layer first, so neither
 document type drifts ahead of the other.
 
-> **Superseded on this point by [malloy-apps-v2.md](malloy-apps-v2.md).** That design does merge the
-> formats, into one `.malloy` **app** whose `## app { layout=grid | flow }` tag makes reading mode a
-> property of the document. The reasoning above still holds on its own terms — the two reading modes
+> **Superseded on this point by [malloy-apps-v2.md](malloy-apps-v2.md).** That design merges the
+> formats **on the reading-mode axis, and only there**: one `.malloy` **app** whose
+> `## app { layout=grid | flow }` tag makes reading mode a property of the document. It is not a claim
+> that an app replaces every `.malloynb` — a notebook whose cells chain through `extendModel` has no
+> representation as a single document and keeps its own format. The reasoning above still holds on its
+> own terms — the two reading modes
 > are genuinely different, and folding one into the other would have broken Malloyyo compatibility.
 > What changed is the price: a WYSIWYG editor, write-back storage, an agent patch protocol and an
 > embedding contract would each have to be built twice, and none of those four was on the table when

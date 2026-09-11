@@ -10,11 +10,14 @@ SPDX-License-Identifier: MIT
 > the pros, cons, and decision rules for each.
 
 > **This page describes what you can author today, and today has three surfaces.**
-> [malloy-apps-v2.md](malloy-apps-v2.md) proposes reducing that to two, by merging notebooks and
-> dashboards into one `.malloy` **app** where a `## app { layout=grid | flow }` tag decides the
-> reading mode — so the notebook-or-dashboard question below becomes one tag rather than two
-> formats. It is a design, not shipped code: keep choosing between the three surfaces here until it
-> lands, and read that document before authoring new guidance on this axis.
+> [malloy-apps-v2.md](malloy-apps-v2.md) proposes reducing that to two **reporting** surfaces, by
+> merging notebooks and dashboards into one `.malloy` **app** where a `## app { layout=grid | flow }`
+> tag decides the reading mode — so the notebook-or-dashboard question below becomes one tag rather
+> than two formats. `.malloynb` does not disappear under that design: a notebook whose cells build on
+> each other through `extendModel` has no representation as a single document, so it remains the
+> format for incremental modeling scratch. It is a design, not shipped code: keep choosing between
+> the three surfaces here until it lands, and read that document before authoring new guidance on
+> this axis.
 
 All three are artifacts that live _inside a package_, ship with the model, and run on the same
 engine: the same governed query endpoints, the same [givens](givens.md), the same

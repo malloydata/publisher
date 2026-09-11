@@ -73,7 +73,8 @@ query: top_brands is orders -> by_brand + { limit: 5 }
 ```
 
 **This document is verified, not sketched.** Run through `MalloyTranslator` on `@malloydata/malloy`
-0.0.432 — the version Publisher pins — with the `import` resolved against a real model, it translates
+0.0.432 — the version `packages/server/package.json` declares, as a caret range rather than a pin —
+with the `import` resolved against a real model, it translates
 with **zero problems**: the `## app` tag, the top-level `query:` tiles, `# tile { colspan=2 }`,
 `# line_chart`, the `#"` tile prose, and both standalone `##"` blocks. Three forms that look
 reasonable and are not:
@@ -171,9 +172,10 @@ flowchart TB
   pkg --> q
 ```
 
-`WorkbookStorage` is already the right shape for this and becomes `AppStore`:
-`listWorkspaces`, `listApps`, `getApp`, `saveApp`, `moveApp`, `deleteApp`
-(`packages/sdk/src/components/Workbook/WorkbookStorage.ts:15`), with an etag added for concurrency.
+`WorkbookStorage` is already the right shape for this and becomes `AppStore`. It declares
+`listWorkbooks`, `getWorkbook`, `saveWorkbook`, `moveWorkbook` and `deleteWorkbook` today
+(`packages/sdk/src/components/Workbook/WorkbookStorage.ts:15`); the `*App` spelling below is this
+document's proposal, not an existing API, and the substantive addition is an etag for concurrency.
 `BrowserWorkbookStorage` over `localStorage` is the existing reference implementation.
 
 ## 4. The store dialect
@@ -207,33 +209,64 @@ This is the design's load-bearing simplification, because that endpoint is alrea
 
 The rule this yields:
 
-> **An app may re-slice what the viewer can already read. It may not reach a new connection, and it
-> may not mint a gate.**
+> **An app gives its author no reach beyond what that author already has on the query endpoint. It
+> may not reach a new connection, and it may not remove or replace a gate.**
 
-Both halves are enforced by code that exists. What the rule deliberately does **not** say is "an app
-cannot name anything new", because that would be false — and the gap is worth stating precisely
-rather than discovering later.
+That is deliberately narrower than "an app may re-slice what the viewer can already read", which an
+earlier draft of this document claimed and the code does not support. The endpoint accepts
+caller-authored Malloy today; an app is a place to *keep* such a query, not a new capability.
 
-**Gates are enforced across the reachable set; curation is not.**
-`assertAuthorizedForAllSources` runs unconditionally on the query path and is explicitly *not* guarded
-by a top-level-sources check, so it catches a gate carried in from a derivation base that is not
-itself top-level (`packages/server/src/service/model.ts:1336`). A gated source therefore stays gated
-however a tile reaches it.
+**The exposure delta of a store is zero, and that — not gate containment — is the security argument.**
+Anyone who can open an app can already post the same text to `/query`: on bare Publisher the API is
+unauthenticated (`security-posture.md:28`), and under a host like Credible the query call is gated by
+package read alone with the query string as free text. App author, viewer, and "could already write
+this join by hand" are the same population, and every tile still executes under the viewer's own
+identity. What a store adds is persistence and sharing, not reach.
 
-The query boundary is different. `assertQueryBoundaryCompiled`
+**Gates are entry-point only, and a join reaches around them.** `#(authorize)` is evaluated on the
+source the query *enters through* — the run target's own gate, the gate it carries from a derivation
+base, and, when the target is a composite, the one member branch Malloy resolved. A gate on a source
+reached only through `join_*` **does not fire**: at any depth, aliased, cross-file, or declared
+query-local inside a refinement. The walk says so in its own words
+(`packages/server/src/service/model.ts:1316`), `authorize.md:214` documents it as the rule authors
+have to design around, and an integration spec asserts it positively on *caller query text* in exactly
+a tile's shape. It is deliberate rather than an oversight: joined-gate enforcement was built and then
+reversed to entry-point-only.
+
+So a tile can read a gated source's rows through a join. This is not a hole the design opens — the
+identical ad-hoc query does the same thing today — but this document must not be read as saying gates
+contain an app, because they do not. The remedy is model-side and is `authorize.md`'s own: put the
+gate on the source callers enter through, and use `include { private: * }` to control what an
+extension re-exposes.
+
+What gates *do* catch, they catch however the tile is written. The walk is unconditional on the query
+path — `authorizeAndBindRunnable` (`packages/server/src/service/model.ts:5196`) runs it for every
+query, under a comment warning against re-adding the `hasAuthorize()` guard that once re-opened an
+inherited-gate bypass (`:5185`).
+
+**Curation is not a boundary either, for a different reason.** `assertQueryBoundaryCompiled`
 (`packages/server/src/service/model.ts:3706`) admits the run target if it is a curated source or
 derives from one, and **never enumerates joined sources**. Under `queryableSources: "declared"` a tile
-may therefore write `run: curated extend { join_one: h is unexported_source on … } -> { group_by:
-h.field }` and read a source the package chose not to export. That is not a hole this design opens —
-it is the position Publisher already takes for `/compile`, where the boundary is documented as
-*discovery curation, not access control* — but a store hands that capability to a narrower author than
-a modeler, so the doc states it rather than implying curation is a security boundary.
+may write `run: curated extend { join_one: h is unexported_source on … } -> { group_by: h.field }` and
+read a source the package chose not to export. That is the position Publisher already takes for
+`/compile`, where the boundary is documented as *discovery curation, not access control*.
 
-Two consequences for implementation. A deployment that needs curation to hold against app authors
-needs a **join walk** on the app path, and that belongs in P1 rather than being left implicit. And the
-`extendModel`-style store-dialect exclusions below are an **editor-enforced lint**, not a consequence
-of restricted mode: restricted mode accepts `source:`, `query:` and inline `extend` at caller trust
-(verified), and refuses `given:` via the experimental flag rather than the restricted construct list.
+**A server-side "join walk on the app path" cannot be built, and this design should not imply one.** A
+tile is an ordinary request to the ordinary query endpoint; nothing distinguishes it from any other
+ad-hoc query, and the one caller-supplied class marker (`queryClass`) is caller-set and not a trust
+signal. The options are an editor-side lint — bypassable, the same status as the store-dialect
+exclusions below — or a Publisher-wide change to `queryableSources` semantics, which
+`discovery-and-access.md:51` declines today on purpose. As a *security* control, deferring is
+defensible precisely because the delta is zero. As a *promotion* check it is required, so it lands
+with promotion in P7 rather than P1.
+
+The `extendModel`-style store-dialect exclusions below are an **editor-enforced lint**, not a
+consequence of restricted mode: restricted mode accepts `source:`, `query:` and inline `extend` at
+caller trust (verified). It refuses `given:` on the **restricted construct list** —
+`restricted-construct-forbidden`, at
+`malloy/packages/malloy/src/lang/ast/statements/define-given.ts:279` — which is a stronger guarantee
+than the experimental-flag gate an earlier draft credited. The flag only decides which error you get
+when the bound model does not enable givens, and any model carrying controls enables them.
 
 **No new compile door is built.** An earlier draft of this design proposed a restricted authoring
 compile over a server-synthesized prologue. That would have been a bespoke trust tier layered on
@@ -246,10 +279,35 @@ that work and the risk with it.
 
 - **No cross-tile shared definitions in the store.** A tile is self-contained. An app that wants a
   shared `source:` extension has outgrown the store and should be promoted.
-- **Controls come from the bound model's `given:` declarations.** The app chooses which to surface; it
-  cannot declare its own. That matches how dashboards already work — declarations are a model concern
-  (`givens.md`).
+- **Controls come from the bound model's `given:` declarations.** The app chooses which to surface and
+  what value to start them at; it cannot declare its own. That matches how dashboards already work —
+  declarations are a model concern (`givens.md`).
 - `given:`, `source:`, `##!` and `import` become live **only at promotion** (§8).
+
+**An app carries given *values*, never given *declarations*** — the distinction the rest of this
+section rests on, and the one an earlier draft collapsed. Three things look alike and sit at three
+different trust levels:
+
+| Shape | Who sets it | Trust level |
+|---|---|---|
+| `## app { givens { REGION is 'emea' } }` | the app author | **presentation.** The viewer's URL overrides it |
+| `?REGION=emea` in the viewer's URL | the viewer | presentation — the same level, at the wire |
+| a tenant given injected per request | the host's middleware | **a boundary**, and the only one of the three |
+
+The first is the "pin a dashboard to a segment" affordance, and it already exists: dashboards and
+notebooks carry `startingGivens` today (`packages/server/src/service/dashboard.ts:895`), documented as
+values that **URL parameters override** (`api-doc.yaml:3713`). An app spells it `givens { … }` on
+`## app` and inherits that behavior, including the recorded limitation that a starting value cannot be
+cleared (`packages/sdk/src/hooks/useGivensState.ts:176`). Because the URL wins, *an author-pinned
+tenant is not a tenant boundary* — say it in the UI, not just here.
+
+The third is how one app serves customer-specific views, and it needs no new mechanism: the given is
+declared on the **model**, gated with `#(authorize)` or narrowed with `where:`, and its value is set
+by the host's middleware on the very path tiles use. Credible's router strips a caller-supplied value
+for a registered name and injects the server-resolved one, whoever set it. **Publisher OSS has no
+trusted tier at all** — the only request headers it reads are `x-publisher-bypass-authorize` and
+`traceparent`, and identity-bound givens are a stated future milestone (`authorize.md:394`). So in
+bare Publisher the tenant boundary does not exist to be inherited; it is the host's to supply.
 
 Three containment rules govern a server-side store, and they are load-bearing because the API is
 unauthenticated by design (`security-posture.md`): **a store root is never inside a package root**;
@@ -283,7 +341,18 @@ five already exist in some form.
 
 Binding authorization sits on the **Host** port deliberately. Publisher does not authenticate end
 users (`security-posture.md`), so "which models may this author bind to" is a question only a host
-with a user model can answer.
+with a user model can answer. Under `queryableSources: "declared"` the host also has to consult the
+package's servable entry points, the same filter dashboards already apply — otherwise an author binds
+to a model that is not listed and gets an app of uniformly dead tiles.
+
+**That check is an authoring affordance, not the containment.** The binding is data in a document the
+store holds, and the store is caller-writable — trivially so in `localStorage`, and over an API for a
+server-side one. "Rebinding is refused" below is an editor gesture, not a boundary. So the invariant
+belongs on the **Data** port instead: *the bound model is authorized on every tile run, under the
+viewer's identity, exactly as any other query against that model would be.* This is also the only way
+the "may not reach a new connection" half of §4's rule can fail — another package's model may sit on
+another connection — so it is the one place a tampered binding has to be caught, and it is caught by
+the endpoint rather than by anything this design adds.
 
 ## 6. The edit algebra
 
@@ -318,10 +387,27 @@ is why the editor parses locally rather than asking.
 
 ### Two properties that make splicing safe
 
-**Every annotation is its own note with its own line.** A tile's three annotations — the `#"` prose,
-`# tile { colspan=2 }`, `# line_chart` — are three separate entries at three separate lines, verified
-both in the compiled `blockNotes` and in the editor's own line parse. One annotation is never spread
-across two lines, and one line never carries two annotations.
+**In the line-oriented form, every annotation is its own note with its own line.** A tile's three
+annotations — the `#"` prose, `# tile { colspan=2 }`, `# line_chart` — are three separate entries at
+three separate lines, verified both in the compiled `blockNotes` and in the editor's own line parse.
+In that form one line never carries two annotations, and `#` runs to end of line.
+
+**Malloy also has block annotations, and they break that assumption.** `#|` … `|#` and `##|` … `|##`
+open an annotation that spans lines (`malloy/packages/malloy/src/lang/grammar/MalloyLexer.g4:188-195`
+and `MalloyParser.g4:102-111` beside it), which the
+compiler models as a **single** note — hence `Note.indentStripped`, present precisely "for multi-line
+annotations" (`malloy/packages/malloy/src/model/malloy_types.ts:2064`). A document using them is legal
+Malloy this editor did not anticipate.
+
+It fails in the **unsafe** direction, which is why it gets a guard rather than a footnote:
+`parseAnnotation('#|')` returns an empty tag with an empty log, so the ownership test below — "every
+property on this line is one the editor manages" — is *vacuously* true, and the editor would claim an
+author's block opener as its own line and rewrite or cut it. The stale-parse guard does not fire,
+because the parse is clean.
+
+> **The editor refuses every structural gesture on a document containing `#|` or `##|`**, and says
+> why, until its line map is block-aware. Text editing stays live. This is a check on the raw text
+> that runs before any line map is trusted — not an invariant the editor may assume.
 
 **Annotation lines fold in order, last-wins per property, and merge rather than replace.** Verified
 against `parseAnnotation`: given `## app { title="A" columns=3 }` followed by `## app { columns=9 }`,
@@ -345,10 +431,14 @@ what keeps that bug unreachable.
 that reopens an app cannot tell its own `# tile { colspan=2 }` from an identical hand-written one. The
 rule is therefore a **property of the content, not of history**:
 
-> A line is editor-owned if every property on it is one the editor manages, and it contains no
-> reference (`$`) and no property the editor does not know. Otherwise the line is the author's:
-> the editor appends its own line to override, and if even that cannot express the change, the
-> gesture is refused.
+> A line is editor-owned if it is a single-line annotation, carries **at least one** property, every
+> property on it is one the editor manages, and it contains no reference (`$`) and no property the
+> editor does not know. Otherwise the line is the author's: the editor appends its own line to
+> override, and if even that cannot express the change, the gesture is refused.
+
+The "at least one property" clause is not redundant — it is what stops an empty parse from reading as
+a line the editor owns, which is the block-annotation trap above and would otherwise be the one place
+this rule hands the editor *more* authority the less it understands.
 
 That is decidable from the text on every reload, by any editor, with no sidecar and no provenance
 marker — and it degrades the right way, because an unfamiliar property makes a line *more* protected
@@ -369,6 +459,14 @@ operation, not an edit.
 | reorder tiles | **block-extent move** |
 | edit a tile's query | **body splice**, text from `@malloydata/malloy-query-builder` |
 
+**That table describes `## app` / `# tile` documents, and only those.** §12 says the editor preserves
+a `## artifact { tiles=[…] }` document in whichever form it found rather than rewriting it — but in
+that form membership and order live in the `tiles=[…]` array, not in statement order. A block-extent
+move would reorder nothing, and a block-extent cut would leave a dangling name in the array. So until
+the array mutations are specified and tested, **an artifact-list document opens read-only in the
+builder**, with an explicit one-way convert action. Preserving a form the editor cannot correctly
+mutate is worse than declining to edit it.
+
 ### The block extent, and why `range` is not enough
 
 `DocumentSymbol.range` excludes a statement's annotations, and `lensRange` covers them only when the
@@ -378,10 +476,29 @@ no-op: *"Object annotation not connected to any object"*
 (`malloy/packages/malloy/src/lang/malloy-to-ast.ts:2235`), verified by translating a document with a
 dangling tag.
 
-So delete and reorder operate on a **block extent**: from the first annotation token after the
-previous statement through the end of the statement — tags, doc comment and body as one unit,
-computable from the notes' ranges plus the symbol's range. Reorder is a multi-line diff by
-construction; that is stated here rather than promised away.
+So delete and reorder operate on a **block extent** — tags, doc comment and body as one unit. The
+extent is computed from the annotations **attached to the statement**, and explicitly *not* as
+"everything since the previous statement."
+
+That distinction is load-bearing rather than pedantic. A standalone `##"` prose block is its own
+statement, but the symbol walker emits **no symbol** for it — `document-symbol-walker.ts` has handlers
+for query, run, source, nest, field, join and import, and none for `docAnnotations`. So "since the
+previous statement" reaches back past page-level narrative and swallows it, and deleting or reordering
+a tile would delete or move prose that belongs to no tile — in `flow`, the reading mode this design
+exists to add.
+
+The extent therefore runs from the first annotation token attached to the statement through the end of
+that statement, **stopping at any standalone model-level note** (`##`, `##"`, `##|`). Three cases the
+implementation covers explicitly, because all three are reachable from the §2 example: prose before
+the first tile, prose between two tiles, and prose after the last tile. Every one of them belongs to
+the page, not to a neighbor.
+
+The editor computes this from its own line map plus `DocumentSymbol` — the only inputs it holds. Not
+from note ranges, which, as above, exist only after translation. Where `lensRange` happens to agree it
+is a useful cross-check and not a substitute: its public getter silently falls back to `range` when
+unset, so a caller cannot tell "covers the tags" from "does not" and still needs its own
+single-definition test. Reorder is a multi-line diff by construction; that is stated here rather than
+promised away.
 
 ### Three guards
 
@@ -405,7 +522,8 @@ unsupported through `Parse._translator`.
 
 - **Tiles run independently and combine on the client.** A tile result and a `nest:` are structurally
   identical in the interfaces format, so N independently-run tiles merge into a single `# dashboard`
-  result and `@malloydata/render` owns the grid. Malloyyo proved this (their `frame-runtime/combine.ts`)
+  result and `@malloydata/render` owns the grid. Malloyyo proved this (their
+  `packages/cli/src/frame-runtime/combine.ts`)
   after starting with a server-side sequential merge; we start where they finished. **This is new
   Publisher code**, not a reuse — v1's dashboard lays its own grid out from per-tile tags rather than
   synthesizing one result — and it is the largest single piece of work in §7.
@@ -431,13 +549,48 @@ Promotion moves an app into a package, and it is the only point where `given:`, 
 and `##!` become live. It changes behavior in ways a text diff does not show:
 
 - Named-query and ad-hoc query paths are not identical.
-- `queryableSources: "declared"` applies at run time, so a promoted app absent from `explores` 404s
-  every tile.
+- `queryableSources: "declared"` applies at run time, so a promoted app whose file is absent from
+  `explores` fails every tile. Dashboards already meet this and are *withheld from listing* rather
+  than served broken; an app reuses that treatment rather than inventing a third behavior.
 - The app's tiles become package queries, visible to MCP, `get_context`, and indexing.
+- **The binding stops being a binding.** An `import` specifier resolves relative to the containing
+  file, so `import "ecommerce.malloy"` identifies nothing while the app sits in a store and does not
+  resolve from `apps/` once promoted. The store records the bound model as a package-qualified
+  locator, and promotion **rewrites the specifier** to a path that resolves from the app's new home.
+  Without this the same document cannot run in both places.
 
-So promotion **runs every tile before and after and compares result hashes**, adds the app to
-`explores`, and lints for a `given:` whose name collides with a host's registered trusted attribute or
-with a name a gate references. The reviewer is a package author, not an app author.
+Promotion therefore runs the following, with a package author as the reviewer:
+
+**Run every tile before and after, and compare result hashes.**
+
+**Touch `explores` only when it already exists.** Adding the app unconditionally is wrong in both
+directions. On a package with no `explores`, writing a single entry *switches curation on* — `explores`
+is the single opt-in — so every other model in that package becomes unlisted and, under the default
+`"declared"`, unqueryable. Promotion into such a package adds nothing. On a package that already
+curates, the entry is a real widening: it belongs in the diff the reviewer reads, alongside an
+explicit `export { … }` naming the tile queries, since a model with no `export {}` exports all of its
+top-level sources.
+
+**Lint every tile against the curated set.** This is the join walk §4 says cannot be built
+server-side — and promotion is where it *can* be, because the app text is in hand, the curated set is
+known, and nothing is ambiguous about which query is a tile. Listing an app in `explores` also puts
+its tiles among the package's curated queries, where they clear the early gate and skip the compiled
+boundary backstop, so a tile joining an unexported source has to be caught here or not at all.
+
+**Refuse a `given:` that shadows the bound model's.** The lint an earlier draft described — collision
+with a host's registered trusted attribute, or with a name a gate references — misses the case that
+actually breaks tenancy. Malloy mints a fresh identity per declaration, so a promoted app that
+re-declares a name the bound model uses only in `where:` **shadows** it: the request value, including
+one the host's middleware injected, binds to the app's declaration while the base's given falls back
+to its default. So promotion refuses any app `given:` whose name appears anywhere on the bound model's
+given surface. Publisher has no knowledge of a host's registered names, so that half is a Host-port
+hook (`reservedGivenNames()`), empty in OSS.
+
+**Lint the import surface.** Promotion is where `import` becomes live, and the reader resolving it has
+no package containment (`packages/server/src/utils.ts:9`) — it will read any `file:` URL.
+Caller-authored text becoming author-trust content is the escalation "an app author is not a modeler"
+exists to prevent, so promotion refuses an absolute or traversing specifier rather than trusting the
+reviewer to spot one.
 
 **The hash comparison is a smoke test, and the doc should not oversell it.** It compares one
 identity's rows at one moment across two code paths, so it catches the mechanical breakages — a tile
@@ -477,8 +630,12 @@ authentication and is not is worse than its absence.
 internal building block, not a supported path for external integration"*, while
 `malloyyo-dashboards-design.md` calls `<Dashboard>` a public export any React app may use. Both cannot
 be true. This design says: `<MalloyApp>` is **public and supported**; the rest of the SDK stays
-internal. React embedding therefore works from P0 with **the host owning framing and auth**, and that
-is stated in the docs rather than left for an integrator to discover.
+internal. React embedding therefore works from P0 with **the host owning framing and auth**.
+
+That is a decision this document takes, not one it has already landed — both sentences above are
+still in their own docs, and `choosing-a-surface.md` still routes notebook and dashboard embedding to
+the internal-building-block page. Reconciling those three is part of **P0**, because an integrator
+who reads them in the wrong order builds against the wrong contract.
 
 ## 10. MCP apps
 
@@ -521,9 +678,12 @@ the opposite of this design's, deliberately, and pretending otherwise would be d
 
   **The answer, and it is the whole of §4:** the store holds a binding and tiles, not code. Every tile
   compiles restricted, on the endpoint that already governs untrusted query text, against a model the
-  author did not write. There is no path by which a stored app reaches data its author could not
-  already read. Review is not the control that makes the store safe — restricted compilation is — and
-  promotion adds review for the apps that want to become package artifacts.
+  author did not write. So a stored app reaches nothing its author could not already reach by typing
+  the same query into the same endpoint — the store's exposure delta is zero, and *that*, rather than
+  any containment restricted mode provides, is what makes it safe to keep an app outside the repo.
+  Note what this does not claim: it is not a claim that a tile is confined to what a *viewer* may
+  read, because §4 shows joins evade both curation and gates. Promotion is where review enters, for
+  the apps that want to become package artifacts.
 - **Its round-trip rule is this design's instinct at coarser grain.** Malloyyo canonicalizes
   machine-written Malloy through the prettifier, and its formatter is *"NOT applied to Malloy a person
   typed."* (`format-malloy.ts`). It draws that line per document; §6 draws it per line, which is what
@@ -582,8 +742,9 @@ claim that an app replaces every `.malloynb`:
 
 So `.malloynb` does not go away. It stops being the format you reach for to write a *report* — which
 is most of its use — and remains the format for a document whose cells build on each other. The four
-artifact types in §1 become three, not one, and §1's "replaces the four we have now" should be read as
-the authoring surface it unifies, not as a deletion list.
+artifact types in §1 become three, not one: §1 names the surface an author reaches for *instead of* a
+notebook, a dashboard, or a workbook, which is a statement about authoring rather than a deletion
+list.
 
 Everything v1 built stays: the given control contract, `# drill`, the shared control components, the
 load-time lint, the per-tile layout tags. This changes what a document *is*, not how it runs.
@@ -595,15 +756,15 @@ code — and the notebook-versus-dashboard question becomes one tag.
 
 | Phase | Delivers |
 | --- | --- |
-| P0 | `## app` grammar, `layout=grid\|flow`, tag discovery, prose rendering for `#"` and `##"`, one `<MalloyApp>` **viewer** replacing the internals of `Notebook` and `Dashboard`; `.malloynb` and workbook JSON as read-only importers; `<MalloyApp>` documented as the supported export |
+| P0 | `## app` grammar, `layout=grid\|flow`, tag discovery, prose rendering for `#"` and `##"` **with raw HTML disabled in the app renderer**, one `<MalloyApp>` **viewer** replacing the internals of `Notebook` and `Dashboard`; `.malloynb` and workbook JSON as read-only *readers* — they render in the builder and are never written back, and a notebook whose cells chain through `extendModel` renders as today's notebook rather than as an app (§13); `<MalloyApp>` documented as the supported export |
 | P0b | **A host adopts the viewer.** Depends on nothing later, and is deliberately early: it validates the reader against real documents and lets a host delete its duplicate renderer at the start of the program rather than the end |
-| P1 | Store port: `AppStore` with etags, browser and local-directory adapters, the three containment rules. **Binding authorization on the Host port lands here, not later** — a store that can save an app is a store that records which model it binds to, and a host with per-package authorization needs that question answered before the first save, not after. Also here: the **join walk** for any deployment that needs `queryableSources` curation to hold against app authors (§4) |
+| P1 | Store port: `AppStore` with etags, browser and local-directory adapters, the three containment rules. **Binding authorization on the Host port lands here, not later** — a store that can save an app is a store that records which model it binds to, and a host with per-package authorization needs that question answered before the first save, not after. The Data port's per-run authorization of the bound model (§5) is the invariant this phase must not be read as replacing |
 | P2 | Edit algebra: block extents, own-line tag writes with the content-based ownership rule, stale-parse guard, `baseVersion` rebase, undo. **The framing policy lands here**, as the prerequisite for the first edit-capable route |
 | P3 | A render-tag validation call the editor can make before saving; the gate-walk contract spec (§15) |
 | P4 | Agent port: the "+" gesture, `AppPatch`, optimistic apply, per-tile re-run |
 | P5 | Embedding: chromeless route, `publisher:*` with an origin allowlist, embed-token verification |
 | P6 | MCP app adapter; collapse the bespoke MCP-app bundles |
-| P7 | Promotion, with the before/after tile comparison |
+| P7 | Promotion, with the before/after tile comparison, the conditional `explores` edit, the import-containment and given-shadowing lints, and the **join walk** — which is a promotion check rather than a runtime control, because §4 shows it cannot be built server-side |
 
 **P0 is the fattest phase and is not a foundation.** Grammar, two reading modes, discovery, a prose
 renderer, two importers, and a rewrite of `Notebook` and `Dashboard` internals is a lot to land
@@ -624,8 +785,12 @@ actually is.
   chain has no representation in a single document and no phase adds one (§13). An app is also not a
   notebook in VS Code — it opens as a model. Both belong in `choosing-a-surface.md` as stated
   trade-offs.
-- **Curation is not a security boundary for app authors** (§4). A tile can join an unexported source.
-  Gates hold; `explores` does not. A deployment relying on curation needs the P1 join walk.
+- **Neither curation nor gates contain a tile's joins** (§4). A tile can join an unexported source,
+  and it can read a gated source's rows, because `#(authorize)` is evaluated at the entry point only.
+  Neither is a hole this design opens — the same ad-hoc query does both today, so the exposure delta
+  of a store is zero — but neither may be described as a boundary that holds app authors in. The walk
+  that would close the curation half cannot be built server-side, since a tile is indistinguishable
+  from any other query; it is a promotion check (P7) or an editor lint, not a runtime control.
 - **Ownership is inferred from content, not recorded.** §6's rule is decidable on every reload, but it
   means a human line that happens to carry only editor-known properties is treated as the editor's.
   That is the safe direction — the edit is expressible and the diff is legible — but it is an
@@ -637,15 +802,20 @@ actually is.
   apps never `extend` at author trust — but an app is a document made almost entirely of added display
   tags, so this gets a contract spec that fails loudly rather than an assumption.
 - **Raw HTML in package markdown** is parsed with `disableParsingRawHTML` unset at three call sites
-  (`security-posture.md`, gap 3). Prose is markdown. Fix that before any *shared* store, or one
-  author's prose runs in another reader's browser.
+  (`security-posture.md`, gap 3). Prose is markdown, so an app renderer inherits this — and a store
+  turns it from author-written package content into stored cross-user content. **This is scheduled,
+  not merely noted**: raw HTML is disabled in the app renderer in P0, alongside the prose renderer
+  that would otherwise introduce the exposure. A shared store must not ship before it.
 - **Things that are not cheap**: in-browser re-parsing pulls `@malloydata/malloy` and its ANTLR runtime
   into the SDK bundle; a versioned store adapter writes one version per drag unless it has a working
   area underneath; and no drag-and-drop library exists in the SDK today.
-- **Open question — app-local givens.** §4 gives them up to keep tiles restricted-compilable. If
-  authors need them, the fallback is an upstream ask to turn `MalloyTranslator.restrictedMode` from a
-  boolean into a capability set. That is a small, well-motivated change to someone else's repo, so it
-  is the alternative rather than the plan.
+- **Resolved — app-local given *values*; still open — app-local given *declarations*.** §4 settles the
+  first: an app carries `givens { … }` as starting values over the bound model's declarations, which
+  covers pinning a dashboard to a segment and, with host middleware, per-tenant views. Declarations
+  stay out, and the fallback if authors ever need them is an upstream ask to turn
+  `MalloyTranslator.restrictedMode` from a boolean into a capability set. Note the cost is higher than
+  an earlier draft assumed: `given:` is refused by the **restricted construct list**, not only by the
+  experimental flag, so lifting the flag alone would not deliver it.
 - **Open question — `## app` vs `## artifact` as the shared spelling.** §12 proposes a superset that
   accepts both. Whether the shared grammar package adopts `## app` is a conversation this document
   opens, not one it presumes.
