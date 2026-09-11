@@ -60,7 +60,6 @@ import {
    getQueryMetadataMode,
 } from "./config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
-import { authorizeReload, reloadDeniedMessage } from "./reload_authorization";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
@@ -1625,19 +1624,6 @@ app.get(
       if (reload === undefined) {
          return;
       }
-      // A reload recompiles the package and replaces the served model, so it is
-      // gated while a plain metadata GET stays open.
-      if (reload) {
-         const decision = authorizeReload(req);
-         if (!decision.authorized) {
-            res.status(403).json({
-               code: 403,
-               message: reloadDeniedMessage(decision.reason),
-            });
-            return;
-         }
-      }
-
       try {
          res.status(200).json(
             await packageController.getPackage(

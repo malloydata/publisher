@@ -45,7 +45,6 @@ import {
 import { logger, redactSensitive } from "./logger";
 import { queryConcurrency } from "./query_concurrency";
 import { normalizeQueryArray } from "./query_param_utils";
-import { authorizeReload, reloadDeniedMessage } from "./reload_authorization";
 import {
    booleanParamOr400,
    optionalBooleanParamOr400,
@@ -647,19 +646,6 @@ export function registerLegacyRoutes(
          const reload = booleanParamOr400(req, res, "reload");
          if (reload === undefined) {
             return;
-         }
-         // Gated exactly as the `/environments/...` route is. This alias reaches
-         // the same reload, so leaving it open would keep the recompile
-         // unauthenticated at a second URL.
-         if (reload) {
-            const decision = authorizeReload(req);
-            if (!decision.authorized) {
-               res.status(403).json({
-                  code: 403,
-                  message: reloadDeniedMessage(decision.reason),
-               });
-               return;
-            }
          }
          try {
             res.status(200).json(
