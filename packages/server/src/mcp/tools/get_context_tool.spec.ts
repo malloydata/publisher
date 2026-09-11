@@ -1689,6 +1689,81 @@ describe("get_context semantic retrieval", () => {
          }),
       );
 
+   it("a source-scoped call does not delete the rest of the package's vectors", async () => {
+      // The destructive shape this must never regress into. syncPackageEmbeddings
+      // reads EVERY row for the package and deletes the ones absent from the
+      // desired set it is handed, so handing it a scope-filtered entity list
+      // means "make the cache match this subset" -- and it obliges, deleting
+      // every other source's vectors. Reported against an older build as one
+      // scoped question dropping 2448 of 2603 rows and taking the package
+      // lexical for the life of the Package instance.
+      //
+      // What keeps it correct is that the scope is applied INSIDE the scan
+      // (trySemanticSearch's `sourceName`), while the sync is handed the whole
+      // package: getContext passes Array.from(byId.values()), and the filtered
+      // list is a separate `inScope` used only for the enumeration tiers. This
+      // pins that separation from the outside, where a future refactor that
+      // collapsed the two would be caught.
+      _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
+      const handler = captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => siblingSourcesModel(GATED_DOC),
+         }),
+      );
+      const target = [
+         { target_type: "measure", search_text: "total order amount" },
+      ];
+      const scope = { environment: "specs", package: "scope-safety" };
+
+      // Warm the whole package, so there are other sources' rows to lose.
+      await callUntilSemantic(handler, {
+         search_targets: target,
+         scopes: [scope],
+      });
+      const rowsFor = async () =>
+         (
+            await db.all<{ n: number }>(
+               "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE package_name = 'scope-safety'",
+            )
+         )[0].n;
+      const warmRows = await rowsFor();
+      // Both sources and both measures are cached, or there is nothing for a
+      // scoped call to delete and this test would pass vacuously.
+      expect(warmRows).toBeGreaterThan(2);
+      const sourcesCached = await db.all<{ entity_source: string }>(
+         "SELECT DISTINCT entity_source FROM entity_embeddings WHERE package_name = 'scope-safety'",
+      );
+      expect(sourcesCached.map((r) => r.entity_source).sort()).toEqual([
+         "sales",
+         "sales_secured",
+      ]);
+
+      // Now the scoped question, repeated: a fire-and-forget sync started by
+      // any one of these would have landed by the last. Retrieval modes are
+      // collected rather than asserted here, so the row check below is what
+      // fails first -- losing the siblings' vectors is the harm, and going
+      // lexical is only how it shows up on the next call.
+      const modes: unknown[] = [];
+      for (let i = 0; i < 5; i++) {
+         modes.push(
+            parse(
+               await handler({
+                  search_targets: target,
+                  scopes: [{ ...scope, source: "sales" }],
+               }),
+            ).retrieval,
+         );
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      // Nothing was deleted: the scope narrowed the SCAN, not the cache.
+      expect(await rowsFor()).toBe(warmRows);
+      // And the scoped calls stayed semantic throughout, which they cannot be
+      // if the cache was rewritten underneath them.
+      expect(modes).toEqual(Array(5).fill("semantic"));
+   });
+
    it("embeds every target in ONE provider request and scans once", async () => {
       // The claim the multi-target design rests on: N targets cost one round
       // trip, not N. embedBatch already batches and the scan cross-joins the

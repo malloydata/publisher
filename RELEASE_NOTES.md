@@ -242,6 +242,66 @@ wild was doing this.
 
 ---
 
+## [Unreleased] — a reloaded package keeps its warm semantic index, and `embeddingIndex.status` means what it says
+
+**Reloading a package no longer costs you a lexically-ranked answer.** A reload
+never dropped a package's vectors — they are keyed by package name in
+`publisher.db` — but it did throw away the server's record that they were
+current, because that record was tied to the in-memory package object a reload
+replaces. So the first `get_context` after every `reload_package`, every REST
+`?reload=true`, and every watch-mode save was ranked lexically while the server
+re-checked hashes that all still matched. If you author models with watch mode
+on, that was one degraded answer per save, including saves that changed nothing
+relevant. Now a reload whose files hash the same keeps the warm index and is
+ranked semantically on its first call; an edit still re-embeds, and still only
+the parts whose text changed.
+
+**`embeddingIndex.status` keeps its name and changes its basis, so read this if
+you poll it.** On the package resource
+(`GET /api/v0/environments/{env}/packages/{pkg}`), `ready` used to be derived
+from whether cached rows covered the package's current entity *names*. Vectors
+outlive a restart and a reload, so that reported `ready` immediately — while the
+next question was still answered lexically. Anything following the documented
+"poll until `ready` before measuring retrieval quality" could therefore measure a
+lexical run and record it as a semantic one, which is a wrong number rather than
+a slow start. `ready` now means one thing: the index is warm, so the next
+`get_context` question about this package is ranked semantically. It is decided
+by the same completed sync the search path itself gates on. It describes the
+index, not the next response — a question whose own query embedding fails still
+falls back, with `retrieval_reason: provider-error`.
+
+**What to do.** If you poll for readiness, keep polling `status` — it is now
+accurate, and it is the field to trust. If you instead inferred readiness from
+`embeddedEntities == totalEntities`, stop: those count coverage by entity name,
+so they can be equal while `status` is `indexing` (an edit that rewrote every
+doc without renaming anything leaves each entity holding its stale name vector).
+Expect `status` to read `indexing` in two places it previously read `ready`:
+just after a server restart, until the first question re-establishes the sync,
+and after a doc-only edit. Both clear on the next `get_context` question. The
+unchanged caveat still applies — a package nothing has ever queried does not warm
+on its own, so poll a package you are about to query rather than one you have not
+touched.
+
+**If your embedding provider ignores `EMBEDDING_DIMENSIONS`, the coverage counts
+now match reality.** The `dims` column records the length the provider actually
+returned, and some providers (Ollama among them) ignore the requested value.
+`embeddedRows` and `embeddedEntities` were counted against the *configured*
+value instead, so for those providers they read 0 while retrieval was reading
+those same vectors happily — and that also pinned `status` at `indexing`. Both
+now count on the same rule the sync uses to decide a row is current: the current
+model, any vector length.
+
+That makes them a count of what is cached, not a prediction of what a search can
+read — the scan also matches on vector length, which only a real question knows.
+So after a change to `EMBEDDING_DIMENSIONS` that no question has probed yet, the
+old rows are still counted until the next search discards them. `status` is
+already `indexing` throughout that window, which is why it, and not the counts,
+is the field to poll.
+
+Unrelated to the above, and unchanged: `--init` still drops the vector cache
+along with the rest of persisted storage. It resets the server root, and it
+remains the reclaim path for rows orphaned by a configuration change.
+
 ## [0.2.4] (BREAKING) — every MCP tool loses its `malloy_` prefix, and get_context answers in one shape
 
 **Every MCP tool is renamed.** The `malloy_` prefix is gone and the names are bare
