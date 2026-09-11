@@ -397,6 +397,11 @@ mcpApp.use(MCP_ENDPOINT, express.json());
 // read a response from this unauthenticated endpoint. A non-browser client (an
 // MCP agent over HTTP) sends no Origin and is unaffected either way: CORS
 // governs what a browser hands to script, not who may connect.
+// codeql[js/cors-permissive-configuration]: the permissive value this rule
+// looks for is reachable only when an operator sets MCP_CORS_ORIGINS=* on
+// purpose, which is the documented escape hatch; every other input, including
+// the default, resolves to an allowlist or to false. The line this replaced was
+// a bare `cors()` -- permissive unconditionally, and unflagged.
 mcpApp.use(MCP_ENDPOINT, cors({ origin: getMcpCorsOrigins() }));
 
 mcpApp.all(MCP_ENDPOINT, async (req, res) => {

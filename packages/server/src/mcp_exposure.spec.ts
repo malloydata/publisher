@@ -28,6 +28,11 @@ const ENV = "MCP_CORS_ORIGINS";
 /** A minimal app wired the way server.ts wires the MCP endpoint. */
 function appWithCors() {
    const app = express();
+   // codeql[js/cors-permissive-configuration]: this fixture mirrors the
+   // production wiring on purpose -- asserting the default denies, and that an
+   // allowlist is honoured, requires calling the real resolver the same way
+   // server.ts does. Rewriting it to satisfy the scanner would stop it testing
+   // the thing it exists for.
    app.use("/mcp", cors({ origin: getMcpCorsOrigins() }));
    app.post("/mcp", (_req, res) => res.status(200).json({ ok: true }));
    return app;

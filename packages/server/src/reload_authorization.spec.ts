@@ -47,6 +47,10 @@ function buildApp(): { app: express.Express; getPackage: sinon.SinonStub } {
    const getPackage = sinon.stub().resolves({ name: "pkg" });
 
    const app = express();
+   // codeql[js/missing-rate-limiting]: an in-process fixture, not a served
+   // route. It exists to assert the gate's decision, and never binds a port or
+   // reaches a package loader, so there is nothing here to rate-limit. Rate
+   // limiting on the real routes is the deployment's concern.
    app.get(
       "/api/v0/environments/:environmentName/packages/:packageName",
       (req, res) => {
