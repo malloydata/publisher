@@ -2353,6 +2353,13 @@ describe("connection integration tests", () => {
             expect(result.errorMessage).toContain(":***@");
          });
 
+         // Best-effort, not the primary pin: `installAndLoadExtension` runs
+         // before the ATTACH, so on a runner that cannot load the ducklake
+         // extension this never reaches the parse error and passes without
+         // proving anything. The deterministic pins are the stubbed
+         // `AS "evil-db"` spec below and the ducklake alias assertions in
+         // connection_federation.spec.ts.
+         //
          // `SAFE_NAME_RE` admits `-`, so a hyphenated name clears both guards
          // and then, unquoted, fails to PARSE at the hyphen -- putting the error
          // position after the DSN literal. DuckDB renders a bounded window
@@ -2397,6 +2404,41 @@ describe("connection integration tests", () => {
             },
             { timeout: 60000 },
          );
+
+         // The DSN-leak fix itself, pinned without depending on any extension:
+         // `attachedDatabases[].name` has a `pattern` in api-doc.yaml but there
+         // is no request validator, so a hyphen reaches the ATTACH. Unquoted it
+         // fails to parse after the DSN literal, which is what truncates the
+         // redactor's anchor away.
+         it("quotes a hyphenated attached-database alias in the ATTACH", async () => {
+            const sql: string[] = [];
+            sinon
+               .stub(DuckDBConnection.prototype, "runSQL")
+               .callsFake(async (query: string) => {
+                  sql.push(query);
+                  return { rows: [], totalRows: 0, runStats: {} } as never;
+               });
+
+            await testConnectionConfig({
+               name: "probe_duckdb",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "evil-db",
+                        type: "postgres",
+                        postgresConnection: {
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/db`,
+                        },
+                     },
+                  ],
+               },
+            });
+
+            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            expect(attach).toBeDefined();
+            expect(attach).toContain('AS "evil-db"');
+         });
       });
 
       // testConnectionConfig isolates the throwaway config in a fresh temp
@@ -2404,14 +2446,15 @@ describe("connection integration tests", () => {
       // in the server's cwd, and a path-traversal name is rejected outright.
       describe("connection-name path safety", () => {
          it("rejects a path-traversal connection name without touching the filesystem", async () => {
-            const traversalName = "../redact_traversal_probe";
+            // Unique per run: the finally deletes this path unconditionally,
+            // so a fixed name could remove an unrelated file that happened to
+            // sit there.
+            const probe = `redact_traversal_probe_${process.pid}_${Date.now()}`;
+            const traversalName = `../${probe}`;
             // Where a regressed guard would actually land: the throwaway config
             // is rooted at an mkdtemp directory, so a `../name` escape resolves
             // one level up into tmpdir, never into cwd.
-            const escapedPath = path.join(
-               os.tmpdir(),
-               "redact_traversal_probe.duckdb",
-            );
+            const escapedPath = path.join(os.tmpdir(), `${probe}.duckdb`);
             try {
                const result = await testConnectionConfig({
                   name: traversalName,
@@ -2447,7 +2490,7 @@ describe("connection integration tests", () => {
             // Seed a sentinel where a cwd-rooted test would open (and, with the
             // old cleanup, delete) the operator's own database. The temp-dir
             // isolation must leave it byte-for-byte untouched.
-            const name = "operator_db_probe";
+            const name = `operator_db_probe_${process.pid}_${Date.now()}`;
             const dbPath = path.join(process.cwd(), `${name}.duckdb`);
             const sentinel = "SENTINEL_DO_NOT_TOUCH";
             await fs.writeFile(dbPath, sentinel);

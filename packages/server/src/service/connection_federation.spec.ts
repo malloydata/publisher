@@ -296,6 +296,15 @@ describe("attachDuckLakeReadWrite", () => {
       expect(attach).toContain('AS "lake"');
    });
 
+   // A name the validator admits but DuckDB cannot parse unquoted; the error
+   // would otherwise land after the catalog DSN in the same statement.
+   it("quotes a hyphenated catalog alias", async () => {
+      const { conn, sql } = stubbedConnection();
+      await attachDuckLakeReadWrite(conn, "prod-lake", ducklakeConfig);
+      const attach = sql.find((s) => s.includes("ATTACH OR REPLACE"));
+      expect(attach).toContain('AS "prod-lake"');
+   });
+
    // Both write bounds are covered in isolation by their own specs, which pass
    // whether or not anything calls them -- deleting a call site is invisible
    // there. This asserts the WIRING: that a read-write attach actually reaches

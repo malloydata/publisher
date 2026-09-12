@@ -19,6 +19,7 @@ import {
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
+import { redactPgSecrets } from "../pg_helpers";
 import { runWithQueryTimeout } from "../query_timeout";
 import { testConnectionConfig } from "../service/connection";
 import {
@@ -949,7 +950,11 @@ export class ConnectionController {
          // values that arrived in this request.
          return {
             status: "failed",
-            errorMessage: `Connection test failed: ${(error as Error).message}`,
+            // Redacted for the same reason the service redacts its own copy:
+            // a driver error embeds the DSN, password included.
+            errorMessage: redactPgSecrets(
+               `Connection test failed: ${(error as Error).message}`,
+            ),
          };
       }
    }
