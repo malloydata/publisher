@@ -319,9 +319,18 @@ This is the design's load-bearing simplification, because that endpoint is alrea
   (`malloy/packages/malloy/src/lang/ast/statements/define-source.ts:71`) and `ancestorGateExprs`
   walks that chain (`packages/server/src/service/gate_registry_walk.ts:129`). Display tags on the
   *views* inside the extension touch neither: `run: locked extend { # line_chart view: v is … } ->
-  v` compiles to a struct whose own `blockNotes` still hold the gate. Verified. What the probe read is
-  the IR, not the walk's verdict, so P1 carries an integration spec that asserts the denial itself
-  (§12).
+  v` compiles to a struct whose own `blockNotes` still hold the gate. Verified.
+
+  **The verdict carries too, not only the IR.** `gateExprsForOwnAnnotations` takes the struct's own
+  `#(authorize)` when it declares one and otherwise returns `ancestorGateExprs`
+  (`packages/server/src/service/gate_classification.ts:242`), so a caller extension that declares no
+  gate is judged on its base's. That walk **fails closed** by design rather than by accident: an
+  `annotations.inherits` chain that hits the depth cap, and a registry link it cannot follow, each
+  return `["false"]` instead of `[]`, on the stated reasoning that "no gate" would be a silent allow on
+  a source whose base may be locked (`packages/server/src/service/gate_registry_walk.ts:124-150`). The
+  classifier's own `catch` returns `["false"]` as well. So the failure modes of an unreadable caller
+  extension are denials, not admissions. P1 still carries an integration spec, now as a regression
+  guard rather than as the thing that establishes the property.
 - A host that injects trusted attributes already does so on this path. Credible's router strips any
   caller-supplied value for a registered trusted name and injects the server-resolved one
   (`applyTrustedGivens`), so anti-forgery is inherited rather than rebuilt.
@@ -873,7 +882,7 @@ or needs an upstream Malloy ask. Each quick win was checked against the code rat
 | `#"` doc comments already parse with a per-note source position | `blockNotes[].at.range` on a view inside the braces (verified); `##"` own notes at model level | holds — only the prose *renderer* is missing |
 | The editor's parser already sees the shape | `Malloy.parse` yields the extension, its views with `lensRange` over their annotations, and the page's `nest:` entries (verified, `malloy/packages/malloy/src/lang/parse-tree-walkers/document-symbol-walker.ts:105`, `:160`) | holds |
 | Reorder is a one-line move | order lives in the page's `nest:` list (§6) | holds — a consequence of the primitive, not of any code |
-| The base gate carries through a caller extension | `x.annotations.blockNotes` holds the base's `#(authorize)` for `source: x is locked extend {}` (verified in the IR the walk reads, `packages/server/src/service/model.ts:2245`, `packages/server/src/service/gate_registry_walk.ts:129`) | holds in the IR; the **walk's verdict** is asserted by a P1 integration spec, not by this document |
+| The base gate carries through a caller extension | the gate is on the caller struct the walk resolves (`packages/server/src/service/model.ts:2245`), and `gateExprsForOwnAnnotations` returns the ancestor's when the extension declares none (`packages/server/src/service/gate_classification.ts:242`), with both the ancestor walk and the classifier returning `["false"]` on unreadable IR (`packages/server/src/service/gate_registry_walk.ts:124-150`) | holds through to the verdict, and fails closed; **untested** for a caller-declared extension specifically, which is what the P1 spec guards |
 
 ### Phases
 
@@ -1140,10 +1149,13 @@ code — and the notebook-versus-dashboard question becomes one tag.
   authors in. The walk that would close the curation half cannot be built server-side, since a tile
   is indistinguishable from any other query; it is a promotion check (P7) or an editor lint, not a
   runtime control.
-- **The gate-carries claim is verified in the IR, not in the verdict.** §4 shows the base's
-  `#(authorize)` on the caller struct the walk resolves; it does not show the walk denying. The P1
-  integration spec (§12) is what turns that into a guarantee, and this document should not be cited
-  as if it already had.
+- **The gate-carries claim now covers the verdict, and the walk fails closed.** §4 traces the base's
+  `#(authorize)` from the caller struct through `gateExprsForOwnAnnotations` to the returned gate
+  expression, and both the ancestor walk and the classifier return `["false"]` on unreadable IR rather
+  than an empty set. The residual risk is not that the property is unproven but that it is **untested**:
+  nothing in the suite asserts it for a *caller-declared* extension specifically, so a future change to
+  the inherits copy or the registry link could regress it without failing a test. That is what the P1
+  spec is for.
 - **Ownership is inferred from content, not recorded.** §6's rule is decidable on every reload, but it
   means a human line that happens to carry only editor-known properties is treated as the editor's.
   That is the safe direction — the edit is expressible and the diff is legible — but it is an
