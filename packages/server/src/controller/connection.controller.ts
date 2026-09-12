@@ -18,6 +18,8 @@ import {
 } from "../errors";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
+import { assertSafePackageName } from "../path_safety";
+import { redactPgSecrets } from "../pg_helpers";
 import { runWithQueryTimeout } from "../query_timeout";
 import { testConnectionConfig } from "../service/connection";
 import {
@@ -923,6 +925,19 @@ export class ConnectionController {
          );
       }
 
+      // duckdb/ducklake derive a `<name>.duckdb` filename from the name, so an
+      // unsafe name is a bad request (400), consistent with the checks above,
+      // rather than a test that runs and "fails". Only these two types touch
+      // the filesystem; other types accept any name. Empty names fall through
+      // to the service, which reports the missing-name test failure.
+      if (
+         (connectionConfig.type === "duckdb" ||
+            connectionConfig.type === "ducklake") &&
+         connectionConfig.name
+      ) {
+         assertSafePackageName(connectionConfig.name);
+      }
+
       try {
          return await testConnectionConfig(connectionConfig);
       } catch (error) {
@@ -935,7 +950,16 @@ export class ConnectionController {
          // values that arrived in this request.
          return {
             status: "failed",
-            errorMessage: `Connection test failed: ${(error as Error).message}`,
+            // Redacted for the same reason the service redacts its own copy:
+            // a driver error embeds the DSN, password included. Untested on
+            // purpose: the service resolves every failure rather than throwing,
+            // so reaching this needs a module mock, and bun shares one process
+            // across spec files -- mocking this module breaks connection.spec.ts.
+            errorMessage: redactPgSecrets(
+               `Connection test failed: ${
+                  error instanceof Error ? error.message : String(error)
+               }`,
+            ),
          };
       }
    }

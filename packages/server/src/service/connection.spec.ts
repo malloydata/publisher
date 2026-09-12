@@ -2199,6 +2199,375 @@ describe("connection integration tests", () => {
          expect(result.status).toBe("failed");
          expect(result.errorMessage).toContain("name is required");
       });
+
+      // These specs drive real attach failures offline: nothing can listen on
+      // localhost port 1 without root, so DuckDB's postgres extension fails
+      // with "Connection refused" and echoes the full connection string into
+      // the error message. The assertions prove that string reaches the
+      // caller redacted (`***`) and never in cleartext.
+      describe("errorMessage redaction", () => {
+         const leakedPassword = "supersecretpw";
+
+         // The security invariant is unconditional: the cleartext password
+         // must never appear (this is also what fails if the fix regresses).
+         // The positive redaction marker is asserted only once the DSN has
+         // actually reached the message (the attach got as far as the connect
+         // refusal, so the host is present). On a runner where a DuckDB
+         // extension can't load, the attach fails earlier with a message that
+         // carries no DSN to redact, and the marker check would then be
+         // meaningless rather than a real failure.
+         const expectRedacted = (
+            errorMessage: string | undefined,
+            marker: string,
+         ) => {
+            expect(errorMessage).not.toContain(leakedPassword);
+            if (
+               typeof errorMessage === "string" &&
+               errorMessage.includes("127.0.0.1")
+            ) {
+               expect(errorMessage).toContain(marker);
+            }
+         };
+
+         it(
+            "redacts a URL-form DSN in a failed duckdb attached-postgres test",
+            async () => {
+               const result = await testConnectionConfig({
+                  name: "redact_pg_url",
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name: "redact_pg_url_db",
+                           type: "postgres",
+                           postgresConnection: {
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/mydb`,
+                           },
+                        },
+                     ],
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expectRedacted(result.errorMessage, ":***@");
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "redacts a keyword-form connection string in a failed duckdb attached-postgres test",
+            async () => {
+               const result = await testConnectionConfig({
+                  name: "redact_pg_kw",
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name: "redact_pg_kw_db",
+                           type: "postgres",
+                           postgresConnection: {
+                              host: "127.0.0.1",
+                              port: 1,
+                              userName: "alice",
+                              password: leakedPassword,
+                              databaseName: "mydb",
+                           },
+                        },
+                     ],
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expectRedacted(result.errorMessage, "password=***");
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "redacts the catalog DSN in a failed ducklake connection test",
+            async () => {
+               const result = await testConnectionConfig({
+                  name: "redact_ducklake",
+                  type: "ducklake",
+                  ducklakeConnection: {
+                     catalog: {
+                        postgresConnection: {
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/mydb`,
+                        },
+                     },
+                     storage: {
+                        bucketUrl: "s3://redact-test-bucket",
+                        s3Connection: {
+                           accessKeyId: "testkey",
+                           secretAccessKey: "testsecret",
+                        },
+                     },
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expectRedacted(result.errorMessage, ":***@");
+            },
+            { timeout: 30000 },
+         );
+
+         // The three specs above depend on the DuckDB postgres extension
+         // loading so the attach reaches a DSN-bearing "connection refused".
+         // This one pins the redaction wiring independently: stub runSQL to
+         // throw a DSN-bearing error, so the failure carries a secret whether
+         // or not any extension is available, and assert it comes back
+         // redacted. (`expectRedacted` would pass vacuously here because a
+         // no-DSN failure trivially satisfies the not-contains invariant.)
+         it("redacts a DSN thrown before any extension loads (stubbed runSQL)", async () => {
+            const dsn = `postgres://alice:${leakedPassword}@127.0.0.1:5432/db`;
+            sinon
+               .stub(DuckDBConnection.prototype, "runSQL")
+               .rejects(
+                  new Error(
+                     `IO Error: Unable to connect to Postgres at "${dsn}"`,
+                  ),
+               );
+
+            const result = await testConnectionConfig({
+               name: "redact_stubbed",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "probe_db",
+                        type: "postgres",
+                        postgresConnection: {
+                           host: "127.0.0.1",
+                           port: 1,
+                           userName: "u",
+                           password: "p",
+                           databaseName: "d",
+                        },
+                     },
+                  ],
+               },
+            });
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).not.toContain(leakedPassword);
+            expect(result.errorMessage).toContain(":***@");
+         });
+
+         // Best-effort, not the primary pin: `installAndLoadExtension` runs
+         // before the ATTACH, so on a runner that cannot load the ducklake
+         // extension this never reaches the parse error and passes without
+         // proving anything. The deterministic pins are the stubbed
+         // `AS "evil-db"` spec below and the ducklake alias assertions in
+         // connection_federation.spec.ts.
+         //
+         // `SAFE_NAME_RE` admits `-`, so a hyphenated name clears both guards
+         // and then, unquoted, fails to PARSE at the hyphen -- putting the error
+         // position after the DSN literal. DuckDB renders a bounded window
+         // around that position, and at some DSN lengths the window opens
+         // between the scheme and the password: `//alice:supersecretpw@...`.
+         // Every `redactPgSecrets` pass anchors on `scheme://user:`, so a window
+         // that clips the scheme redacts nothing and the password comes back
+         // whole. Which lengths land in that band depends on the window width,
+         // so sweep a spread rather than one value -- a single length would go
+         // vacuously green if DuckDB ever widened it.
+         it(
+            "redacts the catalog DSN under a hyphenated ducklake name",
+            async () => {
+               const leaks: number[] = [];
+               for (let length = 8; length <= 56; length += 6) {
+                  const database = "d".repeat(length);
+                  const result = await testConnectionConfig({
+                     name: "prod-lake",
+                     type: "ducklake",
+                     ducklakeConnection: {
+                        catalog: {
+                           postgresConnection: {
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/${database}`,
+                           },
+                        },
+                        storage: {
+                           bucketUrl: "s3://redact-test-bucket",
+                           s3Connection: {
+                              accessKeyId: "testkey",
+                              secretAccessKey: "testsecret",
+                           },
+                        },
+                     },
+                  });
+
+                  expect(result.status).toBe("failed");
+                  if ((result.errorMessage ?? "").includes(leakedPassword)) {
+                     leaks.push(length);
+                  }
+               }
+               expect(leaks).toEqual([]);
+            },
+            { timeout: 60000 },
+         );
+
+         // The DSN-leak fix itself, pinned without depending on any extension:
+         // `attachedDatabases[].name` has a `pattern` in api-doc.yaml but there
+         // is no request validator, so a hyphen reaches the ATTACH. Unquoted it
+         // fails to parse after the DSN literal, which is what truncates the
+         // redactor's anchor away.
+         it("quotes a hyphenated attached-database alias in the ATTACH", async () => {
+            const sql: string[] = [];
+            sinon
+               .stub(DuckDBConnection.prototype, "runSQL")
+               .callsFake(async (query: string) => {
+                  sql.push(query);
+                  return { rows: [], totalRows: 0, runStats: {} } as never;
+               });
+
+            await testConnectionConfig({
+               name: "probe_duckdb",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "evil-db",
+                        type: "postgres",
+                        postgresConnection: {
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/db`,
+                        },
+                     },
+                  ],
+               },
+            });
+
+            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            expect(attach).toBeDefined();
+            expect(attach).toContain('AS "evil-db"');
+         });
+
+         // An absent alias must fail before the ATTACH is built: emitting
+         // `AS ""` runs a statement carrying the DSN and fails at the alias,
+         // which is the truncation that defeats redaction.
+         it("fails a nameless attached database without running the DSN", async () => {
+            const result = await testConnectionConfig({
+               name: "probe_noname",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        type: "postgres",
+                        postgresConnection: {
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/analytics_db`,
+                        },
+                     },
+                  ],
+               },
+            } as never);
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).not.toContain(leakedPassword);
+            // The load-bearing half: it must fail at the guard, not at DuckDB
+            // parsing `AS ""`. A short DSN still redacts cleanly, so the
+            // not-contains check alone would pass either way.
+            expect(result.errorMessage).toContain(
+               "Attached database name is required",
+            );
+         });
+      });
+
+      // testConnectionConfig isolates the throwaway config in a fresh temp
+      // directory, so a connection test never reads, writes, or deletes a file
+      // in the server's cwd, and a path-traversal name is rejected outright.
+      describe("connection-name path safety", () => {
+         it("rejects a path-traversal connection name without touching the filesystem", async () => {
+            // Unique per run: the finally deletes this path unconditionally,
+            // so a fixed name could remove an unrelated file that happened to
+            // sit there.
+            const probe = `redact_traversal_probe_${process.pid}_${Date.now()}`;
+            const traversalName = `../${probe}`;
+            // Where a regressed guard would actually land: the throwaway config
+            // is rooted at an mkdtemp directory, so a `../name` escape resolves
+            // one level up into tmpdir, never into cwd.
+            const escapedPath = path.join(os.tmpdir(), `${probe}.duckdb`);
+            try {
+               const result = await testConnectionConfig({
+                  name: traversalName,
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name: "probe_db",
+                           type: "postgres",
+                           postgresConnection: {
+                              connectionString:
+                                 "postgres://u:p@127.0.0.1:1/mydb",
+                           },
+                        },
+                     ],
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expect(result.errorMessage).toContain("Invalid package name");
+
+               const created = await fs
+                  .access(escapedPath)
+                  .then(() => true)
+                  .catch(() => false);
+               expect(created).toBe(false);
+            } finally {
+               await fs.rm(escapedPath, { force: true });
+            }
+         });
+
+         it("does not read, write, or delete a pre-existing <name>.duckdb in cwd", async () => {
+            // Seed a sentinel where a cwd-rooted test would open (and, with the
+            // old cleanup, delete) the operator's own database. The temp-dir
+            // isolation must leave it byte-for-byte untouched.
+            const name = `operator_db_probe_${process.pid}_${Date.now()}`;
+            const dbPath = path.join(process.cwd(), `${name}.duckdb`);
+            const sentinel = "SENTINEL_DO_NOT_TOUCH";
+            await fs.writeFile(dbPath, sentinel);
+            try {
+               const result = await testConnectionConfig({
+                  name,
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name: "probe_db",
+                           type: "postgres",
+                           postgresConnection: {
+                              connectionString:
+                                 "postgres://u:p@127.0.0.1:1/mydb",
+                           },
+                        },
+                     ],
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expect(await fs.readFile(dbPath, "utf-8")).toBe(sentinel);
+            } finally {
+               await fs.rm(dbPath, { force: true });
+            }
+         });
+
+         it("does not apply the filename guard to a non-filesystem connection type", async () => {
+            // A postgres connection never derives a filename, so a name that
+            // wouldn't pass assertSafePackageName must still be testable: the
+            // failure is a connection error, not "Invalid package name".
+            const result = await testConnectionConfig({
+               name: "my prod db",
+               type: "postgres",
+               postgresConnection: {
+                  host: "127.0.0.1",
+                  port: 1,
+                  userName: "u",
+                  password: "p",
+                  databaseName: "d",
+               },
+            });
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).not.toContain("Invalid package name");
+         });
+      });
    });
 
    describe("SQL injection prevention", () => {

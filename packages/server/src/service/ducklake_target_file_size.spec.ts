@@ -42,7 +42,7 @@ describe("applyDuckLakeTargetFileSize", () => {
       const { conn, sql } = recorder();
       await applyDuckLakeTargetFileSize(conn, "lake");
       expect(sql).toEqual([
-         "CALL lake.set_option('target_file_size', '256MB')",
+         "CALL \"lake\".set_option('target_file_size', '256MB')",
       ]);
    });
 
@@ -69,7 +69,7 @@ describe("applyDuckLakeTargetFileSize", () => {
       await applyDuckLakeTargetFileSize(rowGroupOnly.conn, "lake");
       expect(rowGroupOnly.sql).toEqual([
          "SET preserve_insertion_order=false",
-         "CALL lake.set_option('parquet_row_group_size_bytes', '32MB')",
+         "CALL \"lake\".set_option('parquet_row_group_size_bytes', '32MB')",
       ]);
 
       delete process.env.PUBLISHER_DUCKLAKE_ROW_GROUP_SIZE_BYTES;
@@ -78,7 +78,7 @@ describe("applyDuckLakeTargetFileSize", () => {
       await applyDuckLakeRowGroupBound(fileSizeOnly.conn, "lake");
       await applyDuckLakeTargetFileSize(fileSizeOnly.conn, "lake");
       expect(fileSizeOnly.sql).toEqual([
-         "CALL lake.set_option('target_file_size', '256MB')",
+         "CALL \"lake\".set_option('target_file_size', '256MB')",
       ]);
    });
 });
