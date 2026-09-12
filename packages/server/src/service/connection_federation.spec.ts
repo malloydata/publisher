@@ -293,7 +293,7 @@ describe("attachDuckLakeReadWrite", () => {
       expect(attach).toContain("OVERRIDE_DATA_PATH true");
       expect(attach).not.toContain("READ_ONLY");
       expect(attach).not.toContain("AUTOMATIC_MIGRATION");
-      expect(attach).toContain("AS lake");
+      expect(attach).toContain('AS "lake"');
    });
 
    // Both write bounds are covered in isolation by their own specs, which pass
@@ -316,13 +316,15 @@ describe("attachDuckLakeReadWrite", () => {
          expect(
             sql.some((s) =>
                s.includes(
-                  "CALL lake.set_option('parquet_row_group_size_bytes', '32MB')",
+                  "CALL \"lake\".set_option('parquet_row_group_size_bytes', '32MB')",
                ),
             ),
          ).toBe(true);
          expect(
             sql.some((s) =>
-               s.includes("CALL lake.set_option('target_file_size', '256MB')"),
+               s.includes(
+                  "CALL \"lake\".set_option('target_file_size', '256MB')",
+               ),
             ),
          ).toBe(true);
       });
