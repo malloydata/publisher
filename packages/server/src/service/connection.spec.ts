@@ -2352,6 +2352,51 @@ describe("connection integration tests", () => {
             expect(result.errorMessage).not.toContain(leakedPassword);
             expect(result.errorMessage).toContain(":***@");
          });
+
+         // `SAFE_NAME_RE` admits `-`, so a hyphenated name clears both guards
+         // and then, unquoted, fails to PARSE at the hyphen -- putting the error
+         // position after the DSN literal. DuckDB renders a bounded window
+         // around that position, and at some DSN lengths the window opens
+         // between the scheme and the password: `//alice:supersecretpw@...`.
+         // Every `redactPgSecrets` pass anchors on `scheme://user:`, so a window
+         // that clips the scheme redacts nothing and the password comes back
+         // whole. Which lengths land in that band depends on the window width,
+         // so sweep a spread rather than one value -- a single length would go
+         // vacuously green if DuckDB ever widened it.
+         it(
+            "redacts the catalog DSN under a hyphenated ducklake name",
+            async () => {
+               const leaks: number[] = [];
+               for (let length = 8; length <= 56; length += 6) {
+                  const database = "d".repeat(length);
+                  const result = await testConnectionConfig({
+                     name: "prod-lake",
+                     type: "ducklake",
+                     ducklakeConnection: {
+                        catalog: {
+                           postgresConnection: {
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/${database}`,
+                           },
+                        },
+                        storage: {
+                           bucketUrl: "s3://redact-test-bucket",
+                           s3Connection: {
+                              accessKeyId: "testkey",
+                              secretAccessKey: "testsecret",
+                           },
+                        },
+                     },
+                  });
+
+                  expect(result.status).toBe("failed");
+                  if ((result.errorMessage ?? "").includes(leakedPassword)) {
+                     leaks.push(length);
+                  }
+               }
+               expect(leaks).toEqual([]);
+            },
+            { timeout: 60000 },
+         );
       });
 
       // testConnectionConfig isolates the throwaway config in a fresh temp
@@ -2360,9 +2405,12 @@ describe("connection integration tests", () => {
       describe("connection-name path safety", () => {
          it("rejects a path-traversal connection name without touching the filesystem", async () => {
             const traversalName = "../redact_traversal_probe";
+            // Where a regressed guard would actually land: the throwaway config
+            // is rooted at an mkdtemp directory, so a `../name` escape resolves
+            // one level up into tmpdir, never into cwd.
             const escapedPath = path.join(
-               process.cwd(),
-               `${traversalName}.duckdb`,
+               os.tmpdir(),
+               "redact_traversal_probe.duckdb",
             );
             try {
                const result = await testConnectionConfig({
