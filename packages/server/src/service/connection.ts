@@ -628,7 +628,7 @@ async function attachPostgres(
    const config = attachedDb.postgresConnection;
    const attachString: string = buildPgConnectionString(config);
 
-   const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(attachedDb.name, "duckdb")} (TYPE postgres, READ_ONLY);`;
+   const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(attachedDb.name as string, "duckdb")} (TYPE postgres, READ_ONLY);`;
    await connection.runSQL(attachCommand);
    logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
 }
