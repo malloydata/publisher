@@ -2439,6 +2439,35 @@ describe("connection integration tests", () => {
             expect(attach).toBeDefined();
             expect(attach).toContain('AS "evil-db"');
          });
+
+         // An absent alias must fail before the ATTACH is built: emitting
+         // `AS ""` runs a statement carrying the DSN and fails at the alias,
+         // which is the truncation that defeats redaction.
+         it("fails a nameless attached database without running the DSN", async () => {
+            const result = await testConnectionConfig({
+               name: "probe_noname",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        type: "postgres",
+                        postgresConnection: {
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/analytics_db`,
+                        },
+                     },
+                  ],
+               },
+            } as never);
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).not.toContain(leakedPassword);
+            // The load-bearing half: it must fail at the guard, not at DuckDB
+            // parsing `AS ""`. A short DSN still redacts cleanly, so the
+            // not-contains check alone would pass either way.
+            expect(result.errorMessage).toContain(
+               "Attached database name is required",
+            );
+         });
       });
 
       // testConnectionConfig isolates the throwaway config in a fresh temp

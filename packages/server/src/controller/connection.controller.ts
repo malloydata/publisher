@@ -951,9 +951,14 @@ export class ConnectionController {
          return {
             status: "failed",
             // Redacted for the same reason the service redacts its own copy:
-            // a driver error embeds the DSN, password included.
+            // a driver error embeds the DSN, password included. Untested on
+            // purpose: the service resolves every failure rather than throwing,
+            // so reaching this needs a module mock, and bun shares one process
+            // across spec files -- mocking this module breaks connection.spec.ts.
             errorMessage: redactPgSecrets(
-               `Connection test failed: ${(error as Error).message}`,
+               `Connection test failed: ${
+                  error instanceof Error ? error.message : String(error)
+               }`,
             ),
          };
       }

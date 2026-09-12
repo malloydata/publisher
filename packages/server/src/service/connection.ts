@@ -622,13 +622,19 @@ async function attachPostgres(
          `PostgreSQL connection configuration missing for: ${attachedDb.name}`,
       );
    }
+   // Before any SQL is built: an empty alias emits `AS ""`, which DuckDB
+   // rejects at a position after the DSN literal, and that error truncates the
+   // redactor's anchor away.
+   if (!attachedDb.name) {
+      throw new Error("Attached database name is required");
+   }
 
    await installAndLoadExtension(connection, "postgres");
 
    const config = attachedDb.postgresConnection;
    const attachString: string = buildPgConnectionString(config);
 
-   const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(attachedDb.name || "", "duckdb")} (TYPE postgres, READ_ONLY);`;
+   const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(attachedDb.name, "duckdb")} (TYPE postgres, READ_ONLY);`;
    await connection.runSQL(attachCommand);
    logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
 }
