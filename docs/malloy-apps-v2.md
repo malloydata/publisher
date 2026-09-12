@@ -692,10 +692,29 @@ v1 `Dashboard` already draws `tiles=[…]`; no merged result is needed because n
 renderer for a grid.
 
 The two strategies read the same text and the same tags, so nothing an author writes for one is
-invisible to the other. The remaining rules hold across both:
+invisible to the other. They do not, however, return the same *shape* for every tile, and the runtime
+has to normalize before it can treat them as interchangeable:
+
+> **An aggregate-only view is a record when nested and an array when run alone.** Verified by running
+> both paths over one extension: a view with no `group_by` comes back from the page query as
+> `{"rev":55,"n":3}` and from `run: app -> kpi` as `[{"rev":55,"n":3}]`. A view *with* a `group_by` is
+> an array both ways, whether it returns one row or many — so the trigger is the absent `group_by`,
+> not the row count.
+
+That is precisely the KPI tile — the aggregate-only `# big_value` card that leads most dashboards,
+including the shipped storefront's first tile. It is not a data disagreement: the values are identical
+and no tile is wrong. But it means a card re-rendered after an edit can reach the renderer in a
+different shape than the same card drew in page mode, which is exactly the moment this design's live
+loop exists for. **The page result is the authoritative shape**, and the per-tile path unwraps its
+single record before handing it to the renderer. A runtime that skips that normalization will render
+KPI cards correctly on load and differently on the first edit, which presents as an editor bug rather
+than as the result-shape mismatch it is.
+
+The remaining rules hold across both:
 
 - Each tile runs with only the givens it references. In page mode that is the union — the same rule a
-  `tiles=[…]` dashboard applies to its control row today.
+  `tiles=[…]` dashboard applies to its control row today. A given-driven filter reaches both paths
+  identically (verified: the same `where: amt > $MINAMT` tile agrees row-for-row across strategies).
 - **A page query fails as a whole**, where a per-tile run fails one card. That is a real difference,
   and `dashboards.md` lists "a broken tile shows its error in place instead of blanking the page" as a
   property tiles buy. The viewer keeps it: when the page query errors it falls back to per-tile runs,
@@ -1104,6 +1123,12 @@ code — and the notebook-versus-dashboard question becomes one tag.
   experience, at the cost of a second round of requests on error. It is the only time a reader runs
   tiles individually, and it must stay that way or the single-query reading path quietly degrades to
   the N-query one.
+- **The two execution strategies disagree on shape for aggregate-only tiles** (§7). A view with no
+  `group_by` is a record inside the page result and a one-row array on its own — so the KPI card, the
+  most common tile of that shape, reaches the renderer differently depending on which path ran it. The
+  page shape is authoritative and the per-tile path unwraps. The reason this earns a risk entry rather
+  than a footnote: it renders correctly on load and changes on the first edit, so it will present as an
+  editor bug rather than as a result-shape mismatch.
 - **`.malloynb` does not convert, permanently.** Not a phase limitation: the per-cell `extendModel`
   chain has no representation in a single document and no phase adds one (§13). An app is also not a
   notebook in VS Code — it opens as a model. Both belong in `choosing-a-surface.md` as stated
