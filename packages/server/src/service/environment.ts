@@ -31,6 +31,10 @@ import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
+import {
+   mergeConnectionUpdate,
+   toPublicConnections,
+} from "./connection_public_view";
 import { recordManifestBind } from "../materialization_metrics";
 import {
    assertSafeEnvironmentPath,
@@ -415,9 +419,26 @@ export class Environment {
             logger.info(
                `Updating ${payloadConnections.length} connections for environment ${this.environmentName}`,
             );
+            // This list replaces the stored one wholesale, and responses no
+            // longer carry credentials, so an entry echoed back from a read
+            // arrives without one. Merge each entry against what is stored, the
+            // same "an entry that names a stored one and carries no config
+            // keeps it" rule storageDestinations already documents. Without
+            // this, adding or deleting ANY connection through the app strips
+            // the credentials of every other connection in the environment,
+            // because the app sends the whole list back. An entry with no
+            // stored counterpart is new and passes through as sent.
+            const mergedConnections = payloadConnections.map((incoming) => {
+               const stored = this.apiConnections.find(
+                  (existing) => existing.name === incoming.name,
+               );
+               return stored
+                  ? mergeConnectionUpdate(stored, incoming)
+                  : incoming;
+            });
             const isUpdateConnectionRequest = true;
             const nextMalloyConfig = buildEnvironmentMalloyConfig(
-               payloadConnections,
+               mergedConnections,
                this.environmentPath,
                isUpdateConnectionRequest,
             );
@@ -2965,7 +2986,10 @@ export class Environment {
    public async serialize(): Promise<ApiEnvironment> {
       return {
          ...this.metadata,
-         connections: this.listApiConnections(),
+         // Credentials stay server-side, the same rule storageDestinations
+         // below already followed. listApiConnections() is the internal view
+         // and still carries them, because compiling and connecting need them.
+         connections: toPublicConnections(this.listApiConnections()),
          // Name and type only. This is what the status endpoint reports, so it
          // is how an operator or orchestrator confirms which destinations a
          // worker picked up; the configs behind them stay server-side.
