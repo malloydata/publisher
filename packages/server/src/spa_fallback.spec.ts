@@ -69,26 +69,13 @@ describe("classifySpaFallback", () => {
          });
       });
 
-      it("still claims the OLD `pages` segment, which the app redirects", () => {
-         // Kept deliberately, and load-bearing for the deprecation: an old
-         // bookmark has to REACH the app, because the app is what rewrites it to
-         // `data-apps/<file>`. Divert it here and the old link goes to the static
-         // route instead, which 404s, or worse answers 200 with a different
-         // document for a package that ships a `public/pages/` directory.
-         //
-         // Asserted on the old spelling on purpose: the cases above were
-         // rewritten from `pages` to `data-apps` rather than supplemented, so
-         // without this nothing pins old-URL behaviour in either direction.
-         // Delete alongside the redirect in ModelPage.tsx, not before it.
-         expect(classify("/examples/storefront/pages/index.html")).toEqual({
-            kind: "spa",
-         });
-         // No asset extension, so this reaches the app by the ordinary route
-         // rather than via SPA_OWNED_SEGMENTS. Both shapes have to arrive for
-         // the redirect to cover every old link, so both are asserted.
-         expect(classify("/examples/storefront/pages/report")).toEqual({
-            kind: "spa",
-         });
+      it("no longer claims the retired `pages` segment", () => {
+         // The pre-0.0.242 alias for `data-apps`. With the redirect gone from
+         // the app, a `pages/<file>` path is a plain static path again, so a
+         // package that ships `public/pages/index.html` gets its file back.
+         expect(
+            classify("/examples/storefront/pages/index.html").kind,
+         ).not.toBe("spa");
       });
 
       it("keeps a route whose environment or package name contains a dot", () => {

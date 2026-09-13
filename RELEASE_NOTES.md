@@ -40,6 +40,15 @@ and keeps the reader's edits across it, while a URL it did not write (a drill la
 button, a pasted link) still resets the controls as before. The limitation was documented as
 unreachable when no server populated starting values; both dashboards and notebooks have since.
 
+## [Unreleased] — the `pages/` URL alias is gone
+
+Data apps were renamed from `pages/<file>` to `data-apps/<file>` in 0.0.242, and that release
+promised the old spelling would stop redirecting one release later. It kept redirecting for
+twenty-five. It stops now: the Console no longer rewrites `/<env>/<pkg>/pages/<file>` to the new URL,
+and the server no longer treats `pages` as an app route. A bookmark on the old spelling 404s, and
+a package that ships its own `public/pages/` directory has those files back at
+`/<env>/<pkg>/pages/<file>`, which the alias had been shadowing.
+
 ## [Unreleased] — the Workbook editor is gone; storage is now `DocumentStorage`
 
 **Removed: the Workbook editor.** `Workbook`, `WorkbookList`, `WorkbookManager`, and
