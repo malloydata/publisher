@@ -3500,6 +3500,16 @@ export class Model {
          (this.givens ?? [])
             .map((given) => given.name)
             .filter((name): name is string => name !== undefined),
+         // The EFFECTIVE gate per source, inheritance already resolved by the
+         // extraction, so a suggest over a gated source learns which givens its
+         // gate reads.
+         new Map(
+            (this.sources ?? []).flatMap((source) =>
+               source.name
+                  ? [[source.name, source.authorize ?? []] as const]
+                  : [],
+            ),
+         ),
       );
    }
 

@@ -31,6 +31,17 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — dropdowns over a gated source load their options
+
+A `control=select` whose `suggest` read a source gated by `#(authorize)` (or scoped by a
+source-level `where:` on a given) resolved to "Options unavailable": the option query carried no
+givens, so the gate denied it. The server now names, per suggest, the givens its source is gated or
+scoped by (`GivenSuggest.givenNames`, also on a named `suggest { query=… }`'s own references), and
+the SDK sends the current values of exactly those with the option query and keys its cache on them.
+No other applied filter is sent, so the option list still does not depend on the rest of the page.
+`useSuggestOptions` takes the applied values as a new trailing optional argument; a caller that
+omits it, or a server too old to name the givens, behaves as before.
+
 ## [Unreleased] — a control with a starting value can be cleared
 
 A given seeded by `# artifact { givens { … } }` (or a notebook's `## givens { … }`) could not be
