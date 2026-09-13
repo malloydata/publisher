@@ -156,6 +156,25 @@ export function useGivensState({
    // mount reads as an echo.
    const lastReported = useRef<Record<string, string> | null>(null);
 
+   // The report BEFORE `lastReported`, kept only until the newer one is seen
+   // coming back.
+   //
+   // A report does not reach `params` in the same tick: the host navigates, the
+   // router commits, and `params` arrives a render or two later. Anything that
+   // re-renders this hook in between — a cell finishing, the host's callback
+   // changing identity with its location — sees the URL the report has not
+   // replaced yet. That URL is STALE, not new, and the echo test below matched
+   // only the newest report, so it read as an external push: the anchor moved,
+   // the edits were discarded, and `initial` put the value the reader had just
+   // cleared straight back into the control, and into the URL after it.
+   //
+   // Narrow by construction: it holds one report, only while that report is in
+   // flight, and is dropped the moment the newer one is observed. The cost is
+   // that an external push landing in that window whose values happen to equal
+   // the report being replaced is taken for the echo — the same values we were
+   // just showing, arriving in the few milliseconds before our own URL lands.
+   const priorReported = useRef<Record<string, string> | null>(null);
+
    // The URL that defines the current starting point. This is `params` EXCEPT
    // when `params` is our own report arriving back through the host, which is
    // not a new starting point and must not be treated as one.
@@ -182,17 +201,17 @@ export function useGivensState({
       documentKey: string | undefined;
       params: Record<string, string> | undefined;
    }>({ documentKey, params });
+   const echoes = (reported: Record<string, string> | null) =>
+      reported !== null &&
+      sameDeclaredParams(params ?? {}, reported, declaredTypes);
+   // The newest report has arrived, so the one it replaced is no longer in
+   // flight and stops counting as an echo.
+   if (echoes(lastReported.current)) priorReported.current = null;
    if (
       anchor.current.documentKey !== documentKey ||
       (!sameParams(params ?? {}, anchor.current.params ?? {}) &&
-         !(
-            lastReported.current !== null &&
-            sameDeclaredParams(
-               params ?? {},
-               lastReported.current,
-               declaredTypes,
-            )
-         ))
+         !echoes(lastReported.current) &&
+         !echoes(priorReported.current))
    ) {
       anchor.current = { documentKey, params };
    }
@@ -334,14 +353,29 @@ export function useGivensState({
       [applied, declaredTypes],
    );
    if (lastReported.current === null) lastReported.current = appliedParams;
-   // `lastReported` tracks the applied values whether or not a host is
-   // listening, because the echo test above reads it: a host that feeds the URL
-   // back in without having registered `onParamsChange` (a test, a host that
-   // writes the URL from `applied` directly) still echoes.
+   // Recorded only when the report is actually DELIVERED. A surface withholds
+   // the callback while it is still loading — `Notebook` passes undefined until
+   // the document has arrived, so that a report made in the window where it
+   // does not yet know which givens exist cannot tell the host to clear
+   // parameters belonging to the notebook then arriving — and a value recorded
+   // in that window is remembered as reported without the host ever hearing it.
+   //
+   // That is not merely a missed report, because the echo test above reads this
+   // same record: the host's URL still holds the old value, the record says the
+   // new one, so the next `params` fails the echo test, the anchor moves, and
+   // the edits are discarded as stale. Clearing a control while the cells were
+   // re-running put the cleared value straight back in the box.
+   //
+   // The cost is the case this guard was briefly dropped for: a host that
+   // writes the URL from `applied` directly without registering the callback
+   // never echoes, so a given with a starting value is not clearable there.
+   // Both Console pages register it, as does any host using `useGivenUrlParams`.
    useEffect(() => {
+      if (!onParamsChange) return;
       if (sameParams(lastReported.current ?? {}, appliedParams)) return;
+      priorReported.current = lastReported.current;
       lastReported.current = appliedParams;
-      onParamsChange?.(appliedParams);
+      onParamsChange(appliedParams);
    }, [appliedParams, onParamsChange]);
 
    const setGiven = useCallback(
