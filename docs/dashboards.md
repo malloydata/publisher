@@ -29,9 +29,11 @@ pipeline starts from its own query's source, and there is no way to combine two,
 unrelated sources has to be tiles.
 
 The format is the one [Malloyyo](https://github.com/malloydata/malloyyo) uses, so a model repo with
-a `dashboards/` directory largely works unchanged in either. One property differs: Publisher spells
-the grid width `# dashboard { columns=N }` rather than `dashboard_columns=N`, and reports the old
-name as a property it does not read rather than laying out at the default in silence. See
+a `dashboards/` directory largely works unchanged in either. The one grammar difference: Publisher
+spells the grid width `# dashboard { columns=N }` rather than `dashboard_columns=N`, and reports the
+old name as a property it does not read rather than laying out at the default in silence. One form
+Malloyyo accepts, `# artifact` on a `view:`, is not served here; the package warning says so and
+names the two spellings that are. The dated list of everything else that differs is
 [Where Publisher diverges](malloyyo-dashboards-design.md#where-publisher-diverges).
 
 ## Where the pieces live
@@ -151,8 +153,11 @@ a package's dashboards is what makes them read as one product rather than as sev
 diverge.** On a `# dashboard` query a top-level `aggregate:` measure _is_ the card, so do not nest a
 `# big_value` view to get one: nested there it renders embedded, and each measure becomes a
 full-width bar inside a single tile instead of a row of cards. A dashboard has no top-level
-aggregates — a tile is one whole result — so there a `# big_value` view IS the KPI row, and it
-renders as one. `dashboards/overview.malloy` is that tile, at `# colspan=12`.
+aggregates — a tile is one whole result — so there a view of nothing but measures IS the KPI row: a
+tile whose result is one row of measures renders as big-value cards on its own, the way Malloyyo
+draws the same tile, and `# big_value` on the view says the same thing explicitly.
+`dashboards/overview.malloy` is that tile, at `# colspan=12`. To show such a row as a table instead,
+tag the view `# table`.
 
 Either way, a card's label is one line that ellipses rather than wrapping, so a narrow card truncates
 it silently: "Orders / customer" reads as "ORDERS / CUSTOMEI" at 1 column of 6.
@@ -196,15 +201,15 @@ chart: 1992px bare, against 227px for the same query under a `# dashboard` tag.
 
 ### Tag reference
 
-| Construct                                                | What it does                                                                                                                   |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `## artifact { title= tiles=[…] givens{…} autorun= }`     | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
-| `# artifact { title= givens{…} autorun= }` on a `query:`  | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
-| `# dashboard { columns=N }`                              | Grid width, beside the artifact tag on either form. One spelling                                                                            |
+| Construct                                                                           | What it does                                                                                                                                |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `## artifact { title= tiles=[…] givens{…} autorun= }`                               | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
+| `# artifact { title= givens{…} autorun= }` on a `query:`                            | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
+| `# dashboard { columns=N }`                                                         | Grid width, beside the artifact tag on either form. One spelling                                                                            |
 | `# colspan=K`, `# break`, `# label="…"`, `# subtitle="…"`, `# borderless` on a view | Per-tile presentation, read the same whichever way the view is consumed. See [Laying out the grid](#laying-out-the-grid)                    |
-| `# label="…"` on an aggregate                             | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
-| `# drill { to=[…] given=… }` on a source `dimension:`     | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
-| A `dashboards/*.malloy` with **no** artifact tag          | A shared include, skipped by discovery                                                                                                      |
+| `# label="…"` on an aggregate                                                       | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
+| `# drill { to=[…] given=… }` on a source `dimension:`                               | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
+| A `dashboards/*.malloy` with **no** artifact tag                                    | A shared include, skipped by discovery                                                                                                      |
 
 Anything else inside the artifact tag is a package warning naming it, because the reader looks
 properties up by name and would otherwise serve the page as though the line were not written.
@@ -240,13 +245,14 @@ given: MIN_SALE :: filter<number> is f''
 given: SINCE :: date is @2023-01-01
 ```
 
-| Tag                                             | Renders as                                         |
-| ----------------------------------------------- | -------------------------------------------------- |
-| `control=select` + `suggest { … }`              | A dropdown whose options are queried from the data |
-| `control=multiselect` + `suggest { … }`         | The same, taking several values                    |
-| `range_min=` / `range_max=` on `filter<number>` | A slider instead of a text box                     |
-| none, on a `date` or `timestamp`                | A date picker                                      |
-| none, on a `filter<string>`                     | A text box taking Malloy filter syntax             |
+| Tag                                              | Renders as                                                                                 |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `control=select` + `suggest { … }`               | A dropdown whose options are queried from the data                                         |
+| `control=multiselect` + `suggest { … }`          | The same, taking several values                                                            |
+| `range_min=` / `range_max=` on `filter<number>`  | A two-handled range slider (`[lo to hi]`, or `>= lo` with the upper handle at the ceiling) |
+| none, on a `filter<date>` or `filter<timestamp>` | A time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days  |
+| none, on a `date` or `timestamp`                 | A date picker                                                                              |
+| none, on a `filter<string>`                      | A text box taking Malloy filter syntax                                                     |
 
 A `suggest` reads either a `source=` and `dimension=` pair, or a named `query=` when the option list
 needs its own ordering or filtering. **The source or query has to resolve in the dashboard file**,
