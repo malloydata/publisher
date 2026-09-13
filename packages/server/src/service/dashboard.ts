@@ -1367,11 +1367,10 @@ export function lintUndiscoveredDashboard(
          `Tag ${describeParseFailure(message)}, so the whole tag is discarded ` +
          `and this file is treated as a shared include rather than a dashboard.`,
    );
-   const findings = Array.from(new Set(messages), (message) => ({
-      subject,
-      message,
-      severity: "error" as const,
-   }));
+   const findings: DashboardLintFinding[] = Array.from(
+      new Set(messages),
+      (message) => ({ subject, message, severity: "error" as const }),
+   );
    if (findings.length > 0) return findings;
 
    // A tag that PARSES but describes no dashboard vanishes just as completely,
@@ -1386,6 +1385,46 @@ export function lintUndiscoveredDashboard(
          message:
             `${describeTilelessModelArtifact(modelArtifact)}, so this file ` +
             `produces no dashboard. ${NAME_THE_TILES}`,
+         severity: "error" as const,
+      });
+   }
+   findings.push(...lintArtifactOnView(facts));
+   return findings;
+}
+
+/**
+ * Report an `# artifact` tag on a source VIEW, which Publisher does not read.
+ *
+ * Malloyyo accepts the tag on a view of a source the dashboard file extends
+ * (its "other forms"), so a repo written for it can carry one. Publisher reads
+ * `# artifact` off a `query:` and `## artifact` at model level only; the view
+ * tag is never asked for, so the file falls through to the shared-include path
+ * and vanishes with nothing said. That is the same silent outcome the parse
+ * check above exists to prevent, for a tag that parses perfectly.
+ *
+ * Reachable only from a file that produced no dashboard: a file that did has a
+ * served declaration, and Malloyyo too lets the model-level tag win over a view
+ * tag in the same file. `viewAnnotations` spans every source in the compile
+ * closure, imported ones included, so a shared include that imports a source
+ * whose view carries the tag is told as well. That is still true of the include
+ * (it produces no dashboard), and one finding per importing file beats none.
+ */
+function lintArtifactOnView(
+   facts: DashboardModelFacts,
+): DashboardLintFinding[] {
+   const subject = dashboardSlug(facts.modelPath);
+   const findings: DashboardLintFinding[] = [];
+   for (const [view, annotations] of facts.viewAnnotations) {
+      if (!motlyTag(annotations)?.tag("artifact")) continue;
+      const viewName = view.split("->").at(-1)?.trim() ?? view;
+      findings.push({
+         subject,
+         message:
+            `'# artifact' on view '${view}' is not read: Publisher reads the ` +
+            `tag on a 'query:' or at model level, so this file produces no ` +
+            `dashboard. Either name the view as a tile, ` +
+            `## artifact { tiles=["${view}"] }, or tag a query that runs it, ` +
+            `query: ${viewName} is ${view}.`,
          severity: "error" as const,
       });
    }
