@@ -31,6 +31,15 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a control with a starting value can be cleared
+
+A given seeded by `# artifact { givens { … } }` (or a notebook's `## givens { … }`) could not be
+cleared: the × dropped it from the URL, the host fed that URL back in, and the control snapped
+back to the starting value. The hook now recognises its own report arriving back through the host
+and keeps the reader's edits across it, while a URL it did not write (a drill landing, the Back
+button, a pasted link) still resets the controls as before. The limitation was documented as
+unreachable when no server populated starting values; both dashboards and notebooks have since.
+
 ## [Unreleased] — `ApiErrorDisplay` is exported; two internal names are not
 
 `@malloy-publisher/sdk` now exports `ApiErrorDisplay` and its props type. `Dashboard`,
