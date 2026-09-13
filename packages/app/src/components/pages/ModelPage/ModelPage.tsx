@@ -11,7 +11,7 @@ import {
 import Box from "@mui/material/Box";
 import Link from "@mui/material/Link";
 import Typography from "@mui/material/Typography";
-import { Navigate, useLocation, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
 import DashboardPage from "../DashboardPage/DashboardPage";
 import NotebookPage from "../NotebookPage/NotebookPage";
@@ -19,7 +19,6 @@ import NotebookPage from "../NotebookPage/NotebookPage";
 function ModelPage() {
    const params = useParams();
    const modelPath = params["*"];
-   const { search, hash } = useLocation();
    const { server } = useServer();
    if (!params.environmentName) {
       return (
@@ -33,46 +32,6 @@ function ModelPage() {
          <div>
             <h2>Missing package name</h2>
          </div>
-      );
-   }
-
-   // A data app used to be addressed as `pages/<file>`, which this release
-   // renames to `data-apps/<file>`. Redirect instead of letting the old form
-   // fail, so a bookmark or a shared link self-corrects in the address bar, and
-   // `replace` so the dead URL does not stay in history. The query string and
-   // fragment come along so a rewrite never silently discards state the caller
-   // supplied, matching the server's asset redirect, which rebuilds them through
-   // `withRequestQuery` (server.ts) rather than in the classifier. Note this does
-   // NOT deliver an `embed_token`: that belongs on the standalone URL,
-   // which <DataAppViewer> builds itself via packageFileUrl and which carries no
-   // query string, so an embedded page reads its token from that URL rather than
-   // from this one.
-   //
-   // A model or notebook that legitimately lives in a `pages/` directory is
-   // excluded on the same test the data-apps branch below uses, since the old
-   // data-app URL never named one.
-   //
-   // DEPRECATED. Remove one release after the release that ships this rename,
-   // together with `pages` in SPA_OWNED_SEGMENTS (packages/server/src/
-   // spa_fallback.ts), which is what lets this URL reach the app at all. The
-   // newest tag when this was written was v0.0.240.
-   if (
-      modelPath?.startsWith("pages/") &&
-      !modelPath.endsWith(".malloy") &&
-      !modelPath.endsWith(".malloynb")
-   ) {
-      // Both names are encoded, matching the "Back to" link below. Today it can
-      // only be a no-op, because a name that reaches a loaded package has passed
-      // assertSafePackageName and holds nothing worth encoding. But these two come
-      // from the URL rather than from anything validated, so a typed name need not
-      // be safe, and the encoding keeps a stray character in one segment from
-      // reading as structure in the path. The rest is NOT encoded: it carries the
-      // remaining slashes, which have to stay separators.
-      const renamed = `data-apps/${modelPath.slice("pages/".length)}`;
-      const env = encodeURIComponent(params.environmentName);
-      const pkg = encodeURIComponent(params.packageName);
-      return (
-         <Navigate to={`/${env}/${pkg}/${renamed}${search}${hash}`} replace />
       );
    }
 
