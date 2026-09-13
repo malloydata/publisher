@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-export { AnalyzePackageButton } from "./AnalyzePackageButton";
 export { useRouterClickHandler, type NavigationClick } from "./click_helper";
 export * from "./Dashboard";
 export * from "./DataAppViewer";
@@ -19,5 +18,4 @@ export * from "./QueryResult";
 export * from "./RenderedResult";
 export { ServerProvider, useServer } from "./ServerProvider";
 export type { ServerContextValue, ServerProviderProps } from "./ServerProvider";
-export * from "./Workbook";
-export type { WorkbookStorage } from "./Workbook";
+export * from "./DocumentStorage";
