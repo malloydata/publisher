@@ -447,3 +447,90 @@ describe("useGivensState: swapping documents", () => {
       expect(entries(result.current.applied)).toEqual({});
    });
 });
+
+describe("useGivensState: clearing a given that has a starting value", () => {
+   // The limitation this hook used to document. A clear dropped the name from
+   // the report, the host removed it from the URL and fed that URL back in, and
+   // the changed `params` re-keyed the edits away: `initial` recomputed from the
+   // starting values and the control snapped back to what was just cleared.
+   it("stays cleared when the host echoes the URL back", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      expect(entries(host.current.applied)).toEqual({ REGION: "West" });
+
+      act(() => host.current.setGiven("REGION", null));
+      host.settle();
+      expect(entries(host.current.applied)).toEqual({});
+      expect(entries(host.current.draft)).toEqual({});
+      expect(host.url).toEqual({});
+   });
+
+   it("clears one starting value while keeping another", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West", MIN_AMOUNT: "5" },
+      });
+      act(() => host.current.setGiven("REGION", null));
+      host.settle();
+      expect(entries(host.current.applied)).toEqual({ MIN_AMOUNT: 5 });
+      expect(host.url).toEqual({ MIN_AMOUNT: "5" });
+   });
+
+   it("still takes a URL the host did NOT get from us, such as a drill landing", () => {
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               startingValues: { REGION: "West" },
+               params: props.params,
+               documentKey: "overview",
+               autorun: true,
+            }),
+         { initialProps: { params: {} } },
+      );
+      act(() => result.current.setGiven("REGION", null));
+      expect(entries(result.current.applied)).toEqual({});
+
+      // Not an echo: nothing this hook reported said East.
+      rerender({ params: { REGION: "East" } });
+      expect(entries(result.current.applied)).toEqual({ REGION: "East" });
+   });
+
+   it("treats a host that keeps unrelated parameters beside ours as an echo", () => {
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               startingValues: { REGION: "West" },
+               params: props.params,
+               documentKey: "overview",
+               autorun: true,
+            }),
+         { initialProps: { params: { tab: "sales" } } },
+      );
+      act(() => result.current.setGiven("REGION", null));
+      // The host writes our (empty) report but keeps its own `tab`.
+      rerender({ params: { tab: "sales" } });
+      expect(entries(result.current.applied)).toEqual({});
+      // And the same with the report carrying a value.
+      act(() => result.current.setGiven("REGION", "East"));
+      rerender({ params: { tab: "sales", REGION: "East" } });
+      expect(entries(result.current.applied)).toEqual({ REGION: "East" });
+   });
+
+   it("Reset after a clear restores the starting value and runs once", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      act(() => host.current.setGiven("REGION", null));
+      host.settle();
+      const writes = host.urlWrites.length;
+      act(() => host.current.reset());
+      host.settle();
+      expect(entries(host.current.applied)).toEqual({ REGION: "West" });
+      expect(host.urlWrites.length).toBe(writes + 1);
+   });
+});
