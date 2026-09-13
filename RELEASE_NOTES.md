@@ -42,6 +42,15 @@ No other applied filter is sent, so the option list still does not depend on the
 `useSuggestOptions` takes the applied values as a new trailing optional argument; a caller that
 omits it, or a server too old to name the givens, behaves as before.
 
+## [Unreleased] — `ApiErrorDisplay` is exported; two internal names are not
+
+`@malloy-publisher/sdk` now exports `ApiErrorDisplay` and its props type. `Dashboard`,
+`DashboardTile` and `Notebook` all present request failures through it, and the SDK README has
+shown it in examples for some time, but a host could not import it to match. Two names that leaked
+through the barrels without being documented are no longer exported: `SourceExplorerComponent`
+(the inner half of `SourcesExplorer`, which is the component to use) and `makeDimensionKey` (an
+internal of `useDimensionalFilterRangeData`; `getDimensionKey` stays).
+
 ## [Unreleased] — the `pages/` URL alias is gone
 
 Data apps were renamed from `pages/<file>` to `data-apps/<file>` in 0.0.242, and that release
