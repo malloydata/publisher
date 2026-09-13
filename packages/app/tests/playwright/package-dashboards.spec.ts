@@ -1139,7 +1139,7 @@ test.describe("package-dashboards", () => {
          // Normalized against the page's own grid: its leftmost left and its
          // rightmost right. Heights are deliberately not compared, since a tile
          // is capped and a card is not, and pinning them would make this a test
-         // about TILE_HEIGHT rather than about the colspans.
+         // about TILE_MAX_HEIGHT rather than about the colspans.
          const origin = Math.min(...boxes.map((b) => b.left));
          const span = Math.max(...boxes.map((b) => b.right)) - origin;
          const rows = [...new Set(boxes.map((b) => b.top))].sort(
