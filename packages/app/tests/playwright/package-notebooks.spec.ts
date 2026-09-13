@@ -28,7 +28,7 @@ test.describe("package-notebooks", () => {
       ).toBeVisible();
    });
 
-   test("opening a notebook routes into the workbook view", async ({
+   test("opening a notebook routes into the notebook view", async ({
       page,
    }) => {
       await gotoHome(page);
@@ -37,22 +37,20 @@ test.describe("package-notebooks", () => {
 
       await page.getByText("storefront.malloynb", { exact: true }).click();
 
-      // Router uses a workbook-scoped path; assert we navigated off the package route.
+      // The notebook opens on its own route; assert we navigated off the package route.
       await expect(page).not.toHaveURL(
          new RegExp(`/${DEFAULT_ENV}/${PACKAGES.storefront}/?$`),
       );
       await expect(page).toHaveURL(/storefront\.malloynb/);
    });
 
-   test("workbook renders authored content from the notebook", async ({
-      page,
-   }) => {
+   test("the notebook view renders authored content", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
       await page.getByText("storefront.malloynb", { exact: true }).click();
       // The storefront.malloynb renders an authored H1 ("Storefront — a guided
-      // tour"): presence confirms the Workbook mounted and executed the notebook.
+      // tour"): presence confirms the Notebook mounted and executed the cells.
       await expect(
          page.getByRole("heading", {
             name: "Storefront — a guided tour",
