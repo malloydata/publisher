@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   BrowserDocumentStorage,
+   DocumentStorage,
+   DocumentStorageProvider,
    Loading,
-   WorkbookStorage,
-   WorkbookStorageProvider,
 } from "@malloy-publisher/sdk";
 import { ServerProvider } from "@malloy-publisher/sdk/client";
 import "@malloy-publisher/sdk/styles.css";
@@ -45,16 +46,18 @@ const EnvironmentPage = React.lazy(
 const RouteError = React.lazy(
    () => import("./components/common/RouteError/RouteError"),
 );
-const WorkbookPage = React.lazy(
-   () => import("./components/pages/WorkbookPage/WorkbookPage"),
-);
 const ThemeEditorPage = React.lazy(
    () => import("./components/pages/ThemeEditorPage/ThemeEditorPage"),
 );
 
+/**
+ * @param documentStorage Where documents authored in the Console are kept. A
+ *    host with a store of its own passes an implementation; left out, the
+ *    Console keeps them in this browser's localStorage.
+ */
 export const createMalloyRouter = (
    basePath: string = "/",
-   workbookStorage: WorkbookStorage,
+   documentStorage: DocumentStorage = new BrowserDocumentStorage(),
    headerProps?: HeaderProps,
 ) => {
    return createBrowserRouter([
@@ -62,13 +65,13 @@ export const createMalloyRouter = (
          path: basePath,
          element: (
             <ServerProvider>
-               <WorkbookStorageProvider workbookStorage={workbookStorage}>
+               <DocumentStorageProvider documentStorage={documentStorage}>
                   <PublisherMuiThemeProvider>
                      <Suspense fallback={<Loading />}>
                         <MainPage headerProps={headerProps} />
                      </Suspense>
                   </PublisherMuiThemeProvider>
-               </WorkbookStorageProvider>
+               </DocumentStorageProvider>
             </ServerProvider>
          ),
          errorElement: <RouteError />,
@@ -107,10 +110,6 @@ export const createMalloyRouter = (
                path: ":environmentName/:packageName/*",
                element: <ModelPage />,
             },
-            {
-               path: ":environmentName/:packageName/workbook/:workspace/:workbookPath",
-               element: <WorkbookPage />,
-            },
          ],
       },
    ]);
@@ -119,17 +118,18 @@ export const createMalloyRouter = (
 export interface MalloyPublisherAppProps {
    basePath?: string;
    headerProps: HeaderProps;
-   workbookStorage: WorkbookStorage;
+   /** See {@link createMalloyRouter}. Defaults to this browser's localStorage. */
+   documentStorage?: DocumentStorage;
 }
 
 export const MalloyPublisherApp = ({
    basePath = "/",
-   workbookStorage,
+   documentStorage,
    headerProps,
 }: MalloyPublisherAppProps) => {
    const router = useMemo(
-      () => createMalloyRouter(basePath, workbookStorage, headerProps),
-      [basePath, workbookStorage, headerProps],
+      () => createMalloyRouter(basePath, documentStorage, headerProps),
+      [basePath, documentStorage, headerProps],
    );
 
    return <RouterProvider router={router} />;
