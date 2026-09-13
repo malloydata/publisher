@@ -26,7 +26,6 @@ export {
 export {
    useDimensionalFilterRangeData,
    getDimensionKey,
-   makeDimensionKey,
    type DimensionalFilterRangeDataResult,
    type DimensionSpec,
    type DimensionValue,

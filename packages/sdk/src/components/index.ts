@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 export { AnalyzePackageButton } from "./AnalyzePackageButton";
+// Exported because Dashboard, DashboardTile and Notebook all present request
+// failures through it; a host composing those needs the same presentation for
+// its own.
+export { ApiErrorDisplay, type ApiErrorDisplayProps } from "./ApiErrorDisplay";
 export { useRouterClickHandler, type NavigationClick } from "./click_helper";
 export * from "./Dashboard";
 export * from "./DataAppViewer";
