@@ -188,10 +188,14 @@ test.describe("package-dashboards", () => {
       // `control=select` becomes a combobox, labelled by `# label=` rather than
       // by the given's name.
       await expect(page.getByRole("combobox", { name: "Brand" })).toBeVisible();
-      // `range_min`/`range_max` become a slider, and no control appears for the
-      // givens this dashboard's query does not reference.
+      // `range_min`/`range_max` become a two-handled range slider, and no
+      // control appears for the givens this dashboard's query does not
+      // reference.
       await expect(
-         page.getByRole("slider", { name: "Minimum amount" }),
+         page.getByRole("slider", { name: "Minimum amount from" }),
+      ).toBeVisible();
+      await expect(
+         page.getByRole("slider", { name: "Minimum amount to" }),
       ).toBeVisible();
       await expect(page.getByRole("combobox", { name: "Region" })).toHaveCount(
          0,

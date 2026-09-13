@@ -11,6 +11,13 @@ import {
    filterInnerType,
    isFilterType,
    isPlainFilterList,
+   decodeBetween,
+   decodeDayRange,
+   decodeTimePreset,
+   encodeBetween,
+   encodeDayRange,
+   encodeTimePreset,
+   TIME_PRESETS,
 } from "./filterValue";
 
 /**
@@ -360,5 +367,110 @@ describe("isPlainFilterList", () => {
       // This is what the picker WOULD do, and why it must not.
       expect(encodeFilterList(chips)).toBe("\\-Nike");
       expect(isPlainFilterList("-Nike")).toBe(false);
+   });
+});
+
+describe("encodeBetween / decodeBetween, the two-handled slider's filter", () => {
+   it("writes Malloy's closed range, the spelling Malloyyo writes too", () => {
+      expect(encodeBetween(10, 20)).toBe("[10 to 20]");
+      expect(decodeBetween("[10 to 20]")).toEqual([10, 20]);
+   });
+
+   it("reads whitespace and decimals the grammar accepts", () => {
+      expect(decodeBetween("  [0.5 to 1e3]  ")).toEqual([0.5, 1000]);
+   });
+
+   it("refuses a half-open range, which no thumb can show", () => {
+      expect(decodeBetween("(10 to 20]")).toBeUndefined();
+      expect(decodeBetween("[10 to 20)")).toBeUndefined();
+   });
+
+   it("refuses a negation, a threshold and the empty filter", () => {
+      expect(decodeBetween("not [10 to 20]")).toBeUndefined();
+      expect(decodeBetween(">= 5")).toBeUndefined();
+      expect(decodeBetween("")).toBeUndefined();
+   });
+
+   it("refuses an inverted range rather than drawing it backwards", () => {
+      expect(decodeBetween("[20 to 10]")).toBeUndefined();
+   });
+});
+
+describe("time presets", () => {
+   it("spell each preset in the filter grammar Malloyyo uses", () => {
+      expect(TIME_PRESETS.map((p) => encodeTimePreset(p.key))).toEqual([
+         "today",
+         "7 days",
+         "30 days",
+         "90 days",
+         "12 months",
+      ]);
+   });
+
+   it("round-trip every preset", () => {
+      for (const preset of TIME_PRESETS) {
+         expect(decodeTimePreset(encodeTimePreset(preset.key)!)).toBe(
+            preset.key,
+         );
+      }
+   });
+
+   it("match on the clause, not the spelling", () => {
+      expect(decodeTimePreset("7 day")).toBe("7d");
+      expect(decodeTimePreset("  12   months ")).toBe("12m");
+   });
+
+   it("are not fooled by a window of another size, or a negation", () => {
+      expect(decodeTimePreset("8 days")).toBeUndefined();
+      expect(decodeTimePreset("not today")).toBeUndefined();
+      expect(decodeTimePreset("last 7 days")).toBeUndefined();
+      expect(decodeTimePreset("")).toBeUndefined();
+   });
+
+   it("have no key that is not encodable", () => {
+      expect(encodeTimePreset("nope")).toBeUndefined();
+   });
+});
+
+describe("encodeDayRange / decodeDayRange, inclusive days over a half-open grammar", () => {
+   it("encodes the day after the last picked day, since `to` excludes its end", () => {
+      expect(encodeDayRange("2024-01-01", "2024-01-31")).toBe(
+         "2024-01-01 to 2024-02-01",
+      );
+      // A single picked day is that whole day.
+      expect(encodeDayRange("2024-02-28", "2024-02-28")).toBe(
+         "2024-02-28 to 2024-02-29",
+      );
+   });
+
+   it("decodes back to the days the filter actually selects", () => {
+      expect(decodeDayRange("2024-01-01 to 2024-02-01")).toEqual({
+         firstDay: "2024-01-01",
+         lastDay: "2024-01-31",
+      });
+   });
+
+   it("round-trips through a leap day and a year end", () => {
+      for (const [a, b] of [
+         ["2024-02-28", "2024-02-29"],
+         ["2023-12-25", "2024-01-05"],
+      ]) {
+         expect(decodeDayRange(encodeDayRange(a, b))).toEqual({
+            firstDay: a,
+            lastDay: b,
+         });
+      }
+   });
+
+   it("refuses an end that is not after the start", () => {
+      expect(decodeDayRange("2024-01-10 to 2024-01-10")).toBeUndefined();
+      expect(decodeDayRange("2024-01-10 to 2024-01-01")).toBeUndefined();
+   });
+
+   it("refuses ends two day pickers cannot show", () => {
+      expect(decodeDayRange("2024-01-01 to now")).toBeUndefined();
+      expect(decodeDayRange("2024-01-01 12:00 to 2024-01-02")).toBeUndefined();
+      expect(decodeDayRange("not 2024-01-01 to 2024-02-01")).toBeUndefined();
+      expect(decodeDayRange("7 days")).toBeUndefined();
    });
 });
