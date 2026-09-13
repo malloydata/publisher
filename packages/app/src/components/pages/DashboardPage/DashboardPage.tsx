@@ -109,7 +109,7 @@ export default function DashboardPage({
          // percent-encodes the same name when it publishes a dashboard's own
          // URL. The environment and package names are validated on the way in
          // and hold nothing worth encoding, but they are encoded on the same
-         // principle as the `pages/` redirect in ModelPage.
+         // principle: a name from the URL is not something validated.
          const env = encodeURIComponent(environmentName);
          const pkg = encodeURIComponent(packageName);
          const slug = encodeURIComponent(target.dashboard);
