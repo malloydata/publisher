@@ -231,6 +231,8 @@ export default function Notebook({
       notebookPath,
       declaredGivens,
       versionId,
+      // So a suggest over a gated or scoped source carries the givens it needs.
+      { values: applied, declaredTypes },
    );
 
    // `to=self` filters in place. Which givens a tag may set, and setting one

@@ -45,6 +45,10 @@ import {
    type GivenControlKind,
    type GivenSuggestSpec,
    type MalloyGivenApi,
+   collectGivenRefs,
+   suggestGivenLookup,
+   suggestGivenNames,
+   type SuggestGivenLookup,
 } from "./given";
 import {
    docCommentText,
@@ -451,6 +455,12 @@ export interface DashboardModelFacts {
     * drills come from the sources it imports.
     */
    drills: DashboardDrill[];
+   /**
+    * Which givens a `suggest` needs in its request: the source's own `where:`
+    * and effective `#(authorize)` references, or a named query's plus its
+    * source's, narrowed to what this file can bind. See `suggestGivenLookup`.
+    */
+   suggestGivens: SuggestGivenLookup;
 }
 
 /** A `# drill { to=[…] given=… }` tag on a source dimension. */
@@ -494,27 +504,6 @@ export function normalizeTileExpression(tile: string): string {
 }
 
 /**
- * Collect the given names referenced anywhere in a slice of Malloy IR.
- *
- * A view's `TurtleDef` carries no `givenUsage` summary the way a `Query` does,
- * but its pipeline holds the `{ node: 'given', refName }` reference nodes
- * themselves, so a structural walk answers the same question exactly. Used to
- * resolve a composite tile without compiling the tile expression.
- */
-function collectGivenRefs(value: unknown, into: Set<string>): void {
-   if (Array.isArray(value)) {
-      for (const item of value) collectGivenRefs(item, into);
-      return;
-   }
-   if (value === null || typeof value !== "object") return;
-   const node = value as Record<string, unknown>;
-   if (node.node === "given" && typeof node.refName === "string") {
-      into.add(node.refName);
-   }
-   for (const child of Object.values(node)) collectGivenRefs(child, into);
-}
-
-/**
  * Read the dashboard-relevant facts off a compiled model.
  *
  * The two interesting fields are Malloy's own: `ModelDef.givens` is the
@@ -535,6 +524,13 @@ export function readDashboardModelFacts(
    modelPath: string,
    modelDef: ModelDef,
    surfacedGivenNames: string[],
+   /**
+    * The EFFECTIVE `#(authorize)` expressions per source, from the model's
+    * extracted sources, so a suggest over a gated source knows which givens
+    * its gate reads. Absent means no source is gated, which is what a caller
+    * without the extraction (a test) gets.
+    */
+   authorizeBySource?: ReadonlyMap<string, readonly string[]>,
 ): DashboardModelFacts {
    const registry = modelDef.givens ?? {};
    const surfaced = new Set(surfacedGivenNames);
@@ -633,6 +629,11 @@ export function readDashboardModelFacts(
       viewAnnotations,
       sourceFields,
       drills,
+      suggestGivens: suggestGivenLookup(
+         modelDef,
+         (source) => authorizeBySource?.get(source),
+         surfaced,
+      ),
    };
 }
 
@@ -774,8 +775,9 @@ function referencedTileGivens(
  */
 function buildGivenSpecs(
    names: readonly string[],
-   declarations: Map<string, DashboardGivenDeclaration>,
+   facts: DashboardModelFacts,
 ): DashboardGivenSpec[] {
+   const declarations = facts.givens;
    const specs: DashboardGivenSpec[] = [];
    for (const name of new Set(names)) {
       const declaration = declarations.get(name);
@@ -783,12 +785,24 @@ function buildGivenSpecs(
       // so it is not bindable and gets no control. `lintDashboard` names that
       // case for both dashboard forms.
       if (!declaration) continue;
-      specs.push(givenSpec(declaration));
+      specs.push(givenSpec(declaration, facts));
    }
    return specs;
 }
 
-function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
+function givenSpec(
+   declaration: DashboardGivenDeclaration,
+   facts: DashboardModelFacts,
+): DashboardGivenSpec {
+   const control = readGivenControlSpec(declaration.annotations);
+   // Which givens the suggest query must carry to run: a gated or scoped
+   // source's, so the option list loads without depending on the rest of the
+   // page's filters. The lint reports a suggest naming an unknown target, so an
+   // unresolvable one is simply left without names here.
+   if (control.suggest) {
+      const names = suggestGivenNames(control.suggest, facts.suggestGivens);
+      if (names) control.suggest.givenNames = names;
+   }
    return {
       name: declaration.name,
       type: declaration.type,
@@ -823,7 +837,7 @@ function givenSpec(declaration: DashboardGivenDeclaration): DashboardGivenSpec {
       annotations: declaration.annotations.filter((text) =>
          /^##?\(/.test(text),
       ),
-      ...readGivenControlSpec(declaration.annotations),
+      ...control,
    };
 }
 
@@ -916,7 +930,7 @@ export function buildDashboardManifest(
             tiles.some((tile) => tile.givenNames === undefined)
                ? Array.from(facts.givens.keys())
                : tiles.flatMap((tile) => tile.givenNames ?? []),
-            facts.givens,
+            facts,
          ),
       };
    }
@@ -937,7 +951,7 @@ export function buildDashboardManifest(
          dashboardColumns: artifact.dashboardColumns,
          startingGivens: artifact.givens,
          autorun: artifact.autorun,
-         givens: buildGivenSpecs(query.givens, facts.givens),
+         givens: buildGivenSpecs(query.givens, facts),
       };
    }
 

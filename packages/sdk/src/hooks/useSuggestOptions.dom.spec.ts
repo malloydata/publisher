@@ -53,6 +53,39 @@ const renderSuggest = (versionId?: string) =>
       { wrapper: serverWrapper },
    );
 
+/** A suggest whose source is gated by TENANT; the page also filters by REGION. */
+const GATED: Given[] = [
+   {
+      name: "BRAND",
+      control: "select",
+      suggest: { source: "orders", dimension: "brand", givenNames: ["TENANT"] },
+   },
+];
+const APPLIED = {
+   values: new Map<string, string>([
+      ["TENANT", "acme"],
+      ["REGION", "West"],
+   ]),
+   declaredTypes: new Map<string, string>([
+      ["TENANT", "string"],
+      ["REGION", "filter<string>"],
+      ["BRAND", "filter<string>"],
+   ]),
+};
+const renderGated = (applied = APPLIED) =>
+   renderHook(
+      () =>
+         useSuggestOptions(
+            "env",
+            "pkg",
+            "dashboards/ops.malloy",
+            GATED,
+            undefined,
+            applied,
+         ),
+      { wrapper: serverWrapper },
+   );
+
 beforeEach(() => {
    clearCache();
    executeQueryModel.mockClear();
@@ -73,9 +106,10 @@ it("sends and keys nothing when no version was given", async () => {
    expect(executeQueryModel.mock.calls[0][3].versionId).toBeUndefined();
    // `useQueries` goes through the context client rather than
    // `useQueryWithApiError`, so this key carries no trailing server.
+   // The trailing null is the givens slot: none carried, none keyed.
    expect(cacheKeys("givenSuggest")[0]).toBe(
       '["givenSuggest","env","pkg",null,"dashboards/ops.malloy","REGION",' +
-         'null,"orders","region"]',
+         'null,"orders","region",null]',
    );
 });
 
@@ -88,4 +122,29 @@ it("keeps two versions' option lists apart", async () => {
 
    await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
    expect(new Set(cacheKeys("givenSuggest")).size).toBe(2);
+});
+
+it("sends only the givens the suggest names, and keys on them", async () => {
+   renderGated();
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+   const request = executeQueryModel.mock.calls[0][3] as { givens?: unknown };
+   // TENANT rides along; REGION, applied on the page, does not: the option
+   // list must not depend on the page's other filters.
+   expect(request.givens).toEqual({ TENANT: "acme" });
+   expect(cacheKeys("givenSuggest")[0]).toContain('{\\"TENANT\\":\\"acme\\"}');
+});
+
+it("sends no givens when the suggest names none, or the caller offers none", async () => {
+   renderSuggest();
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+   expect(
+      (executeQueryModel.mock.calls[0][3] as { givens?: unknown }).givens,
+   ).toBeUndefined();
+   executeQueryModel.mockClear();
+   clearCache();
+   renderGated({ values: new Map(), declaredTypes: APPLIED.declaredTypes });
+   await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+   expect(
+      (executeQueryModel.mock.calls[0][3] as { givens?: unknown }).givens,
+   ).toBeUndefined();
 });
