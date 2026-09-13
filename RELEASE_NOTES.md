@@ -42,6 +42,15 @@ No other applied filter is sent, so the option list still does not depend on the
 `useSuggestOptions` takes the applied values as a new trailing optional argument; a caller that
 omits it, or a server too old to name the givens, behaves as before.
 
+## [Unreleased] — a control with a starting value can be cleared
+
+A given seeded by `# artifact { givens { … } }` (or a notebook's `## givens { … }`) could not be
+cleared: the × dropped it from the URL, the host fed that URL back in, and the control snapped
+back to the starting value. The hook now recognises its own report arriving back through the host
+and keeps the reader's edits across it, while a URL it did not write (a drill landing, the Back
+button, a pasted link) still resets the controls as before. The limitation was documented as
+unreachable when no server populated starting values; both dashboards and notebooks have since.
+
 ## [Unreleased] — `ApiErrorDisplay` is exported; two internal names are not
 
 `@malloy-publisher/sdk` now exports `ApiErrorDisplay` and its props type. `Dashboard`,

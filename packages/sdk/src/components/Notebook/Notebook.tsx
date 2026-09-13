@@ -14,7 +14,7 @@ import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
-import { encodeDrillValue, type DrillNavigation } from "../drill";
+import { useDrillSelf, type DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
@@ -235,81 +235,13 @@ export default function Notebook({
       { values: applied, declaredTypes },
    );
 
-   // The declared names, indexed case-insensitively, so a drill tag resolves
-   // whichever way the two were spelled.
-   //
-   // Neither convention can be assumed. `# drill` defaults the given name to
-   // the DIMENSION's name, which is conventionally lower_snake, while givens
-   // are conventionally SHOUTED (both in-repo examples declare `REGION` and
-   // `MIN_AMOUNT`). An exact match therefore failed for the common case, and
-   // upper-casing the dimension name, which is what this did first, only moved
-   // the failure onto models that spell their givens in lower case. Folding
-   // case resolves both instead of picking a side.
-   const givenNamesByFold = useMemo(() => {
-      const byFold = new Map<string, string>();
-      for (const name of declaredTypes.keys()) {
-         // First declaration wins, so a model with `REGION` and `region` keeps
-         // the one it declared first rather than silently flipping.
-         if (!byFold.has(name.toLowerCase()))
-            byFold.set(name.toLowerCase(), name);
-      }
-      return byFold;
-   }, [declaredTypes]);
-
-   /** The declared given a drill tag's name refers to, or undefined. */
-   const resolveGiven = useCallback(
-      (given: string) =>
-         declaredTypes.has(given)
-            ? given
-            : givenNamesByFold.get(given.toLowerCase()),
-      [declaredTypes, givenNamesByFold],
-   );
-
-   // `to=self` filters in place, which only works for a given this notebook
-   // actually declares: sending one it cannot bind would fail every cell. The
-   // mismatch is reported to the author rather than issued: same rule, same
-   // wording, as the dashboard viewer.
-   // Asked before a cell is painted as drillable, so the affordance matches what
-   // a click can actually do. The refusal below still stands as a backstop for a
-   // caller that does not ask.
-   const canDrillSelf = useCallback(
-      (given: string) => resolveGiven(given) !== undefined,
-      [resolveGiven],
-   );
-
-   const onDrillSelf = useCallback(
-      (given: string, rawValue: unknown) => {
-         const declared = resolveGiven(given);
-         if (declared === undefined) {
-            console.warn(
-               `# drill { to=self } tried to set '${given}', which ` +
-                  `'${notebookPath}' does not declare as a given. Name the ` +
-                  `given with 'given=' on the drill tag.`,
-            );
-            return;
-         }
-         // Encoded against the declared type of the given being set, which is
-         // knowable here and is not knowable at the click. Set under the name
-         // the MODEL declares, not the one the tag spelled, so the value goes
-         // into the URL and the request under the one name the server knows.
-         const declaredType = declaredTypes.get(declared);
-         const value = encodeDrillValue(rawValue, declaredType);
-         if (value === undefined) {
-            // Say so. Returning in silence left a whole column painted as
-            // clickable while every click did nothing, and a `given=` pointing
-            // at a type the clicked value cannot become is an authoring
-            // mistake the author has no other way to see. The sibling refusal
-            // in `resolveDrill` warns for the same reason.
-            console.warn(
-               `Drill declined: ${JSON.stringify(rawValue)} cannot be a value for given "${declared}"` +
-                  (declaredType ? ` of type ${declaredType}` : ""),
-            );
-            return;
-         }
-         setGiven(declared, value);
-      },
-      [declaredTypes, notebookPath, resolveGiven, setGiven],
-   );
+   // `to=self` filters in place. Which givens a tag may set, and setting one
+   // from a clicked cell, is the same on both surfaces, so it is shared.
+   const { canSelf: canDrillSelf, onSelf: onDrillSelf } = useDrillSelf({
+      declaredTypes,
+      setGiven,
+      documentName: notebookPath,
+   });
 
    /**
     * The `givens` query param for the notebook-cell GET: the same map the
