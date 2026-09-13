@@ -2,6 +2,7 @@
 name: malloy-dashboards
 description: "Build or modify a Malloy Publisher dashboard, a tagged .malloy file in a package's dashboards/ directory, with auto-rendered filter controls, a grid layout, and # drill click-through. Use when the user asks for a dashboard, a filterable operational view, or drill-through between views, and no code is wanted."
 ---
+
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
@@ -238,8 +239,10 @@ Then the traps:
 - **A KPI row is authored differently on the two forms.** On a `# dashboard` query a top-level
   `aggregate:` measure IS the card, and nesting a `# big_value` view to get one renders it embedded,
   as full-width bars in a single tile. A dashboard has no top-level aggregates, since a tile is one
-  whole result, so there a `# big_value` view IS the KPI row and renders as one. This is the only
-  place the two forms need different Malloy for the same picture.
+  whole result, so there a view of only measures IS the KPI row: a tile that comes back as one row
+  of measures renders as big-value cards on its own (`# big_value` on the view says so explicitly;
+  `# table` opts out). This is the only place the two forms need different Malloy for the same
+  picture.
 - **No `# size=fill` on a dashboard tile.** Inside a dashboard it measures against the container the
   whole grid was handed, not the tile, so it yields a chart thousands of pixels tall. Tiles already
   size to their colspan.
@@ -317,8 +320,10 @@ complaint is a **compile** diagnostic on a compile that still succeeds, not a pa
 step 6 will not show it. Pick by which reader you care about.
 
 `control=select`/`multiselect` with a `suggest` renders a picker filled from the data;
-`range_min`/`range_max` on a `filter<number>` renders a slider; a `date` or `timestamp` renders a
-date picker. Which controls appear is per-dashboard, decided by which givens the query references.
+`range_min`/`range_max` on a `filter<number>` renders a two-handled range slider; a `filter<date>` or
+`filter<timestamp>` renders a time-range control with preset windows and a custom day range; a bare
+`date` or `timestamp` renders a date picker. Which controls appear is per-dashboard, decided by which
+givens the query references.
 `skill:malloy-modeling` and `docs/givens.md` cover givens themselves.
 
 Two per-dashboard options on the artifact tag:
@@ -397,10 +402,10 @@ To tell them apart, run the dashboard's own query, `{"queryName": "<the manifest
 `renderLogs` on the response. Like `warnings`, the key is absent when there is nothing to say.
 Single-query dashboards have no `tiles` in their manifest, so there is no tile query to run:
 
-| render log | what it means |
-|---|---|
-| `Unknown render tag 'colspan'` | the renderer never saw a `# dashboard` tag. It does **not** say which of the two causes; check both |
-| `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count |
+| render log                                         | what it means                                                                                       |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `Unknown render tag 'colspan'`                     | the renderer never saw a `# dashboard` tag. It does **not** say which of the two causes; check both |
+| `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count                                                                |
 
 Neither reaches the package warnings, so step 6 will not show either. A **wrapped `##` tag** is the
 one failure in this family that does: the file is absent from the listing and the package warnings
@@ -447,8 +452,8 @@ is `declared` by default; a package with no `explores` list withholds nothing. W
 `suggest` source has to be queryable as well as resolvable, so it needs to be on the list too.
 
 **A clean reload is not proof the tags are right.** The checks above read names and resolve them; the
-separate warning for a tag that does not *parse* is syntax only: it carries no
-position and says nothing about a name that does not resolve. It catches *a* malformed tag; its
+separate warning for a tag that does not _parse_ is syntax only: it carries no
+position and says nothing about a name that does not resolve. It catches _a_ malformed tag; its
 absence is not evidence there are none. That is why the last step is opening the page, not reading
 the warning list.
 

@@ -40,6 +40,29 @@ and the server no longer treats `pages` as an app route. A bookmark on the old s
 a package that ships its own `public/pages/` directory has those files back at
 `/<env>/<pkg>/pages/<file>`, which the alias had been shadowing.
 
+## [Unreleased] — dashboards written for Malloyyo look the same here
+
+Three behaviors that differed on identical Malloy between Publisher and
+[Malloyyo](https://github.com/malloydata/malloyyo), found by checking Publisher's port against
+Malloyyo 0.2.44:
+
+- **A composite tile that is one row of measures renders as KPI cards**, the way Malloyyo splices the
+  same tile into its grid, rather than as a one-row table. `# big_value` on the view still says so
+  explicitly; any render tag on the view, `# table` included, is respected as written.
+- **A `filter<date>` or `filter<timestamp>` given gets a time-range control**: Today, the last 7, 30
+  or 90 days, the last 12 months, or a custom range of days. The presets are spelled in Malloy's
+  filter grammar (`7 days`, `12 months`), the same values Malloyyo writes, so a URL from either host
+  reads on the other. A custom range is inclusive on both ends as picked; a single day keeps the date
+  picker, and any other filter keeps the text box, as written.
+- **The `range_min`/`range_max` slider has two handles** and writes an inclusive range, `[10 to 20]`.
+  With the upper handle at the ceiling it writes the lower bound alone, `>= 10`, which is what the
+  one-handled slider wrote, so existing links and starting values still place the handles.
+
+And one thing that was silent now speaks: an `# artifact` tag on a source **view**, which Malloyyo
+serves and Publisher never read, made the file a shared include with nothing reported. It is now a
+package warning that names the two forms Publisher does read. The dated comparison lives in
+[docs/malloyyo-dashboards-design.md](docs/malloyyo-dashboards-design.md#where-publisher-diverges).
+
 ## [0.2.7] — bound how far the Snowflake driver reads ahead of a slow consumer
 
 The Docker image now installs a small shim in front of the ADBC Snowflake driver

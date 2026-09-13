@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Box, Paper, Typography } from "@mui/material";
+import { useMemo } from "react";
 import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
@@ -13,6 +14,7 @@ import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import { useServer } from "../ServerProvider";
+import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
 
 export interface DashboardTileProps {
    environmentName: string;
@@ -124,6 +126,18 @@ export function DashboardTile({
       ...CHART_RESULT_QUERY_OPTIONS,
    });
 
+   // A composite tile that is one row of measures draws as KPI cards, the way
+   // Malloyyo splices the same tile into its grid, rather than as a one-row
+   // table. Composite only: the single-query form is one result the renderer
+   // lays out from the query's own tags, and its aggregates are already tiles.
+   // Memoized on the result string so a large result is not re-parsed on every
+   // render of the tile around it.
+   const result = useMemo(() => {
+      const raw = data?.data.result;
+      if (raw === undefined || tile === undefined) return raw;
+      return promoteMeasureRowToKpis(raw);
+   }, [data, tile]);
+
    return (
       <Paper
          elevation={0}
@@ -179,7 +193,7 @@ export function DashboardTile({
          {!isSuccess && !isError && <Loading text="Running…" />}
          {isSuccess && (
             <ResultContainer
-               result={data.data.result}
+               result={result}
                maxHeight={height}
                maxResultSize={maxResultSize}
                renderLogs={data.data.renderLogs}

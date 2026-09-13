@@ -1607,6 +1607,51 @@ describe("service/dashboard silent-vanish lint", () => {
       );
    });
 
+   // Malloyyo's view form. The tag parses, sits on a view Publisher never asks
+   // about, and the file becomes a shared include with nothing said: the least
+   // debuggable outcome for a repo that renders fine on the other host.
+   it("explains an artifact tag on a view, which Publisher does not read", () => {
+      expect(
+         messages(
+            facts({
+               viewAnnotations: new Map([
+                  ["orders -> by_month", ['# artifact { title="Sales" }\n']],
+               ]),
+            }),
+         ),
+      ).toEqual([
+         expect.stringContaining(
+            "'# artifact' on view 'orders -> by_month' is not read",
+         ),
+      ]);
+   });
+
+   it("names the tile form and the query form as the two fixes", () => {
+      const [message] = messages(
+         facts({
+            viewAnnotations: new Map([
+               ["orders -> by_month", ["# artifact\n"]],
+            ]),
+         }),
+      );
+      expect(message).toContain('tiles=["orders -> by_month"]');
+      expect(message).toContain("query: by_month is orders -> by_month");
+   });
+
+   // The control: the ordinary per-tile layout tags on a view are exactly what
+   // a shared include carries, and must not read as a lost dashboard.
+   it("stays silent for a view carrying only layout tags", () => {
+      expect(
+         messages(
+            facts({
+               viewAnnotations: new Map([
+                  ["orders -> by_month", ['# colspan=3 label="Sales"\n']],
+               ]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+
    // MOTLY's grammar stops at the SPACE in `@2024-03-01 10:00`, which is what
    // this covers. It does NOT stop at the ISO `T` form, which parses fine and is
    // handled in `readStartingGivens`; an earlier version of this comment claimed
