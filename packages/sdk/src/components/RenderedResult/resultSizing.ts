@@ -12,10 +12,17 @@
  *
  * The renderer exposes no size API — `MalloyViz` offers `onReady` and
  * `getMetadata()` and nothing that reports a height — so a result that sizes
- * itself has to be measured. What CAN come from the public metadata is which
- * kind of result it is: `getMetadata().getRootField().renderAs()`. Keying off
- * that instead of the rendered class names is what keeps the DOM contact down
- * to one bounded walk.
+ * itself has to be measured. What CAN come from the public metadata is whether
+ * it is worth measuring, from two sources, in this order:
+ *
+ * 1. The root's render plugin declares `sizingStrategy: "fill" | "fixed"`,
+ *    which is the renderer's own answer to exactly this question. Read it
+ *    through `getPluginsForField(getRootField().key)`.
+ * 2. Where no plugin claims the root — a table, a `# dashboard` grid — fall
+ *    back to `renderAs()` and the lists below.
+ *
+ * Keying off either instead of the rendered class names is what keeps the DOM
+ * contact down to one bounded walk.
  */
 
 /**
@@ -42,17 +49,21 @@ export type ResultSizing = "content" | "container";
  * plugin claims the field, collapses both to `"chart"` instead, so that name
  * has to be here too.
  *
- * Measured, because "it is a chart" is not the test — filling the box is. A bar
- * chart reports its box minus an 8px inset at every size: 392 in a 400px tile,
- * 692 in a 700px notebook cell. That inset is the ratchet, and it is why these
- * are never measured. `scatter_chart` is here by analogy with the other plotted
- * charts rather than by measurement; it has the same axes and the same insets.
+ * "It is a chart" is not the test — filling the box is. A bar chart reports its
+ * box minus an 8px inset at every size: 392 in a 400px tile, 692 in a 700px
+ * notebook cell. That inset is the ratchet, and it is why these are never
+ * measured.
  *
- * The maps are NOT here, which is the trap in the other direction. A
- * `# shape_map` reports 365 in a 400px tile and 365 in a 700px cell — the same
- * number, so its height comes from its aspect ratio and not from its box. It
- * belongs with the content-sized roots, and putting it here made a map that
- * needs 365px sit in 700px of cell.
+ * The maps are deliberately NOT here, which is the trap in the other direction:
+ * the renderer declares `# shape_map` and `# segment_map` `"fixed"`, and they
+ * report 365 in a 400px tile and 365 in a 700px cell — the same number, because
+ * their size is their own and not their box's. Grouping them with the charts
+ * put a map that needs 365px into 700px of cell.
+ *
+ * Every name here is checked against the plugin's declared strategy at runtime
+ * and agrees with it today (`bar:fill`, `line:fill`, `shape_map:fixed`); the
+ * strategy wins where both are available, so this list carries the roots no
+ * plugin claims and anything a renderer stops declaring.
  */
 const CONTAINER_SIZED_ROOTS: ReadonlySet<string> = new Set([
    "bar",
@@ -85,11 +96,22 @@ const CONTENT_SIZED_ROOTS: ReadonlySet<string> = new Set([
 /**
  * Which sizing rule a root follows.
  *
- * Unknown names — a host's render plugin, a renderer newer than this SDK — are
- * treated as content-sized, which is the behavior every root had before this
+ * `strategy` is the root plugin's declared `sizingStrategy` and wins when it is
+ * there, because it is the renderer answering the question directly rather than
+ * this SDK inferring it from a name. Note it is the PLUGIN's strategy, not the
+ * field entry's: `renderProperties.sizingStrategy` on the root reads `"fit"` for
+ * every result and says nothing.
+ *
+ * Unknown, with no plugin — a renderer newer than this SDK — is treated as
+ * content-sized, which is the behavior every root had before this
  * classification existed: measure once and use what comes back.
  */
-export function resultSizing(renderAs: string | undefined): ResultSizing {
+export function resultSizing(
+   renderAs: string | undefined,
+   strategy?: string | undefined,
+): ResultSizing {
+   if (strategy === "fill") return "container";
+   if (strategy === "fixed") return "content";
    if (!renderAs) return "content";
    return CONTAINER_SIZED_ROOTS.has(renderAs) ? "container" : "content";
 }
@@ -119,11 +141,18 @@ export function resultSizing(renderAs: string | undefined): ResultSizing {
  * container-sized now and are never measured at all, so the hazard is out of
  * the measured set and the narrow exemption it forced can go with it.
  *
- * A root this SDK does not recognise stays on the one-shot path regardless. It
- * could be a host's own fill-the-box viz, and one measurement is what it got
- * before any of this existed.
+ * A root this SDK cannot place stays on the one-shot path. A plugin that
+ * declares itself `"fixed"` IS placed — the renderer has said its size is its
+ * own — so it re-measures like any other content-sized root. Only a name we do
+ * not know, with no plugin behind it, falls back to one measurement, which is
+ * what it got before any of this existed.
  */
-export function remeasuresAfterReady(renderAs: string | undefined): boolean {
+export function remeasuresAfterReady(
+   renderAs: string | undefined,
+   strategy?: string | undefined,
+): boolean {
+   if (strategy === "fixed") return true;
+   if (strategy === "fill") return false;
    return renderAs !== undefined && CONTENT_SIZED_ROOTS.has(renderAs);
 }
 

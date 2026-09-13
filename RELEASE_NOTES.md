@@ -52,6 +52,11 @@ Two visible fixes come out of it:
   cap" is now the absence of a cap rather than a number standing in for one, and a chart takes the
   caller's height.
 
+Which rule a result follows comes from the root's render plugin where there is one:
+`sizingStrategy: "fill" | "fixed"` is the renderer answering this exact question, and a host's own
+plugin is placed by its own declaration rather than by a name this SDK has to recognise. A table and
+a `# dashboard` grid have no plugin, so `renderAs()` still carries those.
+
 For SDK consumers: `ResultContainer`'s `maxHeight` is optional now, and leaving it out means no cap.
 `RenderedResult` gains an `onSizing` callback reporting which rule a result follows, and its
 `onSizeChange` fires only for results that have a height of their own. Each rendered result also

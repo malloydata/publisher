@@ -55,6 +55,39 @@ describe("resultSizing", () => {
    });
 });
 
+// The renderer's own answer, and the one that decides where both are present.
+// Measured against the bundled examples: `bar:fill`, `line:fill`,
+// `shape_map:fixed`, and no plugin at all for a table or a `# dashboard` grid.
+describe("resultSizing from the plugin's declared strategy", () => {
+   it("takes fill as container-sized and fixed as content-sized", () => {
+      expect(resultSizing("anything", "fill")).toBe("container");
+      expect(resultSizing("anything", "fixed")).toBe("content");
+   });
+
+   // The point of reading it: a host's own plugin says which it is instead of
+   // falling into the unknown-name default, and gets re-measured accordingly.
+   it("places a plugin this SDK has never heard of", () => {
+      expect(resultSizing("acme_gauge", "fixed")).toBe("content");
+      expect(remeasuresAfterReady("acme_gauge", "fixed")).toBe(true);
+      expect(resultSizing("acme_gauge", "fill")).toBe("container");
+      expect(remeasuresAfterReady("acme_gauge", "fill")).toBe(false);
+   });
+
+   // A `# dashboard` grid and a table have no plugin, so the names still carry
+   // them, and every name that DOES have one agrees with it today.
+   it("falls back to the name when no plugin claims the root", () => {
+      expect(resultSizing("table", undefined)).toBe("content");
+      expect(resultSizing("dashboard", undefined)).toBe("content");
+      expect(resultSizing("bar", undefined)).toBe("container");
+      expect(resultSizing("shape_map", undefined)).toBe("content");
+   });
+
+   it("still measures an unplaceable root exactly once", () => {
+      expect(resultSizing("acme_gauge", undefined)).toBe("content");
+      expect(remeasuresAfterReady("acme_gauge", undefined)).toBe(false);
+   });
+});
+
 describe("remeasuresAfterReady", () => {
    // The first measurement races the renderer's layout: a table signals ready
    // before its virtualized grid has laid out, and a `# big_value` row reports

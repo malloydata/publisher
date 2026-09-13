@@ -53,7 +53,13 @@ interface MalloyVizHandle extends DrillMetadataSource {
    // decision keys off; see `./resultSizing`.
    getMetadata: () =>
       | (NonNullable<ReturnType<DrillMetadataSource["getMetadata"]>> & {
-           getRootField: () => { renderAs: () => string };
+           getRootField: () => { renderAs: () => string; key: string };
+           // The root's render plugin, whose `sizingStrategy` is the renderer's
+           // own answer to whether the result fills its box; see
+           // `./resultSizing`. A table or a `# dashboard` grid has none.
+           getPluginsForField: (
+              key: string,
+           ) => Array<{ sizingStrategy?: string }> | undefined;
         })
       | null
       | undefined;
@@ -456,6 +462,7 @@ function RenderedResultInner({
       // after `setResult`. Every height decision below keys off this rather
       // than off the DOM the renderer went on to build; see `./resultSizing`.
       let renderAs: string | undefined;
+      let strategy: string | undefined;
 
       // Measure the rendered result's content height off `root` (the stage
       // that wraps the renderer output) and report it up.
@@ -464,10 +471,10 @@ function RenderedResultInner({
          // A chart fills the box it is handed, so measuring one reports back
          // the height we just gave it. Nothing to learn, and reporting it is
          // what used to ratchet an uncapped chart to its first-paint height.
-         if (resultSizing(renderAs) === "container") return;
+         if (resultSizing(renderAs, strategy) === "container") return;
          // A content-sized root keeps being measured after the first height
          // lands, because the first one races the renderer's layout.
-         const remeasures = remeasuresAfterReady(renderAs);
+         const remeasures = remeasuresAfterReady(renderAs, strategy);
          if (hasMeasuredRef.current && !remeasures) return;
 
          const renderedHeight = measureContentHeight(
@@ -605,20 +612,29 @@ function RenderedResultInner({
             // measurement already knows whether it is worth taking. Metadata is
             // complete as soon as the result is set; the DOM is not.
             try {
-               renderAs = viz.getMetadata()?.getRootField().renderAs();
+               const metadata = viz.getMetadata();
+               const root = metadata?.getRootField();
+               renderAs = root?.renderAs();
+               // The plugin's own `sizingStrategy`, which decides this outright
+               // where there is one. Read from the PLUGIN; the field entry's
+               // `renderProperties.sizingStrategy` reads "fit" for every root.
+               strategy = root
+                  ? metadata?.getPluginsForField(root.key)?.[0]?.sizingStrategy
+                  : undefined;
             } catch {
                // Metadata unavailable: fall through to the content-sized
                // default, which is what every root got before this existed.
                renderAs = undefined;
+               strategy = undefined;
             }
-            onSizing?.(resultSizing(renderAs));
+            onSizing?.(resultSizing(renderAs, strategy));
             // Published on the stage because every sizing decision keys off it
             // and nothing else in the DOM says what it was. A panel at an
             // unexpected height is otherwise a guessing game about which rule
             // applied, and the rule is chosen from a vocabulary — plugin names
             // — that the rendered markup does not spell out anywhere.
             stage.dataset.malloyRenderAs = renderAs ?? "unknown";
-            stage.dataset.malloySizing = resultSizing(renderAs);
+            stage.dataset.malloySizing = resultSizing(renderAs, strategy);
             viz.render(stage);
 
             // Mark the cells a `# drill` makes clickable, so they read as
