@@ -1367,11 +1367,10 @@ export function lintUndiscoveredDashboard(
          `Tag ${describeParseFailure(message)}, so the whole tag is discarded ` +
          `and this file is treated as a shared include rather than a dashboard.`,
    );
-   const findings = Array.from(new Set(messages), (message) => ({
-      subject,
-      message,
-      severity: "error" as const,
-   }));
+   const findings: DashboardLintFinding[] = Array.from(
+      new Set(messages),
+      (message) => ({ subject, message, severity: "error" as const }),
+   );
    if (findings.length > 0) return findings;
 
    // A tag that PARSES but describes no dashboard vanishes just as completely,
