@@ -69,32 +69,13 @@ describe("classifySpaFallback", () => {
          });
       });
 
-      it("still claims the OLD `pages` segment, which the app redirects", () => {
-         // Kept deliberately, and load-bearing for the deprecation: an old
-         // bookmark has to REACH the app, because the app is what rewrites it to
-         // `data-apps/<file>`. Divert it here and the old link goes to the static
-         // route instead, which 404s, or worse answers 200 with a different
-         // document for a package that ships a `public/pages/` directory.
-         //
-         // Asserted on the old spelling on purpose: the cases above were
-         // rewritten from `pages` to `data-apps` rather than supplemented, so
-         // without this nothing pins old-URL behaviour in either direction.
-         // Delete alongside the redirect in ModelPage.tsx, not before it.
-         expect(classify("/examples/storefront/pages/index.html")).toEqual({
-            kind: "spa",
-         });
-         // No asset extension, so this reaches the app by the ordinary route
-         // rather than via SPA_OWNED_SEGMENTS. Both shapes have to arrive for
-         // the redirect to cover every old link, so both are asserted.
-         expect(classify("/examples/storefront/pages/report")).toEqual({
-            kind: "spa",
-         });
-      });
-
-      it("keeps a workbook route whose name looks like a file", () => {
+      it("no longer claims the retired `pages` segment", () => {
+         // The pre-0.0.242 alias for `data-apps`. With the redirect gone from
+         // the app, a `pages/<file>` path is a plain static path again, so a
+         // package that ships `public/pages/index.html` gets its file back.
          expect(
-            classify("/examples/storefront/workbook/ws/scratch.malloynb"),
-         ).toEqual({ kind: "spa" });
+            classify("/examples/storefront/pages/index.html").kind,
+         ).not.toBe("spa");
       });
 
       it("keeps a route whose environment or package name contains a dot", () => {
@@ -209,14 +190,13 @@ describe("classifySpaFallback", () => {
    });
 
    describe("cases the first version of this got wrong", () => {
-      it("keeps a workbook path whose name ends in a servable extension", () => {
-         // Workbook names are arbitrary user-typed keys, so `q1.csv` is legal and
-         // is exactly what SPA_OWNED_SEGMENTS is for. The `.malloynb` case does
-         // not exercise it, because that extension is not in the list at all, so
-         // this is the assertion that actually pins `workbook`.
-         expect(classify("/examples/storefront/workbook/ws/q1.csv")).toEqual({
-            kind: "spa",
-         });
+      it("no longer claims the retired `workbook` segment", () => {
+         // The Workbook editor and its route are gone, so `workbook/` is an
+         // ordinary path into a package's `public/` directory again. A package
+         // shipping `public/workbook/q1.csv` gets its file back.
+         expect(
+            classify("/examples/storefront/workbook/ws/q1.csv").kind,
+         ).not.toBe("spa");
       });
 
       it("flags a two-segment path so a package named like a file survives", () => {
