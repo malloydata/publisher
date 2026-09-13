@@ -40,6 +40,30 @@ and the server no longer treats `pages` as an app route. A bookmark on the old s
 a package that ships its own `public/pages/` directory has those files back at
 `/<env>/<pkg>/pages/<file>`, which the alias had been shadowing.
 
+## [Unreleased] — the Workbook editor is gone; storage is now `DocumentStorage`
+
+**Removed: the Workbook editor.** `Workbook`, `WorkbookList`, `WorkbookManager`, and
+`AnalyzePackageButton` are no longer exported from `@malloy-publisher/sdk`, and the Console's
+`/<env>/<pkg>/workbook/<workspace>/<path>` route is gone. The editor saved its own JSON to browser
+storage, could not write a `.malloynb`, and had no link to it anywhere in the Console since August
+2025: a notebook click has opened the read-only `Notebook` view all along. Authoring returns with
+the dashboard builder, which will cover the notebook case with text tiles in a one-column layout.
+The `@uiw/react-md-editor` dependency and the `@malloy-publisher/sdk/markdown-editor.css` export
+went with it; `styles.css` no longer imports that stylesheet.
+
+**Renamed: `WorkbookStorage` is `DocumentStorage`.** The storage seam the editor used stays, as the
+interface a host hands the SDK for whatever it authors: `DocumentStorage`, `DocumentStorageProvider`,
+`useDocumentStorage`, `BrowserDocumentStorage`, `DocumentLocator`, and `Workspace`, with methods
+named `listDocuments`, `getDocument`, `saveDocument`, `deleteDocument`, `moveDocument`. A locator now
+carries a `type` (`"dashboard"` or `"notebook"`), and `listDocuments` can filter on it. The browser
+implementation namespaces its keys under `publisher:document:`, so it lists only its own documents
+rather than everything the page keeps in localStorage.
+
+**Breaking for hosts of `@malloy-publisher/app`:** `createMalloyRouter`'s second argument and
+`MalloyPublisherApp`'s `workbookStorage` prop are now `documentStorage`, and both are optional,
+defaulting to `BrowserDocumentStorage`. A host that passed a `WorkbookStorage` implementation renames
+its methods and adds `type` to its locators. No known host did.
+
 ## [Unreleased] — dashboards written for Malloyyo look the same here
 
 Three behaviors that differed on identical Malloy between Publisher and

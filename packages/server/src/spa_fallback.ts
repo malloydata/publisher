@@ -78,8 +78,7 @@ const ASSET_EXTENSIONS = new Set([
  * Third segments that belong to the app rather than to a package's `public/`
  * directory, so `/<env>/<pkg>/<here>/...` must keep reaching the SPA even when
  * the path ends in an asset extension. `data-apps/<file>.html` is the in-app
- * embedded data app viewer, `workbook/...` is the workbook route, and
- * `dashboards/<slug>` is the dashboard viewer.
+ * embedded data app viewer and `dashboards/<slug>` is the dashboard viewer.
  *
  * `dashboards` is here because a slug is a FILENAME with its `.malloy` suffix
  * removed, so `dashboards/report.csv.malloy` publishes the slug `report.csv`,
@@ -102,7 +101,7 @@ const ASSET_EXTENSIONS = new Set([
  * a `pages/...` path is an ordinary path into the package's `public/` directory
  * again.
  */
-const SPA_OWNED_SEGMENTS = new Set(["dashboards", "data-apps", "workbook"]);
+const SPA_OWNED_SEGMENTS = new Set(["dashboards", "data-apps"]);
 
 export type SpaFallbackAction =
    /** Serve the app shell, as before. */

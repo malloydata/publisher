@@ -78,12 +78,6 @@ describe("classifySpaFallback", () => {
          ).not.toBe("spa");
       });
 
-      it("keeps a workbook route whose name looks like a file", () => {
-         expect(
-            classify("/examples/storefront/workbook/ws/scratch.malloynb"),
-         ).toEqual({ kind: "spa" });
-      });
-
       it("keeps a route whose environment or package name contains a dot", () => {
          // Deciding by "does it have a dot" would 404 these. Deciding by a
          // closed list of web extensions leaves them alone.
@@ -196,14 +190,13 @@ describe("classifySpaFallback", () => {
    });
 
    describe("cases the first version of this got wrong", () => {
-      it("keeps a workbook path whose name ends in a servable extension", () => {
-         // Workbook names are arbitrary user-typed keys, so `q1.csv` is legal and
-         // is exactly what SPA_OWNED_SEGMENTS is for. The `.malloynb` case does
-         // not exercise it, because that extension is not in the list at all, so
-         // this is the assertion that actually pins `workbook`.
-         expect(classify("/examples/storefront/workbook/ws/q1.csv")).toEqual({
-            kind: "spa",
-         });
+      it("no longer claims the retired `workbook` segment", () => {
+         // The Workbook editor and its route are gone, so `workbook/` is an
+         // ordinary path into a package's `public/` directory again. A package
+         // shipping `public/workbook/q1.csv` gets its file back.
+         expect(
+            classify("/examples/storefront/workbook/ws/q1.csv").kind,
+         ).not.toBe("spa");
       });
 
       it("flags a two-segment path so a package named like a file survives", () => {
