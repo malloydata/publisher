@@ -57,6 +57,12 @@ Which rule a result follows comes from the root's render plugin where there is o
 plugin is placed by its own declaration rather than by a name this SDK has to recognise. A table and
 a `# dashboard` grid have no plugin, so `renderAs()` still carries those.
 
+The bundled `storefront` dashboard also gives its map row six and six columns instead of eight and
+four. A root `# shape_map` is drawn at a fixed 588px wide — the renderer builds its spec from a
+hardcoded 500x350 and no tag reads those numbers — so a narrower tile clips it rather than shrinking
+it, and at four of twelve the east coast and the whole legend were cut off. This is the example
+fitting the renderer's constant, not a fix for it: below a grid of about 1220px it clips again.
+
 For SDK consumers: `ResultContainer`'s `maxHeight` is optional now, and leaving it out means no cap.
 `RenderedResult` gains an `onSizing` callback reporting which rule a result follows, and its
 `onSizeChange` fires only for results that have a height of their own. Each rendered result also

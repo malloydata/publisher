@@ -72,12 +72,24 @@ source: overview is scoped_orders extend {
 
   // `# break` starts a fresh row, so the trend leads the second row however the
   // strip above it wraps.
-  # colspan=8
+  //
+  // Six and six rather than eight and four, and the map is why. A root
+  // `# shape_map` is drawn at a size of its own — @malloydata/render builds its
+  // spec from a hardcoded 500x350, 588px wide once its legend is on, and no tag
+  // reads those numbers — so it does not shrink into a narrower tile, it is
+  // clipped by one. At four of twelve the tile was ~401px and the east coast
+  // and the whole legend were cut off; six is ~631px here and fits.
+  //
+  // Sized to the constant, not eyeballed: the map fits whenever its tile is at
+  // least 588px, which at six of twelve means a grid of about 1220px. Narrower
+  // than that and it clips again, and no colspan available here avoids it —
+  // that is the renderer's fixed size, not this dashboard's layout.
+  # colspan=6
   # break
   # label="Revenue by month"
   view: revenue_trend is sales_by_month
 
-  # colspan=4
+  # colspan=6
   # label="Revenue by state"
   view: revenue_by_state is sales_by_state
 
