@@ -67,7 +67,7 @@ tests/playwright/
 ├── environments.spec.ts         # Home + env CRUD + mutability parity
 ├── packages.spec.ts             # package list + full create-from-git → open → delete lifecycle
 ├── package-models.spec.ts       # .malloy list, open, source combobox, run query → assert rows
-├── package-notebooks.spec.ts    # .malloynb list, open → workbook route, content rendered
+├── package-notebooks.spec.ts    # .malloynb list, open → notebook route, content rendered
 └── package-databases.spec.ts    # embedded DBs + schema dialog + connection CRUD
 ```
 
@@ -93,11 +93,11 @@ and adds the `html` reporter on top of `list`.
 
 ## Environment variables
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `PUBLISHER_URL` | `http://localhost:4000` | Base URL under test |
-| `PLAYWRIGHT_USE_WEBSERVER` | unset (on) | Set to `0` to reuse an already-running server |
-| `CI` | unset | When set, enables retries + HTML reporter + trace/video artifacts |
+| Variable                   | Default                 | Purpose                                                           |
+| -------------------------- | ----------------------- | ----------------------------------------------------------------- |
+| `PUBLISHER_URL`            | `http://localhost:4000` | Base URL under test                                               |
+| `PLAYWRIGHT_USE_WEBSERVER` | unset (on)              | Set to `0` to reuse an already-running server                     |
+| `CI`                       | unset                   | When set, enables retries + HTML reporter + trace/video artifacts |
 
 ## Writing new tests — notes that bite
 

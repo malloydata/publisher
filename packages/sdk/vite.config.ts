@@ -66,7 +66,6 @@ export default ({ mode }) => {
                // Other large React libraries
                "@react-spring/web",
                "@tanstack/react-query",
-               "@uiw/react-md-editor",
 
                // Malloy dependencies (should be provided by host)
                "@malloydata/malloy-explorer",
