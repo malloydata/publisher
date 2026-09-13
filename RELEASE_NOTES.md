@@ -31,6 +31,15 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — `ApiErrorDisplay` is exported; two internal names are not
+
+`@malloy-publisher/sdk` now exports `ApiErrorDisplay` and its props type. `Dashboard`,
+`DashboardTile` and `Notebook` all present request failures through it, and the SDK README has
+shown it in examples for some time, but a host could not import it to match. Two names that leaked
+through the barrels without being documented are no longer exported: `SourceExplorerComponent`
+(the inner half of `SourcesExplorer`, which is the component to use) and `makeDimensionKey` (an
+internal of `useDimensionalFilterRangeData`; `getDimensionKey` stays).
+
 ## [Unreleased] — the `pages/` URL alias is gone
 
 Data apps were renamed from `pages/<file>` to `data-apps/<file>` in 0.0.242, and that release
