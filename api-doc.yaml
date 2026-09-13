@@ -4120,6 +4120,18 @@ components:
           type: string
         dimension:
           type: string
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: |
+            The givens the suggest query needs in its request to run: the ones
+            the source it reads is scoped by (a source-level `where: … ~ $X`)
+            or gated by (an `#(authorize)` reading `$X`), plus, for the `query`
+            form, the named query's own. A client sends the current values of
+            exactly these, so a gated source's options load while the option
+            list still does not depend on the page's other filters. Absent
+            when the query needs none.
 
     GivenValues:
       type: object

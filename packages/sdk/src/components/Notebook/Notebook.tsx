@@ -231,6 +231,8 @@ export default function Notebook({
       notebookPath,
       declaredGivens,
       versionId,
+      // So a suggest over a gated or scoped source carries the givens it needs.
+      { values: applied, declaredTypes },
    );
 
    // The declared names, indexed case-insensitively, so a drill tag resolves

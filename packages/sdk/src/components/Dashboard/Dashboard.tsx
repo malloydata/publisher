@@ -224,6 +224,8 @@ export function Dashboard({
       manifest?.path,
       specs,
       versionId,
+      // So a suggest over a gated or scoped source carries the givens it needs.
+      { values: applied, declaredTypes },
    );
 
    // A drill tag names its given as the model spells it, and `# drill` with no
