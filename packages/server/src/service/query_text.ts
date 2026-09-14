@@ -42,15 +42,37 @@ export function extractRunTargetSourceName(query?: string): string | undefined {
 /**
  * Map each ad-hoc source alias to the base it derives from
  * (`source: NAME is BASE …` → NAME → BASE). Used to walk derivation chains in
- * caller-authored text for both filter inheritance and the query boundary —
- * composition over a queryable source is itself queryable.
+ * caller-authored text for filter inheritance -- a filter-protected source
+ * carries its filter requirements when read under a derived name.
+ *
+ * `source:`-only, last-declaration-wins, and it reads RAW text. It therefore
+ * misreads caller text in BOTH directions, and neither is theoretical:
+ *  - a declaration spelled inside a string literal becomes an edge, and
+ *    last-wins lets it REPLACE the real base for that name;
+ *  - a comment between `is` and the base (`source: mine is -- c\n protected`)
+ *    ERASES the edge, which the compiler still reads around.
+ *
+ * Both misreads are why the query boundary no longer reads this map: a replaced
+ * edge re-pointed a name from the hidden base it really derives from to a
+ * curated one and bought admission. Use {@link buildDerivationBaseMap} on any
+ * path where an edge grants access -- this map stays last-wins and single-valued
+ * because {@link Model.resolveFilterSource} needs ONE source name to inject
+ * filters from.
+ *
+ * Strips its own input rather than trusting the caller to have done it. A
+ * documented "pass me stripped text" precondition would hold only until the
+ * next caller, and the failure is silent in the unsafe direction -- a missed
+ * edge means no filter is injected, on a path with no post-compile backstop.
+ * {@link stripMalloyCommentsAndLiterals} blanks to spaces, so it is idempotent
+ * and a caller that already stripped pays a second scan and nothing else.
  */
 export function buildSourceAliasMap(query: string): Map<string, string> {
    const aliasOf = new Map<string, string>();
+   const text = stripMalloyCommentsAndLiterals(query);
    const declRe =
       /source\s*:\s*(?:`([^`]+)`|(\w+))\s+is\s+(?:`([^`]+)`|(\w+))/g;
    let match: RegExpExecArray | null;
-   while ((match = declRe.exec(query)) !== null) {
+   while ((match = declRe.exec(text)) !== null) {
       aliasOf.set(match[1] ?? match[2], match[3] ?? match[4]);
    }
    return aliasOf;
