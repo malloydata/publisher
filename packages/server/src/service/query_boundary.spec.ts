@@ -783,11 +783,10 @@ export { \`customer-orders\` }`,
             ),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
-         // (b) A SECOND declaration for a name adds an obligation instead of
-         // replacing the first: every base must prove out, so pairing a hidden
-         // base with a curated one is denied, not admitted. (Malloy itself
-         // rejects the redefinition; the boundary must not be the thing that
-         // would have let it through.)
+         // (b) A second declaration for a name, in a form Malloy itself rejects
+         // as a redefinition. That compile error is what refuses this one, so it
+         // guards the shape rather than the boundary's verdict on it; (b2) below
+         // is what pins the every-base quantifier.
          await expect(
             model.getQueryResults(
                undefined,

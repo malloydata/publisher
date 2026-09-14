@@ -340,6 +340,12 @@ function isGivenBindingFailure(err: unknown): boolean {
  * derivation graph can therefore exhaust one and not the other. Both directions
  * deny on exhaustion, so the divergence costs an over-denial rather than an
  * admission, and only past a depth no hand-written query reaches.
+ *
+ * Note the two budgets bound different quantities: the authorize walk's bounds
+ * TOTAL WORK, while bounding depth leaves the boundary's total work at
+ * O(edges x depth). That is not a denial-of-service lever -- `every` short
+ * circuits on the first base that fails and positive results are memoized, so a
+ * false verdict costs one path rather than the product.
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
 
@@ -2870,12 +2876,35 @@ export class Model {
     * derived name. The declared filter belongs to the source, not to the name
     * it is read under. Returns undefined when the run target does not derive
     * from a protected source.
+    *
+    * Scans {@link stripMalloyCommentsAndLiterals} text rather than the caller's
+    * raw text. Both reads here decide whether a filter is INJECTED, and there is
+    * no post-compile backstop on this path, so a name this walk fails to reach
+    * is served unfiltered and silently. Raw text let a caller arrange that four
+    * ways, each of which resolved to undefined on a query that really does read
+    * a protected source:
+    *
+    *  - a comment between `is` and the base (`source: a is -- c\n protected`)
+    *    ERASES the derivation edge, which the compiler still reads around;
+    *  - a declaration forged inside a string literal injects an edge, and
+    *    {@link buildSourceAliasMap} is last-declaration-wins, so it REPLACES the
+    *    real base for that name;
+    *  - a forged `run:` inside a literal or a comment re-points
+    *    {@link extractRunTargetSourceName} at a name that was never the target.
+    *
+    * Stripping first closes all four, because none of that text is syntax any
+    * more. It does not close a derivation that composes through a named
+    * `query:`, which this walk still cannot follow: it resolves a SINGLE source
+    * name, and a set-valued walk would have to decide which protected source's
+    * filters apply to a name with several bases. That needs its own change.
     */
    private resolveFilterSource(query?: string): string | undefined {
-      const target = extractRunTargetSourceName(query);
-      if (!target || !query) return undefined;
+      if (!query) return undefined;
+      const scanned = stripMalloyCommentsAndLiterals(query);
+      const target = extractRunTargetSourceName(scanned);
+      if (!target) return undefined;
 
-      const aliasOf = buildSourceAliasMap(query);
+      const aliasOf = buildSourceAliasMap(scanned);
 
       // Walk the derivation chain until we hit a protected source or run out.
       let current: string | undefined = target;

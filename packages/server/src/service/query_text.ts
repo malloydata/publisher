@@ -52,18 +52,16 @@ export function extractRunTargetSourceName(query?: string): string | undefined {
  *  - a comment between `is` and the base (`source: mine is -- c\n protected`)
  *    ERASES the edge, which the compiler still reads around.
  *
- * The first is why the query boundary no longer reads this map: a replaced edge
- * re-pointed a name from the hidden base it really derives from to a curated
- * one and bought admission. Use {@link buildDerivationBaseMap} over
+ * Both misreads are why the query boundary no longer reads this map: a replaced
+ * edge re-pointed a name from the hidden base it really derives from to a
+ * curated one and bought admission. Use {@link buildDerivationBaseMap} over
  * {@link stripMalloyCommentsAndLiterals} on any path where an edge grants
  * access.
  *
- * The second is a live weakness on the one path that still reads this map:
- * {@link Model.resolveFilterSource} walks it to find the protected source whose
- * filters a derived name must inherit, so an ERASED edge ends that walk early
- * and no filter is injected. Do not read "filter inheritance only" as "safe" --
- * it is unfixed here rather than harmless, and closing it means moving that
- * walk onto the hardened pair too.
+ * The sole remaining caller, {@link Model.resolveFilterSource}, passes stripped
+ * text for the same reason, so neither misread is reachable through it. Keep it
+ * that way: this function reads whatever text it is handed, so it is only as
+ * sound as its caller's input.
  */
 export function buildSourceAliasMap(query: string): Map<string, string> {
    const aliasOf = new Map<string, string>();
