@@ -4,7 +4,7 @@
 import type { ErrorDetails } from "./error_messages";
 
 /**
- * Shared construction of the MCP content blocks every malloy_* tool returns.
+ * Shared construction of the MCP content blocks every Malloy tool returns.
  *
  * Two things here are load-bearing and were previously wrong at every call site:
  *
@@ -120,9 +120,10 @@ export function jsonResource(
  * Builds the standard error result: the {error, suggestions} JSON a parsing
  * client wants, plus the same information as text so every client can read it.
  *
- * @param extraPayload Merged into the JSON payload. malloy_getContext uses it
- *   to keep its `results: []` contract on the error path, which its callers
- *   (and specs) rely on to treat every tier's response shape uniformly.
+ * @param extraPayload Merged into the JSON payload. get_context uses it
+ *   to keep its `sources: []` contract on the error path (and list_packages
+ *   its `environments: []`), which their callers (and specs) rely on to read
+ *   a payload without branching on success first.
  */
 export function jsonToolError(
    uri: string,

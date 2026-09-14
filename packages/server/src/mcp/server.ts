@@ -8,7 +8,10 @@ import { formatDuration, logger } from "../logger";
 import { registerCompileTool } from "./tools/compile_tool";
 import { registerDocsSearchTool } from "./tools/docs_search_tool";
 import { registerExecuteQueryTool } from "./tools/execute_query_tool";
-import { registerGetContextTool } from "./tools/get_context_tool";
+import {
+   registerGetContextTool,
+   registerListPackagesTool,
+} from "./tools/get_context_tool";
 import {
    registerReloadPackageTool,
    RELOAD_FAILURE_IS_SAFE,
@@ -45,9 +48,9 @@ const AGENT_SKILLS = (
 // must never interpolate environment, package, connection, or request data.
 const MCP_INSTRUCTIONS = `Malloy Publisher serves one or more Malloy semantic-model packages, so you can discover what data exists and answer questions against it, grounded in the names the model actually defines.
 
-Start with malloy_getContext. Call it with no arguments to list the environments (each with its packages), with an environment to list its packages, with a package to list its sources, and with a package plus a plain-English question to get the sources, views, and fields most relevant to it. Use the names it returns verbatim and do not guess. Then run a query with malloy_executeQuery. To change a model: validate the edit with malloy_compile, save it, then call malloy_reloadPackage so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE} After every model edit, call malloy_reloadPackage before querying: the server serves the model compiled at the last load, not your files, and a watch-mode save that fails to compile is otherwise silent. An empty malloy_getContext result does not mean the package is empty; check malloy_getStatus for load errors and stale packages before concluding there is no data.
+Start with list_packages, which takes no arguments and names every environment and the packages in each. Those names are what get_context needs, and it is also the only place a package that failed to load is visible rather than simply absent. Then call get_context, which takes search_targets -- one per concept your question needs, each {target_type, search_text} -- plus scopes, which is required and takes exactly one entry naming an environment and a package. One call answers: the response is a sources array with the entities that matched nested inside each source, so there is no drill-down call afterwards. Omit a target's search_text to enumerate that type instead of ranking it. There is no no-argument and no environment-only get_context call: both are validation errors, because retrieval is indexed per package. Use the names it returns verbatim and do not guess. Then run a query with execute_query. To change a model: validate the edit with compile_model, save it, then call reload_package so the new sources and views become queryable by name without restarting the server. ${RELOAD_FAILURE_IS_SAFE} After every model edit, call reload_package before querying: the server serves the model compiled at the last load, not your files, and a watch-mode save that fails to compile is otherwise silent. An empty get_context result does not mean the package is empty; check get_status for load errors and stale packages before concluding there is no data.
 
-To build a model from a database rather than from an existing package, start with malloy_searchDatabaseSchema: it lists the connections, their schemas, and their tables, and ranks those tables against a plain-English description of the data you want. Each table it returns carries the source line to start from. It returns names and types only: no row value is returned.
+To build a model from a database rather than from an existing package, start with search_database_schema: it lists the connections, their schemas, and their tables, and ranks those tables against a plain-English description of the data you want. Each table it returns carries the source line to start from. It returns names and types only: no row value is returned.
 
 Task-specific guidance is served as prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness.
 
@@ -65,6 +68,7 @@ export function initializeMcpServer(
 
    registerExecuteQueryTool(mcpServer, environmentStore);
    registerGetContextTool(mcpServer, environmentStore);
+   registerListPackagesTool(mcpServer, environmentStore);
    registerDocsSearchTool(mcpServer, environmentStore);
    registerCompileTool(mcpServer, environmentStore);
    registerReloadPackageTool(mcpServer, environmentStore);

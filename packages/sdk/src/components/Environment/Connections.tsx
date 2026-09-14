@@ -117,13 +117,19 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
    });
 
    const deleteConnection = useMutationWithApiError({
+      // The dedicated endpoint, not a PATCH of the filtered list. Updating the
+      // environment upserts the connections it still holds and never drops the
+      // row for one that went away, so a deleted connection came back on the
+      // next boot. This path removes the row and cleans up a duckdb/ducklake
+      // connection's database file.
       mutationFn: (payload: ApiConnection) => {
-         return apiClients.environments.updateEnvironment(environmentName, {
-            name: environmentName,
-            connections: data!.data.filter(
-               (conn) => conn.name !== payload.name,
-            ),
-         });
+         if (!payload.name) {
+            throw new Error("Cannot delete a connection with no name");
+         }
+         return apiClients.connections.deleteConnection(
+            environmentName,
+            payload.name,
+         );
       },
       onSuccess(_data, variables) {
          setNotificationMessage(
@@ -208,15 +214,9 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                         onEdit={(payload) =>
                            updateConnection.mutateAsync(payload)
                         }
-                        onDelete={(payload) => {
-                           if (!conn.resource) {
-                              deleteConnection.mutateAsync(payload);
-                           } else {
-                              setNotificationMessage(
-                                 "Cannot delete this connection",
-                              );
-                           }
-                        }}
+                        onDelete={(payload) =>
+                           deleteConnection.mutateAsync(payload)
+                        }
                      />
                   </Grid>
                ))}

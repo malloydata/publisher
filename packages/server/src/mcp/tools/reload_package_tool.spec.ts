@@ -81,7 +81,7 @@ function storeWithInstallLocation(installed: Record<string, unknown>): {
 
 const args = { environmentName: "malloy-samples", packageName: "ecommerce" };
 
-describe("malloy_reloadPackage tool", () => {
+describe("reload_package tool", () => {
    it("returns status reloaded with the package name", async () => {
       const handler = captureHandler(storeReturning({ name: "ecommerce" }));
       const result = await handler(args);

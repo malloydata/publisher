@@ -26,3 +26,8 @@ export {
    type UseDrillOptions,
    type UseDrillResult,
 } from "./useDrill";
+export {
+   useDrillSelf,
+   type UseDrillSelfOptions,
+   type UseDrillSelfResult,
+} from "./useDrillSelf";

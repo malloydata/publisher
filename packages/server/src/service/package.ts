@@ -688,6 +688,9 @@ export class Package {
             // unquoted name is dropped from the build plan, so the source would
             // publish but never materialize. Scan the raw `.malloy` source (the
             // ground truth for quoting); throws a ModelCompilationError (424).
+            // `.malloy` only: `#@ persist` is a model-file directive and does not
+            // appear in `.malloynb` notebooks. If that ever changes, widen this
+            // guard so the identifier-injection check still covers notebooks.
             if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
                const modelSource = await fs.readFile(
                   path.join(packagePath, sm.modelPath),
@@ -1037,6 +1040,14 @@ export class Package {
       });
    }
 
+   /**
+    * ON THE `/status` POLL PATH: this runs for every package in every
+    * environment, every few seconds, because `EnvironmentStore.getStatus()`
+    * serializes each environment through `listPackages()`. Anything added to the
+    * computed spreads below must be trivially cheap or memoized on the Model --
+    * an unmemoized walk over model fields here reached seconds of synchronous
+    * CPU per poll and blocked the event loop for every other request.
+    */
    public getPackageMetadata(): ApiPackage {
       // Overlay the server-computed fields onto the stored metadata: the
       // explores misconfig warnings (loading is fail-safe — the package still

@@ -102,10 +102,10 @@ small: a row count and an overview, which is the moment to point an agent at it.
 A package is just Malloy, so it is not limited to local files. Add a
 [connection](docs/connections.md) — BigQuery, Snowflake, Postgres, Databricks, MotherDuck, and more —
 and point the model at it; the same workspace serves a warehouse. Have the warehouse but no model yet?
-Ask the agent what is in it: `malloy_searchDatabaseSchema` ranks a connection's tables against a
+Ask the agent what is in it: `search_database_schema` ranks a connection's tables against a
 plain-English description and hands back the `source:` line for each. Ranking needs no API key; the
 optional embedding-backed mode is in
-[docs/configuration.md](docs/configuration.md#semantic-ranking-for-malloy_searchdatabaseschema).
+[docs/configuration.md](docs/configuration.md#semantic-ranking-for-search_database_schema).
 
 ## Point your agent at it
 
@@ -126,11 +126,11 @@ clear it. Then ask, in plain English:
 
 > _"Use Malloy to explore the storefront sales data and chart revenue by category."_
 
-The agent discovers what exists (`malloy_getContext`), grounds itself in real source, view, and field
-names, runs the query (`malloy_executeQuery`), and answers from your model — no schema spelunking, no
+The agent discovers what exists (`get_context`), grounds itself in real source, view, and field
+names, runs the query (`execute_query`), and answers from your model — no schema spelunking, no
 hallucinated columns.
 
-If the agent reports no `malloy_*` tools, register the server for yourself instead of relying on that
+If the agent reports no Malloy tools, register the server for yourself instead of relying on that
 file:
 
 ```bash
@@ -168,16 +168,16 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 - **Build the model with an agent.** The bundled open-source [skills](skills/) carry the whole loop —
   discover what a database holds, define sources and measures, model as you go, review, document,
   publish. A LookML review skill covers coming from Looker.
-- **Start from a warehouse.** `malloy_searchDatabaseSchema` ranks a connection's tables against a
+- **Start from a warehouse.** `search_database_schema` ranks a connection's tables against a
   plain-English description and returns the `source:` line for each.
-- **Validate without a restart.** `malloy_compile` checks an edit without running it;
-  `malloy_reloadPackage` recompiles a package from disk. Watch mode does the same for a human editing
+- **Validate without a restart.** `compile_model` checks an edit without running it;
+  `reload_package` recompiles a package from disk. Watch mode does the same for a human editing
   in an IDE.
 
 ### Analyze
 
-- **Ask in plain English.** An agent grounds itself with `malloy_getContext`, runs
-  `malloy_executeQuery`, and answers from the model, never from raw tables. Analysis skills teach it the
+- **Ask in plain English.** An agent grounds itself with `get_context`, runs
+  `execute_query`, and answers from the model, never from raw tables. Analysis skills teach it the
   pitfalls and how to write up a finding — [docs/ai-agents.md](docs/ai-agents.md).
 - **Work in notebooks.** `.malloynb` notebooks live inside a package, mix prose and queries, and run on
   the same governed endpoints — [docs/choosing-a-surface.md](docs/choosing-a-surface.md).

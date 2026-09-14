@@ -50,7 +50,7 @@ export function sqlInFilter(
  * quoting rules differ per dialect. So this REJECTS rather than encodes.
  *
  * Two kinds of value reach it. The caller's `schemaName` split on its first dot
- * is the one that matters, because `malloy_searchDatabaseSchema` takes that
+ * is the one that matters, because `search_database_schema` takes that
  * straight from a model-controlled MCP argument. Trino and Databricks catalog
  * names also pass through it; those come from config or from SHOW CATALOGS, so
  * they are not attacker-controlled, and validating them is for consistency

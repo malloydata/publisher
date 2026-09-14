@@ -2,6 +2,7 @@
 name: malloy-dashboards
 description: "Build or modify a Malloy Publisher dashboard, a tagged .malloy file in a package's dashboards/ directory, with auto-rendered filter controls, a grid layout, and # drill click-through. Use when the user asks for a dashboard, a filterable operational view, or drill-through between views, and no code is wanted."
 ---
+
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
@@ -27,7 +28,7 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
 ## Build sequence
 
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package:
-   `malloy_getContext` if you have it, otherwise the REST model endpoint or the `.malloy` files.
+   `get_context` if you have it, otherwise the REST model endpoint or the `.malloy` files.
    Never guess a name. A guessed field in a query fails the whole package load, not just that one
    dashboard; a guessed tile or suggest source is quieter, and only shows up in the package warnings.
 2. **PICK THE VIEWS TO SHOW.** A dashboard is `## artifact { tiles=[…] }` naming existing views, so
@@ -37,15 +38,18 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    their control tags: see "Filter controls" below for the syntax and what each tag renders as. Skip
    if they already exist, since a given is a model concern and dashboards share them.
 4. **COMPOSE THE FILE** for `dashboards/`, following the template below, but do not save it yet.
-   Import every given it filters by, and every source or query any of those givens names in a
-   `suggest`. Both are per-file, and getting the suggest wrong does not error: the control still
-   looks like a picker but has no options, and says so underneath, "Could not load the options for
-   this control". The package warnings name it too. **A `suggest` naming a `query=` needs that
+   Import the package's givens file **whole**: `import '../givens.malloy'`, not a named list.
+   Only the givens the tiles reference become controls, so a whole-file import brings nothing
+   extra, and a named list is one more thing to forget; forgetting one costs you a missing control
+   rather than an error. Sources are the other way round: name the few you need. Then import every
+   source or query any referenced given names in a `suggest`. Both are per-file, and getting the
+   suggest wrong does not error: the control still looks like a picker but has no options, and says
+   so underneath, "Could not load the options for this control". The package warnings name it too. **A `suggest` naming a `query=` needs that
    query's own source imported as well**, because an import is not transitive: the query resolves by
    name, so the file compiles and the package loads, but running the picker fails with
    `Undefined source '<name>'`. The package warnings name this one too, saying which source to
    import. Import the source that suggest query reads, not just the query.
-5. **COMPILE IT** with `malloy_compile` (or `POST …/models/<path>/compile`), against the source text,
+5. **COMPILE IT** with `compile_model` (or `POST …/models/<path>/compile`), against the source text,
    before you save, at the path the file will have. **Editing one that already exists needs
    `"scope": "file"`**, which compiles your source AS that file; the default appends it instead, so
    every imported name and the query name collide with the saved copy and you get a wall of
@@ -55,7 +59,7 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    dashboard that imports it. A clean compile is not a working dashboard: some tag mistakes surface
    at step 6, and some only when you look at the page in step 7. (The third scope, `append`, is the
    default and is what a not-yet-saved file gets.)
-6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** `malloy_reloadPackage`, or
+6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** `reload_package`, or
    `GET …/packages/<pkg>?reload=true`. Check the status the reload returns as well as the warnings:
    a 424 means the package did not load and your edit is not live. **The `warnings` key is absent
    when there are none**, so an empty response is the pass, not a sign you are reading the wrong
@@ -74,7 +78,7 @@ out by Publisher into the grid `# dashboard { columns=N }` names.
 ## artifact { title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state"] } dashboard { columns=12 }
 import { scoped_sales } from './_shared.malloy'
 import { products } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import '../givens.malloy'
 
 // Layout goes on the VIEW, and a thin re-declaration is the place to put it: the
 // modelled view keeps its chart tag, and this decides how wide it sits here.
@@ -125,7 +129,7 @@ this way.
 ```malloy
 ##! experimental.givens
 import { order_items, products } from '../storefront.malloy'
-import { CATEGORY, MIN_SALE } from '../givens.malloy'
+import '../givens.malloy'
 
 #" Revenue and margin at a glance, and where they come from.
 # artifact { title="Business Overview" } dashboard { columns=12 }
@@ -183,7 +187,7 @@ compiled against a sibling that is not on disk fails with an `import-error`.
 ```malloy
 ##! experimental.givens
 import { order_items } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import '../givens.malloy'
 
 source: scoped_sales is order_items extend {
   where: products.category ~ $CATEGORY and created_at >= $SINCE
@@ -238,8 +242,10 @@ Then the traps:
 - **A KPI row is authored differently on the two forms.** On a `# dashboard` query a top-level
   `aggregate:` measure IS the card, and nesting a `# big_value` view to get one renders it embedded,
   as full-width bars in a single tile. A dashboard has no top-level aggregates, since a tile is one
-  whole result, so there a `# big_value` view IS the KPI row and renders as one. This is the only
-  place the two forms need different Malloy for the same picture.
+  whole result, so there a view of only measures IS the KPI row: a tile that comes back as one row
+  of measures renders as big-value cards on its own (`# big_value` on the view says so explicitly;
+  `# table` opts out). This is the only place the two forms need different Malloy for the same
+  picture.
 - **No `# size=fill` on a dashboard tile.** Inside a dashboard it measures against the container the
   whole grid was handed, not the tile, so it yields a chart thousands of pixels tall. Tiles already
   size to their colspan.
@@ -317,8 +323,10 @@ complaint is a **compile** diagnostic on a compile that still succeeds, not a pa
 step 6 will not show it. Pick by which reader you care about.
 
 `control=select`/`multiselect` with a `suggest` renders a picker filled from the data;
-`range_min`/`range_max` on a `filter<number>` renders a slider; a `date` or `timestamp` renders a
-date picker. Which controls appear is per-dashboard, decided by which givens the query references.
+`range_min`/`range_max` on a `filter<number>` renders a two-handled range slider; a `filter<date>` or
+`filter<timestamp>` renders a time-range control with preset windows and a custom day range; a bare
+`date` or `timestamp` renders a date picker. Which controls appear is per-dashboard, decided by which
+givens the query references.
 `skill:malloy-modeling` and `docs/givens.md` cover givens themselves.
 
 Two per-dashboard options on the artifact tag:
@@ -397,10 +405,10 @@ To tell them apart, run the dashboard's own query, `{"queryName": "<the manifest
 `renderLogs` on the response. Like `warnings`, the key is absent when there is nothing to say.
 Single-query dashboards have no `tiles` in their manifest, so there is no tile query to run:
 
-| render log | what it means |
-|---|---|
-| `Unknown render tag 'colspan'` | the renderer never saw a `# dashboard` tag. It does **not** say which of the two causes; check both |
-| `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count |
+| render log                                         | what it means                                                                                       |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `Unknown render tag 'colspan'`                     | the renderer never saw a `# dashboard` tag. It does **not** say which of the two causes; check both |
+| `Ignored # colspan … only applies in columns mode` | it saw the tag but there is no count                                                                |
 
 Neither reaches the package warnings, so step 6 will not show either. A **wrapped `##` tag** is the
 one failure in this family that does: the file is absent from the listing and the package warnings
@@ -447,8 +455,8 @@ is `declared` by default; a package with no `explores` list withholds nothing. W
 `suggest` source has to be queryable as well as resolvable, so it needs to be on the list too.
 
 **A clean reload is not proof the tags are right.** The checks above read names and resolve them; the
-separate warning for a tag that does not *parse* is syntax only: it carries no
-position and says nothing about a name that does not resolve. It catches *a* malformed tag; its
+separate warning for a tag that does not _parse_ is syntax only: it carries no
+position and says nothing about a name that does not resolve. It catches _a_ malformed tag; its
 absence is not evidence there are none. That is why the last step is opening the page, not reading
 the warning list.
 

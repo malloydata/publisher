@@ -44,12 +44,12 @@ const executeQueryShape = {
    environmentName: z
       .string()
       .describe(
-         "Environment name. Call malloy_getContext with no arguments to list the available environments.",
+         "Environment name. Call get_context with no arguments to list the available environments.",
       ),
    packageName: z
       .string()
       .describe(
-         "Package containing the model. Call malloy_getContext with just environmentName to list its packages.",
+         "Package containing the model. Call get_context with just environmentName to list its packages.",
       ),
    modelPath: z.string().describe("Path to the .malloy model file"),
    query: z
@@ -62,13 +62,13 @@ const executeQueryShape = {
       .string()
       .optional()
       .describe(
-         "Source name for a view. A NAME, not Malloy code: one name exactly as malloy_getContext returned it, sent bare (the server quotes it, so a hyphen or a reserved word is fine — do not add backticks yourself). Anything richer, such as a parameterized source or an inline extension, goes in query.",
+         "Source name for a view. A NAME, not Malloy code: one name exactly as get_context returned it, sent bare (the server quotes it, so a hyphen or a reserved word is fine — do not add backticks yourself). Anything richer, such as a parameterized source or an inline extension, goes in query.",
       ),
    queryName: z
       .string()
       .optional()
       .describe(
-         "Named query or view. A NAME, not Malloy code, on the same terms as sourceName: one view name as malloy_getContext returned it. A dotted path (carriers.by_name), a refinement (by_carrier + { limit: 10 }), or anything containing a newline goes in query instead.",
+         "Named query or view. A NAME, not Malloy code, on the same terms as sourceName: one view name as get_context returned it. A dotted path (carriers.by_name), a refinement (by_carrier + { limit: 10 }), or anything containing a newline goes in query instead.",
       ),
    filterParams: z
       .record(z.union([z.string(), z.array(z.string())]))
@@ -90,7 +90,7 @@ const EXECUTE_QUERY_DESCRIPTION = `Run a Malloy query against a model and return
 - Check _limit_hit before reporting any total, count, or "top N". True means the server's default cap cut the result off and more rows exist, so what came back is a partial set, not the answer.
 - Never sum or count the returned rows to state a total when _limit_hit or _rows_truncated is set. Aggregate in the query instead.
 - _returned_rows: 0 with _rows_truncated set means one row was too large to send, NOT that nothing matched. Do not report it as an empty result.
-- Use source, view, and field names exactly as malloy_getContext returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a second statement) in query.
+- Use source, view, and field names exactly as get_context returned them. sourceName/queryName take one NAME each, never Malloy code — they are quoted for you, so send even a hyphenated name bare, and put anything richer (a dotted path, a refinement, a second statement) in query.
 - query is RESTRICTED: no raw SQL/import/##! (see its param doc).
 
 ## Response
@@ -109,17 +109,17 @@ Values above 2^53 are returned as JSON strings so their digits survive.`;
 // Type inference is handled automatically by the MCP server based on the executeQueryShape
 
 /**
- * Registers the malloy_executeQuery tool with the MCP server.
+ * Registers the execute_query tool with the MCP server.
  */
 export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
 ): void {
    mcpServer.tool(
-      "malloy_executeQuery",
+      "execute_query",
       EXECUTE_QUERY_DESCRIPTION,
       executeQueryShape,
-      /** Handles requests for the malloy_executeQuery tool */
+      /** Handles requests for the execute_query tool */
       async (params) => {
          // Destructure environmentName as well
          const {
@@ -334,7 +334,7 @@ export function registerExecuteQueryTool(
             const suggestions = [...errorDetails.suggestions];
             if (isUndefinedNameError(errorDetails.message)) {
                suggestions.push(
-                  "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call malloy_reloadPackage for this package, then retry.",
+                  "If you added or renamed this source or view on disk after the server loaded the package, the running model is still the one compiled at boot. Call reload_package for this package, then retry.",
                );
             }
 

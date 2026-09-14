@@ -36,6 +36,7 @@ function facts(
       viewAnnotations: new Map(),
       sourceFields: new Map(),
       drills: [],
+      suggestGivens: { forSource: () => undefined, forQuery: () => undefined },
       ...overrides,
    };
 }
@@ -536,6 +537,94 @@ describe("service/dashboard given specs (the control contract)", () => {
          }),
       );
       expect(manifest?.givens[0].control).toBe(undefined);
+   });
+});
+
+describe("service/dashboard suggest givenNames", () => {
+   // A `suggest { source=… }` over a gated or scoped source must carry that
+   // source's givens or the option query is denied and the control reads
+   // "Options unavailable". The names come from the facts' lookup, narrowed to
+   // what the entry can bind, and are absent when the source needs none.
+   it("names the givens a suggest's source is gated or scoped by", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["BRAND"],
+               },
+            ],
+            givens: new Map([
+               given("BRAND", "filter<string>", [
+                  "# control=select suggest { source=order_items dimension=brand }\n",
+               ]),
+               given("TENANT", "string", []),
+            ]),
+            suggestGivens: {
+               forSource: (name) =>
+                  name === "order_items" ? ["TENANT"] : undefined,
+               forQuery: () => undefined,
+            },
+         }),
+      );
+      expect(manifest?.givens?.[0]?.suggest).toEqual({
+         source: "order_items",
+         dimension: "brand",
+         givenNames: ["TENANT"],
+      });
+   });
+
+   it("leaves givenNames off a suggest whose source needs none", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["BRAND"],
+               },
+            ],
+            givens: new Map([
+               given("BRAND", "filter<string>", [
+                  "# control=select suggest { source=order_items dimension=brand }\n",
+               ]),
+            ]),
+            suggestGivens: { forSource: () => [], forQuery: () => undefined },
+         }),
+      );
+      expect(manifest?.givens?.[0]?.suggest).toEqual({
+         source: "order_items",
+         dimension: "brand",
+      });
+   });
+
+   it("resolves the query form through the query lookup", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["BRAND"],
+               },
+            ],
+            givens: new Map([
+               given("BRAND", "filter<string>", [
+                  "# control=select suggest { query=brand_suggest dimension=brand }\n",
+               ]),
+            ]),
+            suggestGivens: {
+               forSource: () => undefined,
+               forQuery: (name) =>
+                  name === "brand_suggest" ? ["TENANT", "REGION"] : undefined,
+            },
+         }),
+      );
+      expect(manifest?.givens?.[0]?.suggest?.givenNames).toEqual([
+         "TENANT",
+         "REGION",
+      ]);
    });
 });
 
@@ -1607,6 +1696,51 @@ describe("service/dashboard silent-vanish lint", () => {
       );
    });
 
+   // Malloyyo's view form. The tag parses, sits on a view Publisher never asks
+   // about, and the file becomes a shared include with nothing said: the least
+   // debuggable outcome for a repo that renders fine on the other host.
+   it("explains an artifact tag on a view, which Publisher does not read", () => {
+      expect(
+         messages(
+            facts({
+               viewAnnotations: new Map([
+                  ["orders -> by_month", ['# artifact { title="Sales" }\n']],
+               ]),
+            }),
+         ),
+      ).toEqual([
+         expect.stringContaining(
+            "'# artifact' on view 'orders -> by_month' is not read",
+         ),
+      ]);
+   });
+
+   it("names the tile form and the query form as the two fixes", () => {
+      const [message] = messages(
+         facts({
+            viewAnnotations: new Map([
+               ["orders -> by_month", ["# artifact\n"]],
+            ]),
+         }),
+      );
+      expect(message).toContain('tiles=["orders -> by_month"]');
+      expect(message).toContain("query: by_month is orders -> by_month");
+   });
+
+   // The control: the ordinary per-tile layout tags on a view are exactly what
+   // a shared include carries, and must not read as a lost dashboard.
+   it("stays silent for a view carrying only layout tags", () => {
+      expect(
+         messages(
+            facts({
+               viewAnnotations: new Map([
+                  ["orders -> by_month", ['# colspan=3 label="Sales"\n']],
+               ]),
+            }),
+         ),
+      ).toEqual([]);
+   });
+
    // MOTLY's grammar stops at the SPACE in `@2024-03-01 10:00`, which is what
    // this covers. It does NOT stop at the ISO `T` form, which parses fine and is
    // handled in `readStartingGivens`; an earlier version of this comment claimed
@@ -1917,6 +2051,40 @@ describe("service/dashboard grid width and hostile literals", () => {
          ),
       ]);
       expect(lintOf(f)[0]).toContain("# dashboard { columns=N }");
+   });
+
+   // A tile entry is the run expression alone, and a property hung off one is
+   // dropped by `tagText` without a word. The shape PARSES today, which is what
+   // makes it worth a finding before tile kinds exist: an author who has read
+   // about them somewhere can write one, get a tile whose query does not
+   // resolve, and be told only that the query failed.
+   it("names a property on a tile entry as unread, and where layout goes", () => {
+      const f = composite(
+         '## artifact { tiles=[intro { kind=text }, "orders -> totals"] }\n',
+      );
+      // It builds, and the entry is reduced to its text.
+      expect(build(f)?.tiles?.map((tile) => tile.query)).toEqual([
+         "intro",
+         "orders -> totals",
+      ]);
+      const carried = lintOf(f).find((finding) =>
+         finding.includes("carries `kind`"),
+      );
+      expect(carried).toContain("`intro` in `tiles=[…]`");
+      expect(carried).toContain("run expression alone");
+      expect(carried).toContain("# colspan");
+      // Alongside, not instead of: `intro` is also a tile expression that does
+      // not resolve, and the author needs both halves. Saying only that the
+      // query failed is the state this finding exists to fix.
+      expect(
+         lintOf(f).some((finding) => finding.includes("does not resolve")),
+      ).toBe(true);
+   });
+
+   it("says nothing about plain tile entries", () => {
+      expect(
+         lintOf(composite('## artifact { tiles=["orders -> totals"] }\n')),
+      ).toEqual([]);
    });
 
    // `Tag.text()` THROWS on a bad date literal rather than returning undefined.

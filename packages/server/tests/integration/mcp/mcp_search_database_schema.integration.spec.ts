@@ -12,7 +12,7 @@ import {
 } from "../../harness/mcp_test_setup";
 
 /**
- * End-to-end coverage for malloy_searchDatabaseSchema against a real server and
+ * End-to-end coverage for search_database_schema against a real server and
  * a real DuckDB connection.
  *
  * The unit spec mocks the first two tiers because they need only an
@@ -20,7 +20,7 @@ import {
  * which is exactly the part worth exercising for real: it is the code this
  * feature depends on and does not own.
  */
-describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
+describe.serial("search_database_schema (E2E Integration)", () => {
    let env: McpE2ETestEnvironment | null = null;
    let mcpClient: Client;
 
@@ -51,13 +51,13 @@ describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
       if (!env) throw new Error("Test environment not initialized");
       const { tools } = await mcpClient.listTools();
       const names = tools.map((t: { name: string }) => t.name);
-      expect(names).toContain("malloy_searchDatabaseSchema");
+      expect(names).toContain("search_database_schema");
    });
 
    it("lists environments and their connections with no arguments", async () => {
       if (!env) throw new Error("Test environment not initialized");
       const result = await mcpClient.callTool({
-         name: "malloy_searchDatabaseSchema",
+         name: "search_database_schema",
          arguments: {},
       });
       expect(result.isError).not.toBe(true);
@@ -69,7 +69,7 @@ describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
    it("lists a connection's schemas", async () => {
       if (!env) throw new Error("Test environment not initialized");
       const result = await mcpClient.callTool({
-         name: "malloy_searchDatabaseSchema",
+         name: "search_database_schema",
          arguments: {
             environmentName: ENVIRONMENT_NAME,
             connectionName: CONNECTION_NAME,
@@ -87,7 +87,7 @@ describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
    it("returns a well-formed table envelope for a real schema", async () => {
       if (!env) throw new Error("Test environment not initialized");
       const schemasResult = await mcpClient.callTool({
-         name: "malloy_searchDatabaseSchema",
+         name: "search_database_schema",
          arguments: {
             environmentName: ENVIRONMENT_NAME,
             connectionName: CONNECTION_NAME,
@@ -101,7 +101,7 @@ describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
       const visible = schemas.find((s) => !s.isHidden) ?? schemas[0];
 
       const result = await mcpClient.callTool({
-         name: "malloy_searchDatabaseSchema",
+         name: "search_database_schema",
          arguments: {
             environmentName: ENVIRONMENT_NAME,
             connectionName: CONNECTION_NAME,
@@ -139,7 +139,7 @@ describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
    it("explains an empty schema rather than returning a bare empty list", async () => {
       if (!env) throw new Error("Test environment not initialized");
       const result = await mcpClient.callTool({
-         name: "malloy_searchDatabaseSchema",
+         name: "search_database_schema",
          arguments: {
             environmentName: ENVIRONMENT_NAME,
             connectionName: CONNECTION_NAME,
@@ -156,7 +156,7 @@ describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
    it("advertises the per-package duckdb sandbox so the drill-down is navigable", async () => {
       if (!env) throw new Error("Test environment not initialized");
       const result = await mcpClient.callTool({
-         name: "malloy_searchDatabaseSchema",
+         name: "search_database_schema",
          arguments: { environmentName: ENVIRONMENT_NAME },
       });
       const payload = payloadOf(result);
@@ -170,7 +170,7 @@ describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
    it("ranks lexically when no embedding provider is configured", async () => {
       if (!env) throw new Error("Test environment not initialized");
       const schemasResult = await mcpClient.callTool({
-         name: "malloy_searchDatabaseSchema",
+         name: "search_database_schema",
          arguments: {
             environmentName: ENVIRONMENT_NAME,
             connectionName: CONNECTION_NAME,
@@ -184,7 +184,7 @@ describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
       const visible = schemas.find((s) => !s.isHidden) ?? schemas[0];
 
       const result = await mcpClient.callTool({
-         name: "malloy_searchDatabaseSchema",
+         name: "search_database_schema",
          arguments: {
             environmentName: ENVIRONMENT_NAME,
             connectionName: CONNECTION_NAME,
@@ -204,7 +204,7 @@ describe.serial("malloy_searchDatabaseSchema (E2E Integration)", () => {
    it("returns a structured error for an unknown connection", async () => {
       if (!env) throw new Error("Test environment not initialized");
       const result = await mcpClient.callTool({
-         name: "malloy_searchDatabaseSchema",
+         name: "search_database_schema",
          arguments: {
             environmentName: ENVIRONMENT_NAME,
             connectionName: "no-such-connection",

@@ -10,18 +10,18 @@ import { type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 
-// Zod shape for malloy_reloadPackage. environmentName/packageName mirror the
-// other tools and point the agent at malloy_getContext for name discovery.
+// Zod shape for reload_package. environmentName/packageName mirror the
+// other tools and point the agent at get_context for name discovery.
 const reloadShape = {
    environmentName: z
       .string()
       .describe(
-         "Environment name. Call malloy_getContext with no arguments to list the available environments.",
+         "Environment name. Call get_context with no arguments to list the available environments.",
       ),
    packageName: z
       .string()
       .describe(
-         "Package to reload. Call malloy_getContext with just environmentName to list its packages.",
+         "Package to reload. Call get_context with just environmentName to list its packages.",
       ),
 };
 
@@ -37,12 +37,12 @@ const reloadShape = {
 export const RELOAD_FAILURE_IS_SAFE =
    "A reload that fails to compile leaves your files on disk alone and keeps serving the previously compiled model, returning the compile errors.";
 
-const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by malloy_executeQuery WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
+const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by execute_query WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
 
-${RELOAD_FAILURE_IS_SAFE} Running malloy_compile first is still the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload.
+${RELOAD_FAILURE_IS_SAFE} Running compile_model first is still the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload.
 
 ## Parameters
-- environmentName, packageName (required): the package to recompile. Use the names malloy_getContext returns.
+- environmentName, packageName (required): the package to recompile. Use the names get_context returns.
 
 ## Behavior
 Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. This is the path every package from publisher.config.json takes. A package whose stored metadata carries an install location (only a PATCH that supplies one sets it) is re-fetched from that source instead, which overwrites on-disk edits.
@@ -51,7 +51,7 @@ Recompiles the package from its current on-disk content under publisher_data/, s
 A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Check mode if you had unsaved-elsewhere edits on disk: "in-place" recompiled them, "reinstalled" re-fetched over them. A reload that hits a hard compile error returns an error payload instead.`;
 
 /**
- * Registers the malloy_reloadPackage MCP tool: recompiles a package from its
+ * Registers the reload_package MCP tool: recompiles a package from its
  * on-disk content so a saved model edit becomes queryable by name without a
  * server restart. Wraps the same PackageController.getPackage(reload=true) path
  * the REST GET /environments/:env/packages/:pkg?reload=true endpoint uses, so it
@@ -67,7 +67,7 @@ export function registerReloadPackageTool(
    const packageController = new PackageController(environmentStore);
 
    mcpServer.tool(
-      "malloy_reloadPackage",
+      "reload_package",
       RELOAD_DESCRIPTION,
       reloadShape,
       async (params) => {
