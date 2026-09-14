@@ -12,6 +12,7 @@ import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { useDrill, useDrillSelf, type DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
+import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
 import { DashboardTile } from "./DashboardTile";
 
@@ -49,36 +50,14 @@ export interface DashboardProps {
    onNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
    /**
     * Height cap for a result panel. Left unset, each form gets the cap that
-    * suits its shape, see {@link TILE_HEIGHT} and {@link WHOLE_PAGE_HEIGHT}.
-    * Set it to hold a dashboard to a fixed box, as an embedding host might.
+    * suits its shape: {@link TILE_MAX_HEIGHT} per tile for the composite form,
+    * and no cap at all for the single-query form, where the one result IS the
+    * dashboard and a cap would clip the page rather than tidy it. Set it to
+    * hold a dashboard to a fixed box, as an embedding host might.
     */
    height?: number;
    maxResultSize?: number;
 }
-
-/**
- * Per-tile cap for the composite form. A tile is one panel among several, so
- * capping them keeps the grid even instead of letting one long table set the
- * height of its whole row.
- */
-const TILE_HEIGHT = 400;
-
-/**
- * Cap for the single-query form, where the one result *is* the dashboard and a
- * cap would clip the page rather than tidy it. High enough to be no cap in
- * practice, and still a guard against a pathological result.
- *
- * A result that REPORTS its own height, which a `# dashboard` grid does, renders
- * at that height and the page scrolls, which is what a reader expects. A result
- * that sizes to its CONTAINER instead, which a bare `# bar_chart` does, has no
- * height to report and keeps whatever first-paint height it was handed, so it
- * stretches: measured 1992px for a two-row bar chart against 227px for the same
- * query under a grid tag. `INITIAL_RENDER_HEIGHT` bounds that near 2000 rather
- * than removing it, and lowering the bound is NOT the fix, because the same seed
- * sizes a notebook's chart cells (measured 700px there). Telling the two kinds of
- * result apart needs something the renderer does not expose here.
- */
-const WHOLE_PAGE_HEIGHT = 20000;
 
 /** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
 const DEFAULT_COLUMNS = 2;
@@ -323,7 +302,7 @@ export function Dashboard({
                queryName={manifest.query}
                givens={applied}
                declaredTypes={declaredTypes}
-               height={height ?? WHOLE_PAGE_HEIGHT}
+               height={height}
                maxResultSize={maxResultSize}
                drill={drill}
             />
@@ -368,7 +347,7 @@ export function Dashboard({
                         givens={applied}
                         declaredTypes={declaredTypes}
                         givenNames={tile.givenNames}
-                        height={height ?? TILE_HEIGHT}
+                        height={height ?? TILE_MAX_HEIGHT}
                         maxResultSize={maxResultSize}
                         drill={drill}
                      />

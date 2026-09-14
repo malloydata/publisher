@@ -11,6 +11,7 @@ import { parseResourceUri } from "../../utils/formatting";
 import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
 import { highlight } from "../highlighter";
 import ResultContainer from "../RenderedResult/ResultContainer";
+import { MODEL_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
 import { useServer } from "../ServerProvider";
 import { CleanMetricCard, CleanNotebookCell } from "../styles";
@@ -182,7 +183,7 @@ export function ModelCell({
                queryData?.data?.result && (
                   <ResultContainer
                      result={queryData.data.result}
-                     maxHeight={600}
+                     maxHeight={MODEL_CELL_MAX_HEIGHT}
                      maxResultSize={maxResultSize}
                      renderLogs={queryData.data.renderLogs}
                   />
