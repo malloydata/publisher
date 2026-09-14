@@ -258,6 +258,39 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
       { timeout: 30000 },
    );
 
+   it(
+      "keeps the warm index across a package reload",
+      async () => {
+         // A reload swaps the Package instance. The vectors never move -- they
+         // are keyed by package name in publisher.db -- but the record that
+         // they were current used to live on the replaced instance, so the
+         // first question after any reload was ranked lexically while the diff
+         // re-discovered that every hash still matched. reload_package,
+         // ?reload=true and every watch-mode save paid that.
+         const before = stubRequests;
+         const reloaded = (await mcpClient.callTool({
+            name: "reload_package",
+            arguments: {
+               environmentName: ENVIRONMENT_NAME,
+               packageName: PACKAGE_NAME,
+            },
+         })) as { isError?: boolean };
+         expect(reloaded.isError).toBeFalsy();
+
+         // The FIRST call after the reload, deliberately without the polling
+         // loop the first test uses: polling here would hide the regression.
+         const payload = await callGetContext({
+            targetType: "view",
+            searchText: "orders by month",
+         });
+         expect(payload.retrieval).toBe("semantic");
+         // Exactly one stub call, the query embedding. The reload recompiled
+         // the package and re-embedded nothing.
+         expect(stubRequests).toBe(before + 1);
+      },
+      { timeout: 60000 },
+   );
+
    // Keep this test LAST: the induced failure starts the provider
    // cool-down, which short-circuits the semantic path for its window.
    it(
