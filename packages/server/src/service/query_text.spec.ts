@@ -247,5 +247,23 @@ describe("service/query_text", () => {
             buildDerivationBaseMap(stripMalloyCommentsAndLiterals(text)).size,
          ).toBe(0);
       });
+
+      it("does not let a literal re-point a name away from its real base", () => {
+         // The two hardenings that separate this map from buildSourceAliasMap,
+         // stated against the exact text that defeated that one: a real
+         // derivation from `hidden`, plus a literal spelling a derivation from
+         // `curated`. Last-wins over raw text resolved `mine` to `curated`,
+         // which is what a boundary keyed on this map would have admitted.
+         // Here `mine` must still resolve to `hidden` and nothing else.
+         const text =
+            "source: mine is hidden extend {\n" +
+            "  dimension: note is 'source: mine is curated'\n" +
+            "}\nrun: mine -> { group_by: note }";
+         expect(
+            buildDerivationBaseMap(stripMalloyCommentsAndLiterals(text)).get(
+               "mine",
+            ),
+         ).toEqual(new Set(["hidden"]));
+      });
    });
 });

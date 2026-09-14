@@ -384,6 +384,65 @@ const enforcedVectors: EnforcedVector[] = [
       expectedRows: 2,
    },
    {
+      // A comment between `is` and the base. The compiler reads around it and
+      // still derives from products, so a scan that stops at the comment
+      // resolves no protected source and injects no filter.
+      label: "line comment between is and the base",
+      modelPath: "products.malloy",
+      query: "source: a is -- c\n products extend {}\nrun: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
+      // Block form of the same.
+      label: "block comment between is and the base",
+      modelPath: "products.malloy",
+      query: "source: a is /* c */ products extend {}\nrun: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
+      // A declaration forged inside a string literal. The alias map is
+      // last-declaration-wins, so read as raw text this REPLACES the real
+      // `a is products` edge and points the walk at a name with no filters.
+      label: "forged derivation inside a string literal",
+      modelPath: "products.malloy",
+      query:
+         "source: a is products extend {\n" +
+         "  dimension: note is 'source: a is unprotected'\n" +
+         "}\nrun: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
+      // A forged `run:` inside a literal re-points run-target extraction at a
+      // name that is not the query's actual target.
+      label: "forged run: target inside a string literal",
+      modelPath: "products.malloy",
+      query:
+         "source: a is products extend {\n" +
+         "  dimension: note is 'run: zzz'\n" +
+         "}\nrun: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
+      // The same, hidden in a comment ahead of the real `run:`.
+      label: "forged run: target inside a comment",
+      modelPath: "products.malloy",
+      query:
+         "-- run: zzz\n" +
+         "source: a is products extend {}\n" +
+         "run: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
       // orders alias — confirms enforcement on a multi-required-filter source.
       label: "orders alias (source a is orders)",
       modelPath: "orders.malloy",

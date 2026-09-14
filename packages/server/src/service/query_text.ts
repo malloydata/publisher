@@ -173,16 +173,24 @@ export function stripMalloyCommentsAndLiterals(text: string): string {
  * Every base each ad-hoc alias in `text` may derive from — `source: NAME is
  * BASE` and `query: NAME is BASE` — as NAME → set of BASEs.
  *
- * Deliberately NOT {@link buildSourceAliasMap}, which this does not replace:
- * that one feeds the query BOUNDARY, where an extra edge widens ADMISSION, so
- * it stays exactly as narrow as it has always been. This one feeds the
- * authorize gate, where an extra edge widens DENIAL, so it is built to
- * over-collect on purpose:
+ * Built to over-collect on purpose:
  *  - `query:` declarations are included, so a `query:` hop between a
  *    derivation and the `run:` cannot break the chain;
  *  - a name maps to a SET, keeping every base declared for it rather than the
  *    last, so a second (forged or shadowing) declaration can only add a base
  *    to check, never replace the real one.
+ *
+ * Read by BOTH the authorize gate and the query boundary, which want opposite
+ * things from it, so the quantifier -- not the map -- is what carries the
+ * direction. The authorize gate denies if ANY branch reaches a gated source,
+ * so an extra edge widens DENIAL and over-collection is trivially safe. The
+ * boundary admits only if EVERY base proves curated, so an extra edge adds an
+ * obligation rather than discharging one, and over-collection is safe there
+ * too. A future caller that reads this map with an ANY-branch ADMISSION
+ * quantifier would invert that and turn a forged edge into a bypass.
+ *
+ * Does NOT replace {@link buildSourceAliasMap}, which survives for
+ * `resolveFilterSource`'s filter-inheritance walk.
  *
  * Expects text already passed through {@link stripMalloyCommentsAndLiterals}.
  */
