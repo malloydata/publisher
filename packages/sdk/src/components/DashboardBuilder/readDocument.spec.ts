@@ -4,13 +4,14 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { blockAbove, readDashboardDocument } from "./readDocument";
+import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
 const read = async (source: string) => {
    const result = await readDashboardDocument(source);
-   if (!result.ok) throw new Error(`expected a document: ${result.reason}`);
+   if (readFailed(result))
+      throw new Error(`expected a document: ${result.reason}`);
    return result.document;
 };
 
@@ -44,7 +45,12 @@ describe("blockAbove", () => {
       ];
       const block = blockAbove(lines, 5);
       expect(block.start).toBe(2);
-      expect(block.tags).toEqual(["# colspan=6", '# label="Revenue"']);
+      expect(block.tags.map((t) => t.text)).toEqual([
+         "# colspan=6",
+         '# label="Revenue"',
+      ]);
+      // The writer patches a tag in place, so the line number is load-bearing.
+      expect(block.tags.map((t) => t.line)).toEqual([3, 4]);
    });
 
    it("stops at the blank line rather than running into the tile above", () => {
@@ -184,7 +190,7 @@ describe("readDashboardDocument: what it refuses", () => {
    it("refuses a file with no artifact tag", async () => {
       const r = await readDashboardDocument("source: a is b extend { }");
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.reason).toContain("composite dashboard");
+      if (readFailed(r)) expect(r.reason).toContain("composite dashboard");
    });
 
    it("refuses a tile that is not a source -> view expression", async () => {
@@ -192,7 +198,7 @@ describe("readDashboardDocument: what it refuses", () => {
          `## artifact { title="T" tiles=["just_a_name"] }\nsource: a is b extend { view: x is y }`,
       );
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.reason).toContain("source -> view");
+      if (readFailed(r)) expect(r.reason).toContain("source -> view");
    });
 
    // NOT a refusal, and the tripwire is what taught us so: a dashboard whose
@@ -261,7 +267,7 @@ describe("every composite dashboard in the repository opens", () => {
             fs.readFileSync(file, "utf8"),
          );
          if (expectBroken) return; // either outcome is acceptable for these
-         if (!result.ok) throw new Error(result.reason);
+         if (readFailed(result)) throw new Error(result.reason);
          // Tiles, always. Sources NOT always: a dashboard whose tiles all read
          // imported sources declares no extension at all, which the tripwire
          // taught us on its first run.

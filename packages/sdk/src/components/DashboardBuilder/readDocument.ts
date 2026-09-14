@@ -46,12 +46,27 @@ export type ReadResult =
    | { ok: true; document: DashboardDocument }
    | ReadFailure;
 
+/**
+ * Narrow a result to its failure arm.
+ *
+ * A guard rather than `if (!result.ok)`, because this package compiles with
+ * `strict: false` — the tsconfig says why, and it is not ours to change — and
+ * without `strictNullChecks` TypeScript does not narrow a discriminated union
+ * through a negated discriminant. The failure is quiet: `result.reason` simply
+ * does not typecheck, in a codebase where most code never notices.
+ */
+export const readFailed = (result: ReadResult): result is ReadFailure =>
+   result.ok === false;
+
 /** A `#`/`//` block above a declaration, and where it sits. */
-interface Block {
+export interface Block {
    /** 0-based line of the first line in the block. */
    start: number;
-   /** The `#`-prefixed lines only, in order, ready for `parseAnnotation`. */
-   tags: string[];
+   /**
+    * The `#`-prefixed lines only, in order, WITH their line numbers. The writer
+    * needs the numbers to patch a tag in place; the reader only needs the text.
+    */
+   tags: Array<{ line: number; text: string }>;
 }
 
 /**
@@ -74,15 +89,20 @@ export function blockAbove(lines: string[], declLine: number): Block {
       if (text.startsWith("#") || text.startsWith("//")) start = i;
       else break;
    }
-   const tags: string[] = [];
+   const tags: Array<{ line: number; text: string }> = [];
    for (let i = start; i < declLine; i++) {
       const text = lines[i].trim();
       // `##` at this indent level is a MODEL annotation and never belongs to a
       // declaration; only single-`#` object tags do.
-      if (text.startsWith("#") && !text.startsWith("##")) tags.push(text);
+      if (text.startsWith("#") && !text.startsWith("##"))
+         tags.push({ line: i, text });
    }
    return { start, tags };
 }
+
+/** Just the text of a block's tags, which is what `parseAnnotation` takes. */
+export const tagText = (tags: Array<{ text: string }>) =>
+   tags.map((t) => t.text);
 
 /** The model-level `##` lines, which are not symbols and must be read as text. */
 function modelLines(lines: string[]): {
@@ -160,11 +180,12 @@ function localGivens(lines: string[]): LocalGiven[] | undefined {
          const m = /^([A-Z_][A-Z0-9_]*)\s*::\s*(\S+)\s+is\s+(.+)$/.exec(text);
          if (!m) continue;
          const { tags } = blockAbove(lines, j);
+         void tags;
          out.push({
             name: m[1],
             type: m[2],
             default: m[3].trim(),
-            ...readControlTags(tags),
+            ...readControlTags(tagText(blockAbove(lines, j).tags)),
          });
       }
    }
@@ -261,7 +282,7 @@ export async function readDashboardDocument(
          if (child.type === "query") views.set(String(child.name), childLine);
          else if (child.type === "field") {
             const { tags } = blockAbove(lines, childLine);
-            const drillTag = parseAnnotation(tags).tag?.tag("drill");
+            const drillTag = parseAnnotation(tagText(tags)).tag?.tag("drill");
             if (!drillTag) continue;
             const to = drillTag.textArray("to") ?? [drillTag.text("to") ?? ""];
             const expression = /is\s+(.+)$/
@@ -320,7 +341,7 @@ export async function readDashboardDocument(
          };
       }
       const { tags } = blockAbove(lines, declLine);
-      const t = parseAnnotation(tags).tag;
+      const t = parseAnnotation(tagText(tags)).tag;
       const filters =
          body.kind === "reference" ? filtersOf(body.refinement) : undefined;
       tiles.push({
