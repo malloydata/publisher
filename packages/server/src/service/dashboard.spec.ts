@@ -2053,6 +2053,40 @@ describe("service/dashboard grid width and hostile literals", () => {
       expect(lintOf(f)[0]).toContain("# dashboard { columns=N }");
    });
 
+   // A tile entry is the run expression alone, and a property hung off one is
+   // dropped by `tagText` without a word. The shape PARSES today, which is what
+   // makes it worth a finding before tile kinds exist: an author who has read
+   // about them somewhere can write one, get a tile whose query does not
+   // resolve, and be told only that the query failed.
+   it("names a property on a tile entry as unread, and where layout goes", () => {
+      const f = composite(
+         '## artifact { tiles=[intro { kind=text }, "orders -> totals"] }\n',
+      );
+      // It builds, and the entry is reduced to its text.
+      expect(build(f)?.tiles?.map((tile) => tile.query)).toEqual([
+         "intro",
+         "orders -> totals",
+      ]);
+      const carried = lintOf(f).find((finding) =>
+         finding.includes("carries `kind`"),
+      );
+      expect(carried).toContain("`intro` in `tiles=[…]`");
+      expect(carried).toContain("run expression alone");
+      expect(carried).toContain("# colspan");
+      // Alongside, not instead of: `intro` is also a tile expression that does
+      // not resolve, and the author needs both halves. Saying only that the
+      // query failed is the state this finding exists to fix.
+      expect(
+         lintOf(f).some((finding) => finding.includes("does not resolve")),
+      ).toBe(true);
+   });
+
+   it("says nothing about plain tile entries", () => {
+      expect(
+         lintOf(composite('## artifact { tiles=["orders -> totals"] }\n')),
+      ).toEqual([]);
+   });
+
    // `Tag.text()` THROWS on a bad date literal rather than returning undefined.
    // The reporting path calls it on the very value it is complaining about, and
    // the lint's try/catch wraps the whole package loop, so one bad literal would

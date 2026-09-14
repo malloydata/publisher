@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
+import Markdown from "markdown-to-jsx";
 import { useCallback, useMemo } from "react";
 import type { DashboardManifest } from "../../client";
 import { useGivensState } from "../../hooks/useGivensState";
@@ -365,6 +366,20 @@ export function Dashboard({
    );
 }
 
+/**
+ * The dashboard's prose header: its title, and the description as MARKDOWN.
+ *
+ * A description comes from the file's model-level doc comment (`##"` lines),
+ * and Malloy carries a whole block of them through with its newlines and blank
+ * lines intact — measured: `'## Why this page exists\nRevenue is up but margin
+ * is flat.\n\nThe tile below says where it went.'` reaches the manifest exactly
+ * like that. Rendering it as a plain `Typography` collapsed all of that onto
+ * one unstyled line, so a dashboard could already carry a narrative header and
+ * was throwing it away at the last step.
+ *
+ * Markdown here and not in a tile: prose BETWEEN tiles needs a tile kind the
+ * format cannot express yet. This is the half that needs nothing new.
+ */
 function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
    return (
       <Box>
@@ -372,9 +387,34 @@ function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
             {manifest.title ?? manifest.name}
          </Typography>
          {manifest.description && (
-            <Typography variant="body2" color="text.secondary">
-               {manifest.description}
-            </Typography>
+            <Box
+               sx={{
+                  color: "text.secondary",
+                  typography: "body2",
+                  // The block starts flush under the title and ends flush
+                  // against the controls, so a one-line description sits
+                  // exactly where the old `Typography` put it and a longer one
+                  // grows downward rather than pushing the title around.
+                  "& > :first-of-type": { mt: 0 },
+                  "& > :last-child": { mb: 0 },
+                  // Headings in a description are section labels within the
+                  // page, not competitors to its title, so they stay at body
+                  // weight and size rather than MUI's h1..h6 scale.
+                  "& h1, & h2, & h3, & h4, & h5, & h6": {
+                     fontSize: "inherit",
+                     fontWeight: 600,
+                     m: "0.5em 0 0.25em",
+                  },
+                  "& p": { m: "0.5em 0" },
+                  "& ul, & ol": { m: "0.5em 0", pl: 3 },
+                  "& code": {
+                     fontFamily: "monospace",
+                     fontSize: "0.9em",
+                  },
+               }}
+            >
+               <Markdown>{manifest.description}</Markdown>
+            </Box>
          )}
       </Box>
    );

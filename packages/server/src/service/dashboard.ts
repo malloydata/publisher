@@ -1112,6 +1112,31 @@ export function lintDashboard(
       );
    }
 
+   // A tile entry is the run expression and NOTHING else. `readArtifactTag`
+   // reads each element with `tagText`, which takes its text and drops anything
+   // hung off it, so `tiles=[intro { kind=text }]` compiles, the package loads
+   // clean, and the entry silently becomes the tile `intro` — a run expression
+   // that does not resolve, reported as a query error with no hint that the tag
+   // was the problem. Measured against a running server.
+   //
+   // Worth a finding now rather than when tile kinds arrive: the shape parses
+   // today, so an author reading about them anywhere (Malloyyo's format, a
+   // proposal, another Publisher) can write one and be told nothing. Same
+   // failure as an `# artifact` on a view, which is silently a shared include
+   // and got its own finding for the same reason.
+   for (const entry of artifactTag?.array("tiles") ?? []) {
+      const carried = Object.keys(entry.dict ?? {});
+      if (carried.length === 0) continue;
+      const named = carried.map((property) => `\`${property}\``).join(", ");
+      add(
+         `\`${tagText(entry) ?? "a tile"}\` in \`tiles=[…]\` carries ${named}, ` +
+            `which Publisher does not read: a tile entry is the run expression ` +
+            `alone. Per-tile presentation goes on the view the tile names ` +
+            `(\`# colspan\`, \`# break\`, \`# label\`, \`# subtitle\`, ` +
+            `\`# borderless\`).`,
+      );
+   }
+
    // Per-tile layout, from the tag on the view a tile names rather than from the
    // tile entry, which is what lets one view lay out the same as a composite tile
    // and as a `nest:`. Publisher's grid always has a width (the manifest's, or
