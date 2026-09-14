@@ -19,6 +19,30 @@
 // same figures as one query with nests. That form is Malloy's own rendering
 // feature and still works; this is the form to author a dashboard in.
 ##! experimental.givens
+
+// The page's narrative header. Model-level doc comments (`##"`) become the
+// dashboard's description, and Publisher renders that as MARKDOWN: paragraphs,
+// emphasis, lists, links and inline code all work, and a bare `##"` line
+// separates paragraphs.
+//
+// It has to be `##"` and not `#"`. A doc comment attaches to an object, and at
+// model level there is none to attach to, so `#"` here fails the package load
+// with "Object annotation not connected to any object". The single-query form
+// is the other way round: its `#"` sits on the `query:` and attaches to that.
+//
+// This is the whole prose surface a dashboard has today, and it is per PAGE.
+// Prose next to one tile is a `# subtitle="…"` on that tile's view, one line.
+// A standalone text tile, prose BETWEEN tiles, needs a tile kind the format
+// cannot express yet.
+##" Revenue, margin and volume for the order lines the controls above select.
+##"
+##" **Key figures** is the summary; everything under it explains the summary.
+##" The monthly trend says which way the numbers are moving, and the state,
+##" category and product breakdowns say where they came from.
+##"
+##" Every tile re-runs when a control changes, so narrowing to a single
+##" `Category` or `Region` reframes the whole page rather than filtering one
+##" list in it.
 ## artifact { title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state", "overview -> revenue_by_category", "overview -> best_sellers"] } dashboard { columns=12 }
 import "../data_app.malloy"
 import "../givens.malloy"

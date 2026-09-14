@@ -115,6 +115,13 @@ query: overview is order_items -> {
 
 - `# artifact { … }` is what makes the file a dashboard. `title=` names it; without one the title
   falls back to the `#"` doc comment above, then to the slug.
+- **The doc comment below the title is the page's prose header, and it renders as markdown.**
+  Paragraphs, emphasis, lists, links and inline code all work, and a bare doc-comment line separates
+  paragraphs. On a composite the lines are model-level (`##"`), because a doc comment attaches to an
+  object and at model level there is none — a `#"` there fails the package load with "Object
+  annotation not connected to any object". On the single-query form it is `#"`, attached to the
+  `query:`. Prose next to one tile is that tile's `# subtitle`, which is a tag string and therefore
+  one line; prose BETWEEN tiles is not something the format can express.
 - `# dashboard { columns=N }` is the renderer's grid: a standard `@malloydata/render` tag, not a
   Publisher one.
 - `where:` naming a given is what puts a control on the page. Two names here, so two controls.

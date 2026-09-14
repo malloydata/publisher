@@ -1091,6 +1091,21 @@ test.describe("package-dashboards", () => {
       );
    });
 
+   // A dashboard's description is its narrative header, and it is MARKDOWN: the
+   // doc comment can carry paragraphs, emphasis, lists and inline code, and
+   // Malloy delivers the block with its newlines intact. Rendered as plain text
+   // it collapsed onto one line with the asterisks showing, which is what this
+   // asserts against: `<strong>` exists, and no literal `**` survives.
+   test("a dashboard's description renders as markdown", async ({ page }) => {
+      await openDashboard(page, "tiled");
+      const header = page.locator("h5", { hasText: "Tiled" }).locator("..");
+      await expect(header).toBeVisible({ timeout: 30_000 });
+      await expect(
+         header.locator("strong", { hasText: "tiles" }),
+      ).toBeVisible();
+      expect(await header.innerText()).not.toContain("**");
+   });
+
    // The claim the one-form decision rests on: a view laid out with `# colspan`
    // and `# break` lands in the same place as a composite tile as it does nested
    // under a `# dashboard` query. `tiled` is `grid` re-authored as tiles, so the

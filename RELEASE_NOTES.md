@@ -31,6 +31,33 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a dashboard's description is its narrative header, and it renders as markdown
+
+A dashboard could already carry a block of prose and was throwing it away at the last step. Malloy
+delivers a doc comment with its newlines and blank lines intact — measured, `'## Why this page
+exists\nRevenue is up but margin is flat.\n\nThe tile below says where it went.'` reaches the manifest
+exactly like that — and Publisher rendered it as a plain `Typography`, which collapsed the lot onto
+one unstyled line with the asterisks showing.
+
+It renders as markdown now: paragraphs, emphasis, lists, links and inline code. Headings stay at body
+weight, because a heading in a description is a section label inside the page rather than a
+competitor to the page's own title. The bundled `storefront` overview has a real one to copy from.
+
+Two things worth knowing when writing one. On a composite the lines are model-level (`##"`), because
+a doc comment attaches to an object and at model level there is none — a `#"` there fails the package
+load with "Object annotation not connected to any object"; the single-query form is the other way
+round, with `#"` attached to its `query:`. And this is the whole prose surface a dashboard has: per
+page, plus a one-line `# subtitle` per tile. Prose BETWEEN tiles needs a tile kind the format cannot
+express yet.
+
+## [Unreleased] — a property on a tile entry is reported instead of dropped
+
+`tiles=[intro { kind=text }]` compiled, loaded clean, and silently became the tile `intro` — a run
+expression that does not resolve, reported as a query error with no hint that the tag was the
+problem. The shape parses today, so an author who has read about tile kinds anywhere can write one
+and be told nothing about why it did not work. The package lint now names the property and says where
+per-tile presentation actually goes.
+
 ## [Unreleased] — a result panel is sized by what the renderer says it is, not by its DOM
 
 A panel decided its height by walking three levels into `@malloydata/render`'s output and reading
