@@ -29,10 +29,17 @@ import { useDashboardEditor } from "./useDashboardEditor";
  * rule comes from `Dashboard` rather than being restated here, so what you
  * arrange is what a reader will see, and the two cannot drift.
  *
- * Tile CONTENT is the caller's business, through `renderTile`. A tile's result
- * comes from running a query, and where that query runs differs between a saved
- * package dashboard and an unsaved draft; keeping it out here means the editing
- * surface can be mounted, tested and reviewed without a server.
+ * The TILE ITSELF is the caller's business, through `renderTile`. A tile's
+ * result comes from running a query, and where that query runs differs between
+ * a saved package dashboard and an unsaved draft; keeping it out here means the
+ * editing surface can be mounted, tested and reviewed without a server.
+ *
+ * `renderTile` replaces the tile rather than filling it, because `DashboardTile`
+ * draws its own card AND its own heading. Nesting one inside a card of ours
+ * would show a card in a card under two titles — which is precisely not what a
+ * reader sees. So selection is drawn as an outline AROUND whatever the caller
+ * renders, and the label and subtitle being edited appear where they really
+ * will.
  *
  * Editing is property-level: a tile's presentation and, later, its filters.
  * Adding, removing and reordering tiles is refused by the writer, so it is not
@@ -45,7 +52,10 @@ export interface DashboardBuilderProps {
    document: DashboardDocument;
    /** Persist the patched file. Left out, the builder edits without saving. */
    onSave?: (source: string) => Promise<void> | void;
-   /** Renders a tile's result. Without it, tiles show what they will run. */
+   /**
+    * Renders a tile, card and heading included — this is where a real
+    * `DashboardTile` goes. Without it, tiles show what they will run.
+    */
    renderTile?: (tile: DashboardTile) => ReactNode;
 }
 
@@ -145,60 +155,72 @@ export function DashboardBuilder({
                   key={`${each.source}.${each.name}`}
                   sx={{ gridColumn: { md: tileGridColumn(each, columns) } }}
                >
-                  <Paper
-                     elevation={0}
+                  <Box
                      onClick={() => setSelected(index)}
                      aria-label={`Tile ${each.name}`}
                      aria-current={index === selected}
                      sx={{
-                        p: 2,
-                        minHeight: 140,
                         cursor: "pointer",
-                        background: theme.tile,
                         borderRadius: 1,
-                        // Selection is a border weight change rather than a
-                        // colour swap, so a selected tile still reads as the
-                        // card it will be on the page.
-                        border:
+                        // An outline rather than a border, and outside the tile
+                        // rather than on it: the tile already has an edge of its
+                        // own, and an outline neither doubles that edge nor
+                        // takes up space, so selecting a tile cannot shift the
+                        // layout being arranged.
+                        outline:
                            index === selected
                               ? `2px solid ${theme.drillLink}`
-                              : theme.border,
+                              : "none",
+                        outlineOffset: 2,
                      }}
                   >
-                     <Typography
-                        variant="subtitle2"
-                        sx={{ fontWeight: 500, color: theme.tileTitle }}
-                     >
-                        {each.label ?? each.name}
-                     </Typography>
-                     {each.subtitle && (
-                        <Typography
-                           variant="caption"
-                           sx={{
-                              display: "block",
-                              color: theme.tileTitle,
-                              opacity: 0.8,
-                           }}
-                        >
-                           {each.subtitle}
-                        </Typography>
-                     )}
                      {renderTile ? (
                         renderTile(each)
                      ) : (
-                        <Typography
-                           variant="caption"
+                        // No caller-supplied tile: say what this one will run,
+                        // so the surface is still legible without a server.
+                        <Paper
+                           elevation={0}
                            sx={{
-                              display: "block",
-                              mt: 1,
-                              color: theme.tileTitle,
-                              opacity: 0.7,
+                              p: 2,
+                              minHeight: 140,
+                              background: theme.tile,
+                              borderRadius: 1,
+                              border: theme.border,
                            }}
                         >
-                           {each.source} → {each.name}
-                        </Typography>
+                           <Typography
+                              variant="subtitle2"
+                              sx={{ fontWeight: 500, color: theme.tileTitle }}
+                           >
+                              {each.label ?? each.name}
+                           </Typography>
+                           {each.subtitle && (
+                              <Typography
+                                 variant="caption"
+                                 sx={{
+                                    display: "block",
+                                    color: theme.tileTitle,
+                                    opacity: 0.8,
+                                 }}
+                              >
+                                 {each.subtitle}
+                              </Typography>
+                           )}
+                           <Typography
+                              variant="caption"
+                              sx={{
+                                 display: "block",
+                                 mt: 1,
+                                 color: theme.tileTitle,
+                                 opacity: 0.7,
+                              }}
+                           >
+                              {each.source} → {each.name}
+                           </Typography>
+                        </Paper>
                      )}
-                  </Paper>
+                  </Box>
                </Box>
             ))}
          </Box>

@@ -124,6 +124,42 @@ describe("DashboardBuilder", () => {
          "declared on orders rather than in this dashboard",
       );
    });
+
+   // `renderTile` hands over the WHOLE tile, card and heading included, because
+   // a real `DashboardTile` draws both. Filling a card of ours would show a card
+   // in a card under two titles, which is the opposite of the point.
+   it("hands the whole tile to renderTile, adding no heading of its own", async () => {
+      const document = await openDocument();
+      render(
+         <DashboardBuilder
+            source={SOURCE}
+            document={document}
+            renderTile={(each) => <article>a real {each.name}</article>}
+         />,
+      );
+      expect(within(tile("by_cat")).getByText(/a real by_cat/)).toBeDefined();
+      // The label is the caller's to draw now, so the surface does not also
+      // print it, and the placeholder is gone.
+      expect(screen.queryByText("By category")).toBeNull();
+      expect(screen.queryByText(/a → by_cat/)).toBeNull();
+   });
+
+   // Selecting is a thing you do while arranging, so it must not move what you
+   // are arranging: an outline is drawn outside the box and takes no space.
+   it("marks selection without resizing the tile", async () => {
+      const document = await openDocument();
+      render(
+         <DashboardBuilder
+            source={SOURCE}
+            document={document}
+            renderTile={(each) => <article>a real {each.name}</article>}
+         />,
+      );
+      const before = gridColumnOf("by_cat");
+      selectTile("by_cat");
+      expect(tile("by_cat").getAttribute("aria-current")).toBe("true");
+      expect(gridColumnOf("by_cat")).toBe(before);
+   });
 });
 
 describe("DashboardBuilder: history", () => {
