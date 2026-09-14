@@ -38,10 +38,13 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    their control tags: see "Filter controls" below for the syntax and what each tag renders as. Skip
    if they already exist, since a given is a model concern and dashboards share them.
 4. **COMPOSE THE FILE** for `dashboards/`, following the template below, but do not save it yet.
-   Import every given it filters by, and every source or query any of those givens names in a
-   `suggest`. Both are per-file, and getting the suggest wrong does not error: the control still
-   looks like a picker but has no options, and says so underneath, "Could not load the options for
-   this control". The package warnings name it too. **A `suggest` naming a `query=` needs that
+   Import the package's givens file **whole** — `import '../givens.malloy'`, not a named list.
+   Only the givens the tiles reference become controls, so a whole-file import brings nothing
+   extra, and a named list is one more thing to forget; forgetting one costs you a missing control
+   rather than an error. Sources are the other way round: name the few you need. Then import every
+   source or query any referenced given names in a `suggest`. Both are per-file, and getting the
+   suggest wrong does not error: the control still looks like a picker but has no options, and says
+   so underneath, "Could not load the options for this control". The package warnings name it too. **A `suggest` naming a `query=` needs that
    query's own source imported as well**, because an import is not transitive: the query resolves by
    name, so the file compiles and the package loads, but running the picker fails with
    `Undefined source '<name>'`. The package warnings name this one too, saying which source to
@@ -75,7 +78,7 @@ out by Publisher into the grid `# dashboard { columns=N }` names.
 ## artifact { title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state"] } dashboard { columns=12 }
 import { scoped_sales } from './_shared.malloy'
 import { products } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import '../givens.malloy'
 
 // Layout goes on the VIEW, and a thin re-declaration is the place to put it: the
 // modelled view keeps its chart tag, and this decides how wide it sits here.
@@ -126,7 +129,7 @@ this way.
 ```malloy
 ##! experimental.givens
 import { order_items, products } from '../storefront.malloy'
-import { CATEGORY, MIN_SALE } from '../givens.malloy'
+import '../givens.malloy'
 
 #" Revenue and margin at a glance, and where they come from.
 # artifact { title="Business Overview" } dashboard { columns=12 }
@@ -184,7 +187,7 @@ compiled against a sibling that is not on disk fails with an `import-error`.
 ```malloy
 ##! experimental.givens
 import { order_items } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import '../givens.malloy'
 
 source: scoped_sales is order_items extend {
   where: products.category ~ $CATEGORY and created_at >= $SINCE

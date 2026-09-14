@@ -21,11 +21,23 @@
 ##! experimental.givens
 ## artifact { title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state", "overview -> revenue_by_category", "overview -> best_sellers"] } dashboard { columns=12 }
 import "../data_app.malloy"
-import { CATEGORY, BRAND, REGION, SINCE, MIN_SALE } from "../givens.malloy"
-// Named explicitly rather than arriving with `scoped_orders`: a bare import is
-// not transitive, so without this the controls' `suggest { source= }` and
-// `suggest { query= }` point at names this file cannot see, and the load lint
-// says so rather than serving a picker with no options.
+import "../givens.malloy"
+// The givens arrive as a WHOLE-FILE import, not as a named list, and that is
+// the convention rather than a shortcut. A control renders for a given the
+// tiles actually reference, not for every one in scope, so importing the file
+// costs nothing and a named list only makes the author enumerate — and forget.
+// It is also what Malloyyo documents as best practice for the same format, so
+// a repo written for either side reads the same.
+//
+// They have to arrive somehow: a bare import is not TRANSITIVE, so they do not
+// ride in with `scoped_orders` from data_app.malloy. Without this line the file
+// surfaces no givens at all and binding one at run time fails.
+//
+// The source names below are listed rather than whole-file imported, and that
+// asymmetry is deliberate: this file needs four specific names out of
+// storefront.malloy, and the controls' `suggest { source= }` and
+// `suggest { query= }` point at names this file cannot otherwise see, so the
+// load lint says so rather than serving a picker with no options.
 //
 // `order_items` is here for the same reason and is the half the lint does NOT
 // catch: `brand_suggest` resolves as a name, so the lint passes, but running it
