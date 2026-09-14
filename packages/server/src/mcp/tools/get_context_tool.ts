@@ -904,6 +904,17 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
    };
 }
 
+/**
+ * Stable order for two paths, by UTF-16 codepoint.
+ *
+ * Deliberately not `localeCompare`: called with no locale it uses the
+ * runtime's, so the same bytes sort differently under a different LANG. Every
+ * caller here wants "the same order everywhere", never a human-friendly one.
+ */
+export function comparePaths(a: string, b: string): number {
+   return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** Does this entity survive the scope's model/source/entity refinements? */
 function matchesScope(
    e: { source?: string; name: string; modelPath: string; kind: string },
@@ -1269,8 +1280,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
    // order equally-ranked cards come back in, and `first wins` still settles
    // the odd genuine within-a-file duplicate. Filesystem order would make both
    // differ between two machines serving the same package.
+   // Codepoint order, not localeCompare: with no locale argument that
+   // follows the runtime's collation, which moves with LANG/LC_ALL -- so two
+   // servers on identical bytes could walk the same package in different
+   // orders, which is the one thing this sort exists to prevent.
    const models = [...(await pkg.listModels())].sort((a, b) =>
-      (a.path ?? "").localeCompare(b.path ?? ""),
+      comparePaths(a.path ?? "", b.path ?? ""),
    );
 
    const entities: Entity[] = [];
@@ -1605,7 +1620,11 @@ function collapseAliases(entities: Entity[]): Entity[] {
          if (Boolean(b.embedDoc) !== Boolean(a.embedDoc)) {
             return b.embedDoc ? 1 : -1;
          }
-         return a.name.localeCompare(b.name);
+         // Codepoint, for the same reason the model walk uses it: this
+         // picks WHICH name survives a collapse, so a locale-dependent
+         // comparison would let two servers answer with different spellings
+         // of the same field.
+         return comparePaths(a.name, b.name);
       })[0];
       // The DOC survives independently of the name. A raw column that carries
       // the only `#(doc)` in the group would otherwise lose it, and `aliases`

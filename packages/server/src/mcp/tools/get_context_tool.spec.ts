@@ -2950,18 +2950,18 @@ describe("get_context duplicate and visibility handling", () => {
                scopes: [{ environment: "specs", package: "dup" }],
             }),
          );
-         return payload.sources
-            .map(
-               (s: { source_info: { resource_id: { model_path: string } } }) =>
-                  s.source_info.resource_id.model_path,
-            )
-            .sort();
+         return payload.sources.map(
+            (s: { source_info: { resource_id: { model_path: string } } }) =>
+               s.source_info.resource_id.model_path,
+         );
       };
       expect(await pathsFor(["a.malloy", "b.malloy"])).toEqual([
          "a.malloy",
          "b.malloy",
       ]);
-      // Reversed listing, same answer: the set does not follow the order.
+      // Reversed listing, same answer IN THE SAME ORDER. Sorting this side
+      // too would have asserted only that the same set comes back, which is
+      // true with no sort at all.
       expect(await pathsFor(["b.malloy", "a.malloy"])).toEqual([
          "a.malloy",
          "b.malloy",

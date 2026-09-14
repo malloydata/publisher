@@ -147,7 +147,7 @@ describe("get_context source attribution", () => {
       ]);
    });
 
-   it("reports the same pairings whatever order the models are listed in", async () => {
+   it("reports the same pairings IN ORDER whatever order the models are listed in", async () => {
       const forward = twoFilePackage();
       const reversed = {
          ...twoFilePackage(),
@@ -156,9 +156,12 @@ describe("get_context source attribution", () => {
             { path: "defs.malloy" },
          ],
       };
-      expect(sorted(await cardsFor(reversed))).toEqual(
-         sorted(await cardsFor(forward)),
-      );
+      // Compared UNSORTED, deliberately. Sorting both sides asserts set
+      // equality, which the walk delivers whether or not it sorts its model
+      // listing -- so it stayed green with the sort at collectEntities
+      // deleted, while the claim being made is that two servers on identical
+      // bytes emit identical output.
+      expect(await cardsFor(reversed)).toEqual(await cardsFor(forward));
    });
 
    /**

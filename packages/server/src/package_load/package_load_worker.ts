@@ -526,7 +526,10 @@ async function listPackageFiles(packagePath: string): Promise<string[]> {
       .map((full: string) =>
          path.relative(packagePath, full).replace(/\\/g, "/"),
       )
-      .sort((a, b) => a.localeCompare(b));
+      // Codepoint order: localeCompare with no locale follows the runtime's
+      // collation (LANG/LC_ALL), so it does not deliver the cross-server
+      // stability the comment above promises.
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 function filterModelPaths(allRelative: string[]): string[] {
