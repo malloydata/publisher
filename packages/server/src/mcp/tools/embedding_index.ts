@@ -381,6 +381,42 @@ export function entityRowKey(
 }
 
 /**
+ * One entry per (kind, source, name), which is the identity the vector cache
+ * keys on.
+ *
+ * A source is queryable at every model path that resolves it, so the entity
+ * list handed to retrieval carries one entry PER PATH -- three dashboards
+ * importing one shared include is three entries for each of its fields. That
+ * is correct for the response, where each path is its own card, and wrong for
+ * everything downstream of here: the embedding rows have no model_path in
+ * their primary key, so the duplicates embed identical text once per path and
+ * then upsert onto the same row. They also inflate the MAX_EMBEDDED_ENTITIES
+ * cap and `totalEntities`, which would let a package flip to lexical because
+ * someone added an importing file rather than because the model grew.
+ *
+ * Collapsed here, at the cache boundary, rather than at either call site, so
+ * the guarantee holds for any caller. The response fan-out is unaffected: it
+ * maps a hit back onto the live per-path entities itself (see the semantic
+ * block in get_context_tool), and reads modelPath from those, never from here.
+ *
+ * First wins. Two entities sharing a key but carrying different doc text
+ * already collide on the row's primary key, so which one is embedded was
+ * decided by write order before this existed; this makes it read order
+ * instead, which is at least stable.
+ */
+export function uniqueByEntityKey<
+   T extends { kind: string; name: string; source: string | undefined },
+>(entities: T[]): T[] {
+   const seen = new Set<string>();
+   return entities.filter((e) => {
+      const key = entityRowKey(e.kind, sourceColumn(e.source), e.name);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+   });
+}
+
+/**
  * The stable key for one embedding ROW: an entity plus the facet of it that
  * row holds. Keeping the format here means the diff, the upsert and the
  * delete cannot drift apart.
@@ -839,11 +875,13 @@ export async function trySemanticSearch(args: {
       pkg,
       environmentName,
       packageName,
-      entities,
       queries,
       limit,
       sourceName,
    } = args;
+   // Unique by the key the rows themselves use, before anything counts or
+   // embeds them. See uniqueByEntityKey.
+   const entities = uniqueByEntityKey(args.entities);
 
    if (entities.length > MAX_EMBEDDED_ENTITIES) {
       const key = `${environmentName}\x00${packageName}`;
@@ -1341,8 +1379,11 @@ export async function getEmbeddingIndexStatus(
    provider: EmbeddingProvider,
    environmentName: string,
    packageName: string,
-   entities: IndexedEntity[],
+   allEntities: IndexedEntity[],
 ): Promise<EmbeddingIndexStatus> {
+   // Counted per cached entity, not per card: the same reason the search
+   // path dedupes. See uniqueByEntityKey.
+   const entities = uniqueByEntityKey(allEntities);
    const entityCount = entities.length;
    // Scoped to the provider's current model, because the search path is
    // (see trySemanticSearch) and the stale-row heal purges anything else.
