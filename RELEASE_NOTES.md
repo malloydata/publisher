@@ -70,6 +70,22 @@ For SDK consumers: `ResultContainer`'s `maxHeight` is optional now, and leaving 
 carries `data-malloy-render-as` and `data-malloy-sizing` on its stage, so a panel at an unexpected
 height says which rule it took.
 
+## [Unreleased] — a dashboard imports its givens file whole
+
+The bundled examples, the dashboards doc and the `malloy-dashboards` skill all named the givens a
+dashboard uses (`import { CATEGORY, BRAND, … } from '../givens.malloy'`). They import the file whole
+now. A control renders for a given the tiles actually *reference*, not for every one in scope, so
+the whole-file form brings no controls you did not ask for, and a named list only gives an author
+something to forget — with a missing control, not an error, as the result. It is also what Malloyyo
+documents for the same format, so a repo written for either side reads the same. Sources are
+unchanged and still named individually, which is the right form where a file wants a few specific
+things.
+
+Nothing about where a given is *declared* changes: that is the model, and `givens.malloy` is where a
+package keeps it, because the MCP surface, row-level access and `#(authorize)` all read it. The doc
+now also records that declaring one in a dashboard file works — the control renders and the tile
+filters — for a page that owns its own knob. That is the exception, not the convention.
+
 ## [Unreleased] — dropdowns over a gated source load their options
 
 A `control=select` whose `suggest` read a source gated by `#(authorize)` (or scoped by a

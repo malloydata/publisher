@@ -74,7 +74,7 @@ after this one is the form to author a dashboard in.
 ```malloy
 ##! experimental.givens
 import { order_items, products } from '../storefront.malloy'
-import { CATEGORY, MIN_SALE } from '../givens.malloy'
+import '../givens.malloy'
 
 #" Revenue and margin at a glance, and where they come from.
 # artifact { title="Business Overview" } dashboard { columns=12 }
@@ -289,6 +289,21 @@ references one lives up an import chain. A given the file does not import gets n
 sending it at run time fails with "unknown given". Everything about givens themselves
 (declaration, types, defaults, access control) is in [givens.md](givens.md).
 
+**Import the givens file whole, rather than naming the ones you use.** A control renders for a given
+the tiles actually _reference_, not for every one in scope, so a whole-file `import '../givens.malloy'`
+brings no controls you did not ask for and costs nothing. A named list only makes the author
+enumerate, and the failure when they forget one is a missing control rather than an error. The same
+convention is what Malloyyo documents for this format, so a repo written for either side reads the
+same. Naming the imports stays correct and is still the right form for _sources_, where a file
+usually wants a few specific names.
+
+Where the declaration itself lives is a separate question, and the answer is the model: a given is
+read by the MCP surface, by row-level access, and by `#(authorize)`, so it is a model concern rather
+than a presentation one, and `givens.malloy` is where a package keeps it. Declaring one in a
+dashboard file is legal and works — the control renders and the tile filters — which is what makes
+a dashboard-local filter possible for a page that owns its own knob. It is the exception, not the
+convention.
+
 <a id="apply"></a>
 
 ### Apply, starting values, and the URL
@@ -322,7 +337,7 @@ the results out:
 ## artifact { title="Seasonality" tiles=["scoped_sales -> sales_by_month", "scoped_sales -> seasonality"] } dashboard { columns=12 }
 import { scoped_sales } from './_shared.malloy'
 import { products } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import '../givens.malloy'
 ```
 
 Model-level because there is no query of its own to hang a `#` tag on, and model-level for a second
@@ -372,7 +387,7 @@ That is the job the shared include does here. `_shared.malloy` scopes the source
 // dashboards/_shared.malloy: no artifact tag, so an include rather than a dashboard.
 ##! experimental.givens
 import { order_items } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import '../givens.malloy'
 
 source: scoped_sales is order_items extend {
   where: category ~ $CATEGORY and created_at >= $SINCE
