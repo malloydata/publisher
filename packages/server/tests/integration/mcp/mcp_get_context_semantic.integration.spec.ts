@@ -107,9 +107,7 @@ async function callGetContext(target: {
                environment: ENVIRONMENT_NAME,
                package: PACKAGE_NAME,
                ...(target.source ? { source: target.source } : {}),
-               ...(target.entityName
-                  ? { entity_name: target.entityName }
-                  : {}),
+               ...(target.entityName ? { entity_name: target.entityName } : {}),
             },
          ],
       },

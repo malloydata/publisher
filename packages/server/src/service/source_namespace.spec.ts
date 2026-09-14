@@ -15,9 +15,7 @@ import {
    type ModelDef,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import {
-   collectSourceInfos,
-} from "./source_extraction";
+import { collectSourceInfos } from "./source_extraction";
 
 const ROOT = "file:///probe/";
 const TABLE = `duckdb.sql("select 'CA' as state, 1 as amt")`;
