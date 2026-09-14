@@ -61,7 +61,7 @@ export interface DashboardProps {
 }
 
 /** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
-const DEFAULT_COLUMNS = 2;
+export const DEFAULT_COLUMNS = 2;
 
 /**
  * The `grid-column` one tile occupies: its `# colspan`, and a `# break` forcing
