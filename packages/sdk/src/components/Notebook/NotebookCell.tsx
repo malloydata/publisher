@@ -29,16 +29,10 @@ import type { NavigationClick } from "../click_helper";
 import { useDrill, type DrillNavigation } from "../drill";
 import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
 import ResultContainer from "../RenderedResult/ResultContainer";
+import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
 import { CleanMetricCard, CleanNotebookCell } from "../styles";
 import { EnhancedNotebookCell } from "./types";
-
-/**
- * Cap for a cell result that lays itself out: a table, mostly. Tall enough for
- * a screenful of rows, after which the cell scrolls rather than the page
- * turning into one long table.
- */
-const CELL_MAX_HEIGHT = 700;
 
 interface NotebookCellProps {
    cell: EnhancedNotebookCell;
@@ -670,7 +664,7 @@ export function NotebookCell({
                   >
                      <ResultContainer
                         result={cell.result}
-                        maxHeight={CELL_MAX_HEIGHT}
+                        maxHeight={NOTEBOOK_CELL_MAX_HEIGHT}
                         maxResultSize={maxResultSize}
                         drill={drill}
                      />

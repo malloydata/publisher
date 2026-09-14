@@ -20,7 +20,10 @@
 // shares.
 ##! experimental.givens
 import "storefront.malloy"
-import { CATEGORY, BRAND, REGION, SINCE, MIN_SALE } from "givens.malloy"
+// Whole-file, so every declared given is in scope here and a new one in
+// givens.malloy needs no edit on this line. Only the givens a query references
+// become controls, so importing them all costs nothing.
+import "givens.malloy"
 
 #(doc) Order lines narrowed by the data app's control row. Every tile queries this.
 source: scoped_orders is order_items extend {
