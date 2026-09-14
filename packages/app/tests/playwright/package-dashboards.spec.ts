@@ -1145,6 +1145,7 @@ test.describe("package-dashboards", () => {
             { timeout: 15_000 },
          )
          .toBe(TILE_COLOR);
+   });
 
    // A dashboard's description is its narrative header, and it is MARKDOWN: the
    // doc comment can carry paragraphs, emphasis, lists and inline code, and
