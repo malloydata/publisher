@@ -31,6 +31,22 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — a composite dashboard's tiles are cards again
+
+A tile on a `## artifact { tiles=[…] }` dashboard painted MUI's white instead of the instance theme's
+`tile` colour, which the theme itself describes as "a faint tint so tiles read as recessed cards on
+the page". The single-query `# dashboard` form has always painted it. On a theme whose page is also
+white, that was the difference between tiles that read as cards and tiles that read as nothing, and
+it is the visible half of #1069's "they render differently".
+
+Measured on the `grid`/`tiled` fixture pair, which is the same layout authored both ways: radius
+(4px), padding (20px), border, shadow and grid gap already agreed, and the background was the last
+piece that did not. Both forms are now pinned against one sentinel colour in the browser suite, so
+neither can drift from the other unnoticed.
+
+Height stays deliberately different: a composite tile is capped so a grid of independent queries
+keeps even rows, where the single-query form sizes to its content.
+
 ## [Unreleased] — a result panel is sized by what the renderer says it is, not by its DOM
 
 A panel decided its height by walking three levels into `@malloydata/render`'s output and reading
