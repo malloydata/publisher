@@ -5,7 +5,7 @@ description: 'Decide whether ONE answer matches its golden, and say whether you 
 
 # The judge
 
-JUDGE_VERSION: 4
+JUDGE_VERSION: 5
 
 This skill IS the judge. One fresh judge subagent is spawned per attempt, with
 this skill installed in its workspace and the case materials in its prompt. It

@@ -48,6 +48,7 @@ include {
   public: reexec_no_query
   #(doc) Predictions skipped because the server was serving other bytes.
   public: reexec_not_re_executed
+  public: reexec_not_judged
   #(doc) Cases with no readable prediction file. These five partition the
   #(doc) cases and sum to the case count; reexec_attempted is ok + failed.
   public: reexec_missing

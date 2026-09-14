@@ -171,7 +171,8 @@ class ReExecution(unittest.TestCase):
         got = rb.reexecution_summary(self.tmp,
                                      ["ok1", "bad", "none", "skip", "absent"])
         self.assertEqual(got, {"attempted": 2, "ok": 1, "failed": 1,
-                               "noQuery": 1, "notReExecuted": 1, "missing": 1})
+                               "noQuery": 1, "notReExecuted": 1, "notJudged": 0,
+                               "missing": 1})
 
     def test_every_case_lands_in_exactly_one_bucket(self):
         # The denominator. `notReExecuted` and `missing` used to `continue`
@@ -187,7 +188,7 @@ class ReExecution(unittest.TestCase):
         got = rb.reexecution_summary(self.tmp, qids)
         self.assertEqual(
             got["ok"] + got["failed"] + got["noQuery"]
-            + got["notReExecuted"] + got["missing"],
+            + got["notReExecuted"] + got["notJudged"] + got["missing"],
             len(qids))
         # `attempted` is the derived one, outside the partition.
         self.assertEqual(got["attempted"], got["ok"] + got["failed"])
@@ -198,6 +199,20 @@ class ReExecution(unittest.TestCase):
         (d / "prediction.json").write_text("{not json")
         got = rb.reexecution_summary(self.tmp, ["junk"])
         self.assertEqual(got["missing"], 1)
+
+    def test_a_case_the_judge_never_saw_is_not_a_missing_artifact(self):
+        # A freshly imported set is `provisional` throughout, so every case is
+        # refused before the judge and no prediction file exists. That read as
+        # N corrupt artifacts beside `predictionsReExecuted: true`.
+        self.pred("ok1", "run: a", "| total |\n| 1 |")
+        got = rb.reexecution_summary(self.tmp, ["ok1", "prov", "prov2"],
+                                     judged={"ok1"})
+        self.assertEqual((got["ok"], got["notJudged"], got["missing"]),
+                         (1, 2, 0))
+
+    def test_without_the_judged_set_the_old_partition_holds(self):
+        got = rb.reexecution_summary(self.tmp, ["absent"])
+        self.assertEqual((got["notJudged"], got["missing"]), (0, 1))
 
 
 class JudgeGate(unittest.TestCase):

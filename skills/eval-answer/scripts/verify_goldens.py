@@ -571,7 +571,20 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
                 out.append(f"{qid}: no id in requiredAnyOf group "
                            f"[{', '.join(g)}] names anything in the model under "
                            f"test")
+        required_ids = set(exp.get("required") or [])
         for e in exp.get("acceptable") or []:
+            if e in required_ids:
+                # `acceptable` marks ids that are not noise if returned. A
+                # required id is already not noise, so listing it twice says
+                # nothing about the case and hides whether `acceptable` was
+                # authored at all or copied from `required`. Review, not fail:
+                # it moves no number.
+                out.append(f"review {qid}: {e} is in both required and "
+                           f"acceptable. A required id is never noise, so the "
+                           f"acceptable entry is redundant. Drop it, or if the "
+                           f"model offers more than one route, make it a "
+                           f"requiredAnyOf group")
+                continue
             if _id_malformed(e):
                 out.append(f"review {qid}: acceptable entity {e!r} has no "
                            f"`kind:` prefix, so it never matches. Fix: "

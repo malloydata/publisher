@@ -47,7 +47,11 @@ import pathlib
 import sys
 from typing import Any
 
-STATUSES = ("verified", "provisional", "invalid", "ambiguous")
+# `verified_wrong` is a key a person has established is wrong. Three files
+# accepted it (ledger-schema.md, golden-side-door.md, run_baseline.py reads it
+# off the case to return `golden_verified_wrong`) and this one rejected it, so
+# a mature set carrying an adjudicated key failed validation.
+STATUSES = ("verified", "provisional", "invalid", "ambiguous", "verified_wrong")
 SPLITS = ("dev", "holdout")
 
 
@@ -194,16 +198,45 @@ def check_case(case: dict[str, Any], where: str) -> tuple[list[str], list[str]]:
 
 
 def stamp_cases(path: pathlib.Path, cases: list[dict[str, Any]]) -> int:
-    """Write `questionSha` where absent. Never overwrites. Returns how many."""
+    """Write `questionSha` where absent. Never overwrites. Returns how many.
+
+    The file is rewritten from its own lines, not from the parsed list. A line
+    that does not parse is written back verbatim, so a stamp can never delete
+    the case it could not read. It did once: `read_cases` drops an unparseable
+    line with a finding, and rewriting the file from the parsed list turned
+    that finding into a deletion on the one file an eval set cannot
+    regenerate. `cases` is stamped in place as well, so the caller's later
+    checks see the same stamp the file does.
+    """
     stamped = 0
-    for case in cases:
-        question = case.get("question")
-        if case.get("questionSha") or not isinstance(question, str) or not question.strip():
+    out: list[str] = []
+    parsed = iter(cases)
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            out.append(line)
             continue
-        case["questionSha"] = sha256_text(question)
-        stamped += 1
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            out.append(line)
+            continue
+        if not isinstance(obj, dict):
+            out.append(line)
+            continue
+        case = next(parsed, None)
+        if case is None:
+            # More object lines on disk than cases handed in: keep the line as
+            # it stands rather than guess which case it was.
+            out.append(line)
+            continue
+        question = case.get("question")
+        if (not case.get("questionSha") and isinstance(question, str)
+                and question.strip()):
+            case["questionSha"] = sha256_text(question)
+            stamped += 1
+        out.append(json.dumps(case))
     if stamped:
-        path.write_text("".join(json.dumps(c) + "\n" for c in cases))
+        path.write_text("".join(l + "\n" for l in out))
     return stamped
 
 
@@ -214,7 +247,7 @@ def summarize(cases: list[dict[str, Any]], lines: int) -> list[str]:
     actually score is usually much smaller, so it goes on the first line.
     """
     scorable = with_query = value_only = to_derive = no_golden = 0
-    verified_values = 0
+    verified_values = invalid = ambiguous = wrong = unrecognised = 0
     for case in cases:
         golden = case.get("golden")
         if not isinstance(golden, dict):
@@ -225,7 +258,18 @@ def summarize(cases: list[dict[str, Any]], lines: int) -> list[str]:
             scorable += 1
             if holds_value(golden):
                 verified_values += 1
-        elif status == "provisional":
+        elif status == "invalid":
+            invalid += 1
+        elif status == "ambiguous":
+            ambiguous += 1
+        elif status == "verified_wrong":
+            wrong += 1
+        elif status != "provisional":
+            # check_case reports the status as a finding; the tally still has
+            # to account for the case, or the lines below stop summing to the
+            # headline and a reader cannot tell a miscount from a bad status.
+            unrecognised += 1
+        else:
             # Three different amounts of work, and the first summary called
             # them all "numbers only" -- including cases that arrived with no
             # number at all, where the criteria describe a key nobody has
@@ -238,11 +282,22 @@ def summarize(cases: list[dict[str, Any]], lines: int) -> list[str]:
             else:
                 to_derive += 1
     provisional = with_query + value_only + to_derive
+    settled = invalid + ambiguous + wrong
+    # Every case lands on exactly one of the lines below, so they sum to the
+    # headline and a reader can check them against it. A golden marked
+    # `invalid`, `ambiguous` or `verified_wrong` used to land on none of them,
+    # so the breakdown quietly fell short of the case count.
     out = [f"{len(cases)} cases from {lines} lines",
            f"  {scorable} scorable now",
            f"  {provisional} provisional ({with_query} with their query, "
            f"{value_only} a number alone, {to_derive} nothing to compare yet)",
            f"  {no_golden} no golden (question only)"]
+    if settled:
+        out.append(f"  {settled} settled unscorable ({invalid} invalid, "
+                   f"{ambiguous} ambiguous, {wrong} verified wrong)")
+    if unrecognised:
+        out.append(f"  {unrecognised} with a status this script does not know "
+                   f"(see FINDINGS)")
     if verified_values:
         # Not phrased as an accusation. This script is also the set validator,
         # so it runs on established sets whose values were verified long after

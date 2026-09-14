@@ -2,6 +2,7 @@
 """Tests for the import checks: what an imported key may claim, and whether a
 question has been edited since it was sealed."""
 import json
+import re
 import pathlib
 import sys
 import tempfile
@@ -242,6 +243,61 @@ class VerifiedNeedsMoreThanTheirOwnQuery(unittest.TestCase):
             self.check({"status": "verified", "kind": "criteria",
                         "rubric": "breaks the total out by region"}))
 
+
+
+class StampingKeepsWhatItCannotRead(unittest.TestCase):
+    def test_an_unparseable_line_survives_a_stamp_verbatim(self):
+        # Reproduced by review: four lines in, one trailing-comma typo, three
+        # lines out, and the finding named a line the author could no longer
+        # open. The file is now rewritten from its own lines.
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "cases.jsonl"
+            bad = '{"qid": "q3", "question": "broken",}'
+            path.write_text(json.dumps(case(qid="q1")) + "\n"
+                            + json.dumps(case(qid="q2")) + "\n"
+                            + bad + "\n" + json.dumps(case(qid="q4")) + "\n")
+            cases, findings = ic.read_cases(path)
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(ic.stamp_cases(path, cases), 3)
+            lines = path.read_text().splitlines()
+            self.assertEqual(len(lines), 4)
+            self.assertEqual(lines[2], bad)
+            for i in (0, 1, 3):
+                self.assertIn("questionSha", lines[i])
+            self.assertEqual(json.loads(lines[3])["qid"], "q4")
+
+
+class TheSummarySums(unittest.TestCase):
+    def _case(self, golden):
+        return {"qid": "q", "question": "how many", "split": "dev",
+                "golden": golden}
+
+    def test_every_status_lands_on_exactly_one_line(self):
+        cases = [
+            self._case({"status": "verified", "kind": "scalar", "value": 1,
+                        "verifiedBy": "truth_package"}),
+            self._case({"status": "provisional", "kind": "scalar", "value": 2}),
+            self._case({"status": "invalid"}),
+            self._case({"status": "ambiguous"}),
+            self._case({"status": "verified_wrong", "kind": "scalar", "value": 3}),
+            self._case({"status": "bogus"}),
+            self._case(None),
+        ]
+        out = ic.summarize(cases, lines=len(cases))
+        self.assertTrue(out[0].startswith("7 cases"))
+        counted = 0
+        for line in out[1:]:
+            m = re.match(r"\s*(\d+) ", line)
+            if m and "of those hold" not in line:
+                counted += int(m.group(1))
+        self.assertEqual(counted, 7)
+        self.assertTrue(any("settled unscorable" in l for l in out))
+        self.assertTrue(any("does not know" in l for l in out))
+
+    def test_verified_wrong_validates_on_an_established_set(self):
+        f, _ = ic.check_case(self._case({"status": "verified_wrong",
+                                         "kind": "scalar", "value": 3}), "x:1")
+        self.assertEqual([x for x in f if "golden.status" in x], [])
 
 if __name__ == "__main__":
     unittest.main()

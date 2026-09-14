@@ -386,5 +386,23 @@ class NothingDecided(unittest.TestCase):
         self.assertEqual(s["decided"], 0)
 
 
+
+class TheComparisonSurvivesTheArtifactWrite(unittest.TestCase):
+    """Reproduced by review: `--compare-labels --out` died on a tuple dict key
+    after every model call had been paid for. The artifact path was untested."""
+
+    def test_serialisable_round_trips_and_keeps_the_counts(self):
+        cases = [{"qid": "a", "coverage": "covered"},
+                 {"qid": "b", "coverage": "absent"}]
+        rows = [{"qid": "a", "verdict": cc.OK, "why": ""},
+                {"qid": "b", "verdict": "COVERAGE", "why": ""}]
+        cmp = cc.compare_labels(rows, cases)
+        text = json.dumps({"labelComparison": cc.serialisable(cmp)})
+        back = json.loads(text)["labelComparison"]
+        self.assertEqual(sum(m["n"] for m in back["matrix"]), 2)
+        self.assertEqual(back["compared"], 2)
+        # The console report still reads the tuple-keyed original.
+        self.assertIn("covered", cc.label_report(cmp))
+
 if __name__ == "__main__":
     unittest.main()

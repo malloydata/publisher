@@ -494,5 +494,17 @@ class Promotion(unittest.TestCase):
         self.assertIsNone(promotion_blocker(self.case(**self.SECOND), s))
 
 
+
+class RequiredAndAcceptableOverlap(unittest.TestCase):
+    def test_an_id_in_both_lists_is_reviewed_once(self):
+        # Review found sets that copied every `required` id into `acceptable`
+        # and never used `requiredAnyOf`; nothing detected it. It moves no
+        # number, so it is reviewed, not failed.
+        eid = "measure:nowhere:dup"
+        f = unknown_name_findings([case(required=[eid], acceptable=[eid])], MODEL)
+        dup = [x for x in f if "both required and acceptable" in x]
+        self.assertEqual(len(dup), 1)
+        self.assertTrue(dup[0].startswith("review "))
+
 if __name__ == "__main__":
     unittest.main()

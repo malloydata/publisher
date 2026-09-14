@@ -1054,8 +1054,8 @@ def golden_check_note(golden_check: str, stale: list[str],
             + ", rubric-claim audit not run in-arm")
 
 
-def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
-                        ) -> dict[str, int]:
+def reexecution_summary(art: pathlib.Path, qids: Iterable[str],
+                        judged: set[str] | None = None) -> dict[str, int]:
     """How many predictions were actually re-executed, from the cached files.
 
     `predictionsReExecuted` is one bool for the whole run meaning "the server
@@ -1064,8 +1064,13 @@ def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
     These counts do.
 
     Every case lands in exactly one of `ok`, `failed`, `noQuery`,
-    `notReExecuted` and `missing`, so those five sum to the case count and a
-    reader can check them against it. `attempted` is not one of the five: it is
+    `notReExecuted`, `notJudged` and `missing`, so those six sum to the case
+    count and a reader can check them against it. `notJudged` is a case the
+    judge was never handed, when the caller says which those were: a golden
+    refused before judging, an attempt that submitted nothing, or every case
+    under `--no-judge`. Before it existed those all landed in `missing`, and a
+    freshly imported set (every golden `provisional`) read as forty corrupt
+    artifacts rather than forty cases nobody judged. `attempted` is not one of the six: it is
     `ok + failed`, kept because it is the number anyone asks for first. Two
     paths used to fall out of the buckets entirely -- a prediction file that is
     absent or unreadable, and one carrying the "not re-executed" notice -- and
@@ -1073,8 +1078,11 @@ def reexecution_summary(art: pathlib.Path, qids: Iterable[str]
     nothing saying which cases were unaccounted for.
     """
     out = {"attempted": 0, "ok": 0, "failed": 0, "noQuery": 0,
-           "notReExecuted": 0, "missing": 0}
+           "notReExecuted": 0, "notJudged": 0, "missing": 0}
     for qid in qids:
+        if judged is not None and qid not in judged:
+            out["notJudged"] += 1
+            continue
         f = art / qid / "prediction.json"
         if not f.exists():
             out["missing"] += 1
@@ -2417,11 +2425,18 @@ def main(argv: list[str] | None = None) -> int:
     # the most expensive wrong turn this loop can take. A warning that exists
     # only as console text is one scrollback away from being missed, so the run
     # itself carries the list and the conductor can read it from run.json.
+    # The cases the judge was actually handed. A golden refused before judging
+    # and an attempt that submitted nothing never reach `prediction_for`, and
+    # under --no-judge nothing does; counting those as `missing` predictions
+    # read as corrupt artifacts.
+    judged_qids = {q for q, v in verdicts.items()
+                   if not (v.get("reason") or "").startswith("golden_")
+                   and v.get("reason") != "not_submitted"}
     ledger.update_run(a.out, answererCostUsd=round(cost, 4),
                       judgeCostUsd=round(judge_cost, 4),
                       retrievalMode=mode, retrievalCalls=tally,
                       reExecution=reexecution_summary(
-                          art, [c["qid"] for c in cases]),
+                          art, [c["qid"] for c in cases], judged=judged_qids),
                       doubtedGoldens=[{"qid": q, "gold_status": st,
                                        "gold_note": note, "declaredBy": src}
                                       for q, st, note, src in doubted],

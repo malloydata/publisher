@@ -303,6 +303,7 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             "reexec_failed": reexec.get("failed"),
             "reexec_no_query": reexec.get("noQuery"),
             "reexec_not_re_executed": reexec.get("notReExecuted"),
+            "reexec_not_judged": reexec.get("notJudged"),
             "reexec_missing": reexec.get("missing"),
         })
         events = read_jsonl(rd / "events.jsonl")
@@ -467,7 +468,7 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "judge_version", "set_version",
         "retrieval_mode", "target_version", "model_git_sha", "model_repo",
         "reexec_attempted", "reexec_ok", "reexec_failed", "reexec_no_query",
-        "reexec_not_re_executed", "reexec_missing"])
+        "reexec_not_re_executed", "reexec_not_judged", "reexec_missing"])
     write_csv(data / "attempts.csv", attempts, [
         "attempt_key", "run_id", "qid", "sample", "phase", "submitted", "final_query",
         "answer_text", "n_get_context", "n_execute", "n_execute_errors",

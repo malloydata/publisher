@@ -15,6 +15,8 @@ models. Recorded at one end of the pipeline, invisible at the other.
 Checked against the REAL headers, by building a package from a synthetic run
 rather than by re-parsing build_run_package's column lists.
 """
+from __future__ import annotations
+
 import csv
 import json
 import pathlib

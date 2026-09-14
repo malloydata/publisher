@@ -69,6 +69,25 @@ def read_jsonl(p: pathlib.Path) -> list[dict]:
     return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
 
 
+def gate_exit(n_fixtures: int, rows: list[dict], fails: list[dict],
+              unresolved: list) -> int:
+    """The exit code, with the one case a green `0/0` used to hide.
+
+    A stale `goldenRevision` pin skips a fixture, and `verify_goldens.py
+    --refresh` bumps the revision on every drifted case at once. So one refresh
+    can leave every fixture skipped: `rows` empty, `fails` empty, and the gate
+    printed `0/0 fixtures reproduce` and exited 0 having never called the
+    judge. That is the failure the `--repeat < 1` guard exists to stop, arrived
+    at by another road. A gate that passes without running is worse than one
+    that errors, so fixtures present with nothing judged is a failure.
+    """
+    if fails or unresolved:
+        return 1
+    if n_fixtures and not rows:
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -222,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
     for fid, want, have in stale_pin:
         print(f"  ! skipped {fid}: settled against goldenRevision {want}, the "
               f"case is now {have}. Re-settle the verdict and re-pin it.")
+    if fixtures and not rows:
+        print(f"\n! none of {len(fixtures)} fixture(s) was judged: "
+              f"{len(stale_pin)} stale-pinned, {len(unresolved)} unresolved. "
+              f"That is a failure, not 0/0 green: a gate that passes without "
+              f"running is worse than one that errors. Re-settle and re-pin "
+              f"the fixtures, then run again.")
 
     # A fixture that has never failed is not yet known to be a test, and a file
     # that covers none of the classes a run's verdicts turn on is not yet known
@@ -249,12 +274,13 @@ def main(argv: list[str] | None = None) -> int:
     if a.out:
         a.out.write_text(json.dumps(
             {"judgeVersion": jv, "rubricSha": rsha, "repeat": a.repeat,
+             "fixtures": len(fixtures), "judged": len(rows),
              "rows": rows, "unpinned": unpinned,
              "stalePins": [f for f, _, _ in stale_pin],
              "classesMissing": missing,
              "unresolved": [f["fixtureId"] for f, _ in unresolved]},
             indent=2))
-    return 1 if fails or unresolved else 0
+    return gate_exit(len(fixtures), rows, fails, unresolved)
 
 
 if __name__ == "__main__":

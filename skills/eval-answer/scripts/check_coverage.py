@@ -351,11 +351,20 @@ def judge_case(case: dict[str, Any], model: str, a: argparse.Namespace,
     prompt = PROMPT.format(model=model, question=case.get("question", ""),
                            concepts=", ".join(concepts) or "(none named)")
     if len(prompt) > MAX_PROMPT:
-        # The way out depends on the mode: `--model-path` narrows a `--publisher`
-        # read to one file and does nothing to a local one, where the fix is to
-        # point `--model` at a single file instead of a tree.
+        # The way out depends on the mode. `--model-path` narrows a
+        # `--publisher` read to one model. A local `--model` read has no such
+        # move: `model_text()` does not resolve `import`, so pointing it at one
+        # file drops every imported source and the judge answers COVERAGE for
+        # concepts the model does represent. That is a false gap that lands in
+        # a published trend (reference/coverage-limits.md), and this message
+        # used to recommend exactly that. The honest outcome is a failed
+        # measurement.
         narrow = ("pass --model-path to measure one model file" if a.publisher
-                  else "point --model at a single .malloy file, not a directory")
+                  else "this is a failed measurement, not a number to rescue: "
+                       "do NOT narrow --model to one file, that drops imported "
+                       "sources and manufactures COVERAGE verdicts "
+                       "(reference/coverage-limits.md). Record coverage as "
+                       "not measured for this package version")
         return {"qid": case["qid"], "verdict": None,
                 "why": f"model text too large for one prompt "
                        f"({len(prompt)} chars > {MAX_PROMPT}); {narrow}",
@@ -461,6 +470,17 @@ def compare_labels(rows: list[dict[str, Any]],
             "disagree": disagree, "matrix": matrix,
             "labels": sorted({(c.get("coverage") or "unlabelled")
                               for c in cases})}
+
+
+def serialisable(cmp: dict[str, Any]) -> dict[str, Any]:
+    """`compare_labels` keys its matrix on (label, verdict) tuples, which is
+    what `label_report` looks up and what `json.dumps` refuses. Flatten it at
+    the artifact boundary only. Left as a tuple key, `--compare-labels --out`
+    died on the write after every model call had been paid for and the
+    console report had already printed, and the artifact was never written.
+    """
+    return {**cmp, "matrix": [{"label": lab, "verdict": v, "n": n}
+                              for (lab, v), n in sorted(cmp["matrix"].items())]}
 
 
 def label_report(cmp: dict[str, Any]) -> str:
@@ -696,7 +716,7 @@ def main(argv: list[str] | None = None) -> int:
         a.out.write_text(json.dumps(
             {"version": a.version, "set": str(a.set_dir),
              "agentModel": a.agent_model, **s, "cases_detail": rows,
-             **({"labelComparison": cmp} if cmp else {})},
+             **({"labelComparison": serialisable(cmp)} if cmp else {})},
             indent=2))
         print(f"\n{a.out}")
     # Nothing decided is not a 0% coverage, it is a measurement that did not
