@@ -1091,6 +1091,61 @@ test.describe("package-dashboards", () => {
       );
    });
 
+   // The other card, and the last piece of the two that did not agree. Radius,
+   // padding, border, shadow and gap were reconciled already; the background was
+   // not, because the composite `Paper` left it unset and took MUI's white while
+   // the renderer card painted `theme.tile`. On a theme whose page is also white
+   // that is the difference between tiles that read as cards and tiles that read
+   // as nothing, and it is exactly the "they render differently" in #1069.
+   //
+   // Asserted across BOTH forms against one sentinel, rather than against a
+   // literal on the composite alone: the claim is that the two cards agree, so a
+   // test that only pins one of them would stay green if the renderer's card
+   // moved.
+   test("both dashboard forms paint their card with the theme's tile colour", async ({
+      page,
+   }) => {
+      const TILE_COLOR = "rgb(4, 5, 6)";
+      await page.route("**/api/v0/status", async (route) => {
+         const res = await route.fetch();
+         const body = await res.json();
+         await route.fulfill({
+            response: res,
+            json: {
+               ...body,
+               theme: {
+                  ...(body.theme ?? {}),
+                  palette: {
+                     ...(body.theme?.palette ?? {}),
+                     tile: { light: "#040506", dark: "#040506" },
+                  },
+               },
+            },
+         });
+      });
+
+      await openDashboard(page, "tiled");
+      const tile = page.locator(
+         '.MuiPaper-root:has([title="tiles -> brand_tile"])',
+      );
+      await expect(tile).toBeVisible({ timeout: 30_000 });
+      await expect
+         .poll(
+            () => tile.evaluate((el) => getComputedStyle(el).backgroundColor),
+            { timeout: 15_000 },
+         )
+         .toBe(TILE_COLOR);
+
+      await openDashboard(page, "grid");
+      const card = page.locator(".dashboard-item").first();
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await expect
+         .poll(
+            () => card.evaluate((el) => getComputedStyle(el).backgroundColor),
+            { timeout: 15_000 },
+         )
+         .toBe(TILE_COLOR);
+
    // A dashboard's description is its narrative header, and it is MARKDOWN: the
    // doc comment can carry paragraphs, emphasis, lists and inline code, and
    // Malloy delivers the block with its newlines intact. Rendered as plain text
