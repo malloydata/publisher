@@ -54,10 +54,16 @@ const parse = (r: { content: Content }) =>
 const envWith = (getPackage: () => Promise<unknown>) =>
    ({ getPackage, getStaleCompileErrors: () => new Map() }) as never;
 
-const source = (name: string) => ({
+const source = (name: string, fields: string[] = ["state"]) => ({
    name,
    annotations: [],
-   schema: { fields: [{ kind: "dimension", name: "state", annotations: [] }] },
+   schema: {
+      fields: fields.map((field) => ({
+         kind: "dimension",
+         name: field,
+         annotations: [],
+      })),
+   },
 });
 
 /**
@@ -75,7 +81,9 @@ function twoFilePackage() {
       getModel: (path: string) =>
          models[path]
             ? {
-                 getSourceInfos: () => models[path].map(source),
+                 // Not `.map(source)`: map passes the index as the
+                 // second argument, which `source` now reads as `fields`.
+                 getSourceInfos: () => models[path].map((name) => source(name)),
                  getQueries: () => [],
               }
             : undefined,
@@ -195,6 +203,39 @@ describe("get_context source attribution", () => {
       expect(drill.returned).toBe(2);
       // Was hard-coded to 1, so the envelope contradicted its own payload.
       expect(drill.total_available).toBe(2);
+   });
+
+   /**
+    * `scopes[].entity_name` had no test anywhere in the server, on either
+    * retrieval mode, while a pinned name also turns `include_code` on -- so
+    * "pinning narrows to this entity" was an unpinned claim about the very
+    * request that returns the most. The semantic half is pinned in
+    * tests/integration/mcp/mcp_get_context_semantic.integration.spec.ts.
+    */
+   it("narrows a lexical drill-down to the pinned entity", async () => {
+      const oneFile = {
+         listModels: async () => [{ path: "defs.malloy" }],
+         getModel: () => ({
+            getSourceInfos: () => [source("shared", ["state", "city"])],
+            getQueries: () => [],
+         }),
+      };
+      const payload = await payloadFor(oneFile, {
+         search_targets: [{ target_type: "dimension" }],
+         scopes: [
+            {
+               environment: "e",
+               package: "p",
+               source: "shared",
+               entity_name: "city",
+            },
+         ],
+      });
+      const names = (payload.sources ?? []).flatMap(
+         (card: { entities?: Array<{ name: string }> }) =>
+            (card.entities ?? []).map((entity) => entity.name),
+      );
+      expect(names).toEqual(["city"]);
    });
 
    it("reports an unknown drill-down source as empty, not as one card", async () => {

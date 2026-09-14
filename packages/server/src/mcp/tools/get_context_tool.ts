@@ -2209,10 +2209,21 @@ async function runContextQuery(
                   // come from the live entity, and a hit with no live
                   // entity (deleted since the last sync) is dropped.
                   const ranked = semantic.hits.flatMap((hit) => {
-                     const matches =
+                     const matches = (
                         byKey.get(
                            entityRowKey(hit.kind, hit.source ?? "", hit.name),
-                        ) ?? [];
+                        ) ?? []
+                     )
+                        // The scan filters on sourceName only, so the scope's
+                        // model_path and entity_name have to be applied to
+                        // what it returns -- the same place the lexical path
+                        // applies them (see matchesScope's other call site).
+                        // Without this, pinning an entity narrowed nothing
+                        // wherever an embedding provider is configured, and
+                        // a caller who pinned one entity got the whole ranked
+                        // set back, definitions included, because a pinned
+                        // entity_name also turns include_code on.
+                        .filter((e) => matchesScope(e, request));
                      return matches.map((e) => ({
                         ...projectEntity(e, environmentName, packageName),
                         score: Math.round(hit.score * 10_000) / 10_000,

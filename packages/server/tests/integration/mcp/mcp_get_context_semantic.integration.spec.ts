@@ -68,6 +68,7 @@ interface GetContextPayload {
          entity_type: string;
          name: string;
          relevance?: number;
+         code?: string;
       }>;
    }>;
    error?: string;
@@ -93,6 +94,7 @@ async function callGetContext(target: {
    targetType: string;
    searchText: string;
    source?: string;
+   entityName?: string;
 }): Promise<GetContextPayload> {
    const result = (await mcpClient.callTool({
       name: "get_context",
@@ -105,6 +107,9 @@ async function callGetContext(target: {
                environment: ENVIRONMENT_NAME,
                package: PACKAGE_NAME,
                ...(target.source ? { source: target.source } : {}),
+               ...(target.entityName
+                  ? { entity_name: target.entityName }
+                  : {}),
             },
          ],
       },
@@ -262,6 +267,34 @@ describe.serial("MCP getContext semantic retrieval (E2E Integration)", () => {
          for (const entity of entities) {
             expect(entity.source).toBe("order_items");
          }
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "narrows semantic retrieval to a pinned entity, with its code",
+      async () => {
+         const payload = await callGetContext({
+            targetType: "measure",
+            searchText: "total sales revenue",
+            source: "order_items",
+            entityName: "total_sales",
+         });
+         expect(payload.retrieval).toBe("semantic");
+
+         const entities = rankedEntities(payload);
+         expect(entities.length).toBeGreaterThan(0);
+         // Every row IS the pinned entity. The scan filters on sourceName
+         // alone, so before the scope was applied to its output a pinned
+         // entity_name narrowed nothing here -- and because pinning also
+         // turns include_code on, the caller who asked for one definition
+         // got the whole ranked set back with every expression attached.
+         for (const entity of entities) {
+            expect(entity.name).toBe("total_sales");
+         }
+         // The other half of the pin: a narrowed call answers with the
+         // definition, which is what turning include_code on is for.
+         expect(entities.some((entity) => entity.code)).toBe(true);
       },
       { timeout: 30000 },
    );
