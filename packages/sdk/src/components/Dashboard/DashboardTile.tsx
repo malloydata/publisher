@@ -152,9 +152,18 @@ export function DashboardTile({
             // honours by dropping background, border, radius and most padding on
             // its own `.dashboard-item`. Same here, so the tag reads the same on
             // both forms.
+            //
+            // The background is `theme.tile`, the same value the renderer card
+            // paints, and NOT MUI's Paper default. Leaving it unset was the last
+            // piece of the two cards' geometry that did not agree: measured on
+            // the `grid`/`tiled` fixture pair, the renderer card came out
+            // `#f5fafc` from the theme and this one plain white, so on a theme
+            // whose page is also white the composite tiles lost the tint that
+            // separates a card from the page while the single-query form kept
+            // it. Radius, padding, border, shadow and gap already matched.
             border: borderless ? "none" : theme.border,
             borderRadius: borderless ? 0 : 1,
-            background: borderless ? "none" : undefined,
+            background: borderless ? "none" : theme.tile,
             overflow: "hidden",
             minHeight: 120,
             p: borderless ? "12px 0" : `${DASHBOARD_CARD_PADDING_PX}px`,
