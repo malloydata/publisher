@@ -36,8 +36,9 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 A panel decided its height by walking three levels into `@malloydata/render`'s output and reading
 whichever node it landed on, plus a class-name check on `.malloy-dashboard` for the one shape that
 needed a fourth. The renderer publishes no size API, so something has to be measured — but WHICH
-rule applies is now read from `getMetadata().getRootField().renderAs()`, and every height decision
-lives in one module with tests instead of four unreconciled constants across as many files.
+rule applies is now read from the renderer's own metadata rather than from its markup, and every
+height decision lives in one module with tests instead of four unreconciled constants across as
+many files.
 
 Two visible fixes come out of it:
 
@@ -68,6 +69,17 @@ For SDK consumers: `ResultContainer`'s `maxHeight` is optional now, and leaving 
 `onSizeChange` fires only for results that have a height of their own. Each rendered result also
 carries `data-malloy-render-as` and `data-malloy-sizing` on its stage, so a panel at an unexpected
 height says which rule it took.
+
+## [Unreleased] — dropdowns over a gated source load their options
+
+A `control=select` whose `suggest` read a source gated by `#(authorize)` (or scoped by a
+source-level `where:` on a given) resolved to "Options unavailable": the option query carried no
+givens, so the gate denied it. The server now names, per suggest, the givens its source is gated or
+scoped by (`GivenSuggest.givenNames`, also on a named `suggest { query=… }`'s own references), and
+the SDK sends the current values of exactly those with the option query and keys its cache on them.
+No other applied filter is sent, so the option list still does not depend on the rest of the page.
+`useSuggestOptions` takes the applied values as a new trailing optional argument; a caller that
+omits it, or a server too old to name the givens, behaves as before.
 
 ## [Unreleased] — a control with a starting value can be cleared
 

@@ -36,6 +36,7 @@ function facts(
       viewAnnotations: new Map(),
       sourceFields: new Map(),
       drills: [],
+      suggestGivens: { forSource: () => undefined, forQuery: () => undefined },
       ...overrides,
    };
 }
@@ -536,6 +537,94 @@ describe("service/dashboard given specs (the control contract)", () => {
          }),
       );
       expect(manifest?.givens[0].control).toBe(undefined);
+   });
+});
+
+describe("service/dashboard suggest givenNames", () => {
+   // A `suggest { source=… }` over a gated or scoped source must carry that
+   // source's givens or the option query is denied and the control reads
+   // "Options unavailable". The names come from the facts' lookup, narrowed to
+   // what the entry can bind, and are absent when the source needs none.
+   it("names the givens a suggest's source is gated or scoped by", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["BRAND"],
+               },
+            ],
+            givens: new Map([
+               given("BRAND", "filter<string>", [
+                  "# control=select suggest { source=order_items dimension=brand }\n",
+               ]),
+               given("TENANT", "string", []),
+            ]),
+            suggestGivens: {
+               forSource: (name) =>
+                  name === "order_items" ? ["TENANT"] : undefined,
+               forQuery: () => undefined,
+            },
+         }),
+      );
+      expect(manifest?.givens?.[0]?.suggest).toEqual({
+         source: "order_items",
+         dimension: "brand",
+         givenNames: ["TENANT"],
+      });
+   });
+
+   it("leaves givenNames off a suggest whose source needs none", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["BRAND"],
+               },
+            ],
+            givens: new Map([
+               given("BRAND", "filter<string>", [
+                  "# control=select suggest { source=order_items dimension=brand }\n",
+               ]),
+            ]),
+            suggestGivens: { forSource: () => [], forQuery: () => undefined },
+         }),
+      );
+      expect(manifest?.givens?.[0]?.suggest).toEqual({
+         source: "order_items",
+         dimension: "brand",
+      });
+   });
+
+   it("resolves the query form through the query lookup", () => {
+      const manifest = build(
+         facts({
+            queries: [
+               {
+                  name: "overview",
+                  annotations: ["# artifact\n"],
+                  givens: ["BRAND"],
+               },
+            ],
+            givens: new Map([
+               given("BRAND", "filter<string>", [
+                  "# control=select suggest { query=brand_suggest dimension=brand }\n",
+               ]),
+            ]),
+            suggestGivens: {
+               forSource: () => undefined,
+               forQuery: (name) =>
+                  name === "brand_suggest" ? ["TENANT", "REGION"] : undefined,
+            },
+         }),
+      );
+      expect(manifest?.givens?.[0]?.suggest?.givenNames).toEqual([
+         "TENANT",
+         "REGION",
+      ]);
    });
 });
 

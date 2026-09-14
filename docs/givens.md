@@ -268,6 +268,14 @@ box rather than showing a control that would rewrite the author's filter on
 first use. The custom day range is inclusive on both ends as picked, and encodes
 Malloy's half-open `A to B` by writing the day after the last one.
 
+A dropdown's option list comes from its `suggest` query, which runs on the same
+governed endpoint as everything else. When the source it reads is gated by an
+`#(authorize)` expression or scoped by a source-level `where:` that reads a
+given, the server names those givens on the suggest (`suggest.givenNames`), and
+the UI sends the current values of exactly those with the option query: enough
+for a gated source's options to load, and no more, so the list still does not
+depend on the page's other filters and is cached across them.
+
 `#(description="...")` annotations render as MUI helper text beneath the input. A
 **Reset** button appears next to the "Parameters" heading whenever any given has a
 value set, whether it was typed, picked, or carried in by the URL. A given left
