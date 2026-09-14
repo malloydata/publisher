@@ -971,6 +971,34 @@ export const getQueryMetadataMode = (): QueryMetadataMode => {
    );
 };
 
+/**
+ * Whether a package's own `skills/` directory is served.
+ *
+ * On by default: a package that ships guidance means it to reach the agent
+ * using it. `off` is for a deployment whose harness installs skills itself and
+ * does not want the server offering a second, possibly older copy -- it
+ * suppresses both the `skills` block on get_context responses and get_skill's
+ * package scoping, so the server answers only from the bundled set.
+ *
+ * Turning it off does not stop the files being read: they stay part of the
+ * package's content hash either way, so the reload receipt keeps working and
+ * flipping the switch cannot silently change what a sha comparison means.
+ *
+ * Case-insensitive; loud-fails on an unrecognized value, so a typo cannot
+ * leave a deployment quietly serving what it meant to suppress.
+ */
+export type PackageSkillsMode = "on" | "off";
+
+export const getPackageSkillsMode = (): PackageSkillsMode => {
+   const raw = process.env.PUBLISHER_PACKAGE_SKILLS;
+   if (raw === undefined || raw.trim() === "") return "on";
+   const value = raw.trim().toLowerCase();
+   if (value === "on" || value === "off") return value;
+   throw new Error(
+      `PUBLISHER_PACKAGE_SKILLS must be on | off (got ${JSON.stringify(raw)})`,
+   );
+};
+
 function substituteEnvVars(value: string): string {
    const envVarPattern = /\$\{([A-Z_][A-Z0-9_]*)\}/g;
 

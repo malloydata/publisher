@@ -332,7 +332,8 @@ conductor. Do not:
 
 ## Prime directives
 
-- The model is the only thing improve edits. No question text, qids, or
+- Improve edits the model repo and nothing else: a `.malloy` file, or a package
+  skill under the package's `skills/`. No question text, qids, or
   expected values in any name, doc, or comment.
 - When the environment misbehaves, stop. Never diagnose a sick system.
 - When a subagent disagrees with you, probe. Do not win by authority.

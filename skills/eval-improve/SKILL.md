@@ -1,12 +1,26 @@
 ---
 name: eval-improve
-description: 'Make the smallest safe Malloy model edit that closes a diagnosed model-owned gap, with a probe receipt for every factual claim. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose).'
+description: 'Make the smallest safe edit that closes a diagnosed gap the model repo owns: a Malloy model edit, or a package skill under skills/. Every factual claim carries a probe receipt. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose).'
 ---
 
 # Improve the Model
 
-Takes an issue with `owner: model` and produces **one smallest edit** that closes
-the gap. Every factual claim is backed by a query you ran.
+Takes an issue with `owner: model` or `owner: package-skill` and produces **one
+smallest edit** that closes the gap. Every factual claim is backed by a query
+you ran.
+
+The two owners license different edits and are never interchangeable:
+
+- **`model`** changes what the data means or how it is described:
+  a `.malloy` file.
+- **`package-skill`** changes what the agent is told about using this package:
+  a file under the package's `skills/`. Use it for a rule that spans entities or
+  is not a property of any one of them. A fact about a single field belongs in
+  that field's `#(doc)`, which reaches every agent whether or not it loaded a
+  guide.
+
+Both live in the model repo, so one git commit checkpoints and rolls back
+either.
 
 **Two hard boundaries:**
 
@@ -29,11 +43,18 @@ the gap. Every factual claim is backed by a query you ran.
 | Doubt only, or retrieval-only (no verdict) | Docs, labels, index only, and only where the transcript shows a concrete confusion. |
 | Silence | **No edit.** |
 
+A `package-skill` edit sits at the docs tier throughout: it is permitted
+wherever the table permits docs, and never on silence. It is the easiest artifact
+in this loop to overfit, because it is prompt text sitting next to the question
+it just failed, so the expert test in Step 1 applies to it word for word.
+
 Do not edit for `BAD-REFERENCE` or `AMBIGUOUS-REFERENCE`. Those are the
 golden side door in `skill:eval-loop`: repair or hold the golden, bump
 `goldenRevision` on the case, and open a new baseline run. Being right and unmatched
-beats encoding a defect or an unsettled key. Do not edit for a skill,
-retrieval, or dataset owner.
+beats encoding a defect or an unsettled key. Do not edit for an `agent-skill`,
+retrieval, or dataset owner: `agent-skill` means the shared skill, which is not
+in this repo, and widening it by editing one package's copy hides the gap from
+every other package.
 
 ## Step 1: What a correct answer may teach
 
@@ -64,6 +85,20 @@ SELECT col, COUNT(*) FROM t GROUP BY 1 ORDER BY 2 DESC LIMIT 5;
 A false `primary_key` compiles and silently corrupts every aggregate. Of one
 pilot's 11 accepted edits, 4 of 5 wrong ones died to a single
 `COUNT(*)` vs `COUNT(DISTINCT …)` probe that was never run.
+
+**A package-skill edit still needs probes, for a different reason.** It makes no
+claim about a join key, so there is nothing structural to verify, and the
+`probes` array can legitimately be short. But a guide that states a fact about
+the data is asserting it to every agent that reads it, with no compiler and no
+query to contradict it. Probe every number and every claim about what a measure
+counts before writing it into a guide, exactly as you would before writing it
+into a `#(doc)`. A guide that quotes a stale figure is worse than one that
+quotes none: it is confidently wrong at the moment of use.
+
+Its reload receipt is the ordinary one. Skill files are part of the package's
+content hash, so a skill-only edit moves `sourceContentSha` and an unchanged sha
+means the edit did not reach what is served. After the reload, read the guide
+back from the server and confirm it is your text.
 
 Compile-check the edit before saving (scope `file` for an edit), then reload
 the package. Confirm it is not serving a stale model.
@@ -96,6 +131,11 @@ displace answers that already worked.
 | 3 | Doc reword, rename, or `#(index)` annotation |
 | 4 | Declared join on a *probed* key |
 | 5 | A new source: last resort, at most one |
+
+For a `package-skill` issue the ranking is the same shape, and rung 1 is still
+the model: if the fact fits on one entity's `#(doc)`, put it there instead. A
+guide is the right home only for what a doc cannot hold, and it reaches only the
+agents that read it.
 
 Make the correct thing the default. Guidance phrased as a caveat
 ("pair with X", "note that Y also includes Z") is retrieved, read, and

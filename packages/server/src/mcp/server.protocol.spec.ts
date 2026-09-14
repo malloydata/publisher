@@ -71,6 +71,10 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // The retrieval tool and the catalog that supplies its scopes.
       expect(names.has("get_context")).toBe(true);
       expect(names.has("list_packages")).toBe(true);
+      // Guides, including the ones a package ships about itself. Registered as
+      // a tool rather than more prompts because a package's set is per-package
+      // and changes on reload; see registerGetSkillTool.
+      expect(names.has("get_skill")).toBe(true);
    });
 
    /**
