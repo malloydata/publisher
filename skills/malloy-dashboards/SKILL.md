@@ -38,7 +38,7 @@ Scanned at a glance is a dashboard; read top to bottom is a notebook.
    their control tags: see "Filter controls" below for the syntax and what each tag renders as. Skip
    if they already exist, since a given is a model concern and dashboards share them.
 4. **COMPOSE THE FILE** for `dashboards/`, following the template below, but do not save it yet.
-   Import the package's givens file **whole** — `import '../givens.malloy'`, not a named list.
+   Import the package's givens file **whole**: `import '../givens.malloy'`, not a named list.
    Only the givens the tiles reference become controls, so a whole-file import brings nothing
    extra, and a named list is one more thing to forget; forgetting one costs you a missing control
    rather than an error. Sources are the other way round: name the few you need. Then import every
