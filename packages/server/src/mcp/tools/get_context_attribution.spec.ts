@@ -10,8 +10,8 @@
  * different paths for the same source, and agents queried a file the source
  * did not resolve in.
  *
- * The namespace itself (which sources a file can resolve, and which the
- * `#(agent-hidden)` tags cover) is pinned against the real compiler in
+ * The namespace itself (which sources a file can resolve) is pinned against
+ * the real compiler in
  * `service/source_namespace.spec.ts`. These cover the index wiring on top.
  */
 import { beforeEach, describe, expect, it } from "bun:test";
@@ -65,7 +65,7 @@ const source = (name: string) => ({
  * `shared` and declares `mine`. `shared` therefore resolves — and is
  * queryable — under both paths.
  */
-function twoFilePackage(agentHidden: Record<string, string[]> = {}) {
+function twoFilePackage() {
    const models: Record<string, string[]> = {
       "defs.malloy": ["shared", "only_here"],
       "uses.malloy": ["shared", "mine"],
@@ -77,8 +77,6 @@ function twoFilePackage(agentHidden: Record<string, string[]> = {}) {
             ? {
                  getSourceInfos: () => models[path].map(source),
                  getQueries: () => [],
-                 getAgentHiddenSourceNames: () =>
-                    new Set(agentHidden[path] ?? []),
               }
             : undefined,
    };
@@ -155,20 +153,6 @@ describe("get_context source attribution", () => {
       );
    });
 
-   it("drops an agent-hidden source from the file that hides it, keeping the other path", async () => {
-      // Source-level `#(agent-hidden)` in defs.malloy travels with the struct,
-      // so both files hide it. A file-level tag would not — see
-      // service/source_namespace.spec.ts.
-      const rows = await cardsFor(
-         twoFilePackage({ "defs.malloy": ["only_here"] }),
-      );
-      expect(sorted(rows)).toEqual([
-         { source: "mine", model_path: "uses.malloy" },
-         { source: "shared", model_path: "defs.malloy" },
-         { source: "shared", model_path: "uses.malloy" },
-      ]);
-   });
-
    /**
     * `limit` and the paging envelope count CARDS, which is what the response
     * returns. A source resolvable from two files is two cards, so windowing
@@ -221,20 +205,5 @@ describe("get_context source attribution", () => {
       expect(missing.sources).toEqual([]);
       expect(missing.total_available).toBe(0);
       expect(missing.warnings).toBeUndefined();
-   });
-
-   it("hides nothing when a model exposes no agent-hidden accessor", async () => {
-      // Package.getModel is duck-typed at several call sites; an older double
-      // must not blank the listing.
-      const legacy = {
-         listModels: async () => [{ path: "defs.malloy" }],
-         getModel: () => ({
-            getSourceInfos: () => [source("shared")],
-            getQueries: () => [],
-         }),
-      };
-      expect(await cardsFor(legacy)).toEqual([
-         { source: "shared", model_path: "defs.malloy" },
-      ]);
    });
 });

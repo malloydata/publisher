@@ -1299,22 +1299,8 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       // and a model that failed to compile has none. Either way the fields
       // still index, just without provenance.
       const modelDef = model.getModelDef?.();
-      // `#(agent-hidden)` is a retrieval-visibility tag only: the source stays
-      // queryable by name, it just gets no card of its own. Enforced at this
-      // one read-time point rather than at index time, so nothing that reaches
-      // the entity another way loses it.
-      //
-      // Optional-chained on the same grounds as getSources/getModelDef above.
-      // Absent ⇒ hide nothing, which is the right way to fail: this is a
-      // discoverability control, not a security boundary — the query boundary
-      // is `queryableSources`, the identity gate is `#(authorize)`, and
-      // neither runs through here.
-      const agentHidden =
-         model.getAgentHiddenSourceNames?.() ?? new Set<string>();
-
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
-         if (agentHidden.has(sourceName)) continue;
          const provenance = readFieldProvenance(
             modelDef,
             sourceName,
@@ -1459,7 +1445,6 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // never appearing in `returned`. Exclude it here, before it can be
          // counted anywhere, rather than at serialization.
          if (!query.sourceName) continue;
-         if (agentHidden.has(query.sourceName)) continue;
          entities.push({
             id: String(n++),
             kind: "query",

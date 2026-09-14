@@ -174,7 +174,6 @@ import {
    type PartitionGraftEntry,
 } from "./gate_classification";
 import {
-   agentHiddenSourceNames,
    collectSourceInfos,
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
@@ -496,7 +495,6 @@ export class Model {
     *  Defaults to false (legacy listings) so a Model created outside a
     *  Package matches pre-opt-in behavior. */
    private discoveryCurationEnabled = false;
-   private agentHiddenMemo: ReadonlySet<string> | undefined;
    /** Per-package query-boundary policy, pushed down by the owning Package
     *  (see `Package.applyQueryBoundaryToModels`). Defaults are inert (mode
     *  "all" / not declared) so a Model created outside a Package — or before
@@ -3380,22 +3378,6 @@ export class Model {
    /** Set by the owning Package; see {@link curateForDiscovery}. */
    public setDiscoveryCuration(enabled: boolean): void {
       this.discoveryCurationEnabled = enabled;
-   }
-
-   /**
-    * Sources this model marks `#(agent-hidden)` / `##(agent-hidden)` — kept out
-    * of retrieval surfaces but fully queryable. Derived from `modelDef` rather
-    * than threaded through the worker protocol: it is a pure read of the
-    * annotations already on the wire, so both compile paths get it for free.
-    * See {@link agentHiddenSourceNames} for why neither spelling may fold.
-    */
-   public getAgentHiddenSourceNames(): ReadonlySet<string> {
-      if (this.agentHiddenMemo === undefined) {
-         this.agentHiddenMemo = this.modelDef
-            ? agentHiddenSourceNames(this.modelDef)
-            : new Set<string>();
-      }
-      return this.agentHiddenMemo;
    }
 
    /**

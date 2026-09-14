@@ -31,11 +31,9 @@ import {
 import * as Malloy from "@malloydata/malloy-interfaces";
 import {
    annotationTexts,
-   type AnnotationsDef,
    modelAnnotations,
    ownLevelNotes,
    ownLevelNoteTexts,
-   ownModelAnnotations,
    type AnnotationNote,
 } from "./annotations";
 import {
@@ -195,9 +193,6 @@ function isEarlierPosition(
  * excludes a cross-file derivation of an imported gated source, since the
  * note's `at.url` always names the original file.
  *
- * Nothing here is `#(authorize)`-specific beyond where it is called from;
- * `agentHiddenSourceNames` asks the same question of `#(agent-hidden)` notes.
- *
  * `candidate.location` absent (should not happen for a top-level source, but
  * not guaranteed by the type) skips the candidate rather than crashing —
  * see the call sites' doc for why an unresolved note then behaves as
@@ -258,96 +253,6 @@ export function collectSourceInfos(modelDef: ModelDef): Malloy.SourceInfo[] {
    return modelDefToModelInfo({ ...modelDef, exports }).entries.filter(
       (entry) => entry.kind === "source",
    ) as Malloy.SourceInfo[];
-}
-
-/**
- * `#(agent-hidden)` / `##(agent-hidden)`: keep a source out of retrieval
- * surfaces (`get_context`) without making it any less queryable. Visibility
- * only — the query boundary is `queryableSources`, the identity gate is
- * `#(authorize)`.
- *
- * PROVISIONAL. Deprecated upstream but still honored there, so Publisher
- * honors it for parity. Deliberately absent from `docs/` and the shared
- * skills, and meant to be cheap to delete.
- *
- * Both spellings match an anchored regex, and both accept the paren-less and
- * spaced forms (`#agent-hidden`, `# (agent-hidden)`) because the reference
- * implementation does. `\b` likewise means `#(agent-hidden-foo)` matches
- * there and so must match here; parity beats tightening a tag on its way out.
- */
-const AGENT_HIDDEN_FILE_TAG = /^##\s*\(?\s*agent-hidden\b/;
-const AGENT_HIDDEN_SOURCE_TAG = /^#\s*\(?\s*agent-hidden\b/;
-
-/** Every `##` note belonging to THIS document, as objects (for `at.url`). */
-function ownModelNoteObjects(modelDef: ModelDef): AnnotationNote[] {
-   const notes: AnnotationNote[] = [];
-   for (
-      let cur: AnnotationsDef | undefined = ownModelAnnotations(modelDef);
-      cur;
-      cur = cur.inherits
-   ) {
-      notes.push(...(cur.blockNotes ?? []), ...(cur.notes ?? []));
-   }
-   return notes;
-}
-
-/**
- * Names of the sources this model hides from retrieval.
- *
- * The two spellings scope differently, deliberately:
- *
- *  - Source-level travels across an import, because the annotation rides on
- *    the imported struct itself.
- *  - File-level does NOT. It applies only to sources DECLARED in this file, so
- *    a shared include cannot hide every file that imports it. An importer
- *    therefore sees a `##`-hidden source as visible, which is what the
- *    reference implementation pins as expected.
- *
- * Accepted consequence: a source now gets a card under EVERY file that
- * resolves it, so a single importer is enough to put a `##`-hidden source
- * back in front of an agent. File-level hiding is only as strong as the
- * package's import graph, and it is the spelling an author reaches for first.
- * `#(agent-hidden)` on the source is the one that holds. Not tightened here
- * because folding the file tag across imports is the worse failure — one
- * shared include would blank every importing file — and because the tag is
- * provisional (see below).
- *
- * "Declared" cannot be read off `struct.annotations` directly: Malloy copies a
- * base's whole annotations object BY REFERENCE onto a derivation that adds no
- * annotation of its own, so `source: child is hidden_base` carries the base's
- * note as if it were its own. Reading it naively hides every extension of a
- * hidden base — inverting the tag, since authors hide a base precisely so the
- * extensions get used. {@link considerNoteOwner} is the existing answer to
- * that question (a note's `at.url` names where it was parsed; the owner is the
- * same-file struct declared earliest), so this reuses it rather than adding a
- * second, weaker positional heuristic.
- */
-export function agentHiddenSourceNames(modelDef: ModelDef): Set<string> {
-   const fileUrl = ownModelNoteObjects(modelDef).find((note) =>
-      AGENT_HIDDEN_FILE_TAG.test(note.text),
-   )?.at?.url;
-
-   const declaredBy = new Map<AnnotationNote, StructDef>();
-   for (const obj of Object.values(modelDef.contents)) {
-      if (!isSourceDef(obj)) continue;
-      const struct = obj as StructDef;
-      for (const note of ownLevelNotes(struct.annotations)) {
-         if (AGENT_HIDDEN_SOURCE_TAG.test(note.text)) {
-            considerNoteOwner(declaredBy, note, struct);
-         }
-      }
-   }
-   const declaring = new Set<StructDef>(declaredBy.values());
-
-   const hidden = new Set<string>();
-   for (const [name, obj] of Object.entries(modelDef.contents)) {
-      if (!isSourceDef(obj)) continue;
-      const struct = obj as StructDef;
-      const declaredHere =
-         fileUrl !== undefined && struct.location?.url === fileUrl;
-      if (declaredHere || declaring.has(struct)) hidden.add(name);
-   }
-   return hidden;
 }
 
 /**
