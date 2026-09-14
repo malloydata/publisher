@@ -42,8 +42,28 @@ export function extractRunTargetSourceName(query?: string): string | undefined {
 /**
  * Map each ad-hoc source alias to the base it derives from
  * (`source: NAME is BASE …` → NAME → BASE). Used to walk derivation chains in
- * caller-authored text for both filter inheritance and the query boundary —
- * composition over a queryable source is itself queryable.
+ * caller-authored text for filter inheritance -- a filter-protected source
+ * carries its filter requirements when read under a derived name.
+ *
+ * `source:`-only, last-declaration-wins, and it reads RAW text. It therefore
+ * misreads caller text in BOTH directions, and neither is theoretical:
+ *  - a declaration spelled inside a string literal becomes an edge, and
+ *    last-wins lets it REPLACE the real base for that name;
+ *  - a comment between `is` and the base (`source: mine is -- c\n protected`)
+ *    ERASES the edge, which the compiler still reads around.
+ *
+ * The first is why the query boundary no longer reads this map: a replaced edge
+ * re-pointed a name from the hidden base it really derives from to a curated
+ * one and bought admission. Use {@link buildDerivationBaseMap} over
+ * {@link stripMalloyCommentsAndLiterals} on any path where an edge grants
+ * access.
+ *
+ * The second is a live weakness on the one path that still reads this map:
+ * {@link Model.resolveFilterSource} walks it to find the protected source whose
+ * filters a derived name must inherit, so an ERASED edge ends that walk early
+ * and no filter is injected. Do not read "filter inheritance only" as "safe" --
+ * it is unfixed here rather than harmless, and closing it means moving that
+ * walk onto the hardened pair too.
  */
 export function buildSourceAliasMap(query: string): Map<string, string> {
    const aliasOf = new Map<string, string>();
@@ -151,16 +171,24 @@ export function stripMalloyCommentsAndLiterals(text: string): string {
  * Every base each ad-hoc alias in `text` may derive from — `source: NAME is
  * BASE` and `query: NAME is BASE` — as NAME → set of BASEs.
  *
- * Deliberately NOT {@link buildSourceAliasMap}, which this does not replace:
- * that one feeds the query BOUNDARY, where an extra edge widens ADMISSION, so
- * it stays exactly as narrow as it has always been. This one feeds the
- * authorize gate, where an extra edge widens DENIAL, so it is built to
- * over-collect on purpose:
+ * Built to over-collect on purpose:
  *  - `query:` declarations are included, so a `query:` hop between a
  *    derivation and the `run:` cannot break the chain;
  *  - a name maps to a SET, keeping every base declared for it rather than the
  *    last, so a second (forged or shadowing) declaration can only add a base
  *    to check, never replace the real one.
+ *
+ * Read by BOTH the authorize gate and the query boundary, which want opposite
+ * things from it, so the quantifier -- not the map -- is what carries the
+ * direction. The authorize gate denies if ANY branch reaches a gated source,
+ * so an extra edge widens DENIAL and over-collection is trivially safe. The
+ * boundary admits only if EVERY base proves curated, so an extra edge adds an
+ * obligation rather than discharging one, and over-collection is safe there
+ * too. A future caller that reads this map with an ANY-branch ADMISSION
+ * quantifier would invert that and turn a forged edge into a bypass.
+ *
+ * Does NOT replace {@link buildSourceAliasMap}, which survives for
+ * `resolveFilterSource`'s filter-inheritance walk.
  *
  * Expects text already passed through {@link stripMalloyCommentsAndLiterals}.
  */

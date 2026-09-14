@@ -329,9 +329,17 @@ function isGivenBindingFailure(err: unknown): boolean {
 }
 
 /**
- * Name budget for {@link Model.requestChainProvesUngated}'s walk over a
- * request's own derivation declarations. Exceeding it fails the proof (and so
- * denies), which is why it only has to be larger than any real chain.
+ * Budget for a walk over a request's own derivation declarations. Exceeding it
+ * fails the proof (and so denies), which is why it only has to be larger than
+ * any real chain.
+ *
+ * Read by two walks that spend it differently, so it bounds two different
+ * things: {@link Model.requestChainProvesUngated} counts TOTAL NAMES visited
+ * (`seen.size`), while {@link Model.derivesFromCurated} counts STACK DEPTH
+ * (`inProgress.size`), since its every-base proof recurses. A wide, shallow
+ * derivation graph can therefore exhaust one and not the other. Both directions
+ * deny on exhaustion, so the divergence costs an over-denial rather than an
+ * admission, and only past a depth no hand-written query reaches.
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
 

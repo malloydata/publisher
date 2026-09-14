@@ -751,6 +751,28 @@ export { \`customer-orders\` }`,
 
          // (a) A declaration forged inside a STRING LITERAL is blanked before
          // the scan, so it never becomes an edge: `mine` stays ungrounded.
+         //
+         // The `source:` spelling is the load-bearing one. The scan this
+         // replaced read `source:` declarations out of RAW text and kept only
+         // the LAST base per name, so a literal spelling `source:` re-pointed
+         // `mine` from the hidden base it really derives from to the curated
+         // one, and the boundary admitted a read of the hidden source. Blanking
+         // literals means the forged text is never a declaration at all, and
+         // keeping every base per name means it could only add an obligation
+         // even if it were.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: mine is helper extend {\n" +
+                  "  dimension: note is 'source: mine is customers'\n" +
+                  "}\nrun: mine -> { group_by: note }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // The `query:` spelling of the same forgery, which the replaced scan
+         // did not read at all. Widening to `query:` is what makes it reachable,
+         // so it is pinned alongside rather than assumed to follow.
          await expect(
             model.getQueryResults(
                undefined,
@@ -774,6 +796,30 @@ export { \`customer-orders\` }`,
                   "query: mine is customers -> { group_by: id }\n" +
                   "source: alias is mine extend { primary_key: id }\n" +
                   "run: alias -> { group_by: id }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // (b2) The same pairing, but spelled so that MALLOY accepts the text --
+         // the forged half rides inside a backtick-quoted FIELD NAME, which is
+         // a legal identifier and is deliberately preserved by the strip (a
+         // backticked span carries real names the scan must read). So the base
+         // map really does see `mine` -> { helper, customers }, and this query
+         // reaches the boundary on its own merits instead of dying at compile
+         // the way (b) does.
+         //
+         // This is the case that pins the QUANTIFIER. Admission requires EVERY
+         // base to prove curated, so the hidden `helper` denies it. Were the
+         // walk to admit on ANY base instead, the forged `customers` edge would
+         // discharge the obligation and this query would return rows from the
+         // hidden source -- and (b) would not catch that, because Malloy rejects
+         // (b) before the boundary ever rules.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: mine is helper extend {\n" +
+                  "  dimension: `source: mine is customers` is 1\n" +
+                  "}\nrun: mine -> { group_by: id }",
             ),
          ).rejects.toBeInstanceOf(NotQueryableError);
 
