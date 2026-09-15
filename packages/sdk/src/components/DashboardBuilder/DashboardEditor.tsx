@@ -318,6 +318,24 @@ function Surface({
    });
    const manifest = data?.data;
 
+   // The package's other dashboards, by slug: where a clicked cell can go.
+   const { data: dashboardList } = useQueryWithApiError({
+      queryKey: ["dashboard-editor-dashboards", environmentName, packageName],
+      queryFn: () =>
+         apiClients.dashboards.listDashboards(
+            environmentName,
+            packageName,
+            undefined,
+         ),
+   });
+   const otherDashboards = useMemo(
+      () =>
+         (dashboardList?.data ?? [])
+            .map((d) => d.name)
+            .filter((name): name is string => !!name && name !== slug),
+      [dashboardList, slug],
+   );
+
    // The catalog: the models this file imports, which is where its tiles'
    // sources and their fields are declared.
    const importPaths = useMemo(() => {
@@ -450,6 +468,7 @@ function Surface({
                }))}
             onChange={setDoc}
             {...(catalog ? { catalog } : {})}
+            dashboards={otherDashboards}
             toolbar={toolbar}
             controls={
                isSuccess ? (

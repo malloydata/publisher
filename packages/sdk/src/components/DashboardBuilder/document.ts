@@ -163,6 +163,19 @@ export interface DashboardSource {
    base: string;
    /** A `#(doc)` description on the source. */
    doc?: string;
+   /**
+    * The dimensions this extension declares itself, in file order. These are
+    * the only fields a `# drill` can be authored on here: a drill is a tag on
+    * the dimension's declaration, and the model's dimensions are declared in
+    * the model.
+    */
+   dimensions?: DashboardDimension[];
+}
+
+/** `dimension: <name> is <expression>` in the dashboard's own extension. */
+export interface DashboardDimension {
+   name: string;
+   expression: string;
 }
 
 export interface DashboardDocument {

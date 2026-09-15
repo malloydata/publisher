@@ -1,11 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { DashboardDocument, DashboardTile } from "./document";
+import type {
+   DashboardDocument,
+   DashboardDrill,
+   DashboardTile,
+} from "./document";
 import type { LocalGiven } from "./document";
 import {
    BINDING_CLAUSE,
    blockAbove,
+   dimensionsDeclaredUnder,
    readDashboardDocument,
    readFailed,
 } from "./readDocument";
@@ -140,9 +145,7 @@ const MODELLED_TAG_KEYS: ReadonlySet<string> = new Set([
 const isSameDocumentExceptTiles = (
    a: DashboardDocument,
    b: DashboardDocument,
-) =>
-   canonical(a.imports) === canonical(b.imports) &&
-   canonical(a.drills) === canonical(b.drills);
+) => canonical(a.imports) === canonical(b.imports);
 
 /**
  * A given's tag line, composed from its control contract. One line, in the
@@ -229,6 +232,17 @@ function declarationEnd(lines: string[], line: number): number {
 }
 
 /** One tile's identity, ignoring presentation and position. */
+/** `# drill { to=… given=… }`, one line, as the reader spells it back. */
+export function drillTagLine(drill: DashboardDrill): string {
+   const to =
+      drill.to.length === 1
+         ? drill.to[0]
+         : `[${drill.to.map((d) => `"${d}"`).join(", ")}]`;
+   return `# drill { to=${to}${drill.given ? ` given=${drill.given}` : ""} }`;
+}
+
+const drillKey = (d: DashboardDrill) => `${d.source}.${d.name}`;
+
 const tileKey = (t: DashboardTile) =>
    canonical([t.name, t.source, t.declaration]);
 
@@ -315,7 +329,7 @@ export async function spliceDashboardDocument(
    if (!isSameDocumentExceptTiles(current, next)) {
       return {
          ok: false,
-         reason: "The dashboard's imports and drills cannot be changed here.",
+         reason: "The dashboard's imports cannot be changed here.",
       };
    }
 
@@ -631,6 +645,58 @@ export async function spliceDashboardDocument(
          edits.push({ start: 0, end: 0, text: "##! experimental.givens\n" });
    }
 
+   // DRILLS. A drill is one `# drill` tag on a dimension THIS FILE declares —
+   // added above the declaration, rewritten, or taken off. The dimension itself
+   // is never written: a dimension no view reads is a dead drill, and the
+   // builder does not edit views, so the author declares the dimension and the
+   // builder makes it clickable.
+   const drillsBefore = new Map(
+      (current.drills ?? []).map((d) => [drillKey(d), d]),
+   );
+   const drillsAfter = new Map(
+      (next.drills ?? []).map((d) => [drillKey(d), d]),
+   );
+   for (const key of new Set([...drillsBefore.keys(), ...drillsAfter.keys()])) {
+      const was = drillsBefore.get(key);
+      const want = drillsAfter.get(key);
+      if (was && want && canonical(was) === canonical(want)) continue;
+      const drill = (want ?? was) as DashboardDrill;
+      if (want && want.to.length === 0) {
+         return {
+            ok: false,
+            reason: `The drill on \`${key}\` names no destination.`,
+         };
+      }
+      const at = dimensionsDeclaredUnder(lines, drill.source).get(drill.name);
+      if (at === undefined) {
+         return {
+            ok: false,
+            reason:
+               `\`${drill.name}\` is not a dimension \`${drill.source}\` declares ` +
+               `in this file, so a drill cannot be put on it here.`,
+         };
+      }
+      const { tags } = blockAbove(lines, at.line);
+      const existing = tags.find((tag) => /^#\s*drill\b/.test(tag.text));
+      const indent = indentOf(at.line);
+      if (want === undefined) {
+         if (existing) edits.push({ ...wholeLine(existing.line), text: "" });
+      } else if (existing) {
+         edits.push({
+            ...wholeLine(existing.line),
+            text: `${indent}${drillTagLine(want)}\n`,
+         });
+      } else {
+         // Directly above the declaration, under any other tags it has.
+         const start = wholeLine(at.line).start;
+         edits.push({
+            start,
+            end: start,
+            text: `${indent}${drillTagLine(want)}\n`,
+         });
+      }
+   }
+
    // REMOVED TILES: the declaration and its `#` tags. An inline view's body
    // runs to its closing brace; a reference is one line. An inherited tile has
    // nothing here to remove — its entry left the artifact list above.
@@ -877,7 +943,19 @@ export async function spliceDashboardDocument(
          reason: `The edit produced a file that cannot be read back: ${after.reason}`,
       };
    }
-   if (canonical(after.document) !== canonical(next)) {
+   // Drills are compared as a set: their order is the file's, and a caller
+   // appending one to the array has no way to know where its dimension sits.
+   const comparable = (document: DashboardDocument): DashboardDocument => ({
+      ...document,
+      ...(document.drills
+         ? {
+              drills: [...document.drills].sort((a, b) =>
+                 drillKey(a).localeCompare(drillKey(b)),
+              ),
+           }
+         : {}),
+   });
+   if (canonical(comparable(after.document)) !== canonical(comparable(next))) {
       return {
          ok: false,
          reason:

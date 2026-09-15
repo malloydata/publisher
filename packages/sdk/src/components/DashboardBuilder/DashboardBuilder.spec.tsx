@@ -675,6 +675,76 @@ describe("DashboardBuilder: widths and the page's own settings", () => {
    });
 });
 
+describe("DashboardBuilder: clickable cells", () => {
+   const WITH_DIMENSION = `## artifact { title="T" tiles=["a -> x"] } dashboard { columns=12 }
+import "../data_app.malloy"
+
+source: a is scoped_orders extend {
+  # label="Category"
+  dimension: cat is products.category
+
+  # colspan=6
+  view: x is { group_by: cat aggregate: total_revenue }
+}`;
+
+   it("puts a drill on a dimension this file declares, and writes the tag", async () => {
+      let saved = "";
+      const doc = await openDocument(WITH_DIMENSION);
+      render(
+         <DashboardBuilder
+            source={WITH_DIMENSION}
+            document={doc}
+            dashboards={["regions"]}
+            givens={[{ name: "CATEGORY" }]}
+            onSave={(source) => {
+               saved = source;
+            }}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for x"));
+      fireEvent.click(button("Clickable cells…"));
+
+      fireEvent.mouseDown(
+         screen.getByRole("combobox", { name: /Clicks go to/, hidden: true }),
+      );
+      fireEvent.click(
+         screen.getByRole("option", { name: /This dashboard/, hidden: true }),
+      );
+      fireEvent.click(
+         screen.getByRole("option", { name: /regions/, hidden: true }),
+      );
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      fireEvent.mouseDown(
+         screen.getByRole("combobox", {
+            name: /Sets the control/,
+            hidden: true,
+         }),
+      );
+      fireEvent.click(
+         screen.getByRole("option", { name: "CATEGORY", hidden: true }),
+      );
+      fireEvent.click(button("Apply"));
+
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(saved).not.toBe(""));
+      expect(saved).toContain(
+         `  # label="Category"
+  # drill { to=["self", "regions"] given=CATEGORY }
+  dimension: cat is products.category`,
+      );
+   });
+
+   it("explains itself when the source declares no dimension here", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for By category"));
+      fireEvent.click(button("Clickable cells…"));
+      expect(
+         screen.getByText(/declares no dimensions of its own/),
+      ).toBeDefined();
+      expect(button("Apply").hasAttribute("disabled")).toBe(true);
+   });
+});
+
 describe("DashboardBuilder: keyboard", () => {
    it("undoes and redoes from the keyboard, and never from inside a text field", async () => {
       await mount();

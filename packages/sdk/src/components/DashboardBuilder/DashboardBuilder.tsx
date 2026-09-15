@@ -50,6 +50,7 @@ import { filterableFields, type PackageCatalog } from "./catalog";
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
 import { AddTileDialog, type NewTile } from "./AddTileDialog";
 import { DiffDialog } from "./DiffDialog";
+import { DrillDialog } from "./DrillDialog";
 import { FilterDialog } from "./FilterDialog";
 import { SettingsPopover, settingsOf } from "./SettingsPopover";
 import {
@@ -156,6 +157,11 @@ export interface DashboardBuilderProps {
     * is the worst place for it.
     */
    catalog?: PackageCatalog;
+   /**
+    * The other dashboards in the package, by slug — where a clicked cell can
+    * go. Absent, a drill can only filter this dashboard.
+    */
+   dashboards?: string[];
    /**
     * The host's own actions for the edit bar — Export, Done — rendered beside
     * undo, redo and save. The builder owns the edits; where the file goes
@@ -323,6 +329,7 @@ export function DashboardBuilder({
    givens,
    catalog,
    toolbar,
+   dashboards,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
@@ -364,6 +371,10 @@ export function DashboardBuilder({
    >(undefined);
    // The add-tile picker, and the diff a structural save shows first.
    const [addingTile, setAddingTile] = useState(false);
+   // The clickable-cells window, for one tile's source.
+   const [drillSource, setDrillSource] = useState<string | undefined>(
+      undefined,
+   );
    // The page's settings, anchored to the toolbar button that opened them.
    const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(
       null,
@@ -1294,6 +1305,28 @@ export function DashboardBuilder({
                if (menu !== undefined) removeTile(menu.index);
             }}
             columns={columns}
+            onDrills={() => {
+               if (menu !== undefined)
+                  setDrillSource(editor.document.tiles[menu.index]?.source);
+            }}
+         />
+         <DrillDialog
+            open={drillSource !== undefined}
+            document={editor.document}
+            source={editor.document.sources.find((s) => s.name === drillSource)}
+            givenNames={controlList.map((c) => c.name)}
+            dashboards={dashboards ?? []}
+            onClose={() => setDrillSource(undefined)}
+            onApply={(drills) =>
+               editor.update((draft) => {
+                  const kept = (draft.drills ?? []).filter(
+                     (d) => d.source !== drillSource,
+                  );
+                  const next = [...kept, ...drills];
+                  if (next.length === 0) delete draft.drills;
+                  else draft.drills = next;
+               })
+            }
          />
          <SettingsPopover
             anchor={settingsAnchor}

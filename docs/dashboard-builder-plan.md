@@ -102,7 +102,7 @@ access and delivery.
 | Control types            | Twelve                                                                                       | Six: search, select, multiselect, range slider, time range, date picker                        | Runtime plus tags         |
 | Required, curated values | Present                                                                                      | None                                                                                           | Runtime plus tags         |
 | Linked filters           | A parent narrows a child's options                                                           | None                                                                                           | Runtime plus tags         |
-| Cross-filtering          | Click any mark to filter every other tile                                                    | `# drill { to=self }` on a dimension; not authorable in the builder yet                        | Runtime, then Format      |
+| Cross-filtering          | Click any mark to filter every other tile                                                    | `# drill { to=self }` on a dimension the dashboard declares; authorable from a tile's menu     | Runtime, then Format      |
 | Drill                    | Overlay of the rows behind a value, further drill, explore from here                         | Dimension drill to a dashboard or self; no overlay, no measure drill                           | Runtime                   |
 | Chart types              | About twenty, plus Highcharts config                                                         | Twelve, from the view's own tag; the builder does not choose one                               | Renderer                  |
 | Vis options              | Series colours, reference and trend lines, value labels, axis ranges, conditional formatting | None                                                                                           | Renderer                  |
@@ -194,7 +194,11 @@ Ordered by what unblocks what. Each is SDK or server work on the existing format
    dashboard's own extension works and is linted today; the builder can author it
    from a tile's menu. That is also the format's only cross-filtering primitive
    (`to=self`), so click-to-filter on a dashboard's own dimensions arrives here,
-   without a grammar change.
+   without a grammar change. Shipped 2026-09-15 as "Clickable cells" on a
+   tile's menu: every dimension the tile's source declares in this file, with
+   its destinations (this dashboard, the package's other dashboards) and the
+   control a click sets. The builder writes the tag, never the dimension — a
+   dimension no view groups by is a dead drill, and views are the author's.
 6. **Filter control tags Publisher already owns.** `required`, curated option
    lists, display modes and a "linked to" parent are additions to the control
    contract Publisher reads off a `given:` declaration. Unread tags are ignored by

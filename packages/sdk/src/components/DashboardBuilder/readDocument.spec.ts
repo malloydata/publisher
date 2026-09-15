@@ -157,6 +157,10 @@ source: a is one extend {
             given: "CATEGORY",
          },
       ]);
+      // And the dimension itself, tagged or not, is where a drill can go.
+      expect(doc.sources[0].dimensions).toEqual([
+         { name: "cat", expression: "products.category" },
+      ]);
    });
 
    // Givens are the one declaration the parser's symbol tree does not cover.

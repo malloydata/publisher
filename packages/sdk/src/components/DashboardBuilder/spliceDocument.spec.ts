@@ -377,6 +377,76 @@ given: CATEGORY :: filter<string> is f''`);
    });
 });
 
+describe("spliceDashboardDocument: drills", () => {
+   const WITH_DIMENSION = `## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  // The dimension a view groups by, declared here so it can be tagged here.
+  # label="Category"
+  dimension: cat is products.category
+
+  # drill { to=self given=BRAND }
+  dimension: brand is products.brand
+
+  view: x is vx
+}`;
+
+   it("puts a drill tag on a dimension this file declares, under its other tags", async () => {
+      const out = await spliced(WITH_DIMENSION, (d) => {
+         d.drills = [
+            ...(d.drills ?? []),
+            {
+               source: "a",
+               name: "cat",
+               expression: "products.category",
+               to: ["self", "regions"],
+               given: "CATEGORY",
+            },
+         ];
+      });
+      expect(out).toContain(
+         `  // The dimension a view groups by, declared here so it can be tagged here.
+  # label="Category"
+  # drill { to=["self", "regions"] given=CATEGORY }
+  dimension: cat is products.category`,
+      );
+      // And it reads back as written.
+      const back = await splice(out, () => {});
+      if (spliceFailed(back)) throw new Error(back.reason);
+      const reread = await readDashboardDocument(out);
+      if (readFailed(reread)) throw new Error(reread.reason);
+      expect(reread.document.drills?.map((d) => d.name)).toEqual([
+         "cat",
+         "brand",
+      ]);
+   });
+
+   it("rewrites and removes a drill tag, leaving the dimension", async () => {
+      const retargeted = await spliced(WITH_DIMENSION, (d) => {
+         d.drills = [{ ...(d.drills ?? [])[0], to: ["brands"] }];
+      });
+      expect(retargeted).toContain(
+         "  # drill { to=brands given=BRAND }\n  dimension: brand is products.brand",
+      );
+      const removed = await spliced(WITH_DIMENSION, (d) => {
+         delete d.drills;
+      });
+      expect(removed).not.toContain("# drill");
+      expect(removed).toContain("  dimension: brand is products.brand");
+   });
+
+   it("refuses a drill on a dimension the model declares", async () => {
+      const r = await splice(WITH_DIMENSION, (d) => {
+         d.drills = [
+            ...(d.drills ?? []),
+            { source: "a", name: "category", expression: "", to: ["self"] },
+         ];
+      });
+      expect(spliceFailed(r) && r.reason).toContain("not a dimension");
+   });
+});
+
 describe("spliceDashboardDocument: the page's own settings", () => {
    it("retitles the page on its one-line tag", async () => {
       const out = await spliced(SOURCE, (d) => {

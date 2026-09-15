@@ -296,6 +296,39 @@ function viewsDeclaredUnder(
    return views;
 }
 
+/**
+ * The `dimension:` declarations under `source: <owner>`, by the same textual
+ * rule as {@link viewsDeclaredUnder}. One-line declarations only: a dimension
+ * whose expression runs on is read up to the end of its first line, which is
+ * enough to identify it and is all the writer ever touches.
+ */
+export function dimensionsDeclaredUnder(
+   lines: string[],
+   owner: string,
+): Map<string, { line: number; expression: string }> {
+   const dimensions = new Map<string, { line: number; expression: string }>();
+   let current: string | undefined;
+   for (let line = 0; line < lines.length; line++) {
+      const text = lines[line];
+      const source = /^\s*source:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(text);
+      if (source) {
+         current = source[1];
+         continue;
+      }
+      if (/^\s*(query|run|import|given)\b/.test(text) || text.startsWith("##"))
+         current = undefined;
+      if (current !== owner) continue;
+      const dimension =
+         /^\s*dimension:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\s+(.*)$/.exec(text);
+      if (dimension)
+         dimensions.set(dimension[1], {
+            line,
+            expression: dimension[2].trim(),
+         });
+   }
+   return dimensions;
+}
+
 /** The `tiles=[…]` entries, in order, as written. */
 function tileEntries(artifactLine: string): string[] {
    const list = /tiles\s*=\s*\[([\s\S]*?)\]/.exec(artifactLine)?.[1];
@@ -379,26 +412,32 @@ export async function readDashboardDocument(
       // A `view: <name> is` line under a `source: <name> is` line is
       // unambiguous, and Malloy has no nested sources to confuse it.
       const views = viewsDeclaredUnder(lines, name);
-      for (const child of symbol.children ?? []) {
-         const childLine = child.range.start.line;
-         if (child.type === "field") {
-            const { tags } = blockAbove(lines, childLine);
-            const drillTag = parseAnnotation(tagText(tags)).tag?.tag("drill");
-            if (!drillTag) continue;
-            const to = drillTag.textArray("to") ?? [drillTag.text("to") ?? ""];
-            const expression = /is\s+(.+)$/
-               .exec(lines[childLine].trim())?.[1]
-               ?.trim();
-            drills.push({
-               source: name,
-               name: String(child.name),
-               expression: expression ?? "",
-               to: to.filter(Boolean),
-               ...(drillTag.text("given")
-                  ? { given: drillTag.text("given") as string }
-                  : {}),
-            });
-         }
+      // Dimensions the same way, and drills off THEIR tag blocks: a `# drill`
+      // is a tag on a dimension's declaration, so the dimensions this file
+      // declares are exactly where one can be authored.
+      const dimensions = dimensionsDeclaredUnder(lines, name);
+      if (dimensions.size > 0) {
+         sources[sources.length - 1].dimensions = [...dimensions].map(
+            ([dimensionName, at]) => ({
+               name: dimensionName,
+               expression: at.expression,
+            }),
+         );
+      }
+      for (const [dimensionName, at] of dimensions) {
+         const { tags } = blockAbove(lines, at.line);
+         const drillTag = parseAnnotation(tagText(tags)).tag?.tag("drill");
+         if (!drillTag) continue;
+         const to = drillTag.textArray("to") ?? [drillTag.text("to") ?? ""];
+         drills.push({
+            source: name,
+            name: dimensionName,
+            expression: at.expression,
+            to: to.filter(Boolean),
+            ...(drillTag.text("given")
+               ? { given: drillTag.text("given") as string }
+               : {}),
+         });
       }
       viewsBySource.set(name, views);
    }

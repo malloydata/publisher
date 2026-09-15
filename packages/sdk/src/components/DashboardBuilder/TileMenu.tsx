@@ -38,6 +38,8 @@ export interface TileMenuProps {
    onRemove: () => void;
    /** The grid's width, which the width presets are fractions of. */
    columns: number;
+   /** Open the clickable-cells window for this tile's source. */
+   onDrills: () => void;
 }
 
 export function TileMenu({
@@ -47,6 +49,7 @@ export function TileMenu({
    onCommit,
    onRemove,
    columns,
+   onDrills,
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
    const [draft, setDraft] = useState<DashboardTile | undefined>(undefined);
@@ -172,17 +175,31 @@ export function TileMenu({
                   </Typography>
                )}
                <Divider />
-               <Button
-                  color="error"
-                  size="small"
-                  onClick={() => {
-                     setDraft(undefined);
-                     onRemove();
-                  }}
-                  sx={{ alignSelf: "flex-start" }}
-               >
-                  Remove tile
-               </Button>
+               <Stack direction="row" sx={{ justifyContent: "space-between" }}>
+                  {editable ? (
+                     <Button
+                        size="small"
+                        onClick={() => {
+                           close();
+                           onDrills();
+                        }}
+                     >
+                        Clickable cells…
+                     </Button>
+                  ) : (
+                     <span />
+                  )}
+                  <Button
+                     color="error"
+                     size="small"
+                     onClick={() => {
+                        setDraft(undefined);
+                        onRemove();
+                     }}
+                  >
+                     Remove tile
+                  </Button>
+               </Stack>
             </Stack>
          )}
       </Popover>
