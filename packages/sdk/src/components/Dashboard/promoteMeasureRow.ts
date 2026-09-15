@@ -50,10 +50,41 @@ const RENDER_TAGS = new Set([
 
 const BIG_VALUE_ANNOTATION = { value: "# big_value\n" };
 
+interface ResultField {
+   kind?: string;
+   annotations?: Array<{ value?: string }>;
+}
+
 interface ResultShape {
-   schema?: { fields?: Array<{ kind?: string }> };
+   schema?: { fields?: ResultField[] };
    data?: { kind?: string; array_value?: unknown[] };
    annotations?: Array<{ value?: string }>;
+}
+
+/**
+ * Whether an output field is an aggregate.
+ *
+ * Measured against the server: every output field of a query comes back
+ * `kind: "dimension"` — a result's columns are its dimensions, whatever they
+ * were in the source — and what marks an aggregate is the `calculation` token
+ * in the field's internal annotation:
+ *
+ *     #(malloy) reference_id = "…" calculation drill_expression { … }
+ *
+ * `kind === "measure"` is kept for a renderer that says so directly, but no
+ * real result has yet. Until this read the annotation the promotion never
+ * fired on real output, and only its own fixture — written with `"measure"` —
+ * ever passed it.
+ */
+const MALLOY_CALCULATION = /^#\(malloy\)[\s\S]*\bcalculation\b/;
+function isMeasureField(field: ResultField | undefined): boolean {
+   if (!field) return false;
+   if (field.kind === "measure") return true;
+   return (field.annotations ?? []).some(
+      (annotation) =>
+         typeof annotation?.value === "string" &&
+         MALLOY_CALCULATION.test(annotation.value.trim()),
+   );
 }
 
 /**
@@ -63,7 +94,7 @@ interface ResultShape {
 export function isMeasureRow(result: ResultShape): boolean {
    const fields = result.schema?.fields;
    if (!Array.isArray(fields) || fields.length === 0) return false;
-   if (!fields.every((field) => field?.kind === "measure")) return false;
+   if (!fields.every(isMeasureField)) return false;
    const data = result.data;
    if (!data) return false;
    if (data.kind === "record_cell") return true;
