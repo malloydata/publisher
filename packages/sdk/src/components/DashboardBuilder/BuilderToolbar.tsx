@@ -130,6 +130,9 @@ export function BuilderToolbar({
                         color: theme.tileTitle,
                         minWidth: 108,
                         textAlign: "right",
+                        // Room between the state and the button that acts on
+                        // it: at the row's 4px gap the two read as one label.
+                        mr: 1.5,
                         opacity: dirty && !saving ? 1 : 0,
                         transition: "opacity 120ms",
                      }}
