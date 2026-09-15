@@ -117,8 +117,9 @@ function tagsFor(tile: DashboardTile): string[] {
    if (tile.colspan !== undefined) tags.push(`# colspan=${tile.colspan}`);
    if (tile.break) tags.push("# break");
    if (tile.borderless) tags.push("# borderless");
-   if (tile.label !== undefined) tags.push(`# label="${tile.label}"`);
-   if (tile.subtitle !== undefined) tags.push(`# subtitle="${tile.subtitle}"`);
+   if (tile.label !== undefined) tags.push(`# label=${quoted(tile.label)}`);
+   if (tile.subtitle !== undefined)
+      tags.push(`# subtitle=${quoted(tile.subtitle)}`);
    return tags;
 }
 
@@ -147,6 +148,22 @@ const MODELLED_TAG_KEYS: ReadonlySet<string> = new Set([
    "subtitle",
 ]);
 
+/**
+ * The same rule for a given: the keys {@link givenTagLine} writes are the only
+ * ones the writer may rewrite or remove. A routed annotation such as
+ * `#(secure)` has no key at all, so it is never ours, and a relabel that took
+ * it with the control contract would strip an access marker the projection
+ * cannot see it lost.
+ */
+const MODELLED_GIVEN_TAG_KEYS: ReadonlySet<string> = new Set([
+   "label",
+   "description",
+   "control",
+   "suggest",
+   "range_min",
+   "range_max",
+]);
+
 const isSameDocumentExceptTiles = (
    a: DashboardDocument,
    b: DashboardDocument,
@@ -159,9 +176,9 @@ const isSameDocumentExceptTiles = (
  */
 function givenTagLine(given: LocalGiven): string | undefined {
    const parts: string[] = [];
-   if (given.label !== undefined) parts.push(`label="${given.label}"`);
+   if (given.label !== undefined) parts.push(`label=${quoted(given.label)}`);
    if (given.description !== undefined)
-      parts.push(`description="${given.description}"`);
+      parts.push(`description=${quoted(given.description)}`);
    if (given.control !== undefined) parts.push(`control=${given.control}`);
    if (given.suggest) {
       const by =
@@ -528,10 +545,19 @@ function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
             reason: `Could not find where the given \`${name}\` is declared.`,
          };
       }
-      // Its tags are its control contract, with no other owner, so they go
-      // with it (or are replaced with it). A `//` comment in the block stays.
+      // Only the keys this document models are the writer's to rewrite. A
+      // removed declaration is the exception and takes every tag with it: a
+      // `#` line left behind does not lapse, it attaches to whatever is
+      // declared next, so an orphaned `#(secure)` would silently move.
       const { tags } = blockAbove(lines, at.line);
-      for (const tag of tags) {
+      const owned =
+         want === undefined
+            ? tags
+            : tags.filter((tag) => {
+                 const key = tagKey(tag.text);
+                 return key !== undefined && MODELLED_GIVEN_TAG_KEYS.has(key);
+              });
+      for (const tag of owned) {
          edits.push({ ...wholeLine(tag.line), text: "" });
          removedLines.add(tag.line);
       }
@@ -1003,7 +1029,49 @@ export async function spliceDashboardDocument(
       if (failure) return failure;
    }
 
-   if (edits.length === 0) return { ok: true, source: sourceText };
+   // Drills are compared as a set: their order is the file's, and a caller
+   // appending one to the array has no way to know where its dimension sits.
+   //
+   // An optional collection the reader omits and a caller materialises as `[]`
+   // are the same document, so they compare equal. Without that, a host that
+   // normalises its shape asks for no change, gets no edits, and would be told
+   // its save did not produce what it asked for.
+   const comparable = (document: DashboardDocument): DashboardDocument => {
+      const { drills, localGivens, ...rest } = document;
+      const tiles = document.tiles.map((tile) => {
+         if (tile.filters?.length) return tile;
+         const { filters: _filters, ...tileRest } = tile;
+         return tileRest as DashboardTile;
+      });
+      return {
+         ...rest,
+         tiles,
+         ...(drills?.length
+            ? {
+                 drills: [...drills].sort((a, b) =>
+                    drillKey(a).localeCompare(drillKey(b)),
+                 ),
+              }
+            : {}),
+         ...(localGivens?.length ? { localGivens } : {}),
+      } as DashboardDocument;
+   };
+
+   // No edit means no planner found anything to place. That is only correct if
+   // the document asked for is the one already on disk -- otherwise the ask
+   // fell through every planner and returning `ok` would report a write that
+   // never happened.
+   if (edits.length === 0) {
+      if (canonical(comparable(current)) !== canonical(comparable(next))) {
+         return {
+            ok: false,
+            reason:
+               "The edit did not produce the dashboard that was asked for, so it " +
+               "was not written. Your changes are still here.",
+         };
+      }
+      return { ok: true, source: sourceText };
+   }
 
    const spliced = applyEdits(sourceText, edits);
 
@@ -1017,18 +1085,6 @@ export async function spliceDashboardDocument(
          reason: `The edit produced a file that cannot be read back: ${after.reason}`,
       };
    }
-   // Drills are compared as a set: their order is the file's, and a caller
-   // appending one to the array has no way to know where its dimension sits.
-   const comparable = (document: DashboardDocument): DashboardDocument => ({
-      ...document,
-      ...(document.drills
-         ? {
-              drills: [...document.drills].sort((a, b) =>
-                 drillKey(a).localeCompare(drillKey(b)),
-              ),
-           }
-         : {}),
-   });
    if (canonical(comparable(after.document)) !== canonical(comparable(next))) {
       return {
          ok: false,
