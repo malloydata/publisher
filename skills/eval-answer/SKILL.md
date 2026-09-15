@@ -154,6 +154,13 @@ How to invoke it. Either `--model <file-or-dir>` for a local package or
 python3 check_coverage.py --set evals/ecommerce --model model.malloy --version 0.0.58
 ```
 
+Then hand the report back to the run: `run_baseline.py --coverage <report>`.
+Its per-case verdict beats the case's authored `coverage` label in retrieval
+attribution, `run.json` records which report was read, and each retrieval row
+says whether `measured`, `authored` or `none` charged the failure. Without a
+report, a case with no label is attributed to nobody rather than to the model,
+which is what used to happen.
+
 Two flags change what the number means, so choose them rather than inheriting
 them. `--repeat N` samples each case N times and takes the majority; it defaults
 to **1 for a set**, because the score is a trend over many cases rather than a

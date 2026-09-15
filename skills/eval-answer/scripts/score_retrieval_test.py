@@ -12,7 +12,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from score_retrieval import (  # noqa: E402
-    attribute, main, score_case, summarise,
+    MEASURED_GAPS, MEASURED_OK, attribute, coverage_report_summary,
+    load_coverage_report, main, score_case, summarise,
 )
 
 M_SALES = "measure:order_items:total_sales"
@@ -222,6 +223,78 @@ class Attribution(unittest.TestCase):
              "expectedEntities": {"required": [], "acceptable": []}}
         r = score_case(c, calls([]), KEY, "match")
         self.assertEqual(r["where_to_fix"], "")
+
+
+class MeasuredCoverage(unittest.TestCase):
+    """check_coverage.py's verdict reaches attribution, and beats the label.
+
+    The `--out` report it writes was read by nothing in the repo. The authored
+    `coverage` label is a standing hand judgement about the question; the
+    verdict is a measurement against this build, which is what an attribution
+    is about.
+    """
+
+    def test_a_measured_ok_with_a_miss_blames_retrieval(self):
+        r = score_case(case(coverage="derivable"), calls([]), KEY, "no_match",
+                       measured="ok")
+        self.assertEqual(r["where_to_fix"], "retrieval ranking")
+        self.assertEqual(r["coverage_source"], "measured")
+
+    def test_a_measured_gap_blames_the_model_and_names_the_code(self):
+        r = score_case(case(coverage="covered"), calls([]), KEY, "no_match",
+                       measured="NO-DISAMBIG")
+        self.assertEqual(r["where_to_fix"], "model coverage")
+        self.assertIn("NO-DISAMBIG", r["why"])
+
+    def test_measurement_beats_the_authored_label(self):
+        # Label says covered (retrieval's fault); measurement says the model
+        # has no representing entity (model's fault). The measurement wins.
+        r = score_case(case(coverage="covered"), calls([]), KEY, "no_match",
+                       measured="COVERAGE")
+        self.assertEqual(r["owner"], "model")
+
+    def test_an_undecided_measurement_falls_back_to_the_label(self):
+        r = score_case(case(coverage="covered"), calls([]), KEY, "no_match",
+                       measured=None)
+        self.assertEqual(r["coverage_source"], "authored")
+        self.assertEqual(r["where_to_fix"], "retrieval ranking")
+
+    def test_no_label_and_no_measurement_charges_nobody(self):
+        c = {"qid": "q", "expectedEntities": {"required": [M_SALES]}}
+        r = score_case(c, calls([]), KEY, "no_match")
+        self.assertEqual(r["coverage_source"], "none")
+        self.assertEqual(r["where_to_fix"], "coverage not measured")
+
+    def test_gap_vocabulary_matches_check_coverage(self):
+        # score_retrieval stays stdlib-only and does not import check_coverage,
+        # so this is the one place the two files are held to the same codes.
+        import check_coverage as cc
+        for v in cc.FAIL_VERDICTS:
+            self.assertIn(v, MEASURED_GAPS, v)
+        self.assertEqual(cc.OK, MEASURED_OK)
+
+    def test_load_coverage_report_keys_verdicts_by_qid(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "cov.json")
+            with open(path, "w") as fh:
+                json.dump({"version": "0.0.58", "cases_detail": [
+                    {"qid": "a", "verdict": "ok"},
+                    {"qid": "b", "verdict": None}]}, fh)
+            self.assertEqual(load_coverage_report(path), {"a": "ok", "b": None})
+
+    def test_coverage_report_summary_records_what_run_json_needs(self):
+        # The file, the version, the judge, and decided-of-cases. Not the
+        # percentage: 4 of 49 decided is a sample size, not a coverage number.
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "cov.json")
+            with open(path, "w") as fh:
+                json.dump({"version": "0.0.58", "agentModel": "sonnet",
+                           "cases": 49, "decided": 45, "ok": 22,
+                           "coverage": 0.489, "cases_detail": []}, fh)
+            got = coverage_report_summary(path)
+        self.assertEqual(got, {"path": path, "version": "0.0.58",
+                               "agentModel": "sonnet", "decided": 45,
+                               "cases": 49})
 
 
 class Summary(unittest.TestCase):

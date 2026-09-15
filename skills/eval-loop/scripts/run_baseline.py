@@ -181,7 +181,8 @@ import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import doc_tokens, entity_ids, search_terms  # noqa: E402
 from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
-from score_retrieval import score_case, summarise  # noqa: E402
+from score_retrieval import (  # noqa: E402
+    coverage_report_summary, load_coverage_report, score_case, summarise)
 from check_contamination import check as path_check  # noqa: E402
 from check_must_not_use import check as must_not_use_check  # noqa: E402
 from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
@@ -1064,7 +1065,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
                   publisher: str, environment: str,
-                  evidence: dict | None = None) -> list[str]:
+                  evidence: dict | None = None,
+                  coverage_report: dict | None = None) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -1142,12 +1144,30 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         lines += ["  where to fix  " + ", ".join(
             f"{k} {v}" for k, v in
             sorted(rs["failures_by_where_to_fix"].items()))]
-    lines += ["  coverage      not measured here: it reads the MODEL, not the "
-              "answers, and asks whether a",
-              "                correct answer is expressible at all. Ask it "
-              "when the score is low:",
-              f"                python3 skills/eval-answer/scripts/"
-              f"check_coverage.py --set {set_dir} --model <package-dir>"]
+    if coverage_report:
+        # A report was consumed, so "not measured here" would be false. Name
+        # it, and say how much of the set it actually decided: 4 of 49 is a
+        # sample size, not a coverage number.
+        cr = coverage_report
+        lines += [f"  coverage      from {cr.get('path')} (version "
+                  f"{cr.get('version') or '?'}, judge "
+                  f"{cr.get('agentModel') or '?'}): {cr.get('decided')} of "
+                  f"{cr.get('cases')} cases decided; its per-case verdict "
+                  f"charged the failures above"]
+        if (cr.get("decided") or 0) < (cr.get("cases") or 0):
+            lines += ["                ! undecided cases fell back to the "
+                      "authored label, or to nobody; `coverage_source` on "
+                      "each retrieval row says which"]
+    else:
+        lines += ["  coverage      not measured here: it reads the MODEL, not "
+                  "the answers, and asks whether a",
+                  "                correct answer is expressible at all. Ask "
+                  "it when the score is low, then hand the",
+                  "                report back with --coverage so it charges "
+                  "the failures:",
+                  f"                python3 skills/eval-answer/scripts/"
+                  f"check_coverage.py --set {set_dir} --model <package-dir> "
+                  f"--out coverage.json"]
 
     pkg_name = f"eval-{out.name}"
     pkg_dir = f"/tmp/{pkg_name}"
@@ -2030,6 +2050,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="a definition ledger (verify_definitions.py --out). "
                          "Without it the run reports no EVIDENCE block, which "
                          "is a different fact from reporting a clean one")
+    ap.add_argument("--coverage", default=None,
+                    help="a check_coverage.py --out report for this model version. "
+                         "Its per-case verdict beats the authored `coverage` label "
+                         "in retrieval attribution, and run.json records which "
+                         "report was read. Without it an unlabelled case is "
+                         "attributed to nobody, not to the model")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
@@ -2343,8 +2369,20 @@ def main(argv: list[str] | None = None) -> int:
 
     retrieval_gate = run_retrieval_gate(a)
 
+    # Coverage is a read of the MODEL and costs a judge call per case, so the
+    # run does not measure it; it consumes a report made separately and says
+    # which one. A path that does not exist is refused here, not discovered as
+    # a traceback after the answerers have been paid for.
+    if a.coverage and not pathlib.Path(a.coverage).exists():
+        raise SystemExit(
+            f"--coverage {a.coverage} does not exist. It should be a "
+            f"check_coverage.py --out report for the model version this run "
+            f"answers from.")
+    coverage_report = coverage_report_summary(a.coverage) if a.coverage else None
+
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(
         retrievalGate=retrieval_gate,
+        coverageReport=coverage_report,
         runId=a.out.name, label=label, target=a.target,
         targetVersion=a.target_version,
         scope=a.scope if a.target == "platform" else None,
@@ -2584,8 +2622,14 @@ def main(argv: list[str] | None = None) -> int:
     # tool_call event, but scoring them only happened in build_run_package, so a
     # run you never packaged had no attribution at all. That is the half of the
     # verdict that says WHERE to fix a failure, so it belongs in the run summary.
+    # A measured coverage verdict per case, when a report was given. The label
+    # on the case is a standing hand judgement about the question; the report
+    # is a measurement against this build, which is what an attribution is
+    # about. Loaded once here, never re-derived per row.
+    measured = load_coverage_report(a.coverage) if a.coverage else {}
     retr = [score_case(c, events, (c["qid"], None, a.phase),
-                       verdicts.get(c["qid"], {}).get("verdict"))
+                       verdicts.get(c["qid"], {}).get("verdict"),
+                       measured.get(c["qid"]))
             for c in cases]
     rs = summarise(retr)
     # Recall below 1.0 on a PASSING case means the required list named one path
@@ -2622,6 +2666,7 @@ def main(argv: list[str] | None = None) -> int:
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
             unscorable=unscorable,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
+            coverage_report=coverage_report,
             answerer_cost=cost, judge_cost=judge_cost,
             publisher=a.publisher, environment=a.environment):
         print(line)

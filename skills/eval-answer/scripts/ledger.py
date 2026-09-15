@@ -167,7 +167,7 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "packageSha", "servedRevision", "datasetSha",
                 "staleEntityNames",
                 "retrievalMode", "retrievalCalls", "retrievalGate",
-                "reExecution",
+                "reExecution", "coverageReport",
                 "modelRepo"} | RUN_RECOMMENDED
 
 

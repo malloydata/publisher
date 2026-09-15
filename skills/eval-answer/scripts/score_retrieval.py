@@ -55,6 +55,11 @@ recoverable.
 `rankedSummary.entityIds`), `attempt` (for `submitted`), and `score` (for
 `verdict`). Everything else is ignored.
 
+`--coverage` is optional: a `check_coverage.py --out` report. Its per-case
+verdict is a measurement against this build and beats the case's authored
+`coverage` label; `coverage_source` on each row says which one attribution
+used, and `none` means neither existed and nobody gets charged.
+
 WHAT COUNTS
 
 Recall is over `required`. Precision counts anything outside `acceptable` as
@@ -89,9 +94,15 @@ MODEL = ("get_context/model", "model", "model coverage")
 # worth its own label: the fix is refusal behaviour, not query-writing.
 REFUSAL = ("construction", "agent-skill", "refusal behaviour")
 UNATTRIBUTED = ("", "", "")
-# Coverage labels that were MEASURED and found nothing to surface. Only these
-# may send a retrieval miss to the model.
-MEASURED_GAPS = ("derivable", "absent")
+# Coverage values that were MEASURED and found nothing to surface. Only these
+# may send a retrieval miss to the model: the authored labels `derivable` and
+# `absent`, and check_coverage.py's four gap verdicts, which are eval-diagnose's
+# codes. The four must match `check_coverage.FAIL_VERDICTS`; the test pins that,
+# because this file stays stdlib-only and does not import it.
+MEASURED_GAPS = ("derivable", "absent",
+                 "COVERAGE", "AMBIGUOUS", "NO-DISAMBIG", "CONVENTION")
+# check_coverage.py's "a correct answer is expressible": the measured `covered`.
+MEASURED_OK = "ok"
 # A failure that is retrieval's or the model's, and nothing measured which. Its
 # own bucket, because the alternative was worse: with no authored `coverage`
 # label the case fell through to MODEL with the words "coverage is unknown, so
@@ -200,7 +211,7 @@ def attribute(recall: float | None, coverage: str, passed: bool | None) -> tuple
     if recall >= 1.0:
         return (*CONSTRUCTION,
                 "retrieval delivered every required entity; the failure is in the query")
-    if coverage == "covered":
+    if coverage in ("covered", MEASURED_OK):
         return (*RETRIEVAL,
                 "the entity exists in the model and was not returned")
     if coverage in MEASURED_GAPS:
@@ -211,9 +222,47 @@ def attribute(recall: float | None, coverage: str, passed: bool | None) -> tuple
             "check_coverage.py before calling this a model gap or a retrieval miss")
 
 
+def load_coverage_report(path: str) -> dict[str, str | None]:
+    """`qid -> verdict` from a `check_coverage.py --out` report.
+
+    That report used to be written and read by nothing. This is the read. A
+    case whose measurement was undecided carries None and falls back to whatever
+    else the case has, and `coverage_source` on the row says which won.
+    """
+    with open(path) as fh:
+        data = json.load(fh)
+    return {r["qid"]: r.get("verdict") for r in data.get("cases_detail", [])}
+
+
+def coverage_report_summary(path: str) -> dict[str, Any]:
+    """What run.json records about a coverage report it consumed.
+
+    Enough to say which measurement charged the failures: the file, the model
+    version it was stamped with, the judge that decided it, and how much of the
+    set it actually decided. `decided` of `cases` matters more than the
+    percentage: a report that decided 4 of 49 is not a coverage number, it is a
+    sample size.
+    """
+    with open(path) as fh:
+        d = json.load(fh)
+    return {"path": path, "version": d.get("version"),
+            "agentModel": d.get("agentModel"),
+            "decided": d.get("decided"), "cases": d.get("cases")}
+
+
 def score_case(case: dict[str, Any], events: list[dict[str, Any]],
-               key: tuple, verdict: str | None) -> dict[str, Any]:
-    coverage = case.get("coverage", "unknown")
+               key: tuple, verdict: str | None,
+               measured: str | None = None) -> dict[str, Any]:
+    # A measured verdict beats the authored label. The label is a standing hand
+    # judgement about the question; the verdict is a measurement against THIS
+    # build, which is the thing an attribution is about. Neither present reads
+    # "unknown", which attribute() refuses to charge to anyone.
+    if measured is not None:
+        coverage, coverage_source = measured, "measured"
+    elif case.get("coverage") is not None:
+        coverage, coverage_source = case["coverage"], "authored"
+    else:
+        coverage, coverage_source = "unknown", "none"
     exp = case.get("expectedEntities") or {}
     req_groups = groups(exp)
     required = {e for g in req_groups for e in g}
@@ -248,6 +297,7 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
         "sample": key[1],
         "phase": key[2],
         "coverage": coverage,
+        "coverage_source": coverage_source,
         "verdict": verdict,
         "failed": passed is False,
         "recall": recall,
@@ -316,10 +366,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--events", required=True)
     ap.add_argument("--cases", required=True)
     ap.add_argument("--json", action="store_true", help="emit rows as JSONL")
+    ap.add_argument("--coverage", default=None,
+                    help="a check_coverage.py --out report; its per-case verdict "
+                         "beats the authored `coverage` label")
     a = ap.parse_args(argv)
 
     events = read_jsonl(a.events)
     cases = {c["qid"]: c for c in read_jsonl(a.cases)}
+    measured = load_coverage_report(a.coverage) if a.coverage else {}
 
     verdicts = {attempt_key(e): e.get("verdict")
                 for e in events if e.get("kind") == "score"}
@@ -333,7 +387,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"warning: no case for qid {e.get('qid')!r}", file=sys.stderr)
             continue
         key = attempt_key(e)
-        rows.append(score_case(case, events, key, verdicts.get(key)))
+        rows.append(score_case(case, events, key, verdicts.get(key),
+                               measured.get(e.get("qid"))))
 
     rows.sort(key=lambda r: (r["qid"], str(r["sample"])))
     if a.json:

@@ -559,6 +559,28 @@ class RunSummary(unittest.TestCase):
     def index_of(self, lines, needle):
         return next(i for i, l in enumerate(lines) if needle in l)
 
+    def test_a_consumed_coverage_report_is_named_not_pointed_at(self):
+        # With a report given, "not measured here" is false and must not print.
+        lines = self.lines(coverage_report={
+            "path": "cov.json", "version": "0.0.58", "agentModel": "sonnet",
+            "decided": 45, "cases": 49})
+        text = "\n".join(lines)
+        self.assertIn("cov.json", text)
+        self.assertIn("45 of 49", text)
+        self.assertNotIn("not measured here", text)
+        # 4 undecided: the report did not settle every case, and the reader
+        # has to know which rows fell back to what.
+        self.assertIn("undecided cases fell back", text)
+
+    def test_a_report_that_decided_everything_carries_no_fallback_warning(self):
+        lines = self.lines(coverage_report={
+            "path": "cov.json", "version": "1", "agentModel": "m",
+            "decided": 49, "cases": 49})
+        self.assertNotIn("undecided cases fell back", "\n".join(lines))
+
+    def test_no_report_keeps_the_pointer(self):
+        self.assertIn("not measured here", "\n".join(self.lines()))
+
     def test_the_three_layers_appear_in_order(self):
         lines = self.lines()
         self.assertLess(self.index_of(lines, "RESULTS"),
