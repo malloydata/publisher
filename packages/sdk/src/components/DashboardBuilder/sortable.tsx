@@ -101,6 +101,12 @@ export function TileSortable({
       index,
       type: TILE_TYPE,
       accept: TILE_TYPE,
+      // The same rule the gaps use: the target is what the POINTER is over.
+      // The sortable default weighs the dragged shape's overlap, and a wide
+      // tile in hand overlaps half the grid, so the target it chose was often
+      // not the tile under the cursor. One rule for both kinds of target is
+      // what makes a drop land where it looks like it will.
+      collisionDetector: pointerIntersection,
       plugins: tilePlugins,
    });
    return <>{children({ ref, handleRef, isDragSource })}</>;

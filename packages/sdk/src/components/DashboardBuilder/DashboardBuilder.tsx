@@ -29,6 +29,7 @@ import {
    type GridTile,
 } from "../Dashboard/DashboardGrid";
 import {
+   acceptsField,
    applyMapping,
    controlsOf,
    declareControl,
@@ -377,16 +378,27 @@ export function DashboardBuilder({
       () => filterableFields(catalog, fieldSource),
       [catalog, fieldSource],
    );
-   // Bindings naming a field the source does not have, per control: marked on
-   // the chip, so a broken binding is seen before the package refuses it.
-   const unknownFieldsOf = (name: string): string[] => {
+   // Bindings the source cannot take, per control — a field it does not have,
+   // or one of a type the given cannot compare: marked on the chip, so a broken
+   // binding is seen before the package refuses it.
+   const unknownFieldsOf = (
+      name: string,
+      type: string | undefined,
+   ): string[] => {
       if (!knownFields) return [];
-      const known = new Set(knownFields.map((field) => field.name));
+      const known = new Map(
+         knownFields.map((field) => [field.name, field.type]),
+      );
       const out: string[] = [];
       for (const tile of editor.document.tiles)
-         for (const filter of tile.filters ?? [])
-            if (filter.given === name && !known.has(filter.field))
+         for (const filter of tile.filters ?? []) {
+            if (filter.given !== name) continue;
+            if (
+               !known.has(filter.field) ||
+               !acceptsField(type, known.get(filter.field))
+            )
                out.push(`${filter.field} on ${tile.label ?? tile.name}`);
+         }
       return out;
    };
    // Model givens nothing binds yet: what "From the model" offers.
@@ -662,13 +674,13 @@ export function DashboardBuilder({
                   </Typography>
                )}
                {controlList.map((control) => {
-                  const unknown = unknownFieldsOf(control.name);
+                  const unknown = unknownFieldsOf(control.name, control.type);
                   return (
                      <Tooltip
                         key={control.name}
                         title={
                            unknown.length > 0
-                              ? `$${control.name} · not a field of ${fieldSource}: ${unknown.join(", ")}`
+                              ? `$${control.name} · ${fieldSource} cannot filter on: ${unknown.join(", ")}`
                               : `$${control.name} · ${
                                    control.origin === "dashboard"
                                       ? "declared here"
@@ -816,13 +828,6 @@ export function DashboardBuilder({
                                     // Anchors the resize and drag handles to
                                     // this tile.
                                     position: "relative",
-                                    // The tile being dragged stays in the flow,
-                                    // at its previewed place, and is dimmed
-                                    // rather than lifted out: a copy follows
-                                    // the pointer, and the whole point of the
-                                    // preview is that the row reflows exactly
-                                    // as it will once the move lands.
-                                    opacity: isDragSource ? 0.55 : 1,
                                     // Same again: this wrapper sits BETWEEN
                                     // the grid item and the tile, so it has to
                                     // pass the height on rather than shrink to
@@ -847,16 +852,10 @@ export function DashboardBuilder({
                                     // an outline neither doubles that edge nor
                                     // takes up space, so selecting a tile
                                     // cannot shift the layout being arranged.
-                                    // Dashed while it is the one being
-                                    // dragged: the tile in place is then the
-                                    // PLACEHOLDER for where the copy in hand
-                                    // will land, and Looker draws that dashed
-                                    // too.
-                                    outline: isDragSource
-                                       ? `2px dashed ${theme.drillLink}`
-                                       : index === selected
-                                         ? `2px solid ${theme.drillLink}`
-                                         : `2px solid transparent`,
+                                    outline:
+                                       index === selected
+                                          ? `2px solid ${theme.drillLink}`
+                                          : `2px solid transparent`,
                                     outlineOffset: 2,
                                     transition:
                                        "outline-color 120ms, opacity 120ms, box-shadow 120ms",
@@ -866,6 +865,30 @@ export function DashboardBuilder({
                                     // hover rule on the WRAPPER, so all three
                                     // appear together rather than as the
                                     // pointer finds each.
+                                    // The library marks the tile in hand
+                                    // `data-dnd-dragging` and the copy it leaves
+                                    // in the flow `data-dnd-placeholder`, and
+                                    // mirrors every class and style of the one
+                                    // onto the other — so styling driven by
+                                    // React state landed on BOTH, and the tile
+                                    // under the pointer was as faded and dashed
+                                    // as the slot it was leaving. Styled by the
+                                    // attributes instead: the tile in hand is
+                                    // solid and lifted; the slot it will land
+                                    // in is the faded, dashed one. Looker draws
+                                    // the same pair. Doubled so they outrank
+                                    // the hover rule below on the tile in hand.
+                                    "&&[data-dnd-dragging]": {
+                                       opacity: 1,
+                                       outline: "none",
+                                       boxShadow:
+                                          "0 12px 32px rgba(0, 0, 0, 0.22)",
+                                    },
+                                    "&&[data-dnd-placeholder]": {
+                                       opacity: 0.45,
+                                       outline: `2px dashed ${theme.drillLink}`,
+                                       boxShadow: "none",
+                                    },
                                     "&:hover .builder-affordance, &:focus-within .builder-affordance":
                                        { opacity: 1 },
                                     // A hovered tile lifts, the way Looker's
@@ -877,9 +900,8 @@ export function DashboardBuilder({
                                           index === selected
                                              ? theme.drillLink
                                              : theme.border,
-                                       boxShadow: isDragSource
-                                          ? "none"
-                                          : "0 2px 10px rgba(0, 0, 0, 0.10)",
+                                       boxShadow:
+                                          "0 2px 10px rgba(0, 0, 0, 0.10)",
                                     },
                                  }}
                               >

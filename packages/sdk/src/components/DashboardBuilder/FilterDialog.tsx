@@ -24,13 +24,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogField } from "./catalog";
 import {
+   acceptsField,
    canBind,
    CONTROL_KINDS,
    defaultOperator,
    givenNameFor,
+   kindForFieldType,
    mappingOf,
    newLocalGiven,
    OPERATORS,
+   typeLabel,
    type BuilderControl,
    type ControlKind,
    type MappingRow,
@@ -102,6 +105,7 @@ function FieldPicker({
    value,
    onChange,
    fields,
+   accepts,
    label,
    ariaLabel,
    error,
@@ -114,6 +118,8 @@ function FieldPicker({
    value: string;
    onChange: (next: string) => void;
    fields: readonly CatalogField[] | undefined;
+   /** Which of the fields to offer; the rest are still accepted if typed. */
+   accepts?: (field: CatalogField) => boolean;
    label: string;
    ariaLabel: string;
    error?: boolean;
@@ -124,8 +130,11 @@ function FieldPicker({
    sx?: SxProps<Theme>;
 }) {
    const options = useMemo(
-      () => (fields ?? []).map((field) => field.name),
-      [fields],
+      () =>
+         (fields ?? [])
+            .filter((field) => accepts?.(field) ?? true)
+            .map((field) => field.name),
+      [fields, accepts],
    );
    const types = useMemo(
       () => new Map((fields ?? []).map((field) => [field.name, field.type])),
@@ -324,11 +333,38 @@ export function FilterDialog({
    );
    const unknown = (name: string) =>
       known !== undefined && name.trim() !== "" && !known.has(name.trim());
+   const typeOf = (name: string) =>
+      fields?.find((f) => f.name === name.trim())?.type;
+   // What this given can compare: the picker offers only these, and a name
+   // typed past the list is held to the same rule.
+   const accepts = (candidate: CatalogField) =>
+      acceptsField(target?.type, candidate.type);
    const problemWith = (name: string): string | undefined => {
       if (name.trim() === "") return "Pick the field this filter compares.";
       if (unknown(name))
          return `Not a field of ${fieldsOf ?? "the tiles' source"}.`;
+      const fieldType = typeOf(name);
+      if (fieldType && !acceptsField(target?.type, fieldType))
+         return `${name.trim()} is ${typeLabel(fieldType)}; this filter compares ${typeLabel(
+            target?.type?.replace(/^filter<(.+)>$/, "$1"),
+         )}.`;
       return undefined;
+   };
+   // A NEW control follows the field it is given: pick a number and it becomes
+   // a number range, a date and it becomes a date picker. Explicit kind changes
+   // still win afterwards; this only moves a kind the field cannot take.
+   const pickField = (next: string) => {
+      setField(next);
+      if (editing || source.kind !== "new") return;
+      const fieldType = typeOf(next);
+      const kindType = newLocalGiven({
+         name: "X",
+         label,
+         kind,
+         field: next,
+      }).type;
+      if (fieldType && !acceptsField(kindType, fieldType))
+         pickKind(kindForFieldType(fieldType));
    };
    const rowProblems = effective.map((row, i) =>
       row.include && bindable[i] ? problemWith(row.field) : undefined,
@@ -486,8 +522,9 @@ export function FilterDialog({
                   {!perTile && (
                      <FieldPicker
                         value={field}
-                        onChange={setField}
+                        onChange={pickField}
                         fields={fields}
+                        accepts={accepts}
                         label="Field to filter"
                         ariaLabel="Field to filter"
                         placeholder="category"
@@ -675,6 +712,7 @@ export function FilterDialog({
                                              setRow(index, { field: next })
                                           }
                                           fields={fields}
+                                          accepts={accepts}
                                           label="Field"
                                           ariaLabel={`Field for ${title}`}
                                           disabled={!row?.include}

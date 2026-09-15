@@ -345,9 +345,22 @@ describe("DashboardBuilder: fields, when the package is known", () => {
             views: [],
             givens: [],
             fields: [
-               { name: "cat", kind: "dimension" as const },
-               { name: "brand", kind: "dimension" as const },
-               { name: "products.category", kind: "dimension" as const },
+               { name: "cat", kind: "dimension" as const, type: "string_type" },
+               {
+                  name: "brand",
+                  kind: "dimension" as const,
+                  type: "string_type",
+               },
+               {
+                  name: "products.category",
+                  kind: "dimension" as const,
+                  type: "string_type",
+               },
+               {
+                  name: "sale_price",
+                  kind: "dimension" as const,
+                  type: "number_type",
+               },
             ],
          },
       ],
@@ -395,6 +408,29 @@ describe("DashboardBuilder: fields, when the package is known", () => {
       expect(
          screen.getByRole("button", { name: "Add filter", hidden: false }),
       ).toHaveProperty("disabled", false);
+   });
+
+   it("switches a new control to the kind its field wants, and marks a field it cannot compare", async () => {
+      await mountWithCatalog();
+      fireEvent.click(button("Add filter"));
+      // A pick-list over a number makes no sense; picking a number field
+      // turns the new control into a number range rather than refusing it.
+      fireEvent.change(screen.getByLabelText("Field to filter"), {
+         target: { value: "sale_price" },
+      });
+      const kind = () =>
+         screen.getByRole("combobox", { name: /Kind of control/ });
+      const submit = () =>
+         screen.getByRole("button", { name: "Add filter", hidden: false });
+      expect(kind().textContent).toBe("Number range");
+      expect(submit()).toHaveProperty("disabled", false);
+      // But an EXPLICIT kind the field cannot take is a problem, said plainly.
+      fireEvent.mouseDown(kind());
+      fireEvent.click(screen.getByRole("option", { name: /Pick one/ }));
+      expect(
+         screen.getByText("sale_price is a number; this filter compares text."),
+      ).toBeDefined();
+      expect(submit()).toHaveProperty("disabled", true);
    });
 
    it("marks a control whose binding names a missing field, on its chip", async () => {

@@ -3,6 +3,9 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   acceptsField,
+   kindForFieldType,
+   typeLabel,
    applyMapping,
    controlsOf,
    declareControl,
@@ -198,5 +201,43 @@ describe("declareControl and removeControl", () => {
       expect(d.localGivens?.map((g) => g.name)).toEqual(["SINCE"]);
       removeControl(d, "SINCE");
       expect(d.localGivens).toBeUndefined();
+   });
+});
+
+describe("acceptsField", () => {
+   it("matches the given's scalar to the field's type, filter or value alike", () => {
+      expect(acceptsField("filter<string>", "string_type")).toBe(true);
+      expect(acceptsField("string", "string_type")).toBe(true);
+      expect(acceptsField("filter<string>", "number_type")).toBe(false);
+      expect(acceptsField("filter<number>", "number_type")).toBe(true);
+      expect(acceptsField("number", "string_type")).toBe(false);
+   });
+
+   it("lets dates and timestamps compare with each other, and nothing else", () => {
+      expect(acceptsField("date", "timestamp_type")).toBe(true);
+      expect(acceptsField("filter<timestamp>", "date_type")).toBe(true);
+      expect(acceptsField("date", "string_type")).toBe(false);
+      expect(acceptsField("filter<string>", "date_type")).toBe(false);
+   });
+
+   it("accepts what it cannot judge", () => {
+      // A catalog with no type, or a given of a type this does not know.
+      expect(acceptsField("filter<string>", undefined)).toBe(true);
+      expect(acceptsField(undefined, "number_type")).toBe(true);
+   });
+});
+
+describe("kindForFieldType and typeLabel", () => {
+   it("gives a field the control its type wants", () => {
+      expect(kindForFieldType("number_type")).toBe("number");
+      expect(kindForFieldType("date_type")).toBe("date");
+      expect(kindForFieldType("timestamp_type")).toBe("date");
+      expect(kindForFieldType("string_type")).toBe("select");
+      expect(kindForFieldType(undefined)).toBe("select");
+   });
+
+   it("says a type the way a message would", () => {
+      expect(typeLabel("number_type")).toBe("a number");
+      expect(typeLabel("string_type")).toBe("text");
    });
 });

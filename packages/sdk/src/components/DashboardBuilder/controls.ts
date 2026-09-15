@@ -111,6 +111,74 @@ export function defaultOperator(type: string | undefined): string | undefined {
    return ">=";
 }
 
+/**
+ * The scalar a given compares: `filter<string>` and `string` both compare
+ * strings, one as a filter expression and one as a value.
+ */
+export function givenScalar(type: string | undefined): string | undefined {
+   if (!type) return undefined;
+   return /^filter<(.+)>$/.exec(type)?.[1] ?? type;
+}
+
+/**
+ * Whether a given of `givenType` can compare a field of `fieldType` (the
+ * catalog's spelling: `string_type`, `number_type`, `date_type`, …).
+ *
+ * A `filter<string>` over a number field compiles nowhere and a `date` over a
+ * string field compares nothing, so the picker offers only the fields a control
+ * can take, and a binding to one it cannot is marked. Dates and timestamps
+ * compare with each other. Unknown on EITHER side is accepted: the catalog may
+ * carry no type, and a given of a type this does not know is not refused on
+ * that account.
+ */
+export function acceptsField(
+   givenType: string | undefined,
+   fieldType: string | undefined,
+): boolean {
+   const scalar = givenScalar(givenType);
+   const field = fieldType?.replace(/_type$/, "");
+   if (!scalar || !field) return true;
+   const dateLike = new Set(["date", "timestamp"]);
+   if (dateLike.has(scalar)) return dateLike.has(field);
+   return scalar === field;
+}
+
+/** `number_type` -> "a number", as a message would say it. */
+export function typeLabel(type: string | undefined): string {
+   switch (type?.replace(/_type$/, "")) {
+      case "string":
+         return "text";
+      case "number":
+         return "a number";
+      case "date":
+         return "a date";
+      case "timestamp":
+         return "a timestamp";
+      case "boolean":
+         return "true or false";
+      default:
+         return type ?? "an unknown type";
+   }
+}
+
+/**
+ * The control a field of this type naturally gets: a number range for a
+ * number, a date picker for a date, a pick-list for anything else. What the
+ * window switches a new control to when the field picked does not fit the kind
+ * it started with.
+ */
+export function kindForFieldType(fieldType: string | undefined): ControlKind {
+   switch (fieldType?.replace(/_type$/, "")) {
+      case "number":
+         return "number";
+      case "date":
+      case "timestamp":
+         return "date";
+      default:
+         return "select";
+   }
+}
+
 /** The comparisons a binding can use, with how a reader would say them. */
 export const OPERATORS: ReadonlyArray<{ op: string; label: string }> = [
    { op: "~", label: "matches" },
