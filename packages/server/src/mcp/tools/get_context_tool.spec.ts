@@ -2890,6 +2890,58 @@ describe("get_context authorize deny-all drop", () => {
       expect("authorize" in sources[0].source_info).toBe(false);
    });
 
+   // Two models can expose a same-named source with different gates —
+   // `droppedSources` must be keyed by (modelPath, sourceName), not the bare
+   // name, or a deny-all in one model blacks out the open model's card too
+   // (cardFor/governance/bySource collapse same-named sources into one card,
+   // first-model-wins, but that is a SEPARATE, pre-existing identity rule —
+   // the drop itself must not leak across models).
+   it("a deny-all source in one model does not black out a same-named open source in another model", async () => {
+      const lockedModel = {
+         getSourceInfos: () => [
+            { name: "shared", annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [],
+         getSources: () => [{ name: "shared", authorize: ["false"] }],
+      };
+      const openModel = {
+         getSourceInfos: () => [
+            { name: "shared", annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [],
+         getSources: () => [{ name: "shared" }],
+      };
+      const pkg = {
+         // Sorted by path in collectEntities, so "a_locked" is processed
+         // before "b_open" — the deny-all model comes first on purpose, to
+         // pin that a later open occurrence is not blacked out by an
+         // earlier drop.
+         listModels: async () => [
+            { path: "a_locked.malloy" },
+            { path: "b_open.malloy" },
+         ],
+         getModel: (path: string) =>
+            path === "a_locked.malloy" ? lockedModel : openModel,
+      };
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => pkg),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "deny-drop" }],
+         }),
+      );
+      const sources = payload.sources as SourceCardShape[];
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("shared");
+      expect(
+         (sources[0].source_info.resource_id as { model_path?: string })
+            .model_path,
+      ).toBe("b_open.malloy");
+      expect("authorize" in sources[0].source_info).toBe(false);
+   });
+
    // A named query over a dropped source (`query: q is locked -> {...}`) is a
    // second route to the same name and shape: KINDS_BY_TARGET.view includes
    // "query", so a bare {target_type: "view"} enumeration would otherwise

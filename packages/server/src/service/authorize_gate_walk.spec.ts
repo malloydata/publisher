@@ -103,15 +103,15 @@ describe("gate walk fail-closed branches", () => {
          new Set(),
          true,
       );
-      expect(gates.map((g) => g.exprs)).toEqual([["false"]]);
       // The walk runs once per route (`authorize`, `source-authorize`), each
-      // with its own `seen` set. The sentinel must be synthesized on the
-      // `authorize` route only — a route that also emitted `["false"]` would
-      // double-deny (harmless here, since AND of two denies is still a deny,
-      // but it would mean the sentinel is being minted per-route instead of
-      // once for the whole entry point, which is the property under test).
-      expect(gates).toHaveLength(1);
-      expect(gates[0].route).toBe("authorize");
+      // with its own `seen` set, and the sentinel is synthesized on BOTH —
+      // own-wins-over-ancestor is decided per route, so neither route's call
+      // can rely on the other having already denied here.
+      expect(gates.map((g) => g.exprs)).toEqual([["false"], ["false"]]);
+      expect(gates.map((g) => g.route).sort()).toEqual([
+         "authorize",
+         "source-authorize",
+      ]);
    });
 
    it("denies when a sourceRegistry entry resolves to nothing", () => {

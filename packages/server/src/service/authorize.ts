@@ -493,7 +493,7 @@ export function assertNoAuthorizeNearMisses(found: readonly string[]): void {
 export type MisplacedAuthorizeAnnotation =
    | { kind: "query"; name: string; route: string }
    | { kind: "field"; name: string; fieldName: string; route: string }
-   | { kind: "file" };
+   | { kind: "file"; route: string };
 
 /** Human-readable position for a {@link MisplacedAuthorizeAnnotation}, as
  *  {@link assertNoMisplacedAuthorizeAnnotations} names it in its refusal.
@@ -504,7 +504,7 @@ export type MisplacedAuthorizeAnnotation =
 function describeMisplacedAuthorizeAnnotation(
    f: MisplacedAuthorizeAnnotation,
 ): string {
-   if (f.kind === "file") return "at the file level (`##(authorize)`)";
+   if (f.kind === "file") return `at the file level (\`##(${f.route})\`)`;
    const tag = `\`#(${f.route})\``;
    if (f.kind === "query") return `on query "${f.name}" (${tag})`;
    return `on field "${f.fieldName}" of source "${f.name}" (${tag})`;
@@ -533,9 +533,10 @@ export function assertNoMisplacedAuthorizeAnnotations(
          `An authorize annotation is never enforced at:\n${positions}\n` +
          `A gate only applies where model load looks for one — a \`source:\`'s ` +
          `own annotation, or one it inherits from an \`extend\`/query-source ` +
-         `base. File-level \`##(authorize)\` is deprecated and no longer ` +
-         `enforced anywhere, so it always lands here: declare \`#(authorize)\` ` +
-         `on each \`source:\` it was meant to protect instead. Every other ` +
+         `base. A file-level annotation (\`##(authorize)\` / ` +
+         `\`##(source-authorize)\`) is deprecated and no longer enforced ` +
+         `anywhere, so it always lands here: declare the same tag on each ` +
+         `\`source:\` it was meant to protect instead. Every other ` +
          `position above should move — with the same tag named beside it — ` +
          `to the \`source:\` statement it is meant ` +
          `to protect.`,
@@ -1184,9 +1185,8 @@ export function collectAuthorizeExprs(
  * read looking clean (or vice versa) just because the caller asked for the
  * other route. Both routes' own-annotation reads on the SAME struct already
  * fail closed independently when this throws (see `gate_classification.ts`'s
- * `gateExprsForOwnAnnotations`'s catch, which only synthesizes the deny
- * sentinel on the `authorize` route — the other route's own call simply
- * contributes nothing, since one denied group is enough).
+ * `gateExprsForOwnAnnotations`'s catch, which synthesizes the deny sentinel
+ * on EITHER route — each route's own call denies independently).
  */
 export function collectAuthorizeExprsForRoute(
    annotations: string[],

@@ -51,18 +51,6 @@ import { collectAuthorizeExprsForRoute } from "./authorize";
 export const ANCESTOR_WALK_MAX_DEPTH = 32;
 
 /**
- * The row-level `#(authorize)` route — kept as this module's own literal
- * (same convention as `authorize.ts`/`authorize_grammar.ts`, each of which
- * has its own copy) rather than an import, since this module is bundled into
- * the package-load worker and stays deliberately light. Used ONLY to decide
- * which route synthesizes the `["false"]` fail-closed sentinel below — see
- * this module's per-function docs for why that has to be the `authorize`
- * route alone: synthesizing it on `source-authorize` too would double-count
- * the same unreadable struct as two independent deny groups.
- */
-const AUTHORIZE_ROUTE = "authorize";
-
-/**
  * The DECLARED source a struct was created from, via `ModelDef.sourceRegistry`
  * (`referenceID` — set for a plain join or unmodified rename — then the
  * struct's own `sourceID`).
@@ -137,7 +125,7 @@ export function resolveDeclaredSource(
  * cap was hit) or an `unresolvable` registry link returns `["false"]` rather
  * than `[]` — the chain exists and was not read to its end, so "no gate" would
  * be a silent allow on a source whose base may be locked. That sentinel is
- * synthesized on EITHER route, not only `route === AUTHORIZE_ROUTE`: because
+ * synthesized on EITHER route, not only the `authorize` route: because
  * own-wins-over-ancestor is decided independently per route (an ancestor with
  * its own `#(authorize)` note but no `#(source-authorize)` one resolves one
  * route right there and sends only the other further up the chain), the two
@@ -317,10 +305,15 @@ export function effectiveAncestorGateExprs(
    const base = resolveQuerySourceBase(struct, modelDef);
    if (!base) {
       const duck = struct as unknown as { type: string };
-      // The fail-closed sentinel, `authorize`-route only — see
-      // `ancestorGateExprs`'s doc for why doubling it onto `source-authorize`
-      // would double-count one unreadable struct as two deny groups.
-      if (duck.type === "query_source" && route === AUTHORIZE_ROUTE) {
+      // The fail-closed sentinel, synthesized on BOTH routes — see
+      // `ancestorGateExprs`'s doc for why own-wins-over-ancestor is decided
+      // per route, so a `source-authorize` call cannot rely on the
+      // `authorize` call over the same struct having already denied here.
+      // Closes a structural gap in the walk rather than a documented live
+      // leak: the two routes' walks over the same struct can diverge before
+      // either reaches this branch, but every construction found so far
+      // fails package load before a served model can exercise it.
+      if (duck.type === "query_source") {
          groups.push(["false"]);
       }
    } else if (!seen.has(base)) {

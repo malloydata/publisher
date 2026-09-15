@@ -412,7 +412,9 @@ function toSourceResults(
       // name off every entity's `source` field, but this is the one place that
       // can mint a card out of a bare name, so it is where a future path that
       // forgets the drop gets caught instead of leaking the name and shape.
-      if (droppedSources.has(name)) return undefined;
+      if (droppedSources.has(droppedSourceKey(modelPathFallback, name))) {
+         return undefined;
+      }
       let entry = bySource.get(name);
       if (!entry) {
          const ctx = sourceContext.get(name);
@@ -1199,6 +1201,17 @@ function isUnconditionalDenyAuthorize(apiSource: {
 }
 
 /**
+ * The `droppedSources` identity key: `(modelPath, sourceName)`, not the bare
+ * name. Two models can expose a same-named source with different gates
+ * (`governance`/`sourceContext`/`cardFor` resolve that by first-model-wins,
+ * collapsing them into one card), and a deny-all in one must not black out
+ * the other's card — see {@link collectEntities}.
+ */
+function droppedSourceKey(modelPath: string, name: string): string {
+   return `${modelPath} ${name}`;
+}
+
+/**
  * Walk every model in the package and collect sources, their views,
  * dimension/measure fields and declared joins, and named queries. Returns the
  * full set; the optional source-level drill-down is applied by the caller
@@ -1246,7 +1259,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
       for (const apiSource of apiSources) {
          if (apiSource.name && isUnconditionalDenyAuthorize(apiSource)) {
-            droppedSources.add(apiSource.name);
+            droppedSources.add(droppedSourceKey(modelPath, apiSource.name));
          }
       }
 
@@ -1260,8 +1273,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // source entirely rather than list it and let the agent learn only
          // from the 403; every OTHER gate stays reported, because a caller's
          // givens are untrusted here and evaluating a real rule would be
-         // forgeable (see execute_query_tool.ts).
-         if (droppedSources.has(sourceName)) continue;
+         // forgeable (see execute_query_tool.ts). Keyed by (modelPath, name):
+         // two models can expose a same-named source, and a deny-all in one
+         // must not black out the other's card.
+         if (droppedSources.has(droppedSourceKey(modelPath, sourceName))) {
+            continue;
+         }
          const provenance = readFieldProvenance(modelDef, sourceName);
          // First model wins, matching the entity dedupe below, so a source's
          // identity and its governance always come from the same model.
@@ -1407,7 +1424,11 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          if (!query.sourceName) continue;
          // Same deny-all drop as the source loop above: a query over a locked
          // source is still a route to learn the source's name and shape exist.
-         if (droppedSources.has(query.sourceName)) continue;
+         if (
+            droppedSources.has(droppedSourceKey(modelPath, query.sourceName))
+         ) {
+            continue;
+         }
          entities.push({
             id: String(n++),
             kind: "query",
