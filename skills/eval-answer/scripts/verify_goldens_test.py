@@ -268,6 +268,74 @@ class SkipShape(unittest.TestCase):
         self.assertIsNone(r["skipped"])
 
 
+class RefreshNeverWritesAnEmptyResult(unittest.TestCase):
+    """A zero-row answer is a failed measurement, not a new value.
+
+    `rows is not None` let an empty result through, and a truth server that
+    loaded nothing answers every query that way -- which is exactly the state a
+    symlinked truth package produces on a clean clone. The refresh then emptied
+    every rows-kind golden and raised IndexError on every scalar one, in the
+    one command whose job is to repair them, on artifacts no re-run rebuilds.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "set.json").write_text(
+            '{"name": "s", "truthPackage": "truth"}')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write(self, golden):
+        (self.tmp / "cases.jsonl").write_text(json.dumps(
+            {"qid": "q1", "question": "x", "split": "dev",
+             "golden": golden}) + "\n")
+
+    def refresh(self, golden):
+        self.write(golden)
+        with unittest.mock.patch.object(
+                verify_goldens, "check_value", return_value=("diff", "", [])):
+            r = verify(self.tmp, "http://truth", "samples", refresh=True,
+                       quiet=True)
+        stored = json.loads((self.tmp / "cases.jsonl").read_text())
+        return r, stored
+
+    def test_a_rows_golden_is_not_emptied(self):
+        r, stored = self.refresh(
+            {"status": "verified", "kind": "rows",
+             "value": [{"brand": "a", "n": 3}]})
+        self.assertEqual(stored["golden"]["value"], [{"brand": "a", "n": 3}])
+        self.assertEqual(r["refreshed"], [])
+        self.assertTrue(any("zero rows" in f for f in r["findings"]),
+                        r["findings"])
+
+    def test_a_scalar_golden_does_not_crash_the_run(self):
+        # `rows[0]` on an empty list raised IndexError, which the top-level
+        # handler turns into exit 3 -- the audit reported as unable to run.
+        r, stored = self.refresh(
+            {"status": "verified", "kind": "scalar", "value": {"total": 42}})
+        self.assertEqual(stored["golden"]["value"], {"total": 42})
+        self.assertTrue(any("zero rows" in f for f in r["findings"]))
+
+    def test_the_refusal_is_a_finding_so_the_exit_code_is_not_clean(self):
+        r, _ = self.refresh({"status": "verified", "kind": "scalar",
+                             "value": {"total": 42}})
+        hard = [f for f in r["findings"] if not f.startswith("review ")]
+        self.assertTrue(hard)
+
+    def test_a_real_result_still_refreshes(self):
+        self.write({"status": "verified", "kind": "scalar",
+                    "value": {"total": 42}})
+        with unittest.mock.patch.object(
+                verify_goldens, "check_value",
+                return_value=("diff", "", [{"total": 99}])):
+            r = verify(self.tmp, "http://truth", "samples", refresh=True,
+                       quiet=True)
+        stored = json.loads((self.tmp / "cases.jsonl").read_text())
+        self.assertEqual(stored["golden"]["value"], {"total": 99})
+        self.assertEqual(r["refreshed"], ["q1"])
+
+
 class QuestionDrift(unittest.TestCase):
     def sealed(self, question, asked=None):
         return {"qid": "q1", "question": asked or question,

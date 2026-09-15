@@ -825,7 +825,21 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                     promoted.append(c["qid"])
         if status == "diff":
             findings.append(f"{c['qid']}: {detail}")
-            if refresh and rows is not None:
+            # `rows is not None` was the whole guard, and an empty result is
+            # not None. A truth server that loaded nothing answers every query
+            # with zero rows, so a refresh against it emptied every rows-kind
+            # golden and raised IndexError on every scalar one -- destroying the
+            # most expensive artifacts in a set, which no re-run can rebuild,
+            # in the one command whose job is to repair them. A zero-row answer
+            # is a failed measurement, not a new value.
+            if refresh and not rows:
+                findings.append(
+                    f"{c['qid']}: refused to refresh from zero rows. The truth "
+                    f"query returned nothing, which is a failed measurement "
+                    f"rather than a new value -- check that the truth package "
+                    f"loaded (a package serving nothing answers every query "
+                    f"this way) before refreshing")
+            elif refresh and rows is not None:
                 g = c["golden"]
                 if g.get("kind") == "rows":
                     keep = list((g.get("value") or [{}])[0].keys()) or None
