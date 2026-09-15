@@ -152,6 +152,7 @@ import {
    type PreaggregateViolation,
 } from "./preaggregation_validation";
 import { derivedStructsReachable } from "./gate_registry_walk";
+import { containsPartitionAnnotationTag } from "./partition_annotation";
 // Aliased with an `Impl` suffix: `Model` declares its own private methods of
 // these same names (thin per-instance wrappers, see each one's doc) — an
 // unaliased import would only work today because a method body's unqualified
@@ -160,13 +161,17 @@ import { derivedStructsReachable } from "./gate_registry_walk";
 // than leaving a trap where converting one of those methods to an
 // arrow-function class property would recurse instead of delegating.
 import {
+   assertPartitionAnnotationsValid,
    collectEntryPointGates as collectEntryPointGatesImpl,
    createGateClassificationDeps,
+   resolveEntryPointPartitions,
    resolveGateShape as resolveGateShapeImpl,
    resolveGraftTarget as resolveGraftTargetImpl,
+   resolvePartitionGraftEntries,
    type GateClassificationDeps,
    type GateEntry,
    type GraftScope,
+   type PartitionGraftEntry,
 } from "./gate_classification";
 import {
    extractQueriesFromModelDef,
@@ -324,9 +329,23 @@ function isGivenBindingFailure(err: unknown): boolean {
 }
 
 /**
- * Name budget for {@link Model.requestChainProvesUngated}'s walk over a
- * request's own derivation declarations. Exceeding it fails the proof (and so
- * denies), which is why it only has to be larger than any real chain.
+ * Budget for a walk over a request's own derivation declarations. Exceeding it
+ * fails the proof (and so denies), which is why it only has to be larger than
+ * any real chain.
+ *
+ * Read by two walks that spend it differently, so it bounds two different
+ * things: {@link Model.requestChainProvesUngated} counts TOTAL NAMES visited
+ * (`seen.size`), while {@link Model.derivesFromCurated} counts STACK DEPTH
+ * (`inProgress.size`), since its every-base proof recurses. A wide, shallow
+ * derivation graph can therefore exhaust one and not the other. Both directions
+ * deny on exhaustion, so the divergence costs an over-denial rather than an
+ * admission, and only past a depth no hand-written query reaches.
+ *
+ * Note the two budgets bound different quantities: the authorize walk's bounds
+ * TOTAL WORK, while bounding depth leaves the boundary's total work at
+ * O(edges x depth). That is not a denial-of-service lever -- `every` short
+ * circuits on the first base that fails and positive results are memoized, so a
+ * false verdict costs one path rather than the product.
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
 
@@ -363,6 +382,11 @@ export function bindingsAllowDegradeToLive(
       )
    );
 }
+
+/** The one empty result {@link Model.preaggregateViolations} hands back, so its
+ *  identity contract holds on the branch that never reaches the memo. */
+const NO_PREAGGREGATE_VIOLATIONS: readonly Readonly<PreaggregateViolation>[] =
+   Object.freeze([]);
 
 export class Model {
    private packageName: string;
@@ -452,6 +476,10 @@ export class Model {
    /** Memo for {@link getDeclaredSourceQueryMetadata}. */
    private declaredSourceQueryMetadataMemo:
       | { sourceName: string; queryMetadata: QueryMetadata }[]
+      | undefined;
+   /** Memo for {@link preaggregateViolations}. */
+   private preaggregateViolationsMemo:
+      | readonly Readonly<PreaggregateViolation>[]
       | undefined;
    /** Given names (`$NAME`) referenced by any authorize gate reachable
     *  anywhere in this model -- every top-level source's own gate, and every
@@ -1083,17 +1111,7 @@ export class Model {
          const modelDef = this.modelDef;
          if (!modelDef) return false;
          try {
-            const structs: SourceDef[] = [];
-            for (const obj of Object.values(modelDef.contents)) {
-               if (isSourceDef(obj)) structs.push(obj);
-            }
-            for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
-               const entry = value.entry;
-               if (entry.type === "source_registry_reference") continue;
-               if (isSourceDef(entry)) structs.push(entry);
-            }
-            structs.push(...derivedStructsReachable(structs, modelDef));
-            for (const struct of structs) {
+            for (const struct of this.reachableStructsForNoteSweep(modelDef)) {
                // `annotationTexts` (whole chain), not `ownLevelNoteTexts`: this
                // has to see a gate demoted to `annotations.inherits` by a stray
                // annotation on the deriving statement, which is the shape the
@@ -1121,6 +1139,66 @@ export class Model {
          }
       })();
       return this.anyAuthorizeNote;
+   }
+
+   /**
+    * Every struct {@link hasAnyAuthorizeNote} and {@link hasAnyPartitionNote}
+    * sweep for an annotation tag: every top-level `modelDef.contents` source,
+    * every non-reference `sourceRegistry` entry, plus everything reachable
+    * from those through a derivation hop ({@link derivedStructsReachable}).
+    * Extracted so the two sweeps — otherwise identical except for which tag
+    * they look for — can't drift apart on WHICH structs get walked, only on
+    * what they walk them for. See {@link hasAnyAuthorizeNote}'s doc for why
+    * this has to be a superset of what `collectEntryPointGates` can reach.
+    */
+   private reachableStructsForNoteSweep(modelDef: ModelDef): SourceDef[] {
+      const structs: SourceDef[] = [];
+      for (const obj of Object.values(modelDef.contents)) {
+         if (isSourceDef(obj)) structs.push(obj);
+      }
+      for (const value of Object.values(modelDef.sourceRegistry ?? {})) {
+         const entry = value.entry;
+         if (entry.type === "source_registry_reference") continue;
+         if (isSourceDef(entry)) structs.push(entry);
+      }
+      structs.push(...derivedStructsReachable(structs, modelDef));
+      return structs;
+   }
+
+   /** Memoized {@link hasAnyPartitionNote}; `undefined` until first asked. */
+   private anyPartitionNote: boolean | undefined;
+
+   /**
+    * Whether this model carries a `#(partition)` annotation ANYWHERE — the
+    * `#(partition)` counterpart of {@link hasAnyAuthorizeNote}, sharing its
+    * struct sweep ({@link reachableStructsForNoteSweep}) and its reasoning
+    * for why that sweep must be a superset of what a per-query walk
+    * (`resolveEntryPointPartitions`) can reach. Own annotations only — unlike
+    * the authorize sweep, this does not also check `struct.fields`, since
+    * `#(partition)` is a source-level-only annotation (see
+    * `partition_annotation.ts`'s module doc); a field can never carry one.
+    */
+   private hasAnyPartitionNote(): boolean {
+      if (this.anyPartitionNote !== undefined) return this.anyPartitionNote;
+      this.anyPartitionNote = ((): boolean => {
+         const modelDef = this.modelDef;
+         if (!modelDef) return false;
+         try {
+            for (const struct of this.reachableStructsForNoteSweep(modelDef)) {
+               if (
+                  containsPartitionAnnotationTag(
+                     annotationTexts(struct.annotations) ?? [],
+                  )
+               ) {
+                  return true;
+               }
+            }
+            return false;
+         } catch {
+            return true;
+         }
+      })();
+      return this.anyPartitionNote;
    }
 
    /**
@@ -1346,6 +1424,11 @@ export class Model {
    ): Promise<{
       entryPointGates: GateEntry[];
       modelDef: ModelDef | undefined;
+      /** The run target's own compiled struct — see `resolveRunTargetStruct`.
+       *  Returned alongside the authorize walk's result so a caller
+       *  (`probeEntryPointGates`) can resolve `#(partition)` pairs for the
+       *  SAME entry point without a second `getPreparedQuery()` compile. */
+      struct: SourceDef | undefined;
    }> {
       const ownSourceName =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
@@ -1469,7 +1552,7 @@ export class Model {
             entryPointGates = Array.from(byKey.values());
          }
       }
-      return { entryPointGates, modelDef };
+      return { entryPointGates, modelDef, struct };
    }
 
    /**
@@ -1536,16 +1619,8 @@ export class Model {
       givens: Record<string, GivenValue>,
       graftScope: GraftScope | undefined,
       skipOwnSourceGate = false,
-   ): Promise<
-      Array<{
-         label: string;
-         graftTarget: string;
-         filterText: string;
-         condition: FilterCondition;
-         givenNames: readonly string[];
-      }>
-   > {
-      const { entryPointGates, modelDef } =
+   ): Promise<PartitionGraftEntry[]> {
+      const { entryPointGates, modelDef, struct } =
          await this.collectAuthorizeEntryPointGates(
             runnable,
             givens,
@@ -1560,13 +1635,11 @@ export class Model {
       // ~microsecond one-row DuckDB queries, so there is nothing worth deduping.
       // (Cycles/repeat structs are already pruned in collectEntryPointGates
       // by struct identity, so the list holds no literal duplicates.)
-      const rowLevel: Array<{
-         label: string;
-         graftTarget: string;
-         filterText: string;
-         condition: FilterCondition;
-         givenNames: readonly string[];
-      }> = [];
+      // Shared with `#(partition)` below — `PartitionGraftEntry` is the same
+      // {label, graftTarget, filterText, condition, givenNames} shape an
+      // authorize row-level classification produces, so both feed the one
+      // graft list `buildGraftedMaterializer` grafts as a unit.
+      const rowLevel: PartitionGraftEntry[] = [];
       for (const entry of entryPointGates) {
          const resolution = modelDef
             ? await this.resolveGateShape(entry, modelDef, graftScope)
@@ -1589,6 +1662,34 @@ export class Model {
          if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
          throw new AccessDeniedError(
             `Access denied for source "${entry.label}".`,
+         );
+      }
+
+      // `#(partition)` composes with `#(authorize)` in the SAME `rowLevel`
+      // list — both graft onto the same target's `filterList`
+      // (`buildGraftedMaterializer`), so a partitioned AND authorize-gated
+      // source is filtered by both conjunctively, never one replacing the
+      // other. A partition pair with nowhere to graft denies (see
+      // `resolvePartitionGraftEntries`'s doc) rather than admitting the query
+      // unfiltered — the same fail-closed posture as a rejected authorize
+      // gate above.
+      try {
+         rowLevel.push(
+            ...(await resolvePartitionGraftEntries(
+               struct,
+               modelDef,
+               graftScope,
+               this.gateClassificationDeps(),
+            )),
+         );
+      } catch (err) {
+         recordRowLevelGateDecision("denied_by_gate");
+         logger.debug("Partition filter could not be resolved; denying", {
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+         throw new AccessDeniedError(
+            `Access denied for source "${(struct as { as?: string } | undefined)?.as ?? struct?.name ?? "unknown"}".`,
          );
       }
       return rowLevel;
@@ -1669,7 +1770,15 @@ export class Model {
                ),
             );
          }
-         return gates.length > 0;
+         // `#(partition)` is the SAME "serve-shape carries no row filter"
+         // hazard as an authorize gate (see `getQueryResults`'s
+         // `routingBlockedByRowLevelGate` doc) — no composite branch to walk
+         // here, since a partitioned composite is refused outright at publish
+         // (`assertPartitionAnnotationsValid`).
+         return (
+            gates.length > 0 ||
+            resolveEntryPointPartitions(struct, modelDef).length > 0
+         );
       } catch {
          // Cannot tell whether the entry point carries a row-level gate — and,
          // once this returns false, nothing downstream can catch a wrong
@@ -2767,12 +2876,35 @@ export class Model {
     * derived name. The declared filter belongs to the source, not to the name
     * it is read under. Returns undefined when the run target does not derive
     * from a protected source.
+    *
+    * Scans {@link stripMalloyCommentsAndLiterals} text rather than the caller's
+    * raw text. Both reads here decide whether a filter is INJECTED, and there is
+    * no post-compile backstop on this path, so a name this walk fails to reach
+    * is served unfiltered and silently. Raw text let a caller arrange that four
+    * ways, each of which resolved to undefined on a query that really does read
+    * a protected source:
+    *
+    *  - a comment between `is` and the base (`source: a is -- c\n protected`)
+    *    ERASES the derivation edge, which the compiler still reads around;
+    *  - a declaration forged inside a string literal injects an edge, and
+    *    {@link buildSourceAliasMap} is last-declaration-wins, so it REPLACES the
+    *    real base for that name;
+    *  - a forged `run:` inside a literal or a comment re-points
+    *    {@link extractRunTargetSourceName} at a name that was never the target.
+    *
+    * Stripping first closes all four, because none of that text is syntax any
+    * more. It does not close a derivation that composes through a named
+    * `query:`, which this walk still cannot follow: it resolves a SINGLE source
+    * name, and a set-valued walk would have to decide which protected source's
+    * filters apply to a name with several bases. That needs its own change.
     */
    private resolveFilterSource(query?: string): string | undefined {
-      const target = extractRunTargetSourceName(query);
-      if (!target || !query) return undefined;
+      if (!query) return undefined;
+      const scanned = stripMalloyCommentsAndLiterals(query);
+      const target = extractRunTargetSourceName(scanned);
+      if (!target) return undefined;
 
-      const aliasOf = buildSourceAliasMap(query);
+      const aliasOf = buildSourceAliasMap(scanned);
 
       // Walk the derivation chain until we hit a protected source or run out.
       let current: string | undefined = target;
@@ -2843,6 +2975,13 @@ export class Model {
             filterMap = sourceResult.filterMap;
             const queryResult = Model.getQueries(modelDef);
             queries = queryResult.queries;
+
+            // A composite source that itself declares `#(partition)` cannot
+            // graft — see `assertPartitionAnnotationsValid`'s doc. Checked
+            // first: it is a load-time authoring mistake, not an authorize
+            // shape, so it should not read as a stranger error from the
+            // authorize checks below.
+            assertPartitionAnnotationsValid(modelDef);
 
             // A `#(authorize)` annotation in a position nothing enforces (a
             // top-level `query:` statement, or a field inside a `source:`
@@ -3398,6 +3537,16 @@ export class Model {
          (this.givens ?? [])
             .map((given) => given.name)
             .filter((name): name is string => name !== undefined),
+         // The EFFECTIVE gate per source, inheritance already resolved by the
+         // extraction, so a suggest over a gated source learns which givens its
+         // gate reads.
+         new Map(
+            (this.sources ?? []).flatMap((source) =>
+               source.name
+                  ? [[source.name, source.authorize ?? []] as const]
+                  : [],
+            ),
+         ),
       );
    }
 
@@ -3657,27 +3806,78 @@ export class Model {
       );
    }
 
-   /** True if `name` reaches a curated source by walking the ad-hoc text's
-    *  `source: NAME is BASE` derivation declarations — composition over a
-    *  queryable source is itself queryable. */
+   /**
+    * True if `name` is PROVABLY a composition over the curated surface, by
+    * walking the ad-hoc text's own derivation declarations — composition over
+    * a queryable source is itself queryable.
+    *
+    * Reads {@link buildDerivationBaseMap} over
+    * {@link stripMalloyCommentsAndLiterals} text, the same hardened pair the
+    * authorize gate's {@link requestChainProvesUngated} uses, rather than the
+    * narrow {@link buildSourceAliasMap}. That map was `source:`-only,
+    * last-declaration-wins, and read RAW text, which cost correctness at both
+    * ends:
+    *
+    *  - **It missed `query:` hops.** The pre-aggregate idiom composes through
+    *    one — `query: agg is <curated> -> { … }`, `source: blended is agg
+    *    extend { … }`, `run: blended` — so the walk dead-ended on `agg`, a
+    *    name that is neither curated nor a `source:` alias, and denied a query
+    *    that only ever reads a source the caller may plainly read. Because
+    *    `/compile` is exempt from this boundary by design, the same text
+    *    compiled clean first, so the 404 explained nothing.
+    *  - **Raw text and last-wins were an admission hazard.** A declaration
+    *    forged inside a string literal (`where: note = 'source: x is
+    *    <curated>'`) or hidden behind a comment could inject an alias edge,
+    *    and last-wins let a second declaration REPLACE a name's real base.
+    *    Stripping closes the forging; the base map's set-per-name closes the
+    *    replacing.
+    *
+    * The quantifier is the part that has to be inverted from the authorize
+    * gate, and it is why the wider map is safe HERE. There, an extra edge
+    * widens DENIAL, so a name is denied if ANY branch reaches a gated source.
+    * Here an extra edge would widen ADMISSION, so a name is admitted only if
+    * EVERY declared base for it proves out: a shadowing or forged edge can
+    * then only add another obligation, never discharge one. For the ordinary
+    * one-base-per-name chain — everything that compiles — this is exactly the
+    * old walk's answer.
+    *
+    * Fails closed on anything it cannot ground: a name with no declared base,
+    * a chain longer than {@link REQUEST_CHAIN_MAX_NAMES}, and a cycle (a
+    * back-edge proves nothing, so `a is b` / `b is a` is not admitted).
+    */
    private derivesFromCurated(name: string, query: string): boolean {
       // Hoisted out of the walk: the own-closure set is the same for every link
       // in the derivation chain, and only the identity check varies by name.
       const own = this.ownCuratedSourceNames();
       const packageCurated = this.queryBoundary.packageCuratedSources;
-      const aliasOf = buildSourceAliasMap(query);
-      let current: string | undefined = name;
-      const seen = new Set<string>();
-      while (current && !seen.has(current)) {
+      const basesOf = buildDerivationBaseMap(
+         stripMalloyCommentsAndLiterals(query),
+      );
+      // Only positive results are memoized: a name proven curated is proven
+      // wherever it appears, while a `false` may be the local verdict of the
+      // in-progress cycle guard rather than a property of the name.
+      const proven = new Set<string>();
+      const inProgress = new Set<string>();
+      const proves = (current: string): boolean => {
          if (
             own.has(current) ||
             this.admittedByPackage(current, packageCurated)
          )
             return true;
-         seen.add(current);
-         current = aliasOf.get(current);
-      }
-      return false;
+         if (proven.has(current)) return true;
+         // A back-edge grounds nothing, and neither does a chain this long —
+         // it is not a real derivation, so stop on the deny side.
+         if (inProgress.has(current)) return false;
+         if (inProgress.size >= REQUEST_CHAIN_MAX_NAMES) return false;
+         const bases = basesOf.get(current);
+         if (!bases || bases.size === 0) return false;
+         inProgress.add(current);
+         const ok = Array.from(bases).every((base) => proves(base));
+         inProgress.delete(current);
+         if (ok) proven.add(current);
+         return ok;
+      };
+      return proves(name);
    }
 
    /**
@@ -3690,12 +3890,30 @@ export class Model {
     * Returned rather than thrown: the owning Package joins these across its
     * models into one rejection, so an author fixing a package sees every bad
     * declaration at once instead of one per publish.
+    *
+    * Memoized for the same reason as {@link getDeclaredQueryMetadata}, and it
+    * matters more here: `preaggregateAccessWarnings` puts this on
+    * `getPackageMetadata()`, which `/status` reaches for every package on every
+    * poll, and the walk below re-parses the annotations on every field of every
+    * source. A compiled model's annotations never change — a reload replaces the
+    * `Model` object outright — so the memo needs no invalidation.
+    *
+    * `readonly` down to the element because callers now share one array rather
+    * than each getting a fresh walk: a caller that sorted the array, or edited a
+    * violation's message, would be editing every later caller's copy. Enforced by
+    * the type rather than `Object.freeze` — the sharing is what makes this cheap,
+    * and a deep freeze would put back a per-element cost.
     */
-   public preaggregateViolations(): PreaggregateViolation[] {
-      if (!this.modelDef) return [];
-      return validateModelPreaggregation(
-         this.modelDef.contents as Record<string, unknown>,
-      );
+   public preaggregateViolations(): readonly Readonly<PreaggregateViolation>[] {
+      // Shared rather than a fresh `[]`, so the identity contract above holds on
+      // this branch too (a model that failed to compile has no `modelDef`).
+      if (!this.modelDef) return NO_PREAGGREGATE_VIOLATIONS;
+      if (this.preaggregateViolationsMemo === undefined) {
+         this.preaggregateViolationsMemo = validateModelPreaggregation(
+            this.modelDef.contents as Record<string, unknown>,
+         );
+      }
+      return this.preaggregateViolationsMemo;
    }
 
    /**
@@ -4796,7 +5014,11 @@ export class Model {
             // cannot hit. This is NOT the `hasAuthorize()` trap warned about
             // further down — see `hasAnyAuthorizeNote`'s doc for why the two
             // predicates differ and why only this one is safe to skip on.
-            this.hasAnyAuthorizeNote() &&
+            // `#(partition)` gets the identical veto — it too grafts a row
+            // filter the serve-shape model carries no bytes for (see
+            // `hasAnyPartitionNote`'s doc) — so both note kinds have to be
+            // checked before the walk can be skipped.
+            (this.hasAnyAuthorizeNote() || this.hasAnyPartitionNote()) &&
             (await this.queryEntryPointHasRowLevelGate(runnable));
          // Recorded HERE, once, rather than in each tier's block below: the
          // pre-aggregation guard runs no compile attempt of its own and calls
@@ -5123,6 +5345,12 @@ export class Model {
       // supplied name with "unknown given" — a spurious 400, past the routing
       // fallback, on a query that should just serve from storage. Nothing in the
       // shape can read them; the authorize gate above already saw the full set.
+      // Safe for `#(partition)` too, and for the identical reason: the
+      // materialization eligibility gate refuses a partition-referencing
+      // source the same way it refuses a given-referencing one (see
+      // `materialization_eligibility.ts`'s `referencesPartition`), and
+      // `routingBlockedByRowLevelGate` above vetoes routing outright whenever
+      // the QUERY's own entry point carries either annotation.
       const effectiveGivens = serveVirtualMap ? undefined : querySurfaceGivens;
       try {
          // The prepared result is also where the executing connection's name

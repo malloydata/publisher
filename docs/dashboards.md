@@ -29,9 +29,11 @@ pipeline starts from its own query's source, and there is no way to combine two,
 unrelated sources has to be tiles.
 
 The format is the one [Malloyyo](https://github.com/malloydata/malloyyo) uses, so a model repo with
-a `dashboards/` directory largely works unchanged in either. One property differs: Publisher spells
-the grid width `# dashboard { columns=N }` rather than `dashboard_columns=N`, and reports the old
-name as a property it does not read rather than laying out at the default in silence. See
+a `dashboards/` directory largely works unchanged in either. The one grammar difference: Publisher
+spells the grid width `# dashboard { columns=N }` rather than `dashboard_columns=N`, and reports the
+old name as a property it does not read rather than laying out at the default in silence. One form
+Malloyyo accepts, `# artifact` on a `view:`, is not served here; the package warning says so and
+names the two spellings that are. The dated list of everything else that differs is
 [Where Publisher diverges](malloyyo-dashboards-design.md#where-publisher-diverges).
 
 ## Where the pieces live
@@ -72,7 +74,7 @@ after this one is the form to author a dashboard in.
 ```malloy
 ##! experimental.givens
 import { order_items, products } from '../storefront.malloy'
-import { CATEGORY, MIN_SALE } from '../givens.malloy'
+import '../givens.malloy'
 
 #" Revenue and margin at a glance, and where they come from.
 # artifact { title="Business Overview" } dashboard { columns=12 }
@@ -113,6 +115,13 @@ query: overview is order_items -> {
 
 - `# artifact { … }` is what makes the file a dashboard. `title=` names it; without one the title
   falls back to the `#"` doc comment above, then to the slug.
+- **The doc comment below the title is the page's prose header, and it renders as markdown.**
+  Paragraphs, emphasis, lists, links and inline code all work, and a bare doc-comment line separates
+  paragraphs. On a composite the lines are model-level (`##"`), because a doc comment attaches to an
+  object and at model level there is none — a `#"` there fails the package load with "Object
+  annotation not connected to any object". On the single-query form it is `#"`, attached to the
+  `query:`. Prose next to one tile is that tile's `# subtitle`, which is a tag string and therefore
+  one line; prose BETWEEN tiles is not something the format can express.
 - `# dashboard { columns=N }` is the renderer's grid: a standard `@malloydata/render` tag, not a
   Publisher one.
 - `where:` naming a given is what puts a control on the page. Two names here, so two controls.
@@ -151,8 +160,11 @@ a package's dashboards is what makes them read as one product rather than as sev
 diverge.** On a `# dashboard` query a top-level `aggregate:` measure _is_ the card, so do not nest a
 `# big_value` view to get one: nested there it renders embedded, and each measure becomes a
 full-width bar inside a single tile instead of a row of cards. A dashboard has no top-level
-aggregates — a tile is one whole result — so there a `# big_value` view IS the KPI row, and it
-renders as one. `dashboards/overview.malloy` is that tile, at `# colspan=12`.
+aggregates — a tile is one whole result — so there a view of nothing but measures IS the KPI row: a
+tile whose result is one row of measures renders as big-value cards on its own, the way Malloyyo
+draws the same tile, and `# big_value` on the view says the same thing explicitly.
+`dashboards/overview.malloy` is that tile, at `# colspan=12`. To show such a row as a table instead,
+tag the view `# table`.
 
 Either way, a card's label is one line that ellipses rather than wrapping, so a narrow card truncates
 it silently: "Orders / customer" reads as "ORDERS / CUSTOMEI" at 1 column of 6.
@@ -196,15 +208,15 @@ chart: 1992px bare, against 227px for the same query under a `# dashboard` tag.
 
 ### Tag reference
 
-| Construct                                                | What it does                                                                                                                   |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `## artifact { title= tiles=[…] givens{…} autorun= }`     | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
-| `# artifact { title= givens{…} autorun= }` on a `query:`  | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
-| `# dashboard { columns=N }`                              | Grid width, beside the artifact tag on either form. One spelling                                                                            |
+| Construct                                                                           | What it does                                                                                                                                |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `## artifact { title= tiles=[…] givens{…} autorun= }`                               | Declares the dashboard, model-level. `title` falls back to the `#"` doc comment; `givens` sets starting control values; see [Apply](#apply) |
+| `# artifact { title= givens{…} autorun= }` on a `query:`                            | Serves ONE query's result as the page. Malloy's rendering feature, not a second dashboard form; see [above](#a-dashboard-from-one-query)    |
+| `# dashboard { columns=N }`                                                         | Grid width, beside the artifact tag on either form. One spelling                                                                            |
 | `# colspan=K`, `# break`, `# label="…"`, `# subtitle="…"`, `# borderless` on a view | Per-tile presentation, read the same whichever way the view is consumed. See [Laying out the grid](#laying-out-the-grid)                    |
-| `# label="…"` on an aggregate                             | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
-| `# drill { to=[…] given=… }` on a source `dimension:`     | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
-| A `dashboards/*.malloy` with **no** artifact tag          | A shared include, skipped by discovery                                                                                                      |
+| `# label="…"` on an aggregate                                                       | What the KPI card is headed. Without it a card reads `total_sales`, which is a column name, not a number a reader came for                  |
+| `# drill { to=[…] given=… }` on a source `dimension:`                               | Makes cells that group by it clickable, see [Drill](#drill)                                                                                 |
+| A `dashboards/*.malloy` with **no** artifact tag                                    | A shared include, skipped by discovery                                                                                                      |
 
 Anything else inside the artifact tag is a package warning naming it, because the reader looks
 properties up by name and would otherwise serve the page as though the line were not written.
@@ -240,13 +252,14 @@ given: MIN_SALE :: filter<number> is f''
 given: SINCE :: date is @2023-01-01
 ```
 
-| Tag                                             | Renders as                                         |
-| ----------------------------------------------- | -------------------------------------------------- |
-| `control=select` + `suggest { … }`              | A dropdown whose options are queried from the data |
-| `control=multiselect` + `suggest { … }`         | The same, taking several values                    |
-| `range_min=` / `range_max=` on `filter<number>` | A slider instead of a text box                     |
-| none, on a `date` or `timestamp`                | A date picker                                      |
-| none, on a `filter<string>`                     | A text box taking Malloy filter syntax             |
+| Tag                                              | Renders as                                                                                 |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `control=select` + `suggest { … }`               | A dropdown whose options are queried from the data                                         |
+| `control=multiselect` + `suggest { … }`          | The same, taking several values                                                            |
+| `range_min=` / `range_max=` on `filter<number>`  | A two-handled range slider (`[lo to hi]`, or `>= lo` with the upper handle at the ceiling) |
+| none, on a `filter<date>` or `filter<timestamp>` | A time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days  |
+| none, on a `date` or `timestamp`                 | A date picker                                                                              |
+| none, on a `filter<string>`                      | A text box taking Malloy filter syntax                                                     |
 
 A `suggest` reads either a `source=` and `dimension=` pair, or a named `query=` when the option list
 needs its own ordering or filtering. **The source or query has to resolve in the dashboard file**,
@@ -283,6 +296,21 @@ references one lives up an import chain. A given the file does not import gets n
 sending it at run time fails with "unknown given". Everything about givens themselves
 (declaration, types, defaults, access control) is in [givens.md](givens.md).
 
+**Import the givens file whole, rather than naming the ones you use.** A control renders for a given
+the tiles actually _reference_, not for every one in scope, so a whole-file `import '../givens.malloy'`
+brings no controls you did not ask for and costs nothing. A named list only makes the author
+enumerate, and the failure when they forget one is a missing control rather than an error. The same
+convention is what Malloyyo documents for this format, so a repo written for either side reads the
+same. Naming the imports stays correct and is still the right form for _sources_, where a file
+usually wants a few specific names.
+
+Where the declaration itself lives is a separate question, and the answer is the model: a given is
+read by the MCP surface, by row-level access, and by `#(authorize)`, so it is a model concern rather
+than a presentation one, and `givens.malloy` is where a package keeps it. Declaring one in a
+dashboard file is legal and works — the control renders and the tile filters — which is what makes
+a dashboard-local filter possible for a page that owns its own knob. It is the exception, not the
+convention.
+
 <a id="apply"></a>
 
 ### Apply, starting values, and the URL
@@ -316,7 +344,7 @@ the results out:
 ## artifact { title="Seasonality" tiles=["scoped_sales -> sales_by_month", "scoped_sales -> seasonality"] } dashboard { columns=12 }
 import { scoped_sales } from './_shared.malloy'
 import { products } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import '../givens.malloy'
 ```
 
 Model-level because there is no query of its own to hang a `#` tag on, and model-level for a second
@@ -366,7 +394,7 @@ That is the job the shared include does here. `_shared.malloy` scopes the source
 // dashboards/_shared.malloy: no artifact tag, so an include rather than a dashboard.
 ##! experimental.givens
 import { order_items } from '../storefront.malloy'
-import { CATEGORY, SINCE } from '../givens.malloy'
+import '../givens.malloy'
 
 source: scoped_sales is order_items extend {
   where: category ~ $CATEGORY and created_at >= $SINCE

@@ -71,9 +71,9 @@ It is a deliberate trade, stated plainly rather than left to be discovered:
 - **403 becomes 200-with-zero-rows.** A caller the retired whole-source gate would have rejected
   outright now gets a successful, empty response. That is wire-visible: a consumer keying its own
   logic on the 403 status must be checked and updated before upgrading a deployment it serves. A 403
-  now means only that the gate could not be *attached* — not that a caller was denied by it.
+  now means only that the gate could not be _attached_ — not that a caller was denied by it.
 - **Fail-closed is the only backstop.** A row filter has no boolean admission to fall back on the
-  way the retired whole-source gate did, so every path that cannot *apply* the filter denies instead — a
+  way the retired whole-source gate did, so every path that cannot _apply_ the filter denies instead — a
   gate whose column doesn't resolve at the entry point, an unresolved given, a compile that
   throws. There is no "serve unfiltered" failure mode.
 - **The gate's own structure is still scrubbed.** Accepting schema disclosure above is not
@@ -147,9 +147,9 @@ React will not execute an inline `<script>` this way, and link `href`s are alrea
 precisely because packages can come from untrusted git or S3 sources — so this is a narrow
 surface, not an open one. Still, it is the one place a declarative artifact touches
 author-controlled HTML, and it is worth either disabling raw HTML or sanitizing deliberately.
-Three call sites, not one: notebook cells, workbook cells, and an environment's About panel
-(`NotebookCell.tsx`, `MutableCell.tsx`, `About.tsx`). None passes the option, so fixing one and
-calling it done would leave the other two open.
+Two call sites, not one: notebook cells and an environment's About panel (`NotebookCell.tsx`,
+`About.tsx`). Neither passes the option, so fixing one and calling it done would leave the other
+open.
 
 **4. Resize messages are not origin-checked.** Both the in-page host runtime
 (`packages/server/src/runtime/publisher.js`) and the Console's data-app viewer

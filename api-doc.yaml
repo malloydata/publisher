@@ -731,6 +731,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -779,6 +781,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1089,6 +1093,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1143,6 +1149,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -4112,6 +4120,18 @@ components:
           type: string
         dimension:
           type: string
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: |
+            The givens the suggest query needs in its request to run: the ones
+            the source it reads is scoped by (a source-level `where: … ~ $X`)
+            or gated by (an `#(authorize)` reading `$X`), plus, for the `query`
+            form, the named query's own. A client sends the current values of
+            exactly these, so a gated source's options load while the option
+            list still does not depend on the page's other filters. Absent
+            when the query needs none.
 
     GivenValues:
       type: object
@@ -4652,7 +4672,17 @@ components:
 
     Connection:
       type: object
-      description: Database connection configuration and metadata
+      description: >
+        Database connection configuration and metadata.
+
+        Credential fields are WRITE-ONLY. They are accepted on create and
+        update and no read returns them, so this one schema describes a
+        request body in full and a response body with its credentials
+        omitted. Omitted rather than masked, so a client cannot round-trip a
+        placeholder back into stored config as a real credential. An update
+        does not have to resend a credential it could not read; a field left
+        out keeps its stored value, a field sent replaces it, and a field sent
+        empty clears it.
       properties:
         resource:
           type: string
@@ -4683,6 +4713,22 @@ components:
               ducklake,
               publisher,
             ]
+        withheldFields:
+          type: array
+          items:
+            type: string
+          description: >
+            Read-only. Dotted paths of the fields this connection has stored
+            that this response does not return. In practice that is its
+            credentials, but it is any stored field the response withholds, so
+            a field the server does not publish appears here too. Names only,
+            never a value.
+
+            It exists because a client otherwise cannot tell a credential that
+            is set from one that is absent, and so cannot tell whether leaving a
+            box empty keeps something or leaves the connection without a
+            credential. An editor should read it to label the boxes that are
+            already filled. Ignored on write.
         fingerprint:
           type: string
           description: >
@@ -5347,12 +5393,34 @@ components:
       type: object
       description: Standard error response format
       properties:
+        code:
+          type: integer
+          description: HTTP status code, repeated in the body for convenience
         message:
           type: string
           description: Human-readable error message describing what went wrong
         details:
           type: string
           description: Additional error details or context
+        reason:
+          type: string
+          description: |
+            Machine-readable discriminator, for callers that must branch on
+            which error they got rather than on prose. Absent unless a caller is
+            expected to act on it, so treat absence as "no special handling".
+
+            TABLE_NOT_FOUND distinguishes a table that is not in the database
+            from the other conditions that also answer 404 on these routes --
+            an environment or connection this server does not host. The former
+            says nothing about whether the caller reached the right server; the
+            latter is a routing problem worth retrying elsewhere.
+
+            Deliberately an open string rather than an enum. Generators render
+            an enum closed, so adding a second value here would break every
+            client generated before it -- on the one field whose purpose is to
+            grow. Callers must treat an unrecognized value as absent.
+
+            Known values: TABLE_NOT_FOUND.
       required:
         - message
 
@@ -5752,18 +5820,20 @@ components:
               free_parameter,
               given,
               authorize,
+              partition,
               not_duckdb_portable,
               public_surface_unknown,
             ]
           description: >-
-            The bounded refusal reason. Only `free_parameter`, `given` and
-            `authorize` can appear here — those are the only reasons the two
-            compile-time eligibility asserts this collection is computed from
-            produce. `not_duckdb_portable` is decided against the post-build
-            captured schema, which does not exist at compile time, and
-            `public_surface_unknown` is raised by the build-time narrowing of a
-            stored table to the source's public columns; both are listed only
-            because they share the enum the runtime eligibility metric uses.
+            The bounded refusal reason. Only `free_parameter`, `given`,
+            `authorize` and `partition` can appear here — those are the only
+            reasons the two compile-time eligibility asserts this collection is
+            computed from produce. `not_duckdb_portable` is decided against the
+            post-build captured schema, which does not exist at compile time,
+            and `public_surface_unknown` is raised by the build-time narrowing
+            of a stored table to the source's public columns; both are listed
+            only because they share the enum the runtime eligibility metric
+            uses.
         message:
           type: string
           description: >-

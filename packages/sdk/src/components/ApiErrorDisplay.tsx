@@ -11,7 +11,7 @@ export interface ApiError extends Error {
    };
 }
 
-interface ApiErrorDisplayProps {
+export interface ApiErrorDisplayProps {
    error: ApiError;
    context?: string;
 }

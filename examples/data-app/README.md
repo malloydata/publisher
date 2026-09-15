@@ -19,12 +19,12 @@ environment.
 
 The left nav switches between four patterns, each a small, self-contained example:
 
-| View | Component | Pattern |
-| --- | --- | --- |
-| **Storefront dashboard** | `StorefrontDashboard` | A fixed grid of SDK tiles (`business_overview`, top products, trend, …) over the storefront model. |
-| **Single Embed** | `SingleEmbedDashboard` | One `EmbeddedQueryResult` rendering the monthly sales line chart from a serialized query. |
-| **Dynamic Dashboard** | `DynamicDashboard` | An editable grid — add and arrange widgets at runtime. |
-| **Interactive** | `InteractiveDashboard` | Hand-rolled `fetch` to the query API, rendered with Recharts, to show the raw data path. |
+| View                     | Component              | Pattern                                                                                            |
+| ------------------------ | ---------------------- | -------------------------------------------------------------------------------------------------- |
+| **Storefront dashboard** | `StorefrontDashboard`  | A fixed grid of SDK tiles (`business_overview`, top products, trend, …) over the storefront model. |
+| **Single Embed**         | `SingleEmbedDashboard` | One `EmbeddedQueryResult` rendering the monthly sales line chart from a serialized query.          |
+| **Dynamic Dashboard**    | `DynamicDashboard`     | An editable grid — add and arrange widgets at runtime.                                             |
+| **Interactive**          | `InteractiveDashboard` | Hand-rolled `fetch` to the query API, rendered with Recharts, to show the raw data path.           |
 
 ## Run it
 
@@ -35,9 +35,14 @@ serves the `examples` environment on `http://localhost:4000`.
 Then, from this directory:
 
 ```bash
-bun install          # or: npm install (run once at the repo root)
+bun install          # in this directory; the example has its own lockfile
 bun run dev          # Vite dev server on http://localhost:5173
+bun run typecheck    # the same check a change to the SDK should keep green
 ```
+
+The dependencies are pinned to the versions the rest of this repository uses (the
+published `@malloy-publisher/sdk` at the workspace version, MUI 7, React 19), so
+the example tracks the SDK it demonstrates rather than whatever is newest on npm.
 
 Vite proxies `/api/v0` to `http://localhost:4000` (see
 [`vite.config.ts`](vite.config.ts)), so the SDK's queries reach your local

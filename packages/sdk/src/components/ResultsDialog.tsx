@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogTitle, IconButton } from "@mui/material";
 import { LogMessage } from "../client";
 import type { DrillBinding } from "./drill";
 import ResultContainer from "./RenderedResult/ResultContainer";
+import { RESULTS_DIALOG_MAX_HEIGHT } from "./RenderedResult/resultSizing";
 
 interface ResultsDialogProps {
    open: boolean;
@@ -60,7 +61,7 @@ export default function ResultsDialog({
          >
             <ResultContainer
                result={result}
-               maxHeight={800}
+               maxHeight={RESULTS_DIALOG_MAX_HEIGHT}
                maxResultSize={1000000}
                renderLogs={renderLogs}
                drill={drill}

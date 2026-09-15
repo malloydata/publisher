@@ -1,7 +1,7 @@
 {
    "name": "@malloy-publisher/sdk",
    "description": "Malloy Publisher SDK",
-   "version": "0.2.3",
+   "version": "0.2.7",
    "type": "module",
    "main": "dist/index.cjs.js",
    "module": "dist/index.es.js",
@@ -38,9 +38,6 @@
       "./malloy-explorer.css": {
          "default": "./dist/malloy-explorer.css"
       },
-      "./markdown-editor.css": {
-         "default": "./dist/markdown-editor.css"
-      },
       "./styles.css": {
          "default": "./dist/styles.css"
       }
@@ -58,7 +55,7 @@
    },
    "scripts": {
       "build": "bun generate-api-types && bunx vite build",
-      "postbuild": "cp ../../node_modules/@malloydata/malloy-explorer/dist/malloy-explorer.css ./dist/malloy-explorer.css && cp ../../node_modules/@uiw/react-md-editor/markdown-editor.css ./dist/markdown-editor.css && echo '/* SDK Styles */\n@import \"./malloy-explorer.css\";\n@import \"./markdown-editor.css\";' > ./dist/styles.css",
+      "postbuild": "cp ../../node_modules/@malloydata/malloy-explorer/dist/malloy-explorer.css ./dist/malloy-explorer.css && echo '/* SDK Styles */\n@import \"./malloy-explorer.css\";' > ./dist/styles.css",
       "test": "bun test",
       "lint": "bunx eslint ./src ./test --fix",
       "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
@@ -87,7 +84,6 @@
       "@emotion/react": "^11.14.0",
       "@emotion/styled": "^11.14.0",
       "@react-spring/web": "^10.0.1",
-      "@uiw/react-md-editor": "^4.0.6",
       "cron-parser": "^5.6.2",
       "cronstrue": "^2.50.0",
       "markdown-to-jsx": "^7.7.6",

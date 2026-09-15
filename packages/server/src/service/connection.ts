@@ -47,6 +47,7 @@ import {
 } from "../ducklake_version";
 import {
    ConnectionNotFoundError,
+   TableNotFoundError,
    UnsupportedCatalogFormatError,
 } from "../errors";
 import { logAxiosError, logger } from "../logger";
@@ -1671,7 +1672,9 @@ class AzureDuckDBConnection extends DuckDBConnection {
             });
             const result = await super.fetchTableSchema(tableKey, azureUrl);
             if (!result) {
-               throw new Error(`Azure file not found: ${azureUrl}`);
+               throw new TableNotFoundError(
+                  `Azure file not found: ${azureUrl}`,
+               );
             }
             return result;
          }
@@ -1679,7 +1682,7 @@ class AzureDuckDBConnection extends DuckDBConnection {
 
       const result = await super.fetchTableSchema(tableKey, tablePath);
       if (!result) {
-         throw new Error(`Table ${tablePath} not found`);
+         throw new TableNotFoundError(`Table ${tablePath} not found`);
       }
       return result;
    }
@@ -1780,7 +1783,7 @@ class DuckLakeConnection extends DuckDBConnection {
          });
          const result = await super.fetchTableSchema(tableKey, prefixedPath);
          if (!result) {
-            throw new Error(
+            throw new TableNotFoundError(
                `Table ${prefixedPath} not found in connection ${this.connectionName}`,
             );
          }
@@ -1790,7 +1793,7 @@ class DuckLakeConnection extends DuckDBConnection {
       // For attached databases, in the future
       const result = await super.fetchTableSchema(tableKey, tablePath);
       if (!result) {
-         throw new Error(
+         throw new TableNotFoundError(
             `Table ${tablePath} not found in connection ${this.connectionName}`,
          );
       }
