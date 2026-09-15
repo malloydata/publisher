@@ -3,7 +3,7 @@
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
 import Markdown from "markdown-to-jsx";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import type { DashboardManifest } from "../../client";
 import { useGivensState } from "../../hooks/useGivensState";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
@@ -15,7 +15,12 @@ import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
+import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
+
+// The grid rule moved to `DashboardGrid`, which the builder shares.
+// Re-exported so existing importers of it are unaffected.
+export { DEFAULT_COLUMNS, tileGridColumn } from "./DashboardGrid";
 
 export interface DashboardProps {
    /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
@@ -58,26 +63,6 @@ export interface DashboardProps {
     */
    height?: number;
    maxResultSize?: number;
-}
-
-/** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
-export const DEFAULT_COLUMNS = 2;
-
-/**
- * The `grid-column` one tile occupies: its `# colspan`, and a `# break` forcing
- * it to start a fresh row.
- *
- * Clamped to the grid width the same way @malloydata/render clamps it, so one
- * view laid out as a composite tile and as a `nest:` under `# dashboard` lands
- * in the same place. A break is `1 / span N` — an explicit start line, which is
- * what pushes the tile down to the next row; the renderer's grid does the same.
- */
-export function tileGridColumn(
-   tile: { colspan?: number; break?: boolean },
-   columns: number,
-): string {
-   const span = Math.min(tile.colspan ?? 1, columns);
-   return tile.break ? `1 / span ${span}` : `span ${span}`;
 }
 
 /**
@@ -311,50 +296,33 @@ export function Dashboard({
             // Composite form: each tile runs on its own and the results are
             // combined into one grid here, since no single Malloy result spans
             // them.
-            <Box
-               sx={{
-                  display: "grid",
-                  gridTemplateColumns: {
-                     xs: "1fr",
-                     md: `repeat(${columns}, minmax(0, 1fr))`,
-                  },
-                  gap: 2,
-               }}
-            >
-               {tiles.map((tile, index) => (
-                  <Box
-                     // Position too, not the expression alone: `tiles=[…]` can
-                     // repeat one, which is a typo rather than a request for two
-                     // identical panels, and keying on the expression made the
-                     // duplicate warn and reconcile onto its twin.
-                     key={`${index}:${tile.query}`}
-                     sx={{
-                        display: "grid",
-                        // Only above `md`: the narrow breakpoint is one column,
-                        // where a span would overflow the grid rather than widen
-                        // anything.
-                        gridColumn: { md: tileGridColumn(tile, columns) },
-                     }}
-                  >
-                     <DashboardTile
-                        environmentName={environmentName}
-                        packageName={packageName}
-                        versionId={versionId}
-                        modelPath={modelPath}
-                        tile={tile.query}
-                        label={tile.label}
-                        subtitle={tile.subtitle}
-                        borderless={tile.borderless}
-                        givens={applied}
-                        declaredTypes={declaredTypes}
-                        givenNames={tile.givenNames}
-                        height={height ?? TILE_MAX_HEIGHT}
-                        maxResultSize={maxResultSize}
-                        drill={drill}
-                     />
-                  </Box>
-               ))}
-            </Box>
+            <DashboardGrid
+               tiles={tiles}
+               columns={columns}
+               // Position too, not the expression alone: `tiles=[…]` can repeat
+               // one, which is a typo rather than a request for two identical
+               // panels, and keying on the expression made the duplicate warn
+               // and reconcile onto its twin.
+               keyOf={(tile, index) => `${index}:${tile.query}`}
+               renderTile={(tile) => (
+                  <DashboardTile
+                     environmentName={environmentName}
+                     packageName={packageName}
+                     versionId={versionId}
+                     modelPath={modelPath}
+                     tile={tile.query}
+                     label={tile.label}
+                     subtitle={tile.subtitle}
+                     borderless={tile.borderless}
+                     givens={applied}
+                     declaredTypes={declaredTypes}
+                     givenNames={tile.givenNames}
+                     height={height ?? TILE_MAX_HEIGHT}
+                     maxResultSize={maxResultSize}
+                     drill={drill}
+                  />
+               )}
+            />
          ) : (
             <Alert severity="warning">
                This dashboard names neither a query nor any tiles.
@@ -382,11 +350,47 @@ export function Dashboard({
  */
 function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
    return (
+      <DashboardProse
+         title={manifest.title ?? manifest.name}
+         {...(manifest.description
+            ? { description: manifest.description }
+            : {})}
+      />
+   );
+}
+
+/**
+ * The prose header itself, over the two fields it actually needs.
+ *
+ * Separate from {@link DashboardHeader} so the BUILDER can render the same
+ * header over a `DashboardDocument` — which carries `title` and `description`
+ * but is not a manifest. Same argument as {@link tileGridColumn}: what the
+ * builder shows a author is the thing a reader will see, and one component is
+ * what stops the two drifting. A builder that restated this markdown block
+ * would be one edit away from showing a different header than it writes.
+ */
+export function DashboardProse({
+   title,
+   description,
+   trailing,
+}: {
+   title: string;
+   description?: string;
+   /** Rendered on the title's row, hard right — the builder's undo/redo/save. */
+   trailing?: ReactNode;
+}) {
+   return (
       <Box>
-         <Typography variant="h5" sx={{ fontWeight: 600 }}>
-            {manifest.title ?? manifest.name}
-         </Typography>
-         {manifest.description && (
+         <Stack
+            direction="row"
+            sx={{ gap: 1, alignItems: "center", flexWrap: "wrap" }}
+         >
+            <Typography variant="h5" sx={{ fontWeight: 600, flexGrow: 1 }}>
+               {title}
+            </Typography>
+            {trailing}
+         </Stack>
+         {description && (
             <Box
                sx={{
                   color: "text.secondary",
@@ -413,7 +417,7 @@ function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
                   },
                }}
             >
-               <Markdown>{manifest.description}</Markdown>
+               <Markdown>{description}</Markdown>
             </Box>
          )}
       </Box>

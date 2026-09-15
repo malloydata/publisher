@@ -164,7 +164,14 @@ export function DashboardTile({
             border: borderless ? "none" : theme.border,
             borderRadius: borderless ? 0 : 1,
             background: borderless ? "none" : theme.tile,
+            // Also load-bearing for RESIZING, not just tidiness: this card is
+            // a grid item, and a grid item that clips gets a minimum width of
+            // zero instead of its content's. That is what lets the card narrow
+            // below the chart it holds when its tile does, so the chart's box
+            // actually shrinks and the renderer redraws it to fit. See the
+            // `minWidth: 0` note in `DashboardGrid` for the rest of the chain.
             overflow: "hidden",
+            minWidth: 0,
             minHeight: 120,
             p: borderless ? "12px 0" : `${DASHBOARD_CARD_PADDING_PX}px`,
          }}
