@@ -31,10 +31,12 @@ import {
  * SCOPE, deliberately: a tile's presentation, its filter bindings, the order of
  * tiles, and the dashboard's OWN givens — added, removed or retagged. Never an
  * import, and never a model file: a filter the builder adds is a declaration in
- * this file, which is the convention {@link LocalGiven} describes. Adding or
- * removing TILES moves view declarations around, and no file says whether the
- * comment above a tile belongs to the tile, to the row, or to the file — so
- * those are refused rather than guessed at, and will arrive with a diff preview.
+ * this file, which is the convention {@link LocalGiven} describes. And tiles
+ * ADDED or REMOVED: a new `view:` inside the extension of the source it reads
+ * (or a new extension, when the file imports that source by name), a removed
+ * one deleted with its `#` tags. Those moves are the one place the file cannot
+ * say who owns the comment beside a declaration, so the builder shows the diff
+ * before a structural save and the `//` comments are left where they were.
  *
  * A given is different from a tile in exactly the way that matters there: the
  * `#` tags above its declaration are its control contract and have no other
@@ -144,7 +146,6 @@ const isSameDocumentExceptTiles = (
    a.columns === b.columns &&
    a.autorun === b.autorun &&
    canonical(a.imports) === canonical(b.imports) &&
-   canonical(a.sources) === canonical(b.sources) &&
    canonical(a.drills) === canonical(b.drills) &&
    canonical(a.startingGivens) === canonical(b.startingGivens);
 
@@ -210,6 +211,28 @@ function givenLines(
    return out;
 }
 
+/**
+ * The last line of the declaration starting at `line`: the line itself for a
+ * one-line `view: x is y + { … }`, or the matching closing brace for a body
+ * (`view: x is {`, `source: s is b extend {`). Braces inside strings are not
+ * a concern Malloy dashboards have raised, so the count is plain.
+ */
+function declarationEnd(lines: string[], line: number): number {
+   let depth = 0;
+   let opened = false;
+   for (let i = line; i < lines.length; i++) {
+      for (const ch of lines[i]) {
+         if (ch === "{") {
+            depth++;
+            opened = true;
+         } else if (ch === "}") depth--;
+      }
+      if (opened && depth <= 0) return i;
+      if (!opened && i === line) return i;
+   }
+   return lines.length - 1;
+}
+
 /** One tile's identity, ignoring presentation and position. */
 const tileKey = (t: DashboardTile) =>
    canonical([t.name, t.source, t.declaration]);
@@ -217,10 +240,6 @@ const tileKey = (t: DashboardTile) =>
 /** The tile list as identities, IN ORDER. Differs under a reorder. */
 const tileIdentity = (document: DashboardDocument) =>
    canonical(document.tiles.map(tileKey));
-
-/** The same identities as a SET. Differs only when a tile is added or removed. */
-const tileMembership = (document: DashboardDocument) =>
-   canonical([...document.tiles.map(tileKey)].sort());
 
 export async function spliceDashboardDocument(
    sourceText: string,
@@ -235,25 +254,69 @@ export async function spliceDashboardDocument(
    }
    const current = before.document;
 
-   // Adding or removing a tile means inserting or deleting a view declaration,
-   // which carries the comment block above it — and the file cannot say whether
-   // that comment belongs to the tile, the row, or the file. Refused rather
-   // than guessed; a diff preview is what makes it safe later.
+   // Tiles ADDED and REMOVED, by identity. A removed tile's declaration goes,
+   // with its `#` tags; a `//` comment above it stays, because the file cannot
+   // say whether it belonged to the tile, the row or the page, and a comment
+   // left behind is a smaller wrong than one destroyed — and the builder shows
+   // this diff before it saves. An added tile is a `view:` in the extension of
+   // the source it reads, or a new extension when the file has none yet.
    //
-   // REORDERING is not in that class, and this used to refuse it with them. A
-   // tile's position is not where its view is declared: order comes from the
-   // `tiles=[…]` array on the `## artifact` tag, which is what the reader walks.
-   // So a reorder rewrites that one array and moves no declaration and no
-   // comment — the ambiguity above simply does not arise. It is handled below.
-   if (tileMembership(current) !== tileMembership(next)) {
-      return {
-         ok: false,
-         reason:
-            "Adding or removing tiles is not supported yet — only reordering " +
-            "them and changing what one already shows.",
-      };
+   // REORDERING is neither: a tile's position is the `tiles=[…]` array on the
+   // `## artifact` tag, and moving a tile there moves no declaration.
+   const currentKeys = new Set(current.tiles.map(tileKey));
+   const nextKeys = new Set(next.tiles.map(tileKey));
+   const removedTiles = current.tiles.filter((t) => !nextKeys.has(tileKey(t)));
+   const addedTiles = next.tiles.filter((t) => !currentKeys.has(tileKey(t)));
+   const membershipChanged = removedTiles.length > 0 || addedTiles.length > 0;
+   const reordered =
+      membershipChanged || tileIdentity(current) !== tileIdentity(next);
+   for (const tile of addedTiles) {
+      if (tile.declaration.kind !== "reference") {
+         return {
+            ok: false,
+            reason:
+               `A new tile names a view of a source; \`${tile.name}\` is ` +
+               `${tile.declaration.kind === "inline" ? "an inline query" : "not declared here"}, ` +
+               `which the builder cannot write.`,
+         };
+      }
    }
-   const reordered = tileIdentity(current) !== tileIdentity(next);
+   // Sources may only be ADDED, and only for a tile being added on them — the
+   // builder never renames or removes an extension, and never edits imports,
+   // so a new extension's base has to be a source the file already imports by
+   // name (or already extends).
+   const currentSources = new Map(current.sources.map((s) => [s.name, s]));
+   const importedByName = new Set(
+      current.imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
+   );
+   for (const source of current.sources) importedByName.add(source.base);
+   const newSources = next.sources.filter((s) => !currentSources.has(s.name));
+   for (const source of current.sources) {
+      const still = next.sources.find((s) => s.name === source.name);
+      if (!still || still.base !== source.base) {
+         return {
+            ok: false,
+            reason: `The source \`${source.name}\` cannot be changed or removed here.`,
+         };
+      }
+   }
+   for (const source of newSources) {
+      if (!addedTiles.some((t) => t.source === source.name)) {
+         return {
+            ok: false,
+            reason: `A new source \`${source.name}\` needs a tile on it.`,
+         };
+      }
+      if (!importedByName.has(source.base)) {
+         return {
+            ok: false,
+            reason:
+               `\`${source.base}\` is not imported by name in this file, so a ` +
+               `tile cannot be put on it. The builder does not add imports: ` +
+               `import { ${source.base} } from the model first.`,
+         };
+      }
+   }
    if (!isSameDocumentExceptTiles(current, next)) {
       return {
          ok: false,
@@ -295,8 +358,13 @@ export async function spliceDashboardDocument(
          const parts = entry.split("->").map((part) => part.trim());
          if (parts.length === 2) byKey.set(`${parts[0]}->${parts[1]}`, entry);
       }
-      const nextEntries = next.tiles.map((tile) =>
-         byKey.get(`${tile.source}->${tile.name}`),
+      // An existing tile keeps its spelling; a new one is written canonically.
+      const nextEntries = next.tiles.map(
+         (tile) =>
+            byKey.get(`${tile.source}->${tile.name}`) ??
+            (nextKeys.has(tileKey(tile)) && !currentKeys.has(tileKey(tile))
+               ? `${tile.source} -> ${tile.name}`
+               : undefined),
       );
       if (nextEntries.some((entry) => entry === undefined)) {
          return {
@@ -453,6 +521,141 @@ export async function spliceDashboardDocument(
          edits.push({ start: 0, end: 0, text: "##! experimental.givens\n" });
    }
 
+   // REMOVED TILES: the declaration and its `#` tags. An inline view's body
+   // runs to its closing brace; a reference is one line. An inherited tile has
+   // nothing here to remove — its entry left the artifact list above.
+   for (const tile of removedTiles) {
+      if (tile.declaration.kind === "inherited") continue;
+      const declLine = lines.findIndex((l) =>
+         new RegExp(`^\\s*view:\\s*${tile.name}\\s+is\\b`).test(l),
+      );
+      if (declLine < 0) {
+         return {
+            ok: false,
+            reason: `Could not find where \`${tile.name}\` is declared.`,
+         };
+      }
+      const endLine = declarationEnd(lines, declLine);
+      const { tags } = blockAbove(lines, declLine);
+      const first = Math.min(declLine, ...tags.map((t) => t.line));
+      for (const tag of tags) edits.push({ ...wholeLine(tag.line), text: "" });
+      edits.push({
+         start: wholeLine(declLine).start,
+         end: wholeLine(endLine).end,
+         text: "",
+      });
+      // The blank line after it goes too when what came before was a blank
+      // line or the extension's opening brace — otherwise two separators meet,
+      // or the body starts with an empty line. It STAYS after a `//` comment
+      // that is being left behind: closing the gap would hand that comment to
+      // the next tile, which is the ownership guess this whole rule avoids.
+      const before = first === 0 ? "" : lines[first - 1].trim();
+      if (
+         (lines[endLine + 1] ?? "x").trim() === "" &&
+         (first === 0 || before === "" || before.endsWith("{"))
+      )
+         edits.push({ ...wholeLine(endLine + 1), text: "" });
+   }
+
+   // ADDED TILES: a `view:` with its tags, inside the extension of the source
+   // the tile reads — before that extension's closing brace — or in a new
+   // extension after the last one, when the file has none for that source.
+   const byExtension = new Map<string, DashboardTile[]>();
+   for (const tile of addedTiles) {
+      const list = byExtension.get(tile.source) ?? [];
+      list.push(tile);
+      byExtension.set(tile.source, list);
+   }
+   const declarationOf = (tile: DashboardTile, indent: string) => {
+      const from =
+         tile.declaration.kind === "reference"
+            ? tile.declaration.from
+            : tile.name;
+      const bindings = (tile.filters ?? [])
+         .map((f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`)
+         .join(", ");
+      return [
+         ...tagsFor(tile).map((tag) => `${indent}${tag}`),
+         `${indent}view: ${tile.name} is ${from}${bindings ? ` + { ${bindings} }` : ""}`,
+      ].join("\n");
+   };
+   let lastExtensionEnd = -1;
+   for (const source of current.sources) {
+      const open = lines.findIndex((l) =>
+         new RegExp(`^\\s*source:\\s*${source.name}\\s+is\\b`).test(l),
+      );
+      if (open >= 0)
+         lastExtensionEnd = Math.max(
+            lastExtensionEnd,
+            declarationEnd(lines, open),
+         );
+   }
+   for (const [sourceName, tiles] of byExtension) {
+      if (currentSources.has(sourceName)) {
+         const open = lines.findIndex((l) =>
+            new RegExp(`^\\s*source:\\s*${sourceName}\\s+is\\b`).test(l),
+         );
+         if (open < 0) {
+            return {
+               ok: false,
+               reason: `Could not find where the source \`${sourceName}\` is declared.`,
+            };
+         }
+         const close = declarationEnd(lines, open);
+         // The indent the extension already uses for its views, else two spaces.
+         let indent = "  ";
+         for (let i = open + 1; i < close; i++) {
+            const m = /^(\s+)view:/.exec(lines[i]);
+            if (m) {
+               indent = m[1];
+               break;
+            }
+         }
+         // Before the closing brace, set off by a blank line from what precedes.
+         const at = wholeLine(close).start;
+         const precededByBlank = (lines[close - 1] ?? "").trim() === "";
+         edits.push({
+            start: at,
+            end: at,
+            text:
+               (precededByBlank ? "" : "\n") +
+               tiles.map((tile) => declarationOf(tile, indent)).join("\n\n") +
+               "\n",
+         });
+      } else {
+         const source = newSources.find((s) => s.name === sourceName);
+         if (!source) {
+            return {
+               ok: false,
+               reason: `The tile's source \`${sourceName}\` is not declared.`,
+            };
+         }
+         const block =
+            `\nsource: ${source.name} is ${source.base} extend {\n` +
+            tiles.map((tile) => declarationOf(tile, "  ")).join("\n\n") +
+            "\n}\n";
+         // After the last extension; failing that, after the last given or
+         // import, where the page's own declarations begin.
+         let anchor = lastExtensionEnd;
+         if (anchor < 0) {
+            for (let i = 0; i < lines.length; i++) {
+               const text = lines[i].trim();
+               if (
+                  /^(import\s|given:|}\s*from\s)/.test(text) ||
+                  /^[A-Z_]+\s*::/.test(text)
+               )
+                  anchor = i;
+            }
+         }
+         const at = anchor >= 0 ? wholeLine(anchor).end : sourceText.length;
+         // A file that ends without a newline needs one before the block.
+         const separator =
+            at === sourceText.length && !sourceText.endsWith("\n") ? "\n" : "";
+         edits.push({ start: at, end: at, text: separator + block });
+         lastExtensionEnd = anchor;
+      }
+   }
+
    // Presentation edits are matched by IDENTITY, not by position: after a
    // reorder `next.tiles[i]` and `current.tiles[i]` are different tiles, and
    // comparing them pairwise would report every moved tile as changed and
@@ -461,6 +664,8 @@ export async function spliceDashboardDocument(
 
    for (const tile of next.tiles) {
       const was = currentByKey.get(tileKey(tile));
+      // Written whole above, tags and all.
+      if (was === undefined) continue;
       if (canonical(was) === canonical(tile)) continue;
 
       // An inherited tile is declared in the model, not here, so there is

@@ -36,6 +36,19 @@ export interface DashboardEditor {
    redo: () => void;
    /** Splice the change into the file. Resolves false when it was refused. */
    save: () => Promise<boolean>;
+   /**
+    * The file a save would write, without writing it: what a diff preview
+    * shows. The failure arm is the writer's refusal, worded for the author.
+    */
+   preview: () => Promise<
+      { ok: true; source: string } | { ok: false; reason: string }
+   >;
+   /**
+    * Whether the unsaved change adds or removes a tile. Those moves touch
+    * declarations and the comments beside them, which is when a save is worth
+    * showing as a diff first; a property edit never is.
+    */
+   structural: boolean;
 }
 
 interface History {
@@ -145,6 +158,22 @@ export function useDashboardEditor(options: {
       () => JSON.stringify(document) !== JSON.stringify(saved),
       [document, saved],
    );
+   const structural = useMemo(() => {
+      const key = (t: { source: string; name: string }) =>
+         `${t.source}.${t.name}`;
+      const before = new Set(saved.tiles.map(key));
+      const after = new Set(document.tiles.map(key));
+      return (
+         [...before].some((k) => !after.has(k)) ||
+         [...after].some((k) => !before.has(k))
+      );
+   }, [document, saved]);
+   const preview = useCallback(async () => {
+      const result = await spliceDashboardDocument(source, document);
+      return spliceFailed(result)
+         ? { ok: false as const, reason: result.reason }
+         : { ok: true as const, source: result.source };
+   }, [document, source]);
 
    return {
       document,
@@ -157,5 +186,7 @@ export function useDashboardEditor(options: {
       undo,
       redo,
       save,
+      preview,
+      structural,
    };
 }

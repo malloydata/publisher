@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import AddIcon from "@mui/icons-material/Add";
 import CheckIcon from "@mui/icons-material/Check";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import RedoIcon from "@mui/icons-material/Redo";
@@ -37,6 +38,8 @@ export interface BuilderToolbarProps {
    onSave?: () => void;
    /** The host's actions, beside the builder's own: Export, Done. */
    actions?: ReactNode;
+   /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
+   onAddTile?: () => void;
 }
 
 export function BuilderToolbar({
@@ -48,6 +51,7 @@ export function BuilderToolbar({
    saving,
    onSave,
    actions,
+   onAddTile,
 }: BuilderToolbarProps) {
    const { theme } = usePublisherTheme();
    return (
@@ -97,6 +101,15 @@ export function BuilderToolbar({
             direction="row"
             sx={{ ml: "auto", alignItems: "center", gap: 0.5 }}
          >
+            {onAddTile && (
+               <Button
+                  size="small"
+                  startIcon={<AddIcon fontSize="small" />}
+                  onClick={onAddTile}
+               >
+                  Add tile
+               </Button>
+            )}
             {actions && (
                <>
                   {actions}

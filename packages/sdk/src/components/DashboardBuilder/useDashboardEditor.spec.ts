@@ -205,11 +205,10 @@ describe("useDashboardEditor: saving", () => {
 
       act(() => {
          view.result.current.update((d) => {
-            // Removing a tile deletes a declaration, which carries the comment
-            // block above it — whose owner the file does not record. Refused.
-            // (Reordering is NOT refused: it rewrites the `tiles=[…]` array and
-            // moves no declaration.)
-            d.tiles.pop();
+            // The page's own settings are not the writer's yet, so this is
+            // refused. (Tiles added, removed or reordered are NOT: the writer
+            // handles those, and the builder shows a diff first.)
+            d.title = "Renamed";
          });
       });
       await act(async () => {
@@ -217,9 +216,9 @@ describe("useDashboardEditor: saving", () => {
       });
 
       expect(called).toBe(false);
-      expect(view.result.current.error).toContain("Adding or removing");
+      expect(view.result.current.error).toContain("settings");
       // Still there, still dirty. The reader can undo or try something else.
-      expect(view.result.current.document.tiles).toHaveLength(1);
+      expect(view.result.current.document.title).toBe("Renamed");
       expect(view.result.current.dirty).toBe(true);
    });
 

@@ -48,6 +48,8 @@ import {
 import { BuilderToolbar } from "./BuilderToolbar";
 import { filterableFields, type PackageCatalog } from "./catalog";
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import { AddTileDialog, type NewTile } from "./AddTileDialog";
+import { DiffDialog } from "./DiffDialog";
 import { FilterDialog } from "./FilterDialog";
 import {
    builderSensors,
@@ -359,6 +361,11 @@ export function DashboardBuilder({
    const [menu, setMenu] = useState<
       { anchor: HTMLElement; index: number } | undefined
    >(undefined);
+   // The add-tile picker, and the diff a structural save shows first.
+   const [addingTile, setAddingTile] = useState(false);
+   const [pendingSave, setPendingSave] = useState<
+      { before: string; after: string } | undefined
+   >(undefined);
    const theme = usePublisherTheme().theme;
 
    const columns = editor.document.columns ?? DEFAULT_COLUMNS;
@@ -443,11 +450,69 @@ export function DashboardBuilder({
       [controlList],
    );
 
-   const save = useCallback(() => {
-      if (!onSave || !editor.dirty || saving) return;
+   const commitSave = useCallback(() => {
+      setPendingSave(undefined);
       setSaving(true);
       void editor.save().finally(() => setSaving(false));
-   }, [onSave, editor, saving]);
+   }, [editor]);
+   const save = useCallback(() => {
+      if (!onSave || !editor.dirty || saving) return;
+      if (!editor.structural) {
+         commitSave();
+         return;
+      }
+      // A tile was added or removed: show what that does to the file first.
+      void editor.preview().then((result) => {
+         if (result.ok)
+            setPendingSave({ before: editor.source, after: result.source });
+         // A refusal surfaces through the same path a save's would.
+         else commitSave();
+      });
+   }, [onSave, editor, saving, commitSave]);
+
+   /** A tile from the picker: on the extension of its source, or a new one. */
+   const addTile = (tile: NewTile) => {
+      setAddingTile(false);
+      editor.update((draft) => {
+         let extension = draft.sources.find((s) => s.base === tile.base);
+         if (!extension) {
+            // A name of the file's own: the base's, suffixed, since an
+            // extension cannot share its base's name.
+            const taken = new Set(draft.sources.map((s) => s.name));
+            let name = `${tile.base}_tiles`;
+            for (let n = 2; taken.has(name); n++)
+               name = `${tile.base}_tiles_${n}`;
+            extension = { name, base: tile.base };
+            draft.sources.push(extension);
+         }
+         // The view's name in the extension: the base view's, suffixed,
+         // because an extension inherits its base's views and cannot redeclare
+         // one under the same name; then kept distinct from its siblings.
+         const used = new Set(
+            draft.tiles
+               .filter((t) => t.source === extension!.name)
+               .map((t) => t.name),
+         );
+         let name = `${tile.view}_tile`;
+         for (let n = 2; used.has(name); n++) name = `${tile.view}_tile_${n}`;
+         draft.tiles.push({
+            name,
+            source: extension.name,
+            declaration: { kind: "reference", from: tile.view },
+            colspan: tile.colspan,
+            ...(tile.label ? { label: tile.label } : {}),
+         });
+      });
+      setSelected(editor.document.tiles.length);
+   };
+
+   const removeTile = (index: number) => {
+      setMenu(undefined);
+      setSelected(undefined);
+      editor.update((draft) => {
+         draft.tiles.splice(index, 1);
+      });
+   };
 
    useBuilderShortcuts(
       // One handlers object per change of what they read, so the key listener
@@ -673,6 +738,7 @@ export function DashboardBuilder({
             saving={saving}
             {...(onSave ? { onSave: save } : {})}
             {...(toolbar ? { actions: toolbar } : {})}
+            {...(catalog ? { onAddTile: () => setAddingTile(true) } : {})}
          />
 
          <DashboardProse
@@ -1208,6 +1274,24 @@ export function DashboardBuilder({
                   draft.tiles[at] = next;
                });
             }}
+            onRemove={() => {
+               if (menu !== undefined) removeTile(menu.index);
+            }}
+         />
+         <AddTileDialog
+            open={addingTile}
+            document={editor.document}
+            catalog={catalog}
+            columns={columns}
+            onClose={() => setAddingTile(false)}
+            onAdd={addTile}
+         />
+         <DiffDialog
+            open={pendingSave !== undefined}
+            before={pendingSave?.before ?? ""}
+            after={pendingSave?.after ?? ""}
+            onConfirm={commitSave}
+            onClose={() => setPendingSave(undefined)}
          />
       </Stack>
    );

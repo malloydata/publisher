@@ -470,6 +470,119 @@ describe("DashboardBuilder: a control the model declares", () => {
    });
 });
 
+describe("DashboardBuilder: tiles added and removed", () => {
+   // A catalog whose source the fixture's extension is built on, with a view
+   // to put on the page. `scoped_orders` is reachable because `a` extends it.
+   const catalogWithViews = {
+      sources: [
+         {
+            name: "scoped_orders",
+            modelPath: "data_app.malloy",
+            views: [
+               {
+                  name: "sales_by_state",
+                  description: "Revenue by state",
+                  chart: "shape_map",
+               },
+            ],
+            givens: [],
+            fields: [],
+         },
+      ],
+   };
+   const mountWithCatalog = async (onSave: (source: string) => void) => {
+      const document = await openDocument();
+      return render(
+         <DashboardBuilder
+            source={SOURCE}
+            document={document}
+            catalog={catalogWithViews}
+            onSave={onSave}
+         />,
+      );
+   };
+   const submitDialog = (name: string) =>
+      fireEvent.click(screen.getByRole("button", { name, hidden: false }));
+
+   // A structural save shows the file's diff first: declarations move, and
+   // the file cannot say whose comment sits beside them.
+   it("adds a tile from the catalog, and saves it through the diff", async () => {
+      let written: string | undefined;
+      await mountWithCatalog((source) => {
+         written = source;
+      });
+      fireEvent.click(button("Add tile"));
+      fireEvent.click(screen.getByLabelText("View sales_by_state"));
+      fireEvent.change(screen.getByLabelText("Tile title"), {
+         target: { value: "Revenue by state" },
+      });
+      submitDialog("Add tile");
+      expect(tile("sales_by_state_tile")).toBeDefined();
+
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save changes", hidden: true }),
+      );
+      await waitFor(() =>
+         expect(screen.getByLabelText("File changes")).toBeDefined(),
+      );
+      // Nothing written until the diff is approved.
+      expect(written).toBeUndefined();
+      fireEvent.click(screen.getByRole("button", { name: "Save this" }));
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain(
+         'tiles=["a -> by_cat", "a -> by_brand", "a -> sales_by_state_tile"]',
+      );
+      expect(written).toContain(
+         '  # colspan=6\n  # label="Revenue by state"\n  view: sales_by_state_tile is sales_by_state\n}',
+      );
+   });
+
+   it("removes a tile from its menu, and saves it through the diff", async () => {
+      let written: string | undefined;
+      await mountWithCatalog((source) => {
+         written = source;
+      });
+      fireEvent.click(screen.getByLabelText("Settings for By category"));
+      fireEvent.click(screen.getByRole("button", { name: "Remove tile" }));
+      expect(screen.queryByLabelText("Tile by_cat")).toBeNull();
+
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save changes", hidden: true }),
+      );
+      await waitFor(() =>
+         expect(screen.getByLabelText("File changes")).toBeDefined(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Save this" }));
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain('tiles=["a -> by_brand"]');
+      expect(written).not.toContain("view: by_cat");
+      // The comment above the removed tile is still in the file.
+      expect(written).toContain(
+         "  // Kept, because a splice never rewrites what it did not change.",
+      );
+   });
+
+   it("keeps editing when the diff is declined", async () => {
+      let written: string | undefined;
+      await mountWithCatalog((source) => {
+         written = source;
+      });
+      fireEvent.click(screen.getByLabelText("Settings for By category"));
+      fireEvent.click(screen.getByRole("button", { name: "Remove tile" }));
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save changes", hidden: true }),
+      );
+      await waitFor(() =>
+         expect(screen.getByLabelText("File changes")).toBeDefined(),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+      expect(written).toBeUndefined();
+      expect(
+         screen.getByRole("button", { name: "Save changes", hidden: true }),
+      ).toBeDefined();
+   });
+});
+
 describe("DashboardBuilder: a tile's own settings", () => {
    it("retitles a tile from its menu, as one history entry", async () => {
       await mount();

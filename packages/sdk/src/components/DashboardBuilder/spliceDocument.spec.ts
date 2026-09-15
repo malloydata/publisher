@@ -377,17 +377,124 @@ given: CATEGORY :: filter<string> is f''`);
    });
 });
 
+describe("spliceDashboardDocument: tiles added and removed", () => {
+   // A removed tile takes its declaration and its `#` tags. The `//` comment
+   // above it stays: the file cannot say whose it was, and a comment left is a
+   // smaller wrong than one destroyed — the builder shows this diff first.
+   it("removes a tile, its tags and its entry, and leaves the comment", async () => {
+      const out = await spliced(SOURCE, (d) => {
+         d.tiles.splice(0, 1);
+      });
+      expect(out).toContain('tiles=["a -> by_brand"]');
+      expect(out).not.toContain("view: by_cat");
+      expect(out).not.toContain('# label="By category"');
+      expect(out).not.toContain("# break");
+      // The comment stays where it was, and the blank line after the removed
+      // tile stays with it: closing that gap would hand the comment to the
+      // next tile, which is the guess the writer refuses to make.
+      expect(out).toContain(
+         "  // Why this tile leads: revenue is the number people ask about first.\n\n  # colspan=6\n  view: by_brand is by_brand_view",
+      );
+   });
+
+   it("removes an inline tile with its whole body", async () => {
+      const source = `## artifact { title="T" tiles=["a -> kpis", "a -> x"] }
+import { one } from "../m.malloy"
+
+source: a is one extend {
+  # colspan=12
+  view: kpis is {
+    aggregate:
+      total_sales
+      order_count
+  }
+
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.tiles.splice(0, 1);
+      });
+      expect(out).toBe(`## artifact { title="T" tiles=["a -> x"] }
+import { one } from "../m.malloy"
+
+source: a is one extend {
+  view: x is vx
+}`);
+   });
+
+   it("adds a tile inside the extension of the source it reads", async () => {
+      const out = await spliced(SOURCE, (d) => {
+         d.tiles.push({
+            name: "by_state_tile",
+            source: "a",
+            declaration: { kind: "reference", from: "sales_by_state" },
+            colspan: 6,
+            label: "By state",
+            filters: [{ field: "category", given: "CATEGORY" }],
+         });
+      });
+      expect(out).toContain(
+         'tiles=["a -> by_cat", "a -> by_brand", "a -> by_state_tile"]',
+      );
+      expect(out).toContain(`  # colspan=6
+  view: by_brand is by_brand_view
+
+  # colspan=6
+  # label="By state"
+  view: by_state_tile is sales_by_state + { where: category ~ $CATEGORY }
+}`);
+   });
+
+   // A source the file imports BY NAME can take a new extension; the builder
+   // never adds an import, so that is the only kind that can.
+   it("adds a tile on a named import by declaring a new extension", async () => {
+      const source = `## artifact { title="T" tiles=["a -> x"] }
+import { one, products } from "../m.malloy"
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.sources.push({ name: "products_tiles", base: "products" });
+         d.tiles.push({
+            name: "by_brand_tile",
+            source: "products_tiles",
+            declaration: { kind: "reference", from: "by_brand" },
+            colspan: 4,
+         });
+      });
+      expect(out)
+         .toBe(`## artifact { title="T" tiles=["a -> x", "products_tiles -> by_brand_tile"] }
+import { one, products } from "../m.malloy"
+
+source: a is one extend {
+  view: x is vx
+}
+
+source: products_tiles is products extend {
+  # colspan=4
+  view: by_brand_tile is by_brand
+}
+`);
+   });
+
+   it("refuses a tile on a source the file does not import by name", async () => {
+      const r = await splice(SOURCE, (d) => {
+         d.sources.push({ name: "orders_tiles", base: "order_items" });
+         d.tiles.push({
+            name: "t",
+            source: "orders_tiles",
+            declaration: { kind: "reference", from: "by_category" },
+         });
+      });
+      expect(r.ok).toBe(false);
+      if (spliceFailed(r)) expect(r.reason).toContain("not imported by name");
+   });
+});
+
 describe("spliceDashboardDocument: what it refuses", () => {
    // Adding or removing a tile inserts or deletes a declaration, which carries
    // the comment block above it, and no file says who that comment belongs to.
-   it("refuses to remove a tile", async () => {
-      const r = await splice(SOURCE, (d) => {
-         d.tiles.pop();
-      });
-      expect(r.ok).toBe(false);
-      if (spliceFailed(r)) expect(r.reason).toContain("Adding or removing");
-   });
-
    it("refuses to change the page's own settings", async () => {
       const r = await splice(SOURCE, (d) => {
          d.title = "Renamed";

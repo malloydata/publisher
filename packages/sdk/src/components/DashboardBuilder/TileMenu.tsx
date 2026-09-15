@@ -1,7 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Popover, Stack, TextField, Typography } from "@mui/material";
+import {
+   Button,
+   Divider,
+   Popover,
+   Stack,
+   TextField,
+   Typography,
+} from "@mui/material";
 import { useEffect, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { DashboardTile } from "./document";
@@ -27,9 +34,17 @@ export interface TileMenuProps {
    onClose: () => void;
    /** Apply the edited tile. Called once, on close, only when something changed. */
    onCommit: (next: DashboardTile) => void;
+   /** Take the tile off the dashboard. Offered on every tile: order is this file's. */
+   onRemove: () => void;
 }
 
-export function TileMenu({ anchor, tile, onClose, onCommit }: TileMenuProps) {
+export function TileMenu({
+   anchor,
+   tile,
+   onClose,
+   onCommit,
+   onRemove,
+}: TileMenuProps) {
    const { theme } = usePublisherTheme();
    const [draft, setDraft] = useState<DashboardTile | undefined>(undefined);
 
@@ -108,6 +123,18 @@ export function TileMenu({ anchor, tile, onClose, onCommit }: TileMenuProps) {
                      the model. It can still be moved.
                   </Typography>
                )}
+               <Divider />
+               <Button
+                  color="error"
+                  size="small"
+                  onClick={() => {
+                     setDraft(undefined);
+                     onRemove();
+                  }}
+                  sx={{ alignSelf: "flex-start" }}
+               >
+                  Remove tile
+               </Button>
             </Stack>
          )}
       </Popover>
