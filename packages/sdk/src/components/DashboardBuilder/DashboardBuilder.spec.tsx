@@ -20,7 +20,7 @@ source: a is scoped_orders extend {
   // Kept, because a splice never rewrites what it did not change.
   # colspan=6
   # label="By category"
-  view: by_cat is by_category
+  view: by_cat is by_category + { where: cat ~ $CATEGORY }
 
   # colspan=6
   view: by_brand is by_brand_view
@@ -44,18 +44,41 @@ const mount = async (onSave?: (source: string) => Promise<void> | void) => {
 };
 
 const tile = (name: string) => screen.getByLabelText(`Tile ${name}`);
+
+/**
+ * Select a tile AND open its settings.
+ *
+ * A tile's presentation is edited from a popover on the tile itself rather than
+ * a panel under the page, so reaching those controls means opening it. Width
+ * and position are not in here at all — they are dragged.
+ */
 const selectTile = (name: string) => fireEvent.click(tile(name));
-const field = (label: string) => screen.getByLabelText(label);
+
+/**
+ * Retitle a tile from its menu.
+ *
+ * The one on-tile edit a test can drive by clicking. Width and position are
+ * dragged, which needs real element geometry that jsdom does not provide, a
+ * tile's row is set by dragging it into a gap, and filters are configured
+ * only from the strip under the header.
+ */
+const retitle = (title: string, next: string) => {
+   fireEvent.click(screen.getByLabelText(`Settings for ${title}`));
+   const field = screen.getByLabelText("Tile title");
+   fireEvent.change(field, { target: { value: next } });
+   fireEvent.keyDown(field, { key: "Escape" });
+};
 const button = (name: string) => screen.getByRole("button", { name });
 
 /**
- * What the grid actually gives a tile.
+ * Every style rule the grid puts on a tile's item — its column, and the
+ * minimum that lets it narrow.
  *
  * The layout is responsive (one column on a phone, the grid above `md`), so
  * `grid-column` lands in a media rule rather than on the element — reading
  * `style.gridColumn` would report nothing and pass whatever the component did.
  */
-const gridColumnOf = (name: string): string => {
+const itemStyleOf = (name: string): string => {
    const box = tile(name).parentElement;
    const className = Array.from(box?.classList ?? []).find((each) =>
       each.startsWith("css-"),
@@ -88,41 +111,51 @@ describe("DashboardBuilder", () => {
    // what you arrange is what a reader sees.
    it("lays tiles out on the dashboard's own grid rule", async () => {
       await mount();
-      expect(gridColumnOf("by_cat")).toContain("grid-column: span 6");
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 6");
    });
 
-   it("edits a tile's label and shows it immediately", async () => {
+   // Narrowing a tile has to narrow it. A grid item's minimum width is its
+   // content's, and a chart's content is an SVG as wide as the tile WAS — so
+   // without an explicit zero the tile could grow but never shrink, and the
+   // renderer never redrew for a size change it never saw.
+   it("lets a tile narrow below whatever it holds", async () => {
       await mount();
-      selectTile("by_cat");
-      fireEvent.change(field("Label"), { target: { value: "Categories" } });
-      expect(within(tile("by_cat")).getByText("Categories")).toBeDefined();
+      expect(itemStyleOf("by_cat")).toContain("min-width: 0;");
    });
 
-   it("resizes a tile and moves it on the grid", async () => {
-      await mount();
-      selectTile("by_cat");
-      fireEvent.change(field("Width (of 12)"), { target: { value: "4" } });
-      expect(gridColumnOf("by_cat")).toContain("grid-column: span 4");
+   // Filters are configured in ONE place, the strip: a control's window is
+   // where a tile is bound or unbound. Nothing on the tile edits a binding.
+   it("unbinds a tile from the control's window, and nowhere else", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      expect(
+         within(tile("by_cat")).queryByLabelText(/^Remove filter /),
+      ).toBeNull();
+
+      fireEvent.click(screen.getByLabelText("Edit filter CATEGORY"));
+      fireEvent.click(screen.getByLabelText("Filter By category"));
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save changes", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain("view: by_cat is by_category\n");
+      expect(written).not.toContain("$CATEGORY");
    });
 
-   it("starts a new row when asked, which the grid has to express", async () => {
-      await mount();
-      selectTile("by_brand");
-      fireEvent.click(field("Start a new row"));
-      // An explicit start line, not just a span: that is what pushes it down.
-      // (CSSOM gives the shorthand back without the spaces around the slash.)
-      expect(gridColumnOf("by_brand")).toContain("grid-column: 1/span 6");
-   });
-
-   it("does not offer controls for a tile the model owns", async () => {
+   it("offers no resize for a tile the model owns", async () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
       const document = await openDocument(source);
       render(<DashboardBuilder source={source} document={document} />);
       selectTile("by_brand");
-      expect(screen.queryByLabelText("Label")).toBeNull();
-      expect(screen.getByRole("alert").textContent).toContain(
-         "declared on orders rather than in this dashboard",
-      );
+      // Its tags live on the model's source, which the builder does not write,
+      // so it gets no resize handle — offering one would offer a drag the
+      // writer then refuses. It keeps its grip: order is this file's own
+      // `tiles=[…]` array, which it owns for every tile.
+      expect(within(tile("by_brand")).queryByLabelText(/^Resize /)).toBeNull();
+      expect(within(tile("by_brand")).getByLabelText(/^Move /)).toBeDefined();
    });
 
    // `renderTile` hands over the WHOLE tile, card and heading included, because
@@ -155,10 +188,226 @@ describe("DashboardBuilder", () => {
             renderTile={(each) => <article>a real {each.name}</article>}
          />,
       );
-      const before = gridColumnOf("by_cat");
+      const before = itemStyleOf("by_cat");
       selectTile("by_cat");
       expect(tile("by_cat").getAttribute("aria-current")).toBe("true");
-      expect(gridColumnOf("by_cat")).toBe(before);
+      expect(itemStyleOf("by_cat")).toBe(before);
+   });
+
+   // The whole card is the drag target, so a press anywhere on it is how a
+   // move begins — and, below the drag threshold, how a tile is selected. The
+   // drag itself needs geometry jsdom does not have; the press it can drive.
+   it("selects a tile from a press anywhere on it, not only the grip", async () => {
+      await mount();
+      fireEvent.pointerDown(tile("by_brand"), { button: 0 });
+      expect(tile("by_brand").getAttribute("aria-current")).toBe("true");
+      // Released without travelling: a click, so nothing was reordered and the
+      // page is left as it was.
+      fireEvent.pointerUp(window);
+      expect(tile("by_brand").getAttribute("aria-current")).toBe("true");
+   });
+
+   it("ignores a press with any button but the primary", async () => {
+      await mount();
+      fireEvent.pointerDown(tile("by_brand"), { button: 2 });
+      expect(tile("by_brand").getAttribute("aria-current")).toBe("false");
+   });
+});
+
+describe("DashboardBuilder: the dashboard's filters", () => {
+   // The convention, end to end through the surface: a filter added here is a
+   // declaration in THIS file plus a binding on each ticked tile, and the save
+   // writes exactly that.
+   it("adds a filter declared in this dashboard and writes it to the file", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      // The file binds CATEGORY without declaring it, so that chip is the
+      // model's: removable here too, which takes it off every tile.
+      expect(screen.getByLabelText("Edit filter CATEGORY")).toBeDefined();
+      expect(screen.getByLabelText("Remove control CATEGORY")).toBeDefined();
+
+      fireEvent.click(button("Add filter"));
+      fireEvent.change(screen.getByLabelText("Field to filter"), {
+         target: { value: "brand" },
+      });
+      fireEvent.change(screen.getByLabelText("Control label"), {
+         target: { value: "Brand" },
+      });
+      fireEvent.click(
+         screen.getByRole("button", { name: "Add filter", hidden: false }),
+      );
+
+      // Declared here, so its chip can be removed; and bound on both tiles.
+      expect(screen.getByLabelText("Edit filter BRAND")).toBeDefined();
+      expect(screen.getByLabelText("Remove control BRAND")).toBeDefined();
+
+      // The window's exit transition hides the rest of the page from assistive
+      // tech until it ends, and the test runner never ends it; the header's
+      // button has to be reached through that.
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save changes", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain(
+         '# label="Brand" control=select suggest { source=scoped_orders dimension=brand }\n' +
+            "given: BRAND :: filter<string> is f''",
+      );
+      expect(written).toContain(
+         "view: by_cat is by_category + { where: cat ~ $CATEGORY, where: brand ~ $BRAND }",
+      );
+      expect(written).toContain(
+         "view: by_brand is by_brand_view + { where: brand ~ $BRAND }",
+      );
+   });
+
+   it("binds a given the model offers, comparing the way its type needs", async () => {
+      let written: string | undefined;
+      const document = await openDocument();
+      render(
+         <DashboardBuilder
+            source={SOURCE}
+            document={document}
+            givens={[
+               {
+                  name: "SINCE",
+                  type: "date",
+                  label: "Since",
+                  field: "created_at",
+               },
+            ]}
+            onSave={(source) => {
+               written = source;
+            }}
+         />,
+      );
+      fireEvent.click(button("Add filter"));
+      fireEvent.click(screen.getByRole("button", { name: "From the model" }));
+      fireEvent.click(
+         screen.getByRole("button", { name: "Add filter", hidden: false }),
+      );
+
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save changes", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      // A `date` is a value, not a filter expression: `>=`, and no declaration
+      // of ours, since the model's is the one that binds.
+      expect(written).toContain("where: created_at >= $SINCE");
+      expect(written).not.toContain("given: SINCE");
+   });
+
+   it("takes a control it declared off the dashboard, bindings and all", async () => {
+      let written: string | undefined;
+      const source = SOURCE.replace(
+         'import "../data_app.malloy"',
+         'import "../data_app.malloy"\n\n# label="Category"\ngiven: CATEGORY :: filter<string> is f\'\'',
+      );
+      const document = await openDocument(source);
+      render(
+         <DashboardBuilder
+            source={source}
+            document={document}
+            onSave={(next) => {
+               written = next;
+            }}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Remove control CATEGORY"));
+      expect(screen.queryByLabelText("Edit filter CATEGORY")).toBeNull();
+
+      // One history entry for the whole removal.
+      fireEvent.click(button("Undo"));
+      expect(screen.getByLabelText("Edit filter CATEGORY")).toBeDefined();
+      fireEvent.click(button("Redo"));
+
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).not.toContain("CATEGORY");
+      expect(written).toContain("view: by_cat is by_category\n");
+   });
+});
+
+describe("DashboardBuilder: a control the model declares", () => {
+   // Its declaration is not ours to delete, but a control is a given some tile
+   // binds, so taking it off the dashboard is unbinding every tile.
+   it("can still be taken off the dashboard", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      fireEvent.click(screen.getByLabelText("Remove control CATEGORY"));
+      expect(screen.queryByLabelText("Edit filter CATEGORY")).toBeNull();
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain("view: by_cat is by_category\n");
+      expect(written).not.toContain("$CATEGORY");
+   });
+});
+
+describe("DashboardBuilder: a tile's own settings", () => {
+   it("retitles a tile from its menu, as one history entry", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for By category"));
+      fireEvent.change(screen.getByLabelText("Tile title"), {
+         target: { value: "Revenue by category" },
+      });
+      fireEvent.change(screen.getByLabelText("Tile subtitle"), {
+         target: { value: "Net of returns" },
+      });
+      // Closing commits, once.
+      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      expect(
+         within(tile("by_cat")).getByText("Revenue by category"),
+      ).toBeDefined();
+      expect(within(tile("by_cat")).getByText("Net of returns")).toBeDefined();
+      fireEvent.click(button("Undo"));
+      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
+      expect(within(tile("by_cat")).queryByText("Net of returns")).toBeNull();
+   });
+
+   it("offers no title to a tile the model owns", async () => {
+      const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
+      const document = await openDocument(source);
+      render(<DashboardBuilder source={source} document={document} />);
+      fireEvent.click(screen.getByLabelText("Settings for by_brand"));
+      expect(screen.queryByLabelText("Tile title")).toBeNull();
+      expect(screen.getByText(/Declared on its source/)).toBeDefined();
+   });
+});
+
+describe("DashboardBuilder: keyboard", () => {
+   it("undoes and redoes from the keyboard, and never from inside a text field", async () => {
+      await mount();
+      retitle("By category", "Renamed");
+      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
+
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true, metaKey: true });
+      expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
+      fireEvent.keyDown(window, {
+         key: "z",
+         ctrlKey: true,
+         metaKey: true,
+         shiftKey: true,
+      });
+      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
+
+      // Typing in a field is typing, not editing the document.
+      fireEvent.click(screen.getByLabelText("Settings for Renamed"));
+      const field = screen.getByLabelText("Tile title");
+      fireEvent.keyDown(field, { key: "z", ctrlKey: true, metaKey: true });
+      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
+   });
+
+   it("nudges the selected tile's width with the arrow keys", async () => {
+      await mount();
+      selectTile("by_cat");
+      fireEvent.keyDown(window, { key: "ArrowLeft" });
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 5");
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 7");
    });
 });
 
@@ -166,21 +415,20 @@ describe("DashboardBuilder: history", () => {
    it("enables undo only once there is something to undo", async () => {
       await mount();
       expect(button("Undo")).toHaveProperty("disabled", true);
-      selectTile("by_cat");
-      fireEvent.change(field("Label"), { target: { value: "Categories" } });
+      retitle("By category", "Renamed");
       expect(button("Undo")).toHaveProperty("disabled", false);
    });
 
    it("takes a change back and puts it forward again", async () => {
       await mount();
-      selectTile("by_cat");
-      fireEvent.change(field("Label"), { target: { value: "Categories" } });
+      retitle("By category", "Renamed");
+      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
 
       fireEvent.click(button("Undo"));
       expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
 
       fireEvent.click(button("Redo"));
-      expect(within(tile("by_cat")).getByText("Categories")).toBeDefined();
+      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
    });
 });
 
@@ -196,12 +444,17 @@ describe("DashboardBuilder: saving", () => {
          written = source;
       });
 
-      selectTile("by_cat");
-      fireEvent.change(field("Label"), { target: { value: "Categories" } });
+      retitle("By category", "Renamed");
       fireEvent.click(button("Save changes"));
 
       await waitFor(() => expect(written).toBeDefined());
-      expect(written).toContain('# label="Categories"');
+      // The tag is rewritten in place; the declaration is otherwise untouched,
+      // and so is the comment in the block.
+      expect(written).toContain('# label="Renamed"');
+      expect(written).not.toContain('# label="By category"');
+      expect(written).toContain(
+         "  view: by_cat is by_category + { where: cat ~ $CATEGORY }",
+      );
       expect(written).toContain(
          "  // Kept, because a splice never rewrites what it did not change.",
       );
@@ -214,14 +467,14 @@ describe("DashboardBuilder: saving", () => {
       await mount(() => {
          throw new Error("disk full");
       });
-      selectTile("by_cat");
-      fireEvent.change(field("Label"), { target: { value: "Categories" } });
+      retitle("By category", "Renamed");
       fireEvent.click(button("Save changes"));
 
       await waitFor(() =>
          expect(screen.getByRole("alert").textContent).toContain("disk full"),
       );
-      expect(within(tile("by_cat")).getByText("Categories")).toBeDefined();
+      // The edit is still on screen and still unsaved.
+      expect(within(tile("by_cat")).getByText("Renamed")).toBeDefined();
       expect(button("Save changes")).toBeDefined();
    });
 });
