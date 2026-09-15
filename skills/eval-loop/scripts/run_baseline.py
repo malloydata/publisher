@@ -186,6 +186,7 @@ from check_contamination import check as path_check  # noqa: E402
 from check_must_not_use import check as must_not_use_check  # noqa: E402
 from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
 import verify_goldens  # noqa: E402
+import verify_definitions  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
@@ -1026,13 +1027,44 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
         return seen[0], tally
     return "mixed", tally
 
+def evidence_lines(evidence: dict | None) -> list[str]:
+    """What the pass rate rests on, or nothing when no ledger was read.
+
+    A run has never said this. Every golden used to be raw-derived, so there was
+    one answer and it went without saying; once a key may instead rest on a
+    validated definition, a score that does not name its evidence is claiming
+    more than it has. Silent without a ledger rather than reassuring: absent is
+    not the same fact as checked.
+    """
+    if not evidence or not evidence.get("ledgerSize"):
+        return []
+    c = evidence["counts"]
+    order = ("independent", "definitions", "unchecked", "disagrees")
+    parts = [f"{c[k]} {k}" for k in order if c.get(k)]
+    lines = ["", "EVIDENCE", "  basis         " + ", ".join(parts)]
+    if c.get("unchecked"):
+        lines += ["                ! those cases rest on a definition nobody "
+                  "has validated. Not a failure, and not a pass either: run "
+                  "verify_definitions.py against this model."]
+    if evidence.get("disagreeing"):
+        lines += ["                ! a definition these cases depend on "
+                  "DISAGREES with its own expression, so the model is wrong "
+                  "before the answer is: "
+                  + ", ".join(evidence["disagreeing"][:4])]
+    if evidence.get("stale"):
+        lines += [f"                ! {len(evidence['stale'])} ledger row(s) "
+                  f"stale: the definition moved since it was checked"]
+    return lines
+
+
 def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   attempted: int, decided: int, passed: int, near: int,
                   human: int, doubted: list, vetoed: list, alt_path: int,
                   unscorable: int,
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
-                  publisher: str, environment: str) -> list[str]:
+                  publisher: str, environment: str,
+                  evidence: dict | None = None) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -1086,6 +1118,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   "  Scored no_match by the script, not the judge:"]
         for qid, hits in vetoed:
             lines += [f"    {qid}: {'; '.join(hits)}"]
+
+    lines += evidence_lines(evidence)
 
     lines += ["", "COVERAGE & RETRIEVAL",
               f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
@@ -1992,6 +2026,10 @@ def main(argv: list[str] | None = None) -> int:
                          "retrievers and reports one number. run.json records "
                          "that you opted out, which is a different fact from a "
                          "gate that passed")
+    ap.add_argument("--definitions", default=None,
+                    help="a definition ledger (verify_definitions.py --out). "
+                         "Without it the run reports no EVIDENCE block, which "
+                         "is a different fact from reporting a clean one")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
@@ -2550,6 +2588,22 @@ def main(argv: list[str] | None = None) -> int:
     alt = sum(1 for r in retr
               if r["recall"] is not None and r["recall"] < 1.0
               and not r["failed"] and r["verdict"] is not None)
+    # What the score rests on. Pure hash comparison against the ledger, no
+    # queries, so it costs nothing and runs whether or not a ledger exists.
+    # Absent ledger means no EVIDENCE block at all, rather than a reassuring one.
+    ledger = verify_definitions.load_ledger(
+        pathlib.Path(a.definitions) if a.definitions else None)
+    # The run's OWN snapshot, not `--model` (which names the answerer's LLM) and
+    # not the served tree: `model.malloy` is the bytes this run pinned, so a
+    # staleness check against it answers "did the ledger describe what actually
+    # answered", which is the only version the score is about.
+    snapshot = a.out / "model.malloy"
+    evidence = verify_definitions.evidence_basis(
+        cases, ledger,
+        verify_definitions.stale_ids(ledger,
+                                     snapshot if snapshot.exists() else None),
+        a.set_dir)
+
     judge_cost = sum((v.get("judge_cost_usd") or 0) for v in verdicts.values())
     mode, tally = retrieval_summary(attempts.values())
     unscorable = sum(1 for v in verdicts.values()
@@ -2560,7 +2614,7 @@ def main(argv: list[str] | None = None) -> int:
             attempted=len(cases), decided=conf, passed=ok, near=near,
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
             unscorable=unscorable,
-            retrieval_mode=mode, tally=tally, rs=rs,
+            retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
             answerer_cost=cost, judge_cost=judge_cost,
             publisher=a.publisher, environment=a.environment):
         print(line)

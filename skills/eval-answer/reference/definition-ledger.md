@@ -161,6 +161,47 @@ which 4 need a raw check. The remainder are multi-line definitions and fields
 declared inside a nested block, which the line scanner attributes to the
 enclosing source and cannot address.
 
+## What a run reports
+
+`run_baseline.py --definitions <ledger>` adds an EVIDENCE block saying what the
+pass rate rests on, per case:
+
+```
+EVIDENCE
+  basis         5 independent, 8 definitions, 36 unchecked
+                ! those cases rest on a definition nobody has validated. Not a
+                  failure, and not a pass either.
+```
+
+| basis | meaning |
+|---|---|
+| `independent` | the key was established outside the model: two differently shaped derivations agree, or it holds no value at all (`criteria`, `unanswerable`) |
+| `definitions` | the key went through the model, and every definition it tests is validated |
+| `unchecked` | at least one tested definition is unvalidated, stale, or absent from the ledger |
+| `disagrees` | a definition the case depends on contradicts its own expression, so the model is wrong before the answer is |
+
+Independence is read from `golden.verification` (or `gold/<qid>.json`) through
+`verify_goldens.has_second_derivation` -- the structured record of "two
+differently shaped derivations agree". **Not from `verifiedBy`,** which is free
+text: a first implementation matched it by prefix and classified 34 goldens of
+the ecommerce set as `unchecked` when every one of them reads "authored and
+re-derived against ecommerce-truth". A well-founded set reading as unvalidated
+is the same over-claim as an unfounded one reading as validated, pointed the
+other way.
+
+Which definitions a case tests comes from `expectedEntities`, which already
+names entities in the `kind:source:name` form the ledger keys on. No new
+hand-maintained field: a wrong entity id is the failure mode that cost a real
+set two days, so this reuses a link the set already maintains and that
+`verify_goldens` check 5 audits against the model.
+
+**Without `--definitions` there is no EVIDENCE block at all.** Absent is a
+different fact from checked, and a reassuring empty block would be the
+over-claim this whole direction exists to remove.
+
+Staleness is a hash comparison against the run's own `model.malloy` snapshot --
+the bytes that actually answered -- so it costs nothing and runs every arm.
+
 ## Where it goes
 
 `evals/definitions/<package>.jsonl` -- keyed by **package, not by set**, because
