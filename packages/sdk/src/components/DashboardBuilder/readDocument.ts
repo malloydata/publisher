@@ -9,6 +9,12 @@ import type {
    DashboardTile,
    LocalGiven,
 } from "./document";
+import {
+   type DeclarationAt,
+   declarationsUnder,
+   givenDeclarations,
+   tileSteps,
+} from "./malloyText";
 
 /**
  * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.
@@ -204,33 +210,19 @@ export function localGivens(
    parse: ParseTags,
 ): LocalGiven[] | undefined {
    const out: LocalGiven[] = [];
-   const push = (line: number, declaration: string) => {
+   for (const at of givenDeclarations(lines).values()) {
       const m = /^([A-Z_][A-Z0-9_]*)\s*::\s*(\S+)\s+is\s+(.+)$/.exec(
-         declaration.trim(),
+         at.declaration,
       );
-      if (!m) return;
+      if (!m) continue;
       out.push({
          name: m[1],
          type: m[2],
          default: m[3].trim(),
-         ...readControlTags(parse(tagText(blockAbove(lines, line).tags)).tag),
+         ...readControlTags(
+            parse(tagText(blockAbove(lines, at.line).tags)).tag,
+         ),
       });
-   };
-   for (let i = 0; i < lines.length; i++) {
-      const text = lines[i].trim();
-      if (text === "given:") {
-         for (let j = i + 1; j < lines.length; j++) {
-            const inner = lines[j].trim();
-            if (
-               inner === "" ||
-               /^(source|query|import|run|given|##)/.test(inner)
-            )
-               break;
-            push(j, inner);
-         }
-      } else if (text.startsWith("given:")) {
-         push(i, text.slice("given:".length));
-      }
    }
    return out.length > 0 ? out : undefined;
 }
@@ -266,67 +258,6 @@ function readControlTags(tag: TagLike | null | undefined): Partial<LocalGiven> {
       ...(rangeMin === undefined ? {} : { rangeMin }),
       ...(rangeMax === undefined ? {} : { rangeMax }),
    };
-}
-
-/**
- * Every `view: <name> is` declared under the top-level `source: <owner> is`
- * line, by name -> 0-based line. See the note at the call site for why this is
- * textual rather than read off the symbol tree.
- */
-function viewsDeclaredUnder(
-   lines: string[],
-   owner: string,
-): Map<string, number> {
-   const views = new Map<string, number>();
-   let current: string | undefined;
-   for (let line = 0; line < lines.length; line++) {
-      const text = lines[line];
-      const source = /^\s*source:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(text);
-      if (source) {
-         current = source[1];
-         continue;
-      }
-      // Any other top-level declaration ends the source's body.
-      if (/^\s*(query|run|import|given)\b/.test(text) || text.startsWith("##"))
-         current = undefined;
-      if (current !== owner) continue;
-      const view = /^\s*view:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(text);
-      if (view) views.set(view[1], line);
-   }
-   return views;
-}
-
-/**
- * The `dimension:` declarations under `source: <owner>`, by the same textual
- * rule as {@link viewsDeclaredUnder}. One-line declarations only: a dimension
- * whose expression runs on is read up to the end of its first line, which is
- * enough to identify it and is all the writer ever touches.
- */
-export function dimensionsDeclaredUnder(
-   lines: string[],
-   owner: string,
-): Map<string, { line: number; expression: string }> {
-   const dimensions = new Map<string, { line: number; expression: string }>();
-   let current: string | undefined;
-   for (let line = 0; line < lines.length; line++) {
-      const text = lines[line];
-      const source = /^\s*source:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(text);
-      if (source) {
-         current = source[1];
-         continue;
-      }
-      if (/^\s*(query|run|import|given)\b/.test(text) || text.startsWith("##"))
-         current = undefined;
-      if (current !== owner) continue;
-      const dimension =
-         /^\s*dimension:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\s+(.*)$/.exec(text);
-      if (dimension)
-         dimensions.set(dimension[1], {
-            line,
-            expression: dimension[2].trim(),
-         });
-   }
-   return dimensions;
 }
 
 /** The `tiles=[…]` entries, in order, as written. */
@@ -374,7 +305,7 @@ export async function readDashboardDocument(
    const imports: DashboardImport[] = [];
    const sources: DashboardSource[] = [];
    const drills: DashboardDrill[] = [];
-   const viewsBySource = new Map<string, Map<string, number>>();
+   const viewsBySource = new Map<string, Map<string, DeclarationAt>>();
 
    for (const symbol of symbols) {
       if (symbol.type === "import") {
@@ -411,16 +342,16 @@ export async function readDashboardDocument(
       // so the tile that named it read back as "inherited" and lost its tags.
       // A `view: <name> is` line under a `source: <name> is` line is
       // unambiguous, and Malloy has no nested sources to confuse it.
-      const views = viewsDeclaredUnder(lines, name);
+      const views = declarationsUnder(lines, name, "view");
       // Dimensions the same way, and drills off THEIR tag blocks: a `# drill`
       // is a tag on a dimension's declaration, so the dimensions this file
       // declares are exactly where one can be authored.
-      const dimensions = dimensionsDeclaredUnder(lines, name);
+      const dimensions = declarationsUnder(lines, name, "dimension");
       if (dimensions.size > 0) {
          sources[sources.length - 1].dimensions = [...dimensions].map(
             ([dimensionName, at]) => ({
                name: dimensionName,
-               expression: at.expression,
+               expression: at.rest,
             }),
          );
       }
@@ -432,7 +363,7 @@ export async function readDashboardDocument(
          drills.push({
             source: name,
             name: dimensionName,
-            expression: at.expression,
+            expression: at.rest,
             to: to.filter(Boolean),
             ...(drillTag.text("given")
                ? { given: drillTag.text("given") as string }
@@ -444,8 +375,8 @@ export async function readDashboardDocument(
 
    const tiles: DashboardTile[] = [];
    for (const entry of entries) {
-      const parts = entry.split("->").map((p) => p.trim());
-      if (parts.length !== 2) {
+      const steps = tileSteps(entry);
+      if (!steps) {
          return {
             ok: false,
             reason:
@@ -453,10 +384,8 @@ export async function readDashboardDocument(
                `which is the only form the builder can lay out.`,
          };
       }
-      const [sourceName, viewExpr] = parts;
-      // A tile may carry its own refinement: `orders -> by_brand + { limit: 2 }`.
-      const viewName = viewExpr.split("+")[0].trim();
-      const declLine = viewsBySource.get(sourceName)?.get(viewName);
+      const { source: sourceName, view: viewName } = steps;
+      const declLine = viewsBySource.get(sourceName)?.get(viewName)?.line;
 
       // Not declared here: the view belongs to an imported source, which is a
       // complete dashboard in itself — `tiles=["orders -> by_brand"]` over an

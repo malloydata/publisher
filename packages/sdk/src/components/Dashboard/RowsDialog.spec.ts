@@ -2,24 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { malloyLiteral, rowsQuery, sourceOf, stepsOf } from "./RowsDialog";
+import { rowsQuery, sourceOf, stepsOf } from "./RowsDialog";
 
 describe("the rows query", () => {
-   it("spells each kind of clicked value as Malloy", () => {
-      expect(malloyLiteral("Jeans")).toBe("'Jeans'");
-      expect(malloyLiteral("Ben's & Jerry\\s")).toBe("'Ben\\'s & Jerry\\\\s'");
-      expect(malloyLiteral(42)).toBe("42");
-      expect(malloyLiteral(true)).toBe("true");
-      expect(malloyLiteral(new Date("2024-03-05T00:00:00Z"))).toBe(
-         "@2024-03-05",
-      );
-      expect(malloyLiteral(new Date("2024-03-05T13:45:00Z"))).toBe(
-         "@2024-03-05 13:45:00",
-      );
-      expect(malloyLiteral(null)).toBeUndefined();
-      expect(malloyLiteral(Number.NaN)).toBeUndefined();
-   });
-
    it("drills through the tile's view to the value's rows", () => {
       expect(
          rowsQuery({
@@ -51,6 +36,7 @@ describe("the rows query", () => {
       expect(sourceOf("overview->kpis")).toBe("overview");
       expect(stepsOf("{ group_by: x } -> y")).toBeUndefined();
       expect(stepsOf("a -> b -> c")).toBeUndefined();
+      expect(stepsOf("a -> b + { limit: 2 }")).toBeUndefined();
       expect(stepsOf(undefined)).toBeUndefined();
    });
 });

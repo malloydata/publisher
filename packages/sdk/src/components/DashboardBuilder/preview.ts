@@ -3,6 +3,7 @@
 
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
+import { malloyLiteral } from "../../utils/malloyLiteral";
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
 
 /**
@@ -162,8 +163,8 @@ export function previewTileQuery(
       }
       if (!localTypes.has(filter.given)) continue;
       const literal = malloyLiteral(
-         localTypes.get(filter.given),
          values.get(filter.given),
+         localTypes.get(filter.given),
       );
       if (literal !== undefined) clauses.push(`${comparison} ${literal}`);
    }
@@ -174,56 +175,4 @@ export function previewTileQuery(
          (refinement ? ` + { ${refinement} }` : ""),
       givenNames: sent,
    };
-}
-
-/**
- * A control's value as the Malloy literal a given of `type` would hold, or
- * undefined when there is nothing to write: no value, or one the type cannot
- * spell. `filter<…>` is a filter expression, `f'…'`; a date is `@2024-01-31`;
- * a timestamp `@2024-01-31 09:30:00`; a string is quoted, a number and a
- * boolean are themselves.
- */
-export function malloyLiteral(
-   type: string | undefined,
-   value: GivenValue | undefined,
-): string | undefined {
-   if (value === undefined || value === null || value === "") return undefined;
-   const quote = (text: string) =>
-      `'${text.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
-   const scalar = type?.startsWith("filter<") ? "filter" : type;
-   switch (scalar) {
-      case "filter":
-         return `f${quote(String(value))}`;
-      case "string":
-         return quote(String(value));
-      case "number": {
-         const n = typeof value === "number" ? value : Number(value);
-         return Number.isFinite(n) ? String(n) : undefined;
-      }
-      case "boolean":
-         return value === true || value === "true" ? "true" : "false";
-      case "date":
-         return datePart(value) && `@${datePart(value)}`;
-      case "timestamp": {
-         const day = datePart(value);
-         if (!day) return undefined;
-         const time =
-            value instanceof Date
-               ? value.toISOString().slice(11, 19)
-               : (/[T ](\d{2}:\d{2}(?::\d{2})?)/.exec(String(value))?.[1] ??
-                 "00:00:00");
-         return `@${day} ${time}`;
-      }
-      default:
-         return undefined;
-   }
-}
-
-/** `2024-01-31` out of a Date (UTC) or an ISO-ish string, else undefined. */
-function datePart(value: GivenValue): string | undefined {
-   if (value instanceof Date)
-      return Number.isNaN(value.getTime())
-         ? undefined
-         : value.toISOString().slice(0, 10);
-   return /^(\d{4}-\d{2}-\d{2})/.exec(String(value))?.[1];
 }

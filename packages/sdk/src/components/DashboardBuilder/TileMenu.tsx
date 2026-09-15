@@ -9,7 +9,7 @@ import {
    TextField,
    Typography,
 } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { DashboardTile } from "./document";
 
@@ -52,25 +52,12 @@ export function TileMenu({
    onDrills,
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
-   const [draft, setDraft] = useState<DashboardTile | undefined>(undefined);
-
-   useEffect(() => {
-      if (anchor && tile) setDraft(structuredClone(tile));
-   }, [anchor, tile]);
-
-   const close = () => {
-      if (draft && tile && JSON.stringify(draft) !== JSON.stringify(tile))
-         onCommit(draft);
-      onClose();
-   };
-
-   const patch = (change: (t: DashboardTile) => void) =>
-      setDraft((previous) => {
-         if (!previous) return previous;
-         const next = structuredClone(previous);
-         change(next);
-         return next;
-      });
+   const { draft, patch, close, discard } = useDraft(
+      tile,
+      anchor !== null,
+      onCommit,
+      onClose,
+   );
 
    const editable =
       draft !== undefined && draft.declaration.kind !== "inherited";
@@ -193,7 +180,7 @@ export function TileMenu({
                      color="error"
                      size="small"
                      onClick={() => {
-                        setDraft(undefined);
+                        discard();
                         onRemove();
                      }}
                   >

@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import type { GivenValue } from "../../hooks/givenValue";
 import type { DashboardDocument, DashboardTile } from "./document";
-import { malloyLiteral, previewGivens, previewTileQuery } from "./preview";
+import { previewGivens, previewTileQuery } from "./preview";
 
 const tile = (
    name: string,
@@ -145,26 +145,5 @@ describe("previewTileQuery", () => {
          expression: "orders -> by_brand",
          givenNames: undefined,
       });
-   });
-});
-
-describe("malloyLiteral", () => {
-   it("spells a value the way a given of the type would hold it", () => {
-      expect(malloyLiteral("filter<string>", "Nike")).toBe("f'Nike'");
-      expect(malloyLiteral("filter<number>", ">= 10")).toBe("f'>= 10'");
-      expect(malloyLiteral("string", "O'Neil")).toBe("'O\\'Neil'");
-      expect(malloyLiteral("number", "42")).toBe("42");
-      expect(malloyLiteral("number", "forty")).toBeUndefined();
-      expect(malloyLiteral("boolean", true)).toBe("true");
-      expect(malloyLiteral("date", "2024-01-31")).toBe("@2024-01-31");
-      expect(malloyLiteral("timestamp", new Date("2024-01-31T09:30:00Z"))).toBe(
-         "@2024-01-31 09:30:00",
-      );
-   });
-
-   it("writes nothing for no value, or a type it cannot spell", () => {
-      expect(malloyLiteral("filter<string>", "")).toBeUndefined();
-      expect(malloyLiteral("filter<string>", null)).toBeUndefined();
-      expect(malloyLiteral("geometry", "x")).toBeUndefined();
    });
 });

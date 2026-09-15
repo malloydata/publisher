@@ -8,9 +8,14 @@ import type {
 } from "./document";
 import type { LocalGiven } from "./document";
 import {
+   artifactLine,
+   declarationLine,
+   declarationsUnder,
+   givenDeclarations,
+} from "./malloyText";
+import {
    BINDING_CLAUSE,
    blockAbove,
-   dimensionsDeclaredUnder,
    readDashboardDocument,
    readFailed,
 } from "./readDocument";
@@ -179,37 +184,6 @@ export const givenDeclaration = (given: LocalGiven) =>
    `given: ${given.name} :: ${given.type} is ${given.default}`;
 
 /**
- * Where each given is declared: the line, and whether it sits inside a
- * `given:` block (whose header has to go if its last declaration does).
- */
-function givenLines(
-   lines: string[],
-): Map<string, { line: number; blockHeader?: number }> {
-   const out = new Map<string, { line: number; blockHeader?: number }>();
-   const nameOf = (declaration: string) =>
-      /^([A-Z_][A-Z0-9_]*)\s*::/.exec(declaration.trim())?.[1];
-   for (let i = 0; i < lines.length; i++) {
-      const text = lines[i].trim();
-      if (text === "given:") {
-         for (let j = i + 1; j < lines.length; j++) {
-            const inner = lines[j].trim();
-            if (
-               inner === "" ||
-               /^(source|query|import|run|given|##)/.test(inner)
-            )
-               break;
-            const name = nameOf(inner);
-            if (name) out.set(name, { line: j, blockHeader: i });
-         }
-      } else if (text.startsWith("given:")) {
-         const name = nameOf(text.slice("given:".length));
-         if (name) out.set(name, { line: i });
-      }
-   }
-   return out;
-}
-
-/**
  * The last line of the declaration starting at `line`: the line itself for a
  * one-line `view: x is y + { … }`, or the matching closing brace for a body
  * (`view: x is {`, `source: s is b extend {`). Braces inside strings are not
@@ -348,16 +322,14 @@ export async function spliceDashboardDocument(
    // so a file that spells a tile `overview->kpis` keeps its spelling and the
    // diff is the reordering and nothing else.
    if (reordered) {
-      const artifactLine = lines.findIndex(
-         (l) => l.trimStart().startsWith("##") && l.includes("artifact"),
-      );
-      if (artifactLine < 0) {
+      const artifactAt = artifactLine(lines);
+      if (artifactAt < 0) {
          return {
             ok: false,
             reason: "Could not find the `## artifact` tag to reorder.",
          };
       }
-      const written = [...lines[artifactLine].matchAll(/"([^"]+)"/g)].map(
+      const written = [...lines[artifactAt].matchAll(/"([^"]+)"/g)].map(
          (m) => m[1],
       );
       const byKey = new Map<string, string>();
@@ -383,12 +355,12 @@ export async function spliceDashboardDocument(
       const list = `tiles=[${nextEntries.map((e) => `"${e}"`).join(", ")}]`;
       // The `## artifact` tag must stay on ONE line or the package fails to
       // compile, so the array is replaced in place rather than reformatted.
-      const rewritten = lines[artifactLine].replace(
+      const rewritten = lines[artifactAt].replace(
          /tiles\s*=\s*\[[\s\S]*?\]/,
          list,
       );
-      if (rewritten !== lines[artifactLine])
-         edits.push({ ...wholeLine(artifactLine), text: `${rewritten}\n` });
+      if (rewritten !== lines[artifactAt])
+         edits.push({ ...wholeLine(artifactAt), text: `${rewritten}\n` });
    }
 
    // THE PAGE'S OWN SETTINGS. Title, autorun and starting values are
@@ -403,10 +375,8 @@ export async function spliceDashboardDocument(
       current.columns !== next.columns ||
       canonical(current.startingGivens) !== canonical(next.startingGivens)
    ) {
-      const artifactLine = lines.findIndex(
-         (l) => l.trimStart().startsWith("##") && l.includes("artifact"),
-      );
-      if (artifactLine < 0) {
+      const artifactAt = artifactLine(lines);
+      if (artifactAt < 0) {
          return {
             ok: false,
             reason:
@@ -416,12 +386,10 @@ export async function spliceDashboardDocument(
       // Whatever the reorder wrote to this line is the text to patch further.
       const already = edits.find(
          (edit) =>
-            edit.start === wholeLine(artifactLine).start &&
-            edit.end === wholeLine(artifactLine).end,
+            edit.start === wholeLine(artifactAt).start &&
+            edit.end === wholeLine(artifactAt).end,
       );
-      let line = already
-         ? already.text.replace(/\n$/, "")
-         : lines[artifactLine];
+      let line = already ? already.text.replace(/\n$/, "") : lines[artifactAt];
       // The artifact tag's braces: everything up to the matching `}`.
       const open = line.indexOf("artifact");
       const braceOpen = line.indexOf("{", open);
@@ -480,7 +448,7 @@ export async function spliceDashboardDocument(
             line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;
       }
       if (already) already.text = `${line}\n`;
-      else edits.push({ ...wholeLine(artifactLine), text: `${line}\n` });
+      else edits.push({ ...wholeLine(artifactAt), text: `${line}\n` });
    }
    if (current.description !== next.description) {
       // The run of `##"` lines, wherever it is; a new one goes above the tag.
@@ -500,10 +468,8 @@ export async function spliceDashboardDocument(
             text: next.description === undefined ? "" : `${text}\n`,
          });
       } else if (next.description !== undefined) {
-         const artifactLine = lines.findIndex(
-            (l) => l.trimStart().startsWith("##") && l.includes("artifact"),
-         );
-         const at = wholeLine(artifactLine).start;
+         const artifactAt = artifactLine(lines);
+         const at = wholeLine(artifactAt).start;
          edits.push({ start: at, end: at, text: `${text}\n` });
       }
    }
@@ -516,7 +482,7 @@ export async function spliceDashboardDocument(
    const givensAfter = new Map(
       (next.localGivens ?? []).map((g) => [g.name, g]),
    );
-   const declared = givenLines(lines);
+   const declared = givenDeclarations(lines);
    const removedLines = new Set<number>();
 
    for (const [name, was] of givensBefore) {
@@ -667,7 +633,9 @@ export async function spliceDashboardDocument(
             reason: `The drill on \`${key}\` names no destination.`,
          };
       }
-      const at = dimensionsDeclaredUnder(lines, drill.source).get(drill.name);
+      const at = declarationsUnder(lines, drill.source, "dimension").get(
+         drill.name,
+      );
       if (at === undefined) {
          return {
             ok: false,
@@ -702,9 +670,7 @@ export async function spliceDashboardDocument(
    // nothing here to remove — its entry left the artifact list above.
    for (const tile of removedTiles) {
       if (tile.declaration.kind === "inherited") continue;
-      const declLine = lines.findIndex((l) =>
-         new RegExp(`^\\s*view:\\s*${tile.name}\\s+is\\b`).test(l),
-      );
+      const declLine = declarationLine(lines, "view", tile.name);
       if (declLine < 0) {
          return {
             ok: false,
@@ -757,9 +723,7 @@ export async function spliceDashboardDocument(
    };
    let lastExtensionEnd = -1;
    for (const source of current.sources) {
-      const open = lines.findIndex((l) =>
-         new RegExp(`^\\s*source:\\s*${source.name}\\s+is\\b`).test(l),
-      );
+      const open = declarationLine(lines, "source", source.name);
       if (open >= 0)
          lastExtensionEnd = Math.max(
             lastExtensionEnd,
@@ -768,9 +732,7 @@ export async function spliceDashboardDocument(
    }
    for (const [sourceName, tiles] of byExtension) {
       if (currentSources.has(sourceName)) {
-         const open = lines.findIndex((l) =>
-            new RegExp(`^\\s*source:\\s*${sourceName}\\s+is\\b`).test(l),
-         );
+         const open = declarationLine(lines, "source", sourceName);
          if (open < 0) {
             return {
                ok: false,

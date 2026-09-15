@@ -13,6 +13,8 @@ import {
    Typography,
 } from "@mui/material";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { malloyLiteral } from "../../utils/malloyLiteral";
+import { isIdentifier, tileSteps } from "../DashboardBuilder/malloyText";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -43,22 +45,6 @@ export interface RowsRequest {
    label: string;
 }
 
-/** A clicked value as a Malloy literal, or undefined when it has no spelling. */
-export function malloyLiteral(value: unknown): string | undefined {
-   if (typeof value === "string")
-      return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
-   if (typeof value === "number")
-      return Number.isFinite(value) ? String(value) : undefined;
-   if (typeof value === "boolean") return String(value);
-   if (value instanceof Date) {
-      if (Number.isNaN(value.getTime())) return undefined;
-      const date = value.toISOString().slice(0, 10);
-      const time = value.toISOString().slice(11, 19);
-      return time === "00:00:00" ? `@${date}` : `@${date} ${time}`;
-   }
-   return undefined;
-}
-
 /** The query the dialog runs, or undefined when the value cannot be spelled. */
 export function rowsQuery(request: RowsRequest): string | undefined {
    const literal = malloyLiteral(request.rawValue);
@@ -68,18 +54,22 @@ export function rowsQuery(request: RowsRequest): string | undefined {
 
 /**
  * `overview -> revenue_trend` → its source and view; undefined for anything
- * else — an inline stage has no view to drill through, and a longer pipeline
- * has no one view its value came from.
+ * else — an inline stage has no view to drill through, a refined one carries
+ * filters `drill:` would not, and a longer pipeline has no one view its value
+ * came from.
  */
 export function stepsOf(
    tileExpression: string | undefined,
 ): { source: string; view: string } | undefined {
-   const steps = (tileExpression ?? "").split("->").map((s) => s.trim());
-   if (steps.length !== 2) return undefined;
-   const name = /^[A-Za-z_]\w*$/;
-   return name.test(steps[0]) && name.test(steps[1])
-      ? { source: steps[0], view: steps[1] }
-      : undefined;
+   const steps = tileSteps(tileExpression);
+   if (
+      !steps ||
+      steps.refinement !== undefined ||
+      !isIdentifier(steps.source) ||
+      !isIdentifier(steps.view)
+   )
+      return undefined;
+   return { source: steps.source, view: steps.view };
 }
 
 /** The source alone, for opening the explorer on it. */

@@ -10,7 +10,7 @@ import {
    TextField,
    Typography,
 } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useDraft } from "./useDraft";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { DashboardDocument } from "./document";
 
@@ -54,23 +54,12 @@ export function SettingsPopover({
    onCommit: (next: PageSettings) => void;
 }) {
    const { theme } = usePublisherTheme();
-   const [draft, setDraft] = useState<PageSettings | undefined>(undefined);
-   useEffect(() => {
-      if (anchor) setDraft({ ...settings });
-   }, [anchor, settings]);
-
-   const close = () => {
-      if (draft && JSON.stringify(draft) !== JSON.stringify(settings))
-         onCommit(draft);
-      onClose();
-   };
-   const patch = (change: (s: PageSettings) => void) =>
-      setDraft((previous) => {
-         if (!previous) return previous;
-         const next = { ...previous };
-         change(next);
-         return next;
-      });
+   const { draft, patch, close } = useDraft(
+      settings,
+      anchor !== null,
+      onCommit,
+      onClose,
+   );
 
    const widths =
       draft?.columns !== undefined && !WIDTHS.includes(draft.columns)
