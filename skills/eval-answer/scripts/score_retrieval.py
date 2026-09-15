@@ -19,7 +19,8 @@ what makes a wrong answer attributable:
   `derivable` or `absent` means there was nothing to surface. (An earlier
   version of this text said "no query-writing skill would have saved it"; that
   was false whenever the set named one route and the model offered another,
-  which is what `requiredAnyOf` below exists to express.)
+  which is what `requiredAnyOf` below exists to express.) No label at all means
+  nobody has measured it, and the row says so instead of asserting a model gap.
 
 Those two look identical in an answer score and have opposite owners. Components
 and owners match eval-diagnose's taxonomy so the output drops into `issue` events
@@ -88,6 +89,17 @@ MODEL = ("get_context/model", "model", "model coverage")
 # worth its own label: the fix is refusal behaviour, not query-writing.
 REFUSAL = ("construction", "agent-skill", "refusal behaviour")
 UNATTRIBUTED = ("", "", "")
+# Coverage labels that were MEASURED and found nothing to surface. Only these
+# may send a retrieval miss to the model.
+MEASURED_GAPS = ("derivable", "absent")
+# A failure that is retrieval's or the model's, and nothing measured which. Its
+# own bucket, because the alternative was worse: with no authored `coverage`
+# label the case fell through to MODEL with the words "coverage is unknown, so
+# the entity does not exist" -- a model gap asserted on no evidence, on exactly
+# the sets that arrive as bare questions with no labels. `unknown` as the
+# conservative reading is eval-diagnose's own convention for `sufficiency`; it
+# is not a new owner, it is the absence of one.
+UNMEASURED = ("get_context", "unknown", "coverage not measured")
 
 PASSING = {"match", "near_match"}
 # Verdicts the acceptance check counts as neither a pass nor a failure.
@@ -191,8 +203,12 @@ def attribute(recall: float | None, coverage: str, passed: bool | None) -> tuple
     if coverage == "covered":
         return (*RETRIEVAL,
                 "the entity exists in the model and was not returned")
-    return (*MODEL,
-            f"nothing to return: coverage is {coverage}, so the entity does not exist")
+    if coverage in MEASURED_GAPS:
+        return (*MODEL,
+                f"nothing to return: coverage is {coverage}, so the entity does not exist")
+    return (*UNMEASURED,
+            "recall below 1.0 and coverage was never measured for this case; run "
+            "check_coverage.py before calling this a model gap or a retrieval miss")
 
 
 def score_case(case: dict[str, Any], events: list[dict[str, Any]],

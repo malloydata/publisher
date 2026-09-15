@@ -171,8 +171,27 @@ class Attribution(unittest.TestCase):
                          ("get_context/retrieval", "retrieval"))
 
     def test_a_missed_entity_that_does_not_exist_blames_the_model(self):
+        # `derivable` is a MEASURED label: someone looked and found nothing to
+        # surface. That stays the model's.
         r = score_case(case(coverage="derivable"), calls([]), KEY, "no_match")
         self.assertEqual((r["component"], r["owner"]), ("get_context/model", "model"))
+
+    def test_a_missed_entity_with_no_coverage_label_blames_nobody_yet(self):
+        # The bug: with no authored label, `case.get("coverage", "unknown")`
+        # fell through to MODEL with "coverage is unknown, so the entity does
+        # not exist" -- a model gap asserted on no evidence. A set that arrives
+        # as bare questions has no labels, so every retrieval failure in it was
+        # attributed to the model.
+        c = {"qid": "q", "expectedEntities": {"required": [M_SALES]}}
+        r = score_case(c, calls([]), KEY, "no_match")
+        self.assertEqual(r["where_to_fix"], "coverage not measured")
+        self.assertEqual(r["owner"], "unknown")
+        self.assertNotEqual(r["component"], "get_context/model")
+        self.assertTrue(r["failed"], "still a failure; only the owner is undecided")
+
+    def test_an_explicit_unknown_label_is_also_unmeasured(self):
+        r = score_case(case(coverage="unknown"), calls([]), KEY, "no_match")
+        self.assertEqual(r["where_to_fix"], "coverage not measured")
 
     def test_a_passing_attempt_is_attributed_to_nobody(self):
         for verdict in ("match", "near_match"):
@@ -206,6 +225,15 @@ class Attribution(unittest.TestCase):
 
 
 class Summary(unittest.TestCase):
+    def test_an_unmeasured_failure_is_counted_not_dropped(self):
+        # "Every failure is attributed somewhere" must hold for this bucket too,
+        # or a bare-question set's failures vanish from the where-to-fix totals.
+        c = {"qid": "q", "expectedEntities": {"required": [M_SALES]}}
+        s = summarise([score_case(c, calls([]), KEY, "no_match")])
+        self.assertEqual(s["failures"], 1)
+        self.assertEqual(s["failures_by_where_to_fix"],
+                         {"coverage not measured": 1})
+
     def test_absent_cases_stay_out_of_the_means(self):
         rows = [
             score_case(case(qid="a"), calls([M_SALES], qid="a"),
