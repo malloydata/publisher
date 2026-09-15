@@ -128,6 +128,34 @@ describe("parseAuthorizeGrammarBody — rejection causes", () => {
       );
    });
 
+   it("duplicate_field_path — a backtick-quoted spelling and a bare spelling of the same column", () => {
+      // `` `region` `` and `region` differ as authored strings but resolve to
+      // the identical `fieldPathSegments` — must be caught on the SEGMENTS,
+      // not the raw text.
+      const givens = new Map([
+         ["A", "string"],
+         ["B", "string"],
+      ]);
+      expectCause(
+         "`region` = $A and region = $B",
+         givens,
+         "duplicate_field_path",
+      );
+   });
+
+   it("a genuinely different dotted path is still accepted", () => {
+      const givens = new Map([
+         ["A", "string"],
+         ["B", "string"],
+      ]);
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "region = $A and org.region = $B",
+         givens,
+      );
+      expect(terms.length).toBe(2);
+   });
+
    it("mixed_scope_body — a row-level term and a source-level term together", () => {
       const givens = new Map([
          ["REGION", "string"],
@@ -267,6 +295,16 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
       expectCoherenceCause([a, b], "duplicate_field_path");
    });
 
+   it("duplicate_field_path across two notes, one backtick-quoted", () => {
+      const givens = new Map([
+         ["A", "string"],
+         ["B", "string"],
+      ]);
+      const [a] = parseAuthorizeGrammarBody("X", "`region` = $A", givens);
+      const [b] = parseAuthorizeGrammarBody("X", "region = $B", givens);
+      expectCoherenceCause([a, b], "duplicate_field_path");
+   });
+
    it("mixed_scope_body across two notes — a row-level note and a source-level note on the same source", () => {
       const givens = new Map([
          ["REGION", "string"],
@@ -394,6 +432,64 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
       );
       expect(terms).toEqual([
          { scope: "source_level", literal: "'analyst'", given: "REGION" },
+      ]);
+   });
+
+   it("a reversed `in` ($GIVEN in 'literal') is refused, not silently swapped, on #(authorize)", () => {
+      // Unlike `=`, `in` is not reversible: the graft compiles the author's
+      // ORIGINAL text unchanged, and Malloy rejects array-in-string
+      // membership, so silently swapping here would validate a body that
+      // then fails at model compilation.
+      try {
+         parseAuthorizeGrammarBody("X", "$GROUPS in 'finance'", LIST_GIVENS);
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "reversed_in_operands" as never,
+         );
+         expect((err as AuthorizeGrammarError).message).toMatch(
+            /'finance' in \$GROUPS/,
+         );
+      }
+   });
+
+   it("a reversed `in` is refused the same way on #(source-authorize)", () => {
+      try {
+         parseAuthorizeGrammarBody(
+            "X",
+            "$GROUPS in 'finance'",
+            LIST_GIVENS,
+            SOURCE_AUTHORIZE_ROUTE,
+         );
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "reversed_in_operands" as never,
+         );
+      }
+   });
+
+   it("literal-first `in` ('literal' in $GIVEN) still parses", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "'finance' in $GROUPS",
+         LIST_GIVENS,
+      );
+      expect(terms).toEqual([
+         { scope: "source_level", literal: "'finance'", given: "GROUPS" },
+      ]);
+   });
+
+   it("`=` still reverses either way round (unaffected by the `in` restriction)", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "$ROLE = 'admin'",
+         new Map([["ROLE", "string"]]),
+      );
+      expect(terms).toEqual([
+         { scope: "source_level", literal: "'admin'", given: "ROLE" },
       ]);
    });
 
@@ -536,6 +632,29 @@ function source(modelDef: ModelDef, name: string): SourceDef {
    const found = modelDef.contents[name];
    if (!found) throw new Error(`no source named ${name} in compiled model`);
    return found as SourceDef;
+}
+
+/** Like {@link compileModel}, but for a multi-file import chain — needed to
+ *  reach a marker that Malloy stores only in `annotations.inherits`, on a
+ *  declaring base struct that never appears in the entry model's own
+ *  `modelDef.contents`. */
+async function compileModelFiles(
+   files: Readonly<Record<string, string>>,
+   entry: string,
+): Promise<ModelDef> {
+   const urlReader = new InMemoryURLReader(
+      new Map(
+         Object.entries(files).map(([name, text]) => [`${ROOT}${name}`, text]),
+      ),
+   );
+   const runtime = new Runtime({ urlReader, connections });
+   const materializer = runtime.loadModel(new URL(`${ROOT}${entry}`), {
+      importBaseURL: new URL(ROOT),
+   });
+   const compiled = await materializer.getModel();
+   /* eslint-disable @typescript-eslint/no-explicit-any */
+   return (compiled as any)._modelDef as ModelDef;
+   /* eslint-enable @typescript-eslint/no-explicit-any */
 }
 
 describe("assertNoFanoutFieldPath", () => {
@@ -728,6 +847,60 @@ source: X is duckdb.sql("select 1 as org_id") extend {
 `);
       const found = collectRetiredRouteMarkers(modelDef);
       expect(found.some((f) => f.includes("model itself"))).toBe(true);
+      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
+   });
+
+   // Gap (a): the block-annotation form (`##|...|#`) lands on `blockNotes`,
+   // which a caller reading only `.notes` never sees — see `annotations.ts`'s
+   // own warning that reading one key "silently skips the latter two forms".
+   it("a leftover file-level ##|(partition)|# BLOCK marker is caught", async () => {
+      const modelDef = await compileModel(`
+##|(partition)
+org_id = $ORG
+|##
+source: X is duckdb.sql("select 1 as org_id") extend {
+   measure: c is count()
+}
+`);
+      const found = collectRetiredRouteMarkers(modelDef);
+      expect(found.some((f) => f.includes("model itself"))).toBe(true);
+      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
+   });
+
+   // Gap (b): a model that reaches a partitioned source only through a
+   // transitive import, where the intermediate derivation carries its own
+   // annotation, stores the marker ONLY in `annotations.inherits` — and the
+   // declaring base (here, `Base`) never appears in the entry model's own
+   // `modelDef.contents` at all (confirmed below). A caller reading only the
+   // struct's own-level notes would see "mid own doc" and stop there.
+   it("a #(partition) marker reachable only through an inherited annotation chain is caught", async () => {
+      const modelDef = await compileModelFiles(
+         {
+            "base.malloy": `
+#(partition) org_id = $ORG
+source: Base is duckdb.sql("select 1 as org_id") extend {
+   measure: c is count()
+}
+`,
+            "mid.malloy": `
+import "base.malloy"
+#(doc) mid own doc
+source: Mid is Base extend {
+   measure: c2 is count()
+}
+`,
+            "entry.malloy": `
+import "mid.malloy"
+source: Entry is Mid extend {}
+`,
+         },
+         "entry.malloy",
+      );
+      // The declaring base is reached only via the annotation chain, not as
+      // its own entry — pinning the shape this test exists to cover.
+      expect(Object.keys(modelDef.contents)).not.toContain("Base");
+      const found = collectRetiredRouteMarkers(modelDef);
+      expect(found.some((f) => f.includes('"Entry"'))).toBe(true);
       expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
    });
 });

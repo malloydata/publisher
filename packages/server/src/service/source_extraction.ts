@@ -532,12 +532,17 @@ export function extractSourcesFromModelDef(
    // `"file"`-kind finding carries no name to tell two of them apart, so
    // pushing one per note would only repeat the same bullet line N times in
    // the refusal message.
-   if (
-      containsAuthorizeAnnotationTag(
-         (modelAnnotations(modelDef).notes ?? []).map((note) => note.text),
-      )
-   ) {
-      misplacedAuthorize.push({ kind: "file" });
+   {
+      const fileNoteTexts = ownLevelNoteTexts(modelAnnotations(modelDef));
+      if (containsAuthorizeAnnotationTag(fileNoteTexts)) {
+         misplacedAuthorize.push({
+            kind: "file",
+            route:
+               fileNoteTexts
+                  .map((text) => authorizeAnnotationRoute(text))
+                  .find((r): r is string => r !== undefined) ?? AUTHORIZE_ROUTE,
+         });
+      }
    }
 
    const sources: ExtractedSource[] = Object.values(modelDef.contents)

@@ -37,6 +37,7 @@ import {
 import { ModelCompilationError } from "../errors";
 import { logger } from "../logger";
 import {
+   annotationTexts,
    modelAnnotations,
    ownLevelNotes,
    ownLevelNoteTexts,
@@ -58,7 +59,6 @@ import {
 } from "./authorize";
 import {
    assertAuthorizeGrammarTermsCoherent,
-   AUTHORIZE_ROUTE,
    AuthorizeGrammarError,
    containsRetiredRouteTag,
    parseAuthorizeGrammarBody,
@@ -466,7 +466,7 @@ function collectEntryPointGatesForRoute(
                [],
             ),
          );
-      } else if (route === AUTHORIZE_ROUTE) {
+      } else {
          // A `query_source` derives from something by construction, so a base
          // we cannot resolve is IR we failed to read — not an ungated source.
          // Contributing no gate here would launder the base's gate away
@@ -475,12 +475,10 @@ function collectEntryPointGatesForRoute(
          // resolves and takes the branch above, where the `seen` check makes
          // the recursion a no-op.
          //
-         // Synthesized ONLY on the `authorize` route — the identical
-         // `source-authorize` call on this same unreadable struct contributes
-         // nothing, relying on THIS entry to already deny the whole entry
-         // point once. See `gate_registry_walk.ts`'s `ancestorGateExprs` doc
-         // for why doubling this sentinel per route would double-count one
-         // unreadable struct as two deny groups.
+         // Synthesized on BOTH routes — see `gate_registry_walk.ts`'s
+         // `ancestorGateExprs` doc for why own-wins-over-ancestor is decided
+         // per route, so one route's call cannot rely on the other having
+         // already reached (and denied at) this same branch.
          results.push({
             label,
             exprs: ["false"],
@@ -1302,7 +1300,7 @@ export function collectRetiredRouteMarkers(
    if (!modelDef) return found;
 
    const fileMatch = containsRetiredRouteTag(
-      (modelAnnotations(modelDef).notes ?? []).map((note) => note.text),
+      ownLevelNoteTexts(modelAnnotations(modelDef)),
    );
    if (fileMatch) {
       found.push(
@@ -1315,10 +1313,15 @@ export function collectRetiredRouteMarkers(
       if (!isSourceDef(obj) && !isQuery) continue;
       const label = (obj as { as?: string }).as ?? obj.name ?? key;
       const noun = isQuery ? "query" : "source";
+      // Reads the full `inherits` chain, not just this level's own notes: a
+      // retired marker can live only on a base struct that is itself absent
+      // from `modelDef.contents` (reached solely via a transitive import),
+      // and `reachesRetiredRouteTagBelow` deliberately skips the root
+      // annotation chain (it is "below the struct level" by construction).
       const ownMatch = containsRetiredRouteTag(
-         ownLevelNoteTexts(
+         annotationTexts(
             (obj as { annotations?: AnnotationsDef }).annotations,
-         ),
+         ) ?? [],
       );
       if (ownMatch) {
          found.push(

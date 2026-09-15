@@ -81,7 +81,12 @@ export type AuthorizeGrammarRejectionCause =
    // term must be `source_level` (the `deny_all` sentinel is the one carved
    // out, since it names no row at all). Raised by
    // `parseAuthorizeGrammarBody` when `route` is the source-authorize route.
-   | "row_level_term_in_source_authorize";
+   | "row_level_term_in_source_authorize"
+   // `$GIVEN in 'literal'`: unlike `=`, `in` is not reversible — the graft
+   // compiles the author's ORIGINAL text unchanged, and Malloy rejects array-
+   // in-string membership, so this would pass validation and then fail at
+   // model compilation. Raised by `parseTerm`.
+   | "reversed_in_operands";
 
 /**
  * An `#(authorize)` annotation that fails this module's grammar. Extends
@@ -374,13 +379,30 @@ function parseTerm(
    let left = trimmed.slice(0, opIdx).trim();
    let right = trimmed.slice(opIdx + opLen).trim();
 
-   // A SOURCE-LEVEL term compares a literal to a given, and reads equally well
-   // either way round (`$ROLE = 'admin'` is the spelling publisher's own
+   // A SOURCE-LEVEL `=` term compares a literal to a given, and reads equally
+   // well either way round (`$ROLE = 'admin'` is the spelling publisher's own
    // fixtures and docs used first). Normalize to literal-on-the-left so one
    // shape reaches the checks below. A ROW-LEVEL term is not reversible: the
    // field path is what the build scan groups by and what the graft filters
    // on, so it stays on the left.
+   //
+   // `in` is not reversible the way `=` is: `'literal' in $GIVEN` is array
+   // membership, but `$GIVEN in 'literal'` is Malloy's (invalid) array-in-
+   // string form. The graft compiles the author's ORIGINAL text unchanged (no
+   // normalization step), so silently swapping here would validate a body
+   // that then fails at model compilation. Refuse it instead, naming the
+   // literal-first spelling.
    if (GIVEN_REF_RE.test(left) && STRING_LITERAL_RE.test(right)) {
+      if (operator === "in") {
+         reject(
+            sourceName,
+            body,
+            "reversed_in_operands",
+            `\`${left} in ${right}\` reads $GIVEN in 'literal', which Malloy ` +
+               `rejects as array-in-string membership. Write the literal ` +
+               `first: \`${right} in ${left}\`.`,
+         );
+      }
       [left, right] = [right, left];
    }
 
@@ -568,14 +590,20 @@ export function assertAuthorizeGrammarTermsCoherent(
          }
          seenGivens.add(t.given);
          if (t.scope === "row_level") {
-            if (seenFieldPaths.has(t.fieldPath)) {
+            // Canonical on `fieldPathSegments`, not the authored spelling: a
+            // backtick-quoted segment and a bare one (`` `region` `` vs
+            // `region`) name the same column but differ as strings.
+            // `JSON.stringify` is collision-free even if a segment itself
+            // contains whatever plain separator this could otherwise join on.
+            const canonicalPath = JSON.stringify(t.fieldPathSegments);
+            if (seenFieldPaths.has(canonicalPath)) {
                rejectCoherence(
                   sourceName,
                   "duplicate_field_path",
                   `\`${t.fieldPath}\` is used by more than one term.`,
                );
             }
-            seenFieldPaths.add(t.fieldPath);
+            seenFieldPaths.add(canonicalPath);
          }
       }
    }

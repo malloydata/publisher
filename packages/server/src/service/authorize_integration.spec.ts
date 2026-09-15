@@ -173,7 +173,49 @@ source: plain is duckdb.table('customers')
       const err = model.getNotebookError();
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toMatch(/file level/i);
+      // Names the actual tag written, not a hardcoded assumption — see the
+      // ##(source-authorize) sibling test below, which pins the opposite case.
+      expect(err?.message).toMatch(/at the file level \(`##\(authorize\)`\)/);
       expect(err?.message).toMatch(/source:/);
+      expect(model.getSources()).toBeUndefined();
+   });
+
+   it("refuses a file-level ##(source-authorize) annotation, naming THAT route rather than ##(authorize)", async () => {
+      // Regression for a route hardcoded into the misplacement message: an
+      // author who misplaced ##(source-authorize) at the file level must be
+      // told to move that tag, not a different route with different body
+      // rules.
+      await writeModel(
+         "file_only_source_authorize.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+##(source-authorize) 'admin' = $ROLE
+
+source: plain is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "file_only_source_authorize.malloy",
+         getConnections(),
+      );
+
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(ModelCompilationError);
+      expect(err?.message).toMatch(/file level/i);
+      // The finding's own bullet must name the route actually written, not a
+      // hardcoded ##(authorize) — the message's shared explanatory prose
+      // mentions both tags generically, so this pins the specific bullet line.
+      expect(err?.message).toMatch(
+         /at the file level \(`##\(source-authorize\)`\)/,
+      );
+      expect(err?.message).not.toMatch(
+         /at the file level \(`##\(authorize\)`\)/,
+      );
       expect(model.getSources()).toBeUndefined();
    });
 
