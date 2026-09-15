@@ -51,6 +51,27 @@ still has a legal spelling.** Every ORDINARY term must reference a given, so `#(
 refused on purpose), and combine what used to be one `or`-joined gate into two extension sources,
 each with its own conjunctive gate — see [docs/authorize.md § OR semantics](docs/authorize.md#or-semantics).
 
+**A source may now declare more than one `#(authorize)` note, and repeats AND together instead of
+failing the load.** `assertAtMostOneAuthorizeGate` refused a second note outright in every released
+version from 0.2.0 through 0.2.7, so no model that loads on a released version already has two of a
+source's own notes to reinterpret; this is new capability, not a reinterpretation of an existing one.
+Separately, and more consequential: **a two-note declaring ancestor two or more `import` hops away
+now ANDs both notes where it previously did not.** That case moves served rows silently, with no
+load error to flag it, so it is the one part of this change worth auditing for rather than trusting
+to surface on its own — look for any ancestor reached through more than one `import` hop that
+declares more than one `#(authorize)` note.
+
+`#(source-authorize)` is a new annotation route: a gate that is a rule about the CALLER (a
+`'literal' <op> $GIVEN` term) rather than the row. It shares the grammar and inheritance rules above,
+and it **ANDs with the row-level `#(authorize)` gate on the same source — it is not a bypass**, and
+there is deliberately no spelling anywhere in the grammar for admitting a caller while skipping the
+row filter. See [docs/authorize.md § The `#(source-authorize)` route](docs/authorize.md#the-source-authorize-route).
+
+`get_context` now drops a source whose gate is an unconditional `false`, on either route, from its
+listing entirely, rather than reporting it as queryable and letting an agent learn only from the
+403/empty result. Every other gate keeps being reported as before, because a caller's givens over
+that MCP path are untrusted and evaluating a real (non-constant) rule there would be forgeable.
+
 `#(partition)` is removed entirely. It predated `given:`/`#(authorize)` as Publisher's own
 tenant-scoping annotation and has been redundant with a row-level `#(authorize)` gate since that
 landed; a model still carrying it — on a `source:` line, on a field inside one, reached through a

@@ -17,8 +17,12 @@ import {
 } from "@malloydata/malloy";
 import { beforeAll, describe, expect, it } from "bun:test";
 import {
+   assertAuthorizeGrammarTermsCoherent,
+   AUTHORIZE_ROUTE,
    AuthorizeGrammarError,
    parseAuthorizeGrammarBody,
+   SOURCE_AUTHORIZE_ROUTE,
+   type AuthorizeGrammarRoutedTerm,
 } from "./authorize_grammar";
 import {
    assertNoFanoutFieldPath,
@@ -146,6 +150,168 @@ describe("parseAuthorizeGrammarBody — rejection causes", () => {
          SCALAR_GIVENS,
          "operator_arity_mismatch",
       );
+   });
+});
+
+describe("parseAuthorizeGrammarBody — #(source-authorize) route", () => {
+   it("row_level_term_in_source_authorize — a field-on-the-left term is refused", () => {
+      try {
+         parseAuthorizeGrammarBody(
+            "X",
+            "region = $REGION",
+            SCALAR_GIVENS,
+            SOURCE_AUTHORIZE_ROUTE,
+         );
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "row_level_term_in_source_authorize" as never,
+         );
+      }
+   });
+
+   it("accepts a source-level term ('literal' in/= $GIVEN)", () => {
+      const [term] = parseAuthorizeGrammarBody(
+         "X",
+         "'admin' = $ROLE",
+         new Map([["ROLE", "string"]]),
+         SOURCE_AUTHORIZE_ROUTE,
+      );
+      expect(term).toEqual({
+         scope: "source_level",
+         literal: "'admin'",
+         given: "ROLE",
+      });
+   });
+
+   it("a bare `false` parses to the SAME deny_all sentinel as the authorize route", () => {
+      // `false` means the same thing on both routes — it names no row at all,
+      // so the row-level-only restriction has a carve-out for it.
+      const [onAuthorize] = parseAuthorizeGrammarBody(
+         "X",
+         "false",
+         new Map(),
+         AUTHORIZE_ROUTE,
+      );
+      const [onSourceAuthorize] = parseAuthorizeGrammarBody(
+         "X",
+         "false",
+         new Map(),
+         SOURCE_AUTHORIZE_ROUTE,
+      );
+      expect(onSourceAuthorize).toEqual(onAuthorize);
+      expect(onSourceAuthorize).toEqual({ scope: "deny_all" });
+   });
+
+   it("a row-level term alongside a sibling still refuses as row_level_term_in_source_authorize, not compound_boolean", () => {
+      try {
+         parseAuthorizeGrammarBody(
+            "X",
+            "region = $REGION and 'admin' = $ROLE",
+            new Map([
+               ["REGION", "string"],
+               ["ROLE", "string"],
+            ]),
+            SOURCE_AUTHORIZE_ROUTE,
+         );
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "row_level_term_in_source_authorize" as never,
+         );
+      }
+   });
+});
+
+// `assertAuthorizeGrammarTermsCoherent` is what catches these four mistakes
+// once they're spread across NOTES rather than terms in one body — the
+// pure-parse cases above already pin the within-one-body forms via
+// `parseAuthorizeGrammarBody` itself.
+describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
+   function routed(
+      terms: readonly AuthorizeGrammarRoutedTerm["term"][],
+   ): AuthorizeGrammarRoutedTerm[] {
+      return terms.map((term) => ({ term, route: AUTHORIZE_ROUTE }));
+   }
+
+   function expectCoherenceCause(
+      terms: readonly AuthorizeGrammarRoutedTerm["term"][],
+      cause: string,
+   ): void {
+      try {
+         assertAuthorizeGrammarTermsCoherent("X", routed(terms));
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            cause as never,
+         );
+      }
+   }
+
+   it("duplicate_given across two notes", () => {
+      const [a] = parseAuthorizeGrammarBody("X", "a = $G", SCALAR_GIVENS);
+      const [b] = parseAuthorizeGrammarBody("X", "b = $G", SCALAR_GIVENS);
+      expectCoherenceCause([a, b], "duplicate_given");
+   });
+
+   it("duplicate_field_path across two notes", () => {
+      const givens = new Map([
+         ["A", "string"],
+         ["B", "string"],
+      ]);
+      const [a] = parseAuthorizeGrammarBody("X", "region = $A", givens);
+      const [b] = parseAuthorizeGrammarBody("X", "region = $B", givens);
+      expectCoherenceCause([a, b], "duplicate_field_path");
+   });
+
+   it("mixed_scope_body across two notes — a row-level note and a source-level note on the same source", () => {
+      const givens = new Map([
+         ["REGION", "string"],
+         ["ROLE", "string"],
+      ]);
+      const [a] = parseAuthorizeGrammarBody("X", "region = $REGION", givens);
+      const [b] = parseAuthorizeGrammarBody("X", "'admin' = $ROLE", givens);
+      expectCoherenceCause([a, b], "mixed_scope_body");
+   });
+
+   it("deny_all_with_sibling — a bare `false` note plus any other note is refused", () => {
+      const [denyAll] = parseAuthorizeGrammarBody("X", "false", new Map());
+      const [sibling] = parseAuthorizeGrammarBody(
+         "X",
+         "region = $REGION",
+         SCALAR_GIVENS,
+      );
+      expectCoherenceCause([denyAll, sibling], "deny_all_with_sibling");
+   });
+
+   it("a lone deny_all (no sibling) does not throw", () => {
+      const [denyAll] = parseAuthorizeGrammarBody("X", "false", new Map());
+      expect(() =>
+         assertAuthorizeGrammarTermsCoherent("X", routed([denyAll])),
+      ).not.toThrow();
+   });
+
+   it("the same given reused across TWO DIFFERENT routes is not a duplicate", () => {
+      // Pins the scoping rule the four checks depend on: a term declared
+      // under one route and a term declared under a different route are
+      // meant to AND, not agree on given or scope — see
+      // `assertAuthorizeGrammarTermsCoherent`'s doc. `"other-route"` stands
+      // in for the second route this module does not yet implement.
+      const [a] = parseAuthorizeGrammarBody("X", "org_id in $G", LIST_GIVENS);
+      const [b] = parseAuthorizeGrammarBody(
+         "X",
+         "'finance' in $G",
+         LIST_GIVENS,
+      );
+      expect(() =>
+         assertAuthorizeGrammarTermsCoherent("X", [
+            { term: a, route: AUTHORIZE_ROUTE },
+            { term: b, route: "other-route" },
+         ]),
+      ).not.toThrow();
    });
 });
 

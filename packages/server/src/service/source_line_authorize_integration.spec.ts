@@ -41,8 +41,8 @@
  * source still aborts the load as it always has.
  *
  * Scope is Task 1 (spine: compile, enforce, override, join non-propagation,
- * query-source inheritance, at-most-one-gate; two known edge cases: the
- * except:+rename: misbinding hole, a bare `false` literal) plus Task 2 (the
+ * query-source inheritance, repeated-note conjunction; two known edge cases:
+ * the except:+rename: misbinding hole, a bare `false` literal) plus Task 2 (the
  * load-abort fix above). It does not migrate the existing dimension-form
  * corpus (Task 3) or touch `gate_dimension.ts`'s validation (Task 4).
  */
@@ -418,81 +418,266 @@ describe("source-line #(authorize) — spine", () => {
    // adds the two-hop-import variant of that same refusal, which was
    // previously untested anywhere.
 
-   it("at most ONE gate per source: two #(authorize) notes on one source is a load error naming both", async () => {
+   it("two #(authorize) notes on one source AND together (was: load error naming both)", async () => {
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
   GROUPS :: number[]
+  OWNERS :: number[]
 
 #(authorize) org_id in $GROUPS
-#(authorize) org_id = 1
+#(authorize) owner in $OWNERS
 source: dual is duckdb.table('orgtable') extend {}
 `);
       try {
-         const err = compilationErrorOf(model);
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/"dual"/);
-         expect(err?.message).toMatch(/org_id in \$GROUPS/);
-         expect(err?.message).toMatch(/org_id = 1/);
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // Rows 1-4 are (org_id, owner): (1,2), (1,1), (2,1), (2,2). A caller
+         // satisfying both terms sees only their intersection, not either
+         // term's own admission — proof this is AND, not OR.
+         const both = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: dual -> { select: id; order_by: id }",
+            {},
+            true,
+            { GROUPS: [1], OWNERS: [1] },
+         );
+         expect(
+            (both.compactResult as unknown as { id: number }[]).map(
+               (r) => r.id,
+            ),
+         ).toEqual([2]);
+
+         const neither = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: dual -> { select: id; order_by: id }",
+            {},
+            true,
+            { GROUPS: [999], OWNERS: [1] },
+         );
+         expect(
+            (neither.compactResult as unknown as { id: number }[]).length,
+         ).toBe(0);
       } finally {
          await cleanup(duckdb, dir);
       }
    });
 
-   it("at most ONE gate per source: a block-list source with no derivation at all still refuses (sanity, single candidate)", async () => {
-      // Same rule as above, through the block-list `source: a is ..., b is
-      // ...` syntax instead of two separate `source:` statements — no
-      // derivation anywhere in this model, so there is exactly one candidate
-      // for `authorizeNoteDeclaredBy` and this must refuse under both the old
-      // presence check and the new attribution-based one.
+   it("a block-list source list where the shared block note attributes to a SIBLING still ANDs into that sibling's OWN second note", async () => {
+      // Malloy puts the block note `#(authorize) org_id in $GROUPS` AND `b`'s
+      // own item note `#(authorize) owner in $OWNERS` both at `b`'s own
+      // annotation level, and the block note is reference-identical to `a`'s.
+      // The attribution-based `authorizeNoteDeclaredBy` correctly attributes
+      // the block note to `a` (earliest, same file) — but that only narrows
+      // `validateAuthorizeProbes`'s own-vs-inherited signal, not what `b`
+      // actually enforces: `b` still, by TEXT, carries two of its own
+      // `#(authorize)` notes (the inherited block note plus its own item
+      // note), and they AND together at `b`'s own entry point. `a` — the
+      // block note's declared owner — is unaffected by `b`'s own addition.
       const { model, duckdb, dir } = await createModel(`##! experimental.givens
 
 given:
   GROUPS :: number[]
-
-#(authorize) org_id in $GROUPS
-#(authorize) org_id = 1
-source:
-  solo is duckdb.table('orgtable') extend {}
-`);
-      try {
-         const err = compilationErrorOf(model);
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/"solo"/);
-      } finally {
-         await cleanup(duckdb, dir);
-      }
-   });
-
-   it("at most ONE gate per source: a block-list source list where the shared block note attributes to a SIBLING still refuses for its OWN second gate", async () => {
-      // Regression for the fail-open finding 1 opened: Malloy puts the block
-      // note `#(authorize) org_id in $GROUPS` AND `b`'s own item note
-      // `#(authorize) owner in $GROUPS` both at `b`'s own annotation level,
-      // and the block note is reference-identical to `a`'s. The
-      // attribution-based `authorizeNoteDeclaredBy` correctly attributes the
-      // block note to `a` (earliest, same file) — but that must narrow only
-      // `validateAuthorizeProbes`'s own-vs-inherited signal, NOT this load
-      // refusal: `b` still, by TEXT, carries two of its own `#(authorize)`
-      // notes (the inherited block note plus its own item note), and a
-      // source declaring two gates must be refused at load regardless of
-      // which of the two the attribution heuristic thinks it "owns".
-      const { model, duckdb, dir } = await createModel(`##! experimental.givens
-
-given:
-  GROUPS :: number[]
+  OWNERS :: number[]
 
 #(authorize) org_id in $GROUPS
 source:
   a is duckdb.table('orgtable') extend { measure: n is count() },
-  #(authorize) owner in $GROUPS
+  #(authorize) owner in $OWNERS
   b is a extend {}
 `);
       try {
-         const err = compilationErrorOf(model);
-         expect(err).toBeInstanceOf(ModelCompilationError);
-         expect(err?.message).toMatch(/"b"/);
-         expect(err?.message).toMatch(/org_id in \$GROUPS/);
-         expect(err?.message).toMatch(/owner in \$GROUPS/);
+         expect(compilationErrorOf(model)).toBeUndefined();
+
+         // `a`'s effective gate is the block note alone: org_id in $GROUPS.
+         const aRows = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: a -> { select: id; order_by: id }",
+            {},
+            true,
+            { GROUPS: [1] },
+         );
+         expect(
+            (aRows.compactResult as unknown as { id: number }[]).map(
+               (r) => r.id,
+            ),
+         ).toEqual([1, 2]);
+
+         // `b`'s effective gate is the block note AND its own item note.
+         const bBoth = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: b -> { select: id; order_by: id }",
+            {},
+            true,
+            { GROUPS: [1], OWNERS: [1] },
+         );
+         expect(
+            (bBoth.compactResult as unknown as { id: number }[]).map(
+               (r) => r.id,
+            ),
+         ).toEqual([2]);
+
+         const bOwnerFailsOnly = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: b -> { select: id; order_by: id }",
+            {},
+            true,
+            { GROUPS: [1], OWNERS: [999] },
+         );
+         expect(
+            (bOwnerFailsOnly.compactResult as unknown as { id: number }[])
+               .length,
+         ).toBe(0);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
+// Own-wins is PER ROUTE: a child's own note of one route replaces only that
+// route's inherited gate, leaving the OTHER route's inherited gate — read off
+// the base's `annotations.inherits` copy after the child's own note demotes
+// it there — untouched. Each test below declares an own note of exactly one
+// route over a base gated on BOTH routes, and shows the un-replaced route
+// still enforces.
+// ---------------------------------------------------------------------------
+
+describe("source-line #(authorize)/#(source-authorize) — own-wins is per route", () => {
+   it("a child's own #(authorize) replaces only the row-level gate — the inherited #(source-authorize) still ANDs in", async () => {
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+  NEVER :: number[]
+  ROLE :: string[]
+
+#(authorize) org_id in $GROUPS
+#(source-authorize) 'finance' in $ROLE
+source: dual_gated_parent is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+
+#(authorize) org_id in $NEVER
+source: child_own_authorize is dual_gated_parent extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+
+         // Own row-level gate is active (NEVER=[1] admits org_id=1 rows) AND
+         // the caller satisfies the INHERITED source-authorize — 2 rows.
+         const admitted = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: child_own_authorize -> { aggregate: n is count() }",
+            {},
+            true,
+            { NEVER: [1], ROLE: ["finance"] },
+         );
+         expect(
+            (admitted.compactResult as unknown as { n: number }[])[0].n,
+         ).toBe(2);
+
+         // Same row-level condition satisfiable, but the caller fails the
+         // INHERITED source-authorize gate — proves it is still being read
+         // off `child_own_authorize`'s `annotations.inherits`, not dropped
+         // when the child's own #(authorize) note demoted it there.
+         const roleDenied = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: child_own_authorize -> { aggregate: n is count() }",
+            {},
+            true,
+            { NEVER: [1], ROLE: ["sales"] },
+         );
+         expect(
+            (roleDenied.compactResult as unknown as { n: number }[])[0].n,
+         ).toBe(0);
+
+         // The base's ORIGINAL row-level gate (org_id in $GROUPS) must NOT
+         // still be active as an OR alongside the child's own #(authorize) —
+         // GROUPS is not even declared as a param a caller could bind here,
+         // so if the base's gate were still live this would be unreachable
+         // rather than an ordinary admit/deny on NEVER/ROLE alone.
+         const relaxed = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: child_own_authorize -> { aggregate: n is count() }",
+            {},
+            true,
+            { NEVER: [], ROLE: ["finance"] },
+         );
+         expect(
+            (relaxed.compactResult as unknown as { n: number }[])[0].n,
+         ).toBe(0);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("a child's own #(source-authorize) replaces only the caller gate — the inherited #(authorize) row filter still applies", async () => {
+      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+
+given:
+  GROUPS :: number[]
+  ROLE :: string[]
+
+#(authorize) org_id in $GROUPS
+source: gated_parent2 is duckdb.table('orgtable') extend {
+   measure: n is count()
+}
+
+#(source-authorize) 'finance' in $ROLE
+source: child_own_source_authorize is gated_parent2 extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+
+         // Both the inherited row filter and the child's own caller check
+         // are satisfied — 2 rows (org_id=1).
+         const admitted = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: child_own_source_authorize -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [1], ROLE: ["finance"] },
+         );
+         expect(
+            (admitted.compactResult as unknown as { n: number }[])[0].n,
+         ).toBe(2);
+
+         // The INHERITED row-level gate still applies: a GROUPS value
+         // matching no row denies even though the caller check passes.
+         const rowDenied = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: child_own_source_authorize -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [999], ROLE: ["finance"] },
+         );
+         expect(
+            (rowDenied.compactResult as unknown as { n: number }[])[0].n,
+         ).toBe(0);
+
+         // The child's OWN caller check still applies: a caller failing it
+         // gets zero rows even though the inherited row filter would admit.
+         const callerDenied = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: child_own_source_authorize -> { aggregate: n is count() }",
+            {},
+            true,
+            { GROUPS: [1], ROLE: ["sales"] },
+         );
+         expect(
+            (callerDenied.compactResult as unknown as { n: number }[])[0].n,
+         ).toBe(0);
       } finally {
          await cleanup(duckdb, dir);
       }

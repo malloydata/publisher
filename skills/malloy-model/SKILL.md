@@ -312,7 +312,22 @@ source: orders is duckdb.table('orders.parquet') extend {
 ```
 
 - **Nothing outside the two term shapes above parses.** No `or`, `not`, `!=`, `<`/`>`/`<=`/`>=`, function calls, bare field/boolean references, or a literal on the right of a row-level term. `org_id in $GROUPS` and `region = $REGION and org_id in $GROUPS` are legal; `upper(region) = $REGION`, `(org_id in $GROUPS or region = $REGION)`, and a bare `#(authorize) authorized` are all refused at load with a named cause (see your deployment's reference documentation for the full list).
-- **A source may declare at most one `#(authorize)` annotation, and `or` is refused wherever it appears.** There is no way to spell a disjunction in a single gate or by stacking annotations; use two extension sources instead, one per admitted population, each with its own conjunctive gate. **One exception to "every term references a given": a body that is exactly `false` still parses**, as a deny-all, so lock a source with `#(authorize) false`, same as before. `true` gets no such exception and stays refused: an admit-everyone gate is not access control at all.
+- **A source may declare more than one `#(authorize)` annotation: repeats AND together.** `#(authorize) region = $REGION` stacked with a second `#(authorize) org_id in $GROUPS` on the same source both apply, and a caller must satisfy every term across every note. `or` is still refused wherever it appears, so there is still no way to spell "admit if either" inside one gate, or across gates on one source; use two extension sources instead, one per admitted population, each with its own conjunctive gate (see the admin pattern below). **One exception to "every term references a given": a body that is exactly `false` still parses**, as a deny-all, so lock a source with `#(authorize) false`, same as before. `true` gets no such exception and stays refused: an admit-everyone gate is not access control at all.
+- **`#(source-authorize)` is a second annotation route for a rule about the CALLER, not the row.** It takes the same source-level term shape (`'literal' <op> $GIVEN`), declared on its own line above `source:`, and it ANDs with any `#(authorize)` gate on the same source rather than replacing or bypassing it: there is no spelling anywhere in the grammar for "admit and skip the row filter". It inherits through `extend` the same way `#(authorize)` does, own wins over ancestor per route, so a source can be "own" for one route and "inherited" for the other. A row-level term (a field on the left) inside a `#(source-authorize)` body is refused at load, naming the rewrite (move it to `#(authorize)`). The API reports it separately: `Source.sourceAuthorize` carries this route's own effective texts, while a source-level term written under plain `#(authorize)` (the convenience form above) keeps reporting under `authorize`.
+- **Generate the admin escape hatch as another extension over the locked base, never as a bypass.** When a model needs an ordinary population plus a wider one, add a second extension whose gate is a source-level convenience term:
+
+```malloy
+#(authorize) false
+source: orders_base is duckdb.table('orders.parquet') extend {}
+
+#(authorize) org_id in $ORG_ID
+source: orders is orders_base extend {}
+
+#(authorize) 'admin' in $GROUPS
+source: orders_admin is orders_base extend {}
+```
+
+  Each extension replaces the base's `false` with its own gate. `orders_admin`'s gate is evaluated exactly the same way as `orders`'s, it just restricts nothing per row (a source-level term is constant across every row). This is the shape to generate whenever an author wants a role to see everything: another extension source, not a flag that skips the gate.
 - **`#(authorize)` only gates from the `source:` line.** The same annotation on a `dimension:`/`measure:`/`join_*:`/`view:` line, or on a top-level `query:`, is refused at load naming the position rather than silently protecting nothing.
 - **Every given the gate references must be declared on the entry model's own surface, and must carry no default.** A given the model cannot resolve is refused at load. So is a referenced given declared *with* a default: a caller who supplies nothing would get that default and be admitted or excluded by a value the gate's own line never shows, so it is refused rather than reasoned about case by case.
 - **A scalar/array mismatch between the operator and the given's declared type is a load-time refusal**, not a request-time warehouse error: `org_id in $GROUPS` requires `GROUPS` to be array-typed, `region = $REGION` requires `REGION` scalar. Negation is likewise refused outright, so there is no empty-given inversion surprise to warn about.

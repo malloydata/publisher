@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#(authorize)` body grammar.
+ * `#(authorize)` / `#(source-authorize)` body grammar.
  *
  * `#(authorize)` no longer accepts an arbitrary Malloy boolean handed
  * verbatim to the compiler. Its body is a narrow grammar publisher parses
@@ -14,6 +14,18 @@
  * scalar one. Nothing else parses: no `or`, `not`, `!=`, `<`/`>`/`<=`/`>=`,
  * `like`, `is not null`, no function calls, no literal on the right of a
  * row-level term.
+ *
+ * `#(source-authorize)` is a second annotation route ({@link
+ * SOURCE_AUTHORIZE_ROUTE}) declared on a `source:` line exactly like
+ * `#(authorize)`, and parsed by this same grammar — but every term its body
+ * declares must be SOURCE-LEVEL (the deny-all `false` sentinel below is the
+ * one carve-out): it is a rule about the CALLER, not the row, and ANDs with
+ * the row-level `#(authorize)` gate rather than replacing or bypassing it.
+ * There is deliberately no spelling anywhere in this grammar for "admit and
+ * skip the row filter". See `gate_classification.ts`'s `collectEntryPointGates`
+ * for how the two routes' gates are collected (independently, so an own
+ * declaration on one route never sheds the other's inherited gate) and
+ * combined (AND, identically to two `#(authorize)` notes).
  *
  * One exception, deliberately narrow: a body that is EXACTLY (trimmed,
  * case-insensitive) `false` — never a term inside an `and` — parses as an
@@ -61,8 +73,15 @@ export type AuthorizeGrammarRejectionCause =
    | "duplicate_given"
    | "duplicate_field_path"
    | "mixed_scope_body"
+   | "deny_all_with_sibling"
    | "operator_arity_mismatch"
-   | "fanout_path";
+   | "fanout_path"
+   // A row-level term (field on the left) inside a `#(source-authorize)`
+   // body — that route is a rule about the CALLER, not the row, so every
+   // term must be `source_level` (the `deny_all` sentinel is the one carved
+   // out, since it names no row at all). Raised by
+   // `parseAuthorizeGrammarBody` when `route` is the source-authorize route.
+   | "row_level_term_in_source_authorize";
 
 /**
  * An `#(authorize)` annotation that fails this module's grammar. Extends
@@ -151,6 +170,17 @@ function splitFieldPathSegments(fieldPath: string): string[] {
    return segments;
 }
 
+/** Shared tail for every grammar rejection message — the reference grammar
+ *  recap, independent of whether the violation was found within one body's
+ *  own text ({@link reject}) or across more than one note's terms
+ *  ({@link rejectCoherence}). */
+const GRAMMAR_SUMMARY =
+   "#(authorize) only accepts one or more `and`-joined terms, each " +
+   "either `<column> <op> $GIVEN` (a single field or a dotted join " +
+   "path on the left) or `'<literal>' in $GIVEN` (a literal on the " +
+   "left), where <op> is fixed by the given's own arity: `in` for a " +
+   "list-typed given, `=` for a scalar one.";
+
 function rejectionMessage(
    sourceName: string,
    body: string,
@@ -158,11 +188,7 @@ function rejectionMessage(
 ): string {
    return (
       `Source "${sourceName}" declares \`#(authorize) ${body}\`: ${detail} ` +
-      `#(authorize) only accepts one or more \`and\`-joined terms, each ` +
-      `either \`<column> <op> $GIVEN\` (a single field or a dotted join ` +
-      `path on the left) or \`'<literal>' in $GIVEN\` (a literal on the ` +
-      `left), where <op> is fixed by the given's own arity: \`in\` for a ` +
-      `list-typed given, \`=\` for a scalar one.`
+      GRAMMAR_SUMMARY
    );
 }
 
@@ -175,6 +201,21 @@ function reject(
    throw new AuthorizeGrammarError(
       cause,
       rejectionMessage(sourceName, body, detail),
+   );
+}
+
+/** Same shape as {@link reject}, for a violation found across more than one
+ *  note's terms rather than within a single body's own text — there is no
+ *  single `body` string to echo, so the message names the source only. */
+function rejectCoherence(
+   sourceName: string,
+   cause: AuthorizeGrammarRejectionCause,
+   detail: string,
+): never {
+   throw new AuthorizeGrammarError(
+      cause,
+      `Source "${sourceName}" declares #(authorize) notes whose terms ` +
+         `conflict: ${detail} ${GRAMMAR_SUMMARY}`,
    );
 }
 
@@ -407,6 +448,139 @@ function parseTerm(
    };
 }
 
+/** The row-level `#(authorize)` route. See {@link assertAuthorizeGrammarTermsCoherent}'s
+ *  doc for why the route string, not the term shape, is what keeps two
+ *  routes' terms from being compared to each other. */
+export const AUTHORIZE_ROUTE = "authorize";
+
+/**
+ * The `#(source-authorize)` route — a rule about the CALLER (a `'literal'
+ * in/= $GIVEN` term) rather than the row. Every term in a body parsed under
+ * this route must be `scope: "source_level"`, with the whole-body `deny_all`
+ * sentinel (a bare `false`) carved out — see {@link parseAuthorizeGrammarBody}'s
+ * `row_level_term_in_source_authorize` check. It ANDs with the row-level
+ * `#(authorize)` gate rather than bypassing it: there is deliberately no
+ * spelling anywhere in this grammar for "admit and skip the row filter".
+ */
+export const SOURCE_AUTHORIZE_ROUTE = "source-authorize";
+
+/** One term paired with the route its declaring note was parsed under —
+ *  what {@link assertAuthorizeGrammarTermsCoherent} needs to tell "two
+ *  terms from the same route" (must be mutually coherent) from "two terms
+ *  from different routes" (meant to AND, not required to agree on scope or
+ *  given). Kept as a wrapper rather than a field on {@link AuthorizeGrammarTerm}
+ *  itself so a route stays a caller-side bookkeeping detail — every existing
+ *  reader of a parsed term (the fan-out check, the graft pipeline) has no
+ *  reason to know it. */
+export type AuthorizeGrammarRoutedTerm = {
+   term: AuthorizeGrammarTerm;
+   route: string;
+};
+
+/**
+ * Cross-term coherence for an `#(authorize)` gate assembled from MORE THAN
+ * ONE note — `duplicate_given`, `duplicate_field_path`, `mixed_scope_body`,
+ * and the `false` deny-all sentinel all used to be safe checking WITHIN one
+ * body, because a source could declare at most one `#(authorize)`. Now that
+ * repeats are legal (and AND together — see this module's doc), the same
+ * four mistakes can be spread across notes instead of terms in one body, so
+ * this checks the SET of terms a declaring source contributes rather than
+ * one note's own list. {@link parseAuthorizeGrammarBody} calls this on its
+ * own single-body terms (trivially a no-op for one note); a caller
+ * assembling more than one note for the same declaring source (today,
+ * `gate_classification.ts`'s `assertAuthorizeGrammarValid`, over the OWN
+ * groups an `AuthorizeMap` entry carries across BOTH routes) calls it again
+ * over the concatenation.
+ *
+ * `duplicate_given`, `duplicate_field_path`, and `mixed_scope_body` are
+ * scoped PER ROUTE (`route` on each entry), never across routes: a term
+ * declared under `#(authorize)` and one declared under `#(source-authorize)`
+ * on the SAME source are meant to AND, not agree on scope or given — e.g.
+ * `#(authorize) org_id in $GROUPS` alongside
+ * `#(source-authorize) 'finance' in $GROUPS` is the intended design, and
+ * must stay legal even though it reuses `$GROUPS` and mixes scope. Two
+ * routes exist today (`AUTHORIZE_ROUTE`, `SOURCE_AUTHORIZE_ROUTE`); a further
+ * route would slot in the same way, by tagging its own terms with its own
+ * route string and calling this same function — nothing here needs to
+ * change.
+ *
+ * `deny_all_with_sibling` is the one check that is NOT route-scoped: an
+ * unconditional `#(authorize) false` alongside ANY sibling note — same
+ * route or not — is the same authoring mistake regardless of which route
+ * the companion used, so it is checked over every entry passed in, before
+ * the per-route split below.
+ *
+ * CRITICAL: never call this over a flattened list spanning more than one
+ * DECLARING SOURCE (`AuthorizeMap`'s `groups.flat()`) — a query-source
+ * base's own gate and its composite member's own gate are two different
+ * sources' gates that AND by design and must never be cross-checked against
+ * each other; see `AuthorizeMap`'s doc and `assertAuthorizeGrammarValid`.
+ */
+export function assertAuthorizeGrammarTermsCoherent(
+   sourceName: string,
+   terms: readonly AuthorizeGrammarRoutedTerm[],
+): void {
+   if (
+      terms.length > 1 &&
+      terms.some(({ term }) => term.scope === "deny_all")
+   ) {
+      rejectCoherence(
+         sourceName,
+         "deny_all_with_sibling",
+         "an unconditional `false` deny-all cannot be combined with any " +
+            "other `#(authorize)` note — a deny-all admits nothing, so a " +
+            "sibling note can never change what is served and its " +
+            "presence is very likely a mistake.",
+      );
+   }
+
+   const byRoute = new Map<string, AuthorizeGrammarParsedTerm[]>();
+   for (const { term, route } of terms) {
+      if (term.scope === "deny_all") continue;
+      const list = byRoute.get(route);
+      if (list) list.push(term);
+      else byRoute.set(route, [term]);
+   }
+
+   for (const routeTerms of byRoute.values()) {
+      const rowLevel = routeTerms.filter((t) => t.scope === "row_level");
+      const sourceLevel = routeTerms.filter((t) => t.scope === "source_level");
+      if (rowLevel.length > 0 && sourceLevel.length > 0) {
+         rejectCoherence(
+            sourceName,
+            "mixed_scope_body",
+            "a row-level term (field on the left) may not be combined with " +
+               "a source-level term (`'literal' in/= $GIVEN`) on the same " +
+               "route.",
+         );
+      }
+
+      const seenGivens = new Set<string>();
+      const seenFieldPaths = new Set<string>();
+      for (const t of routeTerms) {
+         if (seenGivens.has(t.given)) {
+            rejectCoherence(
+               sourceName,
+               "duplicate_given",
+               `\`$${t.given}\` is used by more than one term — a given ` +
+                  "can back at most one term per route.",
+            );
+         }
+         seenGivens.add(t.given);
+         if (t.scope === "row_level") {
+            if (seenFieldPaths.has(t.fieldPath)) {
+               rejectCoherence(
+                  sourceName,
+                  "duplicate_field_path",
+                  `\`${t.fieldPath}\` is used by more than one term.`,
+               );
+            }
+            seenFieldPaths.add(t.fieldPath);
+         }
+      }
+   }
+}
+
 /**
  * Parse and validate one `#(authorize)` body — the note's payload, already
  * extracted by {@link ../service/authorize}'s `collectAuthorizeExprs` —
@@ -419,11 +593,26 @@ function parseTerm(
  * type); a given absent from it (unresolvable at this point) skips the
  * arity check rather than failing it — a load path that has no given
  * surface handy would otherwise be forced to guess.
+ *
+ * Handles SYNTAX only — term splitting, `parseTerm`, `compound_boolean`, the
+ * whole-body `deny_all` exception. The four checks that need to see more
+ * than this one body's own terms live in
+ * {@link assertAuthorizeGrammarTermsCoherent}, called here on this body's
+ * own terms so a single-note source is refused exactly as before.
+ *
+ * `route` defaults to {@link AUTHORIZE_ROUTE} so every existing caller keeps
+ * its exact prior behavior. Passed {@link SOURCE_AUTHORIZE_ROUTE}, every
+ * parsed term must be `scope: "source_level"` — the `deny_all` sentinel is
+ * the one carve-out, since `false` names no row at all and is accepted
+ * identically on both routes (see this module's doc). A `row_level` term
+ * reaching here under that route is refused as
+ * `row_level_term_in_source_authorize`, the mirror of `mixed_scope_body`.
  */
 export function parseAuthorizeGrammarBody(
    sourceName: string,
    body: string,
    givenDeclaredTypes: ReadonlyMap<string, string>,
+   route: string = AUTHORIZE_ROUTE,
 ): AuthorizeGrammarTerm[] {
    const trimmedBody = body.trim();
    if (trimmedBody.length === 0) {
@@ -459,43 +648,23 @@ export function parseAuthorizeGrammarBody(
       parseTerm(sourceName, trimmedBody, term, givenDeclaredTypes),
    );
 
-   const rowLevel = parsed.filter((t) => t.scope === "row_level");
-   const sourceLevel = parsed.filter((t) => t.scope === "source_level");
-   if (rowLevel.length > 0 && sourceLevel.length > 0) {
-      reject(
-         sourceName,
-         trimmedBody,
-         "mixed_scope_body",
-         "a body may not mix a row-level term (field on the left) with a " +
-            "source-level term (`'literal' in $GIVEN`).",
-      );
-   }
-
-   const seenGivens = new Set<string>();
-   const seenFieldPaths = new Set<string>();
-   for (const t of parsed) {
-      if (seenGivens.has(t.given)) {
+   if (route === SOURCE_AUTHORIZE_ROUTE) {
+      const rowLevelTerm = parsed.find((t) => t.scope === "row_level");
+      if (rowLevelTerm) {
          reject(
             sourceName,
             trimmedBody,
-            "duplicate_given",
-            `\`$${t.given}\` is used by more than one term — a given can ` +
-               "back at most one term per body.",
+            "row_level_term_in_source_authorize",
+            "a row-level term (field on the left) is not allowed in " +
+               "`#(source-authorize)` — move the term to `#(authorize)`.",
          );
       }
-      seenGivens.add(t.given);
-      if (t.scope === "row_level") {
-         if (seenFieldPaths.has(t.fieldPath)) {
-            reject(
-               sourceName,
-               trimmedBody,
-               "duplicate_field_path",
-               `\`${t.fieldPath}\` is used by more than one term.`,
-            );
-         }
-         seenFieldPaths.add(t.fieldPath);
-      }
    }
+
+   assertAuthorizeGrammarTermsCoherent(
+      sourceName,
+      parsed.map((term) => ({ term, route })),
+   );
 
    return parsed;
 }

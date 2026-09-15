@@ -144,6 +144,29 @@ source: mz_dim_authz is base -> { aggregate: c is count() }`);
       );
    });
 
+   it("refuses a source protected ONLY by its own #(source-authorize) gate", async () => {
+      // A source carrying no #(authorize) at all, only #(source-authorize) —
+      // this must draw the same materialization refusal as an ordinary
+      // row-level gate, otherwise a source-authorize-only source freezes
+      // into a materialized artifact served to everyone. `isAuthorizeAnnotation`
+      // (via `parseAuthorizeAnnotation`) is widened to recognize both routes,
+      // so this is automatic rather than a special case.
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#(source-authorize) 'finance' = $role
+#@ persist name="mz_source_authz"
+source: mz_source_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_source_authz).toBeDefined();
+      expect(() =>
+         assertMaterializationEligible(sources.mz_source_authz),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(sources.mz_source_authz),
+      ).toThrow(/authorize/i);
+   });
+
    it("refuses a source that reaches an #(authorize) gate through a JOIN", async () => {
       // The gate is on the joined source, not on mz_authz_joined itself — a join
       // must not launder an authorize-gated source into a frozen table.

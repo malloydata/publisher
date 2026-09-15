@@ -98,19 +98,50 @@ source: gated is base -> { select: org_id } extend {}
       });
    });
 
+   it("classifies TWO AND'd groups on one entry point — own gate plus the query-source base's — rejecting when EITHER can't express", async () => {
+      // Restores the two-groups-on-one-source case the neighbor test below
+      // used to say was inexpressible under the old string form's
+      // at-most-one-gate refusal. `derived` both declares its own
+      // `#(authorize)` and, via the query-source derivation, inherits
+      // `base`'s — two separate (AND'd) `GateEntry` results from
+      // `collectEntryPointGates`, not one flattened list (see `AuthorizeMap`'s
+      // doc). `classifyPersistSourceGate` must reject the whole entry point
+      // when EITHER group can't be classified against this deps surface, not
+      // just the one it happens to walk into first.
+      const { modelDef, materializer, sources } = await compileModel(
+         `##! experimental.persistence
+##! experimental.givens
+
+given:
+  ORG :: number
+  REGION :: string
+
+#(authorize) org_id = $ORG
+source: base is duckdb.sql("select 1 as org_id, 'x' as region") extend {}
+
+#(authorize) region = $REGION
+#@ persist name="derived"
+source: derived is base -> { select: org_id, region } extend {}
+`,
+      );
+      const restrictedDeps = createGateClassificationDeps([]);
+      const outcome = await classifyPersistSourceGate(
+         sources.derived,
+         modelDef,
+         materializer,
+         restrictedDeps,
+         "m.malloy",
+      );
+      expect(outcome.classification).toBe("rejected");
+   });
+
    it("records rejected when a query-source derivation inherits an ancestor's gate whose given is off THIS deps surface", async () => {
-      // Replaces the old string form's "two AND'd groups, one rejects" case:
-      // that shape OR'd two independently-authored `#(authorize)` annotations
-      // on one source — a source may declare at most one `#(authorize)` block
-      // (`findMultipleAuthorizeGates`/`assertAtMostOneAuthorizeGate`), so a
-      // second, differently-scoped gate can no longer be expressed on the
-      // same source at all. What still needs pinning here is that `derived`'s
-      // inherited copy of `base`'s gate (carried in via the query-source
-      // derivation, same mechanism `collectEntryPointGates` uses for every
-      // other inheritance case in this file) is re-checked against THIS
-      // CALL's own given surface, not the compiling model's, and is rejected
-      // rather than silently admitted when the given the inherited gate
-      // references isn't on it (`unreachable_given` — see
+      // `derived`'s inherited copy of `base`'s gate (carried in via the
+      // query-source derivation, same mechanism `collectEntryPointGates`
+      // uses for every other inheritance case in this file) is re-checked
+      // against THIS CALL's own given surface, not the compiling model's,
+      // and is rejected rather than silently admitted when the given the
+      // inherited gate references isn't on it (`unreachable_given` — see
       // `resolveGateShape`'s doc for why the deps struct, not the compiled
       // model, is the actual given surface used at classification time).
       const { modelDef, materializer, sources } = await compileModel(
