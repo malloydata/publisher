@@ -181,11 +181,14 @@ import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import doc_tokens, entity_ids, search_terms  # noqa: E402
 from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
-from score_retrieval import score_case, summarise  # noqa: E402
+from score_retrieval import (  # noqa: E402
+    cascade, coverage_report_summary, load_coverage_report, score_case,
+    summarise)
 from check_contamination import check as path_check  # noqa: E402
 from check_must_not_use import check as must_not_use_check  # noqa: E402
 from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
 import verify_goldens  # noqa: E402
+import verify_definitions  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
@@ -221,6 +224,28 @@ REPO_ROOT = SKILLS_ROOT.parent
 # a Malloy query can reach for the skills beside it instead of being handed a
 # transcription of them.
 JUDGE_SKILLS = ("eval-judge", "malloy-analysis-pitfalls", "malloy-gotchas-queries")
+
+
+def usage_fields(usage: dict[str, Any] | None) -> dict[str, Any]:
+    """The four token counts a run needs to reprice itself from its own ledger.
+
+    `cost_usd` comes from the CLI's `total_cost_usd`, which already prices cache
+    reads and writes at their rates, so the total was always right. What was
+    missing was the breakdown that could reproduce it: `cache_creation_input_tokens`
+    was never captured, and on one analysed run cache writes were 44% of the
+    agent's cost -- the single largest line. The ledger held the right total and
+    an incomplete account of it.
+
+    Read `input_tokens` with care. It is only the tokens after the last cache
+    breakpoint. One run recorded 224 of them for 24 questions, beside 2.4M cache
+    reads; the 224 is not the context volume, and nothing that reports it
+    without the cache columns beside it is telling the truth about size.
+    """
+    u = usage or {}
+    return {"input_tokens": u.get("input_tokens"),
+            "output_tokens": u.get("output_tokens"),
+            "cache_read_tokens": u.get("cache_read_input_tokens"),
+            "cache_write_tokens": u.get("cache_creation_input_tokens")}
 
 
 def sha256(data: bytes) -> str:
@@ -1026,13 +1051,121 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
         return seen[0], tally
     return "mixed", tally
 
+def cascade_lines(c: dict | None) -> list[str]:
+    """The three metrics as a funnel: covered, retrieved, correct.
+
+    Each rung conditions the next, because three flat percentages read as three
+    unrelated problems and the shape of a failure is the reason to have three
+    numbers instead of one.
+
+    No rung names an owner the run has not established. The retrieval algorithm
+    is fixed, so a miss is the docs or the search wording, and only diagnose can
+    tell those apart; a delivered-but-wrong answer is the agent's or the docs'
+    for the same reason. An earlier version asserted the docs on a retrieval
+    miss and was wrong on the first real run: the agent had searched only for a
+    source and a dimension, so the measure it needed could not come back, and
+    the documented measure was blamed. The one mechanical exception is that
+    case, `never asked`, which is labelled per case because it cannot be the
+    docs' fault.
+    """
+    if not c or not c.get("total"):
+        return []
+    covered = (c["total"] - c["not covered"] - c["unmeasured"]
+               - c["no entities named"])
+    retrieved = covered - c["not retrieved"]
+    covered_tail = ""
+    if c["unmeasured"]:
+        covered_tail += f", {c['unmeasured']} unmeasured"
+    if c["no entities named"]:
+        covered_tail += f", {c['no entities named']} name no entities"
+    scored_tail = f", {c['not scored']} not scored" if c["not scored"] else ""
+    # A pass that stops on an earlier rung is reported there. Otherwise the
+    # last rung reads as the pass count and disagrees with the headline.
+    anyway = lambda n: f"; {n} answered correctly anyway" if n else ""
+    lines = [f"  cascade       {c['total']} cases",
+             f"    covered?      {covered} yes, {c['not covered']} no (model "
+             f"gap{anyway(c.get('passed_not_covered', 0))})" + covered_tail,
+             f"    retrieved?    {retrieved} yes, {c['not retrieved']} no "
+             f"(the entity exists and did not come back: the docs, or the "
+             f"search wording; diagnose decides"
+             f"{anyway(c.get('passed_not_retrieved', 0))})",
+             f"    correct?      {c['delivered, right']} yes, "
+             f"{c['delivered, wrong']} no (delivered, wrong: agent or docs; "
+             f"diagnose decides)" + scored_tail]
+    early = c.get("passed_not_covered", 0) + c.get("passed_not_retrieved", 0)
+    if early:
+        lines.append(f"                the last rung counts {c['delivered, right']}, "
+                     f"not the pass rate: {early} more passed on a rung above it")
+    return lines
+
+
+def skill_lines(skill_uses: dict | None, _unused: int | None = None) -> list[str]:
+    """Which of the answerer's skills it actually opened.
+
+    A run names the skills it granted, and that reads as though they shaped the
+    answers. They only do when the agent opens them: skills load on demand, and
+    an answerer that finds a question easy reads none. Measured on a real run,
+    every attempt invoked zero, so an edit to a skill could not have changed
+    anything and nothing said so. The count is not a target -- an agent that
+    answers correctly without opening a skill is fine -- but a skill edit
+    justified by an eval needs it.
+    """
+    if not skill_uses or not skill_uses.get("attempts"):
+        return []
+    n, total = skill_uses["with_skill"], skill_uses["attempts"]
+    lines = ["", "SKILLS",
+             f"  invoked       {n} of {total} attempt(s) opened a skill"
+             + (f": {', '.join(skill_uses['skills'][:5])}"
+                if skill_uses.get("skills") else "")]
+    if n == 0:
+        lines += ["                ! none of the granted skills was read, so "
+                  "this run measures the tools and the model, not the skills. "
+                  "A skill edit cannot be credited or blamed from it."]
+    return lines
+
+
+def evidence_lines(evidence: dict | None) -> list[str]:
+    """What the pass rate rests on, or nothing when no ledger was read.
+
+    A run has never said this. Every golden used to be raw-derived, so there was
+    one answer and it went without saying; once a key may instead rest on a
+    validated definition, a score that does not name its evidence is claiming
+    more than it has. Silent without a ledger rather than reassuring: absent is
+    not the same fact as checked.
+    """
+    if not evidence or not evidence.get("ledgerSize"):
+        return []
+    c = evidence["counts"]
+    order = ("independent", "definitions", "unchecked", "disagrees")
+    parts = [f"{c[k]} {k}" for k in order if c.get(k)]
+    lines = ["", "EVIDENCE", "  basis         " + ", ".join(parts)]
+    if c.get("unchecked"):
+        lines += ["                ! those cases rest on a definition nobody "
+                  "has validated. Not a failure, and not a pass either: run "
+                  "verify_definitions.py against this model."]
+    if evidence.get("disagreeing"):
+        lines += ["                ! a definition these cases depend on "
+                  "DISAGREES with its own expression or an authored control, "
+                  "so the model is wrong before the answer is, whatever the "
+                  "goldens rest on: "
+                  + ", ".join(evidence["disagreeing"][:4])]
+    if evidence.get("stale"):
+        lines += [f"                ! {len(evidence['stale'])} ledger row(s) "
+                  f"stale: the definition moved since it was checked"]
+    return lines
+
+
 def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   attempted: int, decided: int, passed: int, near: int,
                   human: int, doubted: list, vetoed: list, alt_path: int,
                   unscorable: int,
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
-                  publisher: str, environment: str) -> list[str]:
+                  publisher: str, environment: str,
+                  evidence: dict | None = None,
+                  coverage_report: dict | None = None,
+                  cascade: dict | None = None,
+                  skill_uses: dict | None = None) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -1087,8 +1220,12 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         for qid, hits in vetoed:
             lines += [f"    {qid}: {'; '.join(hits)}"]
 
-    lines += ["", "COVERAGE & RETRIEVAL",
-              f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
+    lines += skill_lines(skill_uses)
+    lines += evidence_lines(evidence)
+
+    lines += ["", "COVERAGE & RETRIEVAL"]
+    lines += cascade_lines(cascade)
+    lines += [f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
               f" lexical {tally['lexical']},"
               f" unreported {tally['unreported']})"]
     if retrieval_mode != "semantic":
@@ -1100,6 +1237,25 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         lines += [f"  entity recall mean {100 * rs['mean_recall']:.1f}%, "
                   f"complete on {rs['complete_retrievals']} of "
                   f"{rs['retrieval_scored']} scored"]
+        # Breadth, which does not depend on the set authoring `acceptable`:
+        # how much get_context handed back against how much the answer named.
+        if rs.get("mean_returned"):
+            lines += [f"  entity breadth {rs['mean_returned']:.0f} returned per "
+                      f"attempt for {rs['mean_required']:.0f} the answer named"]
+        if rs.get("mean_precision") is not None:
+            authored = rs.get("cases_with_acceptable") or 0
+            lines += [f"  entity precision mean "
+                      f"{100 * rs['mean_precision']:.1f}%"]
+            if authored == 0:
+                lines += ["                ! no case authored `acceptable`, so "
+                          "every entity beyond the strictly required ones "
+                          "counted as noise. Read this as breadth, not as a "
+                          "verdict on retrieval; author `acceptable` to make it "
+                          "one."]
+            elif authored < (rs.get("retrieval_scored") or 0):
+                lines += [f"                ! only {authored} of "
+                          f"{rs['retrieval_scored']} cases authored "
+                          f"`acceptable`, so precision is uneven across them"]
         if alt_path:
             lines += [f"                {alt_path} passing case(s) answered "
                       f"without every required entity -- check whether "
@@ -1108,12 +1264,30 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         lines += ["  where to fix  " + ", ".join(
             f"{k} {v}" for k, v in
             sorted(rs["failures_by_where_to_fix"].items()))]
-    lines += ["  coverage      not measured here: it reads the MODEL, not the "
-              "answers, and asks whether a",
-              "                correct answer is expressible at all. Ask it "
-              "when the score is low:",
-              f"                python3 skills/eval-answer/scripts/"
-              f"check_coverage.py --set {set_dir} --model <package-dir>"]
+    if coverage_report:
+        # A report was consumed, so "not measured here" would be false. Name
+        # it, and say how much of the set it actually decided: 4 of 49 is a
+        # sample size, not a coverage number.
+        cr = coverage_report
+        lines += [f"  coverage      from {cr.get('path')} (version "
+                  f"{cr.get('version') or '?'}, judge "
+                  f"{cr.get('agentModel') or '?'}): {cr.get('decided')} of "
+                  f"{cr.get('cases')} cases decided; its per-case verdict "
+                  f"charged the failures above"]
+        if (cr.get("decided") or 0) < (cr.get("cases") or 0):
+            lines += ["                ! undecided cases fell back to the "
+                      "authored label, or to nobody; `coverage_source` on "
+                      "each retrieval row says which"]
+    else:
+        lines += ["  coverage      not measured here: it reads the MODEL, not "
+                  "the answers, and asks whether a",
+                  "                correct answer is expressible at all. Ask "
+                  "it when the score is low, then hand the",
+                  "                report back with --coverage so it charges "
+                  "the failures:",
+                  f"                python3 skills/eval-answer/scripts/"
+                  f"check_coverage.py --set {set_dir} --model <package-dir> "
+                  f"--out coverage.json"]
 
     pkg_name = f"eval-{out.name}"
     pkg_dir = f"/tmp/{pkg_name}"
@@ -1376,6 +1550,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
     calls, answer, queries = [], [], []
     n_get, n_exec, n_err, host_tools = 0, 0, 0, 0
     foreign_skills: list[str] = []
+    # Skills the answerer actually OPENED. The harness tracked only the breach
+    # case (a skill outside the manifest), so a run reported "11 skills" for an
+    # answerer that read none of them, and a skill edit could be measured only
+    # by guessing. An eval that claims to test an agent "with these skills"
+    # should say how many it used.
+    used_skills: list[str] = []
     pending: dict[str, dict[str, Any]] = {}
 
     for e in events:
@@ -1443,6 +1623,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                             sk = (c.get("input") or {}).get("skill")
                             if sk and sk not in (a.answerer_skills or []):
                                 foreign_skills.append(sk)
+                            elif sk:
+                                used_skills.append(sk)
         elif e.get("type") == "user":
             for c in e["message"].get("content") or []:
                 if c.get("type") != "tool_result":
@@ -1503,10 +1685,9 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "n_execute": n_exec,
         "n_execute_errors": n_err,
         "host_tool_uses": host_tools,
+        "skills_invoked": sorted(set(used_skills)),
         "mcp_tool_uses": n_get + n_exec,
-        "input_tokens": usage.get("input_tokens"),
-        "output_tokens": usage.get("output_tokens"),
-        "cache_read_tokens": usage.get("cache_read_input_tokens"),
+        **usage_fields(usage),
         "cost_usd": res.get("total_cost_usd"),
         "num_turns": res.get("num_turns"),
         "wall_seconds": elapsed,
@@ -1779,13 +1960,23 @@ def unscorable_preflight(cases: list[dict[str, Any]], set_name: str
         f"every one of the {len(cases)} goldens in {set_name} holds a key "
         "nobody has established (provisional, invalid or ambiguous), so no "
         "case can take a verdict and no answer this run produces can change "
-        "that. Two ways forward, and they are different jobs:\n"
+        "that. Three ways forward, and they are different jobs:\n"
         "  - Establish the keys: re-derive them through the truth package and "
         "promote what agrees --\n"
         "      python3 verify_goldens.py --set <set> --publisher <truth> "
         "--promote\n"
         "    (`--refresh` rewrites a drifted VALUE; it does not change a "
         "golden's status.)\n"
+        "  - No truth package? Validate the definitions the keys rest on "
+        "instead --\n"
+        "      python3 verify_definitions.py --model <model> --publisher "
+        "<server> --out <ledger>\n"
+        "      python3 verify_goldens.py --set <set> --definitions <ledger> "
+        "--promote\n"
+        "    A golden is trustworthy if it was derived independently OR if "
+        "every definition\n"
+        "    it tests is validated. Promotion still needs the golden's second "
+        "derivation.\n"
         "  - Measure what the model can express at all, which needs no keys "
         "and no answerer --\n"
         "      python3 check_coverage.py --set <set> --model <package>\n"
@@ -1992,6 +2183,16 @@ def main(argv: list[str] | None = None) -> int:
                          "retrievers and reports one number. run.json records "
                          "that you opted out, which is a different fact from a "
                          "gate that passed")
+    ap.add_argument("--definitions", default=None,
+                    help="a definition ledger (verify_definitions.py --out). "
+                         "Without it the run reports no EVIDENCE block, which "
+                         "is a different fact from reporting a clean one")
+    ap.add_argument("--coverage", default=None,
+                    help="a check_coverage.py --out report for this model version. "
+                         "Its per-case verdict beats the authored `coverage` label "
+                         "in retrieval attribution, and run.json records which "
+                         "report was read. Without it an unlabelled case is "
+                         "attributed to nobody, not to the model")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
@@ -2141,14 +2342,19 @@ def main(argv: list[str] | None = None) -> int:
         r = verify_goldens.verify(a.set_dir, truth,
                                   a.truth_environment or a.environment,
                                   target_package=a.package,
-                                  quiet=True)
+                                  quiet=True,
+                                  definitions=(pathlib.Path(a.definitions)
+                                               if a.definitions else None))
         # The audits run with or without a truth package, so their findings are
         # read on BOTH paths. Taking the skip branch and dropping `findings`
         # put the set-name lint -- the check a truthPackage-less set most needs
         # -- behind the one thing that set cannot do.
         hard = [f for f in r["findings"] if not f.startswith("review ")]
         if r.get("skipped"):
-            golden_check = f"{r['skipped']} ({len(hard)} other finding(s))"
+            # A skip the ledger validated is a different fact from a skip.
+            via = (" -- every value-bearing case rests on validated definitions"
+                   if r.get("ledgerValidated") else "")
+            golden_check = f"{r['skipped']}{via} ({len(hard)} other finding(s))"
             print(f"  ! {golden_check}")
         else:
             golden_check = (f"{r['tally'].get('ok', 0)} ok, {r['drifted']} drifted, "
@@ -2305,8 +2511,20 @@ def main(argv: list[str] | None = None) -> int:
 
     retrieval_gate = run_retrieval_gate(a)
 
+    # Coverage is a read of the MODEL and costs a judge call per case, so the
+    # run does not measure it; it consumes a report made separately and says
+    # which one. A path that does not exist is refused here, not discovered as
+    # a traceback after the answerers have been paid for.
+    if a.coverage and not pathlib.Path(a.coverage).exists():
+        raise SystemExit(
+            f"--coverage {a.coverage} does not exist. It should be a "
+            f"check_coverage.py --out report for the model version this run "
+            f"answers from.")
+    coverage_report = coverage_report_summary(a.coverage) if a.coverage else None
+
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(
         retrievalGate=retrieval_gate,
+        coverageReport=coverage_report,
         runId=a.out.name, label=label, target=a.target,
         targetVersion=a.target_version,
         scope=a.scope if a.target == "platform" else None,
@@ -2435,12 +2653,14 @@ def main(argv: list[str] | None = None) -> int:
                       n_execute_errors=att["n_execute_errors"],
                       host_tool_uses=att["host_tool_uses"],
                       mcp_tool_uses=att.get("mcp_tool_uses"),
+                      skills_invoked=att.get("skills_invoked") or [],
                       reported_calls=att["n_get_context"] + att["n_execute"],
                       contaminated=bool(att.get("breaches")),
                       contamination_reasons=att.get("breaches") or [],
                       input_tokens=att.get("input_tokens"),
                       output_tokens=att.get("output_tokens"),
                       cache_read_tokens=att.get("cache_read_tokens"),
+                      cache_write_tokens=att.get("cache_write_tokens"),
                       cost_usd=att.get("cost_usd"),
                       num_turns=att.get("num_turns"),
                       wall_seconds=att.get("wall_seconds"),
@@ -2494,14 +2714,21 @@ def main(argv: list[str] | None = None) -> int:
                     v["gold_status_from"] = "set"
             # `gold_status_from` is for this run's own report and is not a
             # ledger field: a score event's schema does not have it.
-            sc = {k: x for k, x in v.items()
-                  if k not in ("judge_cost_usd", "gold_status_from")}
             # The schema: a score copies the attempt's contamination flag and
             # a contaminated attempt carries no verdict. This was hardcoded
             # "false" until 2026-09-01, so a flagged attempt could still pass.
+            #
+            # Written into the verdict rather than the `sc` copy, for the same
+            # reason gold_status is: the run summary reads `verdicts`, so a
+            # nulling that only reached the ledger left a flagged attempt
+            # counting as a pass in the printed score. A fully contaminated
+            # 33-case run reported `12 of 21 decided (57%)` while every score
+            # event in its own ledger carried `verdict: null`.
             tainted = bool(att.get("breaches"))
             if tainted:
-                sc["verdict"] = None
+                v["verdict"] = None
+            sc = {k: x for k, x in v.items()
+                  if k not in ("judge_cost_usd", "gold_status_from")}
             events.append(ledger.event("score", **base, **sc,
                           judge_version=JUDGE_VERSION,
                           rubric_sha=RUBRIC_SHA,
@@ -2539,10 +2766,22 @@ def main(argv: list[str] | None = None) -> int:
     # tool_call event, but scoring them only happened in build_run_package, so a
     # run you never packaged had no attribution at all. That is the half of the
     # verdict that says WHERE to fix a failure, so it belongs in the run summary.
+    # A measured coverage verdict per case, when a report was given. The label
+    # on the case is a standing hand judgement about the question; the report
+    # is a measurement against this build, which is what an attribution is
+    # about. Loaded once here, never re-derived per row.
+    measured = load_coverage_report(a.coverage) if a.coverage else {}
     retr = [score_case(c, events, (c["qid"], None, a.phase),
-                       verdicts.get(c["qid"], {}).get("verdict"))
+                       verdicts.get(c["qid"], {}).get("verdict"),
+                       measured.get(c["qid"]))
             for c in cases]
     rs = summarise(retr)
+    funnel = cascade(retr)
+    skill_uses = {
+        "attempts": len(attempts),
+        "with_skill": sum(1 for x in attempts.values() if x.get("skills_invoked")),
+        "skills": sorted({s for x in attempts.values()
+                          for s in (x.get("skills_invoked") or [])})}
     # Recall below 1.0 on a PASSING case means the required list named one path
     # to an answer the agent reached by another. That is an expectation defect,
     # not a retrieval miss, and it is why mean recall is a weaker number than
@@ -2550,6 +2789,26 @@ def main(argv: list[str] | None = None) -> int:
     alt = sum(1 for r in retr
               if r["recall"] is not None and r["recall"] < 1.0
               and not r["failed"] and r["verdict"] is not None)
+    # What the score rests on. Pure hash comparison against the ledger, no
+    # queries, so it costs nothing and runs whether or not a ledger exists.
+    # Absent ledger means no EVIDENCE block at all, rather than a reassuring one.
+    # NOT `ledger`: this module imports a module by that name, and binding it
+    # here made it a local for the whole of main(), so `ledger.run_config` at
+    # the run.json write above raised UnboundLocalError on EVERY run. No unit
+    # test caught it because none of them calls main().
+    def_ledger = verify_definitions.load_ledger(
+        pathlib.Path(a.definitions) if a.definitions else None)
+    # The run's OWN snapshot, not `--model` (which names the answerer's LLM) and
+    # not the served tree: `model.malloy` is the bytes this run pinned, so a
+    # staleness check against it answers "did the ledger describe what actually
+    # answered", which is the only version the score is about.
+    snapshot = a.out / "model.malloy"
+    evidence = verify_definitions.evidence_basis(
+        cases, def_ledger,
+        verify_definitions.stale_ids(def_ledger,
+                                     snapshot if snapshot.exists() else None),
+        a.set_dir)
+
     judge_cost = sum((v.get("judge_cost_usd") or 0) for v in verdicts.values())
     mode, tally = retrieval_summary(attempts.values())
     unscorable = sum(1 for v in verdicts.values()
@@ -2560,7 +2819,9 @@ def main(argv: list[str] | None = None) -> int:
             attempted=len(cases), decided=conf, passed=ok, near=near,
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
             unscorable=unscorable,
-            retrieval_mode=mode, tally=tally, rs=rs,
+            retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
+            coverage_report=coverage_report, cascade=funnel,
+            skill_uses=skill_uses,
             answerer_cost=cost, judge_cost=judge_cost,
             publisher=a.publisher, environment=a.environment):
         print(line)

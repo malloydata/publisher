@@ -531,6 +531,90 @@ class AValueFreeSetNeedsNoTruthServer(unittest.TestCase):
         self.assertTrue(verify(self.tmp, None, "samples", quiet=True)["skipped"])
 
 
+class TheCompositionRuleAtTheGate(unittest.TestCase):
+    """A truth server re-derives values; a ledger validates the definitions a
+    value rests on. Either is evidence. Neither present is a check that did not
+    happen, and the gate says which."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "set.json").write_text('{"name": "s"}')   # no truthPackage
+        self.led = self.tmp / "led.jsonl"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write_case(self, status="verified", ids=("measure:s:m",),
+                   verification=None):
+        g = {"status": status, "kind": "scalar", "value": {"v": 1}}
+        if verification:
+            g["verification"] = verification
+        (self.tmp / "cases.jsonl").write_text(json.dumps(
+            {"qid": "q1", "question": "x", "split": "dev", "golden": g,
+             "expectedEntities": {"required": list(ids)}}) + "\n")
+
+    def write_ledger(self, **verdicts):
+        self.led.write_text("".join(json.dumps(
+            {"entityId": e, "verdict": v, "exprSha": "s"}) + "\n"
+            for e, v in verdicts.items()))
+
+    def test_validated_definitions_lift_the_skip(self):
+        self.write_case()
+        self.write_ledger(**{"measure:s:m": "agrees"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led)
+        self.assertTrue(r["skipped"], "still no truth server")
+        self.assertTrue(r["ledgerValidated"], "but the definitions are checked")
+        self.assertEqual(r["unvalidated"], [])
+
+    def test_an_unchecked_definition_names_the_case(self):
+        self.write_case()
+        self.write_ledger(**{"measure:s:m": "unchecked"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led)
+        self.assertFalse(r["ledgerValidated"])
+        self.assertEqual(r["unvalidated"], ["q1 (unchecked)"])
+
+    def test_a_definition_missing_from_the_ledger_does_not_validate(self):
+        self.write_case()
+        self.write_ledger(**{"measure:s:other": "agrees"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led)
+        self.assertFalse(r["ledgerValidated"])
+
+    def test_an_empty_ledger_validates_nothing(self):
+        # Zero rows is not "every definition agrees"; it is no evidence at all.
+        self.write_case()
+        self.led.write_text("")
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led)
+        self.assertFalse(r["ledgerValidated"])
+
+    def test_promotion_through_the_ledger_still_needs_the_second_derivation(self):
+        # Validated definitions say the pieces are right; two derivations
+        # agreeing say the VALUE is. `verified` needs both.
+        self.write_case(status="provisional")
+        self.write_ledger(**{"measure:s:m": "agrees"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led,
+                   promote=True)
+        self.assertEqual(r["promoted"], [])
+        self.assertTrue(any("q1" in n for n in r["promotionNotes"]),
+                        r["promotionNotes"])
+
+    def test_promotion_through_the_ledger_names_the_ledger(self):
+        self.write_case(status="provisional",
+                        verification={"primaryAxis": "a", "variesAxis": "b"})
+        self.write_ledger(**{"measure:s:m": "agrees"})
+        r = verify(self.tmp, None, "samples", quiet=True, definitions=self.led,
+                   promote=True)
+        self.assertEqual(r["promoted"], ["q1"])
+        g = json.loads((self.tmp / "cases.jsonl").read_text())["golden"]
+        self.assertEqual(g["status"], "verified")
+        self.assertIn("definition ledger", g["verifiedBy"])
+
+    def test_no_ledger_keeps_the_old_behaviour(self):
+        self.write_case()
+        r = verify(self.tmp, None, "samples", quiet=True)
+        self.assertTrue(r["skipped"])
+        self.assertFalse(r["ledgerValidated"])
+
+
 class Promotion(unittest.TestCase):
     """`--promote` is the ONLY thing that writes `golden.status`.
 

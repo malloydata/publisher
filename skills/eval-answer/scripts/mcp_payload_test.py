@@ -6,7 +6,8 @@ regression they exist for: an extractor written against the flat `results`
 shape returned [] for the nested one, which scored attempts that had received
 everything at 0% recall and moved three baseline failures off "query
 construction" onto "retrieval ranking" and "model coverage" -- the wrong team,
-for a bug in the eval.
+for a bug in the eval. Labels as they read then; "retrieval ranking" has since
+become "documentation" and "query construction" "delivered, wrong".
 """
 import unittest
 

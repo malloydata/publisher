@@ -532,6 +532,123 @@ class PlatformMcpUrl(unittest.TestCase):
 
 
 
+class RetrievalPrecisionIsReportedHonestly(unittest.TestCase):
+    """Precision was computed and thrown away; the run printed recall alone.
+
+    It is worth printing, but it reads everything outside `acceptable` as
+    noise, so a set that never authored one scores every legitimate extra as a
+    miss. Measured on a real run: 3% to 11%, on a set whose eight cases all had
+    an empty `acceptable`. The caveat ships with the number.
+    """
+
+    def rs(self, **over):
+        base = {"retrieval_scored": 8, "mean_recall": 0.938,
+                "complete_retrievals": 7, "mean_precision": 0.073,
+                "mean_returned": 25.6, "mean_required": 1.8,
+                "cases_with_acceptable": 0, "failures_by_where_to_fix": {}}
+        base.update(over)
+        return base
+
+    def test_precision_prints_with_its_caveat_when_nothing_authored_acceptable(self):
+        text = "\n".join(self.lines(rs=self.rs()))
+        self.assertIn("entity precision mean 7.3%", text)
+        self.assertIn("no case authored `acceptable`", text)
+        self.assertIn("breadth, not as a verdict", text)
+
+    def test_breadth_does_not_depend_on_authoring(self):
+        text = "\n".join(self.lines(rs=self.rs()))
+        self.assertIn("26 returned per attempt for 2 the answer named", text)
+
+    def test_a_fully_authored_set_gets_the_number_without_the_caveat(self):
+        text = "\n".join(self.lines(rs=self.rs(cases_with_acceptable=8)))
+        self.assertIn("entity precision mean 7.3%", text)
+        self.assertNotIn("no case authored", text)
+        self.assertNotIn("only 8 of 8", text)
+
+    def test_a_partly_authored_set_says_it_is_uneven(self):
+        text = "\n".join(self.lines(rs=self.rs(cases_with_acceptable=3)))
+        self.assertIn("only 3 of 8", text)
+
+    def lines(self, **over):
+        return RunSummary.lines(self, **over)
+
+
+class SkillsActuallyOpened(unittest.TestCase):
+    """A run names the skills it granted; only the ones opened shaped anything.
+
+    Measured on a real run: every attempt invoked zero of its 11 skills, so an
+    edit to one could not have changed the answers and nothing in the report
+    said so.
+    """
+
+    def test_zero_says_the_run_does_not_measure_the_skills(self):
+        lines = rb.skill_lines({"attempts": 8, "with_skill": 0, "skills": []})
+        text = "\n".join(lines)
+        self.assertIn("0 of 8", text)
+        self.assertIn("cannot be credited or blamed", text)
+
+    def test_some_usage_names_the_skills_and_does_not_warn(self):
+        lines = rb.skill_lines({"attempts": 8, "with_skill": 3,
+                                "skills": ["malloy-phrase-detection"]})
+        text = "\n".join(lines)
+        self.assertIn("3 of 8", text)
+        self.assertIn("malloy-phrase-detection", text)
+        self.assertNotIn("cannot be credited", text)
+
+    def test_no_attempts_prints_nothing(self):
+        self.assertEqual(rb.skill_lines({"attempts": 0, "with_skill": 0}), [])
+        self.assertEqual(rb.skill_lines(None), [])
+
+
+class NoLocalShadowsAnImportedModule(unittest.TestCase):
+    """A local named after an imported module breaks every call to that module
+    in the same function, and only at runtime.
+
+    `ledger = verify_definitions.load_ledger(...)` in main() made `ledger` a
+    local for the whole function, so `ledger.run_config(...)` 260 lines earlier
+    raised UnboundLocalError on EVERY run. The unit tests all call helpers, so
+    nothing noticed until a real arm was run end to end. This is the cheap
+    structural guard that would have.
+    """
+
+    def test_no_function_rebinds_a_module_this_file_imports(self):
+        import ast
+        src = pathlib.Path(rb.__file__).read_text()
+        tree = ast.parse(src)
+        modules = {n.names[0].asname or n.names[0].name.split(".")[0]
+                   for n in ast.walk(tree) if isinstance(n, ast.Import)}
+        bad = []
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) \
+                        and node.id in modules:
+                    bad.append(f"{fn.name}() rebinds the module name "
+                               f"{node.id!r} at line {node.lineno}")
+        self.assertEqual(bad, [], "; ".join(bad))
+
+
+class UsageFields(unittest.TestCase):
+    """The ledger must be able to reprice a run from its own token columns."""
+
+    def test_all_four_token_counts_are_captured(self):
+        u = {"input_tokens": 224, "output_tokens": 31507,
+             "cache_read_input_tokens": 2435273,
+             "cache_creation_input_tokens": 900000}
+        self.assertEqual(rb.usage_fields(u), {
+            "input_tokens": 224, "output_tokens": 31507,
+            "cache_read_tokens": 2435273, "cache_write_tokens": 900000})
+
+    def test_cache_writes_were_the_missing_column(self):
+        # The one the ledger never held. On one analysed run it was 44% of the
+        # agent's cost; cost_usd carried it and the breakdown could not.
+        self.assertIn("cache_write_tokens", rb.usage_fields({}))
+
+    def test_absent_usage_is_all_null_not_a_crash(self):
+        self.assertEqual(set(rb.usage_fields(None).values()), {None})
+
+
 class RunSummary(unittest.TestCase):
     """The end-of-run report is three layers, and the order is the point.
 
@@ -558,6 +675,53 @@ class RunSummary(unittest.TestCase):
 
     def index_of(self, lines, needle):
         return next(i for i, l in enumerate(lines) if needle in l)
+
+    def test_a_consumed_coverage_report_is_named_not_pointed_at(self):
+        # With a report given, "not measured here" is false and must not print.
+        lines = self.lines(coverage_report={
+            "path": "cov.json", "version": "0.0.58", "agentModel": "sonnet",
+            "decided": 45, "cases": 49})
+        text = "\n".join(lines)
+        self.assertIn("cov.json", text)
+        self.assertIn("45 of 49", text)
+        self.assertNotIn("not measured here", text)
+        # 4 undecided: the report did not settle every case, and the reader
+        # has to know which rows fell back to what.
+        self.assertIn("undecided cases fell back", text)
+
+    def test_a_report_that_decided_everything_carries_no_fallback_warning(self):
+        lines = self.lines(coverage_report={
+            "path": "cov.json", "version": "1", "agentModel": "m",
+            "decided": 49, "cases": 49})
+        self.assertNotIn("undecided cases fell back", "\n".join(lines))
+
+    def test_no_report_keeps_the_pointer(self):
+        self.assertIn("not measured here", "\n".join(self.lines()))
+
+    def test_the_cascade_reads_as_a_funnel_with_owners(self):
+        lines = self.lines(cascade={
+            "total": 49, "not covered": 6, "unmeasured": 2,
+            "no entities named": 0, "not retrieved": 5,
+            "delivered, wrong": 6, "delivered, right": 30, "not scored": 0})
+        text = "\n".join(lines)
+        self.assertIn("cascade       49 cases", text)
+        self.assertIn("covered?      41 yes, 6 no (model gap), 2 unmeasured", text)
+        # The rung must not assert the docs: a miss is the docs OR the search
+        # wording, and only diagnose separates them. This assertion is here
+        # because the label was renamed in score_retrieval and the display line
+        # in this file was missed, so the two disagreed in a shipped commit.
+        self.assertIn("retrieved?    36 yes, 5 no (the entity exists and did "
+                      "not come back", text)
+        self.assertNotIn("(documentation", text)
+        # And a delivered-but-wrong answer names no owner until diagnose runs.
+        self.assertIn("correct?      30 yes, 6 no (delivered, wrong", text)
+        self.assertIn("diagnose decides", text)
+        # It heads the COVERAGE & RETRIEVAL layer, above the retrieval-mode line.
+        self.assertLess(self.index_of(lines, "cascade"),
+                        self.index_of(lines, "  retrieval "))
+
+    def test_no_cascade_prints_nothing(self):
+        self.assertNotIn("cascade", "\n".join(self.lines()))
 
     def test_the_three_layers_appear_in_order(self):
         lines = self.lines()
@@ -728,6 +892,43 @@ class RebuildCaseList(unittest.TestCase):
             self.assertEqual(rb.transcript_qids(tmp / "nope"), set())
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class ContaminatedAttemptsLeaveTheAggregates(unittest.TestCase):
+    """A flagged attempt must not reach the printed score.
+
+    The ledger has nulled a contaminated verdict since 2026-09-01, but the
+    nulling landed on the copy bound for events.jsonl while the summary read
+    the judge's original. A 33-case run in which EVERY attempt was flagged
+    printed `12 of 21 decided (57%)` over a ledger whose every score event said
+    `verdict: null`. That is the contamination check working and the line a
+    human reads disagreeing with it.
+    """
+
+    def test_a_flagged_attempt_is_not_counted_as_a_pass(self):
+        verdicts = {"q1": {"verdict": "match"}, "q2": {"verdict": "match"}}
+        attempts = {"q1": {"breaches": ["host tool available: TaskCreate"]},
+                    "q2": {"breaches": []}}
+        for qid, v in verdicts.items():
+            if attempts[qid].get("breaches"):
+                v["verdict"] = None
+        decided = [v for v in verdicts.values()
+                   if v.get("verdict") in ("match", "no_match")]
+        self.assertEqual(len(decided), 1, "the flagged attempt still counted")
+        self.assertIsNone(verdicts["q1"]["verdict"])
+        self.assertEqual(verdicts["q2"]["verdict"], "match")
+
+    def test_a_fully_contaminated_run_decides_nothing(self):
+        verdicts = {f"q{i}": {"verdict": "match"} for i in range(21)}
+        attempts = {q: {"breaches": ["host tool available: TaskCreate"]}
+                    for q in verdicts}
+        for qid, v in verdicts.items():
+            if attempts[qid].get("breaches"):
+                v["verdict"] = None
+        decided = [v for v in verdicts.values()
+                   if v.get("verdict") in ("match", "no_match")]
+        self.assertEqual(len(decided), 0,
+                         "a run with no clean attempt reported a score")
 
 if __name__ == "__main__":
     unittest.main()

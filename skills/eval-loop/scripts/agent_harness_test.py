@@ -374,5 +374,20 @@ class ReadOnlyRoles(unittest.TestCase):
             self.assertIn(tool, diagnose.READ_ONLY)
 
 
+
+class TaskToolsAreBlocked(unittest.TestCase):
+    """The newer task-management surface joins the blocklist.
+
+    `--allowedTools` grants permission without restricting availability, so the
+    denylist is the only lever. `Task` was on it; TaskCreate/Get/List/Update
+    were not, and alone flagged every attempt in a 37-case run.
+    """
+
+    def test_the_task_management_tools_are_always_blocked(self):
+        for name in ("Task", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
+                     "TaskOutput", "TaskStop"):
+            self.assertIn(name, ah.ALWAYS_BLOCKED, name)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
