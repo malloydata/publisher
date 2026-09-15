@@ -660,5 +660,74 @@ class QuestionSha(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
+
+class RunLabels(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_fresh_parent_starts_at_01(self):
+        self.assertEqual(rb.next_run_label(self.tmp / "x", "ecom", "baseline"),
+                         "ecom-baseline-01")
+
+    def test_hand_named_siblings_count_through_their_run_json_label(self):
+        # Every documented example hand-names --out, so directory names never
+        # matched the stem and four runs in one afternoon all got -01.
+        (self.tmp / "arm1").mkdir()
+        (self.tmp / "arm1" / "run.json").write_text(
+            json.dumps({"label": "ecom-baseline-01"}))
+        (self.tmp / "ecom-baseline-02").mkdir()
+        self.assertEqual(rb.next_run_label(self.tmp / "arm3", "ecom", "baseline"),
+                         "ecom-baseline-03")
+
+    def test_another_phase_or_set_does_not_consume_a_number(self):
+        (self.tmp / "a").mkdir()
+        (self.tmp / "a" / "run.json").write_text(
+            json.dumps({"label": "ecom-acceptance-01"}))
+        self.assertEqual(rb.next_run_label(self.tmp / "b", "ecom", "baseline"),
+                         "ecom-baseline-01")
+
+
+class ExistingRunRefusal(unittest.TestCase):
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_an_absent_or_empty_directory_is_fine(self):
+        self.assertIsNone(rb.existing_run_refusal(self.tmp / "new"))
+        (self.tmp / "empty").mkdir()
+        self.assertIsNone(rb.existing_run_refusal(self.tmp / "empty"))
+
+    def test_a_directory_holding_a_ledger_is_refused(self):
+        (self.tmp / "events.jsonl").write_text("{}\n")
+        why = rb.existing_run_refusal(self.tmp)
+        self.assertIn("events.jsonl", why)
+        self.assertIn("--from", why)
+
+    def test_transcripts_alone_are_refused_too(self):
+        # Exactly the state a lost ledger leaves behind; a new arm on top of it
+        # would bury the evidence that a record was ever there.
+        (self.tmp / "artifacts" / "q1").mkdir(parents=True)
+        self.assertIn("1 artifact dir", rb.existing_run_refusal(self.tmp))
+
+
+class RebuildCaseList(unittest.TestCase):
+    def test_only_cases_with_a_transcript_are_rebuilt(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            for q, files in (("a", ["answerer.jsonl"]), ("b", ["answer.md"]),
+                             ("c", ["answerer.jsonl", "answer.md"])):
+                (tmp / q).mkdir()
+                for f in files:
+                    (tmp / q / f).write_text("")
+            self.assertEqual(rb.transcript_qids(tmp), {"a", "c"})
+            self.assertEqual(rb.transcript_qids(tmp / "nope"), set())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()

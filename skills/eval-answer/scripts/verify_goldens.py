@@ -818,6 +818,15 @@ def main() -> int:
     # obeying the contract would throw away the one fact this run produced.
     if r["drifted"] or hard:
         return 1
+    if args.promote and not r.get("promoted") and r.get("promotionNotes"):
+        # Asked to promote, promoted nothing, and every candidate was held
+        # back: the set is exactly as unscorable as before. 0 read as "done"
+        # and the next run refused with the same message.
+        print(f"\n--promote promoted 0 of {len(r['promotionNotes'])} candidate(s); "
+              f"the set is still unscorable. Each line above says what is "
+              f"missing (usually the second derivation: `golden.verification` "
+              f"or gold/<qid>.json with verifyRows).", file=sys.stderr)
+        return CANNOT_RUN
     if r.get("skipped"):
         print("The audits above ran without a truth server. No golden was "
               "re-derived, so this says NOTHING about whether the goldens still "

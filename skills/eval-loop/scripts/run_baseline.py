@@ -287,18 +287,74 @@ def git_sha(path: pathlib.Path, scope: pathlib.Path | None = None) -> str | None
 
 
 def next_run_label(out: pathlib.Path, set_name: str, phase: str) -> str:
-    """`<set>-<phase>-<nn>`, with nn the next free number beside `out`."""
+    """`<set>-<phase>-<nn>`, with nn the next free number beside `out`.
+
+    Numbers are taken from sibling directory NAMES and from the `label` in
+    each sibling's `run.json`. The names alone were not enough: every
+    documented example hand-names `--out` (`results/smoke`, `results/arm1`),
+    so no sibling ever matched the stem and four runs in one afternoon were
+    all labelled `-01`, which the run package then showed as one arm.
+    """
     stem = f"{set_name}-{phase}"
-    siblings = out.parent.glob(f"{stem}-*") if out.parent.exists() else []
     used = set()
-    for s in siblings:
-        tail = s.name[len(stem) + 1:]
-        if tail.isdigit():
-            used.add(int(tail))
+    if out.parent.exists():
+        for s in out.parent.iterdir():
+            if not s.is_dir() or s == out:
+                continue
+            names = [s.name]
+            rj = s / "run.json"
+            if rj.exists():
+                try:
+                    names.append(str(json.loads(rj.read_text()).get("label") or ""))
+                except (json.JSONDecodeError, OSError):
+                    pass
+            for nm in names:
+                tail = nm[len(stem) + 1:] if nm.startswith(stem + "-") else ""
+                if tail.isdigit():
+                    used.add(int(tail))
     n = 1
     while n in used:
         n += 1
     return f"{stem}-{n:02d}"
+
+
+def existing_run_refusal(out: pathlib.Path) -> str | None:
+    """Why a fresh arm may not write into `out`, or None when it may.
+
+    A second run into a directory that already holds one overwrote
+    `events.jsonl` in place and left the artifacts of both runs side by side
+    under one ledger that described only the second: measured on a smoke
+    directory, three events became two and a second case's transcript appeared
+    beside the first. `--rebuild`, `--rejudge` and `--from` are the ways to
+    revisit a run; a plain arm needs an empty or absent directory.
+    """
+    if not out.exists():
+        return None
+    record = [f for f in ("run.json", "events.jsonl") if (out / f).exists()]
+    art = out / "artifacts"
+    n_art = sum(1 for d in art.iterdir() if d.is_dir()) if art.exists() else 0
+    if not record and not n_art:
+        return None
+    what = ", ".join(record + ([f"{n_art} artifact dir(s)"] if n_art else []))
+    return (f"{out} already holds a run ({what}). A new arm would overwrite "
+            f"its events.jsonl and mix its artifacts. Use a fresh --out, or "
+            f"--rebuild / --rejudge to re-derive this run in place, or "
+            f"--from {out} --out <new> to re-score it.")
+
+
+def transcript_qids(art: pathlib.Path) -> set[str]:
+    """The cases a rebuild can actually re-derive: those with a transcript.
+
+    `--from` copies the source run's transcripts and then walked EVERY case in
+    the set, so a run made with `--only` (every smoke, every targeted run) hit
+    four cases with no transcript, tripped the four-strikes abort, and exited
+    reporting `0 of 0 decided`. A rebuild's case list is the transcripts it
+    has, unless `--only` narrows it further.
+    """
+    if not art.exists():
+        return set()
+    return {d.name for d in art.iterdir()
+            if d.is_dir() and (d / "answerer.jsonl").exists()}
 
 
 # Tools only the open-source Publisher exposes. A skill naming these is a
@@ -1976,6 +2032,19 @@ def main(argv: list[str] | None = None) -> int:
     if a.only:
         want = {q.strip() for q in a.only.split(",")}
         cases = [c for c in cases if c["qid"] in want]
+    if a.rebuild:
+        have = transcript_qids(a.out / "artifacts")
+        if not have:
+            raise SystemExit(f"--rebuild: no transcript under {a.out / 'artifacts'}, "
+                             f"so there is nothing to re-derive")
+        missing_t = [c["qid"] for c in cases if c["qid"] not in have]
+        if a.only and missing_t:
+            raise SystemExit(f"--rebuild: --only names {len(missing_t)} case(s) "
+                             f"with no transcript here: {', '.join(missing_t[:6])}")
+        if missing_t:
+            print(f"  rebuild: {len(have)} of {len(cases)} cases have a transcript "
+                  f"here; the other {len(missing_t)} were not part of this run")
+        cases = [c for c in cases if c["qid"] in have]
     if a.limit:
         cases = cases[:a.limit]
     if not cases:
@@ -2031,7 +2100,17 @@ def main(argv: list[str] | None = None) -> int:
               "(--truth-publisher); goldens are taken as they stand")
 
     served_identity = package_identity(a.publisher, a.environment, a.package)
-    label = a.label or next_run_label(a.out, a.set_dir.name, a.phase)
+    set_meta = {}
+    if (a.set_dir / "set.json").exists():
+        set_meta = json.loads((a.set_dir / "set.json").read_text())
+    if not (a.rebuild or a.rejudge or a.from_run):
+        refusal = existing_run_refusal(a.out)
+        if refusal:
+            raise SystemExit(refusal)
+    # The set's declared name, not its directory: a set copied to `scratch/set`
+    # is still the ecommerce set, and its runs should say so.
+    label = a.label or next_run_label(a.out, set_meta.get("name") or a.set_dir.name,
+                                      a.phase)
     art = a.out / "artifacts"
     art.mkdir(parents=True, exist_ok=True)
 
@@ -2042,9 +2121,6 @@ def main(argv: list[str] | None = None) -> int:
     rubric = ""
     JUDGE_VERSION, RUBRIC_SHA = judge_pins(rubric_path)
 
-    set_meta = {}
-    if (a.set_dir / "set.json").exists():
-        set_meta = json.loads((a.set_dir / "set.json").read_text())
     if not a.model_path:
         a.model_path = set_meta.get("targetModelPath") or "model.malloy"
 
@@ -2441,7 +2517,9 @@ def main(argv: list[str] | None = None) -> int:
                                        "gold_note": note, "declaredBy": src}
                                       for q, st, note, src in doubted],
                       status="aborted" if aborted else "complete")
-    return 0
+    # An aborted arm wrote a partial ledger and said so in run.json; it did not
+    # do what was asked, and a caller reading 0 would treat it as an arm.
+    return 1 if aborted else 0
 
 
 if __name__ == "__main__":
