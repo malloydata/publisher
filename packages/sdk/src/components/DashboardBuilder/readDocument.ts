@@ -261,8 +261,12 @@ function readControlTags(tag: TagLike | null | undefined): Partial<LocalGiven> {
 
 /** The `tiles=[…]` entries, in order, as written. */
 function tileEntries(artifactLine: string): string[] {
-   const list = /tiles\s*=\s*\[([\s\S]*?)\]/.exec(artifactLine)?.[1];
-   if (list === undefined) return [];
+   const key = artifactLine.search(/tiles\s*=\s*\[/);
+   if (key < 0) return [];
+   const open = artifactLine.indexOf("[", key);
+   const close = artifactLine.indexOf("]", open);
+   if (close < 0) return [];
+   const list = artifactLine.slice(open + 1, close);
    return [...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 }
 

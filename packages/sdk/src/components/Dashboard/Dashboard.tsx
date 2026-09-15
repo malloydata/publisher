@@ -3,7 +3,7 @@
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
 import Markdown from "markdown-to-jsx";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { DashboardManifest } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
@@ -408,24 +408,15 @@ function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
 export function DashboardProse({
    title,
    description,
-   trailing,
 }: {
    title: string;
    description?: string;
-   /** Rendered on the title's row, hard right — the builder's undo/redo/save. */
-   trailing?: ReactNode;
 }) {
    return (
       <Box>
-         <Stack
-            direction="row"
-            sx={{ gap: 1, alignItems: "center", flexWrap: "wrap" }}
-         >
-            <Typography variant="h5" sx={{ fontWeight: 600, flexGrow: 1 }}>
-               {title}
-            </Typography>
-            {trailing}
-         </Stack>
+         <Typography variant="h5" sx={{ fontWeight: 600 }}>
+            {title}
+         </Typography>
          {description && (
             <Box
                sx={{

@@ -1,13 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   act,
-   fireEvent,
-   render,
-   renderHook,
-   screen,
-} from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
 import type { DrillField, DrillTagReader } from "./resolveDrill";
 import { useDrill } from "./useDrill";
@@ -70,44 +64,19 @@ describe("useDrill: the rows behind a value", () => {
       expect(onRows).not.toHaveBeenCalled();
    });
 
-   it("offers the rows beside a drill's destination, in one menu", () => {
+   it("leaves a drilled value to its drill: one destination still navigates at once", () => {
       const onRows = mock(() => {});
       const onSelf = mock(() => {});
-      const Surface = () => {
-         const { drill, drillMenu } = useDrill({
-            onRows,
-            onSelf,
-            selfLabel: "Filter this dashboard",
-         });
-         return (
-            <>
-               <button
-                  onClick={() =>
-                     drill.onClick({
-                        field: dimension("cat", {
-                           to: ["self"],
-                           given: "CATEGORY",
-                        }),
-                        value: "Jeans",
-                        context: "overview -> by_cat",
-                     })
-                  }
-               >
-                  cell
-               </button>
-               {drillMenu}
-            </>
-         );
-      };
-      render(<Surface />);
-      fireEvent.click(screen.getByText("cell"));
-      // A drill with one destination navigated on its own before; with rows
-      // on offer it asks.
-      expect(onSelf).not.toHaveBeenCalled();
-      expect(screen.getByText("Filter this dashboard")).toBeDefined();
-      fireEvent.click(screen.getByText("Show the rows"));
-      expect(onRows).toHaveBeenCalledTimes(1);
-      expect(onSelf).not.toHaveBeenCalled();
+      const { result } = renderHook(() => useDrill({ onRows, onSelf }));
+      act(() =>
+         result.current.drill.onClick({
+            field: dimension("cat", { to: ["self"], given: "CATEGORY" }),
+            value: "Jeans",
+            context: "overview -> by_cat",
+         }),
+      );
+      expect(onSelf).toHaveBeenCalledWith("CATEGORY", "Jeans");
+      expect(onRows).not.toHaveBeenCalled();
    });
 
    it("still navigates straight away when rows are not on offer", () => {

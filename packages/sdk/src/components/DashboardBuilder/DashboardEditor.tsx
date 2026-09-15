@@ -341,7 +341,7 @@ function Surface({
    // The catalog: the models this file imports, which is where its tiles'
    // sources and their fields are declared.
    const importPaths = useMemo(() => {
-      const dir = modelPath.replace(/[^/]*$/, "");
+      const dir = modelPath.slice(0, modelPath.lastIndexOf("/") + 1);
       const resolved = new Set<string>();
       for (const imported of opened.document.imports) {
          const url = new URL(imported.from, `https://malloy.invalid/${dir}`);

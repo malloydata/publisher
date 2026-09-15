@@ -48,17 +48,14 @@ export interface UseDrillOptions {
    selfLabel?: string;
    /**
     * Show the rows behind a grouped value. With it, EVERY dimension cell is
-    * clickable — one with no `# drill` opens the rows directly, one with a
-    * drill offers the rows beside its destinations. Omitted on a surface with
-    * nowhere to show them, and cells then click only where a tag says so.
+    * clickable: one with no `# drill` this surface can honour opens the rows;
+    * one with a drill behaves exactly as it does without this option, since a
+    * drill is the author's own instruction for that value. Omitted on a
+    * surface with nowhere to show them, and cells then click only where a tag
+    * says so.
     */
    onRows?: (request: DrillRowsRequest) => void;
-   /** What the rows entry is called in the menu. */
-   rowsLabel?: string;
 }
-
-/** The literal entry the menu uses for the rows behind a value. */
-const ROWS = "\u0000rows";
 
 /**
  * What a surface hands to its result renderer to become drillable: the click
@@ -85,9 +82,7 @@ export interface UseDrillResult {
 }
 
 interface DrillMenuState {
-   /** Absent when the click has rows behind it but no `# drill`. */
    intent?: DrillIntent;
-   rows?: DrillRowsRequest;
    destinations: string[];
    event?: MouseEvent;
    top: number;
@@ -110,7 +105,6 @@ export function useDrill({
    selfLabel = "Filter this view",
    canSelf,
    onRows,
-   rowsLabel = "Show the rows",
 }: UseDrillOptions): UseDrillResult {
    // A cell inside the renderer's own DOM is the anchor, and this component
    // holds no ref to it, so the menu is positioned from the click coordinates.
@@ -180,14 +174,13 @@ export function useDrill({
             if (rows) onRows?.(rows);
             return;
          }
-         if (destinations.length === 1 && !rows && intent) {
+         if (destinations.length === 1 && intent) {
             go(intent, destinations[0], payload.event);
             return;
          }
          setMenu({
             ...(intent ? { intent } : {}),
-            ...(rows ? { rows } : {}),
-            destinations: rows ? [...destinations, ROWS] : destinations,
+            destinations,
             event: payload.event,
             top: payload.event?.clientY ?? 0,
             left: payload.event?.clientX ?? 0,
@@ -234,18 +227,13 @@ export function useDrill({
                      key={destination}
                      onClick={() => {
                         close();
-                        if (!menu) return;
-                        if (destination === ROWS) {
-                           if (menu.rows) onRows?.(menu.rows);
-                        } else if (menu.intent)
+                        if (menu?.intent)
                            go(menu.intent, destination, menu.event);
                      }}
                   >
-                     {destination === ROWS
-                        ? rowsLabel
-                        : destination === DRILL_SELF
-                          ? selfLabel
-                          : humanizeSlug(destination)}
+                     {destination === DRILL_SELF
+                        ? selfLabel
+                        : humanizeSlug(destination)}
                   </MenuItem>
                ),
             )}

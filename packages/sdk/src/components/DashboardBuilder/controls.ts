@@ -194,13 +194,10 @@ export const OPERATORS: ReadonlyArray<{ op: string; label: string }> = [
  * distinct from any name already taken.
  */
 export function givenNameFor(field: string, taken: Iterable<string>): string {
-   const base =
-      field
-         .split(".")
-         .at(-1)
-         ?.replace(/[^A-Za-z0-9]+/g, "_")
-         .replace(/^_+|_+$/g, "")
-         .toUpperCase() || "FILTER";
+   const words = (field.split(".").at(-1) ?? "")
+      .split(/[^A-Za-z0-9]+/)
+      .filter(Boolean);
+   const base = words.join("_").toUpperCase() || "FILTER";
    const stem = /^[A-Z_]/.test(base) ? base : `F_${base}`;
    const used = new Set(taken);
    if (!used.has(stem)) return stem;

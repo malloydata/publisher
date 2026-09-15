@@ -216,6 +216,10 @@ function drillTagLine(drill: DashboardDrill): string {
 
 const drillKey = (d: DashboardDrill) => `${d.source}.${d.name}`;
 
+/** A tag string value, with the characters the tag parser unescapes escaped. */
+const quoted = (text: string) =>
+   `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+
 /**
  * One tile's identity, ignoring presentation and position — but not its
  * declaration: a tile redeclared from another view is a different tile to
@@ -446,10 +450,7 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          else inner = `${inner.replace(/\s+$/, "")} ${key}=${value} `;
       };
       if (current.title !== next.title)
-         setProperty(
-            "title",
-            next.title ? `"${next.title.replace(/"/g, '\\"')}"` : undefined,
-         );
+         setProperty("title", next.title ? quoted(next.title) : undefined);
       if (current.autorun !== next.autorun)
          setProperty(
             "autorun",
@@ -465,7 +466,7 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          // what the document holds and what is written back here.
          if (entries.length > 0)
             inner = `${inner.replace(/\s+$/, "")} givens { ${entries
-               .map(([k, v]) => `${k}="${v.replace(/"/g, '\\"')}"`)
+               .map(([k, v]) => `${k}=${quoted(v)}`)
                .join(" ")} }`;
       }
       inner = inner.replace(/\s{2,}/g, " ");

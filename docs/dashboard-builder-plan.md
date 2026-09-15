@@ -88,7 +88,7 @@ givens textually under their `source:` line rather than trusting the tree.
 | Live view                  | Tiles run the document's bindings on the dashboard's own extension, so an edit is visible before it is saved; the control row follows the document.                         |
 | Undo/redo                  | Whole-document history, one entry per gesture. Keyboard: ⌘Z / ⌘⇧Z, ⌘S, Esc, ←/→ to nudge width.                                                                             |
 | Validation                 | A binding to a field the source does not have, or of a type the given cannot compare, is marked and blocks Apply when the catalog is known.                                 |
-| Viewer                     | Every grouped value opens the rows behind it (`drill:` through the tile's view); each tile has "Explore from here" into the model explorer.                                 |
+| Viewer                     | A grouped value with no `# drill` opens the rows behind it (`drill:` through the tile's view); a drill behaves as the tag says; each tile has "Explore from here" into the model explorer.                                 |
 | Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, exported, rows shown, explored — each with outcome and duration. The Console logs them structured.     |
 | Notebooks                  | `.malloynb` is viewed read-only (`Notebook`) and stays that way. The authored notebook is a Malloyyo-style format that does not exist yet; see §7.                          |
 | Where it lives             | The SDK's lazy `builder` entry; the Console's `dashboards/<slug>/edit` page; saves go to the browser's `DocumentStorage`, Export hands the file back for the package.       |
@@ -212,7 +212,7 @@ deferred shipped on 2026-09-15.
 7. **Rows behind a value, and explore from here.** Every grouped value in a
    composite tile is clickable: one with no `# drill` opens the rows behind it
    (Malloy's `drill:` through the tile's view, so the tile's own filters and the
-   controls apply); one with a drill offers the rows beside its destinations.
+   controls apply); one with a drill does what its tag says, as before.
    Each tile's heading opens the model explorer on the tile's source with its
    view as the query.
 8. **Export.** The Malloy file, from the editor's bar. CSV and PNG per tile are
