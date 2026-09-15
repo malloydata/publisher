@@ -26,12 +26,13 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { MOD } from "./useBuilderShortcuts";
 
 /**
- * The edit bar across the top of the builder — Looker's shape: the fact that
- * you are editing on the left, the things you can do about it on the right.
+ * The edit bar across the top of the builder, in the shape every builder has
+ * settled on: that you are editing on the left, what you can do about it on
+ * the right.
  *
  * Sticky, so undo and save stay in reach on a long dashboard; the reader's own
  * header (title and description) stays in the page below it rather than being
- * repeated here, which is also what Looker does.
+ * repeated here.
  */
 export interface BuilderToolbarProps {
    canUndo: boolean;
@@ -48,7 +49,7 @@ export interface BuilderToolbarProps {
    onAddTile?: () => void;
    /** Open the page's settings, anchored to the button that asked. */
    onSettings: (anchor: HTMLElement) => void;
-   /** Looker's quick layout: every tile this file owns to one width. */
+   /** Quick layout: every tile this file owns to one width. */
    onQuickLayout: (share: 1 | 2 | 3 | 4) => void;
 }
 
@@ -219,9 +220,8 @@ export function BuilderToolbar({
             {onSave && (
                <>
                   <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
-                  {/* Looker says "Unsaved changes" beside Save, and it is the
-                      right thing to say: the button's label alone reads as a
-                      command, not as a state. */}
+                  {/* "Unsaved changes" beside Save: the button's label alone
+                      reads as a command, not as a state. */}
                   <Typography
                      variant="caption"
                      aria-live="polite"

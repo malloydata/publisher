@@ -103,7 +103,7 @@ export function TileMenu({
                            })
                         }
                      />
-                     {/* Looker's width presets, as fractions of this grid. A
+                     {/* Width presets, as fractions of this grid. A
                          tile's width is otherwise a drag, and a drag cannot
                          say "a third". */}
                      <Stack

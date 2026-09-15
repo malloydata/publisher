@@ -33,7 +33,7 @@ export function FilterStrip({
    const { theme } = usePublisherTheme();
    return (
       <>
-         {/* The filter band — Looker's, for this format. The header is the
+         {/* The filter band, as every dashboard builder has one. The header is the
        dashboard's controls as this FILE has them: a chip per control,
        which opens its window — the one place a control is edited, bound
        or removed, so the consequences are in view when it happens. A ×

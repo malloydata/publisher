@@ -25,7 +25,7 @@ import { useServer } from "../ServerProvider";
 import { now } from "./telemetry";
 
 /**
- * The rows behind a value: Looker's "show all" on a cell, as one query.
+ * The rows behind a value: "show the rows" on a cell, as one query.
  *
  * A grouped value is an aggregate over rows of the tile's source, and Malloy's
  * `drill:` names exactly those rows: `drill: <view>.<field> = <value>` applies

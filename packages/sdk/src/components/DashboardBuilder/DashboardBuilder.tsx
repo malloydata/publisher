@@ -71,7 +71,7 @@ export type { BuilderGiven } from "./controls";
  * set its width, and the tile itself to reorder — into the empty end of a row
  * to change which row it is in. The tile's own menu holds its title and
  * subtitle. FILTERS are configured in exactly one place, the strip under the
- * header: each chip opens Looker's "tiles to update" window for that control,
+ * header: each chip opens the tiles-to-update window for that control,
  * which is where a tile is bound or unbound, and "Add filter" declares a new
  * one in this file — the convention {@link LocalGiven} describes — or binds one
  * the model offers. Nothing about filters is on the tiles themselves: a second

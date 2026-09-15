@@ -111,8 +111,8 @@ export function TileFrame({
                   // as the slot it was leaving. Styled by the
                   // attributes instead: the tile in hand is
                   // solid and lifted; the slot it will land
-                  // in is the faded, dashed one. Looker draws
-                  // the same pair. Doubled so they outrank
+                  // in is the faded, dashed one — the pair every
+                  // drag-and-drop grid draws. Doubled so they outrank
                   // the hover rule below on the tile in hand.
                   "&&[data-dnd-dragging]": {
                      opacity: 1,
@@ -126,8 +126,8 @@ export function TileFrame({
                   },
                   "&:hover .builder-affordance, &:focus-within .builder-affordance":
                      { opacity: 1 },
-                  // A hovered tile lifts, the way Looker's
-                  // does in edit mode: the one card that
+                  // A hovered tile lifts, as a card does in any
+                  // builder's edit mode: the one card that
                   // will respond to the pointer, told apart
                   // from the ones that will not.
                   "&:hover": {
@@ -213,8 +213,8 @@ export function TileFrame({
                   </IconButton>
                )}
 
-               {/* Looker reports a tile's width, height and
-                share of the dashboard while you drag it.
+               {/* A tile's width and share of the dashboard,
+                reported while you drag it, as the best builders do.
                 Height is not ours to show, but the span and
                 its share are exactly what a flow grid leaves
                 you guessing at. */}

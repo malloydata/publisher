@@ -179,7 +179,7 @@ export function Dashboard({
    });
 
    // The rows behind a clicked value, and a tile's query in the explorer —
-   // Looker's two ways past a number. Composite tiles only: each names its
+   // the two ways past a number. Composite tiles only: each names its
    // source, which is what the rows are of and what the explorer opens on.
    const [rows, setRows] = useState<RowsRequest | undefined>(undefined);
    const [exploring, setExploring] = useState<string | undefined>(undefined);
