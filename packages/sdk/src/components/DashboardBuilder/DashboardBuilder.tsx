@@ -77,9 +77,9 @@ export type { BuilderGiven } from "./controls";
  * the model offers. Nothing about filters is on the tiles themselves: a second
  * place to edit the same binding is a second place for it to be wrong.
  *
- * Adding or removing tiles is refused by the writer, so it is not offered here
- * either — a control that always fails is worse than no control. Reordering is
- * NOT in that class and is offered: see `onDragOver`.
+ * Tiles are added from the package's catalog and removed from their menu; a
+ * save that adds or removes one shows the file's diff first, because those
+ * moves relocate declarations and the comments beside them.
  */
 export interface DashboardBuilderProps {
    /** The file being edited. */
@@ -466,12 +466,8 @@ export function DashboardBuilder({
       // together and stay aligned with each other. 4px = the ring's 2px offset
       // plus its 2px width.
       <Stack sx={{ gap: 2, p: "4px" }}>
-         {/* The READER's own header, over the document being edited: the title
-             and the `##"` description as markdown, from the same component the
-             dashboard renders. Only the title was drawn here before, so a
-             dashboard carrying a narrative header lost it the moment it was
-             opened — on the one surface whose whole job is showing the author
-             what a reader will get. */}
+         {/* The reader's own header, from the component the dashboard renders:
+             the surface whose job is showing the author what a reader gets. */}
          <BuilderToolbar
             canUndo={editor.canUndo}
             canRedo={editor.canRedo}

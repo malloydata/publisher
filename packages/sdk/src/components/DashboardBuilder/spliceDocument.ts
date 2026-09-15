@@ -31,9 +31,8 @@ import {
  *
  * The safety property is a SEMANTIC round-trip, not a byte one. After splicing,
  * the result is read back and compared against the document that was asked for;
- * a mismatch refuses the write. An earlier design gated on byte-identity with a
- * freshly generated file, which is a much weaker thing to know and which made
- * every commented file read-only.
+ * a mismatch refuses the write. Byte-identity with a regenerated file would be
+ * a weaker thing to know, and would make every commented file read-only.
  *
  * A refused write NEVER discards the edit. The caller keeps its document and is
  * told the writer produced something it could not read back — that is a defect
@@ -135,10 +134,10 @@ function tagKey(text: string): string | undefined {
  * `# bar_chart`, `# currency`, a host's own tag — is the renderer's, not ours,
  * and survives an edit like any other unmodelled Malloy.
  *
- * Measured before this existed: unticking one filter on the storefront
- * overview's KPI strip deleted its `# big_value`, and the strip came back as a
- * one-row table. The round-trip gate cannot catch that, because the projection
- * never held the tag it lost.
+ * Without this rule, unticking one filter on the storefront overview's KPI
+ * strip deleted its `# big_value` and the strip came back as a one-row table;
+ * the round-trip gate cannot catch that, because the projection never held
+ * the tag it lost.
  */
 const MODELLED_TAG_KEYS: ReadonlySet<string> = new Set([
    "colspan",

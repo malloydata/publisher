@@ -48,10 +48,9 @@ export interface GridTile {
  * Shared by the READER ({@link Dashboard}) and the BUILDER, which is the whole
  * point of it being a component rather than a rule each surface applies. An
  * author arranging a dashboard is arranging the thing a reader will open, so
- * the two cannot be allowed to lay tiles out even slightly differently — and
- * before this existed they already did: the builder restated the track and the
- * gap but not the grid item's own `display: grid`, so its rows ended at ragged
- * heights while the reader's did not.
+ * the two cannot be allowed to lay tiles out even slightly differently; a
+ * restated track without the grid item's own `display: grid` ends rows at
+ * ragged heights on one surface and level on the other.
  *
  * **Why the item is a grid and not a block.** A grid item stretches to its row,
  * but a block CHILD of one does not — it keeps its content height. Results

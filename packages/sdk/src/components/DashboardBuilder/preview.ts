@@ -9,15 +9,9 @@ import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
 /**
  * What a reader would see if the DOCUMENT were the file: the controls, and
  * each tile's query — so the builder's live view follows an edit the moment it
- * is made, rather than the file on the server's disk.
- *
- * The live view used to run from that file. The control row was the server's
- * manifest and each tile ran `overview -> revenue_trend`, the view as saved,
- * with whatever bindings it had when the package loaded. So unbinding a tile
- * changed the document and, after a save, the text — and the live tile kept
- * its disk bindings and kept filtering; removing a control edited the
- * document, and the live filter box stayed the server's list. The edit looked
- * like it did nothing, because on screen it did nothing.
+ * is made, rather than the file on the server's disk. Run from the file, an
+ * unbound tile keeps filtering and a removed control stays in the row until a
+ * save lands, so the edit looks like it did nothing.
  *
  * Two functions, one per half of what a reader sees. Both are pure, so the
  * host can hold the live document and derive its preview from it. A given the

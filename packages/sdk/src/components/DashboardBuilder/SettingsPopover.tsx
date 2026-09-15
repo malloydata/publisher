@@ -17,10 +17,7 @@ import type { DashboardDocument } from "./document";
 /**
  * The page's own settings, off the edit bar: its title, the markdown
  * description under it, the grid's width, and whether controls run as they
- * change or behind an Apply button.
- *
- * Committed ONCE, on close, as a single history entry — a title is typed a
- * letter at a time and undo should take back the title, not the letter.
+ * change or behind an Apply button. Edits commit on close (`useDraft`).
  */
 export interface PageSettings {
    title: string;

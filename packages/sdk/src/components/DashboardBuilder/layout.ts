@@ -13,11 +13,10 @@ import { tileKey, type DashboardTile } from "./document";
  * Reordering keeps the ROW STRUCTURE and moves only the tiles through it.
  *
  * `# break` starts a fresh row. It is written as a tag on a tile, so the
- * obvious reading is that it belongs to the tile and should travel with it —
- * and that is what this did at first. The result was wrong in practice: drag
- * one of four half-width tiles and its `break` lands mid-row, forcing a new
- * row and leaving the half beside it empty. Four `colspan=6` tiles stopped
- * being a 2x2 the moment you moved one.
+ * obvious reading is that it belongs to the tile and should travel with it.
+ * That is wrong in practice: drag one of four half-width tiles and its `break`
+ * lands mid-row, forcing a new row and leaving the half beside it empty — four
+ * `colspan=6` tiles stop being a 2x2 the moment one moves.
  *
  * The tag is positional in MEANING even though it is stored per tile: it
  * says "a row starts here", which is a fact about the grid, not about the

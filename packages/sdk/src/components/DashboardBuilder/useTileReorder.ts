@@ -29,10 +29,10 @@ export function useTileReorder({
    // A move in flight: the tiles as they will stand if the drag ends now.
    // CUMULATIVE — each report moves the tile from where the last report left
    // it, which is the sortable convention and what the library's optimistic
-   // sorting assumes. The first version rebuilt the order from the document on
-   // every report, and as the row reflowed under the pointer the tile beneath
-   // it changed, so the target flipped back and forth. State for the render,
-   // and a ref for `onDragEnd`, which can fire before React has committed it.
+   // sorting assumes; rebuilt from the document on every report, the target
+   // flips back and forth as the row reflows under the pointer. State for the
+   // render, and a ref for `onDragEnd`, which can fire before React has
+   // committed it.
    const [preview, setPreview] = useState<DashboardTile[] | undefined>(
       undefined,
    );

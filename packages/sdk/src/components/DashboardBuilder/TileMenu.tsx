@@ -14,19 +14,13 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { DashboardTile } from "./document";
 
 /**
- * A tile's own settings, on the tile.
- *
- * The properties panel this replaces sat under the page, so editing a tile
- * meant scrolling away from it. This is a popover off the tile's menu button:
- * its title and subtitle. Its row is set by dragging it — a drop into the empty
- * end of a row is the whole of what "start a new row" meant — and its card is
- * the reader's to decide, so neither is a toggle here. Which controls it
- * answers to is NOT here either: filters are configured in one place, the strip
- * under the header, whose window maps a control across tiles.
- *
- * Edits are committed ONCE, on close, as a single history entry. Per-keystroke
- * commits would put a document in the undo stack for every letter typed into a
- * title, and undo would then walk back through the word.
+ * A tile's own settings, on the tile: a popover off its menu button, so
+ * editing it never means scrolling away from it. Its title, subtitle, width
+ * presets, clickable cells and removal. Its row is set by dragging it — a drop
+ * into the empty end of a row is what "start a new row" means — and its card
+ * is the reader's to decide, so neither is a toggle here. Which controls it
+ * answers to is not here either: filters are configured in one place, the
+ * strip under the header. Edits commit on close (`useDraft`).
  */
 export interface TileMenuProps {
    anchor: HTMLElement | null;
