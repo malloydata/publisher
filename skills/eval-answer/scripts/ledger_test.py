@@ -108,6 +108,46 @@ class StoredRuns(unittest.TestCase):
         self.assertTrue(any("second score" in e for e in errors), errors)
 
 
+class TheUnderReportFloor(unittest.TestCase):
+    """The floor consults two fields and used to be gated on a third.
+
+    `mcp_tool_uses` was bound and conjoined into the condition without ever
+    being compared, and it is OPTIONAL on an attempt event -- so the check
+    written to catch an under-reporting answerer skipped every attempt that
+    omitted it. It was applied to exactly the attempts carrying a field it
+    never read.
+    """
+
+    def _run_dir(self, attempt: dict):
+        d = pathlib.Path(tempfile.mkdtemp())
+        (d / "run.json").write_text(json.dumps(RUN))
+        (d / "events.jsonl").write_text(
+            json.dumps({"kind": "attempt", **ATTEMPT, **attempt}) + "\n")
+        return d
+
+    def _floor_warnings(self, attempt: dict):
+        _, warnings = ledger.validate_run(self._run_dir(attempt))
+        return [w for w in warnings if "reported_calls" in w]
+
+    def test_it_fires_without_mcp_tool_uses(self):
+        # The regression: this attempt under-reports and carries no
+        # `mcp_tool_uses`, which used to be enough to skip the floor entirely.
+        self.assertTrue(self._floor_warnings(
+            {"reported_calls": 9, "host_tool_uses": 2}))
+
+    def test_it_still_fires_with_mcp_tool_uses(self):
+        self.assertTrue(self._floor_warnings(
+            {"reported_calls": 9, "host_tool_uses": 2, "mcp_tool_uses": 1}))
+
+    def test_a_consistent_attempt_is_clean(self):
+        self.assertEqual(self._floor_warnings(
+            {"reported_calls": 2, "host_tool_uses": 5}), [])
+
+    def test_an_attempt_reporting_neither_number_is_not_judged(self):
+        # Absent is not "zero calls"; there is nothing to compare.
+        self.assertEqual(self._floor_warnings({}), [])
+
+
 class WriteContract(unittest.TestCase):
     def test_an_unknown_field_raises_on_write(self):
         with self.assertRaises(ValueError) as cm:
@@ -122,6 +162,21 @@ class WriteContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             ledger.event("score", qid="q1", sample=0, phase="baseline",
                          verdict="probably", reason="r")
+
+    def test_a_tool_call_records_the_filters_it_ran_under(self):
+        """`query`, `modelPath` and `filterParams` are one fact about one call.
+
+        A re-execution replays the query; the file and the filter values decide
+        what it means. Sent under another call's `report_id` it returns real
+        rows for the wrong population and nothing says so -- unlike the wrong
+        file, which at least errors. The field has to be writable for that
+        pairing to be auditable from the ledger at all.
+        """
+        e = ledger.event("tool_call", qid="q1", sample=0, phase="baseline",
+                         tool="execute_query", query="run: x -> y",
+                         modelPath="a.malloy",
+                         filterParams={"report_id": "123"})
+        self.assertEqual(e["filterParams"], {"report_id": "123"})
 
     def test_run_config_requires_identity(self):
         with self.assertRaises(ValueError) as cm:
