@@ -63,6 +63,17 @@ import {
    type FetchedManifest,
 } from "./manifest_loader";
 import { ApiConnection, Model } from "./model";
+import {
+   buildDashboardManifest,
+   dashboardSlug,
+   isDashboardModelPath,
+   lintDashboard,
+   lintDrillTargets,
+   lintGivenTags,
+   lintSelfDrills,
+   lintUndiscoveredDashboard,
+   type DashboardModelFacts,
+} from "./dashboard";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 
@@ -209,6 +220,124 @@ export type CompileScope = (typeof COMPILE_SCOPES)[number];
  *  to, resolvable from `at.url` — load-bearing at scope "package", where
  *  problems from every file share one array. */
 export type TaggedLogMessage = LogMessage & { model?: string };
+
+/**
+ * Dashboard and render-tag findings for a dry-run package compile.
+ *
+ * The Malloy compiler answers "does this parse and resolve". It does not answer
+ * "will this dashboard render", because a tile naming a view that does not
+ * exist, a `# colspan` the renderer ignores, and a `# drill` pointing at no
+ * dashboard all compile perfectly. Those are caught by the dashboard lint and
+ * by the renderer, and until now both ran only when a package actually loaded.
+ * So an agent authoring a dashboard could compile clean all the way to a broken
+ * page, and only find out by saving and calling reload_package.
+ *
+ * The checks themselves are not reimplemented here. `lintDashboard` and its
+ * siblings are pure over facts plus manifest, and `validateRenderTags` is a
+ * Model method, so this hydrates the worker's models the same way a real load
+ * does and calls the same functions. What it cannot reach is the part of the
+ * load-time lint that reads Package state rather than a compiled model: a
+ * dashboard held back by `explores` curation, a name outside the documented
+ * shape, an orphan `.jsx` in `dashboards/`. Those are properties of how a
+ * package is served, not of the edit in hand, and they still come back from
+ * reload_package.
+ *
+ * Severity is flattened to `warn` deliberately. None of these fail a package
+ * load -- a broken tile draws its error in its own cell and the rest of the
+ * grid renders -- so reporting `error` here would make compile refuse an edit
+ * the server would happily serve. The load-time severity is kept in the message
+ * instead, so nothing is lost.
+ */
+async function dryRunDashboardFindings(
+   models: readonly { modelPath: string; model: Model }[],
+): Promise<TaggedLogMessage[]> {
+   const findings: TaggedLogMessage[] = [];
+   const say = (
+      model: string,
+      subject: string,
+      message: string,
+      severity: "error" | "warn",
+   ): void => {
+      findings.push({
+         severity: "warn",
+         // The lint's own severity, spelled out because it is flattened above:
+         // "error" here means the load would call it an error, not that this
+         // compile failed.
+         message:
+            severity === "error"
+               ? `${subject}: ${message} (reported as an error at package load)`
+               : `${subject}: ${message}`,
+         model,
+      } as TaggedLogMessage);
+   };
+
+   const factsByPath = new Map<string, DashboardModelFacts>();
+   for (const { modelPath, model } of models) {
+      // Renderer tags first: they apply to every model, not just dashboards.
+      // Never allowed to throw -- a validator failure must not cost the caller
+      // the compiler diagnostics it actually asked for.
+      try {
+         for (const warning of await model.validateRenderTags()) {
+            say(modelPath, warning.subject, warning.message, warning.severity);
+         }
+      } catch (error) {
+         logger.warn("Render-tag validation failed during compile", {
+            modelPath,
+            error: error instanceof Error ? error.message : String(error),
+         });
+      }
+
+      let facts: DashboardModelFacts | undefined;
+      try {
+         facts = model.getDashboardModelFacts();
+      } catch {
+         // A model whose facts cannot be read says nothing about dashboards.
+         continue;
+      }
+      if (!facts) continue;
+      // Every compiled model contributes facts, dashboard or not: a given
+      // declared in the model and a drill declared on a dimension are both
+      // linted across the package, not per dashboard file.
+      factsByPath.set(modelPath, facts);
+
+      if (!isDashboardModelPath(modelPath)) continue;
+      let manifest;
+      try {
+         manifest = buildDashboardManifest(facts);
+      } catch {
+         // Manifest construction threw, so there is nothing to lint against.
+         // The load reports this as a dropped dashboard; here the compile
+         // diagnostics for the same file are the more useful signal.
+         continue;
+      }
+      const forFile = manifest
+         ? lintDashboard(facts, manifest)
+         : lintUndiscoveredDashboard(facts);
+      for (const finding of forFile) {
+         say(modelPath, finding.subject, finding.message, finding.severity);
+      }
+   }
+
+   const allFacts = [...factsByPath.values()];
+   // Slugs come from the dashboard files this compile saw, which is the whole
+   // package: the worker compiles every .malloy and .malloynb. So a drill
+   // pointing at a real sibling dashboard is not reported as dangling.
+   const knownSlugs = new Set(
+      [...factsByPath.keys()].filter(isDashboardModelPath).map(dashboardSlug),
+   );
+   const packageWide = [
+      ...lintDrillTargets(allFacts, knownSlugs),
+      ...lintSelfDrills(allFacts),
+      ...lintGivenTags(allFacts),
+   ];
+   for (const finding of packageWide) {
+      // Package-wide findings are not attributable to one file, so they carry
+      // no model: naming an arbitrary one of the files that share the given
+      // would point the reader at the wrong place to edit.
+      say("", finding.subject, finding.message, finding.severity);
+   }
+   return findings;
+}
 
 async function denyHiddenAsNotQueryable(
    convert: () => void | Promise<void>,
@@ -907,6 +1036,35 @@ export class Environment {
                   }
                }
             }
+            // The compiler has had its say; now ask the two checks that know
+            // about dashboards and renderer tags. Hydrating the worker's
+            // models is what a real load does with the same payload, and it
+            // stays on the main thread because the renderer cannot run in the
+            // worker isolate.
+            const hydrated: { modelPath: string; model: Model }[] = [];
+            for (const compiled of outcome.models) {
+               if (compiled.compilationError || !compiled.modelDef) continue;
+               try {
+                  hydrated.push({
+                     modelPath: compiled.modelPath,
+                     model: Model.fromSerialized(
+                        packageName,
+                        packagePath,
+                        pkg.getMalloyConfig(),
+                        compiled,
+                     ),
+                  });
+               } catch (error) {
+                  logger.warn("Hydrating a compiled model for lint failed", {
+                     packageName,
+                     modelPath: compiled.modelPath,
+                     error:
+                        error instanceof Error ? error.message : String(error),
+                  });
+               }
+            }
+            collect((await dryRunDashboardFindings(hydrated)) as LogMessage[]);
+
             if (
                source !== undefined &&
                outcome.replacementMatchedExisting === false

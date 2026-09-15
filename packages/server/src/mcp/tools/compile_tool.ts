@@ -39,7 +39,7 @@ const compileShape = {
       .enum(["append", "file", "package"])
       .optional()
       .describe(
-         'What source means. "append" (default): append to modelPath. "file": compile AS modelPath to validate an edit. "package": run reload\'s worker compiler over all .malloy/.malloynb files without serving the result; an optional source replaces modelPath.',
+         'What source means. "append" (default): append to modelPath. "file": compile AS modelPath to validate an edit. "package": run reload\'s worker compiler over all .malloy/.malloynb files without serving the result, and additionally lint dashboards and renderer tags; an optional source replaces modelPath.',
       ),
    includeSql: z
       .boolean()
@@ -61,6 +61,8 @@ const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use t
 - "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file.
 - "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
 - "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and #(authorize) still gates caller text. A missing exact path is warned and treated as a new file. Save and call reload_package to serve a clean edit.
+
+Package scope also lints dashboards and renderer tags: unresolvable tiles, bad artifact/dashboard/colspan tags, dangling drills, missing suggest queries. These compile cleanly, so authoring a dashboard without this reports success on a broken page. Always severity "warn" (none fail a load); served-shape findings come from reload_package.
 
 ## Parameters
 - environmentName, packageName, modelPath: required. source: required at append/file, optional at package. includeSql: append/file only. givens: model givens and #(authorize) values. Caller source may not declare #(authorize).
