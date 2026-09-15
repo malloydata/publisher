@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
-import { Box, IconButton, Paper, Tooltip, Typography } from "@mui/material";
-import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
+import { IconButton, Tooltip } from "@mui/material";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import type { GivenValue } from "../../hooks/givenValue";
@@ -11,6 +10,7 @@ import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
+import { TileCard, TileHeading } from "./TileCard";
 
 export interface DashboardTileProps {
    environmentName: string;
@@ -109,41 +109,9 @@ export function DashboardTile({
    });
 
    return (
-      <Paper
-         elevation={0}
+      <TileCard
+         borderless={borderless}
          sx={{
-            // The instance theme's border, not MUI's `divider`: the renderer
-            // card's edge is this same value, and a card that agrees with the
-            // theme everywhere except its outline still reads as a different
-            // card. Radius stays on the host's `shape.borderRadius`, which the
-            // renderer card is now pointed at too.
-            //
-            // `# borderless` asks for the result with no card, which the renderer
-            // honours by dropping background, border, radius and most padding on
-            // its own `.dashboard-item`. Same here, so the tag reads the same on
-            // both forms.
-            //
-            // The background is `theme.tile`, the same value the renderer card
-            // paints, and NOT MUI's Paper default. Leaving it unset was the last
-            // piece of the two cards' geometry that did not agree: measured on
-            // the `grid`/`tiled` fixture pair, the renderer card came out
-            // `#f5fafc` from the theme and this one plain white, so on a theme
-            // whose page is also white the composite tiles lost the tint that
-            // separates a card from the page while the single-query form kept
-            // it. Radius, padding, border, shadow and gap already matched.
-            border: borderless ? "none" : theme.border,
-            borderRadius: borderless ? 0 : 1,
-            background: borderless ? "none" : theme.tile,
-            // Also load-bearing for RESIZING, not just tidiness: this card is
-            // a grid item, and a grid item that clips gets a minimum width of
-            // zero instead of its content's. That is what lets the card narrow
-            // below the chart it holds when its tile does, so the chart's box
-            // actually shrinks and the renderer redraws it to fit. See the
-            // `minWidth: 0` note in `DashboardGrid` for the rest of the chain.
-            overflow: "hidden",
-            minWidth: 0,
-            minHeight: 120,
-            p: borderless ? "12px 0" : `${DASHBOARD_CARD_PADDING_PX}px`,
             // The heading's button shows on hover and keyboard focus, the way
             // a tile's chrome does everywhere else; always-on it competes with
             // the title on every card at once.
@@ -156,56 +124,28 @@ export function DashboardTile({
          }}
       >
          {tile !== undefined && (
-            <Box
-               sx={{
-                  pb: 1.5,
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 1,
-               }}
-            >
-               <Box sx={{ minWidth: 0, flex: 1 }}>
-                  <Typography
-                     variant="subtitle2"
-                     sx={{
-                        fontWeight: 500,
-                        color: theme.tileTitle,
-                        fontFamily: theme.font.family,
-                     }}
-                     // The expression is what actually ran, so it stays reachable
-                     // as a tooltip rather than as the heading.
-                     title={tile}
-                  >
-                     {label ?? tileTitle(tile)}
-                  </Typography>
-                  {subtitle !== undefined && (
-                     <Typography
-                        variant="caption"
-                        sx={{
-                           display: "block",
-                           color: theme.tileTitle,
-                           fontFamily: theme.font.family,
-                           opacity: 0.8,
-                        }}
-                     >
-                        {subtitle}
-                     </Typography>
-                  )}
-               </Box>
-               {onExplore && (
-                  <Tooltip title="Explore from here">
-                     <IconButton
-                        className="publisher-tile-explore"
-                        size="small"
-                        aria-label={`Explore ${label ?? tileTitle(tile)}`}
-                        onClick={onExplore}
-                        sx={{ mt: -0.5, mr: -0.5, color: theme.tileTitle }}
-                     >
-                        <ExploreOutlinedIcon fontSize="small" />
-                     </IconButton>
-                  </Tooltip>
-               )}
-            </Box>
+            <TileHeading
+               title={label ?? tileTitle(tile)}
+               subtitle={subtitle}
+               // The expression is what actually ran, so it stays reachable as
+               // a tooltip rather than as the heading.
+               tooltip={tile}
+               action={
+                  onExplore && (
+                     <Tooltip title="Explore from here">
+                        <IconButton
+                           className="publisher-tile-explore"
+                           size="small"
+                           aria-label={`Explore ${label ?? tileTitle(tile)}`}
+                           onClick={onExplore}
+                           sx={{ mt: -0.5, mr: -0.5, color: theme.tileTitle }}
+                        >
+                           <ExploreOutlinedIcon fontSize="small" />
+                        </IconButton>
+                     </Tooltip>
+                  )
+               }
+            />
          )}
          <ResultPanel
             state={state}
@@ -220,6 +160,6 @@ export function DashboardTile({
             // aggregates are already tiles.
             transform={tile !== undefined ? promoteMeasureRowToKpis : undefined}
          />
-      </Paper>
+      </TileCard>
    );
 }

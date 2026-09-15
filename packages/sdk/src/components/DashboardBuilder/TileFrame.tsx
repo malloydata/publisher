@@ -3,10 +3,11 @@
 
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
-import { Box, IconButton, Paper, Typography } from "@mui/material";
+import { Box, IconButton, Typography } from "@mui/material";
 import type { PointerEvent, ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { GRID_GAP_PX } from "../Dashboard/DashboardGrid";
+import { TileCard, TileHeading } from "../Dashboard/TileCard";
 import { tileKey, type DashboardTile } from "./document";
 import { gapId } from "./layout";
 import { GapDroppable, TileSortable } from "./sortable";
@@ -304,49 +305,18 @@ export function TileFrame({
 export function TilePlaceholder({ tile }: { tile: DashboardTile }) {
    const { theme } = usePublisherTheme();
    return (
-      <Paper
-         elevation={0}
-         sx={{
-            p: 2,
-            minHeight: 140,
-            background: theme.tile,
-            borderRadius: 1,
-            border: theme.border,
-         }}
-      >
-         <Typography
-            variant="subtitle2"
-            sx={{
-               fontWeight: 500,
-               color: theme.tileTitle,
-            }}
-         >
-            {tile.label ?? tile.name}
-         </Typography>
-         {tile.subtitle && (
-            <Typography
-               variant="caption"
-               sx={{
-                  display: "block",
-                  color: theme.tileTitle,
-                  opacity: 0.8,
-               }}
-            >
-               {tile.subtitle}
-            </Typography>
-         )}
+      <TileCard sx={{ minHeight: 140 }}>
+         <TileHeading
+            title={tile.label ?? tile.name}
+            subtitle={tile.subtitle}
+         />
          <Typography
             variant="caption"
-            sx={{
-               display: "block",
-               mt: 1,
-               color: theme.tileTitle,
-               opacity: 0.7,
-            }}
+            sx={{ display: "block", color: theme.tileTitle, opacity: 0.7 }}
          >
             {tile.source} → {tile.name}
          </Typography>
-      </Paper>
+      </TileCard>
    );
 }
 
