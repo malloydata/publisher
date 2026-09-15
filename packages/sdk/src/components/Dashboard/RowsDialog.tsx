@@ -12,6 +12,7 @@ import {
    IconButton,
    Typography,
 } from "@mui/material";
+import { useEffect, useRef } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { malloyLiteral } from "../../utils/malloyLiteral";
 import { isIdentifier, tileSteps } from "../DashboardBuilder/malloyText";
@@ -21,6 +22,7 @@ import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import { useServer } from "../ServerProvider";
+import { now } from "./telemetry";
 
 /**
  * The rows behind a value: Looker's "show all" on a cell, as one query.
@@ -84,6 +86,7 @@ export function RowsDialog({
    modelPath,
    givens,
    onClose,
+   onDone,
 }: {
    request: RowsRequest | undefined;
    environmentName: string;
@@ -93,6 +96,8 @@ export function RowsDialog({
    /** The applied control row, which the source's own `where:` may read. */
    givens: Record<string, unknown>;
    onClose: () => void;
+   /** The query's outcome and how long it took, once per request. */
+   onDone?: (ok: boolean, durationMs: number) => void;
 }) {
    const { apiClients } = useServer();
    const { theme } = usePublisherTheme();
@@ -117,6 +122,16 @@ export function RowsDialog({
       enabled: query !== undefined,
       ...CHART_RESULT_QUERY_OPTIONS,
    });
+   // Reported once per request, when the query settles.
+   const started = useRef<number | undefined>(undefined);
+   useEffect(() => {
+      if (query !== undefined) started.current = now();
+   }, [query]);
+   useEffect(() => {
+      if (started.current === undefined || (!isSuccess && !isError)) return;
+      onDone?.(isSuccess, now() - started.current);
+      started.current = undefined;
+   }, [isSuccess, isError, onDone]);
 
    return (
       <Dialog

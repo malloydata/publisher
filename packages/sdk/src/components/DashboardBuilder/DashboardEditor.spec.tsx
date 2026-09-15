@@ -11,6 +11,7 @@ import {
 } from "../../../test/serverProvider";
 import { BrowserDocumentStorage } from "../DocumentStorage/BrowserDocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
+import type { DashboardEvent } from "../Dashboard/telemetry";
 
 /**
  * The Console's path through the builder, with the server mocked at the
@@ -79,7 +80,10 @@ const DRAFT = {
    path: "env/pkg/dashboards/overview.malloy",
 };
 
-const mount = (onExit?: () => void) => {
+const mount = (
+   onExit?: () => void,
+   onEvent?: (event: DashboardEvent) => void,
+) => {
    const storage = new BrowserDocumentStorage();
    render(
       <DocumentStorageProvider documentStorage={storage}>
@@ -88,6 +92,7 @@ const mount = (onExit?: () => void) => {
             packageName="pkg"
             dashboardName="overview"
             {...(onExit ? { onExit } : {})}
+            {...(onEvent ? { onEvent } : {})}
          />
       </DocumentStorageProvider>,
       { wrapper: serverWrapper },
@@ -152,10 +157,21 @@ describe("DashboardEditor", () => {
       expect(await screen.findByText("Drafted")).toBeDefined();
    });
 
-   it("exports the file a save would write, and hands Done to the host", async () => {
+   it("exports the file a save would write, hands Done to the host, and reports both opening and exporting", async () => {
       const onExit = mock(() => {});
-      mount(onExit);
+      const onEvent = mock((_event: DashboardEvent) => {});
+      mount(onExit, onEvent);
       await screen.findByText("Storefront");
+      await waitFor(() =>
+         expect(onEvent.mock.calls.map((call) => call[0].type)).toContain(
+            "dashboard.opened",
+         ),
+      );
+      expect(onEvent.mock.calls[0][0]).toMatchObject({
+         type: "dashboard.opened",
+         from: "package",
+         tiles: 1,
+      });
       const created: Blob[] = [];
       const createObjectURL = mock((blob: Blob) => {
          created.push(blob);
@@ -172,6 +188,10 @@ describe("DashboardEditor", () => {
          expect(await created[0].text()).toBe(PACKAGE_FILE);
          expect(clicked).toHaveBeenCalledTimes(1);
          expect(revoked).toHaveBeenCalledWith("blob:test");
+         expect(onEvent.mock.calls.at(-1)?.[0]).toEqual({
+            type: "dashboard.exported",
+            bytes: PACKAGE_FILE.length,
+         });
       } finally {
          HTMLAnchorElement.prototype.click = click;
       }

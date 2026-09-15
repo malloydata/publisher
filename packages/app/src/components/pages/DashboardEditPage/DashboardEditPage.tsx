@@ -3,8 +3,9 @@
 
 import { Loading } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
-import React, { Suspense } from "react";
+import React, { Suspense, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { logDashboardEvent } from "../../../utils/dashboardTelemetry";
 
 /**
  * The builder's entry is loaded here and nowhere else. It carries the Malloy
@@ -37,6 +38,10 @@ export default function DashboardEditPage({
    const navigate = useNavigate();
    const { pathname } = useLocation();
    const dashboardPath = pathname.replace(/\/edit\/?$/, "");
+   const onEvent = useMemo(
+      () => logDashboardEvent({ environmentName, packageName, dashboardName }),
+      [environmentName, packageName, dashboardName],
+   );
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          <Suspense fallback={<Loading text="Opening the builder…" />}>
@@ -45,6 +50,7 @@ export default function DashboardEditPage({
                packageName={packageName}
                dashboardName={dashboardName}
                onExit={() => navigate(dashboardPath)}
+               onEvent={onEvent}
             />
          </Suspense>
       </Box>

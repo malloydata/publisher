@@ -34,8 +34,8 @@ export interface DashboardEditor {
    update: (change: (draft: DashboardDocument) => void) => void;
    undo: () => void;
    redo: () => void;
-   /** Splice the change into the file. Resolves false when it was refused. */
-   save: () => Promise<boolean>;
+   /** Splice the change into the file, or say why it was refused. */
+   save: () => Promise<SaveOutcome>;
    /**
     * The file a save would write, without writing it: what a diff preview
     * shows. The failure arm is the writer's refusal, worded for the author.
@@ -50,6 +50,8 @@ export interface DashboardEditor {
     */
    structural: boolean;
 }
+
+export type SaveOutcome = { ok: true } | { ok: false; reason: string };
 
 interface History {
    /** Every document state, oldest first. */
@@ -132,26 +134,27 @@ export function useDashboardEditor(options: {
       );
    }, []);
 
-   const save = useCallback(async () => {
+   const save = useCallback(async (): Promise<SaveOutcome> => {
       const result = await spliceDashboardDocument(source, document);
       if (spliceFailed(result)) {
          setError(result.reason);
-         return false;
+         return { ok: false, reason: result.reason };
       }
       try {
          await options.onSave?.(result.source);
       } catch (failure) {
          // The file may or may not have been written; what is certain is that
          // the editor must not pretend it was. Staying dirty is the safe read.
-         setError(`Could not save: ${failure}`);
-         return false;
+         const reason = `Could not save: ${failure}`;
+         setError(reason);
+         return { ok: false, reason };
       }
       // The patched file is the new baseline, so a second save patches what is
       // now on disk rather than re-deriving from the text this session opened.
       setSource(result.source);
       setSaved(document);
       setError(undefined);
-      return true;
+      return { ok: true };
    }, [document, options, source]);
 
    const dirty = useMemo(

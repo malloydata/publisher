@@ -205,7 +205,7 @@ describe("useDashboardEditor: saving", () => {
          });
       });
       await act(async () => {
-         expect(await view.result.current.save()).toBe(false);
+         expect((await view.result.current.save()).ok).toBe(false);
       });
 
       expect(called).toBe(false);
@@ -225,7 +225,7 @@ describe("useDashboardEditor: saving", () => {
          });
       });
       await act(async () => {
-         expect(await view.result.current.save()).toBe(false);
+         expect((await view.result.current.save()).ok).toBe(false);
       });
       expect(view.result.current.error).toContain("disk full");
       expect(view.result.current.dirty).toBe(true);

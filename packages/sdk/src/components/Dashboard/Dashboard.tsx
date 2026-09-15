@@ -26,6 +26,7 @@ import { DashboardTile } from "./DashboardTile";
 import { useDashboardControls } from "./useDashboardControls";
 import { ExploreDialog } from "./ExploreDialog";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
+import type { DashboardEventHandler } from "./telemetry";
 
 // The grid rule moved to `DashboardGrid`, which the builder shares.
 // Re-exported so existing importers of it are unaffected.
@@ -72,6 +73,8 @@ export interface DashboardProps {
     */
    height?: number;
    maxResultSize?: number;
+   /** The rows shown and tiles explored, for the host to log or count. */
+   onEvent?: DashboardEventHandler;
 }
 
 /**
@@ -91,6 +94,7 @@ export function Dashboard({
    onNavigate,
    height,
    maxResultSize,
+   onEvent,
 }: DashboardProps) {
    const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -313,7 +317,13 @@ export function Dashboard({
                      height={height ?? TILE_MAX_HEIGHT}
                      maxResultSize={maxResultSize}
                      drill={drillFor(tile.query)}
-                     onExplore={() => setExploring(tile.query)}
+                     onExplore={() => {
+                        setExploring(tile.query);
+                        onEvent?.({
+                           type: "dashboard.explored",
+                           tile: tile.query,
+                        });
+                     }}
                   />
                )}
             />
@@ -334,6 +344,17 @@ export function Dashboard({
                   modelPath={modelPath}
                   givens={rowsGivens}
                   onClose={() => setRows(undefined)}
+                  onDone={(ok, durationMs) => {
+                     if (rows)
+                        onEvent?.({
+                           type: "dashboard.rows_shown",
+                           source: rows.source,
+                           view: rows.view,
+                           field: rows.field,
+                           ok,
+                           durationMs,
+                        });
+                  }}
                />
                <ExploreDialog
                   tile={exploring}

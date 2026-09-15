@@ -8,7 +8,9 @@ import {
 } from "@malloy-publisher/sdk";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import { Box, Button, Stack } from "@mui/material";
+import { useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { logDashboardEvent } from "../../../utils/dashboardTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
 export interface DashboardPageProps {
@@ -38,6 +40,10 @@ export default function DashboardPage({
    // Into the builder, one segment down; the builder's Done comes back here.
    const navigate = useNavigate();
    const { pathname } = useLocation();
+   const onEvent = useMemo(
+      () => logDashboardEvent({ environmentName, packageName, dashboardName }),
+      [environmentName, packageName, dashboardName],
+   );
 
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
@@ -57,6 +63,7 @@ export default function DashboardPage({
             givens={givens}
             onGivensChange={onGivensChange}
             onNavigate={onNavigate}
+            onEvent={onEvent}
             maxResultSize={1024 * 1024}
          />
       </Box>

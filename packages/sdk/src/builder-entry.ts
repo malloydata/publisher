@@ -49,3 +49,7 @@ export {
    buildCatalog,
    type PackageCatalog,
 } from "./components/DashboardBuilder/catalog";
+export type {
+   DashboardEvent,
+   DashboardEventHandler,
+} from "./components/Dashboard/telemetry";

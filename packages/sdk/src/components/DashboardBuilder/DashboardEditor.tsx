@@ -4,10 +4,11 @@
 import DownloadIcon from "@mui/icons-material/Download";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DashboardTile, tileTitle } from "../Dashboard/DashboardTile";
+import { now, type DashboardEventHandler } from "../Dashboard/telemetry";
 import { useDashboardControls } from "../Dashboard/useDashboardControls";
 import {
    useOptionalDocumentStorage,
@@ -48,6 +49,11 @@ export interface DashboardEditorProps {
    dashboardName: string;
    /** Leave the editor: the host's "Done". Absent, no Done button. */
    onExit?: () => void;
+   /**
+    * What the editor does — opened, saved, exported, refused — for the host
+    * to log or count; see `DashboardEvent`.
+    */
+   onEvent?: DashboardEventHandler;
 }
 
 /** The Console's key for a dashboard's copy; see the storage seam's locator rule. */
@@ -67,8 +73,11 @@ export function DashboardEditor({
    packageName,
    dashboardName,
    onExit,
+   onEvent,
 }: DashboardEditorProps) {
    const { apiClients } = useServer();
+   // When the editor was asked for, so "opened" can say how long it took.
+   const mountedAt = useRef(now());
    const storage = useOptionalDocumentStorage()?.documentStorage;
    const modelPath = `dashboards/${dashboardName}.malloy`;
 
@@ -134,11 +143,11 @@ export function DashboardEditor({
       void readDashboardDocument(opening).then((result) => {
          if (stale) return;
          if (readFailed(result)) {
-            setOpenError(
-               result.line
-                  ? `${result.reason} (line ${result.line})`
-                  : result.reason,
-            );
+            const reason = result.line
+               ? `${result.reason} (line ${result.line})`
+               : result.reason;
+            setOpenError(reason);
+            onEvent?.({ type: "dashboard.open_refused", reason });
             return;
          }
          setOpenError(undefined);
@@ -147,11 +156,17 @@ export function DashboardEditor({
             document: result.document,
             generation: (previous?.generation ?? 0) + 1,
          }));
+         onEvent?.({
+            type: "dashboard.opened",
+            from: opening === packageText ? "package" : "draft",
+            tiles: result.document.tiles.length,
+            durationMs: now() - mountedAt.current,
+         });
       });
       return () => {
          stale = true;
       };
-   }, [opening]);
+   }, [opening, packageText, onEvent]);
 
    const save = useCallback(
       async (source: string) => {
@@ -219,6 +234,7 @@ export function DashboardEditor({
                slug={dashboardName}
                opened={opened}
                onSave={storage && workspace !== undefined ? save : undefined}
+               {...(onEvent ? { onEvent } : {})}
                toolbar={
                   onExit && (
                      <Button size="small" onClick={onExit}>
@@ -255,6 +271,7 @@ function Surface({
    slug,
    opened,
    onSave,
+   onEvent,
    toolbar,
    note,
 }: {
@@ -264,6 +281,7 @@ function Surface({
    slug: string;
    opened: { source: string; document: DashboardDocument; generation: number };
    onSave?: (source: string) => Promise<void>;
+   onEvent?: DashboardEventHandler;
    toolbar: React.ReactNode;
    note: string;
 }) {
@@ -344,6 +362,7 @@ function Surface({
    const exportFile = useCallback(async () => {
       const result = await spliceDashboardDocument(opened.source, doc);
       const text = spliceFailed(result) ? opened.source : result.source;
+      onEvent?.({ type: "dashboard.exported", bytes: text.length });
       const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -351,7 +370,7 @@ function Surface({
       anchor.download = `${slug}.malloy`;
       anchor.click();
       URL.revokeObjectURL(url);
-   }, [opened.source, doc, slug]);
+   }, [opened.source, doc, slug, onEvent]);
 
    const modelSpecs = useMemo(() => manifest?.givens ?? [], [manifest]);
    const runnable = useMemo(
@@ -431,6 +450,7 @@ function Surface({
             onChange={setDoc}
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}
+            {...(onEvent ? { onEvent } : {})}
             toolbar={
                <>
                   <Button

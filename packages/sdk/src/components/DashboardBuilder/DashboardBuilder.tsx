@@ -12,6 +12,7 @@ import {
 } from "react";
 import { DashboardProse } from "../Dashboard/Dashboard";
 import { DashboardGrid, DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
+import { now, type DashboardEventHandler } from "../Dashboard/telemetry";
 import {
    acceptsField,
    applyMapping,
@@ -143,6 +144,8 @@ export interface DashboardBuilderProps {
     * go. Absent, a drill can only filter this dashboard.
     */
    dashboards?: string[];
+   /** Saves and refusals, for the host to log; see `DashboardEvent`. */
+   onEvent?: DashboardEventHandler;
    /**
     * The host's own actions for the edit bar — Export, Done — rendered beside
     * undo, redo and save. The builder owns the edits; where the file goes
@@ -162,6 +165,7 @@ export function DashboardBuilder({
    catalog,
    toolbar,
    dashboards,
+   onEvent,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
@@ -295,8 +299,27 @@ export function DashboardBuilder({
    const commitSave = useCallback(() => {
       setPendingSave(undefined);
       setSaving(true);
-      void editor.save().finally(() => setSaving(false));
-   }, [editor]);
+      const started = now();
+      const { structural } = editor;
+      const tiles = editor.document.tiles.length;
+      void editor
+         .save()
+         .then((outcome) => {
+            if (outcome.ok === true)
+               onEvent?.({
+                  type: "dashboard.saved",
+                  tiles,
+                  structural,
+                  durationMs: now() - started,
+               });
+            else
+               onEvent?.({
+                  type: "dashboard.save_refused",
+                  reason: outcome.reason,
+               });
+         })
+         .finally(() => setSaving(false));
+   }, [editor, onEvent]);
    const save = useCallback(() => {
       if (!onSave || !editor.dirty || saving) return;
       if (!editor.structural) {
