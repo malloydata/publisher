@@ -51,6 +51,7 @@ import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
 import { AddTileDialog, type NewTile } from "./AddTileDialog";
 import { DiffDialog } from "./DiffDialog";
 import { FilterDialog } from "./FilterDialog";
+import { SettingsPopover, settingsOf } from "./SettingsPopover";
 import {
    builderSensors,
    GAP_TYPE,
@@ -363,6 +364,10 @@ export function DashboardBuilder({
    >(undefined);
    // The add-tile picker, and the diff a structural save shows first.
    const [addingTile, setAddingTile] = useState(false);
+   // The page's settings, anchored to the toolbar button that opened them.
+   const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(
+      null,
+   );
    const [pendingSave, setPendingSave] = useState<
       { before: string; after: string } | undefined
    >(undefined);
@@ -504,6 +509,15 @@ export function DashboardBuilder({
          });
       });
       setSelected(editor.document.tiles.length);
+   };
+
+   /** Every tile this file owns, to one fraction of the grid. */
+   const quickLayout = (share: 1 | 2 | 3 | 4) => {
+      const span = Math.max(1, Math.round(columns / share));
+      editor.update((draft) => {
+         for (const tile of draft.tiles)
+            if (tile.declaration.kind !== "inherited") tile.colspan = span;
+      });
    };
 
    const removeTile = (index: number) => {
@@ -739,6 +753,8 @@ export function DashboardBuilder({
             {...(onSave ? { onSave: save } : {})}
             {...(toolbar ? { actions: toolbar } : {})}
             {...(catalog ? { onAddTile: () => setAddingTile(true) } : {})}
+            onSettings={setSettingsAnchor}
+            onQuickLayout={quickLayout}
          />
 
          <DashboardProse
@@ -1277,6 +1293,23 @@ export function DashboardBuilder({
             onRemove={() => {
                if (menu !== undefined) removeTile(menu.index);
             }}
+            columns={columns}
+         />
+         <SettingsPopover
+            anchor={settingsAnchor}
+            settings={settingsOf(editor.document)}
+            onClose={() => setSettingsAnchor(null)}
+            onCommit={(next) =>
+               editor.update((draft) => {
+                  draft.title = next.title;
+                  if (next.description === undefined) delete draft.description;
+                  else draft.description = next.description;
+                  if (next.columns === undefined) delete draft.columns;
+                  else draft.columns = next.columns;
+                  if (next.autorun === undefined) delete draft.autorun;
+                  else draft.autorun = next.autorun;
+               })
+            }
          />
          <AddTileDialog
             open={addingTile}

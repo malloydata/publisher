@@ -3,6 +3,8 @@
 
 import AddIcon from "@mui/icons-material/Add";
 import CheckIcon from "@mui/icons-material/Check";
+import GridViewIcon from "@mui/icons-material/GridView";
+import TuneIcon from "@mui/icons-material/Tune";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
@@ -11,11 +13,15 @@ import {
    Chip,
    Divider,
    IconButton,
+   ListItemIcon,
+   ListItemText,
+   Menu,
+   MenuItem,
    Stack,
    Tooltip,
    Typography,
 } from "@mui/material";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { MOD } from "./useBuilderShortcuts";
 
@@ -40,6 +46,10 @@ export interface BuilderToolbarProps {
    actions?: ReactNode;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
+   /** Open the page's settings, anchored to the button that asked. */
+   onSettings: (anchor: HTMLElement) => void;
+   /** Looker's quick layout: every tile this file owns to one width. */
+   onQuickLayout: (share: 1 | 2 | 3 | 4) => void;
 }
 
 export function BuilderToolbar({
@@ -52,8 +62,11 @@ export function BuilderToolbar({
    onSave,
    actions,
    onAddTile,
+   onSettings,
+   onQuickLayout,
 }: BuilderToolbarProps) {
    const { theme } = usePublisherTheme();
+   const [layoutMenu, setLayoutMenu] = useState<HTMLElement | null>(null);
    return (
       <Stack
          direction="row"
@@ -99,7 +112,15 @@ export function BuilderToolbar({
 
          <Stack
             direction="row"
-            sx={{ ml: "auto", alignItems: "center", gap: 0.5 }}
+            sx={{
+               ml: "auto",
+               alignItems: "center",
+               gap: 0.5,
+               // The hint beside the chip is what gives way when the bar is
+               // narrow; a button's label never wraps onto a second line.
+               flexShrink: 0,
+               "& .MuiButton-root": { whiteSpace: "nowrap" },
+            }}
          >
             {onAddTile && (
                <Button
@@ -110,6 +131,59 @@ export function BuilderToolbar({
                   Add tile
                </Button>
             )}
+            <Button
+               size="small"
+               startIcon={<GridViewIcon fontSize="small" />}
+               onClick={(event) => setLayoutMenu(event.currentTarget)}
+               aria-haspopup="menu"
+            >
+               Layout
+            </Button>
+            <Menu
+               anchorEl={layoutMenu}
+               open={layoutMenu !== null}
+               onClose={() => setLayoutMenu(null)}
+            >
+               <Typography
+                  variant="caption"
+                  sx={{
+                     px: 2,
+                     py: 0.5,
+                     display: "block",
+                     color: theme.tileTitle,
+                  }}
+               >
+                  Set every tile to
+               </Typography>
+               {(
+                  [
+                     ["Full width", 1],
+                     ["Half width", 2],
+                     ["A third", 3],
+                     ["A quarter", 4],
+                  ] as const
+               ).map(([label, share]) => (
+                  <MenuItem
+                     key={share}
+                     onClick={() => {
+                        setLayoutMenu(null);
+                        onQuickLayout(share);
+                     }}
+                  >
+                     <ListItemIcon>
+                        <GridViewIcon fontSize="small" />
+                     </ListItemIcon>
+                     <ListItemText>{label}</ListItemText>
+                  </MenuItem>
+               ))}
+            </Menu>
+            <Button
+               size="small"
+               startIcon={<TuneIcon fontSize="small" />}
+               onClick={(event) => onSettings(event.currentTarget)}
+            >
+               Settings
+            </Button>
             {actions && (
                <>
                   {actions}

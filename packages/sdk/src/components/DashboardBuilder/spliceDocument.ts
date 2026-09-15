@@ -141,13 +141,8 @@ const isSameDocumentExceptTiles = (
    a: DashboardDocument,
    b: DashboardDocument,
 ) =>
-   a.title === b.title &&
-   a.description === b.description &&
-   a.columns === b.columns &&
-   a.autorun === b.autorun &&
    canonical(a.imports) === canonical(b.imports) &&
-   canonical(a.drills) === canonical(b.drills) &&
-   canonical(a.startingGivens) === canonical(b.startingGivens);
+   canonical(a.drills) === canonical(b.drills);
 
 /**
  * A given's tag line, composed from its control contract. One line, in the
@@ -320,9 +315,7 @@ export async function spliceDashboardDocument(
    if (!isSameDocumentExceptTiles(current, next)) {
       return {
          ok: false,
-         reason:
-            "Only tiles and this dashboard's own filters can be changed so far, " +
-            "not the page's imports, sources or settings.",
+         reason: "The dashboard's imports and drills cannot be changed here.",
       };
    }
 
@@ -382,6 +375,123 @@ export async function spliceDashboardDocument(
       );
       if (rewritten !== lines[artifactLine])
          edits.push({ ...wholeLine(artifactLine), text: `${rewritten}\n` });
+   }
+
+   // THE PAGE'S OWN SETTINGS. Title, autorun and starting values are
+   // properties on the one-line `## artifact { … }` tag; the grid width is the
+   // `dashboard { columns=N }` beside it; the description is the run of `##"`
+   // lines above. Each is patched in place on its own line, so the tag stays
+   // on one line — the package fails to compile otherwise — and a property
+   // the file spells its own way keeps that spelling when it did not change.
+   if (
+      current.title !== next.title ||
+      current.autorun !== next.autorun ||
+      current.columns !== next.columns ||
+      canonical(current.startingGivens) !== canonical(next.startingGivens)
+   ) {
+      const artifactLine = lines.findIndex(
+         (l) => l.trimStart().startsWith("##") && l.includes("artifact"),
+      );
+      if (artifactLine < 0) {
+         return {
+            ok: false,
+            reason:
+               "Could not find the `## artifact` tag to change the page's settings.",
+         };
+      }
+      // Whatever the reorder wrote to this line is the text to patch further.
+      const already = edits.find(
+         (edit) =>
+            edit.start === wholeLine(artifactLine).start &&
+            edit.end === wholeLine(artifactLine).end,
+      );
+      let line = already
+         ? already.text.replace(/\n$/, "")
+         : lines[artifactLine];
+      // The artifact tag's braces: everything up to the matching `}`.
+      const open = line.indexOf("artifact");
+      const braceOpen = line.indexOf("{", open);
+      let depth = 0;
+      let braceClose = -1;
+      for (let i = braceOpen; i < line.length; i++) {
+         if (line[i] === "{") depth++;
+         else if (line[i] === "}" && --depth === 0) {
+            braceClose = i;
+            break;
+         }
+      }
+      if (braceOpen < 0 || braceClose < 0) {
+         return {
+            ok: false,
+            reason: "Could not read the `## artifact { … }` tag.",
+         };
+      }
+      let inner = line.slice(braceOpen + 1, braceClose);
+      const setProperty = (key: string, value: string | undefined) => {
+         const re = new RegExp(
+            `\\s*\\b${key}=(?:"(?:[^"\\\\]|\\\\.)*"|[^\\s}]+)`,
+         );
+         if (value === undefined) inner = inner.replace(re, "");
+         else if (re.test(inner)) inner = inner.replace(re, ` ${key}=${value}`);
+         else inner = `${inner.replace(/\s+$/, "")} ${key}=${value} `;
+      };
+      if (current.title !== next.title)
+         setProperty(
+            "title",
+            next.title ? `"${next.title.replace(/"/g, '\\"')}"` : undefined,
+         );
+      if (current.autorun !== next.autorun)
+         setProperty(
+            "autorun",
+            next.autorun === undefined ? undefined : String(next.autorun),
+         );
+      if (
+         canonical(current.startingGivens) !== canonical(next.startingGivens)
+      ) {
+         inner = inner.replace(/\s*\bgivens\s*\{[^}]*\}/, "");
+         const entries = Object.entries(next.startingGivens ?? {});
+         // Quoted: a tag value is a string, and the reader hands back the
+         // string's text — `CATEGORY="Jeans"` reads as `Jeans`, which is
+         // what the document holds and what is written back here.
+         if (entries.length > 0)
+            inner = `${inner.replace(/\s+$/, "")} givens { ${entries
+               .map(([k, v]) => `${k}="${v.replace(/"/g, '\\"')}"`)
+               .join(" ")} }`;
+      }
+      inner = inner.replace(/\s{2,}/g, " ");
+      line = `${line.slice(0, braceOpen + 1)}${inner.startsWith(" ") ? inner : ` ${inner}`}${inner.endsWith(" ") ? "" : " "}${line.slice(braceClose)}`;
+      if (current.columns !== next.columns) {
+         line = line.replace(/\s*dashboard\s*\{[^}]*\}/, "");
+         if (next.columns !== undefined)
+            line = `${line.trimEnd()} dashboard { columns=${next.columns} }`;
+      }
+      if (already) already.text = `${line}\n`;
+      else edits.push({ ...wholeLine(artifactLine), text: `${line}\n` });
+   }
+   if (current.description !== next.description) {
+      // The run of `##"` lines, wherever it is; a new one goes above the tag.
+      const docLines = lines
+         .map((l, i) => (l.trim().startsWith('##"') ? i : -1))
+         .filter((i) => i >= 0);
+      const text = (next.description ?? "")
+         .split("\n")
+         .map((para) => (para.trim() === "" ? '##"' : `##" ${para.trim()}`))
+         .join("\n");
+      if (docLines.length > 0) {
+         const first = docLines[0];
+         const last = docLines[docLines.length - 1];
+         edits.push({
+            start: wholeLine(first).start,
+            end: wholeLine(last).end,
+            text: next.description === undefined ? "" : `${text}\n`,
+         });
+      } else if (next.description !== undefined) {
+         const artifactLine = lines.findIndex(
+            (l) => l.trimStart().startsWith("##") && l.includes("artifact"),
+         );
+         const at = wholeLine(artifactLine).start;
+         edits.push({ start: at, end: at, text: `${text}\n` });
+      }
    }
 
    // THE DASHBOARD'S OWN GIVENS. Added, removed, or retagged — by name, since

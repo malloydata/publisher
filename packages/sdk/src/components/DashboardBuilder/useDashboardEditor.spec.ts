@@ -205,10 +205,10 @@ describe("useDashboardEditor: saving", () => {
 
       act(() => {
          view.result.current.update((d) => {
-            // The page's own settings are not the writer's yet, so this is
-            // refused. (Tiles added, removed or reordered are NOT: the writer
-            // handles those, and the builder shows a diff first.)
-            d.title = "Renamed";
+            // An import is not the builder's to change, so this is refused.
+            // (Tiles, settings and the page's own givens are NOT: the writer
+            // handles those, and the builder shows a diff for the structural ones.)
+            d.imports.push({ kind: "all", from: "../more.malloy" });
          });
       });
       await act(async () => {
@@ -216,9 +216,9 @@ describe("useDashboardEditor: saving", () => {
       });
 
       expect(called).toBe(false);
-      expect(view.result.current.error).toContain("settings");
+      expect(view.result.current.error).toContain("imports");
       // Still there, still dirty. The reader can undo or try something else.
-      expect(view.result.current.document.title).toBe("Renamed");
+      expect(view.result.current.document.imports).toHaveLength(2);
       expect(view.result.current.dirty).toBe(true);
    });
 

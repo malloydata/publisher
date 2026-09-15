@@ -377,6 +377,80 @@ given: CATEGORY :: filter<string> is f''`);
    });
 });
 
+describe("spliceDashboardDocument: the page's own settings", () => {
+   it("retitles the page on its one-line tag", async () => {
+      const out = await spliced(SOURCE, (d) => {
+         d.title = "Renamed";
+      });
+      expect(out).toContain(
+         '## artifact { title="Renamed" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }',
+      );
+   });
+
+   it("changes the grid width, and can take it away", async () => {
+      const wider = await spliced(SOURCE, (d) => {
+         d.columns = 24;
+      });
+      expect(wider).toContain("] } dashboard { columns=24 }");
+      const flowed = await spliced(SOURCE, (d) => {
+         delete d.columns;
+      });
+      expect(flowed).toContain('tiles=["a -> by_cat", "a -> by_brand"] }\n');
+      expect(flowed).not.toContain("dashboard {");
+   });
+
+   it("adds and removes autorun and starting values inside the tag", async () => {
+      const out = await spliced(SOURCE, (d) => {
+         d.autorun = false;
+         d.startingGivens = { CATEGORY: "Jeans" };
+      });
+      expect(out).toContain(
+         '## artifact { title="Probe" tiles=["a -> by_cat", "a -> by_brand"] autorun=false givens { CATEGORY="Jeans" } } dashboard { columns=12 }',
+      );
+      const back = await spliced(out, (d) => {
+         delete d.autorun;
+         delete d.startingGivens;
+      });
+      expect(back).toContain(
+         '## artifact { title="Probe" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }',
+      );
+   });
+
+   // The description is the run of `##"` lines; a blank paragraph is a bare one.
+   it("rewrites the description in place, paragraphs and all", async () => {
+      const out = await spliced(SOURCE, (d) => {
+         d.description = "First line.\n\nSecond paragraph, **bold**.";
+      });
+      expect(out).toContain(
+         '##! experimental.givens\n\n##" First line.\n##"\n##" Second paragraph, **bold**.\n## artifact {',
+      );
+      const gone = await spliced(SOURCE, (d) => {
+         delete d.description;
+      });
+      expect(gone).toContain("##! experimental.givens\n\n## artifact {");
+   });
+
+   it("adds a description to a page that had none", async () => {
+      const source = `## artifact { title="T" tiles=["a -> x"] }\nimport "../m.malloy"\n\nsource: a is one extend {\n  view: x is vx\n}`;
+      const out = await spliced(source, (d) => {
+         d.description = "Now with prose.";
+      });
+      expect(
+         out.startsWith('##" Now with prose.\n## artifact { title="T"'),
+      ).toBe(true);
+   });
+
+   it("retitles and reorders in one write, on the same line", async () => {
+      const out = await spliced(SOURCE, (d) => {
+         d.title = "Renamed";
+         d.tiles.reverse();
+      });
+      expect(out).toContain(
+         '## artifact { title="Renamed" tiles=["a -> by_brand", "a -> by_cat"] } dashboard { columns=12 }',
+      );
+   });
+});
+
 describe("spliceDashboardDocument: tiles added and removed", () => {
    // A removed tile takes its declaration and its `#` tags. The `//` comment
    // above it stays: the file cannot say whose it was, and a comment left is a
@@ -495,12 +569,12 @@ source: products_tiles is products extend {
 describe("spliceDashboardDocument: what it refuses", () => {
    // Adding or removing a tile inserts or deletes a declaration, which carries
    // the comment block above it, and no file says who that comment belongs to.
-   it("refuses to change the page's own settings", async () => {
+   it("refuses to change the page's imports", async () => {
       const r = await splice(SOURCE, (d) => {
-         d.title = "Renamed";
+         d.imports.push({ kind: "all", from: "../more.malloy" });
       });
       expect(r.ok).toBe(false);
-      if (spliceFailed(r)) expect(r.reason).toContain("settings");
+      if (spliceFailed(r)) expect(r.reason).toContain("imports");
    });
 
    // An inherited tile's tags live on the model's view, and the builder never

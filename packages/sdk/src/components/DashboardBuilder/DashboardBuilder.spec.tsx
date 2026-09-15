@@ -614,6 +614,67 @@ describe("DashboardBuilder: a tile's own settings", () => {
    });
 });
 
+describe("DashboardBuilder: widths and the page's own settings", () => {
+   it("sets a tile to a fraction of the grid from its menu", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for By category"));
+      const third = screen.getByRole("button", { name: "Width ⅓" });
+      fireEvent.click(third);
+      expect(third.getAttribute("aria-pressed")).toBe("true");
+      fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
+      // 12 columns, a third is 4.
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 4");
+      expect(itemStyleOf("by_brand")).toContain("grid-column: span 6");
+   });
+
+   it("lays every tile the file owns to one width, as one history entry", async () => {
+      await mount();
+      fireEvent.click(button("Layout"));
+      fireEvent.click(screen.getByRole("menuitem", { name: "A quarter" }));
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 3");
+      expect(itemStyleOf("by_brand")).toContain("grid-column: span 3");
+      fireEvent.click(button("Undo"));
+      expect(itemStyleOf("by_cat")).toContain("grid-column: span 6");
+      expect(itemStyleOf("by_brand")).toContain("grid-column: span 6");
+   });
+
+   it("edits the page's title, width and autorun, and writes them to the tag", async () => {
+      let saved = "";
+      await mount((source) => {
+         saved = source;
+      });
+      fireEvent.click(button("Settings"));
+      fireEvent.change(screen.getByLabelText("Dashboard title"), {
+         target: { value: "Storefront, weekly" },
+      });
+      fireEvent.change(screen.getByLabelText("Dashboard description"), {
+         target: { value: "What sold, and where." },
+      });
+      fireEvent.click(screen.getByLabelText("Run as controls change"));
+      // Closing commits, once.
+      fireEvent.keyDown(screen.getByLabelText("Dashboard title"), {
+         key: "Escape",
+      });
+      expect(screen.getByText("Storefront, weekly")).toBeDefined();
+      // The popover's own field still holds the text (its exit transition
+      // never ends under the test runner), so look for the page's copy.
+      expect(
+         screen.getAllByText("What sold, and where.").length,
+      ).toBeGreaterThan(0);
+
+      fireEvent.click(button("Save changes"));
+      await waitFor(() => expect(saved).not.toBe(""));
+      expect(saved).toContain(
+         '## artifact { title="Storefront, weekly" tiles=["a -> by_cat", "a -> by_brand"] autorun=false } dashboard { columns=12 }',
+      );
+      expect(saved).toContain('##" What sold, and where.');
+
+      fireEvent.click(button("Undo"));
+      expect(screen.queryByText("Storefront, weekly")).toBeNull();
+      expect(screen.getByText("Storefront")).toBeDefined();
+   });
+});
+
 describe("DashboardBuilder: keyboard", () => {
    it("undoes and redoes from the keyboard, and never from inside a text field", async () => {
       await mount();

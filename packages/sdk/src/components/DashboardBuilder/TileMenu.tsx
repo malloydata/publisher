@@ -36,6 +36,8 @@ export interface TileMenuProps {
    onCommit: (next: DashboardTile) => void;
    /** Take the tile off the dashboard. Offered on every tile: order is this file's. */
    onRemove: () => void;
+   /** The grid's width, which the width presets are fractions of. */
+   columns: number;
 }
 
 export function TileMenu({
@@ -44,6 +46,7 @@ export function TileMenu({
    onClose,
    onCommit,
    onRemove,
+   columns,
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
    const [draft, setDraft] = useState<DashboardTile | undefined>(undefined);
@@ -116,6 +119,51 @@ export function TileMenu({
                            })
                         }
                      />
+                     {/* Looker's width presets, as fractions of this grid. A
+                         tile's width is otherwise a drag, and a drag cannot
+                         say "a third". */}
+                     <Stack
+                        direction="row"
+                        sx={{ gap: 0.5, alignItems: "center" }}
+                     >
+                        <Typography
+                           variant="caption"
+                           sx={{ color: theme.tileTitle, mr: 0.5 }}
+                        >
+                           Width
+                        </Typography>
+                        {(
+                           [
+                              ["Full", 1],
+                              ["½", 2],
+                              ["⅓", 3],
+                              ["¼", 4],
+                           ] as const
+                        ).map(([label, share]) => {
+                           const span = Math.max(
+                              1,
+                              Math.round(columns / share),
+                           );
+                           const active = (draft.colspan ?? 1) === span;
+                           return (
+                              <Button
+                                 key={label}
+                                 size="small"
+                                 variant={active ? "contained" : "outlined"}
+                                 aria-label={`Width ${label}`}
+                                 aria-pressed={active}
+                                 onClick={() =>
+                                    patch((t) => {
+                                       t.colspan = span;
+                                    })
+                                 }
+                                 sx={{ minWidth: 40, px: 1 }}
+                              >
+                                 {label}
+                              </Button>
+                           );
+                        })}
+                     </Stack>
                   </>
                ) : (
                   <Typography variant="body2" sx={{ color: theme.tileTitle }}>
