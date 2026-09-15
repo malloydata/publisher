@@ -36,7 +36,7 @@ import type {
  *
  * Committed once, on Apply, as one history entry.
  */
-export const SELF = "self";
+const SELF = "self";
 
 export interface DrillDialogProps {
    open: boolean;

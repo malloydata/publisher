@@ -7,8 +7,8 @@ import { Box, IconButton, Paper, Typography } from "@mui/material";
 import type { PointerEvent, ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { GRID_GAP_PX } from "../Dashboard/DashboardGrid";
-import type { DashboardTile } from "./document";
-import { gapId, tileKey } from "./layout";
+import { tileKey, type DashboardTile } from "./document";
+import { gapId } from "./layout";
 import { GapDroppable, TileSortable } from "./sortable";
 
 /**

@@ -107,8 +107,7 @@ export function blockAbove(lines: string[], declLine: number): Block {
 }
 
 /** Just the text of a block's tags, which is what `parseAnnotation` takes. */
-export const tagText = (tags: Array<{ text: string }>) =>
-   tags.map((t) => t.text);
+const tagText = (tags: Array<{ text: string }>) => tags.map((t) => t.text);
 
 /** The model-level `##` lines, which are not symbols and must be read as text. */
 function modelLines(lines: string[]): {

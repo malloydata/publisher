@@ -24,14 +24,19 @@ import {
 } from "./controls";
 import { BuilderToolbar } from "./BuilderToolbar";
 import { filterableFields, type PackageCatalog } from "./catalog";
-import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import {
+   tileKey,
+   type DashboardDocument,
+   type DashboardTile,
+   type LocalGiven,
+} from "./document";
 import { AddTileDialog, type NewTile } from "./AddTileDialog";
 import { DiffDialog } from "./DiffDialog";
 import { DrillDialog } from "./DrillDialog";
 import { FilterDialog } from "./FilterDialog";
 import { SettingsPopover, settingsOf } from "./SettingsPopover";
 import { FilterStrip } from "./FilterStrip";
-import { gapId, tileEntry, tileKey, withGaps } from "./layout";
+import { gapId, tileEntry, withGaps } from "./layout";
 import { builderSensors } from "./sortable";
 import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
 import { useTileReorder } from "./useTileReorder";

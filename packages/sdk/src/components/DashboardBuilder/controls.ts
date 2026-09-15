@@ -115,7 +115,7 @@ export function defaultOperator(type: string | undefined): string | undefined {
  * The scalar a given compares: `filter<string>` and `string` both compare
  * strings, one as a filter expression and one as a value.
  */
-export function givenScalar(type: string | undefined): string | undefined {
+function givenScalar(type: string | undefined): string | undefined {
    if (!type) return undefined;
    return /^filter<(.+)>$/.exec(type)?.[1] ?? type;
 }

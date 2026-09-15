@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { GridTile } from "../Dashboard/DashboardGrid";
-import type { DashboardTile } from "./document";
+import { tileKey, type DashboardTile } from "./document";
 
 /**
  * How the builder's grid is arranged: what a reorder does to the rows, and
@@ -78,9 +78,6 @@ export const moveIntoGap = (
    next.splice(to, 0, placed);
    return next;
 };
-
-/** A tile's identity across a reorder: what the grid keys on and a drag names. */
-export const tileKey = (tile: DashboardTile) => `${tile.source}.${tile.name}`;
 
 /** One thing the grid lays out: a tile, or the empty end of a row. */
 export type GridEntry = GridTile &

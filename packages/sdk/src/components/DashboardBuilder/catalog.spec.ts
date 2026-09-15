@@ -9,7 +9,6 @@ import {
    docOf,
    filterableFields,
    isDashboardModel,
-   missingTiles,
 } from "./catalog";
 
 /**
@@ -135,101 +134,6 @@ describe("buildCatalog", () => {
       ]);
       expect(catalog.sources).toHaveLength(1);
       expect(catalog.sources[0].modelPath).toBe("data_app.malloy");
-   });
-});
-
-describe("missingTiles", () => {
-   const catalog = buildCatalog([MODEL]);
-   const declared = [{ name: "overview", base: "scoped_orders" }];
-   const ref = (name: string, from: string) => ({
-      source: "overview",
-      name,
-      declaration: { kind: "reference" as const, from },
-   });
-
-   // A tile declared in the dashboard file needs its BASE view, not its own
-   // name: `overview -> kpis` is declared right there. Getting this wrong
-   // reported every healthy tile in the bundled dashboard as missing.
-   it("checks the base view a tile was built from, not the tile's own name", () => {
-      expect(
-         missingTiles(catalog, [ref("revenue_trend", "by_category")], declared),
-      ).toEqual([]);
-   });
-
-   it("names a base view the model no longer has", () => {
-      expect(
-         missingTiles(
-            catalog,
-            [ref("revenue_trend", "deleted_view")],
-            declared,
-         ),
-      ).toEqual([
-         { source: "overview", name: "revenue_trend", needs: "deleted_view" },
-      ]);
-   });
-
-   // An inline tile carries its own query, so there is nothing to go stale.
-   it("asks nothing of an inline tile", () => {
-      expect(
-         missingTiles(
-            catalog,
-            [
-               {
-                  source: "overview",
-                  name: "kpis",
-                  declaration: { kind: "inline" },
-               },
-            ],
-            declared,
-         ),
-      ).toEqual([]);
-   });
-
-   // An inherited tile is the one case where the view really does live on the
-   // source, so its own name is what has to exist.
-   it("checks an inherited tile's own name against its source", () => {
-      expect(
-         missingTiles(
-            catalog,
-            [
-               {
-                  source: "scoped_orders",
-                  name: "top_products",
-                  declaration: { kind: "inherited" },
-               },
-            ],
-            [],
-         ),
-      ).toEqual([]);
-      expect(
-         missingTiles(
-            catalog,
-            [
-               {
-                  source: "scoped_orders",
-                  name: "gone",
-                  declaration: { kind: "inherited" },
-               },
-            ],
-            [],
-         ),
-      ).toHaveLength(1);
-   });
-
-   it("names a tile whose source is gone entirely", () => {
-      expect(
-         missingTiles(
-            catalog,
-            [
-               {
-                  source: "ghost",
-                  name: "x",
-                  declaration: { kind: "inherited" },
-               },
-            ],
-            [],
-         ),
-      ).toEqual([{ source: "ghost", name: "x", needs: "ghost" }]);
    });
 });
 

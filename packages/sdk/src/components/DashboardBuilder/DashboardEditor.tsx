@@ -5,11 +5,10 @@ import DownloadIcon from "@mui/icons-material/Download";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useGivensState } from "../../hooks/useGivensState";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DashboardTile, tileTitle } from "../Dashboard/DashboardTile";
+import { useDashboardControls } from "../Dashboard/useDashboardControls";
 import {
    useOptionalDocumentStorage,
    type DocumentLocator,
@@ -52,7 +51,7 @@ export interface DashboardEditorProps {
 }
 
 /** The Console's key for a dashboard's copy; see the storage seam's locator rule. */
-export const dashboardLocator = (
+const dashboardLocator = (
    workspace: string,
    environmentName: string,
    packageName: string,
@@ -154,12 +153,6 @@ export function DashboardEditor({
       };
    }, [opening]);
 
-   // The text a save would write for the document as it stands: what Export
-   // downloads, shown before any save.
-   const [previewText, setPreviewText] = useState<string | undefined>(
-      undefined,
-   );
-
    const save = useCallback(
       async (source: string) => {
          if (!storage || workspace === undefined)
@@ -179,18 +172,6 @@ export function DashboardEditor({
       },
       [storage, workspace, environmentName, packageName, modelPath],
    );
-
-   const exportFile = useCallback(() => {
-      const text = previewText ?? opened?.source;
-      if (!text) return;
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `${dashboardName}.malloy`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-   }, [previewText, opened, dashboardName]);
 
    if (modelQuery.isError)
       return (
@@ -238,22 +219,12 @@ export function DashboardEditor({
                slug={dashboardName}
                opened={opened}
                onSave={storage && workspace !== undefined ? save : undefined}
-               onPreview={setPreviewText}
                toolbar={
-                  <>
-                     <Button
-                        size="small"
-                        startIcon={<DownloadIcon fontSize="small" />}
-                        onClick={exportFile}
-                     >
-                        Export
+                  onExit && (
+                     <Button size="small" onClick={onExit}>
+                        Done
                      </Button>
-                     {onExit && (
-                        <Button size="small" onClick={onExit}>
-                           Done
-                        </Button>
-                     )}
-                  </>
+                  )
                }
                note={
                   storage
@@ -284,7 +255,6 @@ function Surface({
    slug,
    opened,
    onSave,
-   onPreview,
    toolbar,
    note,
 }: {
@@ -294,7 +264,6 @@ function Surface({
    slug: string;
    opened: { source: string; document: DashboardDocument; generation: number };
    onSave?: (source: string) => Promise<void>;
-   onPreview: (text: string) => void;
    toolbar: React.ReactNode;
    note: string;
 }) {
@@ -369,15 +338,20 @@ function Surface({
 
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
-   useEffect(() => {
-      let stale = false;
-      void spliceDashboardDocument(opened.source, doc).then((result) => {
-         if (!stale && !spliceFailed(result)) onPreview(result.source);
-      });
-      return () => {
-         stale = true;
-      };
-   }, [doc, opened, onPreview]);
+   // Export: the file a save would write for the document as it stands —
+   // spliced when asked for, so an edit costs nothing until then. Refused
+   // (which the builder has already reported), the file as opened goes out.
+   const exportFile = useCallback(async () => {
+      const result = await spliceDashboardDocument(opened.source, doc);
+      const text = spliceFailed(result) ? opened.source : result.source;
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${slug}.malloy`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+   }, [opened.source, doc, slug]);
 
    const modelSpecs = useMemo(() => manifest?.givens ?? [], [manifest]);
    const runnable = useMemo(
@@ -393,29 +367,17 @@ function Surface({
       () => previewGivens(doc, modelSpecs),
       [doc, modelSpecs],
    );
-   const declaredTypes = useMemo(
-      () =>
-         new Map(
-            specs
-               .filter((spec) => spec.name !== undefined)
-               .map((spec) => [spec.name as string, spec.type]),
-         ),
-      [specs],
-   );
-   const { draft, applied, setGiven, reset, apply, pending } = useGivensState({
-      declaredTypes,
-      startingValues: manifest?.startingGivens,
+   const { declaredTypes, applied, panel } = useDashboardControls({
+      environmentName,
+      packageName,
+      modelPath: manifest?.path,
+      specs,
+      ...(manifest?.startingGivens
+         ? { startingValues: manifest.startingGivens }
+         : {}),
       documentKey: `${environmentName}/${packageName}/${slug}/edit`,
       autorun: manifest?.autorun !== false,
    });
-   const { options, isLoading, failed } = useSuggestOptions(
-      environmentName,
-      packageName,
-      manifest?.path,
-      specs,
-      undefined,
-      { values: applied, declaredTypes },
-   );
 
    const renderTile = useMemo(
       () =>
@@ -469,26 +431,19 @@ function Surface({
             onChange={setDoc}
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}
-            toolbar={toolbar}
-            controls={
-               isSuccess ? (
-                  <GivensPanel
-                     givens={specs}
-                     values={draft}
-                     onChange={setGiven}
-                     onReset={reset}
-                     layout="bar"
-                     options={options}
-                     optionsLoading={isLoading}
-                     optionsFailed={failed}
-                     apply={
-                        manifest?.autorun === false
-                           ? { onApply: apply, pending }
-                           : undefined
-                     }
-                  />
-               ) : undefined
+            toolbar={
+               <>
+                  <Button
+                     size="small"
+                     startIcon={<DownloadIcon fontSize="small" />}
+                     onClick={() => void exportFile()}
+                  >
+                     Export
+                  </Button>
+                  {toolbar}
+               </>
             }
+            controls={isSuccess ? <GivensPanel {...panel} /> : undefined}
             {...(onSave
                ? {
                     onSave: async (source: string) => {

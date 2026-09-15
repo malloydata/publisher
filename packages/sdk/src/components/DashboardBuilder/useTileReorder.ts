@@ -4,8 +4,8 @@
 import { move } from "@dnd-kit/helpers";
 import type { DragEndEvent, DragOverEvent } from "@dnd-kit/react";
 import { useRef, useState } from "react";
-import type { DashboardTile } from "./document";
-import { keepRowStructure, moveIntoGap, tileKey } from "./layout";
+import { tileKey, type DashboardTile } from "./document";
+import { keepRowStructure, moveIntoGap } from "./layout";
 import { GAP_TYPE, type GapData } from "./sortable";
 
 /**

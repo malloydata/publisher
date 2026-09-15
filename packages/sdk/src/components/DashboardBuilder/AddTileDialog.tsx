@@ -57,7 +57,7 @@ export interface AddTileDialogProps {
 }
 
 /** The catalog sources this file can put a tile on; see the note above. */
-export function reachableSources(
+function reachableSources(
    document: DashboardDocument,
    catalog: PackageCatalog | undefined,
 ): CatalogSource[] {

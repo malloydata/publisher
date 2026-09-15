@@ -172,6 +172,10 @@ export interface DashboardSource {
    dimensions?: DashboardDimension[];
 }
 
+/** A tile's identity across a reorder: what the grid keys on, a drag names and the writer matches. */
+export const tileKey = (tile: { source: string; name: string }) =>
+   `${tile.source}.${tile.name}`;
+
 /** `dimension: <name> is <expression>` in the dashboard's own extension. */
 export interface DashboardDimension {
    name: string;

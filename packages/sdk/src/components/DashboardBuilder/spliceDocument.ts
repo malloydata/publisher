@@ -158,7 +158,7 @@ const isSameDocumentExceptTiles = (
  * order `givens.malloy` writes them, so a file the builder wrote reads like one
  * a person wrote.
  */
-export function givenTagLine(given: LocalGiven): string | undefined {
+function givenTagLine(given: LocalGiven): string | undefined {
    const parts: string[] = [];
    if (given.label !== undefined) parts.push(`label="${given.label}"`);
    if (given.description !== undefined)
@@ -181,7 +181,7 @@ export function givenTagLine(given: LocalGiven): string | undefined {
 }
 
 /** `given: NAME :: type is default`, the one-line spelling the builder writes. */
-export const givenDeclaration = (given: LocalGiven) =>
+const givenDeclaration = (given: LocalGiven) =>
    `given: ${given.name} :: ${given.type} is ${given.default}`;
 
 /**
@@ -206,9 +206,8 @@ function declarationEnd(lines: string[], line: number): number {
    return lines.length - 1;
 }
 
-/** One tile's identity, ignoring presentation and position. */
 /** `# drill { to=… given=… }`, one line, as the reader spells it back. */
-export function drillTagLine(drill: DashboardDrill): string {
+function drillTagLine(drill: DashboardDrill): string {
    const to =
       drill.to.length === 1
          ? drill.to[0]
@@ -218,6 +217,11 @@ export function drillTagLine(drill: DashboardDrill): string {
 
 const drillKey = (d: DashboardDrill) => `${d.source}.${d.name}`;
 
+/**
+ * One tile's identity, ignoring presentation and position — but not its
+ * declaration: a tile redeclared from another view is a different tile to
+ * the file, removed and added, which `document.tileKey` does not say.
+ */
 const tileKey = (t: DashboardTile) =>
    canonical([t.name, t.source, t.declaration]);
 

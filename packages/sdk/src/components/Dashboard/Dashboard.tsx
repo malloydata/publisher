@@ -5,9 +5,7 @@ import { Alert, Box, Stack, Typography } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { DashboardManifest } from "../../client";
-import { useGivensState } from "../../hooks/useGivensState";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import {
@@ -25,6 +23,7 @@ import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
 import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
+import { useDashboardControls } from "./useDashboardControls";
 import { ExploreDialog } from "./ExploreDialog";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 
@@ -138,70 +137,34 @@ export function Dashboard({
    const manifest = manifestResponse?.data;
 
    const specs = useMemo(() => manifest?.givens ?? [], [manifest]);
-   const declaredTypes = useMemo(
-      () =>
-         new Map(
-            specs
-               .filter((spec) => spec.name !== undefined)
-               .map((spec) => [spec.name as string, spec.type]),
-         ),
-      [specs],
-   );
-
-   // Hands the host the names this dashboard MANAGES alongside the values, so it
-   // can merge into a shared query string instead of replacing it. Guarded on
-   // `isSuccess` as well as at the call site, since an empty declared set before
-   // the manifest lands is the absence of an answer rather than the answer.
-   const reportGivens = useCallback(
-      (next: Record<string, string>) => {
-         if (!isSuccess) return;
-         onGivensChange?.(next, Array.from(declaredTypes.keys()));
-      },
-      [isSuccess, onGivensChange, declaredTypes],
-   );
-
-   const { draft, applied, setGiven, reset, apply, pending } = useGivensState({
-      declaredTypes,
-      startingValues: manifest?.startingGivens,
-      params: givens,
-      // Withheld until the manifest has loaded, for the same reason the notebook
-      // withholds it. Changing `dashboard` changes the query key, so `data` is
-      // undefined for one commit and `declaredTypes` is empty; `applied` prunes
-      // to nothing and the hook reports "no values, and I manage nothing". This
-      // component is reconciled rather than remounted on a dashboard-to-dashboard
-      // drill, so the hook's record of what it last reported still holds the
-      // PREVIOUS dashboard's values and does not suppress that report as a
-      // repeat. The host reasonably clears its query string, which is exactly the
-      // givens the drill just seeded for the dashboard now arriving.
-      onParamsChange: isSuccess ? reportGivens : undefined,
-      // Which document these edits belong to. Without it the edits are keyed by
-      // their starting VALUES alone, so two dashboards whose starting values
-      // coincide (the common case: both empty) look like one document, and the
-      // one you came from keeps filtering the one you drilled into.
-      // The version belongs in that identity too, so a swap between versions
-      // drops the edits a reader made to the one they came from. Only the
-      // EDITS: `initial` is `startingValues` merged with `params`, so a host
-      // that round-trips givens through its own URL hands them straight back
-      // and they still apply across the swap. That one is the host's call, and
-      // this key neither can nor should overrule it.
+   const { declaredTypes, applied, setGiven, panel } = useDashboardControls({
+      environmentName,
+      packageName,
+      ...(versionId === undefined ? {} : { versionId }),
+      modelPath: manifest?.path,
+      specs,
+      ...(manifest?.startingGivens
+         ? { startingValues: manifest.startingGivens }
+         : {}),
+      ...(givens ? { params: givens } : {}),
+      // Withheld until the manifest has loaded. Changing `dashboard`
+      // changes the query key, so `data` is undefined for one commit and
+      // the declared set is empty; `applied` prunes to nothing and the
+      // hook would report "no values, and I manage nothing". This component
+      // is reconciled rather than remounted on a dashboard-to-dashboard
+      // drill, so the host would clear exactly the givens the drill just
+      // seeded for the dashboard now arriving.
+      ...(isSuccess && onGivensChange
+         ? { onParamsChange: onGivensChange }
+         : {}),
+      // Which document these edits belong to, version included: two
+      // dashboards whose starting values coincide (both empty, usually)
+      // would otherwise look like one document, and the one you came from
+      // would keep filtering the one you drilled into.
       documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${dashboard}`,
       // Absent means autorun; only an explicit `autorun=false` batches.
       autorun: manifest?.autorun !== false,
    });
-
-   const {
-      options,
-      isLoading: optionsLoading,
-      failed: optionsFailed,
-   } = useSuggestOptions(
-      environmentName,
-      packageName,
-      manifest?.path,
-      specs,
-      versionId,
-      // So a suggest over a gated or scoped source carries the givens it needs.
-      { values: applied, declaredTypes },
-   );
 
    // `to=self` filters in place. Which givens a tag may set, and setting one
    // from a clicked cell, is the same on both surfaces, so it is shared.
@@ -300,21 +263,7 @@ export function Dashboard({
       <Stack spacing={2}>
          <DashboardHeader manifest={manifest} />
 
-         <GivensPanel
-            givens={specs}
-            values={draft}
-            onChange={setGiven}
-            onReset={reset}
-            layout="bar"
-            options={options}
-            optionsLoading={optionsLoading}
-            optionsFailed={optionsFailed}
-            apply={
-               manifest.autorun === false
-                  ? { onApply: apply, pending }
-                  : undefined
-            }
-         />
+         <GivensPanel {...panel} />
 
          {modelPath === undefined ? (
             <Alert severity="error">

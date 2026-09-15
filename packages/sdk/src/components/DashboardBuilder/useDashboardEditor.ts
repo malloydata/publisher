@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { useCallback, useMemo, useState } from "react";
-import type { DashboardDocument } from "./document";
+import { tileKey, type DashboardDocument } from "./document";
 import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
 
 /**
@@ -159,10 +159,8 @@ export function useDashboardEditor(options: {
       [document, saved],
    );
    const structural = useMemo(() => {
-      const key = (t: { source: string; name: string }) =>
-         `${t.source}.${t.name}`;
-      const before = new Set(saved.tiles.map(key));
-      const after = new Set(document.tiles.map(key));
+      const before = new Set(saved.tiles.map(tileKey));
+      const after = new Set(document.tiles.map(tileKey));
       return (
          [...before].some((k) => !after.has(k)) ||
          [...after].some((k) => !before.has(k))
