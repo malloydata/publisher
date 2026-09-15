@@ -100,7 +100,14 @@ if (missing.length > 0) {
    );
 }
 
-for (const required of ["dist/index.js", "dist/index.d.ts", "README.md"]) {
+// dist/cli.js is what `bin` points at: if it is missing, `npx
+// @malloy-publisher/skills` fails with a bare ENOENT and nothing says why.
+for (const required of [
+   "dist/index.js",
+   "dist/index.d.ts",
+   "dist/cli.js",
+   "README.md",
+]) {
    if (!packedPaths.has(required)) {
       failures.push(`the tarball is missing ${required}`);
    }
