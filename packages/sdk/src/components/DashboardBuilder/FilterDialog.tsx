@@ -38,7 +38,7 @@ import {
    type ControlKind,
    type MappingRow,
 } from "./controls";
-import type { DashboardDocument, LocalGiven } from "./document";
+import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
 
 /**
  * A filter control: what it is, and which tiles it drives.
@@ -74,13 +74,13 @@ export interface FilterDialogProps {
    /** Model givens not yet bound anywhere, offered as "from the model". */
    available: readonly BuilderControl[];
    /**
-    * The fields a binding may name: the dimensions of the source the tiles
-    * read. Absent when the host has no catalog, in which case any name is
-    * accepted and nothing is searched.
+    * The fields a binding on THIS tile may name: the dimensions of the source
+    * it reads. Per tile, because a composite dashboard exists to span sources,
+    * and a field one source has another may not. Undefined for a tile whose
+    * source the host has no catalog for, in which case any name is accepted
+    * for it and nothing is searched.
     */
-   fields?: readonly CatalogField[];
-   /** The source those fields belong to, for the picker to say so. */
-   fieldsOf?: string;
+   fieldsFor?: (tile: DashboardTile) => readonly CatalogField[] | undefined;
    onClose: () => void;
    /**
     * Bind a control. `declare` is set when the control is new to this file, or
@@ -184,8 +184,7 @@ export function FilterDialog({
    document,
    control,
    available,
-   fields,
-   fieldsOf,
+   fieldsFor,
    onClose,
    onApply,
    onRemove,
@@ -213,11 +212,10 @@ export function FilterDialog({
    const [rows, setRows] = useState<MappingRow[]>([]);
    const [perTile, setPerTile] = useState(false);
 
-   // The base of the dashboard's own extension is the source every field here
-   // lives on, and the one a picker's options can be read from. A dashboard
-   // over imported sources alone has none; the control is then declared as
-   // text.
-   const suggestSource = document.sources[0]?.base;
+   /** The model source a tile's extension is built on, which its fields live on. */
+   const baseOf = (tile: DashboardTile) =>
+      document.sources.find((source) => source.name === tile.source)?.base ??
+      tile.source;
 
    // Reset on open, on what is true now.
    useEffect(() => {
@@ -309,6 +307,41 @@ export function FilterDialog({
    const bindable = document.tiles.map(canBind);
    const bindableCount = bindable.filter(Boolean).length;
    const included = rows.filter((row, i) => row.include && bindable[i]).length;
+   // The tiles a common field has to fit: the ticked, bindable ones — or every
+   // bindable one while nothing is ticked yet, so the picker has something to
+   // offer before the first tick.
+   const ticked = document.tiles.filter(
+      (_, i) => (rows[i]?.include ?? false) && bindable[i],
+   );
+   const pool =
+      ticked.length > 0 ? ticked : document.tiles.filter((_, i) => bindable[i]);
+   // What the common picker offers: every field any tile in the pool can take,
+   // once by name. Undefined when no tile has a list, which is "accept anything".
+   const commonFields = useMemo(() => {
+      const byName = new Map<string, CatalogField>();
+      let any = false;
+      for (const tile of pool) {
+         const list = fieldsFor?.(tile);
+         if (!list) continue;
+         any = true;
+         for (const field of list)
+            if (!byName.has(field.name)) byName.set(field.name, field);
+      }
+      return any ? [...byName.values()] : undefined;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- pool is derived from rows and tiles
+   }, [rows, document.tiles, fieldsFor]);
+   // Where a NEW control's picker reads its options: the source of the first
+   // ticked tile that has the field — a `suggest` has to resolve in this file,
+   // and a tile's own base always does. A dashboard over imported sources
+   // alone has no extension, so the tile's source is the base itself.
+   const suggestSource = (() => {
+      const name = field.trim();
+      for (const tile of ticked) {
+         const list = fieldsFor?.(tile);
+         if (!list || list.some((f) => f.name === name)) return baseOf(tile);
+      }
+      return ticked[0] ? baseOf(ticked[0]) : document.sources[0]?.base;
+   })();
    const setAll = (include: boolean) =>
       setRows((previous) =>
          previous.map((row, i) => ({
@@ -324,28 +357,32 @@ export function FilterDialog({
       [perTile, rows, field],
    );
 
-   // Validation, where the source's fields are known. Unknown is a name the
-   // source does not have; empty is no name at all. Either on a ticked tile
-   // holds Apply, and is marked where it stands.
-   const known = useMemo(
-      () => (fields ? new Set(fields.map((f) => f.name)) : undefined),
-      [fields],
-   );
-   const unknown = (name: string) =>
-      known !== undefined && name.trim() !== "" && !known.has(name.trim());
-   const typeOf = (name: string) =>
-      fields?.find((f) => f.name === name.trim())?.type;
+   // Validation, per TILE, where its source's fields are known. Unknown is a
+   // name that tile's source does not have; empty is no name at all. Either on
+   // a ticked tile holds Apply, and is marked where it stands.
+   const typeOf = (name: string) => {
+      for (const tile of pool) {
+         const found = fieldsFor?.(tile)?.find((f) => f.name === name.trim());
+         if (found?.type) return found.type;
+      }
+      return undefined;
+   };
    // What this given can compare: the picker offers only these, and a name
    // typed past the list is held to the same rule.
    const accepts = (candidate: CatalogField) =>
       acceptsField(target?.type, candidate.type);
-   const problemWith = (name: string): string | undefined => {
+   const problemWith = (
+      name: string,
+      tile: DashboardTile | undefined,
+   ): string | undefined => {
       if (name.trim() === "") return "Pick the field this filter compares.";
-      if (unknown(name))
-         return `Not a field of ${fieldsOf ?? "the tiles' source"}.`;
-      const fieldType = typeOf(name);
-      if (fieldType && !acceptsField(target?.type, fieldType))
-         return `${name.trim()} is ${typeLabel(fieldType)}; this filter compares ${typeLabel(
+      const list = tile ? fieldsFor?.(tile) : undefined;
+      if (!list) return undefined;
+      const found = list.find((f) => f.name === name.trim());
+      if (!found)
+         return `Not a field of ${tile ? baseOf(tile) : "the tiles' source"}.`;
+      if (found.type && !acceptsField(target?.type, found.type))
+         return `${name.trim()} is ${typeLabel(found.type)}; this filter compares ${typeLabel(
             target?.type?.replace(/^filter<(.+)>$/, "$1"),
          )}.`;
       return undefined;
@@ -367,13 +404,18 @@ export function FilterDialog({
          pickKind(kindForFieldType(fieldType));
    };
    const rowProblems = effective.map((row, i) =>
-      row.include && bindable[i] ? problemWith(row.field) : undefined,
+      row.include && bindable[i]
+         ? problemWith(row.field, document.tiles[i])
+         : undefined,
    );
    const fieldsResolve = rowProblems.every((problem) => problem === undefined);
    // In the common case one box speaks for every row, so its message is the
    // rows' message; the box is only marked once a tile is ticked to bind.
+   // Every ticked tile has to take it; the first that cannot says why.
    const commonProblem =
-      !perTile && included > 0 ? problemWith(field) : undefined;
+      !perTile && included > 0
+         ? ticked.map((tile) => problemWith(field, tile)).find(Boolean)
+         : undefined;
 
    const canApply =
       target !== undefined &&
@@ -523,7 +565,7 @@ export function FilterDialog({
                      <FieldPicker
                         value={field}
                         onChange={pickField}
-                        fields={fields}
+                        fields={commonFields}
                         accepts={accepts}
                         label="Field to filter"
                         ariaLabel="Field to filter"
@@ -711,7 +753,7 @@ export function FilterDialog({
                                           onChange={(next) =>
                                              setRow(index, { field: next })
                                           }
-                                          fields={fields}
+                                          fields={fieldsFor?.(tile)}
                                           accepts={accepts}
                                           label="Field"
                                           ariaLabel={`Field for ${title}`}

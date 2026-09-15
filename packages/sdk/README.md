@@ -40,6 +40,14 @@ yarn add @malloy-publisher/sdk
 
 ---
 
+### Peer dependencies
+
+The SDK expects the host to provide React and the Malloy packages it renders
+with, including `@malloydata/malloy`. The Malloy parser is only loaded when the
+dashboard builder opens (it is imported lazily, about 440 KB gzipped), so an
+app that never opens the builder never downloads it — but the package still has
+to be installed, or that one dynamic import fails at open time.
+
 ## Quick Start
 
 ### Basic Setup

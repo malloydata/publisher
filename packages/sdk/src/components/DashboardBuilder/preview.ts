@@ -108,15 +108,16 @@ export interface PreviewTileQuery {
 }
 
 /**
- * A tile's query with the DOCUMENT's bindings, run against the model source
- * the dashboard's extension is built on.
+ * A tile's query with the DOCUMENT's bindings, run on the dashboard's own
+ * extension.
  *
  * `overview -> revenue_trend` would run the view AS SAVED, bindings and all.
- * `order_items -> sales_by_month + { where: category ~ $CATEGORY }` is the same
- * view on the source it extends, refined by what the document binds now —
- * which is exactly the declaration the writer would produce, run before it is
- * written. Every reference tile has such a base: `view: x is base_view + …` can
- * only name a view of the source the extension extends.
+ * `overview -> sales_by_month + { where: category ~ $CATEGORY }` is the base
+ * view the tile names, on the same extension, refined by what the document
+ * binds now — which is exactly the declaration the writer would produce, run
+ * before it is written. Every reference tile has such a base view, and the
+ * extension inherits it: `view: x is base_view + …` can only name a view of the
+ * source the extension extends.
  *
  * `runnable` is the set of givens the server's model declares; a binding to
  * one of them is written as `$NAME` and the given is sent with the request. A
@@ -140,9 +141,13 @@ export function previewTileQuery(
          givenNames: tile.declaration.kind === "inherited" ? undefined : [],
       };
    }
-   const base =
-      document.sources.find((source) => source.name === tile.source)?.base ??
-      tile.source;
+   // Run on the dashboard's OWN extension, not the model source it extends.
+   // An extension inherits every view of its base, so `overview -> sales_by_month`
+   // resolves; and it carries whatever else the extension declares — a
+   // source-level `where:`, a `# drill` dimension — which the base does not.
+   // Running on the base showed unscoped numbers for a dashboard that scopes
+   // its source, and the saved page then differed from what the author watched.
+   const on = tile.source;
    const localTypes = new Map(
       (document.localGivens ?? []).map((local) => [local.name, local.type]),
    );
@@ -165,7 +170,7 @@ export function previewTileQuery(
    const refinement = clauses.join(", ");
    return {
       expression:
-         `${base} -> ${tile.declaration.from}` +
+         `${on} -> ${tile.declaration.from}` +
          (refinement ? ` + { ${refinement} }` : ""),
       givenNames: sent,
    };

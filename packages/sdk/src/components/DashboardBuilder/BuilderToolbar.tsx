@@ -59,9 +59,11 @@ export function BuilderToolbar({
             py: 1,
             // Its own ground, so the tiles scrolling under it do not show
             // through, and an edge so it reads as a bar rather than a row.
-            bgcolor: "background.paper",
-            borderBottom: 1,
-            borderColor: "divider",
+            // The Publisher theme's ground and edge, like every other surface
+            // here — MUI's own palette would not follow an instance theme or
+            // its dark mode.
+            bgcolor: theme.background,
+            borderBottom: theme.border,
             borderRadius: 1,
          }}
       >

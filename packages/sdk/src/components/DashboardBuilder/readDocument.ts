@@ -281,13 +281,13 @@ function viewsDeclaredUnder(
    let current: string | undefined;
    for (let line = 0; line < lines.length; line++) {
       const text = lines[line];
-      const source = /^source:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(text);
+      const source = /^\s*source:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(text);
       if (source) {
          current = source[1];
          continue;
       }
       // Any other top-level declaration ends the source's body.
-      if (/^(query|run|import|given)\b/.test(text) || text.startsWith("##"))
+      if (/^\s*(query|run|import|given)\b/.test(text) || text.startsWith("##"))
          current = undefined;
       if (current !== owner) continue;
       const view = /^\s*view:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(text);

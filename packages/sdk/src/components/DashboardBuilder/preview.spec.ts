@@ -88,7 +88,7 @@ describe("previewTileQuery", () => {
    it("runs the view on the source the extension extends, with the document's bindings", () => {
       const q = previewTileQuery(document, document.tiles[0], runnable);
       expect(q.expression).toBe(
-         "order_items -> key_figures + { where: category ~ $CATEGORY, where: created_at >= $SINCE }",
+         "overview -> key_figures + { where: category ~ $CATEGORY, where: created_at >= $SINCE }",
       );
       expect(q.givenNames).toEqual(["CATEGORY", "SINCE"]);
    });
@@ -99,7 +99,7 @@ describe("previewTileQuery", () => {
       const q = previewTileQuery(document, document.tiles[1], runnable);
       expect(q.givenNames).toEqual(["CATEGORY"]);
       const bare = previewTileQuery(document, document.tiles[2], runnable);
-      expect(bare.expression).toBe("order_items -> by_state");
+      expect(bare.expression).toBe("overview -> by_state");
       expect(bare.givenNames).toEqual([]);
    });
 
@@ -117,14 +117,14 @@ describe("previewTileQuery", () => {
          ]),
       );
       expect(q.expression).toBe(
-         "order_items -> key_figures + { where: category ~ $CATEGORY, where: created_at >= @2024-01-31 }",
+         "overview -> key_figures + { where: category ~ $CATEGORY, where: created_at >= @2024-01-31 }",
       );
       expect(q.givenNames).toEqual(["CATEGORY"]);
    });
 
    it("leaves out an unsent given with no value yet, and one nobody declares", () => {
       const q = previewTileQuery(document, document.tiles[0], new Set());
-      expect(q.expression).toBe("order_items -> key_figures");
+      expect(q.expression).toBe("overview -> key_figures");
       expect(q.givenNames).toEqual([]);
       const stray: DashboardTile = tile("t", "v", [
          { field: "x", given: "NOBODY" },
@@ -132,7 +132,7 @@ describe("previewTileQuery", () => {
       expect(
          previewTileQuery(document, stray, new Set(), new Map([["NOBODY", 1]]))
             .expression,
-      ).toBe("order_items -> v");
+      ).toBe("overview -> v");
    });
 
    it("runs an inherited tile as the model has it, sending the whole row", () => {

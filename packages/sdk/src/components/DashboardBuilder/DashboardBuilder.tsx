@@ -19,7 +19,14 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+   useCallback,
+   useEffect,
+   useMemo,
+   useRef,
+   useState,
+   type ReactNode,
+} from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { DashboardProse } from "../Dashboard/Dashboard";
 import {
@@ -371,34 +378,55 @@ export function DashboardBuilder({
       () => controlsOf(editor.document, modelGivens),
       [editor.document, modelGivens],
    );
-   // The fields a binding may name: the dimensions of the source the tiles
-   // read, when the host knows them. Undefined otherwise, and nothing checks.
-   const fieldSource = editor.document.sources[0]?.base;
-   const knownFields = useMemo(
-      () => filterableFields(catalog, fieldSource),
-      [catalog, fieldSource],
+   // The fields a binding may name, PER SOURCE: the dimensions of the model
+   // source each of this file's extensions is built on, when the host knows
+   // them. A composite spans sources, so one list would call a field the second
+   // source has "unknown" and block the window on it. Undefined for a source
+   // the catalog does not have, and nothing checks that source's tiles.
+   const fieldsBySource = useMemo(
+      () =>
+         new Map(
+            editor.document.sources.map((source) => [
+               source.name,
+               filterableFields(catalog, source.base),
+            ]),
+         ),
+      [catalog, editor.document.sources],
    );
-   // Bindings the source cannot take, per control — a field it does not have,
-   // or one of a type the given cannot compare: marked on the chip, so a broken
-   // binding is seen before the package refuses it.
+   const fieldsFor = useCallback(
+      (tile: DashboardTile) =>
+         fieldsBySource.get(tile.source) ??
+         // A tile on an imported source with no extension of its own: its
+         // source IS a model source, and may be in the catalog directly.
+         filterableFields(catalog, tile.source),
+      [fieldsBySource, catalog],
+   );
+   // Bindings a tile's source cannot take, per control — a field it does not
+   // have, or one of a type the given cannot compare: marked on the chip, so a
+   // broken binding is seen before the package refuses it.
    const unknownFieldsOf = (
       name: string,
       type: string | undefined,
    ): string[] => {
-      if (!knownFields) return [];
-      const known = new Map(
-         knownFields.map((field) => [field.name, field.type]),
-      );
       const out: string[] = [];
-      for (const tile of editor.document.tiles)
+      for (const tile of editor.document.tiles) {
+         const known = fieldsFor(tile);
+         if (!known) continue;
+         const types = new Map(known.map((field) => [field.name, field.type]));
          for (const filter of tile.filters ?? []) {
             if (filter.given !== name) continue;
             if (
-               !known.has(filter.field) ||
-               !acceptsField(type, known.get(filter.field))
+               !types.has(filter.field) ||
+               !acceptsField(type, types.get(filter.field))
             )
-               out.push(`${filter.field} on ${tile.label ?? tile.name}`);
+               out.push(
+                  `${filter.field} on ${tile.label ?? tile.name} (${
+                     editor.document.sources.find((s) => s.name === tile.source)
+                        ?.base ?? tile.source
+                  })`,
+               );
          }
+      }
       return out;
    };
    // Model givens nothing binds yet: what "From the model" offers.
@@ -408,35 +436,43 @@ export function DashboardBuilder({
       [controlList],
    );
 
-   const save = () => {
+   const save = useCallback(() => {
       if (!onSave || !editor.dirty || saving) return;
       setSaving(true);
       void editor.save().finally(() => setSaving(false));
-   };
+   }, [onSave, editor, saving]);
 
-   useBuilderShortcuts({
-      undo: editor.undo,
-      redo: editor.redo,
-      ...(onSave ? { save } : {}),
-      // Escape drops the selection — unless the menu or the filter window is
-      // open, in which case the key is theirs and they close on it themselves.
-      escape: () => {
-         if (!menu && !filterDialog) setSelected(undefined);
-      },
-      nudge: (delta) => {
-         if (selected === undefined) return;
-         const tile = editor.document.tiles[selected];
-         if (!tile || tile.declaration.kind === "inherited") return;
-         const span = Math.min(
-            Math.max((tile.colspan ?? 1) + delta, 1),
-            columns,
-         );
-         if (span === (tile.colspan ?? 1)) return;
-         editor.update((draft) => {
-            draft.tiles[selected].colspan = span;
-         });
-      },
-   });
+   useBuilderShortcuts(
+      // One handlers object per change of what they read, so the key listener
+      // is not torn down and re-bound on every render.
+      useMemo(
+         () => ({
+            undo: editor.undo,
+            redo: editor.redo,
+            ...(onSave ? { save } : {}),
+            // Escape drops the selection — unless the menu or the filter
+            // window is open, in which case the key is theirs and they close
+            // on it themselves.
+            escape: () => {
+               if (!menu && !filterDialog) setSelected(undefined);
+            },
+            nudge: (delta: 1 | -1) => {
+               if (selected === undefined) return;
+               const tile = editor.document.tiles[selected];
+               if (!tile || tile.declaration.kind === "inherited") return;
+               const span = Math.min(
+                  Math.max((tile.colspan ?? 1) + delta, 1),
+                  columns,
+               );
+               if (span === (tile.colspan ?? 1)) return;
+               editor.update((draft) => {
+                  draft.tiles[selected].colspan = span;
+               });
+            },
+         }),
+         [editor, onSave, save, menu, filterDialog, selected, columns],
+      ),
+   );
 
    /**
     * Width is the ONLY thing a resize can change.
@@ -680,7 +716,7 @@ export function DashboardBuilder({
                         key={control.name}
                         title={
                            unknown.length > 0
-                              ? `$${control.name} · ${fieldSource} cannot filter on: ${unknown.join(", ")}`
+                              ? `$${control.name} · cannot filter on: ${unknown.join(", ")}`
                               : `$${control.name} · ${
                                    control.origin === "dashboard"
                                       ? "declared here"
@@ -1144,8 +1180,7 @@ export function DashboardBuilder({
                ? { control: filterDialog.control }
                : {})}
             available={available}
-            {...(knownFields ? { fields: knownFields } : {})}
-            {...(fieldSource ? { fieldsOf: fieldSource } : {})}
+            {...(catalog ? { fieldsFor } : {})}
             onClose={() => setFilterDialog(undefined)}
             onApply={applyFilter}
             onRemove={dropControl}
