@@ -204,7 +204,10 @@ Ordered by what unblocks what. Each is SDK or server work on the existing format
    contract Publisher reads off a `given:` declaration. Unread tags are ignored by
    both projects, so shipping them in Publisher is safe; they should still be
    proposed to Malloyyo so the vocabulary stays one. Only the operator UI for
-   free-text filters needs no new tag at all.
+   free-text filters needs no new tag at all. The operator UI shipped
+   2026-09-15 (a binding's comparison is chosen in the filter window). The new
+   tags are **deferred**: the server reads a control's contract into the
+   manifest's `Given` schema, so a new tag is an API change.
 7. **Drill overlay and explore from here.** The rows behind a value are one
    query away, and `ModelExplorer` exists in the SDK. Runtime only. Shipped
    2026-09-15: every grouped value in a composite tile is clickable, and one
@@ -215,14 +218,19 @@ Ordered by what unblocks what. Each is SDK or server work on the existing format
    source with its view as the query.
 8. **Export and download.** Copy or download the Malloy; later CSV and PNG per
    tile. The Workbook editor was cut because its export never shipped, so export
-   ships with the first Console release, not after it.
+   ships with the first Console release, not after it. Export of the Malloy
+   file shipped 2026-09-15 on the editor's bar; CSV and PNG per tile are not
+   started.
 9. **Sizing aids and settings that are pure UI.** Width presets, a quick-layout
    that sets every tile to one width, run-on-load, auto-refresh, a timezone
    setting on the control row. Width presets (full, ½, ⅓, ¼ of the grid, on
    the tile's menu) and quick layout (on the edit bar) shipped 2026-09-15.
+   Run-on-load is `autorun` and is in the settings; auto-refresh and a timezone
+   setting have no tag to write and are **deferred** with the format work in §6.
 10. **Upstream bug reports that cost nothing to file.** The parser's symbol tree
     misreading `+ { limit: 5, where: … }`; `Malloy.parse` exposing no problems for
-    a file that does not parse; the map's fixed size.
+    a file that does not parse; the map's fixed size. Skipped by decision
+    (2026-09-15); the reader works around the first textually.
 
 ## 6. Plan for each gap that needs an extension
 
