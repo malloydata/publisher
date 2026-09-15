@@ -3,16 +3,17 @@
 
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import SearchIcon from "@mui/icons-material/Search";
-import { Box, Button, IconButton, Typography } from "@mui/material";
+import { Box, Button, Typography } from "@mui/material";
 import React, { useEffect } from "react";
 import { useQueryResult } from "../../hooks/useQueryResult";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
+import { FloatingIconButton } from "../FloatingIconButton";
 import { highlight } from "../highlighter";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { MODEL_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
-import { CleanMetricCard, CleanNotebookCell } from "../styles";
+import { CleanMetricCard } from "../styles";
 
 interface ModelCellProps {
    sourceName?: string;
@@ -59,7 +60,7 @@ export function ModelCell({
    }, [annotations, mode]);
 
    return (
-      <CleanNotebookCell>
+      <Box>
          {highlightedAnnotations && (
             <Box sx={{ marginBottom: "16px" }}>
                <Typography
@@ -92,29 +93,24 @@ export function ModelCell({
                variant="body2"
                sx={{
                   fontSize: "15px",
-                  fontWeight: "600",
-                  color: "#495057",
-                  padding: "8px 16px",
-                  backgroundColor: "#f8f9fa",
-                  borderRadius: "6px",
-                  border: "1px solid #e9ecef",
+                  fontWeight: 600,
+                  color: "text.primary",
+                  px: 2,
+                  py: 1,
+                  bgcolor: "action.hover",
+                  borderRadius: 1.5,
+                  border: 1,
+                  borderColor: "divider",
                }}
             >
                {queryName}
             </Typography>
-            <IconButton
-               sx={{
-                  backgroundColor: "rgba(255, 255, 255, 0.9)",
-                  "&:hover": {
-                     backgroundColor: "rgba(255, 255, 255, 1)",
-                  },
-                  width: "32px",
-                  height: "32px",
-               }}
+            <FloatingIconButton
+               aria-label="Expand results"
                onClick={() => setResultsDialogOpen(true)}
             >
-               <SearchIcon sx={{ fontSize: "18px", color: "text.secondary" }} />
-            </IconButton>
+               <SearchIcon />
+            </FloatingIconButton>
          </Box>
 
          <CleanMetricCard
@@ -140,16 +136,6 @@ export function ModelCell({
                      variant="contained"
                      startIcon={<PlayArrowIcon />}
                      onClick={() => setHasRun(true)}
-                     sx={{
-                        backgroundColor: "#1976d2",
-                        "&:hover": {
-                           backgroundColor: "#1565c0",
-                        },
-                        textTransform: "none",
-                        fontSize: "14px",
-                        fontWeight: 600,
-                        padding: "8px 24px",
-                     }}
                   >
                      Run Query
                   </Button>
@@ -173,6 +159,6 @@ export function ModelCell({
             renderLogs={queryData?.data?.renderLogs}
             title={`Query: ${queryName}`}
          />
-      </CleanNotebookCell>
+      </Box>
    );
 }
