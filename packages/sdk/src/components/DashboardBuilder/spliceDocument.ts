@@ -1031,16 +1031,31 @@ export async function spliceDashboardDocument(
 
    // Drills are compared as a set: their order is the file's, and a caller
    // appending one to the array has no way to know where its dimension sits.
-   const comparable = (document: DashboardDocument): DashboardDocument => ({
-      ...document,
-      ...(document.drills
-         ? {
-              drills: [...document.drills].sort((a, b) =>
-                 drillKey(a).localeCompare(drillKey(b)),
-              ),
-           }
-         : {}),
-   });
+   //
+   // An optional collection the reader omits and a caller materialises as `[]`
+   // are the same document, so they compare equal. Without that, a host that
+   // normalises its shape asks for no change, gets no edits, and would be told
+   // its save did not produce what it asked for.
+   const comparable = (document: DashboardDocument): DashboardDocument => {
+      const { drills, localGivens, ...rest } = document;
+      const tiles = document.tiles.map((tile) => {
+         if (tile.filters?.length) return tile;
+         const { filters: _filters, ...tileRest } = tile;
+         return tileRest as DashboardTile;
+      });
+      return {
+         ...rest,
+         tiles,
+         ...(drills?.length
+            ? {
+                 drills: [...drills].sort((a, b) =>
+                    drillKey(a).localeCompare(drillKey(b)),
+                 ),
+              }
+            : {}),
+         ...(localGivens?.length ? { localGivens } : {}),
+      } as DashboardDocument;
+   };
 
    // No edit means no planner found anything to place. That is only correct if
    // the document asked for is the one already on disk -- otherwise the ask

@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import type { DashboardDocument } from "./document";
 import { givenDeclarations } from "./malloyText";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
 import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
@@ -727,12 +728,18 @@ function unmodelledTagsByDeclaration(text: string): Record<string, string[]> {
          .filter((t) => !MODELLED_TAG.test(t));
       if (tags.length > 0) out[key] = tags;
    };
+   // Keyed by the enclosing source as well as the name: `view:x` repeats
+   // across sources, and a colliding key would let a tag move from one to
+   // another without the comparison noticing.
+   let scope = "";
    lines.forEach((line, i) => {
       const m =
          /^\s*(source|view|dimension|measure):\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(
             line,
          );
-      if (m) record(`${m[1]}:${m[2]}`, i);
+      if (!m) return;
+      if (m[1] === "source") scope = m[2];
+      record(`${scope}/${m[1]}:${m[2]}`, i);
    });
    for (const [name, at] of givenDeclarations(lines))
       record(`given:${name}`, at.line);
@@ -1031,5 +1038,71 @@ source: a is one extend {
       });
       const reread = await openDocument(result);
       expect(reread.tiles[0].subtitle).toBe(subtitle);
+   });
+});
+
+/**
+ * Two behaviours this writer has that are worth pinning rather than
+ * discovering: what the no-edit gate treats as the same document, and the one
+ * place an unmodelled tag is still lost.
+ */
+describe("spliceDashboardDocument: the shapes of no change", () => {
+   const FILE = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+# label="Cat" audit_scope=finance
+given: CATEGORY :: filter<string> is f''
+
+source: a is one extend {
+  # label="X"
+  view: x is vx
+}`;
+
+   it("reads an omitted collection and an empty one as the same document", async () => {
+      // A host that normalises its shape asks for no change, and must not be
+      // told its save did not produce what it asked for.
+      for (const materialise of [
+         (d: DashboardDocument) => {
+            d.drills = [];
+         },
+         (d: DashboardDocument) => {
+            d.localGivens = d.localGivens ?? [];
+            d.tiles[0].filters = [];
+         },
+      ]) {
+         expect(await spliced(FILE, materialise)).toBe(FILE);
+      }
+   });
+
+   /**
+    * KNOWN, and the same rule the tile path has had since `MODELLED_TAG_KEYS`:
+    * ownership is decided by the FIRST key on a line, and the line is replaced
+    * whole. An unmodelled key sharing a line with a modelled one goes with it.
+    *
+    * A routed annotation cannot be caught this way -- `#(secure)` has no key
+    * for `tagKey` to match, so it is never the first key on a shared line --
+    * which is why this is a wart rather than a hole in what the fix is for.
+    */
+   it("loses an unmodelled key that shares a line with a modelled one", async () => {
+      const result = await spliced(FILE, (d) => {
+         d.localGivens![0].label = "Cat2";
+      });
+      expect(result).toContain(`# label="Cat2"`);
+      expect(result).not.toContain("audit_scope");
+   });
+
+   it("keeps a routed marker that shares its block with a mixed line", async () => {
+      const source = FILE.replace(
+         `# label="Cat" audit_scope=finance`,
+         `#(secure)
+# label="Cat" audit_scope=finance`,
+      );
+      const result = await spliced(source, (d) => {
+         d.localGivens![0].label = "Cat2";
+      });
+      expect(result).toContain(
+         `#(secure)\n# label="Cat2"\ngiven: CATEGORY :: filter<string> is f''`,
+      );
    });
 });
