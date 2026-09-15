@@ -4,6 +4,7 @@
 import type {
    DashboardDocument,
    DashboardDrill,
+   DashboardSource,
    DashboardTile,
 } from "./document";
 import type { LocalGiven } from "./document";
@@ -224,19 +225,36 @@ const tileKey = (t: DashboardTile) =>
 const tileIdentity = (document: DashboardDocument) =>
    canonical(document.tiles.map(tileKey));
 
-export async function spliceDashboardDocument(
-   sourceText: string,
-   next: DashboardDocument,
-): Promise<SpliceResult> {
-   const before = await readDashboardDocument(sourceText);
-   if (readFailed(before)) {
-      return {
-         ok: false,
-         reason: `Cannot edit a file that will not open: ${before.reason}`,
-      };
-   }
-   const current = before.document;
+interface TileMembership {
+   currentKeys: Set<string>;
+   nextKeys: Set<string>;
+   removedTiles: DashboardTile[];
+   addedTiles: DashboardTile[];
+   newSources: DashboardSource[];
+   currentSources: Map<string, DashboardSource>;
+   reordered: boolean;
+}
 
+/** Everything a planner reads, and the edits it adds to. */
+interface SpliceContext extends TileMembership {
+   sourceText: string;
+   lines: string[];
+   starts: number[];
+   wholeLine: (line: number) => { start: number; end: number };
+   indentOf: (line: number) => string;
+   current: DashboardDocument;
+   next: DashboardDocument;
+   edits: Edit[];
+}
+
+/**
+ * Which tiles and sources come and go between the two documents, and whether
+ * the change is one the builder may write at all.
+ */
+function checkShape(
+   current: DashboardDocument,
+   next: DashboardDocument,
+): SpliceFailure | TileMembership {
    // Tiles ADDED and REMOVED, by identity. A removed tile's declaration goes,
    // with its `#` tags; a `//` comment above it stays, because the file cannot
    // say whether it belonged to the tile, the row or the page, and a comment
@@ -306,17 +324,20 @@ export async function spliceDashboardDocument(
          reason: "The dashboard's imports cannot be changed here.",
       };
    }
+   return {
+      currentKeys,
+      nextKeys,
+      removedTiles,
+      addedTiles,
+      newSources,
+      currentSources,
+      reordered,
+   };
+}
 
-   const lines = sourceText.split("\n");
-   const starts = lineStarts(sourceText);
-   const wholeLine = (line: number): { start: number; end: number } => ({
-      start: starts[line],
-      end: line + 1 < starts.length ? starts[line + 1] : sourceText.length,
-   });
-   const indentOf = (line: number) => /^\s*/.exec(lines[line])?.[0] ?? "";
-
-   const edits: Edit[] = [];
-
+function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
+   const { lines, wholeLine, next, reordered, currentKeys, nextKeys, edits } =
+      ctx;
    // A reorder is one rewritten array on the `## artifact` line. Each entry is
    // re-emitted AS IT WAS WRITTEN rather than rebuilt from `source` and `name`,
    // so a file that spells a tile `overview->kpis` keeps its spelling and the
@@ -362,7 +383,11 @@ export async function spliceDashboardDocument(
       if (rewritten !== lines[artifactAt])
          edits.push({ ...wholeLine(artifactAt), text: `${rewritten}\n` });
    }
+   return undefined;
+}
 
+function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
+   const { lines, wholeLine, current, next, edits } = ctx;
    // THE PAGE'S OWN SETTINGS. Title, autorun and starting values are
    // properties on the one-line `## artifact { … }` tag; the grid width is the
    // `dashboard { columns=N }` beside it; the description is the run of `##"`
@@ -473,7 +498,11 @@ export async function spliceDashboardDocument(
          edits.push({ start: at, end: at, text: `${text}\n` });
       }
    }
+   return undefined;
+}
 
+function planGivens(ctx: SpliceContext): SpliceFailure | undefined {
+   const { lines, wholeLine, indentOf, current, next, edits } = ctx;
    // THE DASHBOARD'S OWN GIVENS. Added, removed, or retagged — by name, since
    // a given's name is its identity in every `where:` that reads it.
    const givensBefore = new Map(
@@ -610,7 +639,11 @@ export async function spliceDashboardDocument(
       if (!hasSwitch)
          edits.push({ start: 0, end: 0, text: "##! experimental.givens\n" });
    }
+   return undefined;
+}
 
+function planDrills(ctx: SpliceContext): SpliceFailure | undefined {
+   const { lines, wholeLine, indentOf, current, next, edits } = ctx;
    // DRILLS. A drill is one `# drill` tag on a dimension THIS FILE declares —
    // added above the declaration, rewritten, or taken off. The dimension itself
    // is never written: a dimension no view reads is a dead drill, and the
@@ -664,7 +697,11 @@ export async function spliceDashboardDocument(
          });
       }
    }
+   return undefined;
+}
 
+function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
+   const { lines, wholeLine, removedTiles, edits } = ctx;
    // REMOVED TILES: the declaration and its `#` tags. An inline view's body
    // runs to its closing brace; a reference is one line. An inherited tile has
    // nothing here to remove — its entry left the artifact list above.
@@ -698,7 +735,20 @@ export async function spliceDashboardDocument(
       )
          edits.push({ ...wholeLine(endLine + 1), text: "" });
    }
+   return undefined;
+}
 
+function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
+   const {
+      sourceText,
+      lines,
+      wholeLine,
+      current,
+      addedTiles,
+      newSources,
+      currentSources,
+      edits,
+   } = ctx;
    // ADDED TILES: a `view:` with its tags, inside the extension of the source
    // the tile reads — before that extension's closing brace — or in a new
    // extension after the last one, when the file has none for that source.
@@ -793,7 +843,11 @@ export async function spliceDashboardDocument(
          lastExtensionEnd = anchor;
       }
    }
+   return undefined;
+}
 
+function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
+   const { lines, starts, wholeLine, indentOf, current, next, edits } = ctx;
    // Presentation edits are matched by IDENTITY, not by position: after a
    // reorder `next.tiles[i]` and `current.tiles[i]` are different tiles, and
    // comparing them pairwise would report every moved tile as changed and
@@ -889,6 +943,60 @@ export async function spliceDashboardDocument(
             : `${withoutRefinement} + { ${clauses.join(", ")} }`;
       if (rewritten !== lines[declLine])
          edits.push({ ...wholeLine(declLine), text: `${rewritten}\n` });
+   }
+   return undefined;
+}
+
+export async function spliceDashboardDocument(
+   sourceText: string,
+   next: DashboardDocument,
+): Promise<SpliceResult> {
+   const before = await readDashboardDocument(sourceText);
+   if (readFailed(before)) {
+      return {
+         ok: false,
+         reason: `Cannot edit a file that will not open: ${before.reason}`,
+      };
+   }
+   const current = before.document;
+   const shape = checkShape(current, next);
+   if ("reason" in shape) return shape;
+
+   const lines = sourceText.split("\n");
+   const starts = lineStarts(sourceText);
+   const wholeLine = (line: number): { start: number; end: number } => ({
+      start: starts[line],
+      end: line + 1 < starts.length ? starts[line + 1] : sourceText.length,
+   });
+   const indentOf = (line: number) => /^\s*/.exec(lines[line])?.[0] ?? "";
+
+   const edits: Edit[] = [];
+   const ctx: SpliceContext = {
+      ...shape,
+      sourceText,
+      lines,
+      starts,
+      wholeLine,
+      indentOf,
+      current,
+      next,
+      edits,
+   };
+
+   // Each concern plans its own edits against the file as it stands; the
+   // order matters only where one patches a line another rewrote, which the
+   // settings planner handles by patching the reorder's text.
+   for (const plan of [
+      planOrder,
+      planSettings,
+      planGivens,
+      planDrills,
+      planRemovedTiles,
+      planAddedTiles,
+      planTilePresentation,
+   ]) {
+      const failure = plan(ctx);
+      if (failure) return failure;
    }
 
    if (edits.length === 0) return { ok: true, source: sourceText };
