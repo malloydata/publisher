@@ -65,6 +65,27 @@ describe("spliceDashboardDocument: what it preserves", () => {
       );
    });
 
+   // A render tag on the tile — `# big_value`, `# currency` — is the renderer's,
+   // not the document's. Measured on the storefront overview before this was
+   // pinned: unticking one filter on the KPI strip deleted its `# big_value`,
+   // and the strip came back as a one-row table.
+   it("keeps the tags it does not model when it rewrites the ones it does", async () => {
+      const source = SOURCE.replace(
+         '  # label="By category"\n',
+         '  # label="By category"\n  # big_value\n  # currency\n',
+      );
+      const out = await spliced(source, (d) => {
+         d.tiles[0].label = "Categories";
+         d.tiles[0].filters = [{ field: "cat", given: "CATEGORY" }];
+      });
+      expect(out).toContain(
+         '  # label="Categories"\n  # big_value\n  # currency\n',
+      );
+      expect(out).toContain(
+         "view: by_cat is by_category + { where: cat ~ $CATEGORY }",
+      );
+   });
+
    // Byte-minimal: one property changed, one line different.
    it("changes only the line it had to", async () => {
       const out = await spliced(SOURCE, (d) => {
@@ -452,6 +473,16 @@ describe("every composite dashboard survives an edit", () => {
          const comments = (text: string) =>
             text.split("\n").filter((l) => l.trim().startsWith("//")).length;
          expect(comments(result.source)).toBe(comments(source));
+         // And every `#` tag the builder does not model — a render tag, a
+         // host's own — is still there. `# colspan` is excluded because that
+         // is the one tag this edit is allowed to add.
+         const otherTags = (text: string) =>
+            text
+               .split("\n")
+               .filter(
+                  (l) => /^\s*#(?!#)/.test(l) && !/^\s*#\s*colspan\b/.test(l),
+               ).length;
+         expect(otherTags(result.source)).toBe(otherTags(source));
       });
    }
 });

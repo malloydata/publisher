@@ -116,6 +116,25 @@ function tagKey(text: string): string | undefined {
    return m?.[1];
 }
 
+/**
+ * The tag keys the document MODELS, and therefore the only tag lines the
+ * writer may rewrite or remove. Every other `#` line on a tile — `# big_value`,
+ * `# bar_chart`, `# currency`, a host's own tag — is the renderer's, not ours,
+ * and survives an edit like any other unmodelled Malloy.
+ *
+ * Measured before this existed: unticking one filter on the storefront
+ * overview's KPI strip deleted its `# big_value`, and the strip came back as a
+ * one-row table. The round-trip gate cannot catch that, because the projection
+ * never held the tag it lost.
+ */
+const MODELLED_TAG_KEYS: ReadonlySet<string> = new Set([
+   "colspan",
+   "break",
+   "borderless",
+   "label",
+   "subtitle",
+]);
+
 const isSameDocumentExceptTiles = (
    a: DashboardDocument,
    b: DashboardDocument,
@@ -478,7 +497,8 @@ export async function spliceDashboardDocument(
       // the block — a comment explaining the tile — keeps its position.
       for (const tag of tags) {
          const key = tagKey(tag.text);
-         if (key === undefined) continue;
+         // Not a property this document models: not ours to touch.
+         if (key === undefined || !MODELLED_TAG_KEYS.has(key)) continue;
          const want = wantedByKey.get(key);
          if (want === undefined) {
             // Removed: take the whole line, including its newline.
