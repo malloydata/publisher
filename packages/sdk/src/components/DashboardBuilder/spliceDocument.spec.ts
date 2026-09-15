@@ -4,7 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { readDashboardDocument, readFailed } from "./readDocument";
+import { givenDeclarations } from "./malloyText";
+import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
 import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
 import { openDocument, refused, splice, spliced } from "./testing/fixtures";
 
@@ -707,6 +708,37 @@ describe("spliceDashboardDocument: what it refuses", () => {
  * and is read back — which is the property the writer promises and the reason a
  * commented file no longer has to be read-only.
  */
+/** The tag keys the writer models, across tiles, givens and drills. */
+const MODELLED_TAG =
+   /^#\s*(colspan|break|borderless|label|subtitle|description|control|suggest|range_min|range_max|drill)\b/;
+
+/**
+ * Every `#` line the document does not model, keyed by the declaration it sits
+ * above. Comparing this before and after an edit catches what a file-wide
+ * count cannot: a tag that survived but moved onto a different declaration,
+ * which in Malloy is a change of meaning rather than a change of layout.
+ */
+function unmodelledTagsByDeclaration(text: string): Record<string, string[]> {
+   const lines = text.split("\n");
+   const out: Record<string, string[]> = {};
+   const record = (key: string, line: number) => {
+      const tags = blockAbove(lines, line)
+         .tags.map((t) => t.text)
+         .filter((t) => !MODELLED_TAG.test(t));
+      if (tags.length > 0) out[key] = tags;
+   };
+   lines.forEach((line, i) => {
+      const m =
+         /^\s*(source|view|dimension|measure):\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(
+            line,
+         );
+      if (m) record(`${m[1]}:${m[2]}`, i);
+   });
+   for (const [name, at] of givenDeclarations(lines))
+      record(`given:${name}`, at.line);
+   return out;
+}
+
 describe("every composite dashboard survives an edit", () => {
    const found: string[] = [];
    const walk = (dir: string) => {
@@ -763,16 +795,183 @@ describe("every composite dashboard survives an edit", () => {
          const comments = (text: string) =>
             text.split("\n").filter((l) => l.trim().startsWith("//")).length;
          expect(comments(result.source)).toBe(comments(source));
-         // And every `#` tag the builder does not model — a render tag, a
-         // host's own — is still there. `# colspan` is excluded because that
-         // is the one tag this edit is allowed to add.
-         const otherTags = (text: string) =>
-            text
-               .split("\n")
-               .filter(
-                  (l) => /^\s*#(?!#)/.test(l) && !/^\s*#\s*colspan\b/.test(l),
-               ).length;
-         expect(otherTags(result.source)).toBe(otherTags(source));
+         // And every `#` tag the builder does not model is still there, on the
+         // same declaration. A file-wide count cannot see a tag that moved to
+         // the declaration below, which is how one silently changes meaning.
+         expect(unmodelledTagsByDeclaration(result.source)).toEqual(
+            unmodelledTagsByDeclaration(source),
+         );
+      });
+
+      it(`retags a control in ${name} and leaves every other tag where it was`, async () => {
+         const source = fs.readFileSync(file, "utf8");
+         const doc = await readDashboardDocument(source);
+         if (readFailed(doc)) throw new Error(doc.reason);
+         const given = doc.document.localGivens?.[0];
+         // Most dashboards declare no givens of their own; that is a real
+         // shape, not a gap.
+         if (!given) return;
+
+         const next = structuredClone(doc.document);
+         next.localGivens![0].label = `${given.label ?? given.name} (edited)`;
+         const result = await spliceDashboardDocument(source, next);
+         if (spliceFailed(result)) throw new Error(result.reason);
+         expect(unmodelledTagsByDeclaration(result.source)).toEqual(
+            unmodelledTagsByDeclaration(source),
+         );
       });
    }
+});
+
+/**
+ * A given carries two kinds of `#` line: the control contract the builder
+ * writes, and annotations routed elsewhere -- `#(secure)` marks a given as an
+ * access control, and a host may add its own. Only the first kind is the
+ * writer's. The projection never holds the second, so the gate cannot notice
+ * it lost one, which is why these assert on the text.
+ */
+describe("spliceDashboardDocument: a given's annotations it does not own", () => {
+   const FILE = (givens: string) => `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+${givens}
+
+source: a is one extend {
+  view: x is vx
+}`;
+
+   const SECURE_FIRST = FILE(`#(secure)
+# label="Category"
+given: CATEGORY :: filter<string> is f''`);
+
+   it("keeps a routed marker above the control line, still on the declaration", async () => {
+      const result = await spliced(SECURE_FIRST, (d) => {
+         d.localGivens![0].label = "Product category";
+      });
+      expect(result).toContain(
+         `#(secure)\n# label="Product category"\ngiven: CATEGORY :: filter<string> is f''`,
+      );
+   });
+
+   it("rewrites only the control line", async () => {
+      const result = await spliced(SECURE_FIRST, (d) => {
+         d.localGivens![0].label = "Product category";
+      });
+      const changed = result
+         .split("\n")
+         .filter((line, i) => line !== SECURE_FIRST.split("\n")[i]);
+      expect(changed).toEqual([`# label="Product category"`]);
+   });
+
+   it("keeps a routed marker written below the control line", async () => {
+      const source = FILE(`# label="Category"
+#(secure)
+given: CATEGORY :: filter<string> is f''`);
+      const result = await spliced(source, (d) => {
+         d.localGivens![0].label = "Product category";
+      });
+      // The rebuilt contract lands immediately above the declaration, so the
+      // marker ends up above it -- still one contiguous block, and Malloy
+      // reads a declaration's annotations without regard to their order.
+      expect(result).toContain(
+         `#(secure)\n# label="Product category"\ngiven: CATEGORY :: filter<string> is f''`,
+      );
+      expect(result).not.toContain(`label="Category"`);
+   });
+
+   it("keeps a keyed tag it does not model", async () => {
+      const source = FILE(`# audit_scope=finance
+# label="Category"
+given: CATEGORY :: filter<string> is f''`);
+      const result = await spliced(source, (d) => {
+         d.localGivens![0].control = "multiselect";
+      });
+      expect(result).toContain(
+         `# audit_scope=finance\n# label="Category" control=multiselect\ngiven: CATEGORY`,
+      );
+   });
+
+   it("keeps the marker when the contract spans two lines under a comment", async () => {
+      const source = FILE(`// Why this is scoped: one category at a time.
+#(secure)
+# description="Narrow to one category"
+# label="Category" control=select
+given: CATEGORY :: filter<string> is f''`);
+      const result = await spliced(source, (d) => {
+         d.localGivens![0].label = "Product category";
+      });
+      expect(result).toContain(
+         `// Why this is scoped: one category at a time.\n#(secure)\n` +
+            `# label="Product category" description="Narrow to one category" control=select\n` +
+            `given: CATEGORY :: filter<string> is f''`,
+      );
+   });
+
+   it("keeps the marker through a redeclaration", async () => {
+      const result = await spliced(SECURE_FIRST, (d) => {
+         d.localGivens![0].default = "f'Jeans'";
+      });
+      expect(result).toContain(
+         `#(secure)\n# label="Category"\ngiven: CATEGORY :: filter<string> is f'Jeans'`,
+      );
+   });
+
+   it("keeps the marker on a declaration inside a given: block", async () => {
+      const source = FILE(`given:
+  #(secure)
+  # label="Local"
+  LOCAL_X :: filter<string> is f'Jeans'`);
+      const result = await spliced(source, (d) => {
+         d.localGivens![0].label = "Local X";
+      });
+      expect(result).toContain(
+         `  #(secure)\n  # label="Local X"\n  LOCAL_X :: filter<string> is f'Jeans'`,
+      );
+   });
+
+   /**
+    * The exception, and the reason the filter is on the retag path only: a `#`
+    * line whose declaration goes does not lapse, it attaches to whatever is
+    * declared next. Leaving `#(secure)` behind would silently mark a
+    * different given as an access control.
+    */
+   it("takes a routed marker with the declaration it annotates", async () => {
+      const source = FILE(`#(secure)
+# label="Category"
+given: CATEGORY :: filter<string> is f''
+
+# label="Since"
+given: SINCE :: date is @2023-01-01`);
+      const result = await spliced(source, (d) => {
+         d.localGivens = d.localGivens!.filter((g) => g.name !== "CATEGORY");
+      });
+      expect(result).not.toContain("#(secure)");
+      expect(result).toContain(
+         `import "../m.malloy"\n\n# label="Since"\ngiven: SINCE :: date is @2023-01-01`,
+      );
+      const reread = await openDocument(result);
+      expect(reread.localGivens?.map((g) => g.name)).toEqual(["SINCE"]);
+   });
+});
+
+describe("spliceDashboardDocument: an ask no planner could place", () => {
+   it("refuses rather than reporting a write that never happened", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  # label="Category" drill { to=self given=BRAND }
+  dimension: cat is category
+
+  view: x is vx
+}`;
+      const reason = await refused(source, (d) => {
+         delete d.drills;
+      });
+      expect(reason).toContain(
+         "did not produce the dashboard that was asked for",
+      );
+   });
 });
