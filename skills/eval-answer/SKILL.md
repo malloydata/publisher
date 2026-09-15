@@ -122,11 +122,16 @@ a returned source's documentation -- text the answerer reads and acts on. Only
 `missing` is a retrieval miss; the route per entity is recorded so the strict
 count is still there.
 
-Recall 1.0 with a wrong answer exonerates retrieval: the failure is in the query.
+Recall 1.0 with a wrong answer exonerates retrieval: everything arrived. Whether
+the agent misused it or the docs never said how to use it is `eval-diagnose`'s
+call, sufficiency first, so the row reads `delivered, wrong` and names no owner.
 Recall below 1.0 and `coverage: covered` means the entity existed and search did
-not surface it; `derivable` or `absent` means there was nothing to surface. Those
-look identical in an answer score and have opposite owners, which is what makes
-this number worth having. It uses the search terms the answerer chose, so it
+not surface it -- a documentation finding, because the retrieval algorithm is
+fixed (semantic search over doc strings) and an entity that exists and does not
+come back is one whose docs do not say what people ask; `eval-diagnose` calls it
+`NOT-RETURNED`, owner model. `derivable` or `absent` means there was nothing to
+surface. Those look identical in an answer score and have different owners,
+which is what makes this number worth having. It uses the search terms the answerer chose, so it
 attributes a failure *within* an arm and does not compare retrieval across arms
 -- that is the engine-side `eval-retrieval` skill, which does not ship here.
 

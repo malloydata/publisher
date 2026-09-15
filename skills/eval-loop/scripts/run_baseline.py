@@ -182,7 +182,8 @@ from ledger import read_jsonl  # noqa: E402
 from mcp_payload import doc_tokens, entity_ids, search_terms  # noqa: E402
 from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
 from score_retrieval import (  # noqa: E402
-    coverage_report_summary, load_coverage_report, score_case, summarise)
+    cascade, coverage_report_summary, load_coverage_report, score_case,
+    summarise)
 from check_contamination import check as path_check  # noqa: E402
 from check_must_not_use import check as must_not_use_check  # noqa: E402
 from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
@@ -1028,6 +1029,36 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
         return seen[0], tally
     return "mixed", tally
 
+def cascade_lines(c: dict | None) -> list[str]:
+    """The three metrics as a funnel: covered, retrieved, correct.
+
+    Each rung conditions the next and names who owns a miss there, because
+    three flat percentages read as three unrelated problems, and the owner of a
+    miss is the whole reason to have three numbers instead of one. A retrieval
+    miss is the docs' (the algorithm is fixed); a delivered-but-wrong answer is
+    the agent's or the docs' and diagnose decides which.
+    """
+    if not c or not c.get("total"):
+        return []
+    covered = (c["total"] - c["not covered"] - c["unmeasured"]
+               - c["no entities named"])
+    retrieved = covered - c["not retrieved"]
+    covered_tail = ""
+    if c["unmeasured"]:
+        covered_tail += f", {c['unmeasured']} unmeasured"
+    if c["no entities named"]:
+        covered_tail += f", {c['no entities named']} name no entities"
+    scored_tail = f", {c['not scored']} not scored" if c["not scored"] else ""
+    return [f"  cascade       {c['total']} cases",
+            f"    covered?      {covered} yes, {c['not covered']} no (model gap)"
+            + covered_tail,
+            f"    retrieved?    {retrieved} yes, {c['not retrieved']} no "
+            f"(documentation: the entity exists, its docs did not surface it)",
+            f"    correct?      {c['delivered, right']} yes, "
+            f"{c['delivered, wrong']} no (delivered, wrong: agent or docs; "
+            f"diagnose decides)" + scored_tail]
+
+
 def evidence_lines(evidence: dict | None) -> list[str]:
     """What the pass rate rests on, or nothing when no ledger was read.
 
@@ -1066,7 +1097,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   answerer_cost: float, judge_cost: float,
                   publisher: str, environment: str,
                   evidence: dict | None = None,
-                  coverage_report: dict | None = None) -> list[str]:
+                  coverage_report: dict | None = None,
+                  cascade: dict | None = None) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -1123,8 +1155,9 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
 
     lines += evidence_lines(evidence)
 
-    lines += ["", "COVERAGE & RETRIEVAL",
-              f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
+    lines += ["", "COVERAGE & RETRIEVAL"]
+    lines += cascade_lines(cascade)
+    lines += [f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
               f" lexical {tally['lexical']},"
               f" unreported {tally['unreported']})"]
     if retrieval_mode != "semantic":
@@ -2632,6 +2665,7 @@ def main(argv: list[str] | None = None) -> int:
                        measured.get(c["qid"]))
             for c in cases]
     rs = summarise(retr)
+    funnel = cascade(retr)
     # Recall below 1.0 on a PASSING case means the required list named one path
     # to an answer the agent reached by another. That is an expectation defect,
     # not a retrieval miss, and it is why mean recall is a weaker number than
@@ -2666,7 +2700,7 @@ def main(argv: list[str] | None = None) -> int:
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
             unscorable=unscorable,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
-            coverage_report=coverage_report,
+            coverage_report=coverage_report, cascade=funnel,
             answerer_cost=cost, judge_cost=judge_cost,
             publisher=a.publisher, environment=a.environment):
         print(line)

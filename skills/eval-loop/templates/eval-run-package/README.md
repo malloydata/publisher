@@ -89,14 +89,18 @@ Comparing retrieval itself across engine versions is not this package's job; a c
 
 ## Every failure is placed
 
-`where_to_fix` is one of *query construction*, *retrieval ranking*, *model
-coverage*, *refusal behaviour* or *coverage not measured*, and every scored
-failure has exactly one. The last is a failure whose case carries no measured
-coverage label: it is retrieval's or the model's and nothing says which, so it is
-placed as exactly that rather than charged to the model. The counts in
-`failures_by_where_to_fix` therefore sum to the failure count in `run_summary`.
-If they ever do not, attribution has a hole -- that exact bug is why the tables
-are cross-checked rather than trusted.
+`where_to_fix` is one of *model coverage*, *documentation*, *delivered, wrong*,
+*refusal behaviour* or *coverage not measured*, and every scored failure has
+exactly one. *documentation* is a covered entity that search did not return: the
+retrieval algorithm is fixed, so from the customer's side that is a docs finding
+(it used to read *retrieval ranking*, which named the engine). *delivered, wrong*
+names no owner: everything arrived and the answer is still wrong, and whether the
+agent misused it or the docs never said how to use it is diagnose's call (it used
+to read *query construction* and charge the agent). *coverage not measured* is a
+miss whose case carries no measured coverage label, placed as exactly that rather
+than charged to the model. The counts in `failures_by_where_to_fix` therefore sum
+to the failure count in `run_summary`. If they ever do not, attribution has a
+hole -- that exact bug is why the tables are cross-checked rather than trusted.
 
 `needs_human` is neither a pass nor a failure and is attributed to nothing.
 

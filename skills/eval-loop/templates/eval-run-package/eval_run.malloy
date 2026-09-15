@@ -241,8 +241,12 @@ include {
   public: component
   #(doc) agent-skill, retrieval or model. Kept to match eval-diagnose's taxonomy; for reading, use where_to_fix.
   public: owner
-  #(doc) Where to go and fix it: query construction, retrieval ranking, model coverage or refusal behaviour.
-  #(doc) Empty unless the attempt failed. Every failure has one, so this ties to the failure count.
+  #(doc) Where to go and fix it: model coverage, documentation, delivered wrong, refusal behaviour,
+  #(doc) or coverage not measured. Empty unless the attempt failed. Every failure has one, so this
+  #(doc) ties to the failure count. `documentation` is a covered entity search did not return: the
+  #(doc) retrieval algorithm is fixed, so the docs are the lever (it read `retrieval ranking` until
+  #(doc) 2026-09). `delivered, wrong` names no owner: everything arrived and the answer is still
+  #(doc) wrong, and whether the agent misused it or the docs never said how is diagnose's call.
   public: where_to_fix
   #(doc) One sentence on why it landed there.
   public: why
@@ -279,14 +283,19 @@ extend {
     #(doc) Scored failures. Every one of these carries a where_to_fix.
     -- String comparison for the reason given on submitted_count.
     failure_count is count() { where: failed = 'true' }
-    #(doc) Failures where retrieval delivered everything, so the fix is skills, not search.
-    construction_failures is count() { where: where_to_fix = 'query construction' }
-    #(doc) Failures where the entity existed and search missed it.
-    retrieval_failures is count() { where: where_to_fix = 'retrieval ranking' }
+    #(doc) Failures where retrieval delivered everything and the answer is still wrong. The agent's
+    #(doc) or the docs'; eval-diagnose decides, sufficiency first. Do not read this as a skills count.
+    delivered_wrong_failures is count() { where: where_to_fix = 'delivered, wrong' }
+    #(doc) Failures where the entity existed and search did not return it. Its docs do not say what
+    #(doc) people ask; the retrieval algorithm is fixed, so the docs are the lever.
+    documentation_failures is count() { where: where_to_fix = 'documentation' }
     #(doc) Failures where there was nothing to retrieve. Add the entity.
     model_failures is count() { where: where_to_fix = 'model coverage' }
     #(doc) Failures where the model cannot answer and the agent answered anyway.
     refusal_failures is count() { where: where_to_fix = 'refusal behaviour' }
+    #(doc) Failures on a case with no measured coverage label: retrieval's or the model's, and
+    #(doc) nothing says which. Not a model gap.
+    unmeasured_failures is count() { where: where_to_fix = 'coverage not measured' }
 }
 
 #(doc) The answer judge's verdict for one attempt. Exactly one per attempt in a scored run.
@@ -412,7 +421,7 @@ include {
   public: cluster_id
   #(doc) What the group has in common, in a phrase.
   public: label
-  #(doc) query construction, retrieval ranking, model coverage or refusal behaviour.
+  #(doc) model coverage, documentation, delivered wrong, refusal behaviour or coverage not measured.
   public: where_to_fix
   #(doc) eval-diagnose component.
   public: component

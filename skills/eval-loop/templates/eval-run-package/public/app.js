@@ -401,10 +401,11 @@ async function main() {
 
   const fixes = [...new Set(state.rows.flatMap(r => r.arms.map(a => a.where_to_fix).filter(Boolean)))].sort();
   document.getElementById('wtf').title =
-    'Where a failure would have to be fixed: query construction (the agent had '
-    + 'what it needed and built the query wrong), retrieval ranking (the entity '
-    + 'existed but was not returned), model coverage (nothing in the model '
-    + 'answers this), or refusal behaviour.';
+    'Where a failure would have to be fixed: model coverage (nothing in the '
+    + 'model answers this), documentation (the entity existed and search did '
+    + 'not return it: its docs do not say what people ask), delivered, wrong '
+    + '(everything arrived; the agent or the docs, diagnose decides), refusal '
+    + 'behaviour, or coverage not measured.';
   document.getElementById('wtf').innerHTML = '<option value="">Where to fix: any</option>' +
     fixes.map(f => `<option${f === state.wtf ? ' selected' : ''}>${esc(f)}</option>`).join('');
 

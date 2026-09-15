@@ -11,20 +11,27 @@ This is the customer's question. For a case with a known answer, did the agent R
 the entities the answer needs? It is mechanical, exact, and per-case, and it is
 what makes a wrong answer attributable:
 
-  recall 1.0 and the answer is wrong -> retrieval delivered everything, so the
-  failure is construction, and no embedding or ranking work will fix it.
+  recall 1.0 and the answer is wrong -> retrieval delivered everything, so no
+  embedding or ranking work will fix it. Whether the agent misused what it had
+  or the docs never said how to use it is eval-diagnose's call, sufficiency
+  first, so the row reads "delivered, wrong" and names no owner.
 
   recall below 1.0 -> the agent never had the entity. Coverage then says whose
-  problem that is: `covered` means the entity was there and search missed it;
-  `derivable` or `absent` means there was nothing to surface. (An earlier
-  version of this text said "no query-writing skill would have saved it"; that
-  was false whenever the set named one route and the model offered another,
-  which is what `requiredAnyOf` below exists to express.) No label at all means
-  nobody has measured it, and the row says so instead of asserting a model gap.
+  problem that is: `covered` means the entity was there and search missed it,
+  which from the customer's side is a documentation finding -- the retrieval
+  algorithm is fixed, semantic search over doc strings, so an entity that exists
+  and does not come back is one whose docs do not say what people ask
+  (eval-diagnose NOT-RETURNED, owner model). `derivable` or `absent` means there
+  was nothing to surface. (An earlier version of this text said "no
+  query-writing skill would have saved it"; that was false whenever the set
+  named one route and the model offered another, which is what `requiredAnyOf`
+  below exists to express.) No label at all means nobody has measured it, and
+  the row says so instead of asserting a model gap.
 
-Those two look identical in an answer score and have opposite owners. Components
+Those look identical in an answer score and have different owners. Components
 and owners match eval-diagnose's taxonomy so the output drops into `issue` events
-without translation.
+without translation; a label that named the engine ("retrieval ranking") did
+not, and was corrected.
 
 INPUTS
 
@@ -38,8 +45,8 @@ INPUTS
 `required` lists entities the answer cannot be produced without. `requiredAnyOf`
 lists GROUPS, each satisfied by any one member: the case can be answered through
 either route, and naming only one would score the other as a retrieval miss --
-which then steers diagnosis to "retrieval ranking" for a failure that was never
-retrieval's. Every `required` entity is a group of one.
+which then steers the fix to the docs for an entity whose docs were never the
+problem. Every `required` entity is a group of one.
 
 WHAT COUNTS AS DELIVERED
 
@@ -86,12 +93,28 @@ from typing import Any
 # rather than silently mislabelling every issue this script emits. The third
 # element is the human label -- "owner" reads like a person, and the value people
 # actually want from this column is where to go and fix it.
-CONSTRUCTION = ("construction", "agent-skill", "query construction")
-RETRIEVAL = ("get_context/retrieval", "retrieval", "retrieval ranking")
+# Delivered everything and still wrong. eval-diagnose attributes construction
+# "only after sufficiency": first establish that the docs said enough to use the
+# entity correctly. WRONG-PICK is the model's if the docs did not distinguish the
+# candidates, SCOPE is the model's if the rule was undocumented, CONVENTION is
+# the model's ("expose a named measure"). So this row names no owner. An earlier
+# version charged every such case to the agent, which is how a documentation gap
+# gets filed as a skills bug and never fixed.
+DELIVERED = ("construction", "undecided", "delivered, wrong")
+# Covered, and not returned. eval-diagnose's default code for that is
+# NOT-RETURNED under get_context/model, owner model: "labels, docs, synonyms,
+# index". Its RETRIEVAL code (owner retrieval) exists, but needs a rare-token
+# proof -- a distinctive phrase from the entity's own doc retrieves it and
+# ordinary phrasing does not -- and is never assigned mechanically here. From
+# the customer's side the retrieval algorithm is fixed, semantic search over doc
+# strings, so an entity that exists and does not come back is one whose docs do
+# not say what people ask. This label used to read "retrieval ranking", which
+# named the engine and sent the fix to the wrong team.
+DOCUMENTATION = ("get_context/model", "model", "documentation")
 MODEL = ("get_context/model", "model", "model coverage")
-# A case whose coverage is `absent` should have been declined. Answering it is an
-# answerer failure, so it shares construction's component and owner, but it is
-# worth its own label: the fix is refusal behaviour, not query-writing.
+# A case whose coverage is `absent` should have been declined. Answering it is
+# the answerer's, and documentation cannot help when there is nothing to
+# document; its own label because the fix is refusal behaviour, not query-writing.
 REFUSAL = ("construction", "agent-skill", "refusal behaviour")
 UNATTRIBUTED = ("", "", "")
 # Coverage values that were MEASURED and found nothing to surface. Only these
@@ -209,11 +232,15 @@ def attribute(recall: float | None, coverage: str, passed: bool | None) -> tuple
         return (*REFUSAL,
                 "the model cannot answer this and the answerer did not decline")
     if recall >= 1.0:
-        return (*CONSTRUCTION,
-                "retrieval delivered every required entity; the failure is in the query")
+        return (*DELIVERED,
+                "retrieval delivered every required entity; the failure is in how "
+                "it was used, or in docs that never said how to use it. Diagnose "
+                "decides which, sufficiency first")
     if coverage in ("covered", MEASURED_OK):
-        return (*RETRIEVAL,
-                "the entity exists in the model and was not returned")
+        return (*DOCUMENTATION,
+                "the entity exists in the model and was not returned: its docs do "
+                "not say what people ask (eval-diagnose NOT-RETURNED). Assumes a "
+                "semantic run; a lexical run says nothing about the docs")
     if coverage in MEASURED_GAPS:
         return (*MODEL,
                 f"nothing to return: coverage is {coverage}, so the entity does not exist")
@@ -337,6 +364,37 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "complete_retrievals": sum(1 for r in scored if r["recall"] >= 1.0),
         "failures_by_where_to_fix": placed,
     }
+
+
+def cascade(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """The three metrics as a funnel, because each one conditions the next.
+
+    A case the model cannot express has no meaningful retrieval or answer result;
+    a case whose entity never arrived has no meaningful answer result. Reported
+    as three independent percentages those read as three unrelated problems.
+    Reported as a cascade, each failure sits at the one rung that owns it, and
+    the rungs sum to the row count so a reader can check the arithmetic.
+    """
+    c = {"total": len(rows), "not covered": 0, "unmeasured": 0,
+         "no entities named": 0, "not retrieved": 0, "delivered, wrong": 0,
+         "delivered, right": 0, "not scored": 0}
+    for r in rows:
+        cov = r["coverage"]
+        if cov in MEASURED_GAPS:
+            c["not covered"] += 1
+        elif cov not in ("covered", MEASURED_OK):
+            c["unmeasured"] += 1
+        elif r["recall"] is None:
+            c["no entities named"] += 1
+        elif r["recall"] < 1.0:
+            c["not retrieved"] += 1
+        elif r["verdict"] in UNSCORED:
+            c["not scored"] += 1
+        elif r["failed"]:
+            c["delivered, wrong"] += 1
+        else:
+            c["delivered, right"] += 1
+    return c
 
 
 def load(events_path, cases_path) -> tuple[dict, dict]:

@@ -12,7 +12,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from score_retrieval import (  # noqa: E402
-    MEASURED_GAPS, MEASURED_OK, attribute, coverage_report_summary,
+    MEASURED_GAPS, MEASURED_OK, attribute, cascade, coverage_report_summary,
     load_coverage_report, main, score_case, summarise,
 )
 
@@ -95,11 +95,11 @@ class AnyOf(unittest.TestCase):
         self.assertEqual(r["missing"], [f"{M_REVENUE} | {M_SALES}"]
                          if f"{M_REVENUE} | {M_SALES}" in r["missing"]
                          else [f"{M_SALES} | {M_REVENUE}"])
-        self.assertEqual(r["where_to_fix"], "retrieval ranking")
+        self.assertEqual(r["where_to_fix"], "documentation")
 
-    def test_full_delivery_with_a_wrong_answer_is_construction(self):
+    def test_full_delivery_with_a_wrong_answer_is_delivered_wrong(self):
         r = score_case(self.group_case(), calls([D_STATUS, M_REVENUE]), KEY, "no_match")
-        self.assertEqual(r["where_to_fix"], "query construction")
+        self.assertEqual(r["where_to_fix"], "delivered, wrong")
 
 
 class Recall(unittest.TestCase):
@@ -161,15 +161,25 @@ class Precision(unittest.TestCase):
 
 
 class Attribution(unittest.TestCase):
-    def test_full_recall_and_a_wrong_answer_blames_construction(self):
+    def test_full_recall_and_a_wrong_answer_names_no_owner(self):
+        # Everything arrived. eval-diagnose attributes construction only after
+        # sufficiency -- WRONG-PICK is the model's if the docs did not
+        # distinguish the candidates -- so charging the agent here filed
+        # documentation gaps as skills bugs.
         r = score_case(case(), calls([M_SALES]), KEY, "no_match")
         self.assertEqual((r["component"], r["owner"]),
-                         ("construction", "agent-skill"))
+                         ("construction", "undecided"))
+        self.assertEqual(r["where_to_fix"], "delivered, wrong")
 
-    def test_a_missed_entity_that_exists_blames_retrieval(self):
+    def test_a_missed_entity_that_exists_is_a_documentation_finding(self):
+        # eval-diagnose's default for covered-and-not-returned is NOT-RETURNED,
+        # owner model ("labels, docs, synonyms, index"). Its RETRIEVAL code
+        # needs a rare-token proof and is never assigned mechanically. The old
+        # label, "retrieval ranking", named the engine.
         r = score_case(case(coverage="covered"), calls([]), KEY, "no_match")
         self.assertEqual((r["component"], r["owner"]),
-                         ("get_context/retrieval", "retrieval"))
+                         ("get_context/model", "model"))
+        self.assertEqual(r["where_to_fix"], "documentation")
 
     def test_a_missed_entity_that_does_not_exist_blames_the_model(self):
         # `derivable` is a MEASURED label: someone looked and found nothing to
@@ -234,10 +244,10 @@ class MeasuredCoverage(unittest.TestCase):
     is about.
     """
 
-    def test_a_measured_ok_with_a_miss_blames_retrieval(self):
+    def test_a_measured_ok_with_a_miss_is_a_documentation_finding(self):
         r = score_case(case(coverage="derivable"), calls([]), KEY, "no_match",
                        measured="ok")
-        self.assertEqual(r["where_to_fix"], "retrieval ranking")
+        self.assertEqual(r["where_to_fix"], "documentation")
         self.assertEqual(r["coverage_source"], "measured")
 
     def test_a_measured_gap_blames_the_model_and_names_the_code(self):
@@ -257,7 +267,7 @@ class MeasuredCoverage(unittest.TestCase):
         r = score_case(case(coverage="covered"), calls([]), KEY, "no_match",
                        measured=None)
         self.assertEqual(r["coverage_source"], "authored")
-        self.assertEqual(r["where_to_fix"], "retrieval ranking")
+        self.assertEqual(r["where_to_fix"], "documentation")
 
     def test_no_label_and_no_measurement_charges_nobody(self):
         c = {"qid": "q", "expectedEntities": {"required": [M_SALES]}}
@@ -295,6 +305,65 @@ class MeasuredCoverage(unittest.TestCase):
         self.assertEqual(got, {"path": path, "version": "0.0.58",
                                "agentModel": "sonnet", "decided": 45,
                                "cases": 49})
+
+
+class Cascade(unittest.TestCase):
+    """Each metric conditions the next, so the report is a funnel, and the rungs
+    must sum to the rows or a case has fallen between them."""
+
+    def rows(self):
+        bare = {"qid": "q", "expectedEntities": {"required": [M_SALES]}}
+        return [
+            score_case(case(coverage="derivable"), calls([]), KEY, "no_match"),
+            score_case(bare, calls([]), KEY, "no_match"),
+            score_case(case(), calls([]), KEY, "no_match"),
+            score_case(case(), calls([M_SALES]), KEY, "no_match"),
+            score_case(case(), calls([M_SALES]), KEY, "match"),
+            score_case(case(), calls([M_SALES]), KEY, "needs_human"),
+        ]
+
+    def test_every_row_lands_on_exactly_one_rung(self):
+        c = cascade(self.rows())
+        self.assertEqual(c["total"], 6)
+        self.assertEqual(sum(v for k, v in c.items() if k != "total"), 6)
+
+    def test_the_rungs(self):
+        c = cascade(self.rows())
+        self.assertEqual(c["not covered"], 1)
+        self.assertEqual(c["unmeasured"], 1)
+        self.assertEqual(c["not retrieved"], 1)
+        self.assertEqual(c["delivered, wrong"], 1)
+        self.assertEqual(c["delivered, right"], 1)
+        self.assertEqual(c["not scored"], 1)
+
+    def test_a_measured_ok_counts_as_covered(self):
+        c = cascade([score_case(case(coverage="derivable"), calls([M_SALES]),
+                                KEY, "match", measured="ok")])
+        self.assertEqual(c["delivered, right"], 1)
+
+    def test_no_rows_is_an_empty_funnel_not_a_crash(self):
+        self.assertEqual(cascade([])["total"], 0)
+
+
+class LabelsMatchTheRunPackage(unittest.TestCase):
+    """The run package's Malloy model counts failures by filtering on these
+    labels as string literals. A label renamed here and not there makes that
+    measure read zero forever, silently: the exact unearned number this script
+    exists to prevent. So the two are held equal, and a new label must come with
+    a measure."""
+
+    def test_the_template_filters_on_exactly_the_labels_emitted(self):
+        import re
+        from score_retrieval import (DELIVERED, DOCUMENTATION, MODEL, REFUSAL,
+                                     UNMEASURED)
+        here = os.path.dirname(os.path.abspath(__file__))
+        tpl = os.path.join(here, "..", "..", "eval-loop", "templates",
+                           "eval-run-package", "eval_run.malloy")
+        with open(tpl) as fh:
+            literals = set(re.findall(r"where_to_fix = '([^']+)'", fh.read()))
+        emitted = {t[2] for t in (DELIVERED, DOCUMENTATION, MODEL, REFUSAL,
+                                  UNMEASURED)}
+        self.assertEqual(literals, emitted)
 
 
 class Summary(unittest.TestCase):
@@ -345,7 +414,7 @@ class Summary(unittest.TestCase):
         self.assertEqual(s["attributed"], s["failures"],
                          "a failure fell through attribute()")
         self.assertEqual(s["failures_by_where_to_fix"], {
-            "query construction": 1, "retrieval ranking": 1,
+            "delivered, wrong": 1, "documentation": 1,
             "model coverage": 1, "refusal behaviour": 1})
 
 
@@ -419,7 +488,7 @@ class EndToEnd(unittest.TestCase):
                 capture_output=True, text=True, check=True).stdout
         rows = [json.loads(l) for l in out.splitlines()]
         by = {r["qid"]: r for r in rows}
-        self.assertEqual(by["a"]["owner"], "agent-skill",
+        self.assertEqual(by["a"]["owner"], "undecided",
                          "had everything and still failed")
         self.assertEqual(by["b"]["owner"], "model",
                          "nothing to retrieve, so not retrieval's fault")

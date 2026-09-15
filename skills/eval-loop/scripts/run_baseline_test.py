@@ -581,6 +581,26 @@ class RunSummary(unittest.TestCase):
     def test_no_report_keeps_the_pointer(self):
         self.assertIn("not measured here", "\n".join(self.lines()))
 
+    def test_the_cascade_reads_as_a_funnel_with_owners(self):
+        lines = self.lines(cascade={
+            "total": 49, "not covered": 6, "unmeasured": 2,
+            "no entities named": 0, "not retrieved": 5,
+            "delivered, wrong": 6, "delivered, right": 30, "not scored": 0})
+        text = "\n".join(lines)
+        self.assertIn("cascade       49 cases", text)
+        self.assertIn("covered?      41 yes, 6 no (model gap), 2 unmeasured", text)
+        # A miss here is the docs', not the engine's: the algorithm is fixed.
+        self.assertIn("retrieved?    36 yes, 5 no (documentation", text)
+        # And a delivered-but-wrong answer names no owner until diagnose runs.
+        self.assertIn("correct?      30 yes, 6 no (delivered, wrong", text)
+        self.assertIn("diagnose decides", text)
+        # It heads the COVERAGE & RETRIEVAL layer, above the retrieval-mode line.
+        self.assertLess(self.index_of(lines, "cascade"),
+                        self.index_of(lines, "  retrieval "))
+
+    def test_no_cascade_prints_nothing(self):
+        self.assertNotIn("cascade", "\n".join(self.lines()))
+
     def test_the_three_layers_appear_in_order(self):
         lines = self.lines()
         self.assertLess(self.index_of(lines, "RESULTS"),
