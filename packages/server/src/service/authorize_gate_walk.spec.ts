@@ -136,9 +136,18 @@ describe("gate walk fail-closed branches", () => {
          new Set(),
          true,
       );
-      expect(gates.map((g) => g.exprs)).toEqual([["false"]]);
-      expect(gates).toHaveLength(1);
-      expect(gates[0].route).toBe("authorize");
+      // Unlike the query_source case above, `ancestorGateExprs` resolves
+      // `route`-filtered notes at every level it walks, so the two routes CAN
+      // diverge before either reaches this same unresolvable branch (see
+      // `gate_registry_walk.ts`'s `ancestorGateExprs` doc) — a route cannot
+      // rely on its sibling having already denied. Both routes therefore
+      // synthesize `["false"]` independently here.
+      expect(gates.map((g) => g.exprs)).toEqual([["false"], ["false"]]);
+      expect(gates).toHaveLength(2);
+      expect(gates.map((g) => g.route).sort()).toEqual([
+         "authorize",
+         "source-authorize",
+      ]);
    });
 
    it("reports no gate for an ordinary source that is its own declaration", () => {

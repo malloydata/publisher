@@ -286,6 +286,10 @@ A caller who would have satisfied one arm of an old `or` now queries the extensi
 The same shape is also the admin escape hatch: add a further extension over the same locked base whose gate is a source-level convenience term rather than another arm of the row-level rule.
 
 ```malloy
+given:
+  ORG_ID :: string[]
+  GROUPS :: string[]
+
 #(authorize) false
 source: orders_base is duckdb.table('orders.parquet') extend {}
 

@@ -152,13 +152,15 @@ describe("Malloy IR annotation invariants (pins @malloydata/malloy behavior)", (
    // fixed in `effectiveAncestorGateExprs` (`gate_registry_walk.ts`): reading
    // the resolved member's own notes without first identity-subtracting the
    // composite parent's (`parentOwnNotes`/`compositeOwnNotes` there) folds
-   // TWO different sources' conditions into one OR'd list, silently turning
-   // this file's own AND-across-sources rule into an OR. If Malloy stops
-   // copying the composite parent's note onto the resolved member (or starts
-   // copying a re-parsed COPY instead of the same object), the identity
-   // subtraction in `effectiveAncestorGateExprs` stops matching anything,
-   // `compositeOwnNotes` silently includes the parent's note again, and the
-   // P0 leak reopens with no other signal.
+   // TWO different sources' conditions into one list attributed to a single
+   // source, silently misattributing which source declared which term (the
+   // fold result is harmless — both levels AND — but validation keyed on the
+   // wrong declaring source can pass a gate it should reject). If Malloy
+   // stops copying the composite parent's note onto the resolved member (or
+   // starts copying a re-parsed COPY instead of the same object), the
+   // identity subtraction in `effectiveAncestorGateExprs` stops matching
+   // anything, `compositeOwnNotes` silently includes the parent's note
+   // again, and the P0 leak reopens with no other signal.
    // -------------------------------------------------------------------
    it("composite: a resolved member's own notes include BOTH the composite parent's own note and the member's own, by reference", async () => {
       const modelDef = await compileModel(`##! experimental.composite_sources

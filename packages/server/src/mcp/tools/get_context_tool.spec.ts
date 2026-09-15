@@ -2889,6 +2889,79 @@ describe("get_context authorize deny-all drop", () => {
       expect(sources).toHaveLength(1);
       expect("authorize" in sources[0].source_info).toBe(false);
    });
+
+   // A named query over a dropped source (`query: q is locked -> {...}`) is a
+   // second route to the same name and shape: KINDS_BY_TARGET.view includes
+   // "query", so a bare {target_type: "view"} enumeration would otherwise
+   // resurrect a bare card via cardFor even though the source card itself was
+   // dropped from the sourceInfos loop above.
+   function packageWithQueriedSource(
+      apiSource: {
+         name: string;
+         authorize?: string[];
+         sourceAuthorize?: string[];
+      },
+      query: { name: string; sourceName: string },
+   ) {
+      const model = {
+         getSourceInfos: () => [
+            { name: apiSource.name, annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [{ ...query, annotations: [] }],
+         getSources: () => [apiSource],
+      };
+      return {
+         listModels: async () => [{ path: "m.malloy" }],
+         getModel: () => model,
+      };
+   }
+
+   async function viewSourcesFor(
+      apiSource: {
+         name: string;
+         authorize?: string[];
+         sourceAuthorize?: string[];
+      },
+      query: { name: string; sourceName: string },
+   ) {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => packageWithQueriedSource(apiSource, query)),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "view" }],
+            scopes: [{ environment: "specs", package: "deny-drop" }],
+         }),
+      );
+      return payload.sources as SourceCardShape[];
+   }
+
+   it("drops neither a query entity nor a source card for a query over an `#(authorize) false` source", async () => {
+      const sources = await viewSourcesFor(
+         { name: "locked", authorize: ["false"] },
+         { name: "q", sourceName: "locked" },
+      );
+      expect(sources).toEqual([]);
+   });
+
+   it("drops neither a query entity nor a source card for a query over an `#(source-authorize) false` source", async () => {
+      const sources = await viewSourcesFor(
+         { name: "locked", sourceAuthorize: ["false"] },
+         { name: "q", sourceName: "locked" },
+      );
+      expect(sources).toEqual([]);
+   });
+
+   it("still surfaces a query entity and its source card for a query over a non-deny gated source", async () => {
+      const sources = await viewSourcesFor(
+         { name: "gated", authorize: ["org_id in $GROUPS"] },
+         { name: "q", sourceName: "gated" },
+      );
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("gated");
+      expect(sources[0].entities?.map((e) => e.entity_type)).toContain("query");
+   });
 });
 
 /**

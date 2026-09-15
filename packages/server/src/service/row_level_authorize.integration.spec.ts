@@ -3744,8 +3744,8 @@ source: X is duckdb.table('parent') extend {
       // disjunct (`org_id in $GROUPS or $ROLE = 'admin'`, and its `!=`
       // variant) no longer parses at all — `or` inside one term is refused by
       // the grammar (`compound_boolean`) before G4 is ever reached; the
-      // override is written as a single natural boolean instead. What
-      // survives, and is what this test pins, is that G4
+      // override is written as two extension sources over a locked base
+      // instead. What survives, and is what this test pins, is that G4
       // (`validateSourceLineGateGivenUsage`) runs against the DECLARING
       // source's own lifted condition (`validateAuthorizeProbes`'s
       // `onOwnRowLevelConditionCompiled`), never an inheritor's — `Derived`

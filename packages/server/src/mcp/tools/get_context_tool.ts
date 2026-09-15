@@ -396,6 +396,8 @@ function toSourceResults(
    searchTexts: Map<number, string> = new Map(),
    /** Serialize each entity's Malloy expression; off unless asked for. */
    includeCode = false,
+   /** Deny-all sources collectEntities already dropped; refuse to mint a bare card for one. */
+   droppedSources: Set<string> = new Set(),
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -406,6 +408,11 @@ function toSourceResults(
       // Type narrowing only: collectEntities excludes the one entity kind
       // that can lack a source, so no ranked row reaches here nameless.
       if (!name) return undefined;
+      // Defense in depth: collectEntities already keeps every dropped source's
+      // name off every entity's `source` field, but this is the one place that
+      // can mint a card out of a bare name, so it is where a future path that
+      // forgets the drop gets caught instead of leaking the name and shape.
+      if (droppedSources.has(name)) return undefined;
       let entry = bySource.get(name);
       if (!entry) {
          const ctx = sourceContext.get(name);
@@ -648,6 +655,7 @@ function finishRanked(args: {
    packageName: string;
    searchTexts: Map<number, string>;
    includeCode: boolean;
+   droppedSources: Set<string>;
 }): { sources: SourceCard[]; totalSources: number; entitiesDropped: number } {
    const windowed = windowBySource(args.rows, args.max);
    const sources = toSourceResults(
@@ -657,6 +665,7 @@ function finishRanked(args: {
       args.packageName,
       args.searchTexts,
       args.includeCode,
+      args.droppedSources,
    );
    return {
       sources,
@@ -1207,6 +1216,11 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
    const entities: Entity[] = [];
    const governance = new Map<string, SourceGovernance>();
+   // Names of every source dropped for an unconditional deny-all gate, package-
+   // wide. Computed once per model, before either the source or the query loop
+   // runs, so both can skip the same names and neither can resurrect a card for
+   // one the other dropped (see the query loop and cardFor below).
+   const droppedSources = new Set<string>();
    let n = 0;
    for (const apiModel of models) {
       // path is optional in the generated API types; skip models without one.
@@ -1230,6 +1244,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       // still index, just without provenance.
       const modelDef = model.getModelDef?.();
 
+      for (const apiSource of apiSources) {
+         if (apiSource.name && isUnconditionalDenyAuthorize(apiSource)) {
+            droppedSources.add(apiSource.name);
+         }
+      }
+
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
          const apiSource = apiSources.find((c) => c.name === sourceName);
@@ -1241,7 +1261,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // from the 403; every OTHER gate stays reported, because a caller's
          // givens are untrusted here and evaluating a real rule would be
          // forgeable (see execute_query_tool.ts).
-         if (apiSource && isUnconditionalDenyAuthorize(apiSource)) continue;
+         if (droppedSources.has(sourceName)) continue;
          const provenance = readFieldProvenance(modelDef, sourceName);
          // First model wins, matching the entity dedupe below, so a source's
          // identity and its governance always come from the same model.
@@ -1385,6 +1405,9 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // never appearing in `returned`. Exclude it here, before it can be
          // counted anywhere, rather than at serialization.
          if (!query.sourceName) continue;
+         // Same deny-all drop as the source loop above: a query over a locked
+         // source is still a route to learn the source's name and shape exist.
+         if (droppedSources.has(query.sourceName)) continue;
          entities.push({
             id: String(n++),
             kind: "query",
@@ -1407,7 +1430,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
-   return { entities: collapseAliases(deduped), governance };
+   return { entities: collapseAliases(deduped), governance, droppedSources };
 }
 
 /** What the compiled model says about querying a source, beyond its schema. */
@@ -1422,6 +1445,8 @@ interface SourceGovernance {
 interface CollectedModel {
    entities: Entity[];
    governance: Map<string, SourceGovernance>;
+   /** Sources dropped for an unconditional deny-all gate; see isUnconditionalDenyAuthorize. */
+   droppedSources: Set<string>;
 }
 
 /**
@@ -1566,6 +1591,8 @@ interface PackageIndex {
    entityCount: number;
    /** Per-source context, keyed by source name. Built once with the index. */
    sourceContext: Map<string, SourceContextEntry>;
+   /** Sources dropped for an unconditional deny-all gate; cardFor refuses these. */
+   droppedSources: Set<string>;
 }
 
 /** Longest a one-line summary may be, matching the hosted API's own cap. */
@@ -1674,6 +1701,7 @@ async function getPackageIndex(
       index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
+      droppedSources: collected.droppedSources,
    };
    indexCache.set(pkg, built);
    logger.debug("[MCP Tool getContext] Built and cached entity index", {
@@ -1800,7 +1828,7 @@ async function runContextQuery(
       );
    }
 
-   const { byId, index, sourceContext } = pkgIndex;
+   const { byId, index, sourceContext, droppedSources } = pkgIndex;
    const uri = buildMalloyUri(
       { environment: environmentName, package: packageName },
       "get-context",
@@ -1965,6 +1993,7 @@ async function runContextQuery(
          packageName,
          new Map(),
          request.includeCode,
+         droppedSources,
       );
       // A listing is deterministic catalog order, not a ranking, and
       // Publisher has no query-usage signal to fill the hosted API's
@@ -2193,6 +2222,7 @@ async function runContextQuery(
          packageName,
          searchTexts: searchTextsByIndex,
          includeCode: request.includeCode,
+         droppedSources,
       });
       return jsonResource(uri, {
          sources,
@@ -2294,6 +2324,7 @@ async function runContextQuery(
       packageName,
       searchTexts: searchTextsByIndex,
       includeCode: request.includeCode,
+      droppedSources,
    });
    const envelope = {
       sources,
