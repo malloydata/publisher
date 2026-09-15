@@ -73,14 +73,23 @@ def search_terms(tool_input: dict[str, Any]) -> list[str]:
     return terms
 
 
+def entity_id(kind: str, source: str | None, name: str) -> str:
+    """The `kind:source:name` id, minted in one place.
+
+    This file was already the only place ids are BUILT; naming the format as a
+    function keeps it that way now that the definition ledger needs to build
+    them too. `score_retrieval.split_entity()` is the matching reader.
+    """
+    return f"{kind}:{source}:{name}" if source else f"{kind}:{name}"
+
+
 def _ident(node: dict[str, Any]) -> str | None:
     eid = node.get("entityId")
     if isinstance(eid, str) and eid:
         return eid
     kind, name = node.get("kind"), node.get("name")
     if kind in ENTITY_KINDS and isinstance(name, str) and name:
-        src = node.get("source")
-        return f"{kind}:{src}:{name}" if src else f"{kind}:{name}"
+        return entity_id(kind, node.get("source"), name)
     return None
 
 
