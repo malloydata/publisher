@@ -166,7 +166,8 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 "improverManifest", "doubtedGoldens",
                 "packageSha", "servedRevision", "datasetSha",
                 "staleEntityNames",
-                "retrievalMode", "retrievalCalls", "reExecution",
+                "retrievalMode", "retrievalCalls", "retrievalGate",
+                "reExecution",
                 "modelRepo"} | RUN_RECOMMENDED
 
 
@@ -385,11 +386,16 @@ def validate_run(run_dir: pathlib.Path) -> tuple[list[str], list[str]]:
         # `host_tool_uses` counts EVERY tool use, MCP included -- it counted
         # only the non-MCP ones until 2026-09-03, which made the comparison
         # true of almost every clean attempt and unusable as a signal.
+        #
+        # The floor consults `reported_calls` and `host_tool_uses` only.
+        # `mcp_tool_uses` was bound and conjoined here without being compared,
+        # and it is OPTIONAL on an attempt event, so the floor silently skipped
+        # every attempt that omitted it -- a check applied to exactly the
+        # attempts that carried a field it never read.
         if kind == "attempt":
             rep, host = e.get("reported_calls"), e.get("host_tool_uses")
-            mcp = e.get("mcp_tool_uses")
             if (isinstance(rep, int) and isinstance(host, int)
-                    and isinstance(mcp, int) and rep > host):
+                    and rep > host):
                 warnings.append(
                     f"events.jsonl:{n}: {e.get('qid')}: reported_calls {rep} > "
                     f"host_tool_uses {host} -- the answerer claims more calls "

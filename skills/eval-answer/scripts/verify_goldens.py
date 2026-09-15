@@ -147,6 +147,18 @@ def close_enough(want: Any, got: Any, places: int | None) -> bool:
 
 # ---------------------------------------------------------------- 1. value
 
+def needs_value_check(case: dict[str, Any]) -> bool:
+    """Whether a truth server would have anything to re-derive for this case.
+
+    The value-free kinds are settled by their own text: `unanswerable` by the
+    refusal it demands, `criteria` by its clauses. `check_value` returns
+    `skipped` for both before it reaches a server, so a set made only of them
+    asks nothing of one.
+    """
+    return (case.get("golden") or {}).get("kind") not in (
+        "unanswerable", "criteria")
+
+
 def check_value(case: dict[str, Any], a: argparse.Namespace
                 ) -> tuple[str, str, list[dict[str, Any]] | None]:
     """(status, detail, fresh rows). Status: ok / diff / error / skipped."""
@@ -536,6 +548,11 @@ def truth_isolation_findings(base: str, environment: str,
             "the answerer has no route to, and point --publisher there"]
 
 
+# Kept in step with `skill:eval-import`'s `import_cases.STAMP_MIN`, which is
+# what writes the stamps this reads.
+STAMP_MIN = 16
+
+
 def question_drift_findings(cases: list[dict[str, Any]]) -> list[str]:
     """Cases whose question no longer matches the seal stamped at import.
 
@@ -558,6 +575,21 @@ def question_drift_findings(cases: list[dict[str, Any]]) -> list[str]:
     for c in cases:
         stamp, question = c.get("questionSha"), c.get("question")
         if not stamp or not isinstance(question, str):
+            continue
+        # Malformed is its own finding, the rule this file already applies to
+        # entity ids. A stamp that arrived as a number used to raise TypeError
+        # on `len(stamp)`, which the top-level handler turns into exit 3 --
+        # reporting a malformed seal as a harness that could not run. A stamp
+        # shorter than 16 is the quieter half: the prefix comparison still
+        # succeeds, on fewer bits than the seal is worth.
+        if not isinstance(stamp, str) or len(stamp) < STAMP_MIN:
+            out.append(
+                f"{c['qid']}: questionSha is malformed "
+                f"({type(stamp).__name__}, "
+                f"{len(stamp) if isinstance(stamp, str) else 'n/a'} chars); "
+                f"expected a hex string of at least {STAMP_MIN}. The question "
+                f"is unguarded until it is re-stamped. Fix: "
+                f"`import_cases.py --stamp`")
             continue
         full = hashlib.sha256(question.encode()).hexdigest()
         if full[:len(stamp)] != stamp:
@@ -689,6 +721,22 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     cases = [json.loads(l) for l in lines if l.strip()]
     chosen = [c for c in cases if not qids or c["qid"] in qids]
 
+    # A set where no golden holds a value has nothing for a truth server to
+    # re-derive, so a missing one is not a check that did not happen. Left as a
+    # skip, a criteria-only set exited 3 and `improve.py` blocked on it with no
+    # opt-out, over a check that does not apply to it -- and the repair offered
+    # elsewhere ("name a truthPackage") is not open to a set that has no value
+    # to re-derive.
+    #
+    # `server_absent` keeps the audits that really do need a server gated on
+    # the server rather than on the exit code. `chosen and` because "no case
+    # needs a value check" is vacuously true of an empty selection, and an
+    # empty set is not a set that asks nothing -- it is a set with nothing in
+    # it, which must not read as a pass.
+    server_absent = bool(skipped)
+    if skipped and chosen and not any(needs_value_check(c) for c in chosen):
+        skipped = None
+
     tally: dict[str, int] = {}
     findings: list[str] = []
     refreshed: list[str] = []
@@ -704,12 +752,32 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     findings += unknown_name_findings(chosen, model_text(model))
     findings += question_drift_findings(chosen)
 
-    if not skipped:
+    if not server_absent:
         findings += truth_isolation_findings(
             publisher, environment,
             target_package or meta.get("targetPackage"))
     if skipped and not quiet:
         print(f"  ! {skipped}; running only the checks that need no server")
+    # Promoting a golden that holds NO value needs no truth server, so it runs
+    # above the value-check loop rather than inside it. It used to sit in the
+    # loop, which `skipped` empties, so a criteria-only set could be promoted by
+    # no path -- and, since a set with no truthPackage now exits 3 and
+    # `improve.py` blocks on it, had no route to `verified` at all. Giving it a
+    # truthPackage is not the escape either: a criteria-only set has no value to
+    # put in one.
+    if promote:
+        for c in chosen:
+            g = c["golden"]
+            if (g.get("kind") in ("unanswerable", "criteria")
+                    and g.get("status") == "provisional"):
+                # Verified on arrival, as skill:eval-import says: there is no
+                # value to re-derive, and the refusal (or the clauses) is the
+                # whole key. Left provisional, the answer judge refused a
+                # verdict on exactly the cases that measure refusal.
+                g["status"] = "verified"
+                g["verifiedBy"] = "authored_criteria"
+                promoted.append(c["qid"])
+
     # `[] if skipped else chosen` rather than an `if` block: the guard belongs
     # next to the one call that needs it, and wrapping would reindent the
     # --refresh write for nothing.
@@ -723,18 +791,12 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         # second derivation beside it, has met the standard the schema states.
         # Anything else is reported rather than promoted, so a caller learns
         # WHY a key it expected to promote did not.
-        if promote:
+        # The value-free kinds were promoted above, where they need no server.
+        # What is left here is the value-based promotion, and `check_value` IS
+        # its evidence.
+        if promote and needs_value_check(c):
             g = c["golden"]
-            if (g.get("kind") in ("unanswerable", "criteria")
-                    and g.get("status") == "provisional"):
-                # Verified on arrival, as skill:eval-import says: there is no
-                # value to re-derive, and the refusal (or the clauses) is the
-                # whole key. Left provisional, the answer judge refused a
-                # verdict on exactly the cases that measure refusal.
-                g["status"] = "verified"
-                g["verifiedBy"] = "authored_criteria"
-                promoted.append(c["qid"])
-            elif status != "ok":
+            if status != "ok":
                 promotion_notes.append(
                     f"{c['qid']}: not promoted, value check says {status}")
             else:

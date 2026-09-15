@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests for flip_table's gates: the retriever pair, the stable near_match
 list, and the calibration block a band has to be quoted against."""
+import contextlib
+import io
 import json
 import pathlib
 import shutil
@@ -49,6 +51,30 @@ class Gate(unittest.TestCase):
         self.assertEqual(ft.retrieval_gate({"retrievalMode": "mixed"},
                                            {"retrievalMode": "mixed"},
                                            "a", "b", False), 2)
+
+    def test_two_mixed_arms_are_refused_for_the_right_reason(self):
+        # Refusing is right -- a mixed arm is not a measurement whatever the
+        # other arm did -- but the message said "retrieval differs: a mixed,
+        # b mixed", which reads as a contradiction. The reason is the
+        # actionable part.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = ft.retrieval_gate({"retrievalMode": "mixed"},
+                                     {"retrievalMode": "mixed"},
+                                     "a", "b", False)
+        self.assertEqual(code, 2)
+        self.assertIn("both arms changed retriever mid-run", buf.getvalue())
+        # The embedding provider is not the fix here: it answered, and
+        # changed its mind mid-run.
+        self.assertNotIn("Fix the embedding provider", buf.getvalue())
+        self.assertNotIn("retrieval differs", buf.getvalue())
+
+    def test_a_genuine_difference_still_says_so(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ft.retrieval_gate({"retrievalMode": "mixed"},
+                              {"retrievalMode": "semantic"}, "a", "b", False)
+        self.assertIn("retrieval differs", buf.getvalue())
 
     def test_override_reports_instead_of_failing(self):
         self.assertEqual(ft.retrieval_gate({"retrievalMode": "semantic"},

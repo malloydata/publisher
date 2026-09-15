@@ -140,13 +140,30 @@ def retrieval_gate(ca: dict, cb: dict, la: str, lb: str,
                   f"internally consistent, so a band measured here holds for "
                   f"{ma} retrieval and for nothing else.")
         return 0
-    print(f"\n  ! retrieval differs: {la} {ma}, {lb} {mb}. The arms did not "
-          f"search the same way, so these flips are not a measurement of the "
-          f"change.")
+    if ma == mb == "mixed":
+        # The guard above excludes an equal pair only when it is not `mixed`,
+        # so two mixed arms land here and "retrieval differs: mixed, mixed"
+        # read as a contradiction. Refusing is still right -- a mixed arm is
+        # not a measurement whatever the other arm did -- but the reason is
+        # the actionable part.
+        print(f"\n  ! both arms changed retriever mid-run ({la} and {lb} are "
+              f"both `mixed`), so neither is a measurement and the pair "
+              f"cannot be compared.")
+    else:
+        print(f"\n  ! retrieval differs: {la} {ma}, {lb} {mb}. The arms did not "
+              f"search the same way, so these flips are not a measurement of "
+              f"the change.")
     if allow:
         print("    --allow-retrieval-mismatch given; reporting anyway.")
         return 0
-    print("    Fix the embedding provider and re-run, or pass "
+    # Two mixed arms are not an embedding-provider problem: the provider
+    # answered, and changed its mind mid-run. The fix is to let the index
+    # settle before the arm starts, which is `run_baseline.py`'s retrieval gate.
+    print("    Let the index settle before each arm and re-run (the retrieval "
+          "gate in run_baseline.py), or pass --allow-retrieval-mismatch to "
+          "report anyway."
+          if ma == mb == "mixed" else
+          "    Fix the embedding provider and re-run, or pass "
           "--allow-retrieval-mismatch to report anyway.")
     return 2
 

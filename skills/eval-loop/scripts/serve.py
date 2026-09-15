@@ -179,13 +179,25 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
     url = (f"http://localhost:{port}/api/v0/environments/{environment}"
            f"/packages/{package}")
     deadline = time.time() + wait
-    status = None
+    status, last_error, read_one = None, None, False
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=10) as r:
-                status = index_status(json.loads(r.read().decode()))
-        except Exception:  # noqa: BLE001
-            status = None
+                payload = json.loads(r.read().decode())
+        except Exception as e:  # noqa: BLE001
+            # A transport failure is not a capability verdict. Collapsing it
+            # into `status = None` handed None a second meaning `index_status`
+            # is written not to have, so a 404 from a mistyped env or package
+            # reported as "this server has no embedding provider". And
+            # returning on the first failure ended the warm-up inside a poll
+            # loop whose whole premise is that the server may not be answering
+            # cleanly yet: an early-startup 503 is the expected case here, not
+            # the exotic one.
+            last_error = f"{type(e).__name__}: {e}"
+            time.sleep(2)
+            continue
+        read_one = True
+        status = index_status(payload)
         if status is None:
             return None, ("no embeddingIndex on the package resource; this "
                           "server has no embedding provider, so every run "
@@ -194,6 +206,11 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
         if status in TERMINAL_INDEX_STATES:
             break
         time.sleep(2)
+    if not read_one:
+        return None, (f"could not read the package resource at {url} within "
+                      f"{wait}s ({last_error}). The warm-up did not run, which "
+                      f"is not a finding about the server's embedding provider "
+                      f"-- check the environment and package names first")
     if status == "ready":
         return status, "retrieval index ready: rankings are semantic"
     if status in TERMINAL_INDEX_STATES:

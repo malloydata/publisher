@@ -1,6 +1,6 @@
 ---
 name: eval-import
-description: 'Turn a list of questions into an eval set, whatever shape it arrived in: a JSONL a customer sent, a CSV, a spreadsheet export, a markdown doc, an email thread, or a pull from production logs. Classify each item by what came WITH the question (a query, a number, prose criteria, or nothing), write cases.jsonl and set.json per reference/case-format.md, keep the file as it arrived, and seal each question so a later edit is detectable. Never marks a golden verified and never invents a question. Use when questions arrive from outside and need to become a set, or before the first run against a set nobody here authored.'
+description: 'Turn a list of questions into an eval set, whatever shape it arrived in: a JSONL a customer sent, a CSV, a spreadsheet export, a markdown doc, an email thread, or a pull from production logs. Classify each item by what came WITH the question (a query, a number, prose criteria, or nothing), write cases.jsonl and set.json per reference/case-format.md, keep the file as it arrived, and seal each question so a later edit is detectable. Never marks a value-bearing golden verified and never invents a question. Use when questions arrive from outside and need to become a set, or before the first run against a set nobody here authored.'
 ---
 
 # Import questions into an eval set
@@ -190,7 +190,7 @@ python3 scripts/import_cases.py --set evals/<set> --stamp
 ```
 
 It checks the required fields, unique `qid`s, a `split` on every case, a golden
-status from the allowed four, that nothing claims `verified` without the
+status from the allowed statuses, that nothing claims `verified` without the
 evidence for it, and that no question has drifted from its stamp. Exit 0 clean,
 1 with a finding, 2 on a usage error.
 

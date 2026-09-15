@@ -59,6 +59,34 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+# The shortest seal worth trusting. `--stamp` writes 16 hex characters and the
+# ecommerce set's author script writes `sha256(question)[:16]`, so nothing in
+# practice is shorter; a prefix comparison against a TRUNCATED stamp weakens the
+# seal in proportion to what is left -- roughly one in sixteen at a single
+# character -- and reported clean the whole way down.
+STAMP_MIN = 16
+
+
+def stamp_problem(stamp: Any) -> str | None:
+    """Why a stamp cannot be compared, or None if it can.
+
+    Malformed is its own finding with its own message, the rule this branch
+    already applied to entity ids in `verify_goldens.py`. Without it a stamp
+    that arrived as a number raised `AttributeError` on `.startswith`, which
+    `verify_goldens.py`'s top-level handler turns into exit 3, "could not run"
+    -- a malformed seal reported as a harness failure rather than as a finding
+    about the set.
+    """
+    if not isinstance(stamp, str):
+        return (f"`questionSha` is {type(stamp).__name__}, expected a hex "
+                f"string. Fix: re-stamp with `import_cases.py --stamp`")
+    if len(stamp) < STAMP_MIN:
+        return (f"`questionSha` is {len(stamp)} characters, expected at least "
+                f"{STAMP_MIN}. A shorter prefix is a weaker seal and still "
+                f"reports clean. Fix: re-stamp with `import_cases.py --stamp`")
+    return None
+
+
 def stamp_matches(stamp: str, question: str) -> bool:
     """Whether a stored seal still matches the question, by PREFIX.
 
@@ -129,7 +157,10 @@ def check_case(case: dict[str, Any], where: str) -> tuple[list[str], list[str]]:
                         "not a holdout")
 
     stamp = case.get("questionSha")
-    if stamp and question is not None and not stamp_matches(stamp, question):
+    problem = stamp_problem(stamp) if stamp is not None else None
+    if problem:
+        findings.append(f"{where} {qid}: {problem}")
+    elif stamp and question is not None and not stamp_matches(stamp, question):
         findings.append(
             f"{where} {qid}: the question does not match its `questionSha`. "
             "Either the question was edited after import, which is never "

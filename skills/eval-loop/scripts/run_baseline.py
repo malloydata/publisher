@@ -806,6 +806,73 @@ def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
     return False, f"still not ready after {tries} probes: {last}"
 
 
+def resolve_target_version(scope: str | None, target_version: str | None
+                           ) -> tuple[str | None, list[str]]:
+    """The one pin for a platform run, normalised however it was spelled.
+
+    The leading-`v` strip used to live only inside `parse_scope`, which runs
+    only when `--scope` is given. So `--target-version v0.0.58` alone kept its
+    `v` all the way into `run.json`, and `diagnose.py` interpolated that
+    straight into the agent's instructions -- `_strip_v`'s own stated failure
+    mode, a `v` reaching the API as part of the name.
+
+    `parse_scope` still receives what was TYPED, so its refusal over two
+    disagreeing pins can quote the user's own spelling back at them.
+    """
+    if scope:
+        _, _, resolved, notes = parse_scope(scope, target_version)
+        # One pin, wherever it came from, so run.json and the calls cannot
+        # disagree about which build answered.
+        return resolved, notes
+    return _strip_v(target_version, "--target-version")
+
+
+def run_retrieval_gate(a: argparse.Namespace) -> str:
+    """Hold the arm until retrieval is steady, and say what happened.
+
+    `wait_retrieval_ready` was defined and tested but never CALLED, and
+    `--no-retrieval-gate` was parsed and never read, so the suite stayed green
+    over a gate that never fired -- and an opt-OUT flag told every reader the
+    gate was on. That is the shape `check_judge.gate_exit` went after in this
+    same branch: a gate that passes without running is worse than one that
+    errors.
+
+    It aborts rather than warns, for the reason `wait_retrieval_ready`'s own
+    docstring gives: an arm that straddles the cold-start changeover measures
+    two retrievers and reports one number, and four runs came back inconclusive
+    to exactly that.
+
+    `serve.py --warm-retrieval` does not supersede this, so both stay. That
+    reads the SERVER's `embeddingIndex.status`, which says the index is built;
+    this probes what the answerer will actually observe, and a call that lands
+    while a sync bumps the generation comes back lexical against a `ready`
+    index.
+
+    Returns the line for `run.json`. An opt-out reads differently from a gate
+    that passed, which is the whole point of recording it.
+    """
+    if a.rebuild or a.rejudge:
+        # Nothing will be answered: the transcripts exist, and the retriever
+        # that produced them is already recorded against them.
+        return "not run (no answering phase)"
+    if a.no_retrieval_gate:
+        note = "skipped by --no-retrieval-gate"
+        print(f"  ! {note}: the first calls after a restart answer lexically "
+              f"by design, so this arm may measure two retrievers and report "
+              f"one number")
+        return note
+    ready, said = wait_retrieval_ready(a)
+    print(f"  {'' if ready else '! '}retrieval gate: {said}")
+    if not ready:
+        raise SystemExit(
+            f"retrieval is not ready, so this arm would measure two retrievers "
+            f"and report one number.\n"
+            f"  the gate said: {said}\n"
+            f"  Wait for the index to settle and re-run, or pass "
+            f"--no-retrieval-gate to answer anyway and have run.json say so.")
+    return f"ready: {said}"
+
+
 def hosted_tools_reachable(a: argparse.Namespace) -> tuple[bool, str]:
     """Spawn ONE cheap agent to prove the hosted tools are actually granted.
 
@@ -1922,7 +1989,9 @@ def main(argv: list[str] | None = None) -> int:
                          "to warm. The gate exists because a restart leaves it "
                          "cold and the first calls answer lexically by design, "
                          "so an arm started immediately measures two "
-                         "retrievers and reports one number")
+                         "retrievers and reports one number. run.json records "
+                         "that you opted out, which is a different fact from a "
+                         "gate that passed")
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=900)
@@ -2140,13 +2209,10 @@ def main(argv: list[str] | None = None) -> int:
         # could not satisfy, and the else-branch warning below was skipped too
         # because a.scope was truthy -- so the run went out unpinned and silent,
         # which is the one thing this pin exists to prevent.
-        if a.scope:
-            _, _, resolved, notes = parse_scope(a.scope, a.target_version)
-            for n in notes:
-                print(f"  ! {n}")
-            # One pin, wherever it came from, so run.json and the calls cannot
-            # disagree about which build answered.
-            a.target_version = resolved
+        a.target_version, notes = resolve_target_version(a.scope,
+                                                          a.target_version)
+        for n in notes:
+            print(f"  ! {n}")
         if not a.target_version:
             raise SystemExit(
                 "Invalid pins for --target platform: expected a published "
@@ -2237,7 +2303,10 @@ def main(argv: list[str] | None = None) -> int:
 
     golden_check = golden_check_note(golden_check, stale, bool(model_src))
 
+    retrieval_gate = run_retrieval_gate(a)
+
     (a.out / "run.json").write_text(json.dumps(ledger.run_config(
+        retrievalGate=retrieval_gate,
         runId=a.out.name, label=label, target=a.target,
         targetVersion=a.target_version,
         scope=a.scope if a.target == "platform" else None,

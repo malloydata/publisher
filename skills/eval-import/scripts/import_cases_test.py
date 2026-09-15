@@ -143,6 +143,38 @@ class WhatIsReportedNotFailed(unittest.TestCase):
         self.assertEqual(review(c), [])
 
 
+class AMalformedSealIsItsOwnFinding(unittest.TestCase):
+    """Malformed is a finding about the SET, not a harness that could not run.
+
+    A stamp that arrived as a number raised `AttributeError` on `.startswith`,
+    and `verify_goldens.py`'s top-level handler turns that into exit 3, "could
+    not run" -- so a typo in one field read as the whole audit failing. A stamp
+    shorter than the seal is the quieter half: the prefix comparison still
+    succeeds, on fewer bits than the seal is worth, and reports clean.
+    """
+
+    def test_a_non_string_stamp_is_a_finding_not_a_crash(self):
+        got = findings(case(questionSha=12345))
+        self.assertTrue(any("questionSha" in f and "expected a hex" in f
+                            for f in got), got)
+
+    def test_a_truncated_stamp_is_a_finding(self):
+        short = ic.sha256_text(case()["question"])[:4]
+        got = findings(case(questionSha=short))
+        self.assertTrue(any("at least" in f for f in got), got)
+
+    def test_a_full_length_stamp_that_matches_is_clean(self):
+        c = case()
+        c["questionSha"] = ic.sha256_text(c["question"])[:16]
+        self.assertEqual([f for f in findings(c) if "questionSha" in f], [])
+
+    def test_a_malformed_stamp_does_not_also_report_drift(self):
+        # One fact, one finding: the stamp cannot be compared, so saying the
+        # question drifted as well would name an edit nobody made.
+        got = [f for f in findings(case(questionSha=12345)) if "questionSha" in f]
+        self.assertEqual(len(got), 1, got)
+
+
 class RequiredFields(unittest.TestCase):
     def test_a_missing_split_says_why_it_matters(self):
         got = findings(case(split=None))

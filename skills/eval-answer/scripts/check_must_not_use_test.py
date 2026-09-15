@@ -47,7 +47,10 @@ class Check(unittest.TestCase):
         r = check(["shipped_at", "delivered_at"],
                   "run: order_items -> { where: year(shipped_at) = 2022 }")
         self.assertEqual(r["hits"], ["shipped_at"])
-        self.assertEqual(r["unchecked"], ["delivered_at"])
+        # `delivered_at` is decidable and proven absent, so it is reported and
+        # handed to nobody -- not passed to the judge as if it were prose.
+        self.assertEqual(r["absent"], ["delivered_at"])
+        self.assertEqual(r["unchecked"], [])
 
     def test_a_longer_name_is_not_the_forbidden_one(self):
         r = check(["total_sales_2021"],
@@ -102,13 +105,20 @@ class Check(unittest.TestCase):
                   "run: x -> { group_by: products.retail_price_adj }")
         self.assertEqual(r["hits"], [])
 
-    def test_an_entry_the_script_could_not_decide_is_not_listed_as_checked(self):
-        # It goes to the judge as prose; saying it was checked as well claimed
-        # a decision the script did not make.
+    def test_a_proven_absent_path_is_absent_not_unchecked(self):
+        # It is neither `checked` (the script has not decided anything the
+        # judge must weigh) nor `unchecked` (it is not prose, and reaching the
+        # judge as a bare line under the mustNotUse heading invited a fail on a
+        # correct answer). It is proven unused, and goes to nobody.
         r = check(["products.retail_price"],
                   "run: x -> { group_by: other.cost }")
-        self.assertEqual(r["unchecked"], ["products.retail_price"])
+        self.assertEqual(r["absent"], ["products.retail_price"])
+        self.assertEqual(r["unchecked"], [])
         self.assertEqual(r["checked"], [])
+
+    def test_a_proven_absent_path_reaches_the_judge_as_nothing(self):
+        r = check(["shipped_at"], "run: order_items -> { group_by: created_at }")
+        self.assertEqual(judge_note(r), "")
 
     def test_a_use_objection_never_vetoes_the_field_it_names(self):
         # The regression this file exists to hold: the answer showed the field
@@ -143,7 +153,7 @@ class Check(unittest.TestCase):
     def test_no_entries_is_empty(self):
         r = check(None, "run: x -> { aggregate: y }")
         self.assertEqual(r, {"hits": [], "leaf_hits": [], "unchecked": [],
-                             "checked": []})
+                             "absent": [], "checked": []})
 
 
 class Noise(unittest.TestCase):

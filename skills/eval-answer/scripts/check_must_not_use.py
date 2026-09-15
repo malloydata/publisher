@@ -37,6 +37,7 @@ objection is to a use of it.
     r = check(["shipped_at", "an average of per-SKU prices"], "run: x -> ...")
     r["hits"]        # ["shipped_at"]        -> verdict no_match
     r["leaf_hits"]   # []                    -> reported, judged
+    r["absent"]      # []                    -> proven unused, judged by nobody
     r["unchecked"]   # ["an average ..."]    -> goes into the judge prompt
 
 CLI, for a spot check:
@@ -131,15 +132,24 @@ def check(must_not_use: list[str] | None, final_query: str | None
 
     `hits` is a veto: the query names a forbidden field. `leaf_hits` is the last
     segment of a forbidden path found on its own, which is a suspicion for the
-    judge. `unchecked` is prose, which only the judge can apply.
+    judge. `absent` is a decidable field path this script PROVED the query does
+    not use. `unchecked` is prose, which only the judge can apply.
+
+    `absent` is its own bucket because the two things it used to be conflated
+    with are both wrong. Filed under `unchecked`, a proven-absent path reached
+    the judge as a bare line under the mustNotUse heading, rendered identically
+    to a real prose objection, inviting a fail on a correct answer -- the
+    direction this file is explicit about avoiding. Filed under `checked` it
+    would claim the script had decided something the judge still had to weigh.
+    It is reported, and passed to nobody.
     """
     entries = list(must_not_use or [])
     if not entries or not final_query:
         return {"hits": [], "leaf_hits": [], "unchecked": entries,
-                "checked": []}
+                "absent": [], "checked": []}
 
     text = strip_noise(final_query)
-    hits, leaf_hits, unchecked, checked = [], [], [], []
+    hits, leaf_hits, unchecked, checked, absent = [], [], [], [], []
     for entry in entries:
         path = candidate(entry)
         if path is None:
@@ -157,11 +167,11 @@ def check(must_not_use: list[str] | None, final_query: str | None
             checked.append(path)
             leaf_hits.append(entry)
         else:
-            # Not `checked`: the entry is going to the judge as prose, and
-            # listing it as checked as well said the script had decided it.
-            unchecked.append(entry)
+            # Decidable, and decided: the path is not in the query. Reported,
+            # and handed to no one.
+            absent.append(entry)
     return {"hits": hits, "leaf_hits": leaf_hits, "unchecked": unchecked,
-            "checked": checked}
+            "absent": absent, "checked": checked}
 
 
 def judge_note(result: dict[str, Any]) -> str:

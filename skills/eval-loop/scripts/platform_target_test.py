@@ -13,6 +13,7 @@ Stdlib only: python3 platform_target_test.py
 """
 import argparse
 import os
+import inspect
 import pathlib
 import re
 import shutil
@@ -170,6 +171,43 @@ class ScopeParsing(unittest.TestCase):
             msg = str(e.exception)
             self.assertIn("Invalid --scope", msg, msg)
             self.assertIn("Fix: --scope", msg, msg)
+
+
+class TheVersionPinIsNormalisedWithoutAScope(unittest.TestCase):
+    """The half `parse_scope` could never reach.
+
+    The strip lived inside `parse_scope`, which only runs under `if a.scope:`.
+    So `--target-version v0.0.58` with NO `--scope` kept its `v` into
+    `run.json`, and `diagnose.py` interpolated it into the agent's instructions
+    -- the same wrong string reaching the same two tools, one path over.
+    """
+
+    def test_a_leading_v_is_stripped_with_no_scope_at_all(self):
+        version, notes = rb.resolve_target_version(None, "v0.0.58")
+        self.assertEqual(version, "0.0.58")
+        self.assertEqual(len(notes), 1)
+
+    def test_a_version_that_merely_starts_with_v_survives(self):
+        self.assertEqual(rb.resolve_target_version(None, "vnext")[0], "vnext")
+
+    def test_no_version_at_all_stays_none(self):
+        self.assertIsNone(rb.resolve_target_version(None, None)[0])
+
+    def test_a_scope_still_resolves_through_parse_scope(self):
+        self.assertEqual(
+            rb.resolve_target_version("org/pkg@v0.0.58", None)[0], "0.0.58")
+
+    def test_the_refusal_still_quotes_what_was_typed(self):
+        # `parse_scope` must keep receiving the raw spelling, or the message
+        # that fix earned reads back the normalised form instead.
+        with self.assertRaises(SystemExit) as e:
+            rb.resolve_target_version("org/pkg@0.0.58", "v0.0.38")
+        self.assertIn("v0.0.38", str(e.exception))
+
+    def test_main_resolves_through_it(self):
+        # The bug was a normalisation that one code path skipped; a helper
+        # nothing calls on that path would be the same bug again.
+        self.assertIn("resolve_target_version(", inspect.getsource(rb.main))
 
 
 class SkillsWrittenForAnotherHost(unittest.TestCase):

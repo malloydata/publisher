@@ -285,6 +285,25 @@ class QuestionDrift(unittest.TestCase):
         self.assertIn("questionSha", got[0])
         self.assertIn("new qid", got[0])
 
+    def test_a_non_string_stamp_is_a_finding_not_a_crash(self):
+        # `len(stamp)` on a number raised TypeError, and the top-level handler
+        # turns that into exit 3 -- a malformed seal reported as an audit that
+        # could not run, on a set whose other checks were fine.
+        got = question_drift_findings([{"qid": "q1", "question": "x",
+                                        "questionSha": 12345}])
+        self.assertEqual(len(got), 1)
+        self.assertIn("malformed", got[0])
+
+    def test_a_stamp_shorter_than_the_seal_is_a_finding(self):
+        # The quiet half: the prefix comparison still succeeds, on fewer bits
+        # than the seal is worth, and reports clean all the way down.
+        q = "how many orders?"
+        got = question_drift_findings([
+            {"qid": "q1", "question": q,
+             "questionSha": hashlib.sha256(q.encode()).hexdigest()[:4]}])
+        self.assertEqual(len(got), 1)
+        self.assertIn("malformed", got[0])
+
     def test_a_16_char_stamp_is_the_real_shape(self):
         # evals/ecommerce/_author.py:602 writes sha256(question)[:16] for all
         # 49 cases. A full-digest comparison called every one of them edited.
@@ -381,6 +400,67 @@ class TruthIsolation(unittest.TestCase):
                 truth_isolation_findings("http://x", "samples", "ecommerce"), [])
 
 
+
+
+class AValueFreeSetNeedsNoTruthServer(unittest.TestCase):
+    """A criteria-only set had no route to `verified` by any path.
+
+    The whole `if promote:` block sat inside the value-check loop, which
+    `skipped` empties -- including the branch for goldens that hold no value
+    and by their own reasoning need no truth server. And a set naming no
+    truthPackage now exits 3, which `improve.py` blocks on with no opt-out. So
+    such a set could not be promoted here and could not pass the gate there,
+    and the repair offered elsewhere ("name a truthPackage") is exactly what a
+    set with no value to re-derive has nothing to put in.
+    """
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "set.json").write_text('{"name": "s"}')   # no truthPackage
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def write(self, *goldens):
+        (self.tmp / "cases.jsonl").write_text("".join(
+            json.dumps({"qid": f"q{i}", "question": "x", "split": "dev",
+                        "golden": g}) + "\n"
+            for i, g in enumerate(goldens)))
+
+    def test_a_criteria_set_promotes_with_no_server(self):
+        self.write({"status": "provisional", "kind": "criteria",
+                    "rubric": "must break out by region"})
+        r = verify(self.tmp, None, "samples", promote=True, quiet=True)
+        self.assertEqual(r["promoted"], ["q0"])
+        stored = json.loads((self.tmp / "cases.jsonl").read_text())
+        self.assertEqual(stored["golden"]["status"], "verified")
+        self.assertEqual(stored["golden"]["verifiedBy"], "authored_criteria")
+
+    def test_an_unanswerable_set_promotes_with_no_server(self):
+        self.write({"status": "provisional", "kind": "unanswerable"})
+        r = verify(self.tmp, None, "samples", promote=True, quiet=True)
+        self.assertEqual(r["promoted"], ["q0"])
+
+    def test_a_value_free_set_is_not_reported_as_a_skipped_check(self):
+        # There is nothing a truth server would have re-derived, so a missing
+        # one is not a check that did not happen -- and exit 3 would block
+        # `improve.py` over a check that does not apply.
+        self.write({"status": "verified", "kind": "criteria", "rubric": "r"})
+        self.assertIsNone(verify(self.tmp, None, "samples",
+                                 quiet=True)["skipped"])
+
+    def test_one_value_bearing_golden_brings_the_skip_back(self):
+        # A set that asks anything of a truth server must still say it did not
+        # get one. This is the false green the exit-3 rule closed.
+        self.write({"status": "verified", "kind": "criteria", "rubric": "r"},
+                   {"status": "provisional", "kind": "scalar", "value": 42})
+        self.assertTrue(verify(self.tmp, None, "samples", quiet=True)["skipped"])
+
+    def test_an_empty_set_still_reports_the_skip(self):
+        # "No case needs a value check" is vacuously true of no cases, and an
+        # empty set is not a set that asks nothing -- it is a set with nothing.
+        (self.tmp / "cases.jsonl").write_text("")
+        self.assertTrue(verify(self.tmp, None, "samples", quiet=True)["skipped"])
 
 
 class Promotion(unittest.TestCase):

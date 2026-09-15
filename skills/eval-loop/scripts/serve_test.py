@@ -12,10 +12,12 @@ It cannot just be dropped: `--init` is also what makes the server read
 `publisher.config.json` rather than the database, so a config edit does not
 take without it. Both halves are pinned here.
 """
+import json
 import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import serve  # noqa: E402
@@ -127,6 +129,68 @@ class IndexStatus(unittest.TestCase):
         self.assertNotIn("indexing", serve.TERMINAL_INDEX_STATES)
         for state in ("ready", "cooldown", "oversize"):
             self.assertIn(state, serve.TERMINAL_INDEX_STATES)
+
+
+class WarmRetrievalSeparatesFailureFromAbsence(unittest.TestCase):
+    """A transport failure is not a verdict on the server's capability.
+
+    `except: status = None` handed None a second meaning `index_status` is
+    written not to have -- "no embedding provider configured" -- so a 404 from
+    a mistyped env or package reported as a capability finding. And the caller
+    RETURNED on the first failure, inside a poll loop whose whole premise is
+    that the server may not be answering cleanly yet.
+    """
+
+    def warm(self, responses, wait=30):
+        """Run warm_retrieval over a scripted sequence of urlopen outcomes."""
+        it = iter(responses)
+
+        class Resp:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def urlopen(req, timeout=None):
+            r = next(it)
+            if isinstance(r, Exception):
+                raise r
+            return Resp(r)
+
+        with mock.patch.object(serve, "_mcp_call", lambda *a, **k: None), \
+             mock.patch.object(serve.urllib.request, "urlopen", urlopen), \
+             mock.patch.object(serve.time, "sleep", lambda _s: None):
+            return serve.warm_retrieval(4811, 4040, "e", "p", wait=wait)
+
+    def test_an_early_failure_is_retried_rather_than_ending_the_warm_up(self):
+        # The expected case at startup, not the exotic one: a 503, then the
+        # server answers. Returning on the first one ended the warm-up.
+        status, line = self.warm([OSError("connection refused"),
+                                  {"embeddingIndex": {"status": "ready"}}])
+        self.assertEqual(status, "ready")
+        self.assertIn("semantic", line)
+
+    def test_a_failure_that_never_clears_is_not_a_capability_verdict(self):
+        status, line = self.warm([OSError("HTTP Error 404: Not Found")] * 4000,
+                                 wait=0.2)
+        self.assertIsNone(status)
+        self.assertNotIn("no embedding provider", line)
+        self.assertIn("could not read", line)
+        # The actionable part: a 404 here is a typo, not a missing provider.
+        self.assertIn("environment and package names", line)
+
+    def test_a_parsed_payload_with_no_index_still_reports_absence(self):
+        # The meaning `index_status` DOES have must survive the separation.
+        status, line = self.warm([{"someOtherField": 1}])
+        self.assertIsNone(status)
+        self.assertIn("no embedding provider", line)
 
 
 class ServerCmd(unittest.TestCase):

@@ -9,6 +9,7 @@ transcript, so a judge or a clustering agent that reached an outside oracle
 leaves nothing behind that anyone looks at.
 """
 import argparse
+import inspect
 import pathlib
 import sys
 import unittest
@@ -303,6 +304,63 @@ class RetrievalGate(unittest.TestCase):
     def test_a_probe_error_resets_the_confirmations(self):
         ready, _ = self.gate([("semantic", None), ValueError("blip")], tries=2)
         self.assertFalse(ready)
+
+
+class TheRetrievalGateIsWired(unittest.TestCase):
+    """The gate ran nowhere: defined, tested, and never called.
+
+    `wait_retrieval_ready` had two passing tests and no caller, and
+    `--no-retrieval-gate` was parsed and never read -- so the suite was green
+    over a gate that never fired, while an opt-OUT flag told every reader it
+    was on. The two tests above cover the waiting; these cover the wiring, so
+    the same hole cannot reopen silently.
+    """
+
+    def ns(self, **kw):
+        base = dict(rebuild=False, rejudge=False, no_retrieval_gate=False)
+        return argparse.Namespace(**{**base, **kw})
+
+    def test_main_calls_the_gate(self):
+        # The regression itself: an inert gate is invisible to every behaviour
+        # test, because every behaviour test calls it directly.
+        self.assertIn("run_retrieval_gate(", inspect.getsource(rb.main))
+
+    def test_the_opt_out_flag_is_read(self):
+        # The flag was declared and never consulted, which is what made the
+        # dead gate read as live.
+        self.assertIn("no_retrieval_gate", inspect.getsource(rb.run_retrieval_gate))
+
+    def test_a_ready_gate_returns_a_line_for_run_json(self):
+        with mock.patch.object(rb, "wait_retrieval_ready",
+                               lambda _a: (True, "semantic retrieval ready")):
+            note = rb.run_retrieval_gate(self.ns())
+        self.assertTrue(note.startswith("ready:"))
+
+    def test_a_cold_gate_aborts_rather_than_warning(self):
+        # A warning is one scrollback away from being missed, and the arm it
+        # would have let through measures two retrievers and reports one.
+        with mock.patch.object(rb, "wait_retrieval_ready",
+                               lambda _a: (False, "still lexical")):
+            with self.assertRaises(SystemExit) as e:
+                rb.run_retrieval_gate(self.ns())
+        self.assertIn("two retrievers", str(e.exception))
+        self.assertIn("--no-retrieval-gate", str(e.exception))
+
+    def test_opting_out_is_recorded_not_silent(self):
+        # An opt-out must not read back as a gate that passed.
+        note = rb.run_retrieval_gate(self.ns(no_retrieval_gate=True))
+        self.assertIn("--no-retrieval-gate", note)
+        self.assertNotIn("ready", note)
+
+    def test_a_rebuild_does_not_wait_on_a_server(self):
+        # Nothing is answered, so there is no retriever to hold steady.
+        def boom(_a):
+            raise AssertionError("the gate ran with no answering phase")
+        with mock.patch.object(rb, "wait_retrieval_ready", boom):
+            self.assertEqual(rb.run_retrieval_gate(self.ns(rebuild=True)),
+                             "not run (no answering phase)")
+            self.assertEqual(rb.run_retrieval_gate(self.ns(rejudge=True)),
+                             "not run (no answering phase)")
 
 
 class ReadOnlyRoles(unittest.TestCase):
