@@ -94,6 +94,39 @@ back until somebody derives keys. A set of bare questions already measures
 whether the model can express an answer at all, and the answers it produces
 are what the keys get derived from.
 
+### Deriving a key yourself, when nothing arrived with the question
+
+The table above is about what ARRIVED. Sometimes nothing did, nobody knows the
+right number, and the set still needs keys. You may derive one, and the rules
+are the ones already stated rather than new ones:
+
+- Use your full model access and query until you can defend the number. The
+  agent that gets tested later holds only `get_context` and `execute_query`;
+  you are not that agent, and the gap is the point.
+- Record the query as `canonicalQuery`. A number with no query is somebody's
+  guess, which is the row above it in the table.
+- Record the entities you used to get there as `expectedEntities.required`, in
+  the `kind:source:name` form: the measures, dimensions and views the answer
+  cannot be produced without. `reference/case-format.md` says to leave this
+  field empty at import because guessing it invents a retrieval expectation
+  nobody stated; you are not guessing, you just used them. That is the only
+  trustworthy producer this field has, and it is what makes retrieval
+  measurable on a set nobody sent keys for. Where the model offers two
+  legitimate routes, write a `requiredAnyOf` group rather than pick one.
+  `verify_goldens.py` check 5 audits every id against the model, so a wrong one
+  is a hard finding rather than a silent retrieval miss.
+- `status: provisional`, never `verified`, for the reason stated above: you
+  derived it THROUGH the model under test, so a model bug would certify its
+  own key. `verify_goldens.py --promote` is still the only way out.
+- **Where two readings are both defensible from the model, do not pick one.**
+  A model that documents two conventions for the same population produces two
+  honest numbers, and choosing quietly is how a confident wrong key gets
+  written. Go to Hold an ambiguous golden in `skill:eval-loop`'s
+  `reference/golden-side-door.md`: record the competing candidates rather than
+  a new number.
+- What no query can settle is not a failure to derive. It is step 4's second
+  kind, and those clauses score on day one.
+
 ## Step 3: run their query, if they gave one
 
 Do it at import, before any run. It is the cheapest finding in the whole loop.
