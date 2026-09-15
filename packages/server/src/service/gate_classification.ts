@@ -239,11 +239,16 @@ export function createGateClassificationDeps(
  * `#(source-authorize)` note does not satisfy (and does not shed) an
  * ancestor's `#(authorize)` gate, because the caller invokes this function
  * once per route and each call only ever sees that route's own notes. The
- * `["false"]` fail-closed sentinel in the `catch` below is likewise
- * synthesized ONLY for `route === AUTHORIZE_ROUTE` — see
- * `gate_registry_walk.ts`'s `ancestorGateExprs` doc for why doubling it onto
- * `source-authorize` would double-count one unreadable struct as two deny
- * groups instead of denying it once.
+ * `["false"]` fail-closed sentinel in the `catch` below is synthesized on
+ * EITHER route, not only `AUTHORIZE_ROUTE`: because own-wins-over-ancestor is
+ * decided per route, the two routes' calls over the same struct can diverge
+ * before either reaches the unreadable branch (e.g. `struct` owns a real
+ * `#(authorize)` note and returns early, while its `#(source-authorize)` call
+ * falls through to an ancestor whose IR is unreadable) — one route's success
+ * is never a guarantee the other took the same path, so a route cannot rely
+ * on its sibling to have already denied. See `gate_registry_walk.ts`'s
+ * `ancestorGateExprs` doc for the identical reasoning applied to its own
+ * three fail-closed returns.
  */
 function gateExprsForOwnAnnotations(
    struct: SourceDef,
@@ -283,7 +288,7 @@ function gateExprsForOwnAnnotations(
       return { exprs: ancestor, fromAncestor: ancestor.length > 0 };
    } catch {
       return {
-         exprs: route === AUTHORIZE_ROUTE ? ["false"] : [],
+         exprs: ["false"],
          fromAncestor: false,
       };
    }
@@ -534,9 +539,10 @@ function collectEntryPointGatesForRoute(
  * filter. `#(authorize) org_id = $ORG` followed by `#(authorize) team_id in
  * $TEAMS` becomes `(org_id = $ORG) and (team_id in $TEAMS)`, ONE filter that
  * preserves AND semantics exactly: every term must admit a row for it to
- * survive. An admin override is instead written as one natural boolean inside
- * a single term — `#(authorize) $ROLE = 'admin' or org_id in $GROUPS` — since
- * the fold never sees inside an individual expression's own `or`. A given-only
+ * survive. An admin override is instead two extension sources over the same
+ * locked (`#(authorize) false`) base, each with its own conjunctive gate —
+ * `or` is refused everywhere in a gate body, so a disjunction is always two
+ * entry points, never a second arm of one expression. A given-only
  * predicate inside a `where:` is legal Malloy and constant for the life of one
  * request, so folding a given-only conjunct into the same filter text changes
  * nothing about what rows it admits.

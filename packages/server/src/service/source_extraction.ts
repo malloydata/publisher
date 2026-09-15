@@ -791,6 +791,11 @@ export function extractSourcesFromModelDef(
                   kind: "field",
                   name: sourceName,
                   fieldName,
+                  route:
+                     fieldAuthorizeNotes
+                        .map((note) => authorizeAnnotationRoute(note.text))
+                        .find((r): r is string => r !== undefined) ??
+                     AUTHORIZE_ROUTE,
                });
                continue;
             }
@@ -805,6 +810,11 @@ export function extractSourcesFromModelDef(
                kind: "field",
                name: sourceName,
                fieldName,
+               route:
+                  fieldAuthorizeNotes
+                     .map((note) => authorizeAnnotationRoute(note.text))
+                     .find((r): r is string => r !== undefined) ??
+                  AUTHORIZE_ROUTE,
             });
          }
 
@@ -851,6 +861,10 @@ export function extractQueriesFromModelDef(modelDef: ModelDef): {
       .map((queryObj) => ({
          kind: "query" as const,
          name: queryObj.as || queryObj.name,
+         route:
+            ownLevelNoteTexts(queryObj.annotations)
+               .map((text) => authorizeAnnotationRoute(text))
+               .find((r): r is string => r !== undefined) ?? AUTHORIZE_ROUTE,
       }));
    const queries: ExtractedQuery[] = namedQueries.map((queryObj) => ({
       name: queryObj.as || queryObj.name,

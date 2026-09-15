@@ -298,8 +298,8 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
       // Pins the scoping rule the four checks depend on: a term declared
       // under one route and a term declared under a different route are
       // meant to AND, not agree on given or scope — see
-      // `assertAuthorizeGrammarTermsCoherent`'s doc. `"other-route"` stands
-      // in for the second route this module does not yet implement.
+      // `assertAuthorizeGrammarTermsCoherent`'s doc. Exercises the actual
+      // second route this module implements, `#(source-authorize)`.
       const [a] = parseAuthorizeGrammarBody("X", "org_id in $G", LIST_GIVENS);
       const [b] = parseAuthorizeGrammarBody(
          "X",
@@ -309,7 +309,7 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
       expect(() =>
          assertAuthorizeGrammarTermsCoherent("X", [
             { term: a, route: AUTHORIZE_ROUTE },
-            { term: b, route: "other-route" },
+            { term: b, route: SOURCE_AUTHORIZE_ROUTE },
          ]),
       ).not.toThrow();
    });

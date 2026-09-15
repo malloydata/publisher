@@ -1325,8 +1325,9 @@ export class Model {
     *
     * Where several gates are collected (a derivation chain, a resolved
     * composite branch), semantics are AND across them: any one failing denies
-    * the query, while each source's own expression list stays an OR
-    * disjunction.
+    * the query, and each source's own expression list is ALSO AND — a
+    * repeated `#(authorize)` note on the same source conjoins, it does not
+    * offer a choice between arms.
     *
     * Runs UNCONDITIONALLY — NOT guarded by {@link hasAuthorize}, which only
     * inspects top-level `modelDef.contents` sources and so misses a gate
@@ -1384,8 +1385,9 @@ export class Model {
     *
     * Where several gates are collected (a derivation chain, a resolved
     * composite branch), semantics are AND across them: any one failing denies
-    * the query, while each source's own expression list stays an OR
-    * disjunction.
+    * the query, and each source's own expression list is ALSO AND — a
+    * repeated `#(authorize)` note on the same source conjoins, it does not
+    * offer a choice between arms.
     *
     * Runs UNCONDITIONALLY — NOT guarded by {@link hasAuthorize}, which only
     * inspects top-level `modelDef.contents` sources and so misses a gate
@@ -1526,7 +1528,7 @@ export class Model {
          const onDiskGates = this.entryPointGatesBySource.get(ownSourceName);
          if (onDiskGates) {
             const keyOf = (entry: GateEntry): string =>
-               `${entry.label} ${entry.exprs.join(" ")} ${entry.selfContained}`;
+               `${entry.label} ${entry.route} ${entry.exprs.join(" ")} ${entry.selfContained}`;
             const byKey = new Map(
                entryPointGates.map((entry) => [keyOf(entry), entry]),
             );

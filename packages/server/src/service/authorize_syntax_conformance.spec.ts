@@ -860,7 +860,7 @@ source: X is duckdb.table('accounts') extend {
    dimension: d is org_id
 }
 `,
-         /never enforced/i,
+         /never enforced.*#\(source-authorize\)/is,
       );
    });
 
@@ -875,7 +875,7 @@ source: X is duckdb.table('accounts') extend {}
 #(source-authorize) 'finance' in $ROLE
 query: q is X -> { select: id }
 `,
-         /never enforced/i,
+         /never enforced.*#\(source-authorize\)/is,
       );
    });
 
@@ -946,6 +946,12 @@ source: X is duckdb.table('accounts') extend {}
          try {
             const err = compilationErrorOf(model);
             expect(err).toBeInstanceOf(ModelCompilationError);
+            // Pin the actual near-miss refusal, not just SOME load failure —
+            // AuthorizeGrammarError also extends ModelCompilationError, so the
+            // instance check alone stays green even if the wrong path fired.
+            expect(err).not.toBeInstanceOf(AuthorizeGrammarError);
+            expect(err?.message).toMatch(/never enforced/i);
+            expect(err?.message).toContain("#(source-authorize)");
          } finally {
             await cleanup(duckdb, dir);
          }

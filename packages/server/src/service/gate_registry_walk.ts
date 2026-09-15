@@ -137,13 +137,18 @@ export function resolveDeclaredSource(
  * cap was hit) or an `unresolvable` registry link returns `["false"]` rather
  * than `[]` — the chain exists and was not read to its end, so "no gate" would
  * be a silent allow on a source whose base may be locked. That sentinel is
- * synthesized ONLY on `route === AUTHORIZE_ROUTE` (the row-level route) — see
- * this module's `AUTHORIZE_ROUTE` doc: a `source-authorize` call hitting the
- * identical unreadable-IR branch on the SAME struct returns `[]` instead,
- * relying on the authorize-route call (over the same struct, same modelDef)
- * to already deny via its own `["false"]` group. Two independent sentinels
- * for one unreadable struct would double-count it as two deny groups rather
- * than denying it once.
+ * synthesized on EITHER route, not only `route === AUTHORIZE_ROUTE`: because
+ * own-wins-over-ancestor is decided independently per route (an ancestor with
+ * its own `#(authorize)` note but no `#(source-authorize)` one resolves one
+ * route right there and sends only the other further up the chain), the two
+ * routes' walks over the same struct can diverge before either one reaches
+ * this same unreadable branch — a `source-authorize` call cannot rely on an
+ * `authorize` call (over the same struct, same modelDef) having already
+ * denied via its own `["false"]`, because it may never have reached this
+ * branch at all. Synthesizing on both risks folding two `false` filters into
+ * one grafted materializer for the same query instead of one — harmless
+ * (still zero rows, same `AccessDeniedError`) and, per the per-query
+ * `recordRowLevelGateDecision` call sites, does not double the metric either.
  *
  * `route` filters every level's own notes to that route ONLY
  * ({@link collectAuthorizeExprsForRoute}) — this is what makes
@@ -167,20 +172,20 @@ export function ancestorGateExprs(
       if (exprs.length > 0) return exprs;
       inherited = inherited.inherits;
    }
-   if (inherited) return route === AUTHORIZE_ROUTE ? ["false"] : [];
+   if (inherited) return ["false"];
    // The registry link is followed as deep as the inherits chain, not one
    // hop: `seen` (struct identity) is what stops a cycle, so truncating the
    // recursion would just lose a gate two declarations up (fail open).
    seen.add(struct);
    if (seen.size > ANCESTOR_WALK_MAX_DEPTH) {
-      return route === AUTHORIZE_ROUTE ? ["false"] : [];
+      return ["false"];
    }
    const declared = resolveDeclaredSource(struct, modelDef);
    // A registry entry we found but could not read is NOT the same as "this
    // struct has no base" — it means the link to a base exists and the walk
    // failed to follow it, so the gate on the other end is unknown. Deny.
    if (declared.kind === "unresolvable") {
-      return route === AUTHORIZE_ROUTE ? ["false"] : [];
+      return ["false"];
    }
    // A CYCLE returns `[]` ("no gate here"), not `["false"]`, and that is sound
    // because of a CALLER PRECONDITION, not because a cycle is harmless in

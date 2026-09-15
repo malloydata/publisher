@@ -26,8 +26,10 @@
  * gets a clear refusal instead of a silently-ignored annotation.
  *
  * **What counts as the tag is Malloy's answer, not a regex of ours.** A note is
- * a gate iff Malloy routes it to `authorize` ({@link noteRoute}), which
- * admits the block form `#|(authorize)` and the other bracket pairs
+ * a gate iff Malloy routes it to `authorize` or, for the source-level route
+ * this module also defines ({@link SOURCE_AUTHORIZE_ROUTE}), to
+ * `source-authorize` ({@link noteRoute}), which admits the block form
+ * `#|(authorize)` and the other bracket pairs
  * (`#[authorize]`, `#<authorize>`, `#{authorize}`) and excludes near misses like
  * `# (authorize)` (route `''`, Malloy's reserved MOTLY namespace) and
  * `#( authorize )` (malformed prefix). Publisher must not decide any of that for
@@ -412,6 +414,22 @@ export function collectAuthorizeNearMissesAllRoutes(
 }
 
 /**
+ * Which route a near-miss spelling was reaching for, by matching it against
+ * {@link nearMissRouteNames}'s compound `source-authorize` variants before
+ * falling back to plain `authorize` — so the remedy names the tag the author
+ * was actually typing (`#(sourceauthorize)` should not be told to write
+ * `#(authorize)`, a different route with different body rules).
+ */
+function guessedNearMissRoute(text: string): string {
+   const lower = text.toLowerCase();
+   return nearMissRouteNames(SOURCE_AUTHORIZE_ROUTE).some((name) =>
+      lower.includes(name),
+   )
+      ? SOURCE_AUTHORIZE_ROUTE
+      : AUTHORIZE_ROUTE;
+}
+
+/**
  * Refuse a model load carrying any {@link collectAuthorizeNearMisses} spelling.
  *
  * Names every finding at once, like {@link assertNoMisplacedAuthorizeAnnotations},
@@ -422,19 +440,21 @@ export function assertNoAuthorizeNearMisses(found: readonly string[]): void {
    const unique = [...new Set(found)];
    throw new ModelCompilationError({
       message:
-         `These annotations are not \`authorize\` gates and nothing enforces ` +
-         `them:\n${unique.map((t) => `  - \`${t}\``).join("\n")}\n` +
+         `These annotations are never enforced:\n${unique
+            .map(
+               (t) => `  - \`${t}\` (meant \`#(${guessedNearMissRoute(t)})\`?)`,
+            )
+            .join("\n")}\n` +
          `Malloy routes an annotation by its prefix, and only ` +
-         `\`#(authorize)\` (or \`##(authorize)\`, or the block form ` +
-         `\`#|(authorize)\`) reaches the authorize route — a space after the ` +
-         `\`#\`, spaces inside the brackets, or anything trailing the closing ` +
-         `bracket makes it a plain tag Malloy hands to something else. Write ` +
-         `\`#(authorize) <expression>\` on its own line directly above the ` +
-         `\`source:\` statement you mean to protect (unquoted — the quoted ` +
-         `string form is retired). This is refused rather than interpreted: ` +
-         `guessing at the ` +
-         `intent would let publisher start enforcing a filter on a package that ` +
-         `has been serving every row.`,
+         `\`#(authorize)\`/\`#(source-authorize)\` (or their \`##\` or block-form ` +
+         `\`#|(...)\` spellings) reach an authorize route — a space after the ` +
+         `\`#\`, spaces inside the brackets, a mis-hyphenated or transposed word, ` +
+         `or anything trailing the closing bracket makes it a plain tag Malloy ` +
+         `hands to something else. Write the tag named above, unquoted, on its ` +
+         `own line directly above the \`source:\` statement you mean to protect ` +
+         `(the quoted string form is retired). This is refused rather than ` +
+         `interpreted: guessing at the intent would let publisher start ` +
+         `enforcing a filter on a package that has been serving every row.`,
    });
 }
 
@@ -471,18 +491,23 @@ export function assertNoAuthorizeNearMisses(found: readonly string[]): void {
  *    situation — there is no entry point that ever expressed it.
  */
 export type MisplacedAuthorizeAnnotation =
-   | { kind: "query"; name: string }
-   | { kind: "field"; name: string; fieldName: string }
+   | { kind: "query"; name: string; route: string }
+   | { kind: "field"; name: string; fieldName: string; route: string }
    | { kind: "file" };
 
 /** Human-readable position for a {@link MisplacedAuthorizeAnnotation}, as
- *  {@link assertNoMisplacedAuthorizeAnnotations} names it in its refusal. */
+ *  {@link assertNoMisplacedAuthorizeAnnotations} names it in its refusal.
+ *  Names the route actually involved — `#(authorize)` or
+ *  `#(source-authorize)` — rather than assuming the former, so an author who
+ *  misplaced the source-level route is told to move THAT tag, not a
+ *  different one with different body rules. */
 function describeMisplacedAuthorizeAnnotation(
    f: MisplacedAuthorizeAnnotation,
 ): string {
-   if (f.kind === "query") return `on query "${f.name}"`;
    if (f.kind === "file") return "at the file level (`##(authorize)`)";
-   return `on field "${f.fieldName}" of source "${f.name}"`;
+   const tag = `\`#(${f.route})\``;
+   if (f.kind === "query") return `on query "${f.name}" (${tag})`;
+   return `on field "${f.fieldName}" of source "${f.name}" (${tag})`;
 }
 
 /**
@@ -505,13 +530,14 @@ export function assertNoMisplacedAuthorizeAnnotations(
       .join("\n");
    throw new ModelCompilationError({
       message:
-         `An \`#(authorize)\` annotation is never enforced at:\n${positions}\n` +
+         `An authorize annotation is never enforced at:\n${positions}\n` +
          `A gate only applies where model load looks for one — a \`source:\`'s ` +
          `own annotation, or one it inherits from an \`extend\`/query-source ` +
          `base. File-level \`##(authorize)\` is deprecated and no longer ` +
          `enforced anywhere, so it always lands here: declare \`#(authorize)\` ` +
          `on each \`source:\` it was meant to protect instead. Every other ` +
-         `position above should move to the \`source:\` statement it is meant ` +
+         `position above should move — with the same tag named beside it — ` +
+         `to the \`source:\` statement it is meant ` +
          `to protect.`,
    });
 }
