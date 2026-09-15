@@ -110,7 +110,18 @@ DELIVERED = ("construction", "undecided", "delivered, wrong")
 # strings, so an entity that exists and does not come back is one whose docs do
 # not say what people ask. This label used to read "retrieval ranking", which
 # named the engine and sent the fix to the wrong team.
-DOCUMENTATION = ("get_context/model", "model", "documentation")
+# Asked for the right KIND of thing, and it still did not come back. Two live
+# causes and the run cannot separate them: the docs do not describe the entity
+# the way this question phrases it, or the search vocabulary was off. Both are
+# real, they have different owners, and eval-diagnose decides between them
+# (NOT-RETURNED / LOW-RANK are the model's; QUESTION-VOCAB and VAGUE are the
+# agent's). An earlier version asserted `documentation` here outright, which
+# was provably wrong on the first real run.
+NOT_RETURNED = ("get_context", "undecided", "not retrieved")
+# Never issued a search for that kind of entity at all. eval-diagnose's
+# NEVER-ASKED / WRONG-TYPE-OR-SCOPE, owner agent-skill. Mechanical and certain:
+# a measure cannot be returned by a search that asked only for dimensions.
+NEVER_ASKED = ("get_context/agent-call", "agent-skill", "never asked")
 MODEL = ("get_context/model", "model", "model coverage")
 # A case whose coverage is `absent` should have been declined. Answering it is
 # the answerer's, and documentation cannot help when there is nothing to
@@ -160,11 +171,19 @@ def attempt_key(e: dict[str, Any]) -> tuple:
 
 
 def retrieved(events: list[dict[str, Any]],
-              key: tuple) -> tuple[list[str], int, set[str]]:
+              key: tuple) -> tuple[list[str], int, set[str], set[str]]:
     """Entities pooled over the attempt's get_context calls, the call count,
-    and every identifier named in the returned sources' documentation."""
+    every identifier named in the returned sources' documentation, and the
+    entity KINDS the agent actually searched for.
+
+    The kinds matter: a measure cannot come back from a search that asked only
+    for a source and a dimension, and that is the agent's miss rather than the
+    model's. `targets` on the tool_call records what was asked, phrased
+    `"measure: count of titles"`, so the distinction is mechanical.
+    """
     seen: dict[str, None] = {}
     tokens: set[str] = set()
+    asked: set[str] = set()
     calls = 0
     for e in events:
         if e.get("kind") != "tool_call" or e.get("tool") != "get_context":
@@ -176,7 +195,12 @@ def retrieved(events: list[dict[str, Any]],
         for eid in rs.get("entityIds") or []:
             seen.setdefault(eid, None)
         tokens.update(rs.get("docTokens") or [])
-    return list(seen), calls, tokens
+        for t in e.get("targets") or []:
+            if isinstance(t, str) and ":" in t:
+                asked.add(t.split(":", 1)[0].strip().lower())
+            elif isinstance(t, dict) and t.get("target_type"):
+                asked.add(str(t["target_type"]).strip().lower())
+    return list(seen), calls, tokens, asked
 
 
 def split_entity(eid: str) -> tuple[str, str, str]:
@@ -211,7 +235,9 @@ def groups(exp: dict[str, Any]) -> list[list[str]]:
     return out
 
 
-def attribute(recall: float | None, coverage: str, passed: bool | None) -> tuple:
+def attribute(recall: float | None, coverage: str, passed: bool | None,
+              missing_kinds: set[str] | None = None,
+              asked_kinds: set[str] | None = None) -> tuple:
     """Where to fix this outcome. Returns (component, owner, label, why).
 
     EVERY failure gets attributed. An earlier version returned nothing when
@@ -237,10 +263,17 @@ def attribute(recall: float | None, coverage: str, passed: bool | None) -> tuple
                 "it was used, or in docs that never said how to use it. Diagnose "
                 "decides which, sufficiency first")
     if coverage in ("covered", MEASURED_OK):
-        return (*DOCUMENTATION,
-                "the entity exists in the model and was not returned: its docs do "
-                "not say what people ask (eval-diagnose NOT-RETURNED). Assumes a "
-                "semantic run; a lexical run says nothing about the docs")
+        unasked = sorted((missing_kinds or set()) - (asked_kinds or set()))
+        if unasked:
+            return (*NEVER_ASKED,
+                    f"the entity exists and no search asked for a "
+                    f"{'/'.join(unasked)} at all, so nothing of that kind could "
+                    f"come back (eval-diagnose NEVER-ASKED)")
+        return (*NOT_RETURNED,
+                "the entity exists, a search of the right kind was issued, and it "
+                "did not come back. The docs may not say what this question asks, "
+                "or the search wording may be off; eval-diagnose separates "
+                "NOT-RETURNED from QUESTION-VOCAB. Assumes a semantic run")
     if coverage in MEASURED_GAPS:
         return (*MODEL,
                 f"nothing to return: coverage is {coverage}, so the entity does not exist")
@@ -294,7 +327,7 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
     req_groups = groups(exp)
     required = {e for g in req_groups for e in g}
     acceptable = set(exp.get("acceptable") or []) | required
-    got, calls, tokens = retrieved(events, key)
+    got, calls, tokens, asked = retrieved(events, key)
     got_set = set(got)
     route = {e: delivery(e, got_set, tokens) for e in sorted(required)}
     delivered = {e for e, r in route.items() if r != "missing"}
@@ -318,7 +351,10 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
                          if not any(e in delivered for e in g))
         noise = sorted(got_set - acceptable)
 
-    component, owner, where_to_fix, why = attribute(recall, coverage, passed)
+    missing_kinds = {split_entity(e)[0] for g in req_groups for e in g
+                     if e not in delivered}
+    component, owner, where_to_fix, why = attribute(
+        recall, coverage, passed, missing_kinds, asked)
     return {
         "qid": case["qid"],
         "sample": key[1],
@@ -334,6 +370,10 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
         "delivery": route,
         "n_ranked": sum(1 for r in route.values() if r in ("exact", "alias")),
         "n_get_context": calls,
+        # What the agent asked for, so a reader can judge the search rather than
+        # take the label's word for it -- and so a set can be surveyed for the
+        # vocabulary its questions actually need.
+        "asked_kinds": sorted(asked),
         "missing": missing,
         "noise": noise,
         "component": component,

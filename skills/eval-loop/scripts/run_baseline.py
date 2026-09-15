@@ -1054,11 +1054,19 @@ def retrieval_summary(attempts: Iterable[dict[str, Any]]
 def cascade_lines(c: dict | None) -> list[str]:
     """The three metrics as a funnel: covered, retrieved, correct.
 
-    Each rung conditions the next and names who owns a miss there, because
-    three flat percentages read as three unrelated problems, and the owner of a
-    miss is the whole reason to have three numbers instead of one. A retrieval
-    miss is the docs' (the algorithm is fixed); a delivered-but-wrong answer is
-    the agent's or the docs' and diagnose decides which.
+    Each rung conditions the next, because three flat percentages read as three
+    unrelated problems and the shape of a failure is the reason to have three
+    numbers instead of one.
+
+    No rung names an owner the run has not established. The retrieval algorithm
+    is fixed, so a miss is the docs or the search wording, and only diagnose can
+    tell those apart; a delivered-but-wrong answer is the agent's or the docs'
+    for the same reason. An earlier version asserted the docs on a retrieval
+    miss and was wrong on the first real run: the agent had searched only for a
+    source and a dimension, so the measure it needed could not come back, and
+    the documented measure was blamed. The one mechanical exception is that
+    case, `never asked`, which is labelled per case because it cannot be the
+    docs' fault.
     """
     if not c or not c.get("total"):
         return []

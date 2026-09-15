@@ -40,6 +40,12 @@ M_SALES_ALIAS = "measure:orders:total_sales"     # same type + name, sibling sou
 M_REVENUE = "measure:order_items:revenue"
 
 
+def calls_with_targets(entities, targets, qid="q"):
+    return [{"kind": "tool_call", "tool": "get_context", "qid": qid,
+             "sample": None, "phase": "baseline", "targets": list(targets),
+             "rankedSummary": {"entityIds": list(entities)}}]
+
+
 def calls_with_docs(entities, tokens, qid="q"):
     return [{"kind": "tool_call", "tool": "get_context", "qid": qid,
              "sample": None, "phase": "baseline",
@@ -95,7 +101,9 @@ class AnyOf(unittest.TestCase):
         self.assertEqual(r["missing"], [f"{M_REVENUE} | {M_SALES}"]
                          if f"{M_REVENUE} | {M_SALES}" in r["missing"]
                          else [f"{M_SALES} | {M_REVENUE}"])
-        self.assertEqual(r["where_to_fix"], "documentation")
+        # No targets recorded at all, so nothing proves the agent asked for a
+        # measure; the honest read is the ownerless one.
+        self.assertEqual(r["where_to_fix"], "never asked")
 
     def test_full_delivery_with_a_wrong_answer_is_delivered_wrong(self):
         r = score_case(self.group_case(), calls([D_STATUS, M_REVENUE]), KEY, "no_match")
@@ -171,15 +179,43 @@ class Attribution(unittest.TestCase):
                          ("construction", "undecided"))
         self.assertEqual(r["where_to_fix"], "delivered, wrong")
 
-    def test_a_missed_entity_that_exists_is_a_documentation_finding(self):
-        # eval-diagnose's default for covered-and-not-returned is NOT-RETURNED,
-        # owner model ("labels, docs, synonyms, index"). Its RETRIEVAL code
-        # needs a rare-token proof and is never assigned mechanically. The old
-        # label, "retrieval ranking", named the engine.
-        r = score_case(case(coverage="covered"), calls([]), KEY, "no_match")
-        self.assertEqual((r["component"], r["owner"]),
-                         ("get_context/model", "model"))
-        self.assertEqual(r["where_to_fix"], "documentation")
+    def test_a_miss_after_a_search_of_the_right_kind_names_no_owner(self):
+        # The entity exists and a measure search was issued, and it still did
+        # not come back. Docs or search wording; eval-diagnose separates
+        # NOT-RETURNED from QUESTION-VOCAB. The run must not pick.
+        r = score_case(case(coverage="covered"),
+                       calls_with_targets([], ["measure: total sales"]),
+                       KEY, "no_match")
+        self.assertEqual(r["where_to_fix"], "not retrieved")
+        self.assertEqual(r["owner"], "undecided")
+
+    def test_a_miss_with_no_search_of_that_kind_is_the_agents(self):
+        # The regression, and it is from a real run: the agent searched only
+        # `source:` and `dimension:` for "how many titles were released in
+        # 2019?", so the measure could not come back, and a documented measure
+        # was blamed on its docs. eval-diagnose calls this NEVER-ASKED.
+        r = score_case(case(coverage="covered"),
+                       calls_with_targets([], ["source: titles",
+                                               "dimension: release year"]),
+                       KEY, "no_match")
+        self.assertEqual(r["where_to_fix"], "never asked")
+        self.assertEqual(r["owner"], "agent-skill")
+        self.assertIn("measure", r["why"])
+
+    def test_the_kinds_the_agent_searched_are_recorded(self):
+        # So a reader can judge the search instead of taking the label's word,
+        # and so a set can be surveyed for the vocabulary its questions need.
+        r = score_case(case(), calls_with_targets([M_SALES],
+                                                  ["measure: total sales"]),
+                       KEY, "match")
+        self.assertEqual(r["asked_kinds"], ["measure"])
+
+    def test_typed_targets_are_read_as_well_as_prefixed_strings(self):
+        r = score_case(case(coverage="covered"),
+                       calls_with_targets([], [{"target_type": "measure",
+                                                "search_text": "sales"}]),
+                       KEY, "no_match")
+        self.assertEqual(r["where_to_fix"], "not retrieved")
 
     def test_a_missed_entity_that_does_not_exist_blames_the_model(self):
         # `derivable` is a MEASURED label: someone looked and found nothing to
@@ -244,10 +280,10 @@ class MeasuredCoverage(unittest.TestCase):
     is about.
     """
 
-    def test_a_measured_ok_with_a_miss_is_a_documentation_finding(self):
+    def test_a_measured_ok_with_a_miss_is_a_retrieval_rung_finding(self):
         r = score_case(case(coverage="derivable"), calls([]), KEY, "no_match",
                        measured="ok")
-        self.assertEqual(r["where_to_fix"], "documentation")
+        self.assertIn(r["where_to_fix"], ("not retrieved", "never asked"))
         self.assertEqual(r["coverage_source"], "measured")
 
     def test_a_measured_gap_blames_the_model_and_names_the_code(self):
@@ -267,7 +303,7 @@ class MeasuredCoverage(unittest.TestCase):
         r = score_case(case(coverage="covered"), calls([]), KEY, "no_match",
                        measured=None)
         self.assertEqual(r["coverage_source"], "authored")
-        self.assertEqual(r["where_to_fix"], "documentation")
+        self.assertIn(r["where_to_fix"], ("not retrieved", "never asked"))
 
     def test_no_label_and_no_measurement_charges_nobody(self):
         c = {"qid": "q", "expectedEntities": {"required": [M_SALES]}}
@@ -372,15 +408,15 @@ class LabelsMatchTheRunPackage(unittest.TestCase):
 
     def test_the_template_filters_on_exactly_the_labels_emitted(self):
         import re
-        from score_retrieval import (DELIVERED, DOCUMENTATION, MODEL, REFUSAL,
-                                     UNMEASURED)
+        from score_retrieval import (DELIVERED, MODEL, NEVER_ASKED,
+                                     NOT_RETURNED, REFUSAL, UNMEASURED)
         here = os.path.dirname(os.path.abspath(__file__))
         tpl = os.path.join(here, "..", "..", "eval-loop", "templates",
                            "eval-run-package", "eval_run.malloy")
         with open(tpl) as fh:
             literals = set(re.findall(r"where_to_fix = '([^']+)'", fh.read()))
-        emitted = {t[2] for t in (DELIVERED, DOCUMENTATION, MODEL, REFUSAL,
-                                  UNMEASURED)}
+        emitted = {t[2] for t in (DELIVERED, MODEL, NEVER_ASKED, NOT_RETURNED,
+                                  REFUSAL, UNMEASURED)}
         self.assertEqual(literals, emitted)
 
 
@@ -432,7 +468,7 @@ class Summary(unittest.TestCase):
         self.assertEqual(s["attributed"], s["failures"],
                          "a failure fell through attribute()")
         self.assertEqual(s["failures_by_where_to_fix"], {
-            "delivered, wrong": 1, "documentation": 1,
+            "delivered, wrong": 1, "never asked": 1,
             "model coverage": 1, "refusal behaviour": 1})
 
 
