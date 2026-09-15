@@ -153,54 +153,147 @@ function viewBody(
    return undefined;
 }
 
-/** `where: products.brand ~ $BRAND` pairs inside a refinement. */
+/**
+ * One `where: <field> <op> $<GIVEN>` clause. Exported for the writer, which
+ * has to find the same clauses in order to replace them and nothing else.
+ */
+export const BINDING_CLAUSE =
+   /where:\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(~|>=|<=|!=|=|>|<)\s*\$([A-Za-z_][A-Za-z0-9_]*)/g;
+
+/** `where: products.brand ~ $BRAND`, `where: created_at >= $SINCE` … */
 function filtersOf(refinement: string | undefined) {
    if (!refinement) return undefined;
-   const out: Array<{ field: string; given: string }> = [];
-   const re =
-      /where:\s*([A-Za-z_][A-Za-z0-9_.]*)\s*~\s*\$([A-Za-z_][A-Za-z0-9_]*)/g;
-   for (const m of refinement.matchAll(re))
-      out.push({ field: m[1], given: m[2] });
+   const out: Array<{ field: string; given: string; op?: string }> = [];
+   for (const m of refinement.matchAll(BINDING_CLAUSE))
+      out.push({
+         field: m[1],
+         given: m[3],
+         ...(m[2] === "~" ? {} : { op: m[2] }),
+      });
    return out.length > 0 ? out : undefined;
 }
 
 /**
- * `given:` blocks, which the parser's symbol tree does not cover at all — its
- * types are query, unnamed_query, explore, field, join, import and import_item.
- * So these are read as text, from the `given:` keyword to the last declaration
- * before a blank line or a top-level keyword.
+ * A tag object, as `parseAnnotation` returns it. Only the reads this file makes.
  */
-function localGivens(lines: string[]): LocalGiven[] | undefined {
+type TagLike = {
+   text: (key: string) => string | undefined;
+   numeric: (key: string) => number | undefined;
+   tag: (key: string) => TagLike | undefined;
+};
+type ParseTags = (lines: string[]) => { tag?: TagLike | null };
+
+/**
+ * `given:` declarations, which the parser's symbol tree does not cover at all —
+ * its types are query, unnamed_query, explore, field, join, import and
+ * import_item. So these are read as text, in BOTH spellings Malloy accepts and
+ * this repository uses:
+ *
+ *     given: CATEGORY :: filter<string> is f''      // one per line
+ *
+ *     given:                                        // a block
+ *       CATEGORY :: filter<string> is f''
+ *       SINCE :: date is @2023-01-01
+ *
+ * The one-line form is what `givens.malloy` and the docs write and what the
+ * builder emits; the block form is read so a file written the other way still
+ * opens. Either way the tags above a declaration are its control contract.
+ */
+export function localGivens(
+   lines: string[],
+   parse: ParseTags,
+): LocalGiven[] | undefined {
    const out: LocalGiven[] = [];
+   const push = (line: number, declaration: string) => {
+      const m = /^([A-Z_][A-Z0-9_]*)\s*::\s*(\S+)\s+is\s+(.+)$/.exec(
+         declaration.trim(),
+      );
+      if (!m) return;
+      out.push({
+         name: m[1],
+         type: m[2],
+         default: m[3].trim(),
+         ...readControlTags(parse(tagText(blockAbove(lines, line).tags)).tag),
+      });
+   };
    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim() !== "given:") continue;
-      for (let j = i + 1; j < lines.length; j++) {
-         const text = lines[j].trim();
-         if (text === "" || /^(source|query|import|run|##)/.test(text)) break;
-         const m = /^([A-Z_][A-Z0-9_]*)\s*::\s*(\S+)\s+is\s+(.+)$/.exec(text);
-         if (!m) continue;
-         const { tags } = blockAbove(lines, j);
-         void tags;
-         out.push({
-            name: m[1],
-            type: m[2],
-            default: m[3].trim(),
-            ...readControlTags(tagText(blockAbove(lines, j).tags)),
-         });
+      const text = lines[i].trim();
+      if (text === "given:") {
+         for (let j = i + 1; j < lines.length; j++) {
+            const inner = lines[j].trim();
+            if (
+               inner === "" ||
+               /^(source|query|import|run|given|##)/.test(inner)
+            )
+               break;
+            push(j, inner);
+         }
+      } else if (text.startsWith("given:")) {
+         push(i, text.slice("given:".length));
       }
    }
    return out.length > 0 ? out : undefined;
 }
 
-/** `# label="…" control=select` off a given declaration. */
-function readControlTags(tags: string[]) {
-   const joined = tags.join(" ");
-   const label = /label="([^"]*)"/.exec(joined)?.[1];
-   const control = /control=([A-Za-z_]+)/.exec(joined)?.[1];
+/** The control contract off a given's tags; see {@link LocalGiven}. */
+function readControlTags(tag: TagLike | null | undefined): Partial<LocalGiven> {
+   if (!tag) return {};
+   const suggest = tag.tag("suggest");
+   const dimension = suggest?.text("dimension");
+   const rangeMin = tag.numeric("range_min");
+   const rangeMax = tag.numeric("range_max");
    return {
-      ...(label === undefined ? {} : { label }),
-      ...(control === undefined ? {} : { control }),
+      ...(tag.text("label") === undefined ? {} : { label: tag.text("label") }),
+      ...(tag.text("description") === undefined
+         ? {}
+         : { description: tag.text("description") }),
+      ...(tag.text("control") === undefined
+         ? {}
+         : { control: tag.text("control") }),
+      ...(suggest && dimension
+         ? {
+              suggest: {
+                 ...(suggest.text("source") === undefined
+                    ? {}
+                    : { source: suggest.text("source") }),
+                 ...(suggest.text("query") === undefined
+                    ? {}
+                    : { query: suggest.text("query") }),
+                 dimension,
+              },
+           }
+         : {}),
+      ...(rangeMin === undefined ? {} : { rangeMin }),
+      ...(rangeMax === undefined ? {} : { rangeMax }),
    };
+}
+
+/**
+ * Every `view: <name> is` declared under the top-level `source: <owner> is`
+ * line, by name -> 0-based line. See the note at the call site for why this is
+ * textual rather than read off the symbol tree.
+ */
+function viewsDeclaredUnder(
+   lines: string[],
+   owner: string,
+): Map<string, number> {
+   const views = new Map<string, number>();
+   let current: string | undefined;
+   for (let line = 0; line < lines.length; line++) {
+      const text = lines[line];
+      const source = /^source:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(text);
+      if (source) {
+         current = source[1];
+         continue;
+      }
+      // Any other top-level declaration ends the source's body.
+      if (/^(query|run|import|given)\b/.test(text) || text.startsWith("##"))
+         current = undefined;
+      if (current !== owner) continue;
+      const view = /^\s*view:\s*([A-Za-z_][A-Za-z0-9_]*)\s+is\b/.exec(text);
+      if (view) views.set(view[1], line);
+   }
+   return views;
 }
 
 /** The `tiles=[…]` entries, in order, as written. */
@@ -276,11 +369,19 @@ export async function readDashboardDocument(
       }
       sources.push({ name, base });
 
-      const views = new Map<string, number>();
+      // The VIEWS are found in the TEXT, attributed to the nearest `source:`
+      // above them, and not taken from the symbol tree. The tree is reliable
+      // about which sources and imports exist and unreliable about what is
+      // inside a source: measured, a refinement spelled `+ { limit: 5, where: … }`
+      // — which compiles — makes it report the refined view's BASE as a child
+      // view, end the source early, and drop the next declaration altogether,
+      // so the tile that named it read back as "inherited" and lost its tags.
+      // A `view: <name> is` line under a `source: <name> is` line is
+      // unambiguous, and Malloy has no nested sources to confuse it.
+      const views = viewsDeclaredUnder(lines, name);
       for (const child of symbol.children ?? []) {
          const childLine = child.range.start.line;
-         if (child.type === "query") views.set(String(child.name), childLine);
-         else if (child.type === "field") {
+         if (child.type === "field") {
             const { tags } = blockAbove(lines, childLine);
             const drillTag = parseAnnotation(tagText(tags)).tag?.tag("drill");
             if (!drillTag) continue;
@@ -364,6 +465,8 @@ export async function readDashboardDocument(
       });
    }
 
+   const givens = localGivens(lines, parseAnnotation as ParseTags);
+
    const startingGivens: Record<string, string> = {};
    const givensTag = artifactTag?.tag("givens");
    for (const key of Object.keys(givensTag?.dict ?? {})) {
@@ -384,7 +487,7 @@ export async function readDashboardDocument(
             : {}),
          imports,
          sources,
-         ...(localGivens(lines) ? { localGivens: localGivens(lines) } : {}),
+         ...(givens ? { localGivens: givens } : {}),
          ...(Object.keys(startingGivens).length > 0 ? { startingGivens } : {}),
          ...(drills.length > 0 ? { drills } : {}),
          tiles,

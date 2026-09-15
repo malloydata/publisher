@@ -184,6 +184,84 @@ source: a is one extend {
    });
 });
 
+describe("readDashboardDocument: how a tile binds", () => {
+   // A `filter<…>` binds with `~`; a plain `date` is a value and binds with a
+   // comparison. The reader keeps `~` implicit so the common case stays small.
+   it("reads the comparison a binding uses", async () => {
+      const doc = await read(`##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+source: a is one extend {
+  view: x is vx + { where: category ~ $CATEGORY, where: created_at >= $SINCE, limit: 5 }
+}`);
+      expect(doc.tiles[0].filters).toEqual([
+         { field: "category", given: "CATEGORY" },
+         { field: "created_at", given: "SINCE", op: ">=" },
+      ]);
+   });
+});
+
+describe("readDashboardDocument: the dashboard's own givens", () => {
+   // The spelling `givens.malloy` and the docs use, and the one the builder
+   // writes: one declaration per `given:` line, its control contract above it.
+   it("reads one-line givens with their whole control contract", async () => {
+      const doc = await read(`##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import { one, products } from "../m.malloy"
+
+# description="Narrow to one category" label="Category" control=select suggest { source=products dimension=category }
+given: CATEGORY :: filter<string> is f''
+
+# label="Minimum line total" range_min=0 range_max=250
+given: MIN_SALE :: filter<number> is f''
+
+source: a is one extend {
+  view: x is vx + { where: category ~ $CATEGORY }
+}`);
+      expect(doc.localGivens).toEqual([
+         {
+            name: "CATEGORY",
+            type: "filter<string>",
+            default: "f''",
+            label: "Category",
+            description: "Narrow to one category",
+            control: "select",
+            suggest: { source: "products", dimension: "category" },
+         },
+         {
+            name: "MIN_SALE",
+            type: "filter<number>",
+            default: "f''",
+            label: "Minimum line total",
+            rangeMin: 0,
+            rangeMax: 250,
+         },
+      ]);
+   });
+
+   it("reads both spellings from one file, in file order", async () => {
+      const doc = await read(`##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+given: FIRST :: date is @2023-01-01
+
+given:
+  # control=multiselect suggest { query=brand_suggest dimension=brand }
+  BRAND :: filter<string> is f''
+
+source: a is one extend {
+  view: x is vx
+}`);
+      expect(doc.localGivens?.map((g) => g.name)).toEqual(["FIRST", "BRAND"]);
+      expect(doc.localGivens?.[1].suggest).toEqual({
+         query: "brand_suggest",
+         dimension: "brand",
+      });
+   });
+});
+
 describe("readDashboardDocument: what it refuses", () => {
    // All-or-nothing, and every refusal names what it could not understand.
    // "Cannot open this dashboard" with no reason reads as a bug.

@@ -34,7 +34,26 @@ export type DashboardImport =
     */
    | { kind: "names"; names: string[]; from: string };
 
-/** A given this dashboard declares itself, rather than taking from the model. */
+/**
+ * A given this dashboard declares itself, rather than taking from the model.
+ *
+ * This is the CONVENTION for a dashboard the builder edits, not the exception:
+ * the builder adds and removes filters, and a filter it can add has to be a
+ * declaration in the one file it writes. A given imported from the model is
+ * still read and still bindable, but it is the model's, and the builder never
+ * edits imports or model files.
+ *
+ * Measured, and the reason the convention has to be this way round: a local
+ * given does NOT drive a model-level `where:` of the same name. Binding is per
+ * declaration, not per name, so a dashboard that declares `CATEGORY` and extends
+ * a source whose own `where:` reads the model's `CATEGORY` gets a control that
+ * moves nothing. The filtering therefore lives on the dashboard's tiles, as
+ * {@link DashboardTile.filters} — which is what the builder writes anyway.
+ *
+ * The fields are the declaration and its control contract, spelled as in the
+ * file. A tag this does not model survives an edit like any other unmodelled
+ * Malloy, because the writer patches rather than regenerates.
+ */
 export interface LocalGiven {
    name: string;
    /** The declared type, spelled as in the file: `filter<string>`, `date`, … */
@@ -42,7 +61,20 @@ export interface LocalGiven {
    /** The default, spelled as in the file: `f'Jeans'`, `@2023-01-01`, … */
    default: string;
    label?: string;
+   /** `# description="…"`: helper text under the control. */
+   description?: string;
+   /** `control=select` / `multiselect`. */
    control?: string;
+   /**
+    * `suggest { source=products dimension=category }`, or `{ query=… }`: where
+    * a picker gets its options. The source or query has to resolve in this file,
+    * and the builder does not add imports — so a given it creates suggests over
+    * a source the file already reads, or over nothing.
+    */
+   suggest?: { source?: string; query?: string; dimension: string };
+   /** `range_min=` / `range_max=` on a `filter<number>`: a slider's bounds. */
+   rangeMin?: number;
+   rangeMax?: number;
 }
 
 /** A `# drill` dimension the dashboard declares in its own source extension. */
@@ -96,8 +128,15 @@ export interface DashboardTile {
     */
    source: string;
    declaration: TileDeclaration;
-   /** Given bindings, emitted as a `+ { where: … }` refinement on the view. */
-   filters?: Array<{ field: string; given: string }>;
+   /**
+    * Given bindings, emitted as a `+ { where: … }` refinement on the view.
+    *
+    * `op` is the comparison, and absent means `~`, which is how a `filter<…>`
+    * given binds. A plain `date` or `number` given is a VALUE, not a filter,
+    * and compares with `>=`, `<=` or `=` — measured: `created_at >= $SINCE`
+    * compiles and `created_at ~ $SINCE` does not, on a `date` given.
+    */
+   filters?: Array<{ field: string; given: string; op?: string }>;
    label?: string;
    subtitle?: string;
    colspan?: number;

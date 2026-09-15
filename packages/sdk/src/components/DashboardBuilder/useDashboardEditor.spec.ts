@@ -205,9 +205,11 @@ describe("useDashboardEditor: saving", () => {
 
       act(() => {
          view.result.current.update((d) => {
-            // Structural: the writer refuses, because moving a declaration moves
-            // comments whose owner the file does not record.
-            d.tiles.reverse();
+            // Removing a tile deletes a declaration, which carries the comment
+            // block above it — whose owner the file does not record. Refused.
+            // (Reordering is NOT refused: it rewrites the `tiles=[…]` array and
+            // moves no declaration.)
+            d.tiles.pop();
          });
       });
       await act(async () => {
@@ -215,9 +217,9 @@ describe("useDashboardEditor: saving", () => {
       });
 
       expect(called).toBe(false);
-      expect(view.result.current.error).toContain("reordering");
+      expect(view.result.current.error).toContain("Adding or removing");
       // Still there, still dirty. The reader can undo or try something else.
-      expect(view.result.current.document.tiles[0].name).toBe("by_brand");
+      expect(view.result.current.document.tiles).toHaveLength(1);
       expect(view.result.current.dirty).toBe(true);
    });
 

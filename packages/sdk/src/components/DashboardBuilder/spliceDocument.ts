@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import type { DashboardDocument, DashboardTile } from "./document";
-import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
+import type { LocalGiven } from "./document";
+import {
+   BINDING_CLAUSE,
+   blockAbove,
+   readDashboardDocument,
+   readFailed,
+} from "./readDocument";
 
 /**
  * Write a change back into a `dashboards/*.malloy` file by PATCHING it.
@@ -22,11 +28,18 @@ import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
  * told the writer produced something it could not read back — that is a defect
  * in this module, not a mistake by the person editing.
  *
- * SCOPE, deliberately: property edits only. Changing a tile's presentation, its
- * filter binding, or the page's own settings. Adding, removing or reordering
- * tiles moves declarations around, and no file says whether the comment above a
- * tile belongs to the tile, to the row, or to the file — so those are refused
- * here rather than guessed at, and will arrive with a diff preview.
+ * SCOPE, deliberately: a tile's presentation, its filter bindings, the order of
+ * tiles, and the dashboard's OWN givens — added, removed or retagged. Never an
+ * import, and never a model file: a filter the builder adds is a declaration in
+ * this file, which is the convention {@link LocalGiven} describes. Adding or
+ * removing TILES moves view declarations around, and no file says whether the
+ * comment above a tile belongs to the tile, to the row, or to the file — so
+ * those are refused rather than guessed at, and will arrive with a diff preview.
+ *
+ * A given is different from a tile in exactly the way that matters there: the
+ * `#` tags above its declaration are its control contract and have no other
+ * owner, so removing the declaration can take them with it, and a `//` comment
+ * in the same block is left where it is.
  */
 
 export interface SpliceFailure {
@@ -113,13 +126,82 @@ const isSameDocumentExceptTiles = (
    a.autorun === b.autorun &&
    canonical(a.imports) === canonical(b.imports) &&
    canonical(a.sources) === canonical(b.sources) &&
-   canonical(a.localGivens) === canonical(b.localGivens) &&
    canonical(a.drills) === canonical(b.drills) &&
    canonical(a.startingGivens) === canonical(b.startingGivens);
 
-/** The tile list, ignoring presentation: identity, order and what they read. */
+/**
+ * A given's tag line, composed from its control contract. One line, in the
+ * order `givens.malloy` writes them, so a file the builder wrote reads like one
+ * a person wrote.
+ */
+export function givenTagLine(given: LocalGiven): string | undefined {
+   const parts: string[] = [];
+   if (given.label !== undefined) parts.push(`label="${given.label}"`);
+   if (given.description !== undefined)
+      parts.push(`description="${given.description}"`);
+   if (given.control !== undefined) parts.push(`control=${given.control}`);
+   if (given.suggest) {
+      const by =
+         given.suggest.source !== undefined
+            ? `source=${given.suggest.source}`
+            : given.suggest.query !== undefined
+              ? `query=${given.suggest.query}`
+              : undefined;
+      parts.push(
+         `suggest { ${by ? `${by} ` : ""}dimension=${given.suggest.dimension} }`,
+      );
+   }
+   if (given.rangeMin !== undefined) parts.push(`range_min=${given.rangeMin}`);
+   if (given.rangeMax !== undefined) parts.push(`range_max=${given.rangeMax}`);
+   return parts.length > 0 ? `# ${parts.join(" ")}` : undefined;
+}
+
+/** `given: NAME :: type is default`, the one-line spelling the builder writes. */
+export const givenDeclaration = (given: LocalGiven) =>
+   `given: ${given.name} :: ${given.type} is ${given.default}`;
+
+/**
+ * Where each given is declared: the line, and whether it sits inside a
+ * `given:` block (whose header has to go if its last declaration does).
+ */
+function givenLines(
+   lines: string[],
+): Map<string, { line: number; blockHeader?: number }> {
+   const out = new Map<string, { line: number; blockHeader?: number }>();
+   const nameOf = (declaration: string) =>
+      /^([A-Z_][A-Z0-9_]*)\s*::/.exec(declaration.trim())?.[1];
+   for (let i = 0; i < lines.length; i++) {
+      const text = lines[i].trim();
+      if (text === "given:") {
+         for (let j = i + 1; j < lines.length; j++) {
+            const inner = lines[j].trim();
+            if (
+               inner === "" ||
+               /^(source|query|import|run|given|##)/.test(inner)
+            )
+               break;
+            const name = nameOf(inner);
+            if (name) out.set(name, { line: j, blockHeader: i });
+         }
+      } else if (text.startsWith("given:")) {
+         const name = nameOf(text.slice("given:".length));
+         if (name) out.set(name, { line: i });
+      }
+   }
+   return out;
+}
+
+/** One tile's identity, ignoring presentation and position. */
+const tileKey = (t: DashboardTile) =>
+   canonical([t.name, t.source, t.declaration]);
+
+/** The tile list as identities, IN ORDER. Differs under a reorder. */
 const tileIdentity = (document: DashboardDocument) =>
-   canonical(document.tiles.map((t) => [t.name, t.source, t.declaration]));
+   canonical(document.tiles.map(tileKey));
+
+/** The same identities as a SET. Differs only when a tile is added or removed. */
+const tileMembership = (document: DashboardDocument) =>
+   canonical([...document.tiles.map(tileKey)].sort());
 
 export async function spliceDashboardDocument(
    sourceText: string,
@@ -134,23 +216,31 @@ export async function spliceDashboardDocument(
    }
    const current = before.document;
 
-   // Structural change: adding, removing or reordering tiles moves declarations
-   // and their comment blocks, and the file cannot say who a comment belongs to.
-   // Refused rather than guessed; a diff preview is what makes it safe later.
-   if (tileIdentity(current) !== tileIdentity(next)) {
+   // Adding or removing a tile means inserting or deleting a view declaration,
+   // which carries the comment block above it — and the file cannot say whether
+   // that comment belongs to the tile, the row, or the file. Refused rather
+   // than guessed; a diff preview is what makes it safe later.
+   //
+   // REORDERING is not in that class, and this used to refuse it with them. A
+   // tile's position is not where its view is declared: order comes from the
+   // `tiles=[…]` array on the `## artifact` tag, which is what the reader walks.
+   // So a reorder rewrites that one array and moves no declaration and no
+   // comment — the ambiguity above simply does not arise. It is handled below.
+   if (tileMembership(current) !== tileMembership(next)) {
       return {
          ok: false,
          reason:
-            "Adding, removing or reordering tiles is not supported yet — only " +
-            "changing what a tile already shows.",
+            "Adding or removing tiles is not supported yet — only reordering " +
+            "them and changing what one already shows.",
       };
    }
+   const reordered = tileIdentity(current) !== tileIdentity(next);
    if (!isSameDocumentExceptTiles(current, next)) {
       return {
          ok: false,
          reason:
-            "Only a tile's presentation and filters can be changed so far, not " +
-            "the page's imports, sources, givens or settings.",
+            "Only tiles and this dashboard's own filters can be changed so far, " +
+            "not the page's imports, sources or settings.",
       };
    }
 
@@ -164,8 +254,194 @@ export async function spliceDashboardDocument(
 
    const edits: Edit[] = [];
 
-   for (const [index, tile] of next.tiles.entries()) {
-      const was = current.tiles[index];
+   // A reorder is one rewritten array on the `## artifact` line. Each entry is
+   // re-emitted AS IT WAS WRITTEN rather than rebuilt from `source` and `name`,
+   // so a file that spells a tile `overview->kpis` keeps its spelling and the
+   // diff is the reordering and nothing else.
+   if (reordered) {
+      const artifactLine = lines.findIndex(
+         (l) => l.trimStart().startsWith("##") && l.includes("artifact"),
+      );
+      if (artifactLine < 0) {
+         return {
+            ok: false,
+            reason: "Could not find the `## artifact` tag to reorder.",
+         };
+      }
+      const written = [...lines[artifactLine].matchAll(/"([^"]+)"/g)].map(
+         (m) => m[1],
+      );
+      const byKey = new Map<string, string>();
+      for (const entry of written) {
+         const parts = entry.split("->").map((part) => part.trim());
+         if (parts.length === 2) byKey.set(`${parts[0]}->${parts[1]}`, entry);
+      }
+      const nextEntries = next.tiles.map((tile) =>
+         byKey.get(`${tile.source}->${tile.name}`),
+      );
+      if (nextEntries.some((entry) => entry === undefined)) {
+         return {
+            ok: false,
+            reason:
+               "A tile in the new order is not one the `## artifact` tag names.",
+         };
+      }
+      const list = `tiles=[${nextEntries.map((e) => `"${e}"`).join(", ")}]`;
+      // The `## artifact` tag must stay on ONE line or the package fails to
+      // compile, so the array is replaced in place rather than reformatted.
+      const rewritten = lines[artifactLine].replace(
+         /tiles\s*=\s*\[[\s\S]*?\]/,
+         list,
+      );
+      if (rewritten !== lines[artifactLine])
+         edits.push({ ...wholeLine(artifactLine), text: `${rewritten}\n` });
+   }
+
+   // THE DASHBOARD'S OWN GIVENS. Added, removed, or retagged — by name, since
+   // a given's name is its identity in every `where:` that reads it.
+   const givensBefore = new Map(
+      (current.localGivens ?? []).map((g) => [g.name, g]),
+   );
+   const givensAfter = new Map(
+      (next.localGivens ?? []).map((g) => [g.name, g]),
+   );
+   const declared = givenLines(lines);
+   const removedLines = new Set<number>();
+
+   for (const [name, was] of givensBefore) {
+      const want = givensAfter.get(name);
+      if (want !== undefined && canonical(want) === canonical(was)) continue;
+      const at = declared.get(name);
+      if (at === undefined) {
+         return {
+            ok: false,
+            reason: `Could not find where the given \`${name}\` is declared.`,
+         };
+      }
+      // Its tags are its control contract, with no other owner, so they go
+      // with it (or are replaced with it). A `//` comment in the block stays.
+      const { tags } = blockAbove(lines, at.line);
+      for (const tag of tags) {
+         edits.push({ ...wholeLine(tag.line), text: "" });
+         removedLines.add(tag.line);
+      }
+      if (want === undefined) {
+         edits.push({ ...wholeLine(at.line), text: "" });
+         removedLines.add(at.line);
+         // A declaration set off by blank lines takes one of them with it, or
+         // the two separators meet and the file gains an empty line per edit.
+         const first = Math.min(at.line, ...tags.map((tag) => tag.line));
+         const above = at.blockHeader ?? first;
+         const belowIsBlank = (lines[at.line + 1] ?? "x").trim() === "";
+         const aboveIsBlank = above === 0 || lines[above - 1].trim() === "";
+         const lastInBlock =
+            at.blockHeader === undefined ||
+            ![...declared.values()].some(
+               (other) =>
+                  other.blockHeader === at.blockHeader &&
+                  other.line > at.line &&
+                  givensAfter.has(
+                     [...declared.entries()].find(
+                        ([, v]) => v === other,
+                     )?.[0] ?? "",
+                  ),
+            );
+         if (
+            belowIsBlank &&
+            aboveIsBlank &&
+            lastInBlock &&
+            !removedLines.has(at.line + 1)
+         ) {
+            edits.push({ ...wholeLine(at.line + 1), text: "" });
+            removedLines.add(at.line + 1);
+         }
+         continue;
+      }
+      // Retagged, or redeclared: the tag line is rewritten above the
+      // declaration, and the declaration itself only if its type or default
+      // changed — a block-form declaration keeps its own spelling.
+      const indent = indentOf(at.line);
+      const tagLine = givenTagLine(want);
+      const declarationChanged =
+         want.type !== was.type || want.default !== was.default;
+      const declaration = declarationChanged
+         ? at.blockHeader === undefined
+            ? givenDeclaration(want)
+            : `${want.name} :: ${want.type} is ${want.default}`
+         : lines[at.line].trim();
+      edits.push({
+         ...wholeLine(at.line),
+         text:
+            (tagLine ? `${indent}${tagLine}\n` : "") +
+            `${indent}${declaration}\n`,
+      });
+   }
+
+   // A block whose every declaration went has to lose its `given:` header too,
+   // or the file stops compiling on an empty block.
+   for (const [name, at] of declared) {
+      if (at.blockHeader === undefined || givensAfter.has(name)) continue;
+      const siblingsLeft = [...declared.values()].some(
+         (other) =>
+            other.blockHeader === at.blockHeader &&
+            !removedLines.has(other.line),
+      );
+      if (!siblingsLeft && !removedLines.has(at.blockHeader)) {
+         edits.push({ ...wholeLine(at.blockHeader), text: "" });
+         removedLines.add(at.blockHeader);
+      }
+   }
+
+   const added = [...givensAfter.values()].filter(
+      (g) => !givensBefore.has(g.name),
+   );
+   if (added.length > 0) {
+      // A new given goes with the others: after the last one declared, or —
+      // for a file declaring its first — after the imports, where a reader
+      // expects the page's own declarations to begin.
+      const lastGiven = Math.max(
+         -1,
+         ...[...declared.values()].map((at) => at.line),
+      );
+      const lastImport = (() => {
+         let found = -1;
+         for (let i = 0; i < lines.length; i++) {
+            const text = lines[i].trim();
+            if (text.startsWith("import ")) found = i;
+            // A multi-line `import { … } from "…"` ends on its `from` line.
+            else if (found >= 0 && /^}\s*from\s/.test(text)) found = i;
+         }
+         return found;
+      })();
+      const anchor = lastGiven >= 0 ? lastGiven : lastImport;
+      const block = added
+         .map((given) => {
+            const tagLine = givenTagLine(given);
+            return (
+               (tagLine ? `${tagLine}\n` : "") + `${givenDeclaration(given)}\n`
+            );
+         })
+         .join("\n");
+      const at = anchor >= 0 ? wholeLine(anchor).end : wholeLine(0).end;
+      edits.push({ start: at, end: at, text: `\n${block}` });
+
+      // A file declaring a given needs the experiment switched on, at the top,
+      // where every file in this repository that declares one puts it.
+      const hasSwitch = lines.some((l) =>
+         l.trim().startsWith("##! experimental.givens"),
+      );
+      if (!hasSwitch)
+         edits.push({ start: 0, end: 0, text: "##! experimental.givens\n" });
+   }
+
+   // Presentation edits are matched by IDENTITY, not by position: after a
+   // reorder `next.tiles[i]` and `current.tiles[i]` are different tiles, and
+   // comparing them pairwise would report every moved tile as changed and
+   // rewrite tags that nobody touched.
+   const currentByKey = new Map(current.tiles.map((t) => [tileKey(t), t]));
+
+   for (const tile of next.tiles) {
+      const was = currentByKey.get(tileKey(tile));
       if (canonical(was) === canonical(tile)) continue;
 
       // An inherited tile is declared in the model, not here, so there is
@@ -226,18 +502,28 @@ export async function spliceDashboardDocument(
          });
       }
 
-      // The filter binding lives in the declaration itself, as a refinement.
-      const refinement = (tile.filters ?? [])
-         .map((f) => `where: ${f.field} ~ $${f.given}`)
-         .join(", ");
+      // The filter bindings live in the declaration itself, as a refinement.
+      // Only the BINDING clauses are ours to rewrite: a `limit:`, an `order_by:`
+      // or a `where:` on a literal that someone put in the same refinement is
+      // unmodelled Malloy and stays, ahead of the bindings, exactly as written.
+      const existing =
+         /\+\s*\{([\s\S]*)\}\s*$/.exec(lines[declLine])?.[1] ?? "";
+      const kept = existing
+         .replace(BINDING_CLAUSE, "")
+         .replace(/\s*,\s*,\s*/g, ", ")
+         .replace(/^[\s,;]+|[\s,;]+$/g, "");
+      const bindings = (tile.filters ?? []).map(
+         (f) => `where: ${f.field} ${f.op ?? "~"} $${f.given}`,
+      );
+      const clauses = [...(kept ? [kept] : []), ...bindings];
       const withoutRefinement = lines[declLine].replace(
-         /\s*\+\s*\{[^}]*\}\s*$/,
+         /\s*\+\s*\{[\s\S]*\}\s*$/,
          "",
       );
       const rewritten =
-         refinement === ""
+         clauses.length === 0
             ? withoutRefinement
-            : `${withoutRefinement} + { ${refinement} }`;
+            : `${withoutRefinement} + { ${clauses.join(", ")} }`;
       if (rewritten !== lines[declLine])
          edits.push({ ...wholeLine(declLine), text: `${rewritten}\n` });
    }

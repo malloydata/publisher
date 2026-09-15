@@ -118,23 +118,253 @@ describe("spliceDashboardDocument: what it writes", () => {
    });
 });
 
-describe("spliceDashboardDocument: what it refuses", () => {
-   // Structural edits move declarations and their comment blocks, and no file
-   // says whether a comment belongs to the tile, the row or the page.
-   it("refuses to reorder tiles", async () => {
+describe("spliceDashboardDocument: reordering", () => {
+   // Order lives in the `tiles=[…]` array, not in where a view is declared, so
+   // a reorder rewrites that array and moves nothing else.
+   it("reorders by rewriting the artifact tag's tiles array", async () => {
       const r = await splice(SOURCE, (d) => {
          d.tiles.reverse();
       });
-      expect(r.ok).toBe(false);
-      if (spliceFailed(r)) expect(r.reason).toContain("reordering");
+      expect(r.ok).toBe(true);
+      if (!spliceFailed(r)) {
+         expect(r.source).toContain('tiles=["a -> by_brand", "a -> by_cat"]');
+         // The declarations stayed exactly where they were.
+         expect(r.source.indexOf("view: by_cat")).toBeLessThan(
+            r.source.indexOf("view: by_brand"),
+         );
+      }
    });
 
+   it("leaves a tile's comment with the tile it was written above", async () => {
+      const r = await splice(SOURCE, (d) => {
+         d.tiles.reverse();
+      });
+      expect(r.ok).toBe(true);
+      if (!spliceFailed(r)) {
+         // The comment is the reason reordering used to be refused. It never
+         // moves, because no declaration does.
+         expect(r.source).toContain(
+            "// Why this tile leads: revenue is the number people ask about first.\n  # colspan=6",
+         );
+      }
+   });
+
+   it("keeps every tile's own tags through a reorder", async () => {
+      const r = await splice(SOURCE, (d) => {
+         d.tiles.reverse();
+      });
+      expect(r.ok).toBe(true);
+      if (!spliceFailed(r)) {
+         const back = await open(r.source);
+         expect(back.tiles.map((t) => t.name)).toEqual(["by_brand", "by_cat"]);
+         // The writer persists the flags the DOCUMENT carries and takes no
+         // view of what they mean: this document still has `break` on
+         // `by_cat`, so the file does too. Deciding that a row start stays
+         // with the POSITION rather than the tile is the builder's rule
+         // (`keepRowStructure`), applied before a document reaches here.
+         expect(back.tiles.find((t) => t.name === "by_cat")?.break).toBe(true);
+         expect(back.tiles.find((t) => t.name === "by_brand")?.break).toBe(
+            undefined,
+         );
+      }
+   });
+
+   it("reorders and re-tags in one write", async () => {
+      const r = await splice(SOURCE, (d) => {
+         d.tiles.reverse();
+         // Matched by identity, not position: this is the tile now FIRST.
+         d.tiles[0].label = "Brands";
+      });
+      expect(r.ok).toBe(true);
+      if (!spliceFailed(r)) {
+         const back = await open(r.source);
+         expect(back.tiles.map((t) => t.name)).toEqual(["by_brand", "by_cat"]);
+         expect(back.tiles[0].label).toBe("Brands");
+         expect(back.tiles[1].label).toBe("By category");
+      }
+   });
+});
+
+describe("spliceDashboardDocument: bindings", () => {
+   it("writes a binding with the comparison it was given", async () => {
+      const out = await spliced(SOURCE, (d) => {
+         d.tiles[0].filters = [
+            { field: "created_at", given: "SINCE", op: ">=" },
+         ];
+      });
+      expect(out).toContain(
+         "view: by_cat is by_category + { where: created_at >= $SINCE }",
+      );
+   });
+
+   // The refinement is not all ours. What the reader does not model stays,
+   // ahead of the bindings, exactly as written.
+   it("keeps an unmodelled clause in the refinement", async () => {
+      const source = SOURCE.replace(
+         "view: by_cat is by_category",
+         "view: by_cat is by_category + { limit: 5, where: category ~ $CATEGORY }",
+      );
+      const out = await spliced(source, (d) => {
+         d.tiles[0].filters = [
+            { field: "category", given: "CATEGORY" },
+            { field: "brand", given: "BRAND" },
+         ];
+      });
+      expect(out).toContain(
+         "view: by_cat is by_category + { limit: 5, where: category ~ $CATEGORY, where: brand ~ $BRAND }",
+      );
+      // And clearing the bindings leaves the clause that was never ours.
+      const cleared = await spliced(source, (d) => {
+         delete d.tiles[0].filters;
+      });
+      expect(cleared).toContain("view: by_cat is by_category + { limit: 5 }");
+   });
+});
+
+describe("spliceDashboardDocument: the dashboard's own givens", () => {
+   // The convention: a filter the builder adds is a declaration in THIS file.
+   // A file that had none gets the experiment switch too, since a `given:`
+   // without it fails the package load.
+   it("adds a first given after the imports, switching the experiment on", async () => {
+      const source = `## artifact { title="T" tiles=["a -> x"] }
+import { one, products } from "../m.malloy"
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.localGivens = [
+            {
+               name: "CATEGORY",
+               type: "filter<string>",
+               default: "f''",
+               label: "Category",
+               control: "select",
+               suggest: { source: "products", dimension: "category" },
+            },
+         ];
+         d.tiles[0].filters = [{ field: "category", given: "CATEGORY" }];
+      });
+      expect(out.startsWith("##! experimental.givens\n")).toBe(true);
+      expect(out).toContain(
+         `import { one, products } from "../m.malloy"
+
+# label="Category" control=select suggest { source=products dimension=category }
+given: CATEGORY :: filter<string> is f''
+`,
+      );
+      expect(out).toContain("view: x is vx + { where: category ~ $CATEGORY }");
+   });
+
+   it("adds a given after the ones already declared", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+# label="Category"
+given: CATEGORY :: filter<string> is f''
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.localGivens = [
+            ...(d.localGivens ?? []),
+            {
+               name: "SINCE",
+               type: "date",
+               default: "@2023-01-01",
+               label: "Since",
+            },
+         ];
+      });
+      expect(out).toContain(`given: CATEGORY :: filter<string> is f''
+
+# label="Since"
+given: SINCE :: date is @2023-01-01
+`);
+      // Exactly one switch, not a second copy.
+      expect(out.match(/##! experimental\.givens/g)).toHaveLength(1);
+   });
+
+   // Its tags are its control contract, so they go with it; a comment does not.
+   it("removes a given with its tags and leaves the comment above", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+// Why the page filters by category at all.
+# label="Category" control=select
+given: CATEGORY :: filter<string> is f''
+# label="Since"
+given: SINCE :: date is @2023-01-01
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.localGivens = (d.localGivens ?? []).filter(
+            (g) => g.name !== "CATEGORY",
+         );
+      });
+      expect(out).toContain(`// Why the page filters by category at all.
+# label="Since"
+given: SINCE :: date is @2023-01-01`);
+      expect(out).not.toContain("CATEGORY");
+   });
+
+   it("removes a block's header when its last declaration goes", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+given:
+  # label="Local"
+  LOCAL_X :: filter<string> is f'Jeans'
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         delete d.localGivens;
+      });
+      expect(out).not.toContain("given:");
+      expect(out).not.toContain("LOCAL_X");
+      expect(out).toContain(`import "../m.malloy"
+
+source: a is one extend {`);
+   });
+
+   it("retags a given in place, keeping the declaration's own line", async () => {
+      const source = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+# label="Category"
+given: CATEGORY :: filter<string> is f''
+
+source: a is one extend {
+  view: x is vx
+}`;
+      const out = await spliced(source, (d) => {
+         d.localGivens![0].label = "Product category";
+         d.localGivens![0].control = "multiselect";
+      });
+      expect(out).toContain(`# label="Product category" control=multiselect
+given: CATEGORY :: filter<string> is f''`);
+      expect(out).not.toContain(`label="Category"`);
+   });
+});
+
+describe("spliceDashboardDocument: what it refuses", () => {
+   // Adding or removing a tile inserts or deletes a declaration, which carries
+   // the comment block above it, and no file says who that comment belongs to.
    it("refuses to remove a tile", async () => {
       const r = await splice(SOURCE, (d) => {
          d.tiles.pop();
       });
       expect(r.ok).toBe(false);
-      if (spliceFailed(r)) expect(r.reason).toContain("reordering");
+      if (spliceFailed(r)) expect(r.reason).toContain("Adding or removing");
    });
 
    it("refuses to change the page's own settings", async () => {
@@ -142,7 +372,7 @@ describe("spliceDashboardDocument: what it refuses", () => {
          d.title = "Renamed";
       });
       expect(r.ok).toBe(false);
-      if (spliceFailed(r)) expect(r.reason).toContain("presentation");
+      if (spliceFailed(r)) expect(r.reason).toContain("settings");
    });
 
    // An inherited tile's tags live on the model's view, and the builder never
