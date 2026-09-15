@@ -188,6 +188,27 @@ stops being stable. Do not take the over-size message's advice to narrow
 `--model` to one file, which drops every imported source and manufactures
 `COVERAGE` verdicts.
 
+## Validate the definitions, not every answer
+
+A golden must not be derived through the definitions the question TESTS. It may
+reuse everything the question does not turn on -- joins, base sources, date
+handling -- because circularity only bites where the key and the answer share the
+step under measurement. That is what makes this affordable on a model too large
+to reimplement.
+
+`scripts/verify_definitions.py` checks each definition once against the layer
+directly beneath it, and every case depending on it inherits the result. A golden
+is trustworthy if it was derived independently, OR if every definition it tests
+has itself been validated.
+
+Two things it will not do, and both matter more than what it does. It never
+reports a definition reaching through a join as validated, because fanout
+inflates the measure and the control expression equally and the comparison stays
+green on a broken join. And building the ledger without a server exits 3, not 0:
+nothing was checked, and a caller must not read that as a pass.
+
+**Read `reference/definition-ledger.md` before building or quoting one.**
+
 ## Step 5: Distrust the golden
 
 A reference answer can be wrong (parent-column fanout, a join on a shared

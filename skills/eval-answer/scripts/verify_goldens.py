@@ -436,14 +436,81 @@ DEFINES = re.compile(r"^\s*(\w+)\s+is\s+(.+?)\s*$", re.M)
 ASSERTS = re.compile(r"(\w+)\s+is\s+(?:defined\s+as\s+)?(count\([^)]*\)|sum\([^)]*\))")
 
 
-def model_definitions(model_path: pathlib.Path | None) -> dict[str, str]:
+# `source: NAME is`, and the block labels that say what KIND of thing follows.
+# Line-oriented like DEFINES above, for the same reason: this reads text, not a
+# compiled model, because no Publisher API returns a definition's expression.
+SOURCE_DECL = re.compile(r"^\s*source:\s*(\w+)\s+is\b")
+KIND_LABEL = re.compile(r"^\s*(measure|dimension|view|join_one|join_many|join_cross):\s*(.*)$")
+KIND_OF_LABEL = {"measure": "measure", "dimension": "dimension", "view": "view",
+                 "join_one": "join", "join_many": "join", "join_cross": "join"}
+
+
+def parse_definitions(model_path: pathlib.Path | None,
+                      recursive: bool = False) -> list[dict[str, Any]]:
+    """Every `name is expr` in the model, with the source and kind it belongs to.
+
+    `model_definitions()` below is the flat view of this and keeps its old
+    contract. This one exists because a ledger keyed on `kind:source:name`
+    cannot use a flat `dict[name]`: the flat form resolves a same-named field
+    in two sources to whichever was read first, silently, and a model with
+    `total_sales` on two sources would have one of them validated under the
+    other's definition.
+
+    A line scanner, not a parser. It tracks the enclosing `source:` and the most
+    recent `measure:`/`dimension:`/`view:` block label, which is how Malloy
+    declares them. It does not track braces, so a definition inside a nested
+    block is attributed to the enclosing source rather than to the nesting --
+    good enough to key a ledger, and wrong in the same direction as the flat
+    dict it replaces rather than in a new one.
+    """
     if not model_path or not model_path.exists():
-        return {}
-    out: dict[str, str] = {}
-    files = [model_path] if model_path.is_file() else sorted(model_path.glob("*.malloy"))
+        return []
+    # `glob`, not `rglob`, by default: `model_definitions()` has always read
+    # only the top level and `stale_rubric_claims()` is calibrated to that.
+    # `model_text()` next door DOES recurse, which reads like an oversight
+    # rather than a decision -- but changing it here would quietly move an
+    # existing check, so the ledger opts in and the inconsistency stays visible.
+    files = ([model_path] if model_path.is_file()
+             else sorted(model_path.rglob("*.malloy") if recursive
+                         else model_path.glob("*.malloy")))
+    out: list[dict[str, Any]] = []
     for f in files:
-        for name, expr in DEFINES.findall(f.read_text()):
-            out.setdefault(name, expr.split("#")[0].strip())
+        source, kind = None, None
+        for n, raw in enumerate(f.read_text(errors="replace").splitlines(), 1):
+            line = raw.split("//")[0]
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            m = SOURCE_DECL.match(line)
+            if m:
+                source, kind = m.group(1), None
+                # `source: x is y extend { ... }` declares x itself; fall
+                # through so the `is` on this line is not read as a field.
+                continue
+            m = KIND_LABEL.match(line)
+            if m:
+                kind = KIND_OF_LABEL[m.group(1)]
+                line = m.group(2)          # `measure: x is ...` on one line
+                if not line.strip():
+                    continue
+            d = DEFINES.match(line if line.startswith(" ") else "  " + line)
+            if not d:
+                continue
+            out.append({"source": source, "kind": kind or "dimension",
+                        "name": d.group(1), "expr": d.group(2).split("#")[0].strip(),
+                        "file": str(f), "line": n})
+    return out
+
+
+def model_definitions(model_path: pathlib.Path | None) -> dict[str, str]:
+    """Flat `name -> expr`, first declaration wins. The old contract, unchanged.
+
+    `stale_rubric_claims()` compares a rubric's claim against a name it has no
+    source for, so the flat view is what it needs; `parse_definitions()` is for
+    anything that must tell two same-named fields apart.
+    """
+    out: dict[str, str] = {}
+    for r in parse_definitions(model_path):
+        out.setdefault(r["name"], r["expr"])
     return out
 
 
