@@ -203,6 +203,48 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
       }
    });
 
+   it("splits #(authorize) and #(source-authorize) into separate wire fields through the worker", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "split.malloy"),
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+  ROLE :: string[]
+
+#(authorize) id in $DENY
+#(source-authorize) 'finance' in $ROLE
+source: gated is duckdb.sql("select 1 as id") extend {}`,
+      );
+
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("split.malloy");
+         const apiModel = (await model!.getModel()) as {
+            sources?: {
+               name?: string;
+               authorize?: string[];
+               sourceAuthorize?: string[];
+            }[];
+         };
+         // Each route's own text lands under its OWN wire field — neither
+         // leaks into the other, on the worker path exactly as it does
+         // in-process (Model.create).
+         expect(apiModel.sources?.[0]?.authorize).toEqual(["id in $DENY"]);
+         expect(apiModel.sources?.[0]?.sourceAuthorize).toEqual([
+            "'finance' in $ROLE",
+         ]);
+         expect(model!.getAuthorize("gated")).toEqual(["id in $DENY"]);
+         expect(model!.getSourceAuthorize("gated")).toEqual([
+            "'finance' in $ROLE",
+         ]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("rejects a package whose #(authorize) references an unknown given (worker validation)", async () => {
       writeManifest();
       fs.writeFileSync(

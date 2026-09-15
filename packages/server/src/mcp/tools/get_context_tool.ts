@@ -217,6 +217,14 @@ interface SourceContextEntry {
     * are the givens to supply". See docs/authorize.md.
     */
    authorize?: SourceContextAuthorize[];
+   /**
+    * The `#(source-authorize)` route's own gates, reported separately from
+    * `authorize` above — a rule about the CALLER rather than the row, ANDed
+    * with any `authorize` gate rather than bypassing it. Same report-only
+    * caveats apply. A source gated ONLY by an unconditional deny on either
+    * route never reaches this card at all — see the collector's drop.
+    */
+   sourceAuthorize?: SourceContextAuthorize[];
    /** Filters the source declares via `#(filter)`. */
    filters?: SourceContextFilter[];
 }
@@ -331,6 +339,8 @@ interface SourceCardInfo {
    docs?: string;
    givens?: SourceContextGiven[];
    authorize?: SourceContextAuthorize[];
+   /** The `#(source-authorize)` route's own gates — see `SourceContextEntry.sourceAuthorize`. */
+   sourceAuthorize?: SourceContextAuthorize[];
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
@@ -413,6 +423,9 @@ function toSourceResults(
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
                ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
+               ...(ctx?.sourceAuthorize
+                  ? { sourceAuthorize: ctx.sourceAuthorize }
+                  : {}),
                ...(ctx?.filters ? { filter_params: ctx.filters } : {}),
                joins: ctx?.joins ?? [],
             },
@@ -1156,6 +1169,27 @@ function collectJoinedFields(args: {
 }
 
 /**
+ * Whether `apiSource` is gated by an unconditional `#(authorize) false` / or
+ * `#(source-authorize) false` — on EITHER route, since the two routes AND
+ * together and one bare-`false` conjunct denies every caller regardless of
+ * the other route or any given supplied. Keys on the deny, not the route, so
+ * `#(authorize) false` and `#(source-authorize) false` are treated
+ * identically. Case- and whitespace-insensitive: the grammar parser
+ * lowercases `FALSE` only for its own comparison, so the wire payload can
+ * still carry it uppercase (`authorize_grammar.ts`).
+ */
+function isUnconditionalDenyAuthorize(apiSource: {
+   authorize?: string[];
+   sourceAuthorize?: string[];
+}): boolean {
+   const isDeny = (expr: string) => expr.trim().toLowerCase() === "false";
+   return (
+      (apiSource.authorize ?? []).some(isDeny) ||
+      (apiSource.sourceAuthorize ?? []).some(isDeny)
+   );
+}
+
+/**
  * Walk every model in the package and collect sources, their views,
  * dimension/measure fields and declared joins, and named queries. Returns the
  * full set; the optional source-level drill-down is applied by the caller
@@ -1198,11 +1232,20 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
+         const apiSource = apiSources.find((c) => c.name === sourceName);
+         // An unconditional `#(authorize) false` / `#(source-authorize) false`
+         // (either route, any case/whitespace — see isUnconditionalDenyAuthorize)
+         // denies every caller with no given able to change that, so there is
+         // nothing this card can offer an agent that queries it. Drop the
+         // source entirely rather than list it and let the agent learn only
+         // from the 403; every OTHER gate stays reported, because a caller's
+         // givens are untrusted here and evaluating a real rule would be
+         // forgeable (see execute_query_tool.ts).
+         if (apiSource && isUnconditionalDenyAuthorize(apiSource)) continue;
          const provenance = readFieldProvenance(modelDef, sourceName);
          // First model wins, matching the entity dedupe below, so a source's
          // identity and its governance always come from the same model.
          if (!governance.has(sourceName)) {
-            const apiSource = apiSources.find((c) => c.name === sourceName);
             if (apiSource) {
                governance.set(sourceName, {
                   givens: (apiSource.givens ?? []).flatMap((given) =>
@@ -1225,6 +1268,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                      expression,
                      given_names: referencedGivenNames(expression),
                   })),
+                  sourceAuthorize: (apiSource.sourceAuthorize ?? []).map(
+                     (expression) => ({
+                        expression,
+                        given_names: referencedGivenNames(expression),
+                     }),
+                  ),
                   filters: (apiSource.filters ?? []).flatMap((filter) =>
                      filter.name && filter.type
                         ? [
@@ -1366,6 +1415,7 @@ interface SourceGovernance {
    givens: SourceContextGiven[];
    filters: SourceContextFilter[];
    authorize: SourceContextAuthorize[];
+   sourceAuthorize: SourceContextAuthorize[];
 }
 
 /** The entities of a package, plus the per-source governance beside them. */
@@ -1561,6 +1611,9 @@ function buildSourceContext(
          ...(summary ? { oneLineSummary: summary } : {}),
          ...(gates?.givens.length ? { givens: gates.givens } : {}),
          ...(gates?.authorize.length ? { authorize: gates.authorize } : {}),
+         ...(gates?.sourceAuthorize.length
+            ? { sourceAuthorize: gates.sourceAuthorize }
+            : {}),
          ...(gates?.filters.length ? { filters: gates.filters } : {}),
       });
    }
@@ -1644,13 +1697,13 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - Read warnings and any error/stale field before trusting a number.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
-- authorize means gated: supply the givens it names or the query is denied.
+- authorize/sourceAuthorize mean gated; a deny-all source never appears here.
 
 ## Parameters
 search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question asked. include_code adds each field's expression as code.
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, matched_targets, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize/sourceAuthorize, filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, matched_targets, relevance, entity_id. A joined field's name is its dotted path; use it verbatim.
 ranking, returned of total_available sources, next_offset on a listing, warnings[].
 Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
 

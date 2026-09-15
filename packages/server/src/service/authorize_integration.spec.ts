@@ -283,6 +283,101 @@ source: broken is duckdb.table('customers')
    });
 });
 
+describe("the sourceAuthorize wire field mirrors #(source-authorize)", () => {
+   it("reports #(source-authorize)'s own text under sourceAuthorize, not authorize", async () => {
+      await writeModel(
+         "route_split.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string[]
+
+#(source-authorize) 'finance' in $ROLE
+source: fin is duckdb.table('customers') extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "route_split.malloy",
+         getConnections(),
+      );
+
+      expect(model.getAuthorize("fin")).toEqual([]);
+      expect(model.getSourceAuthorize("fin")).toEqual(["'finance' in $ROLE"]);
+      expect(sourceNamed(model, "fin")?.authorize).toBeUndefined();
+      expect(sourceNamed(model, "fin")?.sourceAuthorize).toEqual([
+         "'finance' in $ROLE",
+      ]);
+   });
+
+   it("a convenience-form #(authorize) body reports under authorize, never sourceAuthorize", async () => {
+      // A pure source-level predicate is legal written on the `authorize`
+      // route itself (not just `source-authorize`) — see this route's own
+      // module doc. That convenience form must stay under `authorize`.
+      await writeModel(
+         "convenience.malloy",
+         `##! experimental.givens
+
+given:
+  GROUPS :: string[]
+
+#(authorize) 'x' in $GROUPS
+source: conv is duckdb.table('customers') extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "convenience.malloy",
+         getConnections(),
+      );
+
+      expect(model.getAuthorize("conv")).toEqual(["'x' in $GROUPS"]);
+      expect(model.getSourceAuthorize("conv")).toEqual([]);
+      expect(sourceNamed(model, "conv")?.sourceAuthorize).toBeUndefined();
+   });
+
+   it("both routes agree between the two producers: extraction and the constructor override", async () => {
+      // model.ts's constructor mutates `sources[].authorize`/`sourceAuthorize`
+      // in place from `entryPointGatesBySource` to "make introspection agree
+      // with enforcement" (see model.ts). A query-source derivation is the
+      // shape that historically diverged between the extractor's narrower
+      // answer and the entry-point walk's — exercise it on BOTH routes.
+      await writeModel(
+         "derived_split.malloy",
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+  ROLE :: string[]
+
+#(authorize) id in $DENY
+#(source-authorize) 'finance' in $ROLE
+source: base is duckdb.table('customers') extend {}
+
+source: derived is base -> { select: id, region }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "derived_split.malloy",
+         getConnections(),
+      );
+
+      // The constructor-side and extraction-side answers are the same
+      // object on `Model.create`'s path (the constructor mutates in place),
+      // so this is really pinning that BOTH fields were split by route —
+      // a single un-split `exprs.flat()` would have let source-authorize
+      // text leak into `authorize` or vice versa.
+      expect(model.getAuthorize("derived")).toEqual(["id in $DENY"]);
+      expect(model.getSourceAuthorize("derived")).toEqual([
+         "'finance' in $ROLE",
+      ]);
+   });
+});
+
 describe("authorize annotation compile-time validation", () => {
    it("loads a valid expression that references a value-less given", async () => {
       // The probe is compiled, not run, so a given with no default/value does
@@ -740,11 +835,11 @@ source: gated is duckdb.table('customers') extend {
    // The string form's "two OWN #(authorize) notes, OR'd" idiom folded into
    // ONE dimension expressing an `or` (G1: at most one gate dimension per
    // source). The authorize grammar goes further: `or` is refused outright
-   // (compound_boolean) — a disjunction is not expressible in one gate at
-   // all any more (see `assertAtMostOneAuthorizeGate`'s doc for the intended
-   // rewrite, two separate sources). What survives is an `and`-joined
-   // multi-given gate, which the two tests below cover: satisfying only one
-   // term still denies, and satisfying both admits.
+   // (compound_boolean) inside one term — an admin-override-style disjunction
+   // is written as a single natural boolean inside one `#(authorize)` term
+   // instead. What survives is an `and`-joined multi-given gate, which the
+   // two tests below cover: satisfying only one term still denies, and
+   // satisfying both admits.
    const CONJUNCTION = `##! experimental.givens
 
 given:
@@ -1776,15 +1871,15 @@ source: combo_locked_first is compose(locked_src, open_src)
    // includes every member's fields (that is what lets a query reference a
    // member's column through the composite in the first place), so a
    // member's own `#(authorize)` gate is inherited onto `combo` (via
-   // `ancestorGateExprs`) exactly as if `combo` had never declared its own —
-   // and `combo` may declare only ONE `#(authorize)` block of its own
-   // (`findMultipleAuthorizeGates`/`assertAtMostOneAuthorizeGate`), so there
-   // is no way to independently AND a member's gate with `combo`'s own on
-   // the same composite. A composite can carry AT MOST one gate total: either
-   // its own, or (by inheriting) a single member's — never both independently
-   // ANDed. Worth a human decision on whether composites need first-class
-   // multi-gate support, but that is a product question, not a test-authoring
-   // one.
+   // `ancestorGateExprs`) ONLY while `combo` declares none of its own
+   // (`gateExprsForOwnAnnotations`: own, however many notes, always REPLACES
+   // inherited rather than adding to it) — so there is still no way to
+   // independently AND a member's gate with `combo`'s own on the same
+   // composite, repeated notes included. A composite can carry AT MOST one
+   // gate total: either its own (one term or several, AND'd together), or
+   // (by inheriting) a single member's — never both independently ANDed.
+   // Worth a human decision on whether composites need first-class multi-gate
+   // support, but that is a product question, not a test-authoring one.
 
    it("a query source over a composite reports ONE authorize element for one gate, with the authored expression text", async () => {
       // Under the DIMENSION form, `collectEntryPointGates` walked a

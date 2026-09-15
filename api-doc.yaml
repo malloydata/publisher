@@ -4223,18 +4223,37 @@ components:
 
             IMPORTANT for anything re-implementing the decision: this flat
             list is not a predicate you can evaluate, and it is not a count of
-            one. A source may declare at most one gate of its OWN, but the
-            list flattens every gate carried in, so several elements are
-            normal — a query source over a composite reports the same
-            authored gate twice, once from its base and once from the resolved
-            member. Expressions that came from different declaring sources are
-            AND-ed rather than OR-ed. Treat the list as "at least these
-            constraints apply": use it to decide THAT a source is gated, not
-            to recompute WHETHER a given caller passes. Reading it as a pure
-            disjunction grants where Publisher denies.
+            one. A source may declare more than one gate of its OWN — repeats
+            AND together — and the list also flattens every gate carried in,
+            so several elements are normal — a query source over a composite
+            reports the same authored gate twice, once from its base and once
+            from the resolved member. Expressions from different declaring
+            sources are likewise AND-ed rather than OR-ed. Treat the list as
+            "at least these constraints apply": use it to decide THAT a
+            source is gated, not to recompute WHETHER a given caller passes.
+            Reading it as a pure disjunction grants where Publisher denies.
 
             Givens are caller-asserted, so this is a boundary only behind a
             trusted tier — see docs/authorize.md.
+          items:
+            type: string
+        sourceAuthorize:
+          type: array
+          description: >-
+            Effective `#(source-authorize)` expression gating this source: a
+            rule about the CALLER (e.g. `'literal' in $GROUPS`) rather than
+            the row, ANDed with any `authorize` gate above rather than
+            bypassing it. Reports the `source-authorize` route's own
+            expressions ONLY — a convenience-form `#(authorize)` body (a pure
+            source-level predicate written on the `authorize` route) is
+            reported under `authorize`, not here. An empty or absent list
+            means nothing on this route gates the source, even if `authorize`
+            is present.
+
+            Same flattening and AND-not-OR caveats as `authorize` apply: this
+            is not a predicate to re-evaluate, only a signal that the source
+            is gated. Givens are caller-asserted, so this is a boundary only
+            behind a trusted tier — see docs/authorize.md.
           items:
             type: string
 

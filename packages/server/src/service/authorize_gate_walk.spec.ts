@@ -29,6 +29,7 @@ interface GateEntry {
    label: string;
    exprs: string[];
    selfContained: boolean;
+   route: string;
    struct?: SourceDef;
 }
 interface GateWalker {
@@ -103,6 +104,14 @@ describe("gate walk fail-closed branches", () => {
          true,
       );
       expect(gates.map((g) => g.exprs)).toEqual([["false"]]);
+      // The walk runs once per route (`authorize`, `source-authorize`), each
+      // with its own `seen` set. The sentinel must be synthesized on the
+      // `authorize` route only — a route that also emitted `["false"]` would
+      // double-deny (harmless here, since AND of two denies is still a deny,
+      // but it would mean the sentinel is being minted per-route instead of
+      // once for the whole entry point, which is the property under test).
+      expect(gates).toHaveLength(1);
+      expect(gates[0].route).toBe("authorize");
    });
 
    it("denies when a sourceRegistry entry resolves to nothing", () => {
@@ -128,6 +137,8 @@ describe("gate walk fail-closed branches", () => {
          true,
       );
       expect(gates.map((g) => g.exprs)).toEqual([["false"]]);
+      expect(gates).toHaveLength(1);
+      expect(gates[0].route).toBe("authorize");
    });
 
    it("reports no gate for an ordinary source that is its own declaration", () => {

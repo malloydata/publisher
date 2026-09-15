@@ -1833,6 +1833,7 @@ source: X is duckdb.table('parent') extend {
             label: "X",
             exprs: ["org_id in $GROUPS"],
             selfContained: false,
+            route: "authorize",
             struct: modelDef.contents["X"] as unknown as SourceDef,
          };
 
@@ -3741,9 +3742,9 @@ source: X is duckdb.table('parent') extend {
    it("G4 fires on the source that declares the gate, regardless of any derivation reachable from it", async () => {
       // The admin-override idiom this used to test as an `or`-combined
       // disjunct (`org_id in $GROUPS or $ROLE = 'admin'`, and its `!=`
-      // variant) no longer parses at all — `or` is refused by the grammar
-      // before G4 is ever reached, and a disjunction is not expressible in
-      // one gate any more (see `assertAtMostOneAuthorizeGate`). What
+      // variant) no longer parses at all — `or` inside one term is refused by
+      // the grammar (`compound_boolean`) before G4 is ever reached; the
+      // override is written as a single natural boolean instead. What
       // survives, and is what this test pins, is that G4
       // (`validateSourceLineGateGivenUsage`) runs against the DECLARING
       // source's own lifted condition (`validateAuthorizeProbes`'s

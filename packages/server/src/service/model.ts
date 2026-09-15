@@ -93,16 +93,17 @@ import {
 } from "./annotations";
 import { composeDeclaredQueryMetadata, type ReadableTag } from "./build_plan";
 import {
-   assertAtMostOneAuthorizeGate,
    assertNoCallerAuthorizeAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
+   AUTHORIZE_ROUTE,
    containsAuthorizeAnnotationTag,
    findLegacyStringGates,
-   findMultipleAuthorizeGates,
    referencedGivenNames,
+   SOURCE_AUTHORIZE_ROUTE,
    validateAuthorizeProbes,
    type AuthorizeMap,
+   type AuthorizeOwnNotesMap,
    type MisplacedAuthorizeAnnotation,
    type RowLevelGateRejectionCause,
 } from "./authorize";
@@ -708,18 +709,30 @@ export class Model {
       } catch {
          this.entryPointGatesBySource = new Map();
       }
-      // Make introspection agree with enforcement. `sources[].authorize` is
-      // serialized to the API and read by downstream enforcers, so leaving the
-      // narrower value there reports a gated source as unrestricted — the more
-      // dangerous of the two possible errors. Mutating in place (rather than at
-      // the API boundary) keeps getSources()/getAuthorize()/the early gate on one
-      // answer instead of three.
+      // Make introspection agree with enforcement. `sources[].authorize` and
+      // `sources[].sourceAuthorize` are serialized to the API and read by
+      // downstream enforcers, so leaving the narrower extraction-time value
+      // there reports a gated source as unrestricted — the more dangerous of
+      // the two possible errors. Mutating in place (rather than at the API
+      // boundary) keeps getSources()/getAuthorize()/the early gate on one
+      // answer instead of three. Split BY ROUTE — `authorize` gets only
+      // `AUTHORIZE_ROUTE` entries and `sourceAuthorize` only
+      // `SOURCE_AUTHORIZE_ROUTE` ones — so the two wire fields cannot
+      // disagree with each other the way a single flattened list would.
       for (const source of this.sources ?? []) {
          if (!source.name) continue;
-         const exprs = this.entryPointGatesBySource
-            .get(source.name)
-            ?.flatMap((g) => g.exprs);
-         if (exprs && exprs.length > 0) source.authorize = exprs;
+         const gates = this.entryPointGatesBySource.get(source.name);
+         const exprsForRoute = (route: string): string[] | undefined => {
+            const exprs = gates
+               ?.filter((g) => g.route === route)
+               .flatMap((g) => g.exprs);
+            return exprs && exprs.length > 0 ? exprs : undefined;
+         };
+         const authorizeExprs = exprsForRoute(AUTHORIZE_ROUTE);
+         if (authorizeExprs) source.authorize = authorizeExprs;
+         const sourceAuthorizeExprs = exprsForRoute(SOURCE_AUTHORIZE_ROUTE);
+         if (sourceAuthorizeExprs)
+            source.sourceAuthorize = sourceAuthorizeExprs;
       }
       // Guarded defensively: a malformed gate reachable only through a
       // join/derivation must not throw out of the constructor
@@ -951,6 +964,18 @@ export class Model {
       return (
          this.sources?.find((source) => source.name === sourceName)
             ?.authorize ?? []
+      );
+   }
+
+   /**
+    * Effective `#(source-authorize)` expressions gating a source — the mirror
+    * of {@link getAuthorize} for the `source-authorize` route ONLY. Same
+    * introspection-only caveats apply.
+    */
+   public getSourceAuthorize(sourceName: string): string[] {
+      return (
+         this.sources?.find((source) => source.name === sourceName)
+            ?.sourceAuthorize ?? []
       );
    }
 
@@ -2923,12 +2948,6 @@ export class Model {
                recordRowLevelGateRejected("legacy_string_gate"),
             );
             assertNoLegacyStringGate(legacyStringGates);
-            // A source may declare at most one `#(authorize)` block — see
-            // `findMultipleAuthorizeGates`'s doc. Same check as the
-            // package-load worker.
-            assertAtMostOneAuthorizeGate(
-               findMultipleAuthorizeGates(sourceResult.authorizeOwnNotes),
-            );
             // The body grammar — see `assertAuthorizeGrammarValid`'s doc.
             // Checked before `validateAuthorizeProbes` so a grammar violation
             // gets its own message instead of a raw Malloy compile error.
@@ -3468,7 +3487,10 @@ export class Model {
             .filter((name): name is string => name !== undefined),
          // The EFFECTIVE gate per source, inheritance already resolved by the
          // extraction, so a suggest over a gated source learns which givens its
-         // gate reads.
+         // gate reads. `source.authorize` is scoped to the `authorize` route
+         // only (see `ExtractedSource.authorize`'s doc), so a given
+         // referenced only by a `#(source-authorize)` term is not suggested
+         // — a known, accepted gap.
          new Map(
             (this.sources ?? []).flatMap((source) =>
                source.name
@@ -6466,8 +6488,8 @@ export class Model {
       filterMap: Map<string, FilterDefinition[]>;
       authorizeMap: AuthorizeMap;
       misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-      authorizeOwnNotes: Map<string, AnnotationNote[]>;
-      attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
+      authorizeOwnNotes: AuthorizeOwnNotesMap;
+      attributedAuthorizeOwnNotes: AuthorizeOwnNotesMap;
    } {
       // Shared with the package-load worker — see service/source_extraction.ts.
       // The service path logs filter parse failures; the worker stays silent.

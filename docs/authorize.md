@@ -44,7 +44,7 @@ source: orders is duckdb.table('orders.parquet') extend {
 }
 ```
 
-- **A source may declare at most one `#(authorize)` annotation.** Declaring a second on the same source fails the load naming both. `or` is refused by the grammar too, so there is no way to combine more than one condition in a single gate — see [OR semantics](#or-semantics) for the two-sources alternative.
+- **A source may declare more than one `#(authorize)` annotation; repeats AND together.** `#(authorize) region = $REGION` and a second `#(authorize) org_id in $GROUPS` on the same source both apply, and a caller must satisfy every one of them. `or` is still refused by the grammar, so there is still no way to admit-if-either inside a single gate — see [OR semantics](#or-semantics) for the two-sources alternative. A separate `#(source-authorize)` route exists for a rule about the caller rather than the row; see [The `#(source-authorize)` route](#the-source-authorize-route) below.
 - **`#(authorize)` only gates from the `source:` line.** The same annotation on a `dimension:`/`measure:`/`join_*:`/`view:` line inside the source, or on a top-level `query:`, is never enforced from there — it fails the load naming the position instead of silently protecting nothing. See [Enforcement](#enforcement).
 - A source with no `#(authorize)` annotation of its own or inherited is **unrestricted**.
 
@@ -140,6 +140,8 @@ is legal; none of the following are:
 | `'x' = $ROLE and org_id in $GROUPS` | `mixed_scope_body` | a body is either all row-level or all source-level terms, never mixed |
 | `org_id = $GROUPS` where `GROUPS` is list-typed | `operator_arity_mismatch` | a list-typed given takes `in`, not `=` |
 | `kids.name in $GROUPS` where `kids` is a `join_many`/`join_cross` | `fanout_path` | a row-level term cannot read through a fan-out join — see [Row-level gates](#row-level-gates) |
+| `org_id in $GROUPS` inside `#(source-authorize)` | `row_level_term_in_source_authorize` | a `#(source-authorize)` body is caller-only; move the term to `#(authorize)` — see [The `#(source-authorize)` route](#the-source-authorize-route) |
+| `#(authorize) false` alongside any other `#(authorize)`/`#(source-authorize)` note on the same source | `deny_all_with_sibling` | a deny-all admits nobody, so a sibling note can never change what is served; delete whichever is wrong |
 
 Embedded string literals follow ordinary Malloy syntax: single-quote them as usual (`'analyst' = $ROLE`).
 
@@ -207,11 +209,62 @@ source: orders_summary is orders_raw -> {
 } extend {}
 ```
 
+## The `#(source-authorize)` route
+
+`#(source-authorize)` is a second annotation route: a gate that is a rule about the CALLER (a
+source-level term, `'literal' <op> $GIVEN`) rather than about the row. It shares the grammar,
+declaration position, and load-time validation described above — see [Declaring Gates](#declaring-gates)
+and [Expression Language](#expression-language) — with three things specific to it:
+
+- **Every term must be source-level.** A row-level term (a field path on the left) inside a
+  `#(source-authorize)` body is refused at load as `row_level_term_in_source_authorize`, naming the
+  rewrite: move the term to `#(authorize)`. The `false` deny-all is accepted on this route too, and
+  denies on either route denies both — see [Enforcement](#enforcement).
+- **It inherits through `extend` the same way `#(authorize)` does, evaluated per route.** An
+  extension that declares its own `#(source-authorize)` replaces the base's on that route only; it
+  still carries whatever `#(authorize)` gate it inherited (or declared) unchanged, and vice versa. A
+  source that inherits `#(authorize)` from its base but declares its own `#(source-authorize)` is
+  correctly "own" for one route and "inherited" for the other.
+- **It ANDs with the row-level `#(authorize)` gate — it never bypasses it.** There is deliberately no
+  spelling anywhere in this grammar for "admit and skip the row filter": a source gated by both
+  `#(authorize) org_id in $GROUPS` and `#(source-authorize) 'finance' in $GROUPS` grafts both, and a
+  caller must satisfy each independently. A caller it does not admit on this route gets the same
+  **200 with zero rows** shape as any other gate.
+
+```malloy
+given:
+  ORG_ID :: string
+  GROUPS :: string[]
+
+#(authorize) org_id = $ORG_ID
+#(source-authorize) 'finance' in $GROUPS
+source: orders is duckdb.table('orders.parquet') extend {}
+```
+
+The API reports the two routes separately. `authorize` carries the row-level route's effective texts
+(this includes a pure source-level `#(authorize)` body, the convenience form below); `sourceAuthorize`
+carries the `source-authorize` route's own effective texts only. See `Source.sourceAuthorize` in
+`api-doc.yaml`.
+
+**The source-level convenience form under `#(authorize)` still exists and is a different thing.**
+`#(authorize) 'analyst' = $ROLE` is a source-level TERM on the `authorize` ROUTE, the form already
+covered in [Declaring Gates](#declaring-gates), and it is reported under `authorize`, not
+`sourceAuthorize`. Reach for `#(source-authorize)` when the caller-rule needs to stay visible as its
+own thing in introspection (`get_context`, the API's `sourceAuthorize` field) and AND separately
+alongside a row-level gate; a source-level term does not need the separate route to be enforced, it
+already works under plain `#(authorize)`.
+
+**`/compile`'s presence-not-truth rule applies identically to this route.** A caller supplying any
+`GROUPS` (right or wrong) clears the decidability check for a `#(source-authorize)` term exactly as
+it does for `#(authorize)` (see [Enforcement](#enforcement)), and `includeSql` returns SQL ungrafted
+with either route's `where:`. This is not new behavior introduced by the second route: it was already
+true of a source-level term before `#(source-authorize)` existed.
+
 ## Semantics
 
 ### OR semantics
 
-**`or` is not accepted anywhere in a gate body — `compound_boolean` at load, unconditionally.** A source may also declare at most one `#(authorize)` annotation, so there is no way to express disjunction on a single source at all: not by writing `or` in the expression, and not by stacking a second annotation (a second one fails the load naming both).
+**`or` is not accepted anywhere in a gate body — `compound_boolean` at load, unconditionally.** Repeats on the same source AND rather than OR (see [Declaring Gates](#declaring-gates)), so there is still no way to express disjunction on a single source: not by writing `or` in the expression, and not by declaring more than one `#(authorize)` note — that combines conditions, it does not offer a choice between them.
 
 The replacement pattern is two sources instead of one disjunction: give each admitted population its own extension source, each with its own conjunctive gate, over the same base. Every ordinary term must reference a given — see [Declaring Gates](#declaring-gates) — but `false` is a deliberate exception (below), so a base can still be locked outright:
 
@@ -229,6 +282,21 @@ source: orders_for_tenants is orders_base extend {}
 ```
 
 A caller who would have satisfied one arm of an old `or` now queries the extension whose gate their given satisfies, instead of a single source whose gate tries to satisfy everyone at once.
+
+The same shape is also the admin escape hatch: add a further extension over the same locked base whose gate is a source-level convenience term rather than another arm of the row-level rule.
+
+```malloy
+#(authorize) false
+source: orders_base is duckdb.table('orders.parquet') extend {}
+
+#(authorize) org_id in $ORG_ID
+source: orders is orders_base extend {}
+
+#(authorize) 'admin' in $GROUPS
+source: orders_admin is orders_base extend {}
+```
+
+Each extension replaces the base's `false` with its own rule. Gates AND on both routes with no exception, so there is deliberately no spelling for "admit and skip the row filter" here: `orders_admin`'s gate is still evaluated exactly like `orders`'s, it just restricts nothing per row because a source-level term is constant across every row. The disjunction between an ordinary caller and an admin one is expressed the only way this grammar allows a disjunction: as two entry points, never as `or` inside one gate.
 
 ### The entry point, and only the entry point
 
