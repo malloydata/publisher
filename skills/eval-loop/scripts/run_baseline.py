@@ -1098,6 +1098,31 @@ def cascade_lines(c: dict | None) -> list[str]:
     return lines
 
 
+def skill_lines(skill_uses: dict | None, _unused: int | None = None) -> list[str]:
+    """Which of the answerer's skills it actually opened.
+
+    A run names the skills it granted, and that reads as though they shaped the
+    answers. They only do when the agent opens them: skills load on demand, and
+    an answerer that finds a question easy reads none. Measured on a real run,
+    every attempt invoked zero, so an edit to a skill could not have changed
+    anything and nothing said so. The count is not a target -- an agent that
+    answers correctly without opening a skill is fine -- but a skill edit
+    justified by an eval needs it.
+    """
+    if not skill_uses or not skill_uses.get("attempts"):
+        return []
+    n, total = skill_uses["with_skill"], skill_uses["attempts"]
+    lines = ["", "SKILLS",
+             f"  invoked       {n} of {total} attempt(s) opened a skill"
+             + (f": {', '.join(skill_uses['skills'][:5])}"
+                if skill_uses.get("skills") else "")]
+    if n == 0:
+        lines += ["                ! none of the granted skills was read, so "
+                  "this run measures the tools and the model, not the skills. "
+                  "A skill edit cannot be credited or blamed from it."]
+    return lines
+
+
 def evidence_lines(evidence: dict | None) -> list[str]:
     """What the pass rate rests on, or nothing when no ledger was read.
 
@@ -1138,7 +1163,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   publisher: str, environment: str,
                   evidence: dict | None = None,
                   coverage_report: dict | None = None,
-                  cascade: dict | None = None) -> list[str]:
+                  cascade: dict | None = None,
+                  skill_uses: dict | None = None) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -1193,6 +1219,7 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         for qid, hits in vetoed:
             lines += [f"    {qid}: {'; '.join(hits)}"]
 
+    lines += skill_lines(skill_uses)
     lines += evidence_lines(evidence)
 
     lines += ["", "COVERAGE & RETRIEVAL"]
@@ -1503,6 +1530,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
     calls, answer, queries = [], [], []
     n_get, n_exec, n_err, host_tools = 0, 0, 0, 0
     foreign_skills: list[str] = []
+    # Skills the answerer actually OPENED. The harness tracked only the breach
+    # case (a skill outside the manifest), so a run reported "11 skills" for an
+    # answerer that read none of them, and a skill edit could be measured only
+    # by guessing. An eval that claims to test an agent "with these skills"
+    # should say how many it used.
+    used_skills: list[str] = []
     pending: dict[str, dict[str, Any]] = {}
 
     for e in events:
@@ -1570,6 +1603,8 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                             sk = (c.get("input") or {}).get("skill")
                             if sk and sk not in (a.answerer_skills or []):
                                 foreign_skills.append(sk)
+                            elif sk:
+                                used_skills.append(sk)
         elif e.get("type") == "user":
             for c in e["message"].get("content") or []:
                 if c.get("type") != "tool_result":
@@ -1630,6 +1665,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "n_execute": n_exec,
         "n_execute_errors": n_err,
         "host_tool_uses": host_tools,
+        "skills_invoked": sorted(set(used_skills)),
         "mcp_tool_uses": n_get + n_exec,
         **usage_fields(usage),
         "cost_usd": res.get("total_cost_usd"),
@@ -2597,6 +2633,7 @@ def main(argv: list[str] | None = None) -> int:
                       n_execute_errors=att["n_execute_errors"],
                       host_tool_uses=att["host_tool_uses"],
                       mcp_tool_uses=att.get("mcp_tool_uses"),
+                      skills_invoked=att.get("skills_invoked") or [],
                       reported_calls=att["n_get_context"] + att["n_execute"],
                       contaminated=bool(att.get("breaches")),
                       contamination_reasons=att.get("breaches") or [],
@@ -2720,6 +2757,11 @@ def main(argv: list[str] | None = None) -> int:
             for c in cases]
     rs = summarise(retr)
     funnel = cascade(retr)
+    skill_uses = {
+        "attempts": len(attempts),
+        "with_skill": sum(1 for x in attempts.values() if x.get("skills_invoked")),
+        "skills": sorted({s for x in attempts.values()
+                          for s in (x.get("skills_invoked") or [])})}
     # Recall below 1.0 on a PASSING case means the required list named one path
     # to an answer the agent reached by another. That is an expectation defect,
     # not a retrieval miss, and it is why mean recall is a weaker number than
@@ -2759,6 +2801,7 @@ def main(argv: list[str] | None = None) -> int:
             unscorable=unscorable,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
             coverage_report=coverage_report, cascade=funnel,
+            skill_uses=skill_uses,
             answerer_cost=cost, judge_cost=judge_cost,
             publisher=a.publisher, environment=a.environment):
         print(line)

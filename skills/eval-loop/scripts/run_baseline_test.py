@@ -532,6 +532,33 @@ class PlatformMcpUrl(unittest.TestCase):
 
 
 
+class SkillsActuallyOpened(unittest.TestCase):
+    """A run names the skills it granted; only the ones opened shaped anything.
+
+    Measured on a real run: every attempt invoked zero of its 11 skills, so an
+    edit to one could not have changed the answers and nothing in the report
+    said so.
+    """
+
+    def test_zero_says_the_run_does_not_measure_the_skills(self):
+        lines = rb.skill_lines({"attempts": 8, "with_skill": 0, "skills": []})
+        text = "\n".join(lines)
+        self.assertIn("0 of 8", text)
+        self.assertIn("cannot be credited or blamed", text)
+
+    def test_some_usage_names_the_skills_and_does_not_warn(self):
+        lines = rb.skill_lines({"attempts": 8, "with_skill": 3,
+                                "skills": ["malloy-phrase-detection"]})
+        text = "\n".join(lines)
+        self.assertIn("3 of 8", text)
+        self.assertIn("malloy-phrase-detection", text)
+        self.assertNotIn("cannot be credited", text)
+
+    def test_no_attempts_prints_nothing(self):
+        self.assertEqual(rb.skill_lines({"attempts": 0, "with_skill": 0}), [])
+        self.assertEqual(rb.skill_lines(None), [])
+
+
 class NoLocalShadowsAnImportedModule(unittest.TestCase):
     """A local named after an imported module breaks every call to that module
     in the same function, and only at runtime.
