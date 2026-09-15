@@ -46,6 +46,7 @@ These are the rules you won't apply correctly by default:
 5. **Categorical strings that look numeric are still dimensions.** "18-30", "<5 days", "tier 2" are stored as literal strings on a dimension. Target that dimension, then confirm the exact string with `execute_query`.
 6. **"Top N" without a named measure, add a ranking measure.** "top 6 products" becomes a measure for the ranking concept (`"the performance metric for a product"`) plus a dimension for the entity. If the measure is explicit ("top products by total sales"), use it directly and skip the generic ranking measure.
 7. **Multiple values for one concept, one dimension target.** Several values ("premium and basic") still map to a single dimension target for the parent field; enumerate the exact stored values with `execute_query`.
+8. **A population qualifier is a target, and so is the one the question omits.** Words like "real", "actual", "genuine", "live" or "production" are not filler: they name rows the model marks for exclusion. Target the flag itself (`"the flag marking synthetic, test or monitoring traffic"`), not just the noun they modify. Add one such target even when the question carries no qualifier at all, because a table of events, requests, sessions or logs usually holds test, internal or cancelled rows and nothing in the wording will say so. Resolve it to the model's own flag rather than inventing a filter on an id or a name; a hand-rolled exclusion and the documented one rarely select the same rows.
 
 ## Worked example
 

@@ -36,6 +36,7 @@ A name is a pointer, not confirmation. A field, source, or view name you saw in 
 - Do I have every entity I need, each confirmed by a `get_context` result rather than assumed from a name?
 - Did I actually read the docstrings, source-level and field-level, for grain, units, null handling, and required joins?
 - Do I understand the relationships between the entities I plan to use (joins, grain)?
+- What population does this source default to? Fact tables of events, requests, sessions or logs commonly carry test, synthetic, internal or cancelled rows, and the question will not mention them. Find out whether the model documents a flag for those rows, and settle it before the first aggregate rather than after.
 
 ## 3. Construct the query
 
@@ -97,8 +98,9 @@ Your first result is a draft, not an answer. The difference between a useful ana
   - Time series or trend: query `min(date_field)` and `max(date_field)` to confirm the range matches what you're presenting.
   - Any percentage: verify the denominator separately.
   - Ranking or comparison: check whether the conclusion holds under a different reasonable metric; if it doesn't, that's a finding to surface, not a problem to hide.
+  - Extreme of a rate ("worst", "highest failure rate", "best performing"): read the denominator before you report the winner. A group with a handful of rows takes the top spot on noise alone; one failure in three is a 33% failure rate. If the model documents a minimum volume, apply it. If it documents none, choose a floor, say which floor you chose, and show the rate with its denominator beside it.
 
-If verification reveals a discrepancy, stop and fix it (go back to step 2 or 3). Do not present a result that failed verification with a caveat: fix it, or tell the user you cannot confidently answer. Verification queries are for your reasoning, so do not put chart annotations on them.
+If verification reveals a discrepancy, stop and fix it (go back to step 2 or 3). Do not present a result that failed verification with a caveat: fix it, or tell the user you cannot confidently answer. A failed verification is more than two computations disagreeing. Any condition you yourself name that would invalidate the result counts: the field is null for the period asked about, the denominator is eleven rows, the instrumentation started after the window. When that happens the conclusion has to move, not just acquire a footnote. Writing the condition beside an unchanged headline satisfies the wording of this rule and defeats its purpose, because if the caveat is true the headline is wrong. Verification queries are for your reasoning, so do not put chart annotations on them.
 
 Never re-run the exact same query expecting a different result: a given query always returns the same data. This does not forbid the checks above (independent recounts, denominator checks, fan-out probes) - those are different queries that cross-check the result, and running them is expected.
 
@@ -108,6 +110,17 @@ single grain carries, a breakout the report lacks), say so briefly and then RUN 
 alternative you can name: fewer dimensions per chart, several focused charts, or a table. Naming
 viable fallbacks and offering to run them later is a non-answer; the user asked a question and
 something runnable exists. The same applies to a breakout you believe is unavailable: **run the query before reporting that it cannot be done.** A `where:` on a dimension value, a dimension you have not tried, or a differently-scoped grain often returns rows when the discovery view suggested otherwise. Report an absence only after a query has actually failed or come back empty.
+
+**The fallback changes the shape of the answer, never the field that carries the distinction.**
+Fewer dimensions, a coarser grain, several charts instead of one, a table instead of a chart: those
+still answer the question that was asked. Substituting a neighbouring field because the requested
+one is null does not, and it is the more tempting move precisely because it produces a complete
+looking answer. When the field that carries the distinction the user asked about is null across the
+window they asked about, that absence IS the answer: say the split is not recorded for that window,
+name the window where it is recorded if one exists, and stop there. Reporting one side of the split
+as a confirmed number while caveating the other is the same substitution wearing a caveat: if every
+row in the window falls on one side by construction, that number describes how the rows were
+logged, not the thing the user asked about.
 
 **But once the evidence is in, commit to it.** That rule exists to stop you guessing an absence, not to stop you ever stating one. An authoritative list that does not contain the thing asked about IS proof it is absent: say so plainly. "The model cannot confirm or deny whether X is one of them" is a wrong answer when you are holding the list: the user asked a yes/no question and you have the answer. The same holds for a value you are declining to show: decline it in one clear sentence and deliver the rest. Hedging after you have the evidence reads as not knowing, and it is the failure mode this rule most easily causes.
 
