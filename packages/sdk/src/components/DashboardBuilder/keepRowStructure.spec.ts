@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { keepRowStructure } from "./DashboardBuilder";
+import { keepRowStructure } from "./layout";
 import type { DashboardTile } from "./document";
 
 const tile = (

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { moveIntoGap } from "./DashboardBuilder";
+import { moveIntoGap } from "./layout";
 import type { DashboardTile } from "./document";
 
 const tile = (

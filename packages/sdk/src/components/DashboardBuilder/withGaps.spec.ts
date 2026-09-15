@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { withGaps } from "./DashboardBuilder";
+import { withGaps } from "./layout";
 import type { DashboardTile } from "./document";
 
 const tile = (
