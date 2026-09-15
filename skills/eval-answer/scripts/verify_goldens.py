@@ -118,6 +118,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import datetime
 import json
 import pathlib
 import re
@@ -153,6 +154,11 @@ def check_value(case: dict[str, Any], a: argparse.Namespace
     q = g.get("canonicalQuery")
     if g.get("kind") == "unanswerable":
         return "skipped", "unanswerable by design: the pass is a refusal", None
+    if g.get("kind") == "criteria":
+        # The clauses ARE the key. This used to fall through to "no
+        # canonicalQuery" and count as an error, so a set with one criteria
+        # golden failed its own audit with exit 1.
+        return "skipped", "criteria: the clauses are the key, nothing to re-derive", None
     if not q:
         return "error", "no canonicalQuery: this golden cannot be re-derived", None
     if a.rewrite:
@@ -225,7 +231,42 @@ def golden_numbers(value: Any) -> list[float]:
 # reported on the ecommerce set.
 _WRONG_MARK = re.compile(
     r"(?i)\b(close but wrong|wrong|incorrect|trap|reject"
-    r"|divergent|near_match|also acceptable)\b")
+    r"|divergent|near_match|also acceptable|partial|structural)\b"
+    r"|\bwrong[ _-]?(pick|answer)|accept:\s*false")
+# Rubrics also reject by naming a diagnose code rather than saying "wrong":
+# "using it is FILTER-LITERAL / SCOPE", "is WRONG_PICK". The underscore in
+# WRONG_PICK defeats `\bwrong\b` above (underscore is a word character), and
+# the codes are written in upper case on purpose, so this one is
+# case-sensitive: a rubric that says "the scope of the question" in prose is
+# not rejecting anything.
+_CODE_MARK = re.compile(
+    r"\b(WRONG[_-]PICK|FILTER-LITERAL|SCOPE|GRAIN|CONVENTION|SYNTAX|COVERAGE"
+    r"|NOT-RETURNED|LOW-RANK)\b")
+
+
+def accepting_clause(rubric: str) -> str:
+    """The text before the first rejecting marker, from either list.
+
+    Measured on the ecommerce set: the `(?i)wrong` marker alone read 168
+    figures as asserted-right, most of them the trap value the rubric names
+    after "is WRONG_PICK" or "is FILTER-LITERAL", because neither spelling
+    matched. Every such figure is supposed to be absent from the golden, so
+    every one was reported as a review item.
+    """
+    starts = [m.start() for m in (_WRONG_MARK.search(rubric),
+                                  _CODE_MARK.search(rubric)) if m]
+    if not starts:
+        return rubric
+    # Back up to the start of the SENTENCE holding the marker. Rubrics name
+    # the trap before its verdict ("Using total_sales (12566292.88) is
+    # WRONG_PICK"), so cutting at the marker itself kept the very figure the
+    # sentence rejects. A sentence ends at . ; ! ? followed by whitespace, so
+    # the dot inside 6564004.49 is not a boundary.
+    prior = rubric[:min(starts)]
+    end = 0
+    for m in re.finditer(r"[.;!?]\s+", prior):
+        end = m.end()
+    return prior[:end]
 
 
 def rubric_number_findings(case: dict[str, Any]) -> list[str]:
@@ -254,8 +295,7 @@ def rubric_number_findings(case: dict[str, Any]) -> list[str]:
     rubric = g.get("rubric") or ""
     if not rubric or g.get("kind") == "unanswerable":
         return []
-    m = _WRONG_MARK.search(rubric)
-    accepting = rubric[:m.start()] if m else rubric
+    accepting = accepting_clause(rubric)
     have = golden_numbers(g.get("value"))
     val = g.get("value")
     if isinstance(val, list):
@@ -552,6 +592,7 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
     if not text:
         return []
     out: list[str] = []
+    dup_cases: dict[str, list[str]] = {}
     for case in cases:
         qid = case["qid"]
         exp = case.get("expectedEntities") or {}
@@ -577,13 +618,10 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
                 # `acceptable` marks ids that are not noise if returned. A
                 # required id is already not noise, so listing it twice says
                 # nothing about the case and hides whether `acceptable` was
-                # authored at all or copied from `required`. Review, not fail:
-                # it moves no number.
-                out.append(f"review {qid}: {e} is in both required and "
-                           f"acceptable. A required id is never noise, so the "
-                           f"acceptable entry is redundant. Drop it, or if the "
-                           f"model offers more than one route, make it a "
-                           f"requiredAnyOf group")
+                # authored at all or copied from `required`. Collected and
+                # reported ONCE per set below: on the ecommerce set this fired
+                # 103 times, once per entry, and buried the rubric prompts.
+                dup_cases.setdefault(qid, []).append(e)
                 continue
             if _id_malformed(e):
                 out.append(f"review {qid}: acceptable entity {e!r} has no "
@@ -597,6 +635,14 @@ def unknown_name_findings(cases: list[dict[str, Any]], text: str) -> list[str]:
             if name and not _named(name.rsplit(".", 1)[-1], text):
                 out.append(f"review {qid}: mustNotUse {name!r} names nothing in "
                            f"the model under test, so the veto can never fire")
+    if dup_cases:
+        n = sum(len(v) for v in dup_cases.values())
+        sample = ", ".join(list(dup_cases)[:4])
+        out.append(f"review set: {len(dup_cases)} case(s) list an id in both "
+                   f"required and acceptable ({n} entries; e.g. {sample}). A "
+                   f"required id is never noise, so those acceptable entries say "
+                   f"nothing. Drop them, or where the model offers more than one "
+                   f"route, make the id a requiredAnyOf group")
     return out
 
 
@@ -607,7 +653,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
            refresh: bool = False, promote: bool = False,
            target_package: str | None = None,
            cases_file: str = "cases.jsonl",
-           quiet: bool = False) -> dict[str, Any]:
+           quiet: bool = False, attest: str | None = None,
+           verbose: bool = False) -> dict[str, Any]:
     """Run every check. Returns a summary; `drifted` is the count that should
     stop a run.
 
@@ -646,6 +693,7 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     findings: list[str] = []
     refreshed: list[str] = []
     promoted: list[str] = []
+    attested: list[str] = []
     promotion_notes: list[str] = []
     # Everything down to the value loop reads the cases, the gold artifacts and
     # the model text. No server is involved, so none of it is gated.
@@ -676,16 +724,42 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         # Anything else is reported rather than promoted, so a caller learns
         # WHY a key it expected to promote did not.
         if promote:
-            if status != "ok":
+            g = c["golden"]
+            if (g.get("kind") in ("unanswerable", "criteria")
+                    and g.get("status") == "provisional"):
+                # Verified on arrival, as skill:eval-import says: there is no
+                # value to re-derive, and the refusal (or the clauses) is the
+                # whole key. Left provisional, the answer judge refused a
+                # verdict on exactly the cases that measure refusal.
+                g["status"] = "verified"
+                g["verifiedBy"] = "authored_criteria"
+                promoted.append(c["qid"])
+            elif status != "ok":
                 promotion_notes.append(
                     f"{c['qid']}: not promoted, value check says {status}")
             else:
                 why = promotion_blocker(c, set_dir)
-                if why:
+                if why and attest and why.startswith("no second derivation"):
+                    # The human path the doctrine already grants `invalid` and
+                    # `ambiguous`: a person vouches, and the record says so
+                    # rather than pretending a second query was run.
+                    g["status"] = "verified"
+                    g["verifiedBy"] = f"attested: {attest}"
+                    g["verification"] = {
+                        "primaryAxis": "canonicalQuery",
+                        "variesAxis": "human-attestation",
+                        "attestation": attest,
+                        "attestedAt": datetime.date.today().isoformat()}
+                    promoted.append(c["qid"])
+                    attested.append(c["qid"])
+                elif why:
+                    if why.startswith("no second derivation"):
+                        why += ("; or vouch for it with --promote --attest "
+                                "'<who, when, how it was checked>'")
                     promotion_notes.append(f"{c['qid']}: not promoted, {why}")
                 else:
-                    c["golden"]["status"] = "verified"
-                    c["golden"]["verifiedBy"] = PROMOTED_BY
+                    g["status"] = "verified"
+                    g["verifiedBy"] = PROMOTED_BY
                     promoted.append(c["qid"])
         if status == "diff":
             findings.append(f"{c['qid']}: {detail}")
@@ -724,7 +798,9 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
         # number nobody had re-derived to one two derivations agree on.
         print(f"\n  promoted {len(promoted)} golden(s) to verified: "
               f"{', '.join(promoted)} -- value unchanged, so goldenRevision is "
-              f"not bumped and earlier scores stay comparable")
+              f"not bumped and earlier scores stay comparable"
+              + (f"\n  {len(attested)} of those by attestation, not by a second "
+                 f"derivation; the record says so on each" if attested else ""))
     if promotion_notes and not quiet:
         print(f"\n  {len(promotion_notes)} golden(s) not promoted:")
         for n in promotion_notes:
@@ -742,12 +818,19 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
             print(f"\n{len(hard)} finding(s) besides value drift:")
             for f in hard:
                 print(f"  {f}")
-        if soft:
-            print(f"\n{len(soft)} rubric figure(s) to review (not failures):")
-            for f in soft[:20]:
+        figs = [f for f in soft if "rubric asserts" in f]
+        rest = [f for f in soft if "rubric asserts" not in f]
+        for group, head in ((figs, "rubric figure(s) to review (not failures; a "
+                                   "prompt to read each rubric against its rows)"),
+                            (rest, "other review item(s) (not failures)")):
+            if not group:
+                continue
+            shown = group if verbose else group[:5]
+            print(f"\n{len(group)} {head}:")
+            for f in shown:
                 print(f"  {f[len('review '):]}")
-            if len(soft) > 20:
-                print(f"  ... and {len(soft) - 20} more")
+            if len(group) > len(shown):
+                print(f"  ... and {len(group) - len(shown)} more (--verbose prints all)")
     # ONE shape, both paths. Two shapes is what produced the bug: a caller had
     # to branch on `skipped` before it could safely read `tally`, and that
     # branch is where the findings were dropped. `skipped` stays a truthy
@@ -756,7 +839,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     # spelled "skipped" and one word may not mean two things in one dict.
     return {"skipped": skipped, "tally": tally, "drifted": drifted,
             "findings": findings, "refreshed": refreshed,
-            "promoted": promoted, "promotionNotes": promotion_notes}
+            "promoted": promoted, "attested": attested,
+            "promotionNotes": promotion_notes}
 
 
 # "The check you asked for did not happen." Two ways in: an unanticipated
@@ -798,15 +882,27 @@ def main() -> int:
                          "golden.status; without it an imported set stays "
                          "unscorable forever. Prints why each unpromoted golden "
                          "was left alone")
+    ap.add_argument("--attest", default=None, metavar="TEXT",
+                    help="with --promote: vouch for goldens that re-derived "
+                         "cleanly but carry no second derivation. TEXT names "
+                         "who checked, when, and how; it is written on the "
+                         "golden as the verification record, so a reader sees "
+                         "a person stood behind it rather than a second query")
+    ap.add_argument("--verbose", action="store_true",
+                    help="print every rubric-figure review item, not the first five")
     ap.add_argument("--target-package",
                     help="the package under test, for the isolation guard. "
                          "Falls back to set.json's `targetPackage`")
     args = ap.parse_args()
+    if args.attest is not None and (not args.promote or not args.attest.strip()):
+        ap.error("--attest needs --promote and non-empty text naming who "
+                 "checked, when, and how")
 
     r = verify(args.set_dir, args.publisher, args.environment,
                qids=set(args.qid) if args.qid else None, model=args.model,
                refresh=args.refresh, promote=args.promote,
-               target_package=args.target_package, cases_file=args.cases)
+               target_package=args.target_package, cases_file=args.cases,
+               attest=args.attest, verbose=args.verbose)
     if r.get("skipped"):
         print(f"\n{r['skipped']}")
     # Drift and findings both fail: a golden that cannot be re-derived is a

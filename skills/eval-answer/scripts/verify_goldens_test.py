@@ -3,6 +3,7 @@
 under test. The rest of verify_goldens needs a live Publisher and is exercised
 by running it."""
 import hashlib
+import argparse
 import json
 import pathlib
 import shutil
@@ -505,6 +506,111 @@ class RequiredAndAcceptableOverlap(unittest.TestCase):
         dup = [x for x in f if "both required and acceptable" in x]
         self.assertEqual(len(dup), 1)
         self.assertTrue(dup[0].startswith("review "))
+
+
+class VerifiedOnArrival(Promotion):
+    """unanswerable and criteria goldens hold no value; the importer marks
+    them verified on arrival, and the promoter refused them, so a set that
+    imported them provisional could never score its refusal cases."""
+
+    def test_an_unanswerable_golden_promotes(self):
+        r, stored = self.run_promote(
+            self.case(kind="unanswerable", value=None, rubric="decline"),
+            value_status="skipped")
+        self.assertEqual(r["promoted"], ["q1"])
+        self.assertEqual(stored["golden"]["verifiedBy"], "authored_criteria")
+
+    def test_a_criteria_golden_promotes(self):
+        r, stored = self.run_promote(
+            self.case(kind="criteria", value=None, rubric="REQUIRED: names X"),
+            value_status="skipped")
+        self.assertEqual(r["promoted"], ["q1"])
+        self.assertEqual(stored["golden"]["status"], "verified")
+
+    def test_criteria_is_skipped_by_the_value_check_not_an_error(self):
+        # It has no canonicalQuery by design; "error" counted as drift and
+        # failed the audit for the whole set.
+        status, _, _ = verify_goldens.check_value(
+            self.case(kind="criteria", value=None, rubric="x"),
+            argparse.Namespace(publisher="http://x", environment="e",
+                               truth_package="t", truth_model="t.malloy",
+                               rewrite=False))
+        self.assertEqual(status, "skipped")
+
+
+class Attestation(Promotion):
+    """The human path. A person vouches for a re-derived value that has no
+    second derivation, and the record says a person did, not a query."""
+
+    def attest(self, case, value_status="ok", text="jane, 2026-09-14, rows checked by hand"):
+        self.write(case)
+        with unittest.mock.patch.object(
+                verify_goldens, "check_value",
+                return_value=(value_status, "", [{"x": 42}])):
+            r = verify(self.tmp, "http://truth", "samples", promote=True,
+                       quiet=True, attest=text)
+        return r, json.loads((self.tmp / "cases.jsonl").read_text())
+
+    def test_attestation_promotes_and_records_who(self):
+        r, stored = self.attest(self.case())
+        self.assertEqual(r["promoted"], ["q1"])
+        self.assertEqual(r["attested"], ["q1"])
+        g = stored["golden"]
+        self.assertEqual(g["status"], "verified")
+        self.assertTrue(g["verifiedBy"].startswith("attested: jane"))
+        self.assertEqual(g["verification"]["variesAxis"], "human-attestation")
+        self.assertIn("attestation", g["verification"])
+
+    def test_attestation_never_covers_a_drifted_value(self):
+        r, stored = self.attest(self.case(), value_status="diff")
+        self.assertEqual(r["promoted"], [])
+        self.assertEqual(stored["golden"]["status"], "provisional")
+
+    def test_a_real_second_derivation_is_not_marked_attested(self):
+        r, stored = self.attest(self.case(**self.SECOND))
+        self.assertEqual(r["promoted"], ["q1"])
+        self.assertEqual(r["attested"], [])
+        self.assertEqual(stored["golden"]["verifiedBy"], "verify_goldens.py --promote")
+
+    def test_without_attest_the_note_names_the_flag(self):
+        r, _ = self.run_promote(self.case())
+        self.assertIn("--attest", r["promotionNotes"][0])
+
+
+class RubricFigures(unittest.TestCase):
+    """Figures a rubric asserts as RIGHT that the golden does not hold. The
+    rejecting half quotes numbers that are supposed to be absent, so the check
+    must stop at the first rejecting marker, in whatever words the set uses."""
+
+    def case(self, rubric, **value):
+        return {"qid": "q", "golden": {"kind": "scalar", "rubric": rubric,
+                                        "value": {**value, "round": 2}}}
+
+    def test_a_trap_after_wrong_pick_is_not_asserted_right(self):
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: sale_price minus cost, 6564004.49. Using total_sales "
+            "(12566292.88) is WRONG_PICK.", total_gross_margin=6564004.49))
+        self.assertEqual(f, [])
+
+    def test_a_diagnose_code_ends_the_accepting_clause(self):
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: status = 'Complete' only, 11865343.56. The model's total_sales "
+            "measure has no status filter (12566292.88), using it is FILTER-LITERAL "
+            "/ SCOPE.", total_sales=11865343.56))
+        self.assertEqual(f, [])
+
+    def test_lower_case_prose_is_not_a_code(self):
+        # "the scope of the question" rejects nothing; only the upper-case code does.
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: 99999.99, the scope of the question is one year.",
+            total=6564004.49))
+        self.assertEqual(len(f), 1)
+
+    def test_a_figure_in_the_accepting_clause_is_still_reported(self):
+        f = verify_goldens.rubric_number_findings(self.case(
+            "Right: 99999.99 exactly.", total=6564004.49))
+        self.assertEqual(len(f), 1)
+        self.assertIn("99999.99", f[0])
 
 if __name__ == "__main__":
     unittest.main()
