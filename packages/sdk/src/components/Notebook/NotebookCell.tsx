@@ -24,6 +24,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
 import { highlight } from "../highlighter";
 import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
+import { FloatingIconButton } from "../FloatingIconButton";
 import { Prose } from "../Prose";
 import type { NavigationClick } from "../click_helper";
 import { useDrill, type DrillNavigation } from "../drill";
@@ -31,7 +32,7 @@ import { createEmbeddedQueryResult } from "../QueryResult/QueryResult";
 import ResultContainer from "../RenderedResult/ResultContainer";
 import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
-import { CleanMetricCard, CleanNotebookCell } from "../styles";
+import { CleanMetricCard } from "../styles";
 import { EnhancedNotebookCell } from "./types";
 
 interface NotebookCellProps {
@@ -245,7 +246,7 @@ export function NotebookCell({
 
    return (
       (cell.type === "markdown" && (
-         <CleanNotebookCell>
+         <Box>
             <Box>
                {index === 0 ? (
                   <Stack
@@ -280,10 +281,10 @@ export function NotebookCell({
                   message={copyMessage}
                />
             </Box>
-         </CleanNotebookCell>
+         </Box>
       )) ||
       (cell.type === "code" && (
-         <CleanNotebookCell>
+         <Box>
             {(!hideCodeCellIcon ||
                (!hideEmbeddingIcon && cell.result) ||
                (cell.newSources && cell.newSources.length > 0)) && (
@@ -325,33 +326,13 @@ export function NotebookCell({
                               />
                            )}
                            {hasValidImport && (
-                              <IconButton
-                                 sx={{
-                                    backgroundColor: "rgba(255, 255, 255, 0.9)",
-                                    "&:hover": {
-                                       backgroundColor:
-                                          "rgba(255, 255, 255, 1)",
-                                    },
-                                    width: "32px",
-                                    height: "32px",
-                                    flexShrink: 0,
-                                 }}
+                              <FloatingIconButton
+                                 aria-label="Data sources"
+                                 sx={{ flexShrink: 0 }}
                                  onClick={() => setSourcesDialogOpen(true)}
                               >
-                                 <SearchIcon
-                                    sx={{
-                                       fontSize: "18px",
-                                       // grey.700 is a dark warm grey
-                                       // that stays legible on the
-                                       // white-ish IconButton in both
-                                       // light and dark mode. The
-                                       // button background is
-                                       // hardcoded white, so the icon
-                                       // must be hardcoded dark.
-                                       color: "grey.700",
-                                    }}
-                                 />
-                              </IconButton>
+                                 <SearchIcon />
+                              </FloatingIconButton>
                            )}
                         </Box>
                      </CleanMetricCard>
@@ -581,44 +562,26 @@ export function NotebookCell({
                      }}
                   >
                      {!hideCodeCellIcon && (
-                        <IconButton
-                           sx={{
-                              backgroundColor: "rgba(255, 255, 255, 0.9)",
-                              "&:hover": {
-                                 backgroundColor: "rgba(255, 255, 255, 1)",
-                              },
-                              width: "32px",
-                              height: "32px",
-                           }}
+                        <FloatingIconButton
+                           aria-label="Malloy code"
                            onClick={(e) => {
                               e.stopPropagation();
                               setCodeDialogOpen(true);
                            }}
                         >
-                           <CodeIcon
-                              sx={{ fontSize: "18px", color: "grey.700" }}
-                           />
-                        </IconButton>
+                           <CodeIcon />
+                        </FloatingIconButton>
                      )}
-                     <IconButton
-                        sx={{
-                           backgroundColor: "rgba(255, 255, 255, 0.9)",
-                           "&:hover": {
-                              backgroundColor: "rgba(255, 255, 255, 1)",
-                           },
-                           width: "32px",
-                           height: "32px",
-                        }}
+                     <FloatingIconButton
+                        aria-label="Expand results"
                         onClick={() => setResultsDialogOpen(true)}
                      >
-                        <SearchIcon
-                           sx={{ fontSize: "18px", color: "grey.700" }}
-                        />
-                     </IconButton>
+                        <SearchIcon />
+                     </FloatingIconButton>
                   </Stack>
                </CleanMetricCard>
             )}
-         </CleanNotebookCell>
+         </Box>
       ))
    );
 }
