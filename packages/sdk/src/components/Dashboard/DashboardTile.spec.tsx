@@ -54,7 +54,7 @@ it("puts the version in the request body and in the key", async () => {
 
    await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
    expect(executeQueryModel.mock.calls[0][3].versionId).toBe("v2");
-   expect(cacheKeys("dashboardTile")[0]).toContain('"v2"');
+   expect(cacheKeys("queryResult")[0]).toContain('"v2"');
 });
 
 it("sends and keys nothing extra without one", async () => {
@@ -64,9 +64,9 @@ it("sends and keys nothing extra without one", async () => {
    expect(executeQueryModel.mock.calls[0][3].versionId).toBeUndefined();
    // The whole key: an empty slot rather than a literal "undefined", and
    // nothing else disturbed. The narrow assertion above cannot see either.
-   expect(cacheKeys("dashboardTile")[0]).toBe(
-      '["dashboardTile","env","pkg",null,"dashboards/ops.malloy",null,' +
-         '"sales_by_month","{}","http://localhost/api/v0"]',
+   expect(cacheKeys("queryResult")[0]).toBe(
+      '["queryResult","env","pkg",null,"dashboards/ops.malloy",null,' +
+         '"run: sales_by_month",null,"{}","http://localhost/api/v0"]',
    );
 });
 
@@ -77,7 +77,7 @@ it("keeps two versions of one tile apart", async () => {
    rerender(tileAt("v2"));
 
    await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
-   expect(new Set(cacheKeys("dashboardTile")).size).toBe(2);
+   expect(new Set(cacheKeys("queryResult")).size).toBe(2);
 });
 
 it("offers to explore from the tile when the host can take it somewhere", () => {

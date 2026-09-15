@@ -2,20 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
-import { Box, IconButton, Paper, Tooltip, Typography } from "@mui/material";
-import { useMemo } from "react";
-import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
+import { IconButton, Tooltip } from "@mui/material";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { useQueryResult } from "../../hooks/useQueryResult";
 import type { GivenValue } from "../../hooks/givenValue";
-import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest } from "../given/paramCodec";
-import { Loading } from "../Loading";
-import ResultContainer from "../RenderedResult/ResultContainer";
-import { useServer } from "../ServerProvider";
+import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
+import { TileCard, TileHeading } from "./TileCard";
 
 export interface DashboardTileProps {
    environmentName: string;
@@ -101,86 +96,22 @@ export function DashboardTile({
    drill,
    onExplore,
 }: DashboardTileProps) {
-   const { apiClients } = useServer();
    const { theme } = usePublisherTheme();
-   const requestGivens = givensToRequest(givens, declaredTypes, givenNames);
-
-   const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: [
-         "dashboardTile",
-         environmentName,
-         packageName,
-         versionId,
-         modelPath,
-         queryName,
-         tile,
-         // Re-runs when the applied values change, which is the whole point of
-         // the control row.
-         JSON.stringify(requestGivens),
-      ],
-      queryFn: () =>
-         apiClients.models.executeQueryModel(
-            environmentName,
-            packageName,
-            modelPath,
-            {
-               queryName,
-               query: tile !== undefined ? `run: ${tile}` : undefined,
-               givens: requestGivens,
-               versionId,
-            },
-         ),
-      ...CHART_RESULT_QUERY_OPTIONS,
+   const state = useQueryResult({
+      environmentName,
+      packageName,
+      modelPath,
+      versionId,
+      queryName,
+      query: tile !== undefined ? `run: ${tile}` : undefined,
+      // Narrowed to the givens this tile references: see `givenNames`.
+      givens: givensToRequest(givens, declaredTypes, givenNames),
    });
 
-   // A composite tile that is one row of measures draws as KPI cards, the way
-   // Malloyyo splices the same tile into its grid, rather than as a one-row
-   // table. Composite only: the single-query form is one result the renderer
-   // lays out from the query's own tags, and its aggregates are already tiles.
-   // Memoized on the result string so a large result is not re-parsed on every
-   // render of the tile around it.
-   const result = useMemo(() => {
-      const raw = data?.data.result;
-      if (raw === undefined || tile === undefined) return raw;
-      return promoteMeasureRowToKpis(raw);
-   }, [data, tile]);
-
    return (
-      <Paper
-         elevation={0}
+      <TileCard
+         borderless={borderless}
          sx={{
-            // The instance theme's border, not MUI's `divider`: the renderer
-            // card's edge is this same value, and a card that agrees with the
-            // theme everywhere except its outline still reads as a different
-            // card. Radius stays on the host's `shape.borderRadius`, which the
-            // renderer card is now pointed at too.
-            //
-            // `# borderless` asks for the result with no card, which the renderer
-            // honours by dropping background, border, radius and most padding on
-            // its own `.dashboard-item`. Same here, so the tag reads the same on
-            // both forms.
-            //
-            // The background is `theme.tile`, the same value the renderer card
-            // paints, and NOT MUI's Paper default. Leaving it unset was the last
-            // piece of the two cards' geometry that did not agree: measured on
-            // the `grid`/`tiled` fixture pair, the renderer card came out
-            // `#f5fafc` from the theme and this one plain white, so on a theme
-            // whose page is also white the composite tiles lost the tint that
-            // separates a card from the page while the single-query form kept
-            // it. Radius, padding, border, shadow and gap already matched.
-            border: borderless ? "none" : theme.border,
-            borderRadius: borderless ? 0 : 1,
-            background: borderless ? "none" : theme.tile,
-            // Also load-bearing for RESIZING, not just tidiness: this card is
-            // a grid item, and a grid item that clips gets a minimum width of
-            // zero instead of its content's. That is what lets the card narrow
-            // below the chart it holds when its tile does, so the chart's box
-            // actually shrinks and the renderer redraws it to fit. See the
-            // `minWidth: 0` note in `DashboardGrid` for the rest of the chain.
-            overflow: "hidden",
-            minWidth: 0,
-            minHeight: 120,
-            p: borderless ? "12px 0" : `${DASHBOARD_CARD_PADDING_PX}px`,
             // The heading's button shows on hover and keyboard focus, the way
             // a tile's chrome does everywhere else; always-on it competes with
             // the title on every card at once.
@@ -193,75 +124,42 @@ export function DashboardTile({
          }}
       >
          {tile !== undefined && (
-            <Box
-               sx={{
-                  pb: 1.5,
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 1,
-               }}
-            >
-               <Box sx={{ minWidth: 0, flex: 1 }}>
-                  <Typography
-                     variant="subtitle2"
-                     sx={{
-                        fontWeight: 500,
-                        color: theme.tileTitle,
-                        fontFamily: theme.font.family,
-                     }}
-                     // The expression is what actually ran, so it stays reachable
-                     // as a tooltip rather than as the heading.
-                     title={tile}
-                  >
-                     {label ?? tileTitle(tile)}
-                  </Typography>
-                  {subtitle !== undefined && (
-                     <Typography
-                        variant="caption"
-                        sx={{
-                           display: "block",
-                           color: theme.tileTitle,
-                           fontFamily: theme.font.family,
-                           opacity: 0.8,
-                        }}
-                     >
-                        {subtitle}
-                     </Typography>
-                  )}
-               </Box>
-               {onExplore && (
-                  <Tooltip title="Explore from here">
-                     <IconButton
-                        className="publisher-tile-explore"
-                        size="small"
-                        aria-label={`Explore ${label ?? tileTitle(tile)}`}
-                        onClick={onExplore}
-                        sx={{ mt: -0.5, mr: -0.5, color: theme.tileTitle }}
-                     >
-                        <ExploreOutlinedIcon fontSize="small" />
-                     </IconButton>
-                  </Tooltip>
-               )}
-            </Box>
-         )}
-         {!isSuccess && !isError && <Loading text="Running…" />}
-         {isSuccess && (
-            <ResultContainer
-               result={result}
-               maxHeight={height}
-               maxResultSize={maxResultSize}
-               renderLogs={data.data.renderLogs}
-               drill={drill}
+            <TileHeading
+               title={label ?? tileTitle(tile)}
+               subtitle={subtitle}
+               // The expression is what actually ran, so it stays reachable as
+               // a tooltip rather than as the heading.
+               tooltip={tile}
+               action={
+                  onExplore && (
+                     <Tooltip title="Explore from here">
+                        <IconButton
+                           className="publisher-tile-explore"
+                           size="small"
+                           aria-label={`Explore ${label ?? tileTitle(tile)}`}
+                           onClick={onExplore}
+                           sx={{ mt: -0.5, mr: -0.5, color: theme.tileTitle }}
+                        >
+                           <ExploreOutlinedIcon fontSize="small" />
+                        </IconButton>
+                     </Tooltip>
+                  )
+               }
             />
          )}
-         {isError && (
-            <Box sx={{ p: 2 }}>
-               <ApiErrorDisplay
-                  context={tile ?? queryName ?? modelPath}
-                  error={error}
-               />
-            </Box>
-         )}
-      </Paper>
+         <ResultPanel
+            state={state}
+            context={tile ?? queryName ?? modelPath}
+            maxHeight={height}
+            maxResultSize={maxResultSize}
+            drill={drill}
+            // A composite tile that is one row of measures draws as KPI cards,
+            // the way Malloyyo splices the same tile into its grid, rather than
+            // as a one-row table. Composite only: the single-query form is one
+            // result the renderer lays out from the query's own tags, and its
+            // aggregates are already tiles.
+            transform={tile !== undefined ? promoteMeasureRowToKpis : undefined}
+         />
+      </TileCard>
    );
 }

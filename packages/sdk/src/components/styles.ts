@@ -85,22 +85,8 @@ export const CleanNotebookContainer = styled("div")(({ theme }) => ({
    margin: "0 auto",
 }));
 
-export const CleanNotebookHeader = styled("div")(({ theme }) => ({
-   marginBottom: "40px",
-   paddingBottom: "24px",
-   borderBottom: `1px solid ${theme.palette.divider}`,
-}));
-
 export const CleanNotebookSection = styled("div")({
    marginBottom: "48px",
-   padding: "0",
-   backgroundColor: "transparent",
-   border: "none",
-   boxShadow: "none",
-});
-
-export const CleanNotebookCell = styled("div")({
-   marginBottom: "0",
    padding: "0",
    backgroundColor: "transparent",
    border: "none",
@@ -116,29 +102,6 @@ export const CleanMetricCard = styled("div")({
    boxShadow: "none",
    marginBottom: "0",
 });
-
-export const CleanCodeBlock = styled("div")(({ theme }) => ({
-   backgroundColor: theme.palette.mode === "dark" ? "#1e293b" : "#f8f9fa",
-   padding: "16px",
-   borderRadius: "8px",
-   border: `1px solid ${theme.palette.divider}`,
-   fontFamily: "'Monaco', 'Menlo', 'Ubuntu Mono', monospace",
-   fontSize: "13px",
-   lineHeight: "1.5",
-   overflowX: "auto",
-   color: theme.palette.text.primary,
-}));
-
-export const CleanActionBar = styled("div")(({ theme }) => ({
-   backgroundColor: theme.palette.mode === "dark" ? "#1e293b" : "#f8f9fa",
-   padding: "12px 16px",
-   borderRadius: "8px",
-   border: `1px solid ${theme.palette.divider}`,
-   marginBottom: "16px",
-   display: "flex",
-   justifyContent: "space-between",
-   alignItems: "center",
-}));
 
 export const StyledExplorerPage = styled("div")({
    height: "100%",

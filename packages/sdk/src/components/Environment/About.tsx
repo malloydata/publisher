@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { Box, Button } from "@mui/material";
-import Markdown from "markdown-to-jsx";
 import { useState } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
+import { Prose } from "../Prose";
 import { useServer } from "../ServerProvider";
 import {
    PackageCard,
@@ -42,42 +42,10 @@ export default function About({ resourceUri }: AboutProps) {
             <PackageCard>
                <PackageCardContent>
                   <PackageSectionTitle>Readme</PackageSectionTitle>
-                  <Box sx={{ mt: 1, fontSize: "0.875rem", lineHeight: 1.6 }}>
-                     <Markdown
-                        options={{
-                           overrides: {
-                              h1: {
-                                 component: "p",
-                                 props: {
-                                    style: {
-                                       fontSize: "inherit",
-                                       fontWeight: "italic",
-                                    },
-                                 },
-                              },
-                              h2: {
-                                 component: "p",
-                                 props: {
-                                    style: {
-                                       fontSize: "inherit",
-                                       fontWeight: "italic",
-                                    },
-                                 },
-                              },
-                              h3: {
-                                 component: "p",
-                                 props: {
-                                    style: {
-                                       fontSize: "inherit",
-                                       fontWeight: "italic",
-                                    },
-                                 },
-                              },
-                           },
-                        }}
-                     >
+                  <Box sx={{ mt: 1 }}>
+                     <Prose variant="caption">
                         {expanded || !shouldTruncate ? readmeContent : preview}
-                     </Markdown>
+                     </Prose>
 
                      {shouldTruncate && (
                         <Box sx={{ mt: 1 }}>
