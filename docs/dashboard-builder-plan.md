@@ -89,29 +89,29 @@ grammar cannot express it; **Renderer** means `@malloydata/render`; **Runtime**
 means the SDK or server, with no format change; **Platform** means storage,
 access and delivery.
 
-| Area                     | Looker                                                                                       | Builder today                                                                                  | Class                     |
-| ------------------------ | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------- |
-| Placement                | 24-column grid; row, col, width, height per tile; free drag and drop                         | Flow grid; order and `colspan`; a drop into a row's empty end. No row index, no height.        | Format (G1)               |
-| Sizing aids              | Width presets, gridlines while dragging, quick layout                                        | Gridlines while dragging; width badge; width presets and quick layout; one grid width per page | Runtime                   |
-| Tabs                     | Tabbed dashboards                                                                            | None                                                                                           | Format (G2)               |
-| Tile kinds               | Query, text, markdown, button, image, extension, filter tile, merged results                 | Query tiles only; one markdown header per page                                                 | Format (G2)               |
-| Query authoring          | Each tile owns an inline query edited in the explore UI                                      | A tile names an existing view, optionally refined by a filter                                  | Runtime, then Format (G3) |
-| Add / remove a tile      | Yes                                                                                          | Refused by the writer: a view declaration's comment block has no recorded owner                | Runtime (splice tier 3)   |
-| Filter declaration       | On the dashboard, from any field                                                             | On the dashboard, from a field of the tiles' source                                            | Parity                    |
-| Filter to tile binding   | Per-tile field mapping, including "do not filter"                                            | Per-tile field mapping, per-tile comparison, including untick                                  | Parity                    |
-| Control types            | Twelve                                                                                       | Six: search, select, multiselect, range slider, time range, date picker                        | Runtime plus tags         |
-| Required, curated values | Present                                                                                      | None                                                                                           | Runtime plus tags         |
-| Linked filters           | A parent narrows a child's options                                                           | None                                                                                           | Runtime plus tags         |
-| Cross-filtering          | Click any mark to filter every other tile                                                    | `# drill { to=self }` on a dimension the dashboard declares; authorable from a tile's menu     | Runtime, then Format      |
-| Drill                    | Overlay of the rows behind a value, further drill, explore from here                         | Dimension drill to a dashboard or self; no overlay, no measure drill                           | Runtime                   |
-| Chart types              | About twenty, plus Highcharts config                                                         | Twelve, from the view's own tag; the builder does not choose one                               | Renderer                  |
-| Vis options              | Series colours, reference and trend lines, value labels, axis ranges, conditional formatting | None                                                                                           | Renderer                  |
-| Dashboard settings       | Timezone, run on load, auto-refresh, download defaults, themes, mobile layout                | Title, description, starting values, `autorun`, grid width; all editable in the builder        | Runtime                   |
-| Editing model            | Explicit edit mode, explicit save, no undo                                                   | Explicit save, undo/redo                                                                       | Ahead                     |
-| What editing does        | User dashboards in a database; LookML converted both ways                                    | Splices the authored file; comments survive                                                    | Ahead                     |
-| Governance               | Access filters and user attributes through embed                                             | Givens, row-level access and `#(authorize)` apply to every tile with no wiring                 | Ahead                     |
-| Storage and access       | Database with folder ACLs                                                                    | A storage provider seam; the Publisher package-file provider is not written                    | Platform                  |
-| Delivery                 | Schedules, alerts, PDF/CSV/PNG, signed embed                                                 | None                                                                                           | Platform                  |
+| Area                     | Looker                                                                                       | Builder today                                                                                                | Class                     |
+| ------------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------- |
+| Placement                | 24-column grid; row, col, width, height per tile; free drag and drop                         | Flow grid; order and `colspan`; a drop into a row's empty end. No row index, no height.                      | Format (G1)               |
+| Sizing aids              | Width presets, gridlines while dragging, quick layout                                        | Gridlines while dragging; width badge; width presets and quick layout; one grid width per page               | Runtime                   |
+| Tabs                     | Tabbed dashboards                                                                            | None                                                                                                         | Format (G2)               |
+| Tile kinds               | Query, text, markdown, button, image, extension, filter tile, merged results                 | Query tiles only; one markdown header per page                                                               | Format (G2)               |
+| Query authoring          | Each tile owns an inline query edited in the explore UI                                      | A tile names an existing view, optionally refined by a filter                                                | Runtime, then Format (G3) |
+| Add / remove a tile      | Yes                                                                                          | Refused by the writer: a view declaration's comment block has no recorded owner                              | Runtime (splice tier 3)   |
+| Filter declaration       | On the dashboard, from any field                                                             | On the dashboard, from a field of the tiles' source                                                          | Parity                    |
+| Filter to tile binding   | Per-tile field mapping, including "do not filter"                                            | Per-tile field mapping, per-tile comparison, including untick                                                | Parity                    |
+| Control types            | Twelve                                                                                       | Six: search, select, multiselect, range slider, time range, date picker                                      | Runtime plus tags         |
+| Required, curated values | Present                                                                                      | None                                                                                                         | Runtime plus tags         |
+| Linked filters           | A parent narrows a child's options                                                           | None                                                                                                         | Runtime plus tags         |
+| Cross-filtering          | Click any mark to filter every other tile                                                    | `# drill { to=self }` on a dimension the dashboard declares; authorable from a tile's menu                   | Runtime, then Format      |
+| Drill                    | Overlay of the rows behind a value, further drill, explore from here                         | Dimension drill to a dashboard or self; rows behind any grouped value; explore from a tile; no measure drill | Runtime                   |
+| Chart types              | About twenty, plus Highcharts config                                                         | Twelve, from the view's own tag; the builder does not choose one                                             | Renderer                  |
+| Vis options              | Series colours, reference and trend lines, value labels, axis ranges, conditional formatting | None                                                                                                         | Renderer                  |
+| Dashboard settings       | Timezone, run on load, auto-refresh, download defaults, themes, mobile layout                | Title, description, starting values, `autorun`, grid width; all editable in the builder                      | Runtime                   |
+| Editing model            | Explicit edit mode, explicit save, no undo                                                   | Explicit save, undo/redo                                                                                     | Ahead                     |
+| What editing does        | User dashboards in a database; LookML converted both ways                                    | Splices the authored file; comments survive                                                                  | Ahead                     |
+| Governance               | Access filters and user attributes through embed                                             | Givens, row-level access and `#(authorize)` apply to every tile with no wiring                               | Ahead                     |
+| Storage and access       | Database with folder ACLs                                                                    | A storage provider seam; the Publisher package-file provider is not written                                  | Platform                  |
+| Delivery                 | Schedules, alerts, PDF/CSV/PNG, signed embed                                                 | None                                                                                                         | Platform                  |
 
 The six structural gaps identified in the research, by number: **G1** no
 positional layout or tile heights; **G2** no non-query tiles or tabs; **G3** tile
@@ -206,7 +206,13 @@ Ordered by what unblocks what. Each is SDK or server work on the existing format
    proposed to Malloyyo so the vocabulary stays one. Only the operator UI for
    free-text filters needs no new tag at all.
 7. **Drill overlay and explore from here.** The rows behind a value are one
-   query away, and `ModelExplorer` exists in the SDK. Runtime only.
+   query away, and `ModelExplorer` exists in the SDK. Runtime only. Shipped
+   2026-09-15: every grouped value in a composite tile is clickable, and one
+   with no `# drill` opens the rows behind it (Malloy's `drill:` through the
+   tile's view, so the tile's own filters and the controls apply); a value
+   with a drill offers the rows beside its destinations. Each tile's heading
+   has "Explore from here", which opens the model explorer on the tile's
+   source with its view as the query.
 8. **Export and download.** Copy or download the Malloy; later CSV and PNG per
    tile. The Workbook editor was cut because its export never shipped, so export
    ships with the first Console release, not after it.

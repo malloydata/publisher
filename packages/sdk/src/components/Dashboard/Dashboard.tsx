@@ -3,20 +3,30 @@
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
 import Markdown from "markdown-to-jsx";
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { DashboardManifest } from "../../client";
 import { useGivensState } from "../../hooks/useGivensState";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { useDrill, useDrillSelf, type DrillNavigation } from "../drill";
+import {
+   useDrill,
+   useDrillSelf,
+   type DrillBinding,
+   type DrillClickPayload,
+   type DrillNavigation,
+   type DrillRowsRequest,
+} from "../drill";
 import { GivensPanel } from "../given";
+import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
 import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
+import { ExploreDialog } from "./ExploreDialog";
+import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 
 // The grid rule moved to `DashboardGrid`, which the builder shares.
 // Re-exported so existing importers of it are unaffected.
@@ -201,12 +211,46 @@ export function Dashboard({
       documentName: dashboard,
    });
 
+   // The rows behind a clicked value, and a tile's query in the explorer —
+   // Looker's two ways past a number. Composite tiles only: each names its
+   // source, which is what the rows are of and what the explorer opens on.
+   const [rows, setRows] = useState<RowsRequest | undefined>(undefined);
+   const [exploring, setExploring] = useState<string | undefined>(undefined);
+   const onRows = useCallback((request: DrillRowsRequest) => {
+      const steps = stepsOf(request.context);
+      if (steps === undefined) return;
+      setRows({
+         ...steps,
+         field: request.field,
+         rawValue: request.rawValue,
+         label: request.label,
+      });
+   }, []);
+
+   // The whole applied row: a source's own `where:` may read any of it, and a
+   // given the rows query does not reference is ignored by the server.
+   const rowsGivens = useMemo(
+      () => givensToRequest(applied, declaredTypes),
+      [applied, declaredTypes],
+   );
+
    const { drill, drillMenu } = useDrill({
       onNavigate,
       onSelf,
       canSelf,
       selfLabel: "Filter this dashboard",
+      onRows,
    });
+   // Each tile's clicks carry the tile they came from, so the rows behind a
+   // value know which source to run against.
+   const drillFor = useCallback(
+      (tile: string): DrillBinding => ({
+         canDrill: drill.canDrill,
+         onClick: (payload: DrillClickPayload) =>
+            drill.onClick({ ...payload, context: tile }),
+      }),
+      [drill],
+   );
 
    // After every hook, so the hook order does not depend on the URI.
    if (!uriNamesBoth) {
@@ -319,7 +363,8 @@ export function Dashboard({
                      givenNames={tile.givenNames}
                      height={height ?? TILE_MAX_HEIGHT}
                      maxResultSize={maxResultSize}
-                     drill={drill}
+                     drill={drillFor(tile.query)}
+                     onExplore={() => setExploring(tile.query)}
                   />
                )}
             />
@@ -330,6 +375,27 @@ export function Dashboard({
          )}
 
          {drillMenu}
+         {modelPath !== undefined && (
+            <>
+               <RowsDialog
+                  request={rows}
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  {...(versionId === undefined ? {} : { versionId })}
+                  modelPath={modelPath}
+                  givens={rowsGivens}
+                  onClose={() => setRows(undefined)}
+               />
+               <ExploreDialog
+                  tile={exploring}
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  {...(versionId === undefined ? {} : { versionId })}
+                  modelPath={modelPath}
+                  onClose={() => setExploring(undefined)}
+               />
+            </>
+         )}
       </Stack>
    );
 }

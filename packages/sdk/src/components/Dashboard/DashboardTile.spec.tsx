@@ -9,7 +9,7 @@
  * prop alone.
  */
 import { beforeEach, expect, it, mock } from "bun:test";
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
    cacheKeys,
    clearCache,
@@ -78,4 +78,28 @@ it("keeps two versions of one tile apart", async () => {
 
    await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
    expect(new Set(cacheKeys("dashboardTile")).size).toBe(2);
+});
+
+it("offers to explore from the tile when the host can take it somewhere", () => {
+   const onExplore = mock(() => {});
+   render(
+      <DashboardTile
+         environmentName="env"
+         packageName="pkg"
+         modelPath="dashboards/ops.malloy"
+         tile="overview -> sales_by_month"
+         givens={new Map()}
+         declaredTypes={new Map()}
+         height={400}
+         onExplore={onExplore}
+      />,
+      { wrapper: serverWrapper },
+   );
+   fireEvent.click(screen.getByLabelText("Explore Sales by month"));
+   expect(onExplore).toHaveBeenCalledTimes(1);
+});
+
+it("has no explore button when the host offers nowhere to go", () => {
+   render(tileAt(), { wrapper: serverWrapper });
+   expect(screen.queryByLabelText(/^Explore /)).toBeNull();
 });

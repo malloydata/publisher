@@ -15,7 +15,8 @@ Publisher discovers it at package load, lists it on the package page, and serves
 
 **One form:** `## artifact { tiles=[…] }` at model level, one tile per named view. The controls at the
 top are not written anywhere in the page; they are rendered from the `given:` declarations the tiles
-filter by. Cells are clickable where the model's dimension carries a `# drill` tag.
+filter by. Every grouped value in a tile is clickable: it opens the rows behind it, and where the
+dimension carries a `# drill` tag, it also goes where the tag says.
 [`examples/storefront/dashboards/overview.malloy`](../examples/storefront/dashboards/overview.malloy)
 is the shipped one.
 
@@ -456,6 +457,16 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   parameters it declares, spelled identically. So `given=brand` into a dashboard declaring `BRAND`
   opens it unfiltered. The load-time lint reports the case it can see: a `to=self` drill seeding a
   given no model in the package declares is an error at load.
+
+**The rows behind a value, and exploring from a tile.** On a composite dashboard every grouped
+value is clickable whether or not it carries a `# drill`. A value with no drill opens the rows
+behind it: Malloy's `drill:` through the tile's view (`run: <source> -> { drill: <view>.<field> =
+<value>; select: *; limit: 200 }`), so the tile's own `where:` and the applied controls both hold.
+A value with a drill offers the rows beside its destinations in the same menu, and a drill with one
+destination that used to navigate at once now asks, since there is a second thing to do. Each tile's
+heading shows "Explore from here" on hover, which opens the model explorer on the tile's source with
+its view as the query. Neither is available on the single-query form, whose one result names no
+tile.
 
 **What a reader sees.** Cells in a drillable column take a pointer cursor, and turn blue and
 underlined under the pointer: plain text at rest, a link when you reach for them. They carry a button

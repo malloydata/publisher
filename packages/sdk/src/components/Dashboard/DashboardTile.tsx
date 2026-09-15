@@ -1,7 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, Paper, Typography } from "@mui/material";
+import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
+import { Box, IconButton, Paper, Tooltip, Typography } from "@mui/material";
 import { useMemo } from "react";
 import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
 import { usePublisherTheme } from "../../theme/ThemeContext";
@@ -51,6 +52,11 @@ export interface DashboardTileProps {
    maxResultSize?: number;
    /** Cell clicks and their affordance, for the dashboard's `# drill`. */
    drill?: DrillBinding;
+   /**
+    * Open this tile's query somewhere it can be changed. Shown as a button in
+    * the heading, on hover; absent, the heading has no button.
+    */
+   onExplore?: () => void;
 }
 
 /**
@@ -93,6 +99,7 @@ export function DashboardTile({
    height,
    maxResultSize,
    drill,
+   onExplore,
 }: DashboardTileProps) {
    const { apiClients } = useServer();
    const { theme } = usePublisherTheme();
@@ -174,35 +181,66 @@ export function DashboardTile({
             minWidth: 0,
             minHeight: 120,
             p: borderless ? "12px 0" : `${DASHBOARD_CARD_PADDING_PX}px`,
+            // The heading's button shows on hover and keyboard focus, the way
+            // a tile's chrome does everywhere else; always-on it competes with
+            // the title on every card at once.
+            "& .publisher-tile-explore": {
+               opacity: 0,
+               transition: "opacity 120ms",
+            },
+            "&:hover .publisher-tile-explore, & .publisher-tile-explore:focus-visible":
+               { opacity: 1 },
          }}
       >
          {tile !== undefined && (
-            <Box sx={{ pb: 1.5 }}>
-               <Typography
-                  variant="subtitle2"
-                  sx={{
-                     fontWeight: 500,
-                     color: theme.tileTitle,
-                     fontFamily: theme.font.family,
-                  }}
-                  // The expression is what actually ran, so it stays reachable
-                  // as a tooltip rather than as the heading.
-                  title={tile}
-               >
-                  {label ?? tileTitle(tile)}
-               </Typography>
-               {subtitle !== undefined && (
+            <Box
+               sx={{
+                  pb: 1.5,
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 1,
+               }}
+            >
+               <Box sx={{ minWidth: 0, flex: 1 }}>
                   <Typography
-                     variant="caption"
+                     variant="subtitle2"
                      sx={{
-                        display: "block",
+                        fontWeight: 500,
                         color: theme.tileTitle,
                         fontFamily: theme.font.family,
-                        opacity: 0.8,
                      }}
+                     // The expression is what actually ran, so it stays reachable
+                     // as a tooltip rather than as the heading.
+                     title={tile}
                   >
-                     {subtitle}
+                     {label ?? tileTitle(tile)}
                   </Typography>
+                  {subtitle !== undefined && (
+                     <Typography
+                        variant="caption"
+                        sx={{
+                           display: "block",
+                           color: theme.tileTitle,
+                           fontFamily: theme.font.family,
+                           opacity: 0.8,
+                        }}
+                     >
+                        {subtitle}
+                     </Typography>
+                  )}
+               </Box>
+               {onExplore && (
+                  <Tooltip title="Explore from here">
+                     <IconButton
+                        className="publisher-tile-explore"
+                        size="small"
+                        aria-label={`Explore ${label ?? tileTitle(tile)}`}
+                        onClick={onExplore}
+                        sx={{ mt: -0.5, mr: -0.5, color: theme.tileTitle }}
+                     >
+                        <ExploreOutlinedIcon fontSize="small" />
+                     </IconButton>
+                  </Tooltip>
                )}
             </Box>
          )}
