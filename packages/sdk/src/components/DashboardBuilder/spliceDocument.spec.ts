@@ -975,3 +975,61 @@ source: a is one extend {
       );
    });
 });
+
+/**
+ * A label is free text a person types, and it is written into a double-quoted
+ * tag value. Unescaped, a quote or a trailing backslash closed the value early
+ * and the rest of the line parsed as tag syntax -- which the gate caught, so
+ * the symptom was not a corrupt file but a document that could never be saved
+ * again. The title and a starting given's value already escape; these are the
+ * remaining tag values the writer composes.
+ */
+describe("spliceDashboardDocument: labels are free text", () => {
+   const FILE = `##! experimental.givens
+## artifact { title="T" tiles=["a -> x"] }
+import "../m.malloy"
+
+# label="Cat"
+given: CATEGORY :: filter<string> is f''
+
+source: a is one extend {
+  # label="X"
+  view: x is vx
+}`;
+
+   it("keeps a quote in a tile label, and reads it back", async () => {
+      const label = 'Revenue (the "good" kind)';
+      const result = await spliced(FILE, (d) => {
+         d.tiles[0].label = label;
+      });
+      const reread = await openDocument(result);
+      expect(reread.tiles[0].label).toBe(label);
+   });
+
+   it("keeps a trailing backslash in a given's label", async () => {
+      const label = "Category\\";
+      const result = await spliced(FILE, (d) => {
+         d.localGivens![0].label = label;
+      });
+      const reread = await openDocument(result);
+      expect(reread.localGivens?.[0].label).toBe(label);
+   });
+
+   it("keeps a quote in a given's description", async () => {
+      const description = 'Only the "current" quarter';
+      const result = await spliced(FILE, (d) => {
+         d.localGivens![0].description = description;
+      });
+      const reread = await openDocument(result);
+      expect(reread.localGivens?.[0].description).toBe(description);
+   });
+
+   it("keeps a quote in a tile subtitle", async () => {
+      const subtitle = 'by "region"';
+      const result = await spliced(FILE, (d) => {
+         d.tiles[0].subtitle = subtitle;
+      });
+      const reread = await openDocument(result);
+      expect(reread.tiles[0].subtitle).toBe(subtitle);
+   });
+});

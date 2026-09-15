@@ -117,8 +117,9 @@ function tagsFor(tile: DashboardTile): string[] {
    if (tile.colspan !== undefined) tags.push(`# colspan=${tile.colspan}`);
    if (tile.break) tags.push("# break");
    if (tile.borderless) tags.push("# borderless");
-   if (tile.label !== undefined) tags.push(`# label="${tile.label}"`);
-   if (tile.subtitle !== undefined) tags.push(`# subtitle="${tile.subtitle}"`);
+   if (tile.label !== undefined) tags.push(`# label=${quoted(tile.label)}`);
+   if (tile.subtitle !== undefined)
+      tags.push(`# subtitle=${quoted(tile.subtitle)}`);
    return tags;
 }
 
@@ -175,9 +176,9 @@ const isSameDocumentExceptTiles = (
  */
 function givenTagLine(given: LocalGiven): string | undefined {
    const parts: string[] = [];
-   if (given.label !== undefined) parts.push(`label="${given.label}"`);
+   if (given.label !== undefined) parts.push(`label=${quoted(given.label)}`);
    if (given.description !== undefined)
-      parts.push(`description="${given.description}"`);
+      parts.push(`description=${quoted(given.description)}`);
    if (given.control !== undefined) parts.push(`control=${given.control}`);
    if (given.suggest) {
       const by =
