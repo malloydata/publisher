@@ -657,6 +657,16 @@ export function DashboardBuilder({
                </Button>
             </Stack>
 
+            {/* The live row and the tiles run from the SAVED file, not the
+                document being edited, so a filter changed above does not move
+                them until a save writes it. Said here, once the two disagree,
+                because otherwise the edit looks like it did nothing. */}
+            {editor.dirty && (
+               <Typography variant="caption" sx={{ color: theme.tileTitle }}>
+                  The controls and tiles below run from the saved file. Save to
+                  see your changes there.
+               </Typography>
+            )}
             {controls}
          </Stack>
 
