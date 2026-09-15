@@ -281,6 +281,125 @@ class TheExitContract(unittest.TestCase):
         self.assertTrue(all("entityId" in r and "exprSha" in r for r in rows))
 
 
+class WhatTheScoreRestsOn(unittest.TestCase):
+    """The composition rule, per case: a golden is trustworthy if it was derived
+    independently, OR if every definition it tests has been validated."""
+
+    def ledger(self, **verdicts):
+        return {eid: {"entityId": eid, "verdict": v, "exprSha": "s"}
+                for eid, v in verdicts.items()}
+
+    def case(self, ids=("measure:s:m",), **golden):
+        g = {"status": "verified", "kind": "scalar", "value": 1}
+        g.update(golden)
+        return {"qid": "q", "golden": g,
+                "expectedEntities": {"required": list(ids)}}
+
+    def setUp(self):
+        self.set_dir = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.set_dir, ignore_errors=True)
+
+    def basis(self, case, ledger=None, stale=()):
+        return vd.case_basis(case, ledger or {}, set(stale), self.set_dir)
+
+    def test_a_second_derivation_makes_a_key_independent(self):
+        # It was established twice, in differently shaped ways, so no single
+        # model bug could have certified it.
+        c = self.case()
+        c["golden"]["verification"] = {"primaryAxis": "a", "variesAxis": "b"}
+        self.assertEqual(self.basis(c), "independent")
+
+    def test_free_text_verifiedby_is_not_the_signal(self):
+        # The regression: matching `verifiedBy` by prefix classified 34 goldens
+        # of the ecommerce set as unchecked, every one of which reads "authored
+        # and re-derived against ecommerce-truth". A well-founded set reading as
+        # unvalidated is the same over-claim, pointed the other way.
+        c = self.case(verifiedBy="authored and re-derived against ecommerce-truth")
+        self.assertEqual(self.basis(c, self.ledger()), "unchecked")
+        c["golden"]["verification"] = {"primaryAxis": "a", "variesAxis": "b"}
+        self.assertEqual(self.basis(c, self.ledger()), "independent")
+
+    def test_a_value_free_golden_is_independent(self):
+        # Nothing to re-derive, so nothing a model bug could get wrong.
+        for kind in ("criteria", "unanswerable"):
+            self.assertEqual(self.basis(self.case(kind=kind)), "independent")
+
+    def test_validated_definitions_carry_a_model_derived_key(self):
+        self.assertEqual(
+            self.basis(self.case(verifiedBy="something else"),
+                       self.ledger(**{"measure:s:m": "agrees"})),
+            "definitions")
+
+    def test_one_unchecked_definition_makes_the_whole_case_unchecked(self):
+        # The weakest link decides. A case is only as established as the least
+        # established thing it depends on.
+        led = self.ledger(**{"measure:s:m": "agrees", "measure:s:n": "unchecked"})
+        self.assertEqual(
+            self.basis(self.case(ids=("measure:s:m", "measure:s:n")), led),
+            "unchecked")
+
+    def test_a_definition_missing_from_the_ledger_is_unchecked(self):
+        self.assertEqual(self.basis(self.case(), self.ledger()), "unchecked")
+
+    def test_a_stale_row_does_not_count_as_validated(self):
+        # It agreed once, against a definition that has since moved.
+        led = self.ledger(**{"measure:s:m": "agrees"})
+        self.assertEqual(self.basis(self.case(), led, stale=("measure:s:m",)),
+                         "unchecked")
+
+    def test_a_disagreeing_definition_outranks_everything(self):
+        led = self.ledger(**{"measure:s:m": "disagrees"})
+        self.assertEqual(self.basis(self.case(), led), "disagrees")
+
+    def test_a_case_naming_no_entities_is_unchecked_not_validated(self):
+        # Nothing was established, so it must not read as though something was.
+        c = {"qid": "q", "golden": {"kind": "scalar", "value": 1}}
+        self.assertEqual(self.basis(c, self.ledger()), "unchecked")
+
+    def test_requiredanyof_members_count_as_tested(self):
+        c = {"qid": "q", "golden": {"kind": "scalar", "value": 1},
+             "expectedEntities": {"requiredAnyOf": [["measure:s:a", "measure:s:b"]]}}
+        self.assertEqual(vd.tested_ids(c), ["measure:s:a", "measure:s:b"])
+
+    def test_the_basis_totals_cover_every_case(self):
+        cases = [self.case(kind="criteria"), self.case(), self.case()]
+        ev = vd.evidence_basis(cases, self.ledger(), set(), self.set_dir)
+        self.assertEqual(sum(ev["counts"].values()), len(cases))
+
+
+class StalenessIsAHashComparison(unittest.TestCase):
+    def setUp(self):
+        self.model = write(MODEL)
+
+    def tearDown(self):
+        shutil.rmtree(self.model.parent, ignore_errors=True)
+
+    def test_an_unmoved_definition_is_not_stale(self):
+        led = {r["entityId"]: r for r in vd.records(self.model, False)}
+        self.assertEqual(vd.stale_ids(led, self.model), set())
+
+    def test_editing_a_dependency_makes_its_dependant_stale_too(self):
+        led = {r["entityId"]: r for r in vd.records(self.model, False)}
+        self.model.write_text(MODEL.replace("total_sales is sale_price.sum()",
+                                            "total_sales is sale_price.sum() * 2"))
+        stale = vd.stale_ids(led, self.model)
+        self.assertIn("measure:order_items:total_sales", stale)
+        # Its own text never changed; the sha chain is what catches it.
+        self.assertIn("measure:order_items:total_sales_2022", stale)
+        self.assertNotIn("measure:order_items:order_item_count", stale)
+
+    def test_a_removed_definition_is_stale(self):
+        led = {"measure:order_items:gone": {"entityId": "measure:order_items:gone",
+                                            "exprSha": "x"}}
+        self.assertEqual(vd.stale_ids(led, self.model),
+                         {"measure:order_items:gone"})
+
+    def test_no_model_means_nothing_can_be_called_stale(self):
+        self.assertEqual(vd.stale_ids({"a": {"exprSha": "x"}}, None), set())
+
+
 class TheSummary(unittest.TestCase):
     def test_it_says_how_many_are_not_validated_by_this_run(self):
         recs = [{"verdict": "agrees", "check": {"kind": "within_model"}},

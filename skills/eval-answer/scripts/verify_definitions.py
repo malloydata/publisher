@@ -67,7 +67,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from mcp_payload import entity_id                                  # noqa: E402
 from publisher_rest import try_query                               # noqa: E402
-from verify_goldens import parse_definitions                       # noqa: E402
+from verify_goldens import has_second_derivation, parse_definitions  # noqa: E402
 
 CANNOT_RUN = 3
 
@@ -285,6 +285,109 @@ def summarise(recs: list[dict[str, Any]]) -> list[str]:
         lines.append(f"{raw} need a raw check and are NOT validated by this run; "
                      f"a within-model check cannot see fanout")
     return lines
+
+
+# ------------------------------------------------- reading a ledger back
+
+# Kinds that hold no value, so there is nothing a model bug could get wrong.
+VALUE_FREE_KINDS = ("criteria", "unanswerable")
+
+
+def load_ledger(path: pathlib.Path | None) -> dict[str, dict[str, Any]]:
+    """`entityId -> record`, or empty when there is no ledger."""
+    if not path or not path.exists():
+        return {}
+    out = {}
+    for line in path.read_text().splitlines():
+        if line.strip():
+            r = json.loads(line)
+            out[r["entityId"]] = r
+    return out
+
+
+def stale_ids(ledger: dict[str, dict[str, Any]], model: pathlib.Path | None,
+              recursive: bool = False) -> set[str]:
+    """Ledger rows whose definition has moved since they were checked.
+
+    Pure hash comparison, no queries, so this is cheap enough to run before
+    every arm. An id the model no longer declares counts as stale too: a
+    definition that was renamed away is not a validated definition.
+    """
+    if not model:
+        return set()
+    current = {r["entityId"]: r["exprSha"] for r in records(model, recursive)}
+    return {eid for eid, rec in ledger.items()
+            if current.get(eid) != rec.get("exprSha")}
+
+
+def tested_ids(case: dict[str, Any]) -> list[str]:
+    """The definitions a case's answer depends on.
+
+    Read from `expectedEntities`, which already names entities in the same
+    `kind:source:name` form the ledger keys on, rather than from a new
+    hand-maintained field. A wrong id here is the failure mode that cost a real
+    set two days, so this reuses a link the set already maintains and that
+    `verify_goldens` check 5 already audits against the model.
+    """
+    exp = case.get("expectedEntities") or {}
+    out = list(exp.get("required") or [])
+    for group in exp.get("requiredAnyOf") or []:
+        out += list(group or [])
+    return out
+
+
+def case_basis(case: dict[str, Any], ledger: dict[str, dict[str, Any]],
+               stale: set[str], set_dir: pathlib.Path | None = None) -> str:
+    """What this case's verdict rests on: independent, definitions, unchecked
+    or disagrees.
+
+    The composition rule, applied per case: a golden is trustworthy if it was
+    derived independently, OR if every definition it tests has been validated.
+    Anything else is `unchecked` -- a statement about the EVIDENCE, not about
+    the answer, and never to be read as a failing case.
+
+    Independence is read from `golden.verification` (or `gold/<qid>.json`) via
+    `verify_goldens.has_second_derivation`, which is the structured record of
+    "two differently shaped derivations agree". NOT from `verifiedBy`: that is
+    free text, and a first pass matched it by prefix and classified 34 goldens
+    of the ecommerce set as unchecked when every one of them says "authored and
+    re-derived against ecommerce-truth". A well-founded set reading as
+    unvalidated is the same over-claim as an unfounded one reading as validated,
+    pointed the other way.
+    """
+    g = case.get("golden") or {}
+    if g.get("kind") in VALUE_FREE_KINDS:
+        return "independent"
+    if set_dir is not None and has_second_derivation(case, set_dir):
+        return "independent"
+    ids = tested_ids(case)
+    if not ids:
+        return "unchecked"
+    worst = "definitions"
+    for eid in ids:
+        rec = ledger.get(eid)
+        if rec is None or eid in stale or rec.get("verdict") == "unchecked":
+            worst = "unchecked"
+        elif rec.get("verdict") == "disagrees":
+            return "disagrees"
+    return worst
+
+
+def evidence_basis(cases: list[dict[str, Any]],
+                   ledger: dict[str, dict[str, Any]],
+                   stale: set[str],
+                   set_dir: pathlib.Path | None = None) -> dict[str, Any]:
+    """Counts per basis, plus the ids worth naming. Pure, so tests can pin it."""
+    counts: dict[str, int] = {}
+    disagreeing: set[str] = set()
+    for c in cases:
+        b = case_basis(c, ledger, stale, set_dir)
+        counts[b] = counts.get(b, 0) + 1
+        if b == "disagrees":
+            disagreeing |= {e for e in tested_ids(c)
+                            if (ledger.get(e) or {}).get("verdict") == "disagrees"}
+    return {"counts": counts, "disagreeing": sorted(disagreeing),
+            "stale": sorted(stale), "ledgerSize": len(ledger)}
 
 
 def main(argv: list[str] | None = None) -> int:
