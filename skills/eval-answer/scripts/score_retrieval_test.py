@@ -336,6 +336,24 @@ class Cascade(unittest.TestCase):
         self.assertEqual(c["delivered, right"], 1)
         self.assertEqual(c["not scored"], 1)
 
+    def test_a_pass_on_an_earlier_rung_is_counted_there(self):
+        # A real run: every case matched, yet the last rung read 6 because two
+        # passed despite a coverage gap and incomplete retrieval. 6 is exactly
+        # the number a reader mistakes for the pass rate.
+        rows = [
+            score_case(case(coverage="derivable"), calls([M_SALES]), KEY, "match"),
+            score_case(case(required=(M_SALES, M_COUNT)), calls([M_SALES]),
+                       KEY, "match"),
+            score_case(case(), calls([M_SALES]), KEY, "match"),
+        ]
+        c = cascade(rows)
+        self.assertEqual(c["passed_not_covered"], 1)
+        self.assertEqual(c["passed_not_retrieved"], 1)
+        self.assertEqual(c["delivered, right"], 1)
+        # and the three still sum
+        self.assertEqual(c["not covered"] + c["not retrieved"]
+                         + c["delivered, right"], 3)
+
     def test_a_measured_ok_counts_as_covered(self):
         c = cascade([score_case(case(coverage="derivable"), calls([M_SALES]),
                                 KEY, "match", measured="ok")])

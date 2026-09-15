@@ -383,6 +383,32 @@ class WhatTheScoreRestsOn(unittest.TestCase):
         c = {"qid": "q", "golden": {"kind": "scalar", "value": 1}}
         self.assertEqual(self.basis(c, self.ledger()), "unchecked")
 
+    def test_an_anyof_group_is_satisfied_by_either_member(self):
+        # The regression: the groups were flattened and every member demanded,
+        # so a case answerable through `startYear` OR the model's alias for it
+        # was held unvalidated because only the alias is a checkable definition.
+        c = {"qid": "q", "golden": {"kind": "scalar", "value": 1},
+             "expectedEntities": {"requiredAnyOf": [["dimension:s:raw",
+                                                     "dimension:s:alias"]]}}
+        led = {"dimension:s:alias": {"verdict": "agrees", "exprSha": "x"}}
+        self.assertEqual(vd.case_basis(c, led, set(), self.set_dir), "definitions")
+
+    def test_a_passthrough_column_counts_as_validated(self):
+        # A raw column exposed as-is has no expression that could be wrong.
+        # Absent from the ledger it blocked a case forever; recorded as
+        # `no_definition` it is what it is.
+        c = {"qid": "q", "golden": {"kind": "scalar", "value": 1},
+             "expectedEntities": {"required": ["dimension:s:runtimeMinutes"]}}
+        led = {"dimension:s:runtimeMinutes": {"verdict": "no_definition",
+                                              "exprSha": None}}
+        self.assertEqual(vd.case_basis(c, led, set(), self.set_dir), "definitions")
+
+    def test_an_anyof_group_with_no_validated_member_is_unchecked(self):
+        c = {"qid": "q", "golden": {"kind": "scalar", "value": 1},
+             "expectedEntities": {"requiredAnyOf": [["dimension:s:a",
+                                                     "dimension:s:b"]]}}
+        self.assertEqual(vd.case_basis(c, {}, set(), self.set_dir), "unchecked")
+
     def test_requiredanyof_members_count_as_tested(self):
         c = {"qid": "q", "golden": {"kind": "scalar", "value": 1},
              "expectedEntities": {"requiredAnyOf": [["measure:s:a", "measure:s:b"]]}}

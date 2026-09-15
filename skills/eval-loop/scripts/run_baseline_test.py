@@ -532,6 +532,35 @@ class PlatformMcpUrl(unittest.TestCase):
 
 
 
+class NoLocalShadowsAnImportedModule(unittest.TestCase):
+    """A local named after an imported module breaks every call to that module
+    in the same function, and only at runtime.
+
+    `ledger = verify_definitions.load_ledger(...)` in main() made `ledger` a
+    local for the whole function, so `ledger.run_config(...)` 260 lines earlier
+    raised UnboundLocalError on EVERY run. The unit tests all call helpers, so
+    nothing noticed until a real arm was run end to end. This is the cheap
+    structural guard that would have.
+    """
+
+    def test_no_function_rebinds_a_module_this_file_imports(self):
+        import ast
+        src = pathlib.Path(rb.__file__).read_text()
+        tree = ast.parse(src)
+        modules = {n.names[0].asname or n.names[0].name.split(".")[0]
+                   for n in ast.walk(tree) if isinstance(n, ast.Import)}
+        bad = []
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) \
+                        and node.id in modules:
+                    bad.append(f"{fn.name}() rebinds the module name "
+                               f"{node.id!r} at line {node.lineno}")
+        self.assertEqual(bad, [], "; ".join(bad))
+
+
 class UsageFields(unittest.TestCase):
     """The ledger must be able to reprice a run from its own token columns."""
 

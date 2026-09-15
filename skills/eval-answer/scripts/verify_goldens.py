@@ -451,6 +451,13 @@ ASSERTS = re.compile(r"(\w+)\s+is\s+(?:defined\s+as\s+)?(count\([^)]*\)|sum\([^)
 # compiled model, because no Publisher API returns a definition's expression.
 SOURCE_DECL = re.compile(r"^\s*source:\s*(\w+)\s+is\b")
 KIND_LABEL = re.compile(r"^\s*(measure|dimension|view|join_one|join_many|join_cross):\s*(.*)$")
+# `public: runtimeMinutes` inside an `include { }` block: a raw column passed
+# through, with no expression. It has no definition that could be wrong, but it
+# DOES get an entity id from get_context and so can be named in a case's
+# `expectedEntities`. Parsed so the ledger knows it exists: without a row, a
+# case naming one is indistinguishable from a case naming a definition nobody
+# checked, and stays unvalidated forever.
+PASSTHROUGH = re.compile(r"^\s*public:\s*(\w+)\s*$")
 KIND_OF_LABEL = {"measure": "measure", "dimension": "dimension", "view": "view",
                  "join_one": "join", "join_many": "join", "join_cross": "join"}
 
@@ -502,11 +509,18 @@ def parse_definitions(model_path: pathlib.Path | None,
                 line = m.group(2)          # `measure: x is ...` on one line
                 if not line.strip():
                     continue
+            pt = PASSTHROUGH.match(line)
+            if pt:
+                out.append({"source": source, "kind": "dimension",
+                            "name": pt.group(1), "expr": None,
+                            "passthrough": True, "file": str(f), "line": n})
+                continue
             d = DEFINES.match(line if line.startswith(" ") else "  " + line)
             if not d:
                 continue
             out.append({"source": source, "kind": kind or "dimension",
                         "name": d.group(1), "expr": d.group(2).split("#")[0].strip(),
+                        "passthrough": False,
                         "file": str(f), "line": n})
     return out
 
@@ -520,7 +534,8 @@ def model_definitions(model_path: pathlib.Path | None) -> dict[str, str]:
     """
     out: dict[str, str] = {}
     for r in parse_definitions(model_path):
-        out.setdefault(r["name"], r["expr"])
+        if r["expr"] is not None:
+            out.setdefault(r["name"], r["expr"])
     return out
 
 

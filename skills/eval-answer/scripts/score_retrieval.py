@@ -377,17 +377,26 @@ def cascade(rows: list[dict[str, Any]]) -> dict[str, int]:
     """
     c = {"total": len(rows), "not covered": 0, "unmeasured": 0,
          "no entities named": 0, "not retrieved": 0, "delivered, wrong": 0,
-         "delivered, right": 0, "not scored": 0}
+         "delivered, right": 0, "not scored": 0,
+         # Passes that stop on an earlier rung. Without these the funnel looks
+         # like it contradicts the pass rate: a run where every case matched
+         # read "correct? 6 yes" because two passed despite a coverage gap and
+         # incomplete retrieval, and 6 is exactly the number a reader would
+         # mistake for the score.
+         "passed_not_covered": 0, "passed_not_retrieved": 0}
     for r in rows:
         cov = r["coverage"]
+        passed = not r["failed"] and r["verdict"] not in UNSCORED
         if cov in MEASURED_GAPS:
             c["not covered"] += 1
+            c["passed_not_covered"] += passed
         elif cov not in ("covered", MEASURED_OK):
             c["unmeasured"] += 1
         elif r["recall"] is None:
             c["no entities named"] += 1
         elif r["recall"] < 1.0:
             c["not retrieved"] += 1
+            c["passed_not_retrieved"] += passed
         elif r["verdict"] in UNSCORED:
             c["not scored"] += 1
         elif r["failed"]:

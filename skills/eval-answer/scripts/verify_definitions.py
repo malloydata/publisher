@@ -147,6 +147,10 @@ def needs_raw(expr: str, joins: set[str]) -> str | None:
     to it. A join is the case that matters: fanout multiplies the stated measure
     and the control expression identically.
 
+    Measures only. A dimension is compared row by row and a duplicating join
+    duplicates both sides alike, so fanout cannot hide a difference there; the
+    caller applies this to measures and passes dimensions through.
+
     Detection needs the join NAMES, not a dot. `sale_price.sum()` is a method
     call on a column in this very source and is perfectly checkable;
     `inventory_items.cost.sum()` traverses a join and is not. A first pass
@@ -175,7 +179,8 @@ def records(model: pathlib.Path, recursive: bool,
     parsed = parse_definitions(model, recursive=recursive)
     by_name: dict[str, dict[str, Any]] = {}
     for r in parsed:
-        by_name.setdefault(r["name"], r)
+        if r.get("expr") is not None:
+            by_name.setdefault(r["name"], r)
     # Anything an expression can traverse INTO: a declared join, or a source
     # name used as one. Both make the within-model comparison fanout-blind.
     joins = ({r["name"] for r in parsed if r["kind"] == "join"}
@@ -203,10 +208,30 @@ def records(model: pathlib.Path, recursive: bool,
     for r in parsed:
         if r["kind"] not in CHECKABLE_KINDS:
             continue
+        if r.get("passthrough"):
+            # A raw column exposed as-is. There is no expression that could be
+            # wrong, so `no_definition` rather than `agrees`: nothing was
+            # checked, and nothing needed to be. It is in the ledger so that a
+            # case naming it is distinguishable from a case naming a definition
+            # nobody got to.
+            out.append({
+                "entityId": entity_id("dimension", r["source"], r["name"]),
+                "kind": "dimension", "source": r["source"], "name": r["name"],
+                "expr": None, "exprSha": None, "depends": [],
+                "check": {"kind": "passthrough"}, "verdict": "no_definition",
+                "needs": None, "file": r["file"], "line": r["line"]})
+            continue
         deps = deps_of(r)
+        # Fanout inflates a SUM; it does not corrupt a dimension. A dimension is
+        # compared row by row, and a join that duplicates rows duplicates both
+        # sides identically, so the comparison still holds. Holding dimensions
+        # back for fanout was wrong reasoning: it left `name` and `job` -- the
+        # two a "top director" question turns on -- permanently unvalidated for
+        # a risk that does not apply to them.
         why = ("spans more than one line, so only its first line was read"
                if incomplete(r["expr"])
-               else needs_raw(r["expr"], joins - {r["source"]}))
+               else needs_raw(r["expr"], joins - {r["source"]})
+               if r["kind"] == "measure" else None)
         out.append({
             "entityId": entity_id(r["kind"], r["source"], r["name"]),
             "kind": r["kind"],
@@ -335,6 +360,8 @@ def run_check(rec: dict[str, Any], a: argparse.Namespace) -> tuple[str, str]:
     """
     if (rec["check"].get("query") or "").strip() and rec["kind"] == "measure":
         return run_authored(rec, a)
+    if rec["check"]["kind"] == "passthrough":
+        return "no_definition", "a raw column passed through; no expression to check"
     if rec["check"]["kind"] == "raw":
         return run_authored(rec, a)
     if rec["check"]["kind"] != "within_model":
@@ -430,20 +457,32 @@ def stale_ids(ledger: dict[str, dict[str, Any]], model: pathlib.Path | None,
             if current.get(eid) != rec.get("exprSha")}
 
 
-def tested_ids(case: dict[str, Any]) -> list[str]:
-    """The definitions a case's answer depends on.
+def tested_groups(case: dict[str, Any]) -> list[list[str]]:
+    """The definitions a case depends on, as GROUPS satisfied by any member.
 
     Read from `expectedEntities`, which already names entities in the same
     `kind:source:name` form the ledger keys on, rather than from a new
     hand-maintained field. A wrong id here is the failure mode that cost a real
     set two days, so this reuses a link the set already maintains and that
     `verify_goldens` check 5 already audits against the model.
+
+    Grouped, the same way `score_retrieval.groups()` does it. A first version
+    flattened `requiredAnyOf` and demanded every member, which defeats the
+    point of the group: a case answerable through `startYear` OR the model's
+    `production_year` alias was held unvalidated because only one of the two is
+    a checkable definition.
     """
     exp = case.get("expectedEntities") or {}
-    out = list(exp.get("required") or [])
+    out = [[r] for r in (exp.get("required") or [])]
     for group in exp.get("requiredAnyOf") or []:
-        out += list(group or [])
+        if group:
+            out.append(list(group))
     return out
+
+
+def tested_ids(case: dict[str, Any]) -> list[str]:
+    """Every id a case names, flattened. For reporting, never for deciding."""
+    return [e for g in tested_groups(case) for e in g]
 
 
 def case_basis(case: dict[str, Any], ledger: dict[str, dict[str, Any]],
@@ -470,17 +509,21 @@ def case_basis(case: dict[str, Any], ledger: dict[str, dict[str, Any]],
         return "independent"
     if set_dir is not None and has_second_derivation(case, set_dir):
         return "independent"
-    ids = tested_ids(case)
-    if not ids:
+    groups = tested_groups(case)
+    if not groups:
         return "unchecked"
-    worst = "definitions"
-    for eid in ids:
+
+    def ok(eid: str) -> bool:
         rec = ledger.get(eid)
-        if rec is None or eid in stale or rec.get("verdict") == "unchecked":
-            worst = "unchecked"
-        elif rec.get("verdict") == "disagrees":
-            return "disagrees"
-    return worst
+        # `no_definition` is a passthrough column: raw data with no expression
+        # that could be wrong. Nothing validated it because nothing had to.
+        return (rec is not None and eid not in stale
+                and rec.get("verdict") in ("agrees", "no_definition"))
+
+    if any((ledger.get(e) or {}).get("verdict") == "disagrees"
+           for g in groups for e in g):
+        return "disagrees"
+    return "definitions" if all(any(ok(e) for e in g) for g in groups) else "unchecked"
 
 
 def evidence_basis(cases: list[dict[str, Any]],

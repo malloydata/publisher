@@ -1071,14 +1071,23 @@ def cascade_lines(c: dict | None) -> list[str]:
     if c["no entities named"]:
         covered_tail += f", {c['no entities named']} name no entities"
     scored_tail = f", {c['not scored']} not scored" if c["not scored"] else ""
-    return [f"  cascade       {c['total']} cases",
-            f"    covered?      {covered} yes, {c['not covered']} no (model gap)"
-            + covered_tail,
-            f"    retrieved?    {retrieved} yes, {c['not retrieved']} no "
-            f"(documentation: the entity exists, its docs did not surface it)",
-            f"    correct?      {c['delivered, right']} yes, "
-            f"{c['delivered, wrong']} no (delivered, wrong: agent or docs; "
-            f"diagnose decides)" + scored_tail]
+    # A pass that stops on an earlier rung is reported there. Otherwise the
+    # last rung reads as the pass count and disagrees with the headline.
+    anyway = lambda n: f"; {n} answered correctly anyway" if n else ""
+    lines = [f"  cascade       {c['total']} cases",
+             f"    covered?      {covered} yes, {c['not covered']} no (model "
+             f"gap{anyway(c.get('passed_not_covered', 0))})" + covered_tail,
+             f"    retrieved?    {retrieved} yes, {c['not retrieved']} no "
+             f"(documentation: the entity exists, its docs did not surface "
+             f"it{anyway(c.get('passed_not_retrieved', 0))})",
+             f"    correct?      {c['delivered, right']} yes, "
+             f"{c['delivered, wrong']} no (delivered, wrong: agent or docs; "
+             f"diagnose decides)" + scored_tail]
+    early = c.get("passed_not_covered", 0) + c.get("passed_not_retrieved", 0)
+    if early:
+        lines.append(f"                the last rung counts {c['delivered, right']}, "
+                     f"not the pass rate: {early} more passed on a rung above it")
+    return lines
 
 
 def evidence_lines(evidence: dict | None) -> list[str]:
@@ -1887,13 +1896,23 @@ def unscorable_preflight(cases: list[dict[str, Any]], set_name: str
         f"every one of the {len(cases)} goldens in {set_name} holds a key "
         "nobody has established (provisional, invalid or ambiguous), so no "
         "case can take a verdict and no answer this run produces can change "
-        "that. Two ways forward, and they are different jobs:\n"
+        "that. Three ways forward, and they are different jobs:\n"
         "  - Establish the keys: re-derive them through the truth package and "
         "promote what agrees --\n"
         "      python3 verify_goldens.py --set <set> --publisher <truth> "
         "--promote\n"
         "    (`--refresh` rewrites a drifted VALUE; it does not change a "
         "golden's status.)\n"
+        "  - No truth package? Validate the definitions the keys rest on "
+        "instead --\n"
+        "      python3 verify_definitions.py --model <model> --publisher "
+        "<server> --out <ledger>\n"
+        "      python3 verify_goldens.py --set <set> --definitions <ledger> "
+        "--promote\n"
+        "    A golden is trustworthy if it was derived independently OR if "
+        "every definition\n"
+        "    it tests is validated. Promotion still needs the golden's second "
+        "derivation.\n"
         "  - Measure what the model can express at all, which needs no keys "
         "and no answerer --\n"
         "      python3 check_coverage.py --set <set> --model <package>\n"
@@ -2703,7 +2722,11 @@ def main(argv: list[str] | None = None) -> int:
     # What the score rests on. Pure hash comparison against the ledger, no
     # queries, so it costs nothing and runs whether or not a ledger exists.
     # Absent ledger means no EVIDENCE block at all, rather than a reassuring one.
-    ledger = verify_definitions.load_ledger(
+    # NOT `ledger`: this module imports a module by that name, and binding it
+    # here made it a local for the whole of main(), so `ledger.run_config` at
+    # the run.json write above raised UnboundLocalError on EVERY run. No unit
+    # test caught it because none of them calls main().
+    def_ledger = verify_definitions.load_ledger(
         pathlib.Path(a.definitions) if a.definitions else None)
     # The run's OWN snapshot, not `--model` (which names the answerer's LLM) and
     # not the served tree: `model.malloy` is the bytes this run pinned, so a
@@ -2711,8 +2734,8 @@ def main(argv: list[str] | None = None) -> int:
     # answered", which is the only version the score is about.
     snapshot = a.out / "model.malloy"
     evidence = verify_definitions.evidence_basis(
-        cases, ledger,
-        verify_definitions.stale_ids(ledger,
+        cases, def_ledger,
+        verify_definitions.stale_ids(def_ledger,
                                      snapshot if snapshot.exists() else None),
         a.set_dir)
 
