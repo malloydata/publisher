@@ -81,6 +81,10 @@ ALWAYS_BLOCKED = (
     # does); seen 2026-09-01 on the first platform smoke, where they alone
     # flagged the attempt contaminated.
     "ListMcpResourcesTool", "ReadMcpResourceDirTool", "ReadMcpResourceTool",
+    # The same shape, one host surface later: granted when the runner is
+    # launched detached, and they alone flagged every attempt in a 37-case run.
+    # `Task` was blocked; the newer task-management tools were not.
+    "TaskCreate", "TaskGet", "TaskList", "TaskUpdate",
 )
 
 # The role-dependent half, and the reason it cannot join ALWAYS_BLOCKED:
