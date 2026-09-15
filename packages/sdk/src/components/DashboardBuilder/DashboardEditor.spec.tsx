@@ -137,6 +137,10 @@ describe("DashboardEditor", () => {
          ),
       );
       expect(await storage.getDocument(DRAFT)).toContain("# colspan=6");
+      // The copy just written is not "edits from an earlier visit": no offer
+      // to resume it appears over the page being edited.
+      await waitFor(() => expect(button("Saved")).toBeDefined());
+      expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
    it("offers a saved draft that differs from the package, and opens it on Resume", async () => {
@@ -145,7 +149,8 @@ describe("DashboardEditor", () => {
          'title="Drafted"',
       );
       await new BrowserDocumentStorage().saveDocument(DRAFT, draft);
-      mount();
+      const onEvent = mock((_event: DashboardEvent) => {});
+      mount(undefined, onEvent);
       expect(
          await screen.findByText(
             /edits to this dashboard saved in this browser/,
@@ -155,6 +160,11 @@ describe("DashboardEditor", () => {
       expect(await screen.findByText("Storefront")).toBeDefined();
       fireEvent.click(button("Resume"));
       expect(await screen.findByText("Drafted")).toBeDefined();
+      expect(onEvent.mock.calls.at(-1)?.[0]).toMatchObject({
+         type: "dashboard.opened",
+         from: "draft",
+      });
+      expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
    it("exports the file a save would write, hands Done to the host, and reports both opening and exporting", async () => {

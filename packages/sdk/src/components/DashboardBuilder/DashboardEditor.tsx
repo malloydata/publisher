@@ -3,7 +3,6 @@
 
 import DownloadIcon from "@mui/icons-material/Download";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
-import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -76,8 +75,12 @@ export function DashboardEditor({
    onEvent,
 }: DashboardEditorProps) {
    const { apiClients } = useServer();
-   // When the editor was asked for, so "opened" can say how long it took.
-   const mountedAt = useRef(now());
+   // When the editor was asked for — or the reader chose what to open — so
+   // "opened" can say how long it took. Read through refs by the open effect,
+   // so a host's handler changing identity does not re-open the document.
+   const startedAt = useRef(now());
+   const onEventRef = useRef(onEvent);
+   onEventRef.current = onEvent;
    const storage = useOptionalDocumentStorage()?.documentStorage;
    const modelPath = `dashboards/${dashboardName}.malloy`;
 
@@ -100,6 +103,9 @@ export function DashboardEditor({
    const [workspace, setWorkspace] = useState<string | undefined>(undefined);
    const [draft, setDraft] = useState<string | undefined>(undefined);
    const [draftChecked, setDraftChecked] = useState(storage === undefined);
+   // Whether a draft was there when the editor opened: only that one is
+   // offered. A copy this session saves is not "edits from an earlier visit".
+   const [offered, setOffered] = useState(false);
    useEffect(() => {
       if (!storage) return;
       let stale = false;
@@ -119,6 +125,7 @@ export function DashboardEditor({
             .catch(() => undefined);
          if (!stale) {
             setDraft(text);
+            setOffered(text !== undefined);
             setDraftChecked(true);
          }
       })();
@@ -131,7 +138,10 @@ export function DashboardEditor({
    // package file otherwise. `generation` remounts the builder for a fresh
    // history when that choice changes.
    const [resume, setResume] = useState<boolean | undefined>(undefined);
-   const opening = resume === true && draft !== undefined ? draft : packageText;
+   const fromDraft = resume === true && draft !== undefined;
+   const opening = fromDraft ? draft : packageText;
+   const fromRef = useRef<"package" | "draft">("package");
+   fromRef.current = fromDraft ? "draft" : "package";
    const [opened, setOpened] = useState<
       | { source: string; document: DashboardDocument; generation: number }
       | undefined
@@ -147,7 +157,7 @@ export function DashboardEditor({
                ? `${result.reason} (line ${result.line})`
                : result.reason;
             setOpenError(reason);
-            onEvent?.({ type: "dashboard.open_refused", reason });
+            onEventRef.current?.({ type: "dashboard.open_refused", reason });
             return;
          }
          setOpenError(undefined);
@@ -156,17 +166,17 @@ export function DashboardEditor({
             document: result.document,
             generation: (previous?.generation ?? 0) + 1,
          }));
-         onEvent?.({
+         onEventRef.current?.({
             type: "dashboard.opened",
-            from: opening === packageText ? "package" : "draft",
+            from: fromRef.current,
             tiles: result.document.tiles.length,
-            durationMs: now() - mountedAt.current,
+            durationMs: now() - startedAt.current,
          });
       });
       return () => {
          stale = true;
       };
-   }, [opening, packageText, onEvent]);
+   }, [opening]);
 
    const save = useCallback(
       async (source: string) => {
@@ -184,9 +194,15 @@ export function DashboardEditor({
             source,
          );
          setDraft(source);
+         // Saving without choosing is choosing the package file.
+         setResume((chosen) => chosen ?? false);
       },
       [storage, workspace, environmentName, packageName, modelPath],
    );
+   const choose = (resumeDraft: boolean) => {
+      startedAt.current = now();
+      setResume(resumeDraft);
+   };
 
    if (modelQuery.isError)
       return (
@@ -207,15 +223,15 @@ export function DashboardEditor({
    const draftDiffers = draft !== undefined && draft !== packageText;
    return (
       <Stack sx={{ gap: 2 }}>
-         {draftDiffers && resume === undefined && (
+         {offered && draftDiffers && resume === undefined && (
             <Alert
                severity="info"
                action={
                   <Stack direction="row" sx={{ gap: 1 }}>
-                     <Button size="small" onClick={() => setResume(true)}>
+                     <Button size="small" onClick={() => choose(true)}>
                         Resume
                      </Button>
-                     <Button size="small" onClick={() => setResume(false)}>
+                     <Button size="small" onClick={() => choose(false)}>
                         Start from the package
                      </Button>
                   </Stack>
@@ -286,7 +302,6 @@ function Surface({
    note: string;
 }) {
    const { apiClients } = useServer();
-   const queryClient = useQueryClient();
 
    const { data, isSuccess } = useQueryWithApiError({
       queryKey: [
@@ -464,18 +479,7 @@ function Surface({
                </>
             }
             controls={isSuccess ? <GivensPanel {...panel} /> : undefined}
-            {...(onSave
-               ? {
-                    onSave: async (source: string) => {
-                       await onSave(source);
-                       // A saved copy may declare controls the live row shows
-                       // from the document already; nothing server-side moved.
-                       void queryClient.invalidateQueries({
-                          queryKey: ["dashboard-editor-manifest"],
-                       });
-                    },
-                 }
-               : {})}
+            {...(onSave ? { onSave } : {})}
          />
          <Box sx={{ px: 0.5 }}>
             <Typography variant="caption" sx={{ opacity: 0.7 }}>

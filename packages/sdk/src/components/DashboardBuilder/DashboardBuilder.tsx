@@ -174,9 +174,10 @@ export function DashboardBuilder({
    });
    const [selected, setSelected] = useState<number | undefined>(undefined);
    const [saving, setSaving] = useState(false);
+   const columns = editor.document.columns ?? DEFAULT_COLUMNS;
    const { resize, gridBox, startResize, onResize, endResize } = useTileResize({
       tiles: editor.document.tiles,
-      columns: editor.document.columns ?? DEFAULT_COLUMNS,
+      columns,
       onStart: setSelected,
       commit: (index, span) =>
          editor.update((draft) => {
@@ -214,11 +215,15 @@ export function DashboardBuilder({
       { before: string; after: string } | undefined
    >(undefined);
 
-   const columns = editor.document.columns ?? DEFAULT_COLUMNS;
-
    useEffect(() => {
       onChange?.(editor.document);
    }, [editor.document, onChange]);
+   // One object per document, or the popover's draft would reset on every
+   // render of the builder while it is open.
+   const settings = useMemo(
+      () => settingsOf(editor.document),
+      [editor.document],
+   );
 
    // The givens the MODEL offers: the caller's list, less any the opened file
    // declared itself. A caller gets that list from the server's manifest, which
@@ -614,7 +619,7 @@ export function DashboardBuilder({
          />
          <SettingsPopover
             anchor={settingsAnchor}
-            settings={settingsOf(editor.document)}
+            settings={settings}
             onClose={() => setSettingsAnchor(null)}
             onCommit={(next) =>
                editor.update((draft) => {
