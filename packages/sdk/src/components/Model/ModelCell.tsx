@@ -5,15 +5,13 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import SearchIcon from "@mui/icons-material/Search";
 import { Box, Button, IconButton, Typography } from "@mui/material";
 import React, { useEffect } from "react";
-import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { useQueryResult } from "../../hooks/useQueryResult";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { parseResourceUri } from "../../utils/formatting";
-import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
 import { highlight } from "../highlighter";
-import ResultContainer from "../RenderedResult/ResultContainer";
+import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { MODEL_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
-import { useServer } from "../ServerProvider";
 import { CleanMetricCard, CleanNotebookCell } from "../styles";
 
 interface ModelCellProps {
@@ -40,29 +38,13 @@ export function ModelCell({
 
    const { packageName, environmentName, versionId, modelPath } =
       parseResourceUri(resourceUri);
-   const { apiClients } = useServer();
-
-   const {
-      data: queryData,
-      isSuccess,
-      isLoading,
-   } = useQueryWithApiError({
-      queryKey: ["namedQueryResult", resourceUri, queryName],
-      queryFn: () =>
-         apiClients.models.executeQueryModel(
-            environmentName,
-            packageName,
-            modelPath,
-            {
-               query: undefined,
-               sourceName: undefined,
-               queryName: queryName,
-               versionId: versionId,
-            },
-         ),
-      enabled: runOnDemand ? hasRun : true, // Execute on demand or always
-      ...CHART_RESULT_QUERY_OPTIONS,
-   });
+   // Run on demand or always; a query not yet asked for is not fetched.
+   const shouldRun = !runOnDemand || hasRun;
+   const state = useQueryResult(
+      { environmentName, packageName, modelPath, versionId, queryName },
+      { enabled: shouldRun },
+   );
+   const queryData = state.data;
 
    const { mode } = usePublisherTheme();
    useEffect(() => {
@@ -173,21 +155,14 @@ export function ModelCell({
                   </Button>
                </Box>
             )}
-            {(!runOnDemand || hasRun) && isLoading && (
-               <Box sx={{ padding: "20px", textAlign: "center" }}>
-                  <Typography>Loading results...</Typography>
-               </Box>
+            {shouldRun && (
+               <ResultPanel
+                  state={state}
+                  context={queryName}
+                  maxHeight={MODEL_CELL_MAX_HEIGHT}
+                  maxResultSize={maxResultSize}
+               />
             )}
-            {(!runOnDemand || hasRun) &&
-               isSuccess &&
-               queryData?.data?.result && (
-                  <ResultContainer
-                     result={queryData.data.result}
-                     maxHeight={MODEL_CELL_MAX_HEIGHT}
-                     maxResultSize={maxResultSize}
-                     renderLogs={queryData.data.renderLogs}
-                  />
-               )}
          </CleanMetricCard>
 
          {/* Results Dialog */}

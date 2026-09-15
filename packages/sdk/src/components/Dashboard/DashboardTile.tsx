@@ -3,18 +3,13 @@
 
 import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
 import { Box, IconButton, Paper, Tooltip, Typography } from "@mui/material";
-import { useMemo } from "react";
 import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { useQueryResult } from "../../hooks/useQueryResult";
 import type { GivenValue } from "../../hooks/givenValue";
-import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest } from "../given/paramCodec";
-import { Loading } from "../Loading";
-import ResultContainer from "../RenderedResult/ResultContainer";
-import { useServer } from "../ServerProvider";
+import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
 
 export interface DashboardTileProps {
@@ -101,49 +96,17 @@ export function DashboardTile({
    drill,
    onExplore,
 }: DashboardTileProps) {
-   const { apiClients } = useServer();
    const { theme } = usePublisherTheme();
-   const requestGivens = givensToRequest(givens, declaredTypes, givenNames);
-
-   const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: [
-         "dashboardTile",
-         environmentName,
-         packageName,
-         versionId,
-         modelPath,
-         queryName,
-         tile,
-         // Re-runs when the applied values change, which is the whole point of
-         // the control row.
-         JSON.stringify(requestGivens),
-      ],
-      queryFn: () =>
-         apiClients.models.executeQueryModel(
-            environmentName,
-            packageName,
-            modelPath,
-            {
-               queryName,
-               query: tile !== undefined ? `run: ${tile}` : undefined,
-               givens: requestGivens,
-               versionId,
-            },
-         ),
-      ...CHART_RESULT_QUERY_OPTIONS,
+   const state = useQueryResult({
+      environmentName,
+      packageName,
+      modelPath,
+      versionId,
+      queryName,
+      query: tile !== undefined ? `run: ${tile}` : undefined,
+      // Narrowed to the givens this tile references: see `givenNames`.
+      givens: givensToRequest(givens, declaredTypes, givenNames),
    });
-
-   // A composite tile that is one row of measures draws as KPI cards, the way
-   // Malloyyo splices the same tile into its grid, rather than as a one-row
-   // table. Composite only: the single-query form is one result the renderer
-   // lays out from the query's own tags, and its aggregates are already tiles.
-   // Memoized on the result string so a large result is not re-parsed on every
-   // render of the tile around it.
-   const result = useMemo(() => {
-      const raw = data?.data.result;
-      if (raw === undefined || tile === undefined) return raw;
-      return promoteMeasureRowToKpis(raw);
-   }, [data, tile]);
 
    return (
       <Paper
@@ -244,24 +207,19 @@ export function DashboardTile({
                )}
             </Box>
          )}
-         {!isSuccess && !isError && <Loading text="Running…" />}
-         {isSuccess && (
-            <ResultContainer
-               result={result}
-               maxHeight={height}
-               maxResultSize={maxResultSize}
-               renderLogs={data.data.renderLogs}
-               drill={drill}
-            />
-         )}
-         {isError && (
-            <Box sx={{ p: 2 }}>
-               <ApiErrorDisplay
-                  context={tile ?? queryName ?? modelPath}
-                  error={error}
-               />
-            </Box>
-         )}
+         <ResultPanel
+            state={state}
+            context={tile ?? queryName ?? modelPath}
+            maxHeight={height}
+            maxResultSize={maxResultSize}
+            drill={drill}
+            // A composite tile that is one row of measures draws as KPI cards,
+            // the way Malloyyo splices the same tile into its grid, rather than
+            // as a one-row table. Composite only: the single-query form is one
+            // result the renderer lays out from the query's own tags, and its
+            // aggregates are already tiles.
+            transform={tile !== undefined ? promoteMeasureRowToKpis : undefined}
+         />
       </Paper>
    );
 }
