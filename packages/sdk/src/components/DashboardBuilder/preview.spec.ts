@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import type { GivenValue } from "../../hooks/givenValue";
 import type { DashboardDocument, DashboardTile } from "./document";
-import { previewGivens, previewTileQuery, unsavedControls } from "./preview";
+import { malloyLiteral, previewGivens, previewTileQuery } from "./preview";
 
 const tile = (
    name: string,
@@ -102,16 +103,36 @@ describe("previewTileQuery", () => {
       expect(bare.givenNames).toEqual([]);
    });
 
-   it("leaves out a binding to a given the server does not know yet", () => {
+   it("writes the value of a given the server does not know yet as a literal", () => {
+      // SINCE is declared here and not compiled on the server: it cannot be
+      // sent by name, so its value goes into the query, and a new filter works
+      // before the file is saved. Only CATEGORY travels with the request.
       const q = previewTileQuery(
          document,
          document.tiles[0],
          new Set(["CATEGORY"]),
+         new Map<string, GivenValue>([
+            ["CATEGORY", "Shoes"],
+            ["SINCE", new Date("2024-01-31T00:00:00Z")],
+         ]),
       );
       expect(q.expression).toBe(
-         "order_items -> key_figures + { where: category ~ $CATEGORY }",
+         "order_items -> key_figures + { where: category ~ $CATEGORY, where: created_at >= @2024-01-31 }",
       );
       expect(q.givenNames).toEqual(["CATEGORY"]);
+   });
+
+   it("leaves out an unsent given with no value yet, and one nobody declares", () => {
+      const q = previewTileQuery(document, document.tiles[0], new Set());
+      expect(q.expression).toBe("order_items -> key_figures");
+      expect(q.givenNames).toEqual([]);
+      const stray: DashboardTile = tile("t", "v", [
+         { field: "x", given: "NOBODY" },
+      ]);
+      expect(
+         previewTileQuery(document, stray, new Set(), new Map([["NOBODY", 1]]))
+            .expression,
+      ).toBe("order_items -> v");
    });
 
    it("runs an inherited tile as the model has it, sending the whole row", () => {
@@ -127,13 +148,23 @@ describe("previewTileQuery", () => {
    });
 });
 
-describe("unsavedControls", () => {
-   it("names the bound controls the server cannot run yet", () => {
-      expect(unsavedControls(document, new Set(["CATEGORY"]))).toEqual([
-         "SINCE",
-      ]);
-      expect(unsavedControls(document, new Set(["CATEGORY", "SINCE"]))).toEqual(
-         [],
+describe("malloyLiteral", () => {
+   it("spells a value the way a given of the type would hold it", () => {
+      expect(malloyLiteral("filter<string>", "Nike")).toBe("f'Nike'");
+      expect(malloyLiteral("filter<number>", ">= 10")).toBe("f'>= 10'");
+      expect(malloyLiteral("string", "O'Neil")).toBe("'O\\'Neil'");
+      expect(malloyLiteral("number", "42")).toBe("42");
+      expect(malloyLiteral("number", "forty")).toBeUndefined();
+      expect(malloyLiteral("boolean", true)).toBe("true");
+      expect(malloyLiteral("date", "2024-01-31")).toBe("@2024-01-31");
+      expect(malloyLiteral("timestamp", new Date("2024-01-31T09:30:00Z"))).toBe(
+         "@2024-01-31 09:30:00",
       );
+   });
+
+   it("writes nothing for no value, or a type it cannot spell", () => {
+      expect(malloyLiteral("filter<string>", "")).toBeUndefined();
+      expect(malloyLiteral("filter<string>", null)).toBeUndefined();
+      expect(malloyLiteral("geometry", "x")).toBeUndefined();
    });
 });

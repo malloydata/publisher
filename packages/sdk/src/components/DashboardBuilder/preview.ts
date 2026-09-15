@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Given } from "../../client";
+import type { GivenValue } from "../../hooks/givenValue";
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
 
 /**
@@ -18,10 +19,11 @@ import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
  * like it did nothing, because on screen it did nothing.
  *
  * Two functions, one per half of what a reader sees. Both are pure, so the
- * host can hold the live document and derive its preview from it, and both
- * are honest about the one thing a preview cannot do: a given the document
- * declares but the server's model does not yet know cannot be sent to it, so
- * a NEW control shows in the row and moves nothing until the file is saved.
+ * host can hold the live document and derive its preview from it. A given the
+ * document declares but the server's model has not compiled cannot be SENT to
+ * it — the server refuses a given it does not know — so a new control's value
+ * is written into the query as a literal instead, and the new filter works the
+ * moment it is added rather than after a save.
  */
 
 /**
@@ -116,15 +118,19 @@ export interface PreviewTileQuery {
  * written. Every reference tile has such a base: `view: x is base_view + …` can
  * only name a view of the source the extension extends.
  *
- * `runnable` is the set of givens the server's model declares. A binding to a
- * given outside it — one this document just declared — is left out of the
- * refinement and the request, because the server would refuse a given it does
- * not know; the control still shows, and takes effect once the file is saved.
+ * `runnable` is the set of givens the server's model declares; a binding to
+ * one of them is written as `$NAME` and the given is sent with the request. A
+ * binding to a given outside it — one this document just declared, which the
+ * server would refuse by name — is written with its VALUE as a literal,
+ * `where: brand ~ f'Nike'`, from `values` and the declaration's type; with no
+ * value yet it is left out, which is what an empty filter means. A binding to
+ * a given neither side knows is left out too.
  */
 export function previewTileQuery(
    document: DashboardDocument,
    tile: DashboardTile,
    runnable: ReadonlySet<string>,
+   values: ReadonlyMap<string, GivenValue> = new Map(),
 ): PreviewTileQuery {
    if (tile.declaration.kind !== "reference") {
       // Inherited: the model's view, bindings in the model. Inline: this file's
@@ -137,33 +143,82 @@ export function previewTileQuery(
    const base =
       document.sources.find((source) => source.name === tile.source)?.base ??
       tile.source;
-   const bindings = (tile.filters ?? []).filter((filter) =>
-      runnable.has(filter.given),
+   const localTypes = new Map(
+      (document.localGivens ?? []).map((local) => [local.name, local.type]),
    );
-   const refinement = bindings
-      .map(
-         (filter) =>
-            `where: ${filter.field} ${filter.op ?? "~"} $${filter.given}`,
-      )
-      .join(", ");
+   const sent: string[] = [];
+   const clauses: string[] = [];
+   for (const filter of tile.filters ?? []) {
+      const comparison = `where: ${filter.field} ${filter.op ?? "~"}`;
+      if (runnable.has(filter.given)) {
+         sent.push(filter.given);
+         clauses.push(`${comparison} $${filter.given}`);
+         continue;
+      }
+      if (!localTypes.has(filter.given)) continue;
+      const literal = malloyLiteral(
+         localTypes.get(filter.given),
+         values.get(filter.given),
+      );
+      if (literal !== undefined) clauses.push(`${comparison} ${literal}`);
+   }
+   const refinement = clauses.join(", ");
    return {
       expression:
          `${base} -> ${tile.declaration.from}` +
          (refinement ? ` + { ${refinement} }` : ""),
-      givenNames: bindings.map((filter) => filter.given),
+      givenNames: sent,
    };
 }
 
 /**
- * The controls the document shows that the server's model does not declare
- * yet: they render, and move nothing until the file is saved. For the host to
- * say so.
+ * A control's value as the Malloy literal a given of `type` would hold, or
+ * undefined when there is nothing to write: no value, or one the type cannot
+ * spell. `filter<…>` is a filter expression, `f'…'`; a date is `@2024-01-31`;
+ * a timestamp `@2024-01-31 09:30:00`; a string is quoted, a number and a
+ * boolean are themselves.
  */
-export function unsavedControls(
-   document: DashboardDocument,
-   runnable: ReadonlySet<string>,
-): string[] {
-   return previewGivens(document, [])
-      .map((given) => given.name as string)
-      .filter((name) => !runnable.has(name));
+export function malloyLiteral(
+   type: string | undefined,
+   value: GivenValue | undefined,
+): string | undefined {
+   if (value === undefined || value === null || value === "") return undefined;
+   const quote = (text: string) =>
+      `'${text.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+   const scalar = type?.startsWith("filter<") ? "filter" : type;
+   switch (scalar) {
+      case "filter":
+         return `f${quote(String(value))}`;
+      case "string":
+         return quote(String(value));
+      case "number": {
+         const n = typeof value === "number" ? value : Number(value);
+         return Number.isFinite(n) ? String(n) : undefined;
+      }
+      case "boolean":
+         return value === true || value === "true" ? "true" : "false";
+      case "date":
+         return datePart(value) && `@${datePart(value)}`;
+      case "timestamp": {
+         const day = datePart(value);
+         if (!day) return undefined;
+         const time =
+            value instanceof Date
+               ? value.toISOString().slice(11, 19)
+               : (/[T ](\d{2}:\d{2}(?::\d{2})?)/.exec(String(value))?.[1] ??
+                 "00:00:00");
+         return `@${day} ${time}`;
+      }
+      default:
+         return undefined;
+   }
+}
+
+/** `2024-01-31` out of a Date (UTC) or an ISO-ish string, else undefined. */
+function datePart(value: GivenValue): string | undefined {
+   if (value instanceof Date)
+      return Number.isNaN(value.getTime())
+         ? undefined
+         : value.toISOString().slice(0, 10);
+   return /^(\d{4}-\d{2}-\d{2})/.exec(String(value))?.[1];
 }
