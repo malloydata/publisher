@@ -8,7 +8,7 @@ import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { DashboardTile, tileTitle } from "../Dashboard/DashboardTile";
 import { now, type DashboardEventHandler } from "../Dashboard/telemetry";
-import { useDashboardControls } from "../Dashboard/useDashboardControls";
+import { useDocumentControls } from "../../hooks/useDocumentControls";
 import {
    useOptionalDocumentStorage,
    type DocumentLocator,
@@ -401,16 +401,16 @@ function Surface({
       () => previewGivens(doc, modelSpecs),
       [doc, modelSpecs],
    );
-   const { declaredTypes, applied, panel } = useDashboardControls({
+   const { declaredTypes, applied, panel } = useDocumentControls({
+      specs,
+      loaded: isSuccess,
+      startingValues: manifest?.startingGivens,
+      documentKey: `${environmentName}/${packageName}/${slug}/edit`,
+      autorun: manifest?.autorun !== false,
       environmentName,
       packageName,
       modelPath: manifest?.path,
-      specs,
-      ...(manifest?.startingGivens
-         ? { startingValues: manifest.startingGivens }
-         : {}),
-      documentKey: `${environmentName}/${packageName}/${slug}/edit`,
-      autorun: manifest?.autorun !== false,
+      documentName: slug,
    });
 
    const renderTile = useMemo(
@@ -478,7 +478,9 @@ function Surface({
                   {toolbar}
                </>
             }
-            controls={isSuccess ? <GivensPanel {...panel} /> : undefined}
+            controls={
+               isSuccess ? <GivensPanel {...panel} layout="bar" /> : undefined
+            }
             {...(onSave ? { onSave } : {})}
          />
          <Box sx={{ px: 0.5 }}>

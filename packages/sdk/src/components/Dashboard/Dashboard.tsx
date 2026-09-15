@@ -5,12 +5,12 @@ import { Alert, Box, Stack, Typography } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import { useCallback, useMemo, useState } from "react";
 import type { DashboardManifest } from "../../client";
+import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import {
    useDrill,
-   useDrillSelf,
    type DrillBinding,
    type DrillClickPayload,
    type DrillNavigation,
@@ -23,7 +23,6 @@ import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
 import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
-import { useDashboardControls } from "./useDashboardControls";
 import { ExploreDialog } from "./ExploreDialog";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 import type { DashboardEventHandler } from "./telemetry";
@@ -141,42 +140,31 @@ export function Dashboard({
    const manifest = manifestResponse?.data;
 
    const specs = useMemo(() => manifest?.givens ?? [], [manifest]);
-   const { declaredTypes, applied, setGiven, panel } = useDashboardControls({
-      environmentName,
-      packageName,
-      ...(versionId === undefined ? {} : { versionId }),
-      modelPath: manifest?.path,
+
+   // The control row's state, options and `to=self` drill: the same hook the
+   // notebook uses, so a control behaves identically on both surfaces.
+   const controls = useDocumentControls({
       specs,
-      ...(manifest?.startingGivens
-         ? { startingValues: manifest.startingGivens }
-         : {}),
-      ...(givens ? { params: givens } : {}),
-      // Withheld until the manifest has loaded. Changing `dashboard`
-      // changes the query key, so `data` is undefined for one commit and
-      // the declared set is empty; `applied` prunes to nothing and the
-      // hook would report "no values, and I manage nothing". This component
-      // is reconciled rather than remounted on a dashboard-to-dashboard
-      // drill, so the host would clear exactly the givens the drill just
-      // seeded for the dashboard now arriving.
-      ...(isSuccess && onGivensChange
-         ? { onParamsChange: onGivensChange }
-         : {}),
+      loaded: isSuccess,
+      startingValues: manifest?.startingGivens,
+      params: givens,
+      onGivensChange,
       // Which document these edits belong to, version included: two
       // dashboards whose starting values coincide (both empty, usually)
       // would otherwise look like one document, and the one you came from
-      // would keep filtering the one you drilled into.
+      // would keep filtering the one you drilled into. Only the EDITS: a host
+      // that round-trips givens through its own URL hands them straight back,
+      // and they still apply across the swap.
       documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${dashboard}`,
       // Absent means autorun; only an explicit `autorun=false` batches.
       autorun: manifest?.autorun !== false,
-   });
-
-   // `to=self` filters in place. Which givens a tag may set, and setting one
-   // from a clicked cell, is the same on both surfaces, so it is shared.
-   const { canSelf, onSelf } = useDrillSelf({
-      declaredTypes,
-      setGiven,
+      environmentName,
+      packageName,
+      modelPath: manifest?.path,
+      versionId,
       documentName: dashboard,
    });
+   const { applied, declaredTypes, canSelf, onSelf } = controls;
 
    // The rows behind a clicked value, and a tile's query in the explorer —
    // the two ways past a number. Composite tiles only: each names its
@@ -267,7 +255,7 @@ export function Dashboard({
       <Stack spacing={2}>
          <DashboardHeader manifest={manifest} />
 
-         <GivensPanel {...panel} />
+         <GivensPanel {...controls.panel} layout="bar" />
 
          {modelPath === undefined ? (
             <Alert severity="error">
