@@ -14,6 +14,7 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
+import type { ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { MOD } from "./useBuilderShortcuts";
 
@@ -34,6 +35,8 @@ export interface BuilderToolbarProps {
    saving: boolean;
    /** Absent when the builder has nowhere to save: no Save, no unsaved marker. */
    onSave?: () => void;
+   /** The host's actions, beside the builder's own: Export, Done. */
+   actions?: ReactNode;
 }
 
 export function BuilderToolbar({
@@ -44,6 +47,7 @@ export function BuilderToolbar({
    dirty,
    saving,
    onSave,
+   actions,
 }: BuilderToolbarProps) {
    const { theme } = usePublisherTheme();
    return (
@@ -93,6 +97,12 @@ export function BuilderToolbar({
             direction="row"
             sx={{ ml: "auto", alignItems: "center", gap: 0.5 }}
          >
+            {actions && (
+               <>
+                  {actions}
+                  <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+               </>
+            )}
             <Tooltip title={`Undo (${MOD}Z)`}>
                {/* A span, because a disabled button dispatches no events and a
                    tooltip on one would never show. */}

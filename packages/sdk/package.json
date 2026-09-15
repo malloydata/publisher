@@ -8,6 +8,9 @@
    "types": "dist/index.d.ts",
    "typesVersions": {
       "*": {
+         "builder": [
+            "dist/builder-entry.d.ts"
+         ],
          "client": [
             "dist/client-entry.d.ts"
          ],
@@ -28,6 +31,12 @@
          "import": "./dist/client/index.es.js",
          "require": "./dist/client/index.cjs.js",
          "default": "./dist/client/index.es.js"
+      },
+      "./builder": {
+         "types": "./dist/builder-entry.d.ts",
+         "import": "./dist/builder/index.es.js",
+         "require": "./dist/builder/index.cjs.js",
+         "default": "./dist/builder/index.es.js"
       },
       "./client/*": {
          "types": "./dist/client/*.d.ts",

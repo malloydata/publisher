@@ -161,15 +161,22 @@ Ordered by what unblocks what. Each is SDK or server work on the existing format
    (440 KB gzipped) loads only when the builder opens; an "Edit" entry from the
    dashboard page; the `globalThis.process` shim the parser's dependencies need in
    the browser. One static `import { Malloy }` anywhere reachable from the entry
-   chunk defeats this, so the reader keeps its `await import`.
-2. **The storage provider and the write path.** The `DocumentStorage` seam
-   already stores Malloy text with a locator of `<env>/<package>/dashboards/<slug>.malloy`.
-   A package dashboard is a read-only origin: edit copies it into the provider,
-   save writes the copy, export gives it back. A Publisher package-file provider
-   is where the server write path, the `publisher_data` copy and the gateway
-   posture belong, so they land there rather than in the builder. Origin tracking
-   (`contentHash` at copy time, re-fetch and compare on open, never auto-merge)
-   is part of this step.
+   chunk defeats this, so the reader keeps its `await import`. _Landed:_ the SDK's
+   `builder` entry and the Console's `dashboards/<slug>/edit` page.
+2. **Saving, through the storage seam — no server write path.** The
+   `DocumentStorage` seam already stores Malloy text with a locator of
+   `<env>/<package>/dashboards/<slug>.malloy`. A package dashboard is a read-only
+   origin: edit copies it into the provider (the Console's default is this
+   browser), save writes the copy, and Export hands the file back for the package.
+   _Landed_ in the editor. **Deferred, by decision (2026-09-15): any server write
+   path.** Writing back into the package, and with it a Publisher package-file
+   provider, means a new REST endpoint, and API changes are out of scope for this
+   phase. When it is taken up, the shape that was prototyped and rolled back is
+   worth keeping: compile first as the file, write atomically, reload the package
+   _in place_ (a location-based reinstall would overwrite the write), restore the
+   previous file on a failed reload, and refuse under `frozenConfig`. Origin
+   tracking (`contentHash` at copy time, re-fetch and compare on open, never
+   auto-merge) belongs to the same step.
 3. **Add and remove tiles (splice tier 3).** The writer refuses these today
    because a view declaration's comment block has no recorded owner. The plan is
    the picker plus a diff preview before save, so a possible comment move is one

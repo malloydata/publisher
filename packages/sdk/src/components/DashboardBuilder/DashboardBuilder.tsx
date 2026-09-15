@@ -153,6 +153,12 @@ export interface DashboardBuilderProps {
     * is the worst place for it.
     */
    catalog?: PackageCatalog;
+   /**
+    * The host's own actions for the edit bar — Export, Done — rendered beside
+    * undo, redo and save. The builder owns the edits; where the file goes
+    * afterwards is the host's, so its buttons sit in the host's slot.
+    */
+   toolbar?: ReactNode;
 }
 
 /**
@@ -313,6 +319,7 @@ export function DashboardBuilder({
    controls,
    givens,
    catalog,
+   toolbar,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
@@ -665,6 +672,7 @@ export function DashboardBuilder({
             dirty={editor.dirty}
             saving={saving}
             {...(onSave ? { onSave: save } : {})}
+            {...(toolbar ? { actions: toolbar } : {})}
          />
 
          <DashboardProse
