@@ -5,12 +5,9 @@ import type { DragEndEvent, DragOverEvent } from "@dnd-kit/react";
 import { DragDropProvider } from "@dnd-kit/react";
 import { isSortable } from "@dnd-kit/react/sortable";
 import AddIcon from "@mui/icons-material/Add";
-import CheckIcon from "@mui/icons-material/Check";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
-import RedoIcon from "@mui/icons-material/Redo";
-import UndoIcon from "@mui/icons-material/Undo";
 import {
    Alert,
    Box,
@@ -40,6 +37,7 @@ import {
    type BuilderGiven,
    type MappingRow,
 } from "./controls";
+import { BuilderToolbar } from "./BuilderToolbar";
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
 import { FilterDialog } from "./FilterDialog";
 import {
@@ -50,7 +48,7 @@ import {
    TileSortable,
 } from "./sortable";
 import { TileMenu } from "./TileMenu";
-import { MOD, useBuilderShortcuts } from "./useBuilderShortcuts";
+import { useBuilderShortcuts } from "./useBuilderShortcuts";
 import { useDashboardEditor } from "./useDashboardEditor";
 
 export type { BuilderGiven } from "./controls";
@@ -551,151 +549,116 @@ export function DashboardBuilder({
              dashboard carrying a narrative header lost it the moment it was
              opened — on the one surface whose whole job is showing the author
              what a reader will get. */}
+         <BuilderToolbar
+            canUndo={editor.canUndo}
+            canRedo={editor.canRedo}
+            onUndo={editor.undo}
+            onRedo={editor.redo}
+            dirty={editor.dirty}
+            saving={saving}
+            {...(onSave ? { onSave: save } : {})}
+         />
+
          <DashboardProse
             title={editor.document.title || "Untitled dashboard"}
             {...(editor.document.description
                ? { description: editor.document.description }
                : {})}
-            trailing={
-               <>
-                  <Tooltip title={`Undo (${MOD}Z)`}>
-                     {/* A span, because a disabled button dispatches no events and a
-                   tooltip on one would never show. */}
-                     <span>
-                        <IconButton
-                           aria-label="Undo"
-                           size="small"
-                           disabled={!editor.canUndo}
-                           onClick={editor.undo}
-                        >
-                           <UndoIcon fontSize="small" />
-                        </IconButton>
-                     </span>
-                  </Tooltip>
-                  <Tooltip title={`Redo (${MOD}⇧Z)`}>
-                     <span>
-                        <IconButton
-                           aria-label="Redo"
-                           size="small"
-                           disabled={!editor.canRedo}
-                           onClick={editor.redo}
-                        >
-                           <RedoIcon fontSize="small" />
-                        </IconButton>
-                     </span>
-                  </Tooltip>
-                  {onSave && (
-                     <Tooltip title={editor.dirty ? `Save (${MOD}S)` : ""}>
-                        <span>
-                           <Button
-                              variant={editor.dirty ? "contained" : "outlined"}
-                              size="small"
-                              disabled={!editor.dirty || saving}
-                              onClick={save}
-                              startIcon={
-                                 !editor.dirty && !saving ? (
-                                    <CheckIcon fontSize="small" />
-                                 ) : undefined
-                              }
-                              sx={{ ml: 0.5, minWidth: 124 }}
-                           >
-                              {/* Says what will happen, then that it is happening,
-                            then what did. */}
-                              {saving
-                                 ? "Saving…"
-                                 : editor.dirty
-                                   ? "Save changes"
-                                   : "Saved"}
-                           </Button>
-                        </span>
-                     </Tooltip>
-                  )}
-               </>
-            }
          />
 
-         {/* The dashboard's controls, as this FILE has them: what is declared
-             here and what is bound. A chip opens the control's tiles-to-update
-             window; its × takes the control off the dashboard — the
-             declaration too when this file made it, every binding when the
-             model did, since a control is a given some tile binds. The
-             live control row the caller passes in sits underneath, and shows
-             the same controls as a reader gets them — from the saved file. */}
-         <Stack
-            direction="row"
-            aria-label="Filters"
-            sx={{
-               gap: 1,
-               alignItems: "center",
-               flexWrap: "wrap",
-               minHeight: 32,
-            }}
-         >
-            <FilterListIcon
-               sx={{ fontSize: 18, color: theme.tileTitle, opacity: 0.7 }}
-            />
-            {controlList.length === 0 && (
-               <Typography
-                  variant="body2"
-                  sx={{ color: theme.tileTitle, opacity: 0.8 }}
-               >
-                  No filters yet.
-               </Typography>
-            )}
-            {controlList.map((control) => (
-               <Tooltip
-                  key={control.name}
-                  title={`$${control.name} · ${
-                     control.origin === "dashboard"
-                        ? "declared here"
-                        : "from the model"
-                  } · ${control.boundTiles} of ${editor.document.tiles.length} tiles`}
-               >
-                  <Chip
-                     size="small"
-                     label={control.label ?? control.name}
-                     aria-label={`Edit filter ${control.name}`}
-                     variant={
-                        control.origin === "dashboard" ? "filled" : "outlined"
-                     }
-                     onClick={() => setFilterDialog({ control })}
-                     onDelete={() => dropControl(control.name)}
-                     deleteIcon={
-                        <Box
-                           component="span"
-                           role="button"
-                           aria-label={`Remove control ${control.name}`}
-                           sx={{
-                              display: "inline-flex",
-                              fontSize: 14,
-                              lineHeight: 1,
-                              px: 0.25,
-                           }}
-                        >
-                           ×
-                        </Box>
-                     }
-                     sx={{
-                        // Faint when nothing binds it: declared, but not yet a
-                        // control a reader would see.
-                        opacity: control.boundTiles === 0 ? 0.6 : 1,
-                        cursor: "pointer",
-                        transition: "opacity 120ms",
-                     }}
-                  />
-               </Tooltip>
-            ))}
-            <Button
-               size="small"
-               startIcon={<AddIcon fontSize="small" />}
-               onClick={() => setFilterDialog({})}
-               sx={{ ml: 0.5 }}
+         {/* The filter band — Looker's, for this format. The header is the
+             dashboard's controls as this FILE has them: a chip per control,
+             which opens its tiles-to-update window, and whose × takes it off
+             the dashboard (the declaration too when this file made it, every
+             binding when the model did). The live control row the caller
+             passes in sits directly under, showing the same controls as a
+             reader gets them — from the saved file. */}
+         <Stack sx={{ gap: 1 }}>
+            <Stack
+               direction="row"
+               aria-label="Filters"
+               sx={{
+                  gap: 1,
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  minHeight: 32,
+               }}
             >
-               Add filter
-            </Button>
-         </Stack>
+               <FilterListIcon
+                  sx={{ fontSize: 18, color: theme.tileTitle, opacity: 0.7 }}
+               />
+               <Typography
+                  variant="subtitle2"
+                  sx={{ color: theme.tileTitle, mr: 0.5 }}
+               >
+                  Filters
+               </Typography>
+               {controlList.length === 0 && (
+                  <Typography
+                     variant="body2"
+                     sx={{ color: theme.tileTitle, opacity: 0.8 }}
+                  >
+                     None yet.
+                  </Typography>
+               )}
+               {controlList.map((control) => (
+                  <Tooltip
+                     key={control.name}
+                     title={`$${control.name} · ${
+                        control.origin === "dashboard"
+                           ? "declared here"
+                           : "from the model"
+                     } · ${control.boundTiles} of ${editor.document.tiles.length} tiles`}
+                  >
+                     <Chip
+                        size="small"
+                        label={control.label ?? control.name}
+                        aria-label={`Edit filter ${control.name}`}
+                        variant={
+                           control.origin === "dashboard"
+                              ? "filled"
+                              : "outlined"
+                        }
+                        onClick={() => setFilterDialog({ control })}
+                        onDelete={() => dropControl(control.name)}
+                        deleteIcon={
+                           <Box
+                              component="span"
+                              role="button"
+                              aria-label={`Remove control ${control.name}`}
+                              sx={{
+                                 display: "inline-flex",
+                                 fontSize: 14,
+                                 lineHeight: 1,
+                                 px: 0.25,
+                              }}
+                           >
+                              ×
+                           </Box>
+                        }
+                        sx={{
+                           // Faint when nothing binds it: declared, but not yet a
+                           // control a reader would see.
+                           opacity: control.boundTiles === 0 ? 0.6 : 1,
+                           cursor: "pointer",
+                           transition: "opacity 120ms",
+                        }}
+                     />
+                  </Tooltip>
+               ))}
+               <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<AddIcon fontSize="small" />}
+                  onClick={() => setFilterDialog({})}
+                  sx={{ ml: "auto" }}
+               >
+                  Add filter
+               </Button>
+            </Stack>
 
-         {controls}
+            {controls}
+         </Stack>
 
          {editor.error && (
             // The edit is still here; the message says what stopped it reaching
@@ -830,13 +793,19 @@ export function DashboardBuilder({
                                     // an outline neither doubles that edge nor
                                     // takes up space, so selecting a tile
                                     // cannot shift the layout being arranged.
-                                    outline:
-                                       index === selected
-                                          ? `2px solid ${theme.drillLink}`
-                                          : `2px solid transparent`,
+                                    // Dashed while it is the one being
+                                    // dragged: the tile in place is then the
+                                    // PLACEHOLDER for where the copy in hand
+                                    // will land, and Looker draws that dashed
+                                    // too.
+                                    outline: isDragSource
+                                       ? `2px dashed ${theme.drillLink}`
+                                       : index === selected
+                                         ? `2px solid ${theme.drillLink}`
+                                         : `2px solid transparent`,
                                     outlineOffset: 2,
                                     transition:
-                                       "outline-color 120ms, opacity 120ms",
+                                       "outline-color 120ms, opacity 120ms, box-shadow 120ms",
                                     // The handles, grip and menu are invisible
                                     // until wanted, and wanted is: the pointer
                                     // over the tile, or the tile selected. A
@@ -845,11 +814,18 @@ export function DashboardBuilder({
                                     // pointer finds each.
                                     "&:hover .builder-affordance, &:focus-within .builder-affordance":
                                        { opacity: 1 },
+                                    // A hovered tile lifts, the way Looker's
+                                    // does in edit mode: the one card that
+                                    // will respond to the pointer, told apart
+                                    // from the ones that will not.
                                     "&:hover": {
                                        outlineColor:
                                           index === selected
                                              ? theme.drillLink
                                              : theme.border,
+                                       boxShadow: isDragSource
+                                          ? "none"
+                                          : "0 2px 10px rgba(0, 0, 0, 0.10)",
                                     },
                                  }}
                               >
