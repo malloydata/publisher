@@ -532,6 +532,26 @@ class PlatformMcpUrl(unittest.TestCase):
 
 
 
+class UsageFields(unittest.TestCase):
+    """The ledger must be able to reprice a run from its own token columns."""
+
+    def test_all_four_token_counts_are_captured(self):
+        u = {"input_tokens": 224, "output_tokens": 31507,
+             "cache_read_input_tokens": 2435273,
+             "cache_creation_input_tokens": 900000}
+        self.assertEqual(rb.usage_fields(u), {
+            "input_tokens": 224, "output_tokens": 31507,
+            "cache_read_tokens": 2435273, "cache_write_tokens": 900000})
+
+    def test_cache_writes_were_the_missing_column(self):
+        # The one the ledger never held. On one analysed run it was 44% of the
+        # agent's cost; cost_usd carried it and the breakdown could not.
+        self.assertIn("cache_write_tokens", rb.usage_fields({}))
+
+    def test_absent_usage_is_all_null_not_a_crash(self):
+        self.assertEqual(set(rb.usage_fields(None).values()), {None})
+
+
 class RunSummary(unittest.TestCase):
     """The end-of-run report is three layers, and the order is the point.
 

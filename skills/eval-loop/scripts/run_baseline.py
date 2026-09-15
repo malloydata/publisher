@@ -226,6 +226,28 @@ REPO_ROOT = SKILLS_ROOT.parent
 JUDGE_SKILLS = ("eval-judge", "malloy-analysis-pitfalls", "malloy-gotchas-queries")
 
 
+def usage_fields(usage: dict[str, Any] | None) -> dict[str, Any]:
+    """The four token counts a run needs to reprice itself from its own ledger.
+
+    `cost_usd` comes from the CLI's `total_cost_usd`, which already prices cache
+    reads and writes at their rates, so the total was always right. What was
+    missing was the breakdown that could reproduce it: `cache_creation_input_tokens`
+    was never captured, and on one analysed run cache writes were 44% of the
+    agent's cost -- the single largest line. The ledger held the right total and
+    an incomplete account of it.
+
+    Read `input_tokens` with care. It is only the tokens after the last cache
+    breakpoint. One run recorded 224 of them for 24 questions, beside 2.4M cache
+    reads; the 224 is not the context volume, and nothing that reports it
+    without the cache columns beside it is telling the truth about size.
+    """
+    u = usage or {}
+    return {"input_tokens": u.get("input_tokens"),
+            "output_tokens": u.get("output_tokens"),
+            "cache_read_tokens": u.get("cache_read_input_tokens"),
+            "cache_write_tokens": u.get("cache_creation_input_tokens")}
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -1592,9 +1614,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         "n_execute_errors": n_err,
         "host_tool_uses": host_tools,
         "mcp_tool_uses": n_get + n_exec,
-        "input_tokens": usage.get("input_tokens"),
-        "output_tokens": usage.get("output_tokens"),
-        "cache_read_tokens": usage.get("cache_read_input_tokens"),
+        **usage_fields(usage),
         "cost_usd": res.get("total_cost_usd"),
         "num_turns": res.get("num_turns"),
         "wall_seconds": elapsed,
@@ -2556,6 +2576,7 @@ def main(argv: list[str] | None = None) -> int:
                       input_tokens=att.get("input_tokens"),
                       output_tokens=att.get("output_tokens"),
                       cache_read_tokens=att.get("cache_read_tokens"),
+                      cache_write_tokens=att.get("cache_write_tokens"),
                       cost_usd=att.get("cost_usd"),
                       num_turns=att.get("num_turns"),
                       wall_seconds=att.get("wall_seconds"),

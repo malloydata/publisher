@@ -67,6 +67,7 @@ EVENTS: dict[str, dict[str, set[str]]] = {
                      "mcp_tool_uses", "final_query_source",
                      "reported_calls", "contaminated", "contamination_reasons",
                      "input_tokens", "output_tokens", "cache_read_tokens",
+                     "cache_write_tokens",
                      "cost_usd", "num_turns", "wall_seconds", "run_error", "at"},
     },
     "tool_call": {

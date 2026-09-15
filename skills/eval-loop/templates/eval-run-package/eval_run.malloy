@@ -128,10 +128,16 @@ include {
   public: final_query_source
   #(doc) The answer text the judge scored. Readable without opening the transcript.
   public: answer_text
-  #(doc) Answerer input tokens.
+  #(doc) Answerer input tokens AFTER the last cache breakpoint only. Not the context volume: one
+  #(doc) run recorded 224 here for 24 questions beside 2.4M cache reads. See cache_read_tokens.
   public: input_tokens
   #(doc) Answerer output tokens.
   public: output_tokens
+  #(doc) Tokens served from the prompt cache. The bulk of an answerer's input.
+  public: cache_read_tokens
+  #(doc) Tokens written into the prompt cache. Priced above input; on one analysed run the single
+  #(doc) largest cost line, and never recorded before this column existed.
+  public: cache_write_tokens
   #(doc) Answerer cost in USD for this attempt.
   public: cost_usd
   #(doc) Assistant turns the attempt took.
@@ -200,12 +206,18 @@ extend {
     total_cost_usd is sum(cost_usd::number)
     #(doc) Mean cost per attempt. Compare across arms only at equal case counts.
     avg_cost_usd is avg(cost_usd::number)
-    #(doc) Total tokens the answerer consumed.
+    #(doc) Post-breakpoint input plus output. NOT the context volume: cache reads are excluded,
+    #(doc) and they are the bulk of it. Kept under its old name for continuity; read
+    #(doc) context_tokens for size and cost_usd for money.
     -- Cast, like cases_covered below and for the same reason: a column that is
     -- empty in every row types as VARCHAR, and a platform run reports no token
     -- usage at all. Untyped, `sum()` then fails to compile and takes the whole
     -- package with it, so the run that most needs reading shows nothing.
     total_tokens is sum(input_tokens::number) + sum(output_tokens::number)
+    #(doc) Every input token the model saw: post-breakpoint input, cache reads and cache writes.
+    #(doc) This is the number that matches the CLI's cost accounting; total_tokens is not.
+    context_tokens is sum(input_tokens::number) + sum(cache_read_tokens::number)
+      + sum(cache_write_tokens::number)
     #(doc) Mean turns per attempt. Rises when the agent is groping rather than reading.
     avg_turns is avg(num_turns::number)
     #(doc) Mean wall-clock seconds per attempt.
