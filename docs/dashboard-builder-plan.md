@@ -1,8 +1,10 @@
-# Dashboard builder: research, gaps, and plan
+# Dashboard and notebook builders: research, gaps, and plan
 
 _Design and planning doc. The dashboard builder is the SDK component that opens a
 `dashboards/*.malloy` file, lets a person arrange and filter it visually, and
-writes the file back. This document records what was learned building it,
+writes the file back; the notebook builder (§7, planned) does the same for a
+`.malloynb` file's linear cells. This document records what was learned building
+the first,
 measures it against the state of the art in dashboard builders, records the
 decision to defer any change to the Malloy renderer or the Malloyyo format, and
 lays out the steps for each remaining gap. It is the reference for scoping the
@@ -88,6 +90,7 @@ givens textually under their `source:` line rather than trusting the tree.
 | Validation                 | A binding to a field the source does not have, or of a type the given cannot compare, is marked and blocks Apply when the catalog is known.                                 |
 | Viewer                     | Every grouped value opens the rows behind it (`drill:` through the tile's view); each tile has "Explore from here" into the model explorer.                                 |
 | Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, exported, rows shown, explored — each with outcome and duration. The Console logs them structured.     |
+| Notebooks                  | A viewer only (`Notebook`): cells run and render, parameters surface, drills work. No builder yet; see §7.                                                                  |
 | Where it lives             | The SDK's lazy `builder` entry; the Console's `dashboards/<slug>/edit` page; saves go to the browser's `DocumentStorage`, Export hands the file back for the package.       |
 
 ## 3. Gaps against the state of the art
@@ -216,7 +219,7 @@ deferred shipped on 2026-09-15.
    not started.
 9. **Sizing aids.** Width presets and quick layout shipped; run-on-load is
    `autorun`. **Deferred** with the format work in §7: auto-refresh and a
-   timezone setting, which have no tag to write.
+   timezone setting, which have no tag to write (§8).
 10. **Upstream bug reports.** Skipped by decision; the reader works around the
     parser's symbol tree textually.
 
@@ -271,7 +274,92 @@ line per event under `[publisher.dashboard]`, `warn` on a refusal or a failed
 query. A deployment that wants metrics forwards from there; nothing server-side
 was added, by the no-API-change rule.
 
-## 7. Plan for each gap that needs an extension
+## 7. The notebook builder
+
+A dashboard is a grid; a notebook is a line. The second surface the builder
+should cover is the `.malloynb` notebook: a linear document of cells — markdown
+prose, Malloy that defines and runs, results rendered as tables or charts — read
+top to bottom, with the same governed parameters a dashboard has. Publisher
+already renders it (`Notebook`, `NotebookCell`); what does not exist, on either
+side, is a way to write one without a text editor.
+
+**What a notebook is, for the builder.** The file is plain text: cells separated
+by `>>>markdown` and `>>>malloy` lines, in order. A markdown cell is prose. A
+Malloy cell is either definitions (imports, `source:`, `view:`, the `##` lines
+that title the notebook and set `autorun`) or a `run:` whose result the reader
+sees; a chart is a `run:` with a render tag (`# bar_chart`) on it, so "a chart
+cell" is a query cell with a tag, not a third kind. The notebook surfaces the
+givens its cells import, as a dashboard does, and every `run:` re-runs when a
+control changes. Cells are independent: a later cell sees an earlier cell's
+definitions through the file, not through a runtime state, which is what makes
+the file the product here too.
+
+**The same principles, and most of the same code.** Everything §1 established
+carries over unchanged: the file is the product; the builder holds a document
+only as editor state; write by splicing; refuse rather than guess; every notebook
+in the repository opens and writes back unchanged. The reader is simpler than the
+dashboard's — a cell split is a text operation, and the parser is needed only to
+compile-check a Malloy cell — and so is the writer: a cell is a contiguous block,
+so adding, removing, reordering or editing one replaces whole blocks and the
+round-trip gate is the same read-back comparison. The shared core is what the
+dashboard builder already has, generalised where it is document-specific:
+
+- `useDashboardEditor` → a `useDocumentEditor<T>` (history, dirty, save with a
+  refusal reason) parameterised by the document type and its writer.
+- The writer's `Edit` / `applyEdits` primitives, `DiffDialog`, `BuilderToolbar`,
+  `useDraft`, `DocumentStorage` (a `notebook` locator type already exists), the
+  editor host's open / draft / resume / export flow, and the event seam
+  (`notebook.*` events, the same shape and the same Console sink).
+- `useDashboardControls` for the parameter row, `useDrill` for clickable cells,
+  `ModelExplorer` (which `NotebookCell` already opens on a cell) for authoring a
+  query, and the render tags the catalog already reads for choosing a chart.
+
+**What the builder does.**
+
+| Capability      | Plan                                                                                                                                                                                                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cells           | Add a markdown or Malloy cell above or below any cell; remove; drag to reorder (one history entry per gesture, as tiles). A cell's identity is its position, so reorder is a block move.                                                                                                                |
+| Markdown        | Edited in place, preview beside it, through the same markdown path the page description uses.                                                                                                                                                                                                           |
+| Query cells     | A code editor with the compiler's own diagnostics — `compile_model` with scope `file`, which exists — and a Run that shows the result under the cell the way the viewer does. "Build with the explorer" opens `ModelExplorer` on the cell's source and writes the query it produces back into the cell. |
+| Charts          | Pick a chart type on a query cell; the builder writes the render tag above the `run:` — a tier-1 tag edit, the same kind the dashboard builder makes on a view.                                                                                                                                         |
+| Parameters      | The notebook's own givens, declared and bound the way §1's convention does for dashboards, with the same filter window; imported givens bindable, not editable.                                                                                                                                         |
+| Settings        | `## title=`, `## autorun`, the `##"` description, from the edit bar.                                                                                                                                                                                                                                    |
+| Live view       | Every `run:` cell runs against the document as it stands, under the current parameter values — the viewer's cell runner, fed the edited text.                                                                                                                                                           |
+| Save and export | The same storage seam and the same read-only-origin rule: a package notebook is copied into the provider, saved there, exported back; a server write path waits on the same API decision as dashboards.                                                                                                 |
+| Where it lives  | The SDK's `builder` entry (the parser is already paid for); the Console's `…/<name>.malloynb/edit` page beside the viewer.                                                                                                                                                                              |
+
+**Against the state of the art.** Measured against the leading notebook
+products — the Jupyter lineage and the hosted analytics notebooks built on it —
+the builder above reaches parity on cells, markdown, charts as an attribute of a
+query, parameters, drill-through and code-visible files under version control;
+it is ahead on governance, since givens, row-level access and `#(authorize)`
+apply to every cell with no wiring. It does not attempt: cells in other
+languages (the notebook is Malloy by design), a reactive dependency graph between
+cells (the file is the dependency; a later cell reads an earlier definition
+because it compiles after it), or scheduled runs, publishing and alerts, which
+are the same Platform class as for dashboards. The one format question is
+whether a notebook may declare its own givens the way a dashboard now does;
+measured behaviour says the viewer surfaces imported givens, and a cell that
+declares one is the next thing to probe before the parameter row is built.
+
+**Decisions this revises.** `.malloynb` stays the interchange format with the
+VS Code extension and is authored, not extended: the builder writes only what
+the format already has. The earlier reading that narrative layouts would arrive
+as text tiles in a one-column dashboard (§4, G2) stands for _grids with prose_;
+a linear analysis with code beside its results is a notebook, and the two
+surfaces stay distinct.
+
+**Steps.** (1) Generalise the editor core and the host flow out of the dashboard
+builder (no behaviour change; the dashboard specs are the guard). (2) The notebook
+reader and splice writer, with the repository round-trip suite over every
+`.malloynb`. (3) Cells: add, remove, reorder, markdown in place. (4) The query
+cell's editor with compile diagnostics and Run, then the explorer hand-off and
+chart choice. (5) Parameters and settings. (6) The Console page, storage, export
+and events. Each step ships behind the same gate as the dashboard builder: unit
+specs on the reader and writer, an integration spec on the host, one browser
+spec on the page.
+
+## 8. Plan for each gap that needs an extension
 
 Each step names the extension, who has to agree, and the Publisher work that
 follows. The venue for every grammar item is the shared grammar package with
@@ -356,14 +444,17 @@ symbol tree that survives every refinement spelling, and problems reported from
 message. A tag-and-view printer would make the writer simpler still, but the
 splice approach no longer needs one.
 
-## 8. Sequence
+## 9. Sequence
 
 1. Land PR #1158; keep the round-trip suite green over every dashboard in the
    repository. _Done except the merge._
 2. Open the grammar conversation with Malloyyo with G1, G2, G3 and G6 as one
    proposal, with the control-tag names alongside.
 3. When API changes are back in scope: the server write path and package-file
-   provider (§7), then the control tags and settings that ride on the `Given`
+   provider (§8), then the control tags and settings that ride on the `Given`
    schema.
-4. Renderer and parser issues upstream, when there is appetite to file them.
-5. When the grammar lands: placement, text tiles, tabs, entry-level layout (§7).
+4. The notebook builder (§7): the shared editor core first, then cells, then
+   the query cell's editor. It needs no API, renderer or format change, so it
+   can proceed in parallel with 2 and 3.
+5. Renderer and parser issues upstream, when there is appetite to file them.
+6. When the grammar lands: placement, text tiles, tabs, entry-level layout (§8).

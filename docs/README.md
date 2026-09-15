@@ -76,13 +76,13 @@ there for the primitive, then follow the application you need.
 
 ## Develop & contribute
 
-| Doc                                                            | Read it when you want to…                                                                                                     |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                                                     |
-| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                                                |
-| [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                                                    |
-| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.                                       |
-| [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ the dashboard builder's research, its gaps against the state of the art, how it is built, and the steps for each gap. |
+| Doc                                                            | Read it when you want to…                                                                                                                                               |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                                                                                               |
+| [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                                                                                          |
+| [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                                                                                              |
+| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.                                                                                 |
+| [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ the dashboard and notebook builders — research, gaps against the state of the art, how the first is built, the plan for the second, and the steps for each gap. |
 
 ## Full public docs
 
