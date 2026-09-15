@@ -2,18 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { openDocument } from "./testing/fixtures";
 import * as fs from "fs";
 import * as path from "path";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
-const read = async (source: string) => {
-   const result = await readDashboardDocument(source);
-   if (readFailed(result))
-      throw new Error(`expected a document: ${result.reason}`);
-   return result.document;
-};
+const read = openDocument;
 
 const SIMPLE = `##! experimental.givens
 

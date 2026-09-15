@@ -3,8 +3,7 @@
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
-import type { DashboardDocument } from "./document";
-import { readDashboardDocument, readFailed } from "./readDocument";
+import { openDocument } from "./testing/fixtures";
 import { useDashboardEditor } from "./useDashboardEditor";
 
 const SOURCE = `## artifact { title="Probe" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
@@ -19,12 +18,6 @@ source: a is scoped_orders extend {
   # colspan=6
   view: by_brand is by_brand_view
 }`;
-
-const openDocument = async (source = SOURCE): Promise<DashboardDocument> => {
-   const result = await readDashboardDocument(source);
-   if (readFailed(result)) throw new Error(result.reason);
-   return result.document;
-};
 
 const editor = async (
    onSave?: (source: string) => Promise<void> | void,

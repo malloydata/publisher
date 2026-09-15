@@ -4,9 +4,9 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import type { DashboardDocument } from "./document";
 import { readDashboardDocument, readFailed } from "./readDocument";
 import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
+import { openDocument, refused, splice, spliced } from "./testing/fixtures";
 
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 
@@ -26,27 +26,6 @@ source: a is scoped_orders extend {
   # colspan=6
   view: by_brand is by_brand_view
 }`;
-
-const open = async (source: string) => {
-   const r = await readDashboardDocument(source);
-   if (readFailed(r)) throw new Error(r.reason);
-   return r.document;
-};
-
-const splice = async (source: string, edit: (d: DashboardDocument) => void) => {
-   const next = structuredClone(await open(source));
-   edit(next);
-   return spliceDashboardDocument(source, next);
-};
-
-const spliced = async (
-   source: string,
-   edit: (d: DashboardDocument) => void,
-): Promise<string> => {
-   const r = await splice(source, edit);
-   if (spliceFailed(r)) throw new Error(r.reason);
-   return r.source;
-};
 
 describe("spliceDashboardDocument: what it preserves", () => {
    // The whole reason for splicing rather than regenerating. A generated file
@@ -109,7 +88,7 @@ describe("spliceDashboardDocument: what it writes", () => {
          d.tiles[1].label = "By brand";
       });
       expect(out).toContain('  # label="By brand"\n  view: by_brand');
-      expect(await open(out)).toMatchObject({
+      expect(await openDocument(out)).toMatchObject({
          tiles: [{ name: "by_cat" }, { name: "by_brand", label: "By brand" }],
       });
    });
@@ -119,7 +98,7 @@ describe("spliceDashboardDocument: what it writes", () => {
          delete d.tiles[0].break;
       });
       expect(out).not.toContain("# break");
-      expect((await open(out)).tiles[0].break).toBeUndefined();
+      expect((await openDocument(out)).tiles[0].break).toBeUndefined();
    });
 
    // The filter binding lives in the declaration, as a refinement.
@@ -176,7 +155,7 @@ describe("spliceDashboardDocument: reordering", () => {
       });
       expect(r.ok).toBe(true);
       if (!spliceFailed(r)) {
-         const back = await open(r.source);
+         const back = await openDocument(r.source);
          expect(back.tiles.map((t) => t.name)).toEqual(["by_brand", "by_cat"]);
          // The writer persists the flags the DOCUMENT carries and takes no
          // view of what they mean: this document still has `break` on
@@ -198,7 +177,7 @@ describe("spliceDashboardDocument: reordering", () => {
       });
       expect(r.ok).toBe(true);
       if (!spliceFailed(r)) {
-         const back = await open(r.source);
+         const back = await openDocument(r.source);
          expect(back.tiles.map((t) => t.name)).toEqual(["by_brand", "by_cat"]);
          expect(back.tiles[0].label).toBe("Brands");
          expect(back.tiles[1].label).toBe("By category");
@@ -658,6 +637,58 @@ describe("spliceDashboardDocument: what it refuses", () => {
       if (spliceFailed(r)) expect(r.reason).toContain("declared on its source");
    });
 
+   it("refuses a new tile that is not a reference to a view", async () => {
+      expect(
+         await refused(SOURCE, (d) => {
+            d.tiles.push({
+               name: "adhoc",
+               source: "a",
+               declaration: { kind: "inline" },
+            });
+         }),
+      ).toContain("inline query");
+   });
+
+   it("refuses to change or remove an extension", async () => {
+      expect(
+         await refused(SOURCE, (d) => {
+            d.sources[0].base = "other_orders";
+         }),
+      ).toContain("cannot be changed or removed");
+      expect(
+         await refused(SOURCE, (d) => {
+            d.sources = [];
+         }),
+      ).toContain("cannot be changed or removed");
+   });
+
+   it("refuses a new extension that no tile reads", async () => {
+      expect(
+         await refused(SOURCE, (d) => {
+            d.sources.push({ name: "b", base: "scoped_orders" });
+         }),
+      ).toContain("needs a tile on it");
+   });
+
+   it("refuses a drill that names no destination", async () => {
+      const withDimension = SOURCE.replace(
+         "source: a is scoped_orders extend {",
+         "source: a is scoped_orders extend {\n  dimension: cat is products.category",
+      );
+      expect(
+         await refused(withDimension, (d) => {
+            d.drills = [
+               {
+                  source: "a",
+                  name: "cat",
+                  expression: "products.category",
+                  to: [],
+               },
+            ];
+         }),
+      ).toContain("names no destination");
+   });
+
    it("refuses to edit a file that will not open", async () => {
       const r = await spliceDashboardDocument("not malloy at all", {
          title: "x",
@@ -700,6 +731,14 @@ describe("every composite dashboard survives an edit", () => {
 
    for (const file of editable) {
       const name = path.relative(REPO, file);
+      it(`opens ${name}, and writes it back byte for byte when nothing changed`, async () => {
+         const source = fs.readFileSync(file, "utf8");
+         const doc = await openDocument(source);
+         const result = await spliceDashboardDocument(source, doc);
+         if (spliceFailed(result)) throw new Error(result.reason);
+         expect(result.source).toBe(source);
+      });
+
       it(`round-trips a colspan change in ${name}`, async () => {
          const source = fs.readFileSync(file, "utf8");
          const doc = await readDashboardDocument(source);

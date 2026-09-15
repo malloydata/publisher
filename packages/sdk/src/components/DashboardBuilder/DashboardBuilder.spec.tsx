@@ -10,8 +10,7 @@ import {
 } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
 import { DashboardBuilder } from "./DashboardBuilder";
-import type { DashboardDocument } from "./document";
-import { readDashboardDocument, readFailed } from "./readDocument";
+import { openDocument } from "./testing/fixtures";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
 import "../data_app.malloy"
@@ -26,14 +25,8 @@ source: a is scoped_orders extend {
   view: by_brand is by_brand_view
 }`;
 
-const openDocument = async (source = SOURCE): Promise<DashboardDocument> => {
-   const result = await readDashboardDocument(source);
-   if (readFailed(result)) throw new Error(result.reason);
-   return result.document;
-};
-
 const mount = async (onSave?: (source: string) => Promise<void> | void) => {
-   const document = await openDocument();
+   const document = await openDocument(SOURCE);
    return render(
       <DashboardBuilder
          source={SOURCE}
@@ -169,7 +162,7 @@ describe("DashboardBuilder", () => {
    // a real `DashboardTile` draws both. Filling a card of ours would show a card
    // in a card under two titles, which is the opposite of the point.
    it("hands the whole tile to renderTile, adding no heading of its own", async () => {
-      const document = await openDocument();
+      const document = await openDocument(SOURCE);
       render(
          <DashboardBuilder
             source={SOURCE}
@@ -187,7 +180,7 @@ describe("DashboardBuilder", () => {
    // Selecting is a thing you do while arranging, so it must not move what you
    // are arranging: an outline is drawn outside the box and takes no space.
    it("marks selection without resizing the tile", async () => {
-      const document = await openDocument();
+      const document = await openDocument(SOURCE);
       render(
          <DashboardBuilder
             source={SOURCE}
@@ -269,7 +262,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
 
    it("binds a given the model offers, comparing the way its type needs", async () => {
       let written: string | undefined;
-      const document = await openDocument();
+      const document = await openDocument(SOURCE);
       render(
          <DashboardBuilder
             source={SOURCE}
@@ -366,7 +359,7 @@ describe("DashboardBuilder: fields, when the package is known", () => {
       ],
    };
    const mountWithCatalog = async () => {
-      const document = await openDocument();
+      const document = await openDocument(SOURCE);
       return render(
          <DashboardBuilder
             source={SOURCE}
@@ -491,7 +484,7 @@ describe("DashboardBuilder: tiles added and removed", () => {
       ],
    };
    const mountWithCatalog = async (onSave: (source: string) => void) => {
-      const document = await openDocument();
+      const document = await openDocument(SOURCE);
       return render(
          <DashboardBuilder
             source={SOURCE}
