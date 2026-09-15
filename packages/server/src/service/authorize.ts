@@ -861,7 +861,7 @@ const WHOLE_BODY_SINGLE_QUOTED_STRING = /^'(?:\\.|[^'\\])*'$/;
  * verbatim regardless of form. Its only remaining job is deciding what
  * {@link findLegacyStringGates} reports at load time.
  */
-function isLegacyQuotedPayload(payload: string): boolean {
+export function isLegacyQuotedPayload(payload: string): boolean {
    const trimmed = payload.trim();
    return (
       WHOLE_BODY_QUOTED_STRING.test(trimmed) ||
@@ -1014,9 +1014,12 @@ export function assertAtMostOneAuthorizeGate(
    throw new ModelCompilationError({
       message:
          `A source may declare at most one \`#(authorize)\` annotation:\n${positions}\n` +
-         `Combine multiple conditions into one expression with \`or\` instead of ` +
-         `repeating the annotation, e.g. ` +
-         "`#(authorize) $ROLE = 'admin' or org_id in $GROUPS`.",
+         `A conjunction (every condition must hold) is one \`#(authorize)\` ` +
+         `with its terms joined by \`and\` instead of repeating the ` +
+         "annotation, e.g. `#(authorize) org_id = $ORG and team_id in " +
+         "$TEAMS`. A disjunction (either condition alone admits) is not " +
+         "expressible in one gate — declare the two conditions on two " +
+         "separate sources instead.",
    });
 }
 

@@ -1,0 +1,539 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+// One test per `AuthorizeGrammarRejectionCause`, plus the shapes the
+// term-by-term rule alone does not settle (a mixed-scope body; `and` inside
+// a string literal, which must be ACCEPTED; the same column gated under two
+// different attributes), plus the fan-out refusal and the retired-route
+// refusal — both IR-level, so they compile a REAL model rather than parsing
+// bare text.
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import {
+   FixedConnectionMap,
+   InMemoryURLReader,
+   Runtime,
+   type ModelDef,
+   type SourceDef,
+} from "@malloydata/malloy";
+import { beforeAll, describe, expect, it } from "bun:test";
+import {
+   AuthorizeGrammarError,
+   parseAuthorizeGrammarBody,
+} from "./authorize_grammar";
+import {
+   assertNoFanoutFieldPath,
+   assertNoRetiredRouteMarkers,
+   collectRetiredRouteMarkers,
+} from "./gate_classification";
+
+const SCALAR_GIVENS = new Map([["REGION", "string"]]);
+const LIST_GIVENS = new Map([["GROUPS", "array"]]);
+const MIXED_GIVENS = new Map([
+   ["REGION", "string"],
+   ["GROUPS", "array"],
+]);
+
+describe("parseAuthorizeGrammarBody — rejection causes", () => {
+   it("empty_body", () => {
+      expect(() => parseAuthorizeGrammarBody("X", "   ", new Map())).toThrow(
+         AuthorizeGrammarError,
+      );
+      try {
+         parseAuthorizeGrammarBody("X", "", new Map());
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "empty_body",
+         );
+      }
+   });
+
+   function expectCause(
+      body: string,
+      givens: ReadonlyMap<string, string>,
+      cause: string,
+   ): void {
+      try {
+         parseAuthorizeGrammarBody("X", body, givens);
+         throw new Error(`expected a throw for \`${body}\``);
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            cause as never,
+         );
+      }
+   }
+
+   it("compound_boolean — `or`", () => {
+      expectCause(
+         "region = $REGION or org_id = $REGION",
+         SCALAR_GIVENS,
+         "compound_boolean",
+      );
+   });
+
+   it("compound_boolean — `not`", () => {
+      expectCause("not region = $REGION", SCALAR_GIVENS, "compound_boolean");
+   });
+
+   it("negated_operator", () => {
+      expectCause("region != $REGION", SCALAR_GIVENS, "negated_operator");
+   });
+
+   it("comparison_operator", () => {
+      expectCause("region > $REGION", SCALAR_GIVENS, "comparison_operator");
+   });
+
+   it("left_not_field_path — a function call", () => {
+      expectCause(
+         "upper(region) = $REGION",
+         SCALAR_GIVENS,
+         "left_not_field_path",
+      );
+   });
+
+   it("left_not_field_path — a bare literal on both sides", () => {
+      expectCause("1 = 1", new Map(), "left_not_field_path");
+   });
+
+   it("missing_given_reference — right side is not `$NAME`", () => {
+      expectCause("region = 'east'", SCALAR_GIVENS, "missing_given_reference");
+   });
+
+   it("malformed_body — no `=`/`in` operator", () => {
+      expectCause("region like $REGION", SCALAR_GIVENS, "malformed_body");
+   });
+
+   it("duplicate_given — the same given used by two terms", () => {
+      expectCause(
+         "org_id = $REGION and region = $REGION",
+         SCALAR_GIVENS,
+         "duplicate_given",
+      );
+   });
+
+   it("duplicate_field_path — the same column gated under two attributes", () => {
+      const givens = new Map([
+         ["A", "string"],
+         ["B", "string"],
+      ]);
+      expectCause(
+         "region = $A and region = $B",
+         givens,
+         "duplicate_field_path",
+      );
+   });
+
+   it("mixed_scope_body — a row-level term and a source-level term together", () => {
+      const givens = new Map([
+         ["REGION", "string"],
+         ["ROLE", "string"],
+      ]);
+      expectCause(
+         "region = $REGION and 'admin' = $ROLE",
+         givens,
+         "mixed_scope_body",
+      );
+   });
+
+   it("operator_arity_mismatch — `=` against a list-typed given", () => {
+      expectCause("org_id = $GROUPS", LIST_GIVENS, "operator_arity_mismatch");
+   });
+
+   it("operator_arity_mismatch — `in` against a scalar given", () => {
+      expectCause(
+         "region in $REGION",
+         SCALAR_GIVENS,
+         "operator_arity_mismatch",
+      );
+   });
+});
+
+describe("parseAuthorizeGrammarBody — accepted shapes", () => {
+   it("`and` inside a string literal is not a compound boolean", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "'research and development' in $GROUPS",
+         LIST_GIVENS,
+      );
+      expect(terms).toEqual([
+         {
+            scope: "source_level",
+            literal: "'research and development'",
+            given: "GROUPS",
+         },
+      ]);
+   });
+
+   it("`or`/`not` inside a string literal are not refused", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "'rock or roll' in $GROUPS",
+         LIST_GIVENS,
+      );
+      expect(terms).toEqual([
+         { scope: "source_level", literal: "'rock or roll'", given: "GROUPS" },
+      ]);
+   });
+
+   it("a row-level and a second row-level term joined by `and`", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "region = $REGION and org_id in $GROUPS",
+         MIXED_GIVENS,
+      );
+      expect(terms).toEqual([
+         {
+            scope: "row_level",
+            fieldPath: "region",
+            fieldPathSegments: ["region"],
+            given: "REGION",
+            operator: "=",
+         },
+         {
+            scope: "row_level",
+            fieldPath: "org_id",
+            fieldPathSegments: ["org_id"],
+            given: "GROUPS",
+            operator: "in",
+         },
+      ]);
+   });
+
+   it("a dotted join path on the left", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "child.name in $GROUPS",
+         LIST_GIVENS,
+      );
+      expect(terms).toEqual([
+         {
+            scope: "row_level",
+            fieldPath: "child.name",
+            fieldPathSegments: ["child", "name"],
+            given: "GROUPS",
+            operator: "in",
+         },
+      ]);
+   });
+
+   it("a comparison character inside a string literal is not a comparison", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "'a>b' in $GROUPS",
+         LIST_GIVENS,
+      );
+      expect(terms).toEqual([
+         { scope: "source_level", literal: "'a>b'", given: "GROUPS" },
+      ]);
+   });
+
+   it("`!=` inside a string literal is not a negated operator", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "'a!=b' in $GROUPS",
+         LIST_GIVENS,
+      );
+      expect(terms).toEqual([
+         { scope: "source_level", literal: "'a!=b'", given: "GROUPS" },
+      ]);
+   });
+
+   it("a backtick-quoted column hides the tokens inside it", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "`org in region` = $REGION",
+         SCALAR_GIVENS,
+      );
+      expect(terms).toEqual([
+         {
+            scope: "row_level",
+            fieldPath: "`org in region`",
+            fieldPathSegments: ["org in region"],
+            given: "REGION",
+            operator: "=",
+         },
+      ]);
+   });
+
+   it("a backtick-quoted column containing `and` is one term, not two", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "`research and development` in $GROUPS",
+         LIST_GIVENS,
+      );
+      expect(terms).toEqual([
+         {
+            scope: "row_level",
+            fieldPath: "`research and development`",
+            fieldPathSegments: ["research and development"],
+            given: "GROUPS",
+            operator: "in",
+         },
+      ]);
+   });
+
+   it("a backtick-quoted column containing a literal dot is one segment, not two", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "`cost.center`.name in $GROUPS",
+         LIST_GIVENS,
+      );
+      expect(terms).toEqual([
+         {
+            scope: "row_level",
+            fieldPath: "`cost.center`.name",
+            fieldPathSegments: ["cost.center", "name"],
+            given: "GROUPS",
+            operator: "in",
+         },
+      ]);
+   });
+
+   it("a given absent from the declared-type map skips the arity check", () => {
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "region = $UNKNOWN",
+         new Map(),
+      );
+      expect(terms).toEqual([
+         {
+            scope: "row_level",
+            fieldPath: "region",
+            fieldPathSegments: ["region"],
+            given: "UNKNOWN",
+            operator: "=",
+         },
+      ]);
+   });
+});
+
+// ---------------------------------------------------------------------------
+// Fan-out and retired-route refusals — both IR-level, so real compiled
+// models rather than bare text.
+// ---------------------------------------------------------------------------
+
+const ROOT = "file:///authorize-grammar/";
+let connections: FixedConnectionMap;
+
+beforeAll(() => {
+   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   connections = new FixedConnectionMap(
+      new Map([["duckdb", duckdb]]),
+      "duckdb",
+   );
+});
+
+async function compileModel(model: string): Promise<ModelDef> {
+   const urlReader = new InMemoryURLReader(
+      new Map([[`${ROOT}m.malloy`, model]]),
+   );
+   const runtime = new Runtime({ urlReader, connections });
+   const materializer = runtime.loadModel(new URL(`${ROOT}m.malloy`), {
+      importBaseURL: new URL(ROOT),
+   });
+   const compiled = await materializer.getModel();
+   /* eslint-disable @typescript-eslint/no-explicit-any */
+   return (compiled as any)._modelDef as ModelDef;
+   /* eslint-enable @typescript-eslint/no-explicit-any */
+}
+
+function source(modelDef: ModelDef, name: string): SourceDef {
+   const found = modelDef.contents[name];
+   if (!found) throw new Error(`no source named ${name} in compiled model`);
+   return found as SourceDef;
+}
+
+describe("assertNoFanoutFieldPath", () => {
+   it("refuses a path through a join_many", async () => {
+      const modelDef = await compileModel(`
+source: child is duckdb.sql("select 1 as parent_id, 'north' as name") extend {}
+
+source: parent is duckdb.sql("select 1 as id") extend {
+   join_many: kids is child on id = kids.parent_id
+}
+`);
+      expect(() =>
+         assertNoFanoutFieldPath(
+            "parent",
+            source(modelDef, "parent"),
+            "kids.name",
+            ["kids", "name"],
+         ),
+      ).toThrow(AuthorizeGrammarError);
+      try {
+         assertNoFanoutFieldPath(
+            "parent",
+            source(modelDef, "parent"),
+            "kids.name",
+            ["kids", "name"],
+         );
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "fanout_path",
+         );
+      }
+   });
+
+   it("admits a path through a join_one", async () => {
+      const modelDef = await compileModel(`
+source: child is duckdb.sql("select 1 as id, 'north' as name") extend {}
+
+source: parent is duckdb.sql("select 1 as child_id") extend {
+   join_one: kid is child on child_id = kid.id
+}
+`);
+      expect(() =>
+         assertNoFanoutFieldPath(
+            "parent",
+            source(modelDef, "parent"),
+            "kid.name",
+            ["kid", "name"],
+         ),
+      ).not.toThrow();
+   });
+
+   // Must-fix 1: a naive `fieldPath.split(".")` downstream would compare the
+   // RAW (still-backtick-quoted) segment "`cost center`" against the join's
+   // real name "cost center" and never match, reading a genuine fan-out join
+   // as fully resolved and silently admitting it. `parseAuthorizeGrammarBody`
+   // pre-splits and unquotes the segments precisely so this cannot happen;
+   // this test pins that against a real fan-out join through a backtick-
+   // quoted name, not just the segment splitter in isolation.
+   it("refuses a path through a backtick-quoted join_many segment", async () => {
+      const modelDef = await compileModel(`
+source: child is duckdb.sql("select 1 as parent_id, 'north' as name") extend {}
+
+source: parent is duckdb.sql("select 1 as id") extend {
+   join_many: \`cost center\` is child on id = \`cost center\`.parent_id
+}
+`);
+      const terms = parseAuthorizeGrammarBody(
+         "parent",
+         "`cost center`.name in $GROUPS",
+         LIST_GIVENS,
+      );
+      const term = terms[0];
+      if (term.scope !== "row_level") throw new Error("expected row_level");
+      expect(() =>
+         assertNoFanoutFieldPath(
+            "parent",
+            source(modelDef, "parent"),
+            term.fieldPath,
+            term.fieldPathSegments,
+         ),
+      ).toThrow(AuthorizeGrammarError);
+      try {
+         assertNoFanoutFieldPath(
+            "parent",
+            source(modelDef, "parent"),
+            term.fieldPath,
+            term.fieldPathSegments,
+         );
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "fanout_path",
+         );
+      }
+   });
+
+   // Must-fix 1's other half: a segment this walk cannot resolve against the
+   // struct at all must fail closed, not be read as "no fan-out here" —
+   // exactly the bug a stripped-quote mismatch would otherwise produce.
+   it("refuses a path whose segment does not resolve against the struct", async () => {
+      const modelDef = await compileModel(`
+source: parent is duckdb.sql("select 1 as id") extend {}
+`);
+      expect(() =>
+         assertNoFanoutFieldPath(
+            "parent",
+            source(modelDef, "parent"),
+            "nope.name",
+            ["nope", "name"],
+         ),
+      ).toThrow(AuthorizeGrammarError);
+   });
+});
+
+describe("retired-route markers", () => {
+   it("a leftover #(partition) marker on the source line is caught", async () => {
+      const modelDef = await compileModel(`
+#(partition) org_id = $ORG
+source: X is duckdb.sql("select 1 as org_id") extend {
+   measure: c is count()
+}
+`);
+      const found = collectRetiredRouteMarkers(modelDef);
+      expect(found.length).toBeGreaterThan(0);
+      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
+   });
+
+   it("a marker one level too low (on a field, not the source) is still caught", async () => {
+      const modelDef = await compileModel(`
+source: X is duckdb.sql("select 1 as org_id") extend {
+   #(partition) org_id = $ORG
+   measure: c is count()
+}
+`);
+      const found = collectRetiredRouteMarkers(modelDef);
+      expect(found.length).toBeGreaterThan(0);
+      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
+   });
+
+   it("a marker on a joined source is caught through the join", async () => {
+      const modelDef = await compileModel(`
+source: Child is duckdb.sql("select 1 as org_id, 1 as k") extend {
+   #(partition) org_id = $ORG
+   measure: c is count()
+}
+source: X is duckdb.sql("select 1 as k") extend {
+   join_one: Child on k = Child.k
+   measure: c is count()
+}
+`);
+      const found = collectRetiredRouteMarkers(modelDef);
+      expect(found.some((f) => f.includes('"X"'))).toBe(true);
+      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
+   });
+
+   it("a model with no retired marker is clean", async () => {
+      const modelDef = await compileModel(`
+source: X is duckdb.sql("select 1 as org_id") extend {
+   measure: c is count()
+}
+`);
+      expect(collectRetiredRouteMarkers(modelDef)).toEqual([]);
+   });
+
+   // Also fix 3: `#(authorize)`'s own misplaced-annotation check
+   // (`assertNoMisplacedAuthorizeAnnotations`) already covers a top-level
+   // `query:` and the file level; the retired-route sweep did not, so a
+   // leftover `#(partition)` in either position loaded clean.
+   it("a leftover #(partition) marker on a top-level query: is caught", async () => {
+      const modelDef = await compileModel(`
+source: X is duckdb.sql("select 1 as org_id") extend {
+   measure: c is count()
+}
+
+#(partition) org_id = $ORG
+query: secret is X -> { aggregate: c is count() }
+`);
+      const found = collectRetiredRouteMarkers(modelDef);
+      expect(found.some((f) => f.includes('"secret"'))).toBe(true);
+      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
+   });
+
+   it("a leftover file-level ##(partition) marker is caught", async () => {
+      const modelDef = await compileModel(`
+##(partition) org_id = $ORG
+source: X is duckdb.sql("select 1 as org_id") extend {
+   measure: c is count()
+}
+`);
+      const found = collectRetiredRouteMarkers(modelDef);
+      expect(found.some((f) => f.includes("model itself"))).toBe(true);
+      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
+   });
+});

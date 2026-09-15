@@ -181,7 +181,7 @@ describe("Package.create via worker pool", () => {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
@@ -195,9 +195,9 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          // The worker compiled the authorize probe (no throw) and surfaced the
          // effective expression list — proves worker-path validation runs.
          expect(apiModel.sources?.[0]?.authorize).toEqual([
-            "$ROLE = 'analyst'",
+            "'analyst' = $ROLE",
          ]);
-         expect(model!.getAuthorize("gated")).toEqual(["$ROLE = 'analyst'"]);
+         expect(model!.getAuthorize("gated")).toEqual(["'analyst' = $ROLE"]);
       } finally {
          await duckdb.close();
       }
@@ -212,7 +212,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 given:
   ROLE :: string
 
-#(authorize) $NOPE = 'x'
+#(authorize) 'x' = $NOPE
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
@@ -243,7 +243,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
@@ -254,7 +254,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          // compileNotebookModel ran authorize validation (no throw) and
          // surfaced the gate — the notebook compile path was previously
          // unexercised by tests.
-         expect(model!.getAuthorize("gated")).toEqual(["$ROLE = 'analyst'"]);
+         expect(model!.getAuthorize("gated")).toEqual(["'analyst' = $ROLE"]);
       } finally {
          await duckdb.close();
       }
@@ -270,7 +270,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 given:
   ROLE :: string
 
-#(authorize) $NOPE = 'x'
+#(authorize) 'x' = $NOPE
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 

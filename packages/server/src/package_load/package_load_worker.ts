@@ -96,7 +96,12 @@ import {
    type AuthorizeMap,
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
-import { assertPartitionAnnotationsValid } from "../service/gate_classification";
+import {
+   assertAuthorizeGrammarValid,
+   assertNoRetiredRouteMarkers,
+   collectRetiredRouteMarkers,
+   computeGivenDeclaredTypes,
+} from "../service/gate_classification";
 import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
@@ -744,7 +749,7 @@ async function compileMalloyModel(
    const queryResult = extractQueries(modelDef);
    const queries = queryResult.queries;
    // See the identical check in `Model.create`.
-   assertPartitionAnnotationsValid(modelDef);
+   assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(modelDef));
    // A `#(authorize)` annotation in a position nothing enforces (a top-level
    // `query:` statement, or a field inside a `source:` rather than the
    // `source:` line itself) fails OPEN — see
@@ -766,6 +771,14 @@ async function compileMalloyModel(
    // A source may declare at most one `#(authorize)` block — see
    // `findMultipleAuthorizeGates`'s doc. Presence-based, same reason as above.
    assertAtMostOneAuthorizeGate(findMultipleAuthorizeGates(authorizeOwnNotes));
+   // The body grammar — see `assertAuthorizeGrammarValid`'s doc, same order
+   // as `Model.create`.
+   assertAuthorizeGrammarValid(
+      modelDef,
+      authorizeMap,
+      authorizeOwnNotes,
+      computeGivenDeclaredTypes(givens),
+   );
    // Validate #(authorize) at compile time (shared with Model.create). Throws
    // on an unknown given / source-field reference or a rejected row-level
    // shape; compileOneModel's catch turns it into this model's
@@ -1005,7 +1018,7 @@ async function compileNotebookModel(
       const finalQueryResult = extractQueries(finalModelDef);
       finalQueries = finalQueryResult.queries;
       // See the identical check in `compileMalloyModel` above.
-      assertPartitionAnnotationsValid(finalModelDef);
+      assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(finalModelDef));
       // See the identical check in `compileMalloyModel` above.
       assertNoMisplacedAuthorizeAnnotations([
          ...extracted.misplacedAuthorize,
@@ -1022,6 +1035,13 @@ async function compileNotebookModel(
       // See the identical check in `compileMalloyModel` above.
       assertAtMostOneAuthorizeGate(
          findMultipleAuthorizeGates(extracted.authorizeOwnNotes),
+      );
+      // See the identical check in `compileMalloyModel` above.
+      assertAuthorizeGrammarValid(
+         finalModelDef,
+         extracted.authorizeMap,
+         extracted.authorizeOwnNotes,
+         computeGivenDeclaredTypes(finalGivens),
       );
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.
