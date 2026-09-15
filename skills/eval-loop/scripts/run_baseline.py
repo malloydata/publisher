@@ -1086,8 +1086,9 @@ def cascade_lines(c: dict | None) -> list[str]:
              f"    covered?      {covered} yes, {c['not covered']} no (model "
              f"gap{anyway(c.get('passed_not_covered', 0))})" + covered_tail,
              f"    retrieved?    {retrieved} yes, {c['not retrieved']} no "
-             f"(documentation: the entity exists, its docs did not surface "
-             f"it{anyway(c.get('passed_not_retrieved', 0))})",
+             f"(the entity exists and did not come back: the docs, or the "
+             f"search wording; diagnose decides"
+             f"{anyway(c.get('passed_not_retrieved', 0))})",
              f"    correct?      {c['delivered, right']} yes, "
              f"{c['delivered, wrong']} no (delivered, wrong: agent or docs; "
              f"diagnose decides)" + scored_tail]
@@ -1236,6 +1237,25 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
         lines += [f"  entity recall mean {100 * rs['mean_recall']:.1f}%, "
                   f"complete on {rs['complete_retrievals']} of "
                   f"{rs['retrieval_scored']} scored"]
+        # Breadth, which does not depend on the set authoring `acceptable`:
+        # how much get_context handed back against how much the answer named.
+        if rs.get("mean_returned"):
+            lines += [f"  entity breadth {rs['mean_returned']:.0f} returned per "
+                      f"attempt for {rs['mean_required']:.0f} the answer named"]
+        if rs.get("mean_precision") is not None:
+            authored = rs.get("cases_with_acceptable") or 0
+            lines += [f"  entity precision mean "
+                      f"{100 * rs['mean_precision']:.1f}%"]
+            if authored == 0:
+                lines += ["                ! no case authored `acceptable`, so "
+                          "every entity beyond the strictly required ones "
+                          "counted as noise. Read this as breadth, not as a "
+                          "verdict on retrieval; author `acceptable` to make it "
+                          "one."]
+            elif authored < (rs.get("retrieval_scored") or 0):
+                lines += [f"                ! only {authored} of "
+                          f"{rs['retrieval_scored']} cases authored "
+                          f"`acceptable`, so precision is uneven across them"]
         if alt_path:
             lines += [f"                {alt_path} passing case(s) answered "
                       f"without every required entity -- check whether "

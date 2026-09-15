@@ -326,7 +326,8 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
     exp = case.get("expectedEntities") or {}
     req_groups = groups(exp)
     required = {e for g in req_groups for e in g}
-    acceptable = set(exp.get("acceptable") or []) | required
+    authored_acceptable = set(exp.get("acceptable") or [])
+    acceptable = authored_acceptable | required
     got, calls, tokens, asked = retrieved(events, key)
     got_set = set(got)
     route = {e: delivery(e, got_set, tokens) for e in sorted(required)}
@@ -367,6 +368,10 @@ def score_case(case: dict[str, Any], events: list[dict[str, Any]],
         "precision": precision,
         "n_required": len(req_groups),
         "n_returned": len(got_set),
+        # Precision reads everything outside `acceptable` as noise, so a set
+        # that never authored one scores every legitimate extra as a miss. The
+        # flag travels with the row so a reader knows which they are looking at.
+        "has_acceptable": bool(authored_acceptable),
         "delivery": route,
         "n_ranked": sum(1 for r in route.values() if r in ("exact", "alias")),
         "n_get_context": calls,
@@ -402,6 +407,12 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_precision": mean([r["precision"] for r in scored
                                 if r["precision"] is not None]),
         "complete_retrievals": sum(1 for r in scored if r["recall"] >= 1.0),
+        # How much get_context handed back, and how much of it the answer
+        # needed. Unlike precision these do not depend on `acceptable` being
+        # authored, so they say something about retrieval on any set.
+        "mean_returned": mean([r["n_returned"] for r in scored]),
+        "mean_required": mean([r["n_required"] for r in scored]),
+        "cases_with_acceptable": sum(1 for r in rows if r.get("has_acceptable")),
         "failures_by_where_to_fix": placed,
     }
 

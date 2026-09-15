@@ -532,6 +532,47 @@ class PlatformMcpUrl(unittest.TestCase):
 
 
 
+class RetrievalPrecisionIsReportedHonestly(unittest.TestCase):
+    """Precision was computed and thrown away; the run printed recall alone.
+
+    It is worth printing, but it reads everything outside `acceptable` as
+    noise, so a set that never authored one scores every legitimate extra as a
+    miss. Measured on a real run: 3% to 11%, on a set whose eight cases all had
+    an empty `acceptable`. The caveat ships with the number.
+    """
+
+    def rs(self, **over):
+        base = {"retrieval_scored": 8, "mean_recall": 0.938,
+                "complete_retrievals": 7, "mean_precision": 0.073,
+                "mean_returned": 25.6, "mean_required": 1.8,
+                "cases_with_acceptable": 0, "failures_by_where_to_fix": {}}
+        base.update(over)
+        return base
+
+    def test_precision_prints_with_its_caveat_when_nothing_authored_acceptable(self):
+        text = "\n".join(self.lines(rs=self.rs()))
+        self.assertIn("entity precision mean 7.3%", text)
+        self.assertIn("no case authored `acceptable`", text)
+        self.assertIn("breadth, not as a verdict", text)
+
+    def test_breadth_does_not_depend_on_authoring(self):
+        text = "\n".join(self.lines(rs=self.rs()))
+        self.assertIn("26 returned per attempt for 2 the answer named", text)
+
+    def test_a_fully_authored_set_gets_the_number_without_the_caveat(self):
+        text = "\n".join(self.lines(rs=self.rs(cases_with_acceptable=8)))
+        self.assertIn("entity precision mean 7.3%", text)
+        self.assertNotIn("no case authored", text)
+        self.assertNotIn("only 8 of 8", text)
+
+    def test_a_partly_authored_set_says_it_is_uneven(self):
+        text = "\n".join(self.lines(rs=self.rs(cases_with_acceptable=3)))
+        self.assertIn("only 3 of 8", text)
+
+    def lines(self, **over):
+        return RunSummary.lines(self, **over)
+
+
 class SkillsActuallyOpened(unittest.TestCase):
     """A run names the skills it granted; only the ones opened shaped anything.
 
@@ -665,8 +706,13 @@ class RunSummary(unittest.TestCase):
         text = "\n".join(lines)
         self.assertIn("cascade       49 cases", text)
         self.assertIn("covered?      41 yes, 6 no (model gap), 2 unmeasured", text)
-        # A miss here is the docs', not the engine's: the algorithm is fixed.
-        self.assertIn("retrieved?    36 yes, 5 no (documentation", text)
+        # The rung must not assert the docs: a miss is the docs OR the search
+        # wording, and only diagnose separates them. This assertion is here
+        # because the label was renamed in score_retrieval and the display line
+        # in this file was missed, so the two disagreed in a shipped commit.
+        self.assertIn("retrieved?    36 yes, 5 no (the entity exists and did "
+                      "not come back", text)
+        self.assertNotIn("(documentation", text)
         # And a delivered-but-wrong answer names no owner until diagnose runs.
         self.assertIn("correct?      30 yes, 6 no (delivered, wrong", text)
         self.assertIn("diagnose decides", text)
