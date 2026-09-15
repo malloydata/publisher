@@ -82,6 +82,40 @@ export function chartOf(annotations: string[] | undefined): string | undefined {
 }
 
 /**
+ * How far into a source's joins the field list reaches. One level:
+ * `products.category` is a field people filter on; `products.supplier.region`
+ * is where a list stops being a list.
+ */
+const JOIN_DEPTH = 1;
+
+/**
+ * The fields of one schema, with a JOIN's fields under it as `join.field`
+ * paths — the spelling a `where:` uses for them, and the fields a filter most
+ * often wants. A view is not a field and is left out.
+ */
+function schemaFields(
+   fields: Array<Record<string, unknown>> | undefined,
+   prefix: string,
+   depth: number,
+): CatalogField[] {
+   const out: CatalogField[] = [];
+   for (const field of fields ?? []) {
+      const name = field["name"];
+      const kind = field["kind"];
+      if (typeof name !== "string") continue;
+      if (kind === "dimension" || kind === "measure") {
+         const type = (field["type"] as { kind?: string } | undefined)?.kind;
+         out.push({ name: prefix + name, kind, ...(type ? { type } : {}) });
+      } else if (kind === "join" && depth > 0) {
+         const nested = (field["schema"] as { fields?: unknown } | undefined)
+            ?.fields as Array<Record<string, unknown>> | undefined;
+         out.push(...schemaFields(nested, `${prefix}${name}.`, depth - 1));
+      }
+   }
+   return out;
+}
+
+/**
  * Per-source fields, from `sourceInfos`, which the endpoint returns as an array
  * of JSON STRINGS rather than objects. A malformed entry is skipped rather than
  * failing the catalog: a picker missing one source's fields is a smaller problem
@@ -101,18 +135,23 @@ function fieldsOf(model: CompiledModel): Map<string, CatalogField[]> {
          schema?: { fields?: Array<Record<string, unknown>> };
       };
       if (!info?.name) continue;
-      const fields: CatalogField[] = [];
-      for (const field of info.schema?.fields ?? []) {
-         const name = field["name"];
-         const kind = field["kind"];
-         if (typeof name !== "string") continue;
-         if (kind !== "dimension" && kind !== "measure") continue;
-         const type = (field["type"] as { kind?: string } | undefined)?.kind;
-         fields.push({ name, kind, ...(type ? { type } : {}) });
-      }
-      byName.set(info.name, fields);
+      byName.set(info.name, schemaFields(info.schema?.fields, "", JOIN_DEPTH));
    }
    return byName;
+}
+
+/**
+ * The fields a filter on `source` may name: its dimensions, joins included as
+ * paths. Measures are not filterable with `where:` and are left out. Undefined
+ * when the catalog has no such source, which a picker reads as "no list".
+ */
+export function filterableFields(
+   catalog: PackageCatalog | undefined,
+   source: string | undefined,
+): CatalogField[] | undefined {
+   if (!catalog || source === undefined) return undefined;
+   const found = catalog.sources.find((s) => s.name === source);
+   return found?.fields.filter((field) => field.kind === "dimension");
 }
 
 /**

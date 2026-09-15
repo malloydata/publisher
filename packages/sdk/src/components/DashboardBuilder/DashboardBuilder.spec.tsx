@@ -336,6 +336,85 @@ describe("DashboardBuilder: the dashboard's filters", () => {
    });
 });
 
+describe("DashboardBuilder: fields, when the package is known", () => {
+   const catalog = {
+      sources: [
+         {
+            name: "scoped_orders",
+            modelPath: "data_app.malloy",
+            views: [],
+            givens: [],
+            fields: [
+               { name: "cat", kind: "dimension" as const },
+               { name: "brand", kind: "dimension" as const },
+               { name: "products.category", kind: "dimension" as const },
+            ],
+         },
+      ],
+   };
+   const mountWithCatalog = async () => {
+      const document = await openDocument();
+      return render(
+         <DashboardBuilder
+            source={SOURCE}
+            document={document}
+            catalog={catalog}
+            onSave={() => undefined}
+         />,
+      );
+   };
+
+   // A binding to a field the source does not have fails at package load,
+   // which is the worst place for it. Here it is marked and cannot be applied.
+   it("holds Apply while a ticked tile names a field the source does not have", async () => {
+      await mountWithCatalog();
+      fireEvent.click(screen.getByLabelText("Edit filter CATEGORY"));
+      const field = screen.getByLabelText("Field to filter");
+      expect((field as HTMLInputElement).value).toBe("cat");
+      expect(button("Apply")).toHaveProperty("disabled", false);
+
+      fireEvent.change(field, { target: { value: "nope" } });
+      expect(screen.getByText("Not a field of scoped_orders.")).toBeDefined();
+      expect(button("Apply")).toHaveProperty("disabled", true);
+
+      fireEvent.change(field, { target: { value: "products.category" } });
+      expect(screen.queryByText("Not a field of scoped_orders.")).toBeNull();
+      expect(button("Apply")).toHaveProperty("disabled", false);
+   });
+
+   it("holds Apply while a ticked tile has no field at all", async () => {
+      await mountWithCatalog();
+      fireEvent.click(button("Add filter"));
+      // Both tiles are ticked and the field is empty: nothing to bind with.
+      expect(
+         screen.getByRole("button", { name: "Add filter", hidden: false }),
+      ).toHaveProperty("disabled", true);
+      fireEvent.change(screen.getByLabelText("Field to filter"), {
+         target: { value: "brand" },
+      });
+      expect(
+         screen.getByRole("button", { name: "Add filter", hidden: false }),
+      ).toHaveProperty("disabled", false);
+   });
+
+   it("marks a control whose binding names a missing field, on its chip", async () => {
+      const source = SOURCE.replace(
+         "where: cat ~ $CATEGORY",
+         "where: catgory ~ $CATEGORY",
+      );
+      const document = await openDocument(source);
+      render(
+         <DashboardBuilder
+            source={source}
+            document={document}
+            catalog={catalog}
+         />,
+      );
+      const chip = screen.getByLabelText("Edit filter CATEGORY");
+      expect(chip.className).toContain("colorWarning");
+   });
+});
+
 describe("DashboardBuilder: a control the model declares", () => {
    // Its declaration is not ours to delete, but a control is a given some tile
    // binds, so taking it off the dashboard is unbinding every tile.

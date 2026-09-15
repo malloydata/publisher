@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   Autocomplete,
    Box,
    Button,
    Checkbox,
@@ -16,9 +17,12 @@ import {
    ToggleButtonGroup,
    Tooltip,
    Typography,
+   type SxProps,
+   type Theme,
 } from "@mui/material";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import type { CatalogField } from "./catalog";
 import {
    canBind,
    CONTROL_KINDS,
@@ -43,6 +47,13 @@ import type { DashboardDocument, LocalGiven } from "./document";
  * of the dashboard's tiles with a checkbox each, and one checkbox over them
  * all. A tile that cannot take a filter says why in place.
  *
+ * The field is SEARCHED, not typed blind, when the host has handed over the
+ * source's fields: the picker offers the dimensions the tiles' source has,
+ * an unknown name is marked as such where it stands, and Apply waits until
+ * every ticked tile's field resolves. A binding to a field that does not exist
+ * fails at package load, which is the worst place for it to fail; here it
+ * cannot be written.
+ *
  * The same window adds, edits and removes. It opens on the mapping the control
  * has NOW, so unticking a tile unbinds it, and a control this dashboard
  * declares can be taken off the page from here.
@@ -59,6 +70,14 @@ export interface FilterDialogProps {
    control?: BuilderControl;
    /** Model givens not yet bound anywhere, offered as "from the model". */
    available: readonly BuilderControl[];
+   /**
+    * The fields a binding may name: the dimensions of the source the tiles
+    * read. Absent when the host has no catalog, in which case any name is
+    * accepted and nothing is searched.
+    */
+   fields?: readonly CatalogField[];
+   /** The source those fields belong to, for the picker to say so. */
+   fieldsOf?: string;
    onClose: () => void;
    /**
     * Bind a control. `declare` is set when the control is new to this file, or
@@ -75,11 +94,89 @@ type Source = { kind: "existing"; name: string } | { kind: "new" };
 const titleCase = (name: string) =>
    name.charAt(0) + name.slice(1).toLowerCase().replace(/_/g, " ");
 
+/**
+ * A field name, searched from the source's dimensions and still free to type:
+ * the catalog may lag a model edit, and a host without one has no list at all.
+ */
+function FieldPicker({
+   value,
+   onChange,
+   fields,
+   label,
+   ariaLabel,
+   error,
+   helperText,
+   disabled,
+   autoFocus,
+   placeholder,
+   sx,
+}: {
+   value: string;
+   onChange: (next: string) => void;
+   fields: readonly CatalogField[] | undefined;
+   label: string;
+   ariaLabel: string;
+   error?: boolean;
+   helperText?: string;
+   disabled?: boolean;
+   autoFocus?: boolean;
+   placeholder?: string;
+   sx?: SxProps<Theme>;
+}) {
+   const options = useMemo(
+      () => (fields ?? []).map((field) => field.name),
+      [fields],
+   );
+   const types = useMemo(
+      () => new Map((fields ?? []).map((field) => [field.name, field.type])),
+      [fields],
+   );
+   return (
+      <Autocomplete
+         freeSolo
+         size="small"
+         options={options}
+         inputValue={value}
+         onInputChange={(_, next) => onChange(next)}
+         value={value}
+         onChange={(_, next) => onChange(typeof next === "string" ? next : "")}
+         disabled={disabled}
+         disableClearable
+         renderOption={(props, option) => (
+            <li {...props} key={option}>
+               <Typography variant="body2" sx={{ flex: 1 }}>
+                  {option}
+               </Typography>
+               {types.get(option) && (
+                  <Typography variant="caption" sx={{ opacity: 0.6 }}>
+                     {types.get(option)?.replace(/_type$/, "")}
+                  </Typography>
+               )}
+            </li>
+         )}
+         renderInput={(params) => (
+            <TextField
+               {...params}
+               label={label}
+               placeholder={placeholder}
+               autoFocus={autoFocus}
+               error={error}
+               helperText={helperText}
+               inputProps={{ ...params.inputProps, "aria-label": ariaLabel }}
+            />
+         )}
+         sx={sx}
+      />
+   );
+}
+
 export function FilterDialog({
    open,
    document,
    control,
    available,
+   fields,
+   fieldsOf,
    onClose,
    onApply,
    onRemove,
@@ -99,8 +196,10 @@ export function FilterDialog({
    const [kind, setKind] = useState<ControlKind>("select");
    const [dateDefault, setDateDefault] = useState("");
    // The field every ticked tile filters on, and the rows themselves. The
-   // field is the common case; the rows are the truth. Typing in the field
-   // writes every row, and "Adjust per tile" opens the rows up to differ.
+   // field is the common case and, until "Adjust per tile" is pressed, the ONE
+   // that is applied: a row's own field only counts once the author has asked
+   // to set them one by one. That is what keeps a fallback name a row happened
+   // to carry from being written when the box above it was empty.
    const [field, setField] = useState("");
    const [rows, setRows] = useState<MappingRow[]>([]);
    const [perTile, setPerTile] = useState(false);
@@ -120,11 +219,15 @@ export function FilterDialog({
          const mapped = mappingOf(document, control);
          setRows(mapped);
          // One field when every bound tile agrees; otherwise the rows already
-         // differ and the per-tile view is the honest one to open on.
+         // differ and the per-tile view is the honest one to open on. A control
+         // bound nowhere starts from what its own suggest names, or empty — and
+         // empty has to be filled before it can apply.
          const bound = mapped.filter((row) => row.include);
-         const fields = new Set(bound.map((row) => row.field));
-         setField(fields.size === 1 ? bound[0].field : (control.field ?? ""));
-         setPerTile(fields.size > 1);
+         const fieldsBound = new Set(bound.map((row) => row.field));
+         setField(
+            fieldsBound.size === 1 ? bound[0].field : (control.field ?? ""),
+         );
+         setPerTile(fieldsBound.size > 1);
       } else {
          setSource({ kind: "new" });
          setLabel("");
@@ -171,16 +274,12 @@ export function FilterDialog({
    const commonOp =
       rows.find((row) => row.include)?.op ?? defaultOperator(target?.type);
 
-   const setCommonField = (next: string) => {
-      setField(next);
-      setRows((previous) => previous.map((row) => ({ ...row, field: next })));
-   };
-   const setCommonOp = (next: string) =>
-      setRows((previous) => previous.map((row) => ({ ...row, op: next })));
    const setRow = (index: number, patch: Partial<MappingRow>) =>
       setRows((previous) =>
          previous.map((row, i) => (i === index ? { ...row, ...patch } : row)),
       );
+   const setCommonOp = (next: string) =>
+      setRows((previous) => previous.map((row) => ({ ...row, op: next })));
    /** Rows follow a given's type: the comparison it needs, or none. */
    const retype = (type: string | undefined) => {
       const op = defaultOperator(type);
@@ -190,7 +289,7 @@ export function FilterDialog({
    };
    const pickExisting = (given: BuilderControl) => {
       setSource({ kind: "existing", name: given.name });
-      setCommonField(given.field ?? given.name.toLowerCase());
+      setField(given.field ?? "");
       retype(given.type);
    };
    const pickKind = (next: ControlKind) => {
@@ -209,16 +308,48 @@ export function FilterDialog({
          })),
       );
 
+   // The rows as they will be APPLIED: the common field on every row until
+   // the author has asked to set them one by one.
+   const effective = useMemo(
+      () => (perTile ? rows : rows.map((row) => ({ ...row, field }))),
+      [perTile, rows, field],
+   );
+
+   // Validation, where the source's fields are known. Unknown is a name the
+   // source does not have; empty is no name at all. Either on a ticked tile
+   // holds Apply, and is marked where it stands.
+   const known = useMemo(
+      () => (fields ? new Set(fields.map((f) => f.name)) : undefined),
+      [fields],
+   );
+   const unknown = (name: string) =>
+      known !== undefined && name.trim() !== "" && !known.has(name.trim());
+   const problemWith = (name: string): string | undefined => {
+      if (name.trim() === "") return "Pick the field this filter compares.";
+      if (unknown(name))
+         return `Not a field of ${fieldsOf ?? "the tiles' source"}.`;
+      return undefined;
+   };
+   const rowProblems = effective.map((row, i) =>
+      row.include && bindable[i] ? problemWith(row.field) : undefined,
+   );
+   const fieldsResolve = rowProblems.every((problem) => problem === undefined);
+   // In the common case one box speaks for every row, so its message is the
+   // rows' message; the box is only marked once a tile is ticked to bind.
+   const commonProblem =
+      !perTile && included > 0 ? problemWith(field) : undefined;
+
    const canApply =
       target !== undefined &&
+      fieldsResolve &&
       (source.kind === "existing" || (field.trim() !== "" && newName !== ""));
 
    const apply = () => {
-      if (!target) return;
+      if (!target || !canApply) return;
       if (source.kind === "new") {
          onApply(
             target.name,
-            rows,
+            effective,
             newLocalGiven({
                name: target.name,
                // Untyped, the label is what the placeholder promised — `Status`
@@ -237,13 +368,13 @@ export function FilterDialog({
          const changed = trimmed !== (control.local.label ?? "");
          onApply(
             target.name,
-            rows,
+            effective,
             changed
                ? { ...control.local, ...(trimmed ? { label: trimmed } : {}) }
                : undefined,
          );
       } else {
-         onApply(target.name, rows);
+         onApply(target.name, effective);
       }
    };
 
@@ -346,38 +477,46 @@ export function FilterDialog({
                         </MenuItem>
                      ))}
                   </TextField>
-               ) : (
-                  <Stack direction="row" sx={{ gap: 1.5, flexWrap: "wrap" }}>
+               ) : null}
+
+               <Stack direction="row" sx={{ gap: 1.5, flexWrap: "wrap" }}>
+                  {/* Hidden while per-tile fields are open: they speak for
+                      themselves then, and a box above them that applied to
+                      nothing would read as one more thing to fill. */}
+                  {!perTile && (
+                     <FieldPicker
+                        value={field}
+                        onChange={setField}
+                        fields={fields}
+                        label="Field to filter"
+                        ariaLabel="Field to filter"
+                        placeholder="category"
+                        autoFocus={!editing}
+                        error={commonProblem !== undefined}
+                        helperText={
+                           commonProblem ??
+                           (!editing && newName
+                              ? `Declared as $${newName}`
+                              : undefined)
+                        }
+                        sx={{ flex: 1, minWidth: 200 }}
+                     />
+                  )}
+                  {!fromModel && (
                      <TextField
                         size="small"
-                        label="Field to filter"
-                        placeholder="category"
-                        value={field}
-                        autoFocus={!editing}
-                        onChange={(event) => setCommonField(event.target.value)}
-                        inputProps={{ "aria-label": "Field to filter" }}
-                        helperText={
-                           !editing && newName
-                              ? `Declared as $${newName}`
-                              : undefined
-                        }
+                        label="Label"
+                        placeholder={newName ? titleCase(newName) : ""}
+                        value={label}
+                        onChange={(event) => setLabel(event.target.value)}
+                        inputProps={{ "aria-label": "Control label" }}
                         sx={{ flex: 1, minWidth: 160 }}
                      />
-                     {!fromModel && (
-                        <TextField
-                           size="small"
-                           label="Label"
-                           placeholder={newName ? titleCase(newName) : ""}
-                           value={label}
-                           onChange={(event) => setLabel(event.target.value)}
-                           inputProps={{ "aria-label": "Control label" }}
-                           sx={{ flex: 1, minWidth: 160 }}
-                        />
-                     )}
-                     {valueTyped &&
-                        operatorField(commonOp, setCommonOp, "Comparison")}
-                  </Stack>
-               )}
+                  )}
+                  {valueTyped &&
+                     !perTile &&
+                     operatorField(commonOp, setCommonOp, "Comparison")}
+               </Stack>
                {!editing && source.kind === "new" && (
                   <Stack direction="row" sx={{ gap: 1.5 }}>
                      <TextField
@@ -449,7 +588,12 @@ export function FilterDialog({
                      <Button
                         size="small"
                         onClick={() => {
-                           if (perTile) setCommonField(field);
+                           // Opening per-tile starts every row from the common
+                           // field; closing it goes back to one box for all.
+                           if (!perTile)
+                              setRows((previous) =>
+                                 previous.map((row) => ({ ...row, field })),
+                              );
                            setPerTile((was) => !was);
                         }}
                      >
@@ -460,13 +604,16 @@ export function FilterDialog({
                      {document.tiles.map((tile, index) => {
                         const row = rows[index];
                         const title = tile.label ?? tile.name;
+                        const problem = perTile
+                           ? rowProblems[index]
+                           : undefined;
                         return (
                            <Stack
                               key={`${tile.source}.${tile.name}`}
                               direction="row"
                               sx={{
                                  gap: 1,
-                                 alignItems: "center",
+                                 alignItems: perTile ? "flex-start" : "center",
                                  opacity: bindable[index] ? 1 : 0.6,
                               }}
                            >
@@ -487,7 +634,11 @@ export function FilterDialog({
                               />
                               <Typography
                                  variant="body2"
-                                 sx={{ flex: 1, minWidth: 0 }}
+                                 sx={{
+                                    flex: 1,
+                                    minWidth: 0,
+                                    pt: perTile ? 1 : 0,
+                                 }}
                                  noWrap
                               >
                                  {title}
@@ -518,20 +669,18 @@ export function FilterDialog({
                                              (op) => setRow(index, { op }),
                                              `Comparison for ${title}`,
                                           )}
-                                       <TextField
-                                          size="small"
-                                          label="Field"
+                                       <FieldPicker
                                           value={row?.field ?? ""}
-                                          disabled={!row?.include}
-                                          inputProps={{
-                                             "aria-label": `Field for ${title}`,
-                                          }}
-                                          onChange={(event) =>
-                                             setRow(index, {
-                                                field: event.target.value,
-                                             })
+                                          onChange={(next) =>
+                                             setRow(index, { field: next })
                                           }
-                                          sx={{ width: 180 }}
+                                          fields={fields}
+                                          label="Field"
+                                          ariaLabel={`Field for ${title}`}
+                                          disabled={!row?.include}
+                                          error={problem !== undefined}
+                                          helperText={problem}
+                                          sx={{ width: 220 }}
                                        />
                                     </>
                                  )
@@ -564,9 +713,23 @@ export function FilterDialog({
                </Button>
             )}
             <Button onClick={onClose}>Cancel</Button>
-            <Button variant="contained" onClick={apply} disabled={!canApply}>
-               {editing ? "Apply" : "Add filter"}
-            </Button>
+            <Tooltip
+               title={
+                  canApply || target === undefined
+                     ? ""
+                     : "A ticked tile has no field, or names one its source does not have."
+               }
+            >
+               <span>
+                  <Button
+                     variant="contained"
+                     onClick={apply}
+                     disabled={!canApply}
+                  >
+                     {editing ? "Apply" : "Add filter"}
+                  </Button>
+               </span>
+            </Tooltip>
          </DialogActions>
       </Dialog>
    );

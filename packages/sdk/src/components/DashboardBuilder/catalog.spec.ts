@@ -7,6 +7,7 @@ import {
    buildCatalog,
    chartOf,
    docOf,
+   filterableFields,
    isDashboardModel,
    missingTiles,
 } from "./catalog";
@@ -229,5 +230,82 @@ describe("missingTiles", () => {
             [],
          ),
       ).toEqual([{ source: "ghost", name: "x", needs: "ghost" }]);
+   });
+});
+
+describe("filterableFields", () => {
+   // Captured from the storefront package's `order_items`: a join's fields are
+   // what people filter on, and a view is not a field at all.
+   const model: CompiledModel = {
+      modelPath: "storefront.malloy",
+      sources: [{ name: "order_items" }],
+      sourceInfos: [
+         JSON.stringify({
+            name: "order_items",
+            schema: {
+               fields: [
+                  {
+                     name: "status",
+                     kind: "dimension",
+                     type: { kind: "string_type" },
+                  },
+                  {
+                     name: "total_sales",
+                     kind: "measure",
+                     type: { kind: "number_type" },
+                  },
+                  {
+                     name: "products",
+                     kind: "join",
+                     schema: {
+                        fields: [
+                           {
+                              name: "category",
+                              kind: "dimension",
+                              type: { kind: "string_type" },
+                           },
+                           {
+                              name: "supplier",
+                              kind: "join",
+                              schema: {
+                                 fields: [
+                                    { name: "region", kind: "dimension" },
+                                 ],
+                              },
+                           },
+                        ],
+                     },
+                  },
+                  {
+                     name: "by_status",
+                     kind: "view",
+                     schema: {
+                        fields: [{ name: "status", kind: "dimension" }],
+                     },
+                  },
+               ],
+            },
+         }),
+      ],
+   } as CompiledModel;
+
+   it("offers dimensions, with a join's fields as paths, and no measures or views", () => {
+      const fields = filterableFields(buildCatalog([model]), "order_items");
+      expect(fields?.map((f) => f.name)).toEqual([
+         "status",
+         "products.category",
+      ]);
+      expect(fields?.[1]).toEqual({
+         name: "products.category",
+         kind: "dimension",
+         type: "string_type",
+      });
+   });
+
+   it("has no list for a source the catalog does not know, or no catalog", () => {
+      expect(
+         filterableFields(buildCatalog([model]), "elsewhere"),
+      ).toBeUndefined();
+      expect(filterableFields(undefined, "order_items")).toBeUndefined();
    });
 });
