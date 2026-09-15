@@ -8,7 +8,8 @@
  * verbatim to the compiler. Its body is a narrow grammar publisher parses
  * itself: one or more terms joined by `and`, each either a ROW-LEVEL term
  * (`field_path <op> $GIVEN`, field path on the left) or a SOURCE-LEVEL term
- * (`'<literal>' in $GIVEN`, literal on the left). The operator is fixed by
+ * (`'<literal>' in $GIVEN`), whose literal and given may be written in either
+ * order since neither side is a column. The operator is fixed by
  * the given's declared arity — `in` for a list-typed given, `=` for a
  * scalar one. Nothing else parses: no `or`, `not`, `!=`, `<`/`>`/`<=`/`>=`,
  * `like`, `is not null`, no function calls, no literal on the right of a
@@ -329,8 +330,18 @@ function parseTerm(
       );
    }
 
-   const left = trimmed.slice(0, opIdx).trim();
-   const right = trimmed.slice(opIdx + opLen).trim();
+   let left = trimmed.slice(0, opIdx).trim();
+   let right = trimmed.slice(opIdx + opLen).trim();
+
+   // A SOURCE-LEVEL term compares a literal to a given, and reads equally well
+   // either way round (`$ROLE = 'admin'` is the spelling publisher's own
+   // fixtures and docs used first). Normalize to literal-on-the-left so one
+   // shape reaches the checks below. A ROW-LEVEL term is not reversible: the
+   // field path is what the build scan groups by and what the graft filters
+   // on, so it stays on the left.
+   if (GIVEN_REF_RE.test(left) && STRING_LITERAL_RE.test(right)) {
+      [left, right] = [right, left];
+   }
 
    const leftIsFieldPath = FIELD_PATH_RE.test(left);
    const leftIsLiteral = STRING_LITERAL_RE.test(left);
@@ -340,9 +351,9 @@ function parseTerm(
          sourceName,
          body,
          "left_not_field_path",
-         `\`${left}\` is neither a field path nor a string literal — the ` +
-            "left side must be a single column, a dotted join path, or a " +
-            "quoted literal.",
+         `\`${left}\` is neither a field path nor a string literal — one ` +
+            "side must be a single column, a dotted join path, or a quoted " +
+            "literal, and the other a `$GIVEN`.",
       );
    }
 
@@ -352,7 +363,7 @@ function parseTerm(
          sourceName,
          body,
          "missing_given_reference",
-         `\`${right}\` is not a given reference — the right side must be ` +
+         `\`${right}\` is not a given reference — a term compares against ` +
             "`$NAME`.",
       );
    }

@@ -26,7 +26,7 @@ For the gate's own grammar, see [Expression Language](#expression-language) belo
 A gate is an `#(authorize)` annotation on its own line directly above a `source:` line — **not** an arbitrary Malloy boolean expression, but one or more terms joined by `and`, each one of two shapes:
 
 - **Row-level**: `field_path <op> $GIVEN` — a single column or a dotted join path on the left.
-- **Source-level**: `'<literal>' <op> $GIVEN` — a quoted literal on the left.
+- **Source-level**: `'<literal>' <op> $GIVEN` — a quoted literal and a given, in either order, since neither side is a column.
 
 `<op>` is fixed by the given's own declared arity: `in` for a list-typed given, `=` for a scalar one. Nothing else parses — no `or`, no `not`, no `!=`/`<`/`>`/`<=`/`>=`, no function calls, no literal on the right of a row-level term, no given compared to another given. See [Row-level gates](#row-level-gates) for the full grammar and every named refusal.
 
@@ -109,7 +109,7 @@ source: orders is duckdb.table('orders.parquet') extend {
 The body is **not** an arbitrary Malloy boolean expression. It is one or more terms joined only by `and`, each one of two shapes, spelled out by `authorize_grammar.ts`:
 
 - **Row-level**: `field_path <op> $GIVEN` — a single column, or a dotted join path, on the left.
-- **Source-level**: `'<literal>' <op> $GIVEN` — a quoted string literal on the left.
+- **Source-level**: `'<literal>' <op> $GIVEN` — a quoted string literal and a given. Either order reads the same and both parse; a row-level term is not reversible, because its column is what the graft filters on.
 
 `<op>` is `in` when `$GIVEN` is declared as a list (array) type, and `=` when it is declared scalar — the operator is not a free choice, it is fixed by the given's own declaration. Everything else is refused at load, each with its own named cause (`AuthorizeGrammarRejectionCause`):
 

@@ -217,6 +217,34 @@ describe("parseAuthorizeGrammarBody — accepted shapes", () => {
       ]);
    });
 
+   it("a source-level term reads either way round: given on the left", () => {
+      // The spelling publisher's own fixtures and docs used first. Same
+      // comparison as `'analyst' = $REGION`, so refusing it would break
+      // working models over operand order alone.
+      const terms = parseAuthorizeGrammarBody(
+         "X",
+         "$REGION = 'analyst'",
+         SCALAR_GIVENS,
+      );
+      expect(terms).toEqual([
+         { scope: "source_level", literal: "'analyst'", given: "REGION" },
+      ]);
+   });
+
+   it("a row-level term is NOT reversible — the column stays on the left", () => {
+      // The field path is what the build scan groups by and what the graft
+      // filters on, so a flipped row-level term is a different statement.
+      try {
+         parseAuthorizeGrammarBody("X", "$GROUPS = org_id", LIST_GIVENS);
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "left_not_field_path",
+         );
+      }
+   });
+
    it("a comparison character inside a string literal is not a comparison", () => {
       const terms = parseAuthorizeGrammarBody(
          "X",
