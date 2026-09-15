@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import Markdown from "markdown-to-jsx";
 import { useCallback, useMemo, useState } from "react";
 import type { DashboardManifest } from "../../client";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
@@ -17,6 +16,7 @@ import {
    type DrillRowsRequest,
 } from "../drill";
 import { GivensPanel } from "../given";
+import { Prose } from "../Prose";
 import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
@@ -405,36 +405,7 @@ export function DashboardProse({
          <Typography variant="h5" sx={{ fontWeight: 600 }}>
             {title}
          </Typography>
-         {description && (
-            <Box
-               sx={{
-                  color: "text.secondary",
-                  typography: "body2",
-                  // The block starts flush under the title and ends flush
-                  // against the controls, so a one-line description sits
-                  // exactly where the old `Typography` put it and a longer one
-                  // grows downward rather than pushing the title around.
-                  "& > :first-of-type": { mt: 0 },
-                  "& > :last-child": { mb: 0 },
-                  // Headings in a description are section labels within the
-                  // page, not competitors to its title, so they stay at body
-                  // weight and size rather than MUI's h1..h6 scale.
-                  "& h1, & h2, & h3, & h4, & h5, & h6": {
-                     fontSize: "inherit",
-                     fontWeight: 600,
-                     m: "0.5em 0 0.25em",
-                  },
-                  "& p": { m: "0.5em 0" },
-                  "& ul, & ol": { m: "0.5em 0", pl: 3 },
-                  "& code": {
-                     fontFamily: "monospace",
-                     fontSize: "0.9em",
-                  },
-               }}
-            >
-               <Markdown>{description}</Markdown>
-            </Box>
-         )}
+         {description && <Prose variant="caption">{description}</Prose>}
       </Box>
    );
 }

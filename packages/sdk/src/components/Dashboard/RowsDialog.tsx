@@ -13,15 +13,11 @@ import {
    Typography,
 } from "@mui/material";
 import { useEffect, useRef } from "react";
-import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { useQueryResult } from "../../hooks/useQueryResult";
 import { malloyLiteral } from "../../utils/malloyLiteral";
 import { isIdentifier, tileSteps } from "../DashboardBuilder/malloyText";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { Loading } from "../Loading";
-import ResultContainer from "../RenderedResult/ResultContainer";
-import { useServer } from "../ServerProvider";
+import { ResultPanel } from "../RenderedResult/ResultPanel";
 import { now } from "./telemetry";
 
 /**
@@ -99,39 +95,8 @@ export function RowsDialog({
    /** The query's outcome and how long it took, once per request. */
    onDone?: (ok: boolean, durationMs: number) => void;
 }) {
-   const { apiClients } = useServer();
    const { theme } = usePublisherTheme();
    const query = request ? rowsQuery(request) : undefined;
-   const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: [
-         "dashboardRows",
-         environmentName,
-         packageName,
-         versionId,
-         modelPath,
-         query,
-         JSON.stringify(givens),
-      ],
-      queryFn: () =>
-         apiClients.models.executeQueryModel(
-            environmentName,
-            packageName,
-            modelPath,
-            { query, givens, versionId },
-         ),
-      enabled: query !== undefined,
-      ...CHART_RESULT_QUERY_OPTIONS,
-   });
-   // Reported once per request, when the query settles.
-   const started = useRef<number | undefined>(undefined);
-   useEffect(() => {
-      if (query !== undefined) started.current = now();
-   }, [query]);
-   useEffect(() => {
-      if (started.current === undefined || (!isSuccess && !isError)) return;
-      onDone?.(isSuccess, now() - started.current);
-      started.current = undefined;
-   }, [isSuccess, isError, onDone]);
 
    return (
       <Dialog
@@ -186,21 +151,16 @@ export function RowsDialog({
                   be fetched.
                </Typography>
             )}
-            {query !== undefined && !isSuccess && !isError && (
-               <Loading text="Running…" />
-            )}
-            {isSuccess && (
-               <Box sx={{ p: 1 }}>
-                  <ResultContainer
-                     result={data.data.result}
-                     renderLogs={data.data.renderLogs}
-                  />
-               </Box>
-            )}
-            {isError && (
-               <Box sx={{ p: 2 }}>
-                  <ApiErrorDisplay context={query ?? ""} error={error} />
-               </Box>
+            {query !== undefined && (
+               <RowsResult
+                  query={query}
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  {...(versionId === undefined ? {} : { versionId })}
+                  modelPath={modelPath}
+                  givens={givens}
+                  {...(onDone ? { onDone } : {})}
+               />
             )}
          </DialogContent>
          <DialogActions sx={{ px: 3, py: 1.5 }}>
@@ -223,5 +183,52 @@ export function RowsDialog({
             <Button onClick={onClose}>Close</Button>
          </DialogActions>
       </Dialog>
+   );
+}
+
+/**
+ * The rows themselves. Its own component so the query exists only while a
+ * request does: a closed dialog holds nothing in the cache.
+ */
+function RowsResult({
+   query,
+   environmentName,
+   packageName,
+   versionId,
+   modelPath,
+   givens,
+   onDone,
+}: {
+   query: string;
+   environmentName: string;
+   packageName: string;
+   versionId?: string;
+   modelPath: string;
+   givens: Record<string, unknown>;
+   onDone?: (ok: boolean, durationMs: number) => void;
+}) {
+   const state = useQueryResult({
+      environmentName,
+      packageName,
+      modelPath,
+      ...(versionId === undefined ? {} : { versionId }),
+      query,
+      givens,
+   });
+   const { isSuccess, isError } = state;
+   // Reported once per request, when the query settles.
+   const started = useRef<number | undefined>(undefined);
+   useEffect(() => {
+      started.current = now();
+   }, [query]);
+   useEffect(() => {
+      if (started.current === undefined || (!isSuccess && !isError)) return;
+      onDone?.(isSuccess, now() - started.current);
+      started.current = undefined;
+   }, [isSuccess, isError, onDone]);
+   return (
+      <Box sx={{ p: 1 }}>
+         <ResultPanel state={state} context={query} />
+      </Box>
    );
 }
