@@ -19,7 +19,7 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { DashboardProse } from "../Dashboard/Dashboard";
 import {
@@ -93,6 +93,17 @@ export interface DashboardBuilderProps {
    document: DashboardDocument;
    /** Persist the patched file. Left out, the builder edits without saving. */
    onSave?: (source: string) => Promise<void> | void;
+   /**
+    * The document as it stands, on every edit — including the first render.
+    *
+    * For the host's LIVE VIEW. A tile's result and the control row are the
+    * host's to render (`renderTile`, `controls`), and both have to follow the
+    * document rather than the saved file, or an edit looks like it did
+    * nothing: unbinding a tile left it filtering, removing a control left it
+    * in the row. `preview.ts` turns the document handed here into what a reader
+    * would see.
+    */
+   onChange?: (document: DashboardDocument) => void;
    /**
     * Renders a tile, card and heading included — this is where a real
     * `DashboardTile` goes. Without it, tiles show what they will run.
@@ -290,6 +301,7 @@ export function DashboardBuilder({
    source,
    document,
    onSave,
+   onChange,
    renderTile,
    controls,
    givens,
@@ -328,6 +340,10 @@ export function DashboardBuilder({
    const theme = usePublisherTheme().theme;
 
    const columns = editor.document.columns ?? DEFAULT_COLUMNS;
+
+   useEffect(() => {
+      onChange?.(editor.document);
+   }, [editor.document, onChange]);
 
    // The givens the MODEL offers: the caller's list, less any the opened file
    // declared itself. A caller gets that list from the server's manifest, which
@@ -654,16 +670,6 @@ export function DashboardBuilder({
                </Button>
             </Stack>
 
-            {/* The live row and the tiles run from the SAVED file, not the
-                document being edited, so a filter changed above does not move
-                them until a save writes it. Said here, once the two disagree,
-                because otherwise the edit looks like it did nothing. */}
-            {editor.dirty && (
-               <Typography variant="caption" sx={{ color: theme.tileTitle }}>
-                  The controls and tiles below run from the saved file. Save to
-                  see your changes there.
-               </Typography>
-            )}
             {controls}
          </Stack>
 
