@@ -2,12 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { pointerIntersection } from "@dnd-kit/collision";
-import {
-   Feedback,
-   KeyboardSensor,
-   PointerActivationConstraints,
-   PointerSensor,
-} from "@dnd-kit/dom";
+import { Feedback, KeyboardSensor, PointerSensor } from "@dnd-kit/dom";
 import { useDroppable } from "@dnd-kit/react";
 import { useSortable, type UseSortableInput } from "@dnd-kit/react/sortable";
 import type { ReactNode } from "react";
@@ -33,56 +28,32 @@ const TILE_TYPE = "tile";
 export const GAP_TYPE = "gap";
 
 /**
- * How far the pointer must travel before a press becomes a drag. Below it a
- * press is a click, which is what keeps every drill cell, link and chart hover
- * inside a tile working when the whole tile is the drag target.
- */
-const DRAG_THRESHOLD_PX = 4;
-
-/**
- * A touch has to be HELD before it drags, or a finger that meant to scroll the
- * page picks a tile up instead. The library's own touch defaults.
- */
-const TOUCH_HOLD_MS = 250;
-const TOUCH_HOLD_TOLERANCE_PX = 5;
-
-/**
- * Content a press must never pick the tile up from: a press on a button is a
- * click on the button however far the pointer wanders before it lets go, and
- * the resize handle has a drag of its own.
- */
-const NEVER_DRAG_FROM =
-   'button, a, input, textarea, select, [role="separator"], [data-no-drag]';
-
-/**
- * The sensors, configured for a tile that is draggable from ANYWHERE on it.
+ * The sensors: the library's own, with one addition and one exception.
  *
- * `activatorElements` is the whole tile, not the grip: a 22px corner that
- * appears on hover is not a target a reader finds; the whole card is. The grip
- * stays the `handle`, which is what gives it the keyboard focus and the
- * screen-reader instructions — a tile full of live content should not itself
- * be a button.
+ * The ADDITION is `activatorElements`: the whole tile starts a pointer drag,
+ * not only the grip. A 22px corner that appears on hover is not a target a
+ * reader finds; the whole card is. The grip stays the `handle`, which is what
+ * gives it keyboard focus and the screen-reader instructions — and, by the
+ * library's own rule, a press on the handle drags at once while a press
+ * anywhere else on the card waits for a short hold or a few pixels of travel,
+ * so a click inside a tile stays a click. Those thresholds, and the check that
+ * a press on a button or a link is never a drag, are the defaults: they are
+ * what every surface built on this library feels like, and the hand-tuned
+ * versions this replaced were most of why the gesture felt unfamiliar.
+ *
+ * The EXCEPTION is the resize handle. Its own pointer handling stops the press
+ * in React, but React's listener sits at the root and runs after the sensor's
+ * own listener on the tile has already seen it; so the sensor is told directly
+ * that a press there is not the start of a move.
  */
+const RESIZE_HANDLE = '[role="separator"]';
 export const builderSensors = [
    PointerSensor.configure({
-      activationConstraints: (event) =>
-         event.pointerType === "touch"
-            ? [
-                 new PointerActivationConstraints.Delay({
-                    value: TOUCH_HOLD_MS,
-                    tolerance: TOUCH_HOLD_TOLERANCE_PX,
-                 }),
-              ]
-            : [
-                 new PointerActivationConstraints.Distance({
-                    value: DRAG_THRESHOLD_PX,
-                 }),
-              ],
       activatorElements: (source) => [source.element],
-      preventActivation: (event) =>
-         event.button !== 0 ||
+      preventActivation: (event, source) =>
+         (PointerSensor.defaults.preventActivation?.(event, source) ?? false) ||
          (event.target instanceof Element &&
-            event.target.closest(NEVER_DRAG_FROM) !== null),
+            event.target.closest(RESIZE_HANDLE) !== null),
    }),
    KeyboardSensor,
 ];

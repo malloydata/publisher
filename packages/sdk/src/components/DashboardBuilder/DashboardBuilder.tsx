@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { DragEndEvent, DragOverEvent } from "@dnd-kit/react";
+import { move } from "@dnd-kit/helpers";
 import { DragDropProvider } from "@dnd-kit/react";
-import { isSortable } from "@dnd-kit/react/sortable";
 import AddIcon from "@mui/icons-material/Add";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import FilterListIcon from "@mui/icons-material/FilterList";
@@ -38,6 +38,7 @@ import {
    type MappingRow,
 } from "./controls";
 import { BuilderToolbar } from "./BuilderToolbar";
+import { filterableFields, type PackageCatalog } from "./catalog";
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
 import { FilterDialog } from "./FilterDialog";
 import {
@@ -135,6 +136,15 @@ export interface DashboardBuilderProps {
     * knows only what its own file declares.
     */
    givens?: BuilderGiven[];
+   /**
+    * What the package offers, for the filter window to SEARCH a field rather
+    * than take one on trust: the dimensions of the source the tiles read are
+    * offered, an unknown name is marked where it stands, and a binding to a
+    * field the source does not have cannot be applied. Absent, any name is
+    * accepted — a binding to a missing field then fails at package load, which
+    * is the worst place for it.
+    */
+   catalog?: PackageCatalog;
 }
 
 /**
@@ -286,17 +296,6 @@ const dragChrome = (on: boolean) => {
    body.style.cursor = on ? "grabbing" : "";
 };
 
-/**
- * A move in flight: the tiles as they will stand if the drag ends now, and the
- * index the dragged tile lands at. Rebuilt from the DOCUMENT on every report
- * rather than from the last preview, so a drag that wanders across five
- * targets and back settles exactly where a direct drop would.
- */
-interface Preview {
-   tiles: DashboardTile[];
-   landing: number;
-}
-
 export function DashboardBuilder({
    source,
    document,
@@ -305,6 +304,7 @@ export function DashboardBuilder({
    renderTile,
    controls,
    givens,
+   catalog,
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
@@ -322,10 +322,17 @@ export function DashboardBuilder({
    // Wraps the grid, so its content box IS the grid's: what a dragged edge has
    // to be measured against to work out a column count.
    const gridBox = useRef<HTMLDivElement>(null);
-   // A move in flight. State for the render, and a ref for `onDragEnd`, which
-   // can fire before React has committed the state it would otherwise read.
-   const [preview, setPreview] = useState<Preview | undefined>(undefined);
-   const previewRef = useRef<Preview | undefined>(undefined);
+   // A move in flight: the tiles as they will stand if the drag ends now.
+   // CUMULATIVE — each report moves the tile from where the last report left
+   // it, which is the sortable convention and what the library's optimistic
+   // sorting assumes. The first version rebuilt the order from the document on
+   // every report, and as the row reflowed under the pointer the tile beneath
+   // it changed, so the target flipped back and forth. State for the render,
+   // and a ref for `onDragEnd`, which can fire before React has committed it.
+   const [preview, setPreview] = useState<DashboardTile[] | undefined>(
+      undefined,
+   );
+   const previewRef = useRef<DashboardTile[] | undefined>(undefined);
    // Whether a drag is live at all: what turns the row-end gaps into drop
    // targets and draws the grid guides.
    const [dragging, setDragging] = useState(false);
@@ -363,6 +370,25 @@ export function DashboardBuilder({
       () => controlsOf(editor.document, modelGivens),
       [editor.document, modelGivens],
    );
+   // The fields a binding may name: the dimensions of the source the tiles
+   // read, when the host knows them. Undefined otherwise, and nothing checks.
+   const fieldSource = editor.document.sources[0]?.base;
+   const knownFields = useMemo(
+      () => filterableFields(catalog, fieldSource),
+      [catalog, fieldSource],
+   );
+   // Bindings naming a field the source does not have, per control: marked on
+   // the chip, so a broken binding is seen before the package refuses it.
+   const unknownFieldsOf = (name: string): string[] => {
+      if (!knownFields) return [];
+      const known = new Set(knownFields.map((field) => field.name));
+      const out: string[] = [];
+      for (const tile of editor.document.tiles)
+         for (const filter of tile.filters ?? [])
+            if (filter.given === name && !known.has(filter.field))
+               out.push(`${filter.field} on ${tile.label ?? tile.name}`);
+      return out;
+   };
    // Model givens nothing binds yet: what "From the model" offers.
    const available = useMemo(
       () =>
@@ -477,39 +503,39 @@ export function DashboardBuilder({
     * rebuilt from the document on each report and written once, on release:
     * ONE history entry for the whole drag, however far it wandered.
     */
+   const onDragStart = () => {
+      setDragging(true);
+      previewRef.current = editor.document.tiles;
+   };
+
    const onDragOver = (event: DragOverEvent) => {
       const { source, target } = event.operation;
       if (!source || !target) return;
-      const tiles = editor.document.tiles;
-      const from = tiles.findIndex((tile) => tileKey(tile) === source.id);
-      if (from < 0) return;
-      const moved = tiles[from];
-      const rest = tiles.filter((_, index) => index !== from);
-      let next: Preview | undefined;
+      const current = previewRef.current ?? editor.document.tiles;
+      let next: DashboardTile[];
       if (target.type === GAP_TYPE) {
          const { after } = target.data as GapData;
+         const from = current.findIndex((tile) => tileKey(tile) === source.id);
          // The gap right after the dragged tile is the one it is already
          // previewed in; there is nothing to change.
-         if (after === source.id) return;
+         if (from < 0 || after === source.id) return;
+         const rest = current.filter((_, index) => index !== from);
          const to = rest.findIndex((tile) => tileKey(tile) === after) + 1;
-         next = { tiles: moveIntoGap(tiles, from, to), landing: to };
-      } else if (isSortable(target) && target.id !== source.id) {
-         // Onto a tile: the dragged tile takes that tile's slot. `index` is the
-         // target's place in the PREVIEWED order — the sortable convention,
-         // which is why dragging forward lands after the target and dragging
-         // back lands before it.
-         const to = target.index;
-         const order = [...rest];
-         order.splice(to, 0, moved);
-         next = {
-            tiles: keepRowStructure(
-               order,
-               tiles.map((tile) => tile.break ?? false),
-            ),
-            landing: to,
-         };
+         next = moveIntoGap(current, from, to);
+      } else {
+         // Onto a tile: the library's own `move` — the same arithmetic every
+         // sortable list built on it uses, over the order as it stands. Then
+         // the row starts re-applied by position, so the rows keep their shape
+         // and the tiles flow through them.
+         const keys = current.map(tileKey);
+         const reordered = move(keys, event);
+         if (reordered.every((key, index) => key === keys[index])) return;
+         const byKey = new Map(current.map((tile) => [tileKey(tile), tile]));
+         next = keepRowStructure(
+            reordered.map((key) => byKey.get(key) as DashboardTile),
+            editor.document.tiles.map((tile) => tile.break ?? false),
+         );
       }
-      if (!next) return;
       previewRef.current = next;
       setPreview(next);
    };
@@ -520,10 +546,15 @@ export function DashboardBuilder({
       previewRef.current = undefined;
       setPreview(undefined);
       if (event.canceled || !next) return;
+      // ONE history entry for the whole drag; a drag that ends where it began
+      // changes nothing and makes none.
       editor.update((draft) => {
-         draft.tiles = next.tiles;
+         draft.tiles = next;
       });
-      setSelected(next.landing);
+      const landing = next.findIndex(
+         (tile) => tileKey(tile) === event.operation.source?.id,
+      );
+      if (landing >= 0) setSelected(landing);
    };
 
    /** The filter window's result: bind, and declare when it is new or retagged. */
@@ -556,7 +587,7 @@ export function DashboardBuilder({
          return tiles.map((each, index) =>
             index === resize.index ? { ...each, colspan: resize.span } : each,
          );
-      return preview?.tiles ?? tiles;
+      return preview ?? tiles;
    })();
    // And, while a drag is live, the empty end of every row as a drop target.
    // Not otherwise: a gap is only a place to land while something is in hand.
@@ -630,35 +661,45 @@ export function DashboardBuilder({
                      None yet.
                   </Typography>
                )}
-               {controlList.map((control) => (
-                  <Tooltip
-                     key={control.name}
-                     title={`$${control.name} · ${
-                        control.origin === "dashboard"
-                           ? "declared here"
-                           : "from the model"
-                     } · ${control.boundTiles} of ${editor.document.tiles.length} tiles`}
-                  >
-                     <Chip
-                        size="small"
-                        label={control.label ?? control.name}
-                        aria-label={`Edit filter ${control.name}`}
-                        variant={
-                           control.origin === "dashboard"
-                              ? "filled"
-                              : "outlined"
+               {controlList.map((control) => {
+                  const unknown = unknownFieldsOf(control.name);
+                  return (
+                     <Tooltip
+                        key={control.name}
+                        title={
+                           unknown.length > 0
+                              ? `$${control.name} · not a field of ${fieldSource}: ${unknown.join(", ")}`
+                              : `$${control.name} · ${
+                                   control.origin === "dashboard"
+                                      ? "declared here"
+                                      : "from the model"
+                                } · ${control.boundTiles} of ${editor.document.tiles.length} tiles`
                         }
-                        onClick={() => setFilterDialog({ control })}
-                        sx={{
-                           // Faint when nothing binds it: declared, but not yet a
-                           // control a reader would see.
-                           opacity: control.boundTiles === 0 ? 0.6 : 1,
-                           cursor: "pointer",
-                           transition: "opacity 120ms",
-                        }}
-                     />
-                  </Tooltip>
-               ))}
+                     >
+                        <Chip
+                           size="small"
+                           label={control.label ?? control.name}
+                           aria-label={`Edit filter ${control.name}`}
+                           // Warning where a binding names a field the source
+                           // does not have: the package would refuse the file.
+                           color={unknown.length > 0 ? "warning" : "default"}
+                           variant={
+                              control.origin === "dashboard"
+                                 ? "filled"
+                                 : "outlined"
+                           }
+                           onClick={() => setFilterDialog({ control })}
+                           sx={{
+                              // Faint when nothing binds it: declared, but not yet a
+                              // control a reader would see.
+                              opacity: control.boundTiles === 0 ? 0.6 : 1,
+                              cursor: "pointer",
+                              transition: "opacity 120ms",
+                           }}
+                        />
+                     </Tooltip>
+                  );
+               })}
                <Button
                   size="small"
                   variant="outlined"
@@ -681,7 +722,7 @@ export function DashboardBuilder({
 
          <DragDropProvider
             sensors={builderSensors}
-            onDragStart={() => setDragging(true)}
+            onDragStart={onDragStart}
             onDragOver={onDragOver}
             onDragEnd={onDragEnd}
          >
@@ -1081,6 +1122,8 @@ export function DashboardBuilder({
                ? { control: filterDialog.control }
                : {})}
             available={available}
+            {...(knownFields ? { fields: knownFields } : {})}
+            {...(fieldSource ? { fieldsOf: fieldSource } : {})}
             onClose={() => setFilterDialog(undefined)}
             onApply={applyFilter}
             onRemove={dropControl}
