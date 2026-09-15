@@ -99,6 +99,10 @@ EXIT CODES
   2  usage error (argparse)
   3  the value check did not happen -- says nothing about whether the goldens
      still hold. Either this crashed, or set.json names no truthPackage.
+     With --definitions, a set whose every value-bearing case rests on
+     validated definitions exits 0 instead: the values were not re-derived,
+     but the definitions they rest on were checked, which is the other half
+     of the same rule.
 
 3 is load-bearing and it is why the codes are enumerated here. `improve.py`'s
 acceptance gate has to tell "your edit may have invalidated a golden" from "the
@@ -113,6 +117,12 @@ golden was re-derived, and 0 told a caller it had been: `improve.py` recorded
 `clean: True` for an audit that never looked. When one of those checks DOES
 find something, 1 wins over 3: a finding is evidence, and 3 says there is none
 to read, so a caller obeying that would discard it.
+
+The composition rule: a golden is trustworthy if it was derived independently,
+OR if every definition it tests has itself been validated. A truth server is the
+first half. `--definitions <ledger>` (from verify_definitions.py) is the second,
+and the only thing it settles is the exit code and the promotion basis -- never a
+golden's value, which it does not touch.
 """
 from __future__ import annotations
 
@@ -753,7 +763,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
            target_package: str | None = None,
            cases_file: str = "cases.jsonl",
            quiet: bool = False, attest: str | None = None,
-           verbose: bool = False) -> dict[str, Any]:
+           verbose: bool = False,
+           definitions: pathlib.Path | None = None) -> dict[str, Any]:
     """Run every check. Returns a summary; `drifted` is the count that should
     stop a run.
 
@@ -804,6 +815,34 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     if skipped and chosen and not any(needs_value_check(c) for c in chosen):
         skipped = None
 
+    # The composition rule's second half. A truth server re-derives VALUES; a
+    # definition ledger validates the DEFINITIONS a value rests on. When every
+    # value-bearing case's tested definitions read `agrees` in the ledger and
+    # are not stale against --model, the absent server is not a check that
+    # failed to happen, and main() may exit 0 instead of 3. The value loop
+    # below still does not run -- there is nothing to run it against -- so this
+    # settles the exit code and the promotion basis, never a golden's value.
+    # Imported here rather than at the top: verify_definitions imports from
+    # this file, and the cycle is harmless once this module is fully loaded.
+    ledger_validated, unvalidated = False, []
+    if skipped and definitions:
+        from verify_definitions import (case_basis, load_ledger,  # noqa: E402
+                                        stale_ids)
+        led = load_ledger(definitions)
+        stale = stale_ids(led, model)
+        for c in chosen:
+            if not needs_value_check(c):
+                continue
+            basis = case_basis(c, led, stale, set_dir)
+            if basis not in ("independent", "definitions"):
+                unvalidated.append(f"{c['qid']} ({basis})")
+        ledger_validated = bool(led) and not unvalidated
+        if not quiet:
+            print(f"  definition ledger {definitions}: "
+                  + ("every value-bearing case rests on validated definitions"
+                     if ledger_validated else
+                     f"{len(unvalidated)} case(s) rest on unvalidated definitions"))
+
     tally: dict[str, int] = {}
     findings: list[str] = []
     refreshed: list[str] = []
@@ -844,6 +883,26 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
                 g["status"] = "verified"
                 g["verifiedBy"] = "authored_criteria"
                 promoted.append(c["qid"])
+
+    # Promotion through the ledger. `verified` here means two derivations of
+    # the value agree (the second derivation, as always) AND every definition
+    # those derivations used is validated. Nothing re-derived the value on a
+    # truth server, and verifiedBy says so by naming the ledger. No --attest
+    # path: an authored control plus a human vouching, with no second
+    # derivation, is too thin to call verified.
+    if promote and ledger_validated:
+        for c in chosen:
+            g = c["golden"]
+            if not needs_value_check(c) or g.get("status") != "provisional":
+                continue
+            why = promotion_blocker(c, set_dir)
+            if why:
+                promotion_notes.append(f"{c['qid']}: not promoted, {why}")
+                continue
+            g["status"] = "verified"
+            g["verifiedBy"] = (f"verify_goldens.py --promote via definition "
+                               f"ledger {definitions.name}")
+            promoted.append(c["qid"])
 
     # `[] if skipped else chosen` rather than an `if` block: the guard belongs
     # next to the one call that needs it, and wrapping would reindent the
@@ -980,7 +1039,8 @@ def verify(set_dir: pathlib.Path, publisher: str, environment: str,
     # string so both existing predicates still read; `tally` is {} rather than
     # {"skipped": N}, because check_value already returns a per-case status
     # spelled "skipped" and one word may not mean two things in one dict.
-    return {"skipped": skipped, "tally": tally, "drifted": drifted,
+    return {"skipped": skipped, "ledgerValidated": ledger_validated,
+            "unvalidated": unvalidated, "tally": tally, "drifted": drifted,
             "findings": findings, "refreshed": refreshed,
             "promoted": promoted, "attested": attested,
             "promotionNotes": promotion_notes}
@@ -1036,6 +1096,11 @@ def main() -> int:
     ap.add_argument("--target-package",
                     help="the package under test, for the isolation guard. "
                          "Falls back to set.json's `targetPackage`")
+    ap.add_argument("--definitions", type=pathlib.Path, default=None,
+                    help="a definition ledger (verify_definitions.py). With no "
+                         "truth server, a set whose every value-bearing case "
+                         "rests on validated definitions exits 0 instead of 3, "
+                         "and --promote may promote through it")
     args = ap.parse_args()
     if args.attest is not None and (not args.promote or not args.attest.strip()):
         ap.error("--attest needs --promote and non-empty text naming who "
@@ -1045,7 +1110,8 @@ def main() -> int:
                qids=set(args.qid) if args.qid else None, model=args.model,
                refresh=args.refresh, promote=args.promote,
                target_package=args.target_package, cases_file=args.cases,
-               attest=args.attest, verbose=args.verbose)
+               attest=args.attest, verbose=args.verbose,
+               definitions=args.definitions)
     if r.get("skipped"):
         print(f"\n{r['skipped']}")
     # Drift and findings both fail: a golden that cannot be re-derived is a
@@ -1067,10 +1133,23 @@ def main() -> int:
               f"or gold/<qid>.json with verifyRows).", file=sys.stderr)
         return CANNOT_RUN
     if r.get("skipped"):
+        if r.get("ledgerValidated"):
+            print("No truth server, and none needed here: every value-bearing "
+                  "golden rests on definitions the ledger validates. Values were "
+                  "not re-derived; the definitions they rest on were.",
+                  file=sys.stderr)
+            return 0
+        if args.definitions:
+            print("The definition ledger does not validate every case: "
+                  + "; ".join(r.get("unvalidated") or ["the ledger has no rows"])
+                  + ". Author or re-run controls for those definitions, or name "
+                    "a truthPackage in set.json.", file=sys.stderr)
+            return CANNOT_RUN
         print("The audits above ran without a truth server. No golden was "
               "re-derived, so this says NOTHING about whether the goldens still "
               "hold; do not read it as a pass. Name a truthPackage in set.json "
-              "(init_truth_package.py scaffolds one).", file=sys.stderr)
+              "(init_truth_package.py scaffolds one), or validate the "
+              "definitions and pass --definitions.", file=sys.stderr)
         return CANNOT_RUN
     return 0
 

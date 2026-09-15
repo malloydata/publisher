@@ -219,6 +219,13 @@ inflates the measure and the control expression equally and the comparison stays
 green on a broken join. And building the ledger without a server exits 3, not 0:
 nothing was checked, and a caller must not read that as a pass.
 
+A raw check -- a definition that reaches through a join -- is an authored
+control: a person writes the population down as a query on the ledger record and
+the tool re-runs it every time. It is not found unaided, and the docs say so.
+`verify_goldens.py --definitions <ledger>` then applies the composition rule at
+the gate: a set with no truth package exits 0 when every value-bearing case's
+tested definitions are validated, and names the cases that are not.
+
 **Read `reference/definition-ledger.md` before building or quoting one.**
 
 ## Step 5: Distrust the golden

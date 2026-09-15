@@ -32,10 +32,28 @@ that cross a join therefore record `unchecked` with `needs: raw`, never `agrees`
 Reporting them as validated would be this tool committing the exact error it
 exists to find.
 
-`raw`, `external` and `irreducible` are recorded but not executed here; raw
-checks need a lens onto the base tables, which Publisher only grants a model
-file in a package (restricted-mode compilation rejects `duckdb.table(...)` in
-any ad-hoc query, whatever `queryableSources` says).
+`raw` is an AUTHORED control. The plan for this file once said raw checks would
+"catch a definition wrong about the business, like the cogs case". They cannot:
+re-deriving the definition's own expression over the base tables computes the
+same quantity, cancelled lines and all, and agrees. What caught the cogs case
+was a person who read the `status` doc and wrote down what the population
+should be. So a raw check is a control query the conductor authors into the
+ledger record -- `check.query`, a `run:` returning one row with a `control`
+column -- and this file re-runs and compares it every time, against the model
+by default (`check.against: model`) or against a truth package of raw tables
+(`against: truth`, which needs --truth-publisher). A control may be authored on
+any measure, not only a raw one, and it supersedes the within-model check: that
+check can say a measure is what its expression says, a person can say what its
+population should be. A raw record with no authored query stays `unchecked`,
+and `needs` says so. That is "validate what
+someone asserted", not "find business-wrong definitions unaided", and the
+difference is the whole point.
+
+Build once, then maintain. `--out` writes a fresh ledger. `--ledger` reads an
+existing one, keeps every field a person wrote (`check.query`, `check.against`,
+`check.note`, `cause`), re-parses the model, re-runs every check, and writes it
+back, so an authored control survives every rebuild and a definition that moved
+gets a fresh verdict rather than a stale `agrees`.
 
 EXIT CODES, matching `verify_goldens.py`
 
@@ -51,6 +69,9 @@ USAGE
     python3 verify_definitions.py --model <file-or-dir> --out <ledger.jsonl>
     python3 verify_definitions.py --model m.malloy --publisher http://localhost:4811 \\
         --environment samples --package ecommerce --out evals/definitions/ecommerce.jsonl
+    # after authoring check.query on the raw records:
+    python3 verify_definitions.py --model m.malloy --ledger evals/definitions/ecommerce.jsonl \\
+        --publisher http://localhost:4811 --package ecommerce --model-path ecommerce.malloy
 """
 from __future__ import annotations
 
@@ -79,6 +100,10 @@ WORD = re.compile(r"[A-Za-z_]\w*")
 # Aggregates that survive uniform duplication, so fanout does not move them.
 # `verify_goldens`' own fanout note lists the same four.
 FANOUT_SAFE = ("avg(", "stddev(", "min(", "max(")
+# What a person writes into a record and a rebuild must never lose. Everything
+# else on the record is recomputed from the model.
+AUTHORED_CHECK_FIELDS = ("query", "against", "note")
+AUTHORED_FIELDS = ("cause",)
 # Rows sampled for a dimension comparison. A wrong dimension shows on a slice,
 # and the slice is recorded so nobody reads it as a whole-table proof.
 DIM_SLICE = 200
@@ -136,8 +161,17 @@ def needs_raw(expr: str, joins: set[str]) -> str | None:
     return None
 
 
-def records(model: pathlib.Path, recursive: bool) -> list[dict[str, Any]]:
-    """The ledger's rows, built from the model text and linked by `depends`."""
+def records(model: pathlib.Path, recursive: bool,
+            existing: dict[str, dict[str, Any]] | None = None
+            ) -> list[dict[str, Any]]:
+    """The ledger's rows, built from the model text and linked by `depends`.
+
+    `existing` is a prior ledger keyed by entityId. Fields a person wrote on it
+    are carried onto the rebuilt row; nothing else is, so a verdict is never
+    inherited from a definition that has since moved. A row whose definition
+    the model no longer declares is dropped, authored fields and all -- a
+    control for a measure that no longer exists is not a validated measure.
+    """
     parsed = parse_definitions(model, recursive=recursive)
     by_name: dict[str, dict[str, Any]] = {}
     for r in parsed:
@@ -189,7 +223,24 @@ def records(model: pathlib.Path, recursive: bool) -> list[dict[str, Any]]:
             "file": r["file"],
             "line": r["line"],
         })
+    if existing:
+        for rec in out:
+            prior = existing.get(rec["entityId"]) or {}
+            for k in AUTHORED_CHECK_FIELDS:
+                if k in (prior.get("check") or {}):
+                    rec["check"][k] = prior["check"][k]
+            for k in AUTHORED_FIELDS:
+                if k in prior:
+                    rec[k] = prior[k]
     return out
+
+
+def stated_query(rec: dict[str, Any]) -> str:
+    """The measure's own value through the model, on its own. A control query
+    is the other side, written by a person, and may run elsewhere."""
+    return (f"run: {rec['source']} -> {{\n"
+            f"  aggregate: stated is {rec['name']}\n"
+            f"}}")
 
 
 def within_model_query(rec: dict[str, Any]) -> str:
@@ -228,8 +279,64 @@ def close_enough(a: Any, b: Any) -> bool:
     return a == b
 
 
+def run_authored(rec: dict[str, Any], a: argparse.Namespace) -> tuple[str, str]:
+    """(verdict, detail) for a raw record: the measure through the model against
+    the control a person wrote. Two queries, deliberately -- the control is
+    supposed to differ in population, and may run on another server."""
+    q = (rec["check"].get("query") or "").strip()
+    if not q:
+        return "unchecked", ((rec.get("needs") or "reaches through a join")
+                             + "; no authored control yet (check.query)")
+    if rec["kind"] != "measure":
+        return "unchecked", ("an authored control compares one aggregate; this "
+                             "is a dimension")
+    against = rec["check"].get("against") or "model"
+    if against == "model":
+        target = (a.publisher, a.environment, a.package, a.model_path)
+    elif against == "truth":
+        if not getattr(a, "truth_publisher", None):
+            return "unchecked", ("check.against is truth but no --truth-publisher "
+                                 "was given, so the control could not run")
+        target = (a.truth_publisher, a.truth_environment or a.environment,
+                  a.truth_package, a.truth_model)
+    else:
+        return "unchecked", f"check.against is {against!r}; expected model or truth"
+    stated_rows, err = try_query(a.publisher, a.environment, a.package,
+                                 a.model_path, stated_query(rec))
+    if err:
+        return "unchecked", f"stated query failed: {err[:120]}"
+    control_rows, err = try_query(*target, q)
+    if err:
+        return "unchecked", f"control query failed: {err[:120]}"
+    if not stated_rows or not control_rows:
+        return "unchecked", "a side returned no rows"
+    if "control" not in control_rows[0]:
+        return "unchecked", ("the control query must return a column named "
+                             "`control`; got " + ", ".join(control_rows[0]))
+    stated, control = stated_rows[0].get("stated"), control_rows[0]["control"]
+    rec["check"]["against"] = against
+    if close_enough(stated, control):
+        return "agrees", (f"stated={stated} control={control} (authored control, "
+                          f"against {against})")
+    return "disagrees", (f"stated={stated} but the authored control gives "
+                         f"{control} (against {against}) -- "
+                         f"{rec['check'].get('note') or 'see check.query'}")
+
+
 def run_check(rec: dict[str, Any], a: argparse.Namespace) -> tuple[str, str]:
-    """(verdict, detail) for one definition."""
+    """(verdict, detail) for one definition.
+
+    An authored control wins on ANY measure record, not only a raw one. The
+    within-model check can only say a measure is what its expression says; a
+    person can say what its population should be, and `total_sales is
+    sale_price.sum()` -- which agrees with itself while including the cancelled
+    lines its own docs exclude -- is exactly the case where the second question
+    matters more than the first.
+    """
+    if (rec["check"].get("query") or "").strip() and rec["kind"] == "measure":
+        return run_authored(rec, a)
+    if rec["check"]["kind"] == "raw":
+        return run_authored(rec, a)
     if rec["check"]["kind"] != "within_model":
         return "unchecked", rec["needs"] or "not a within-model check"
     if not rec["source"]:
@@ -257,8 +364,9 @@ def run_check(rec: dict[str, Any], a: argparse.Namespace) -> tuple[str, str]:
     return "agrees", f"stated={rows[0].get('stated')} control={rows[0].get('control')}"
 
 
-def verify(model: pathlib.Path, a: argparse.Namespace) -> dict[str, Any]:
-    recs = records(model, a.recursive)
+def verify(model: pathlib.Path, a: argparse.Namespace,
+           existing: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    recs = records(model, a.recursive, existing)
     if not recs:
         return {"records": [], "findings": [], "cannotRun":
                 "no measure or dimension definitions found in the model"}
@@ -278,12 +386,14 @@ def summarise(recs: list[dict[str, Any]]) -> list[str]:
     tally: dict[str, int] = {}
     for r in recs:
         tally[r["verdict"]] = tally.get(r["verdict"], 0) + 1
-    raw = sum(1 for r in recs if r["check"]["kind"] == "raw")
+    raw = [r for r in recs if r["check"]["kind"] == "raw"]
+    authored = sum(1 for r in raw if (r["check"].get("query") or "").strip())
     lines = [f"{len(recs)} definition(s): "
              + ", ".join(f"{n} {k}" for k, n in sorted(tally.items()))]
     if raw:
-        lines.append(f"{raw} need a raw check and are NOT validated by this run; "
-                     f"a within-model check cannot see fanout")
+        lines.append(f"{len(raw)} reach through a join: {authored} carry an "
+                     f"authored control, {len(raw) - authored} do not and are "
+                     f"NOT validated by this run")
     return lines
 
 
@@ -383,9 +493,15 @@ def evidence_basis(cases: list[dict[str, Any]],
     for c in cases:
         b = case_basis(c, ledger, stale, set_dir)
         counts[b] = counts.get(b, 0) + 1
-        if b == "disagrees":
-            disagreeing |= {e for e in tested_ids(c)
-                            if (ledger.get(e) or {}).get("verdict") == "disagrees"}
+        # Collected for EVERY case, not only those whose basis is "disagrees".
+        # A golden derived from raw tables is trustworthy however wrong the
+        # model's own definition is -- and that the definition is wrong is
+        # exactly the finding the run exists to surface. On the ecommerce set
+        # every golden is independent, `total_sales` disagrees with its own
+        # docs once a control is authored, and without this the run would have
+        # said nothing about it.
+        disagreeing |= {e for e in tested_ids(c)
+                        if (ledger.get(e) or {}).get("verdict") == "disagrees"}
     return {"counts": counts, "disagreeing": sorted(disagreeing),
             "stale": sorted(stale), "ledgerSize": len(ledger)}
 
@@ -393,7 +509,15 @@ def evidence_basis(cases: list[dict[str, Any]],
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--model", required=True, help="a .malloy file or a package directory")
-    ap.add_argument("--out", default=None, help="write the ledger here (JSONL)")
+    ap.add_argument("--out", default=None, help="write a fresh ledger here (JSONL)")
+    ap.add_argument("--ledger", default=None,
+                    help="an existing ledger to read, re-check and write back, "
+                         "keeping every field a person authored on it")
+    ap.add_argument("--truth-publisher", dest="truth_publisher", default=None,
+                    help="server for controls with check.against: truth")
+    ap.add_argument("--truth-environment", dest="truth_environment", default=None)
+    ap.add_argument("--truth-package", dest="truth_package", default=None)
+    ap.add_argument("--truth-model", dest="truth_model", default="truth.malloy")
     ap.add_argument("--publisher", default=None,
                     help="server to run the checks against; without it the "
                          "ledger is built and nothing is checked")
@@ -414,14 +538,26 @@ def main(argv: list[str] | None = None) -> int:
         print("--publisher needs --package and --model-path to address a query",
               file=sys.stderr)
         return CANNOT_RUN
+    if a.truth_publisher and not a.truth_package:
+        print("--truth-publisher needs --truth-package", file=sys.stderr)
+        return CANNOT_RUN
+    existing = None
+    if a.ledger:
+        led = pathlib.Path(a.ledger)
+        if not led.exists():
+            print(f"--ledger {a.ledger} does not exist; build one with --out first",
+                  file=sys.stderr)
+            return CANNOT_RUN
+        existing = load_ledger(led)
 
-    r = verify(model, a)
+    r = verify(model, a, existing)
     if r["cannotRun"]:
         print(r["cannotRun"], file=sys.stderr)
         return CANNOT_RUN
 
-    if a.out:
-        out = pathlib.Path(a.out)
+    # --ledger writes back where it read from unless --out says otherwise.
+    if a.out or a.ledger:
+        out = pathlib.Path(a.out or a.ledger)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text("".join(json.dumps(x) + "\n" for x in r["records"]))
         if not a.quiet:

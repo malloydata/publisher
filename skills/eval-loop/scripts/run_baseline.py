@@ -1080,8 +1080,9 @@ def evidence_lines(evidence: dict | None) -> list[str]:
                   "verify_definitions.py against this model."]
     if evidence.get("disagreeing"):
         lines += ["                ! a definition these cases depend on "
-                  "DISAGREES with its own expression, so the model is wrong "
-                  "before the answer is: "
+                  "DISAGREES with its own expression or an authored control, "
+                  "so the model is wrong before the answer is, whatever the "
+                  "goldens rest on: "
                   + ", ".join(evidence["disagreeing"][:4])]
     if evidence.get("stale"):
         lines += [f"                ! {len(evidence['stale'])} ledger row(s) "
@@ -2238,14 +2239,19 @@ def main(argv: list[str] | None = None) -> int:
         r = verify_goldens.verify(a.set_dir, truth,
                                   a.truth_environment or a.environment,
                                   target_package=a.package,
-                                  quiet=True)
+                                  quiet=True,
+                                  definitions=(pathlib.Path(a.definitions)
+                                               if a.definitions else None))
         # The audits run with or without a truth package, so their findings are
         # read on BOTH paths. Taking the skip branch and dropping `findings`
         # put the set-name lint -- the check a truthPackage-less set most needs
         # -- behind the one thing that set cannot do.
         hard = [f for f in r["findings"] if not f.startswith("review ")]
         if r.get("skipped"):
-            golden_check = f"{r['skipped']} ({len(hard)} other finding(s))"
+            # A skip the ledger validated is a different fact from a skip.
+            via = (" -- every value-bearing case rests on validated definitions"
+                   if r.get("ledgerValidated") else "")
+            golden_check = f"{r['skipped']}{via} ({len(hard)} other finding(s))"
             print(f"  ! {golden_check}")
         else:
             golden_check = (f"{r['tally'].get('ok', 0)} ok, {r['drifted']} drifted, "

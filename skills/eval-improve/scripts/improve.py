@@ -185,6 +185,9 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
     # exits 3, which `couldNotRun` already reads correctly.
     if a.truth_publisher:
         cmd += ["--publisher", a.truth_publisher]
+    # getattr: older callers and the tests build this Namespace by hand.
+    if getattr(a, "definitions", None):
+        cmd += ["--definitions", str(a.definitions)]
     if model:
         cmd += ["--model", str(model)]
     # The isolation guard needs to know what is under test; without it the
@@ -331,6 +334,11 @@ def main(argv: list[str] | None = None) -> int:
                          "whole point of the second server. Without it the "
                          "value check does not run and the acceptance check "
                          "blocks")
+    ap.add_argument("--definitions", type=pathlib.Path, default=None,
+                    help="a definition ledger (verify_definitions.py). Passed to "
+                         "the golden audit so a set with no truth package can "
+                         "pass the acceptance check when every tested definition "
+                         "is validated")
     ap.add_argument("--max-turns", type=int, default=60)
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--retries", type=int, default=1)

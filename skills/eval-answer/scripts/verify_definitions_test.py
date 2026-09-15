@@ -273,6 +273,31 @@ class TheExitContract(unittest.TestCase):
                                   "--publisher", "http://t", "--quiet"]),
                          vd.CANNOT_RUN)
 
+    def test_ledger_mode_reads_merges_checks_and_writes_back(self):
+        led = self.model.parent / "led.jsonl"
+        vd.main(["--model", str(self.model), "--out", str(led), "--quiet"])
+        rows = [json.loads(l) for l in led.read_text().splitlines()]
+        for r in rows:
+            if r["name"] == "total_cost_through_join":
+                r["check"]["query"] = "run: x -> { aggregate: control is 1 }"
+        led.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        with mock.patch.object(vd, "try_query",
+                               lambda *a, **k: ([{"stated": 1, "control": 1}], None)):
+            code = vd.main(["--model", str(self.model), "--ledger", str(led),
+                            "--publisher", "http://t", "--package", "p",
+                            "--model-path", "m.malloy", "--quiet"])
+        self.assertEqual(code, 0)
+        back = {r["name"]: r for r in
+                (json.loads(l) for l in led.read_text().splitlines())}
+        self.assertEqual(back["total_cost_through_join"]["check"]["query"],
+                         "run: x -> { aggregate: control is 1 }")
+        self.assertEqual(back["total_cost_through_join"]["verdict"], "agrees")
+
+    def test_a_missing_ledger_is_could_not_run(self):
+        self.assertEqual(vd.main(["--model", str(self.model),
+                                  "--ledger", "/nope/led.jsonl", "--quiet"]),
+                         vd.CANNOT_RUN)
+
     def test_the_ledger_is_written_as_jsonl(self):
         out = self.model.parent / "led.jsonl"
         self.run_main([{"stated": 1, "control": 1}], extra=["--out", str(out)])
@@ -363,6 +388,17 @@ class WhatTheScoreRestsOn(unittest.TestCase):
              "expectedEntities": {"requiredAnyOf": [["measure:s:a", "measure:s:b"]]}}
         self.assertEqual(vd.tested_ids(c), ["measure:s:a", "measure:s:b"])
 
+    def test_a_disagreeing_definition_is_named_even_under_an_independent_key(self):
+        # The golden was derived from raw tables and is trustworthy; the model's
+        # own total_sales still contradicts its docs. Both are true, and the
+        # second is the finding the run exists to surface.
+        c = self.case()
+        c["golden"]["verification"] = {"primaryAxis": "a", "variesAxis": "b"}
+        ev = vd.evidence_basis([c], self.ledger(**{"measure:s:m": "disagrees"}),
+                               set(), self.set_dir)
+        self.assertEqual(ev["counts"], {"independent": 1})
+        self.assertEqual(ev["disagreeing"], ["measure:s:m"])
+
     def test_the_basis_totals_cover_every_case(self):
         cases = [self.case(kind="criteria"), self.case(), self.case()]
         ev = vd.evidence_basis(cases, self.ledger(), set(), self.set_dir)
@@ -398,6 +434,147 @@ class StalenessIsAHashComparison(unittest.TestCase):
 
     def test_no_model_means_nothing_can_be_called_stale(self):
         self.assertEqual(vd.stale_ids({"a": {"exprSha": "x"}}, None), set())
+
+
+class AuthoredControls(unittest.TestCase):
+    """A raw check is a control query a person wrote into the ledger, re-run and
+    compared here. Re-deriving the definition's own expression over raw tables
+    computes the same quantity and agrees; what catches a wrong population is
+    the person who read the docs and wrote the population down."""
+
+    def ns(self, truth=None):
+        return argparse.Namespace(
+            publisher="http://m", environment="e", package="p",
+            model_path="m.malloy", truth_publisher=truth, truth_environment=None,
+            truth_package="truth", truth_model="truth.malloy")
+
+    def rec(self, **check):
+        c = {"kind": "raw"}
+        c.update(check)
+        return {"kind": "measure", "source": "order_items",
+                "name": "total_gross_margin",
+                "expr": "sale_price.sum() - inventory_items.cost.sum()",
+                "check": c, "needs": "reaches through inventory_items"}
+
+    def exercise(self, rec, stated, control, truth=None):
+        calls = []
+
+        def fake(base, env, pkg, model, q, **k):
+            calls.append(base)
+            if "stated is" in q:
+                return [{"stated": stated}], None
+            return [{"control": control}], None
+        with mock.patch.object(vd, "try_query", fake):
+            v, d = vd.run_check(rec, self.ns(truth))
+        return v, d, calls
+
+    def test_no_authored_query_stays_unchecked(self):
+        v, d, _ = self.exercise(self.rec(), 1, 1)
+        self.assertEqual(v, "unchecked")
+        self.assertIn("check.query", d)
+
+    def test_an_agreeing_control_agrees(self):
+        v, _, _ = self.exercise(self.rec(query="run: x -> { aggregate: control is y }"),
+                           5.0, 5.0)
+        self.assertEqual(v, "agrees")
+
+    def test_a_disagreeing_control_disagrees_and_carries_the_note(self):
+        # The cogs shape: the model includes cancelled lines its own status doc
+        # says are not sales. Nothing mechanical sees that; the person who read
+        # the doc did, and wrote it down.
+        rec = self.rec(query="run: x -> { aggregate: control is z }",
+                       note="excludes Cancelled, per the status doc")
+        v, d, _ = self.exercise(rec, 6002288.38, 5788744.33)
+        self.assertEqual(v, "disagrees")
+        self.assertIn("status doc", d)
+
+    def test_against_truth_routes_only_the_control_to_the_truth_server(self):
+        rec = self.rec(query="run: raw -> { aggregate: control is c }",
+                       against="truth")
+        v, _, calls = self.exercise(rec, 1, 1, truth="http://t")
+        self.assertEqual(v, "agrees")
+        # stated came from the model server, the control from the truth server
+        self.assertEqual(sorted(set(calls)), ["http://m", "http://t"])
+
+    def test_against_truth_without_a_truth_server_is_unchecked(self):
+        rec = self.rec(query="run: raw -> {}", against="truth")
+        v, d, _ = self.exercise(rec, 1, 1)
+        self.assertEqual(v, "unchecked")
+        self.assertIn("--truth-publisher", d)
+
+    def test_an_unknown_target_is_unchecked(self):
+        v, d, _ = self.exercise(self.rec(query="run: x -> {}", against="warehouse"), 1, 1)
+        self.assertEqual(v, "unchecked")
+        self.assertIn("warehouse", d)
+
+    def test_a_control_without_a_control_column_is_unchecked_not_a_crash(self):
+        def fake(base, env, pkg, model, q, **k):
+            return ([{"stated": 1}] if "stated is" in q else [{"wrong": 1}]), None
+        with mock.patch.object(vd, "try_query", fake):
+            v, d = vd.run_check(self.rec(query="run: x -> {}"), self.ns())
+        self.assertEqual(v, "unchecked")
+        self.assertIn("`control`", d)
+
+    def test_a_dimension_is_not_a_target_for_an_authored_control(self):
+        rec = self.rec(query="run: x -> {}")
+        rec["kind"] = "dimension"
+        v, _, _ = self.exercise(rec, 1, 1)
+        self.assertEqual(v, "unchecked")
+
+    def test_an_authored_control_supersedes_the_within_model_check(self):
+        # total_sales is sale_price.sum() agrees with itself while including the
+        # cancelled lines its own docs exclude. The within-model check cannot see
+        # that; a person's population assertion can, and it wins.
+        rec = self.rec(kind="within_model",
+                       query="run: order_items -> { aggregate: control is "
+                             "sale_price.sum() { where: status != 'Cancelled' } }",
+                       note="excludes Cancelled, per the status doc")
+        rec["name"], rec["expr"] = "total_sales", "sale_price.sum()"
+        v, d, _ = self.exercise(rec, 12566292.88, 12119909.43)
+        self.assertEqual(v, "disagrees")
+        self.assertIn("authored control", d)
+
+    def test_a_failing_control_query_is_unchecked_not_a_disagreement(self):
+        def fake(base, env, pkg, model, q, **k):
+            if "stated is" in q:
+                return [{"stated": 1}], None
+            return [], "HTTP 400: nope"
+        with mock.patch.object(vd, "try_query", fake):
+            v, d = vd.run_check(self.rec(query="run: x -> {}"), self.ns())
+        self.assertEqual(v, "unchecked")
+        self.assertIn("control query failed", d)
+
+
+class TheLedgerKeepsWhatAPersonWrote(unittest.TestCase):
+    """`--ledger` rebuilds from the model and must not lose an authored control,
+    and must not inherit a verdict from a definition that may have moved."""
+
+    def setUp(self):
+        self.model = write(MODEL)
+
+    def tearDown(self):
+        shutil.rmtree(self.model.parent, ignore_errors=True)
+
+    def test_a_rebuild_carries_authored_fields_forward_and_recomputes_the_rest(self):
+        eid = "measure:order_items:total_cost_through_join"
+        prior = {r["entityId"]: r for r in vd.records(self.model, False)}
+        prior[eid]["check"]["query"] = "run: x -> { aggregate: control is 1 }"
+        prior[eid]["check"]["note"] = "why"
+        prior[eid]["cause"] = "CONVENTION"
+        prior[eid]["verdict"] = "agrees"          # must NOT survive
+        second = {r["entityId"]: r
+                  for r in vd.records(self.model, False, existing=prior)}
+        self.assertEqual(second[eid]["check"]["query"],
+                         "run: x -> { aggregate: control is 1 }")
+        self.assertEqual(second[eid]["check"]["note"], "why")
+        self.assertEqual(second[eid]["cause"], "CONVENTION")
+        self.assertEqual(second[eid]["verdict"], "unchecked")
+
+    def test_a_definition_the_model_no_longer_declares_is_dropped(self):
+        gone = "measure:order_items:gone"
+        prior = {gone: {"entityId": gone, "check": {"query": "q"}}}
+        ids = {r["entityId"] for r in vd.records(self.model, False, existing=prior)}
+        self.assertNotIn(gone, ids)
 
 
 class TheSummary(unittest.TestCase):

@@ -111,10 +111,72 @@ method call on a column in the same source and is perfectly checkable;
 matched any `word.word` and held back `total_sales` -- the measure twelve of the
 ecommerce set's cases depend on -- for a join it does not cross.
 
-Raw checks are **not run by `verify_definitions.py` today.** They need a model
-file in a package that declares the base tables, because restricted-mode
-compilation rejects `duckdb.table(...)` and `connection.sql(...)` in any ad-hoc
-query whatever `queryableSources` says. The existing truth package is that lens.
+## A raw check is a control a person wrote
+
+An earlier version of this page, and the plan behind it, said raw checks would
+"catch a definition wrong about the business, like the cogs case." **That is
+retracted.** Re-deriving `total_gross_margin`'s own expression over the base
+tables -- reconstructing the model's join from its declared key -- computes the
+same quantity, cancelled lines included, and agrees. Mechanically that catches
+only fanout from a mis-declared join, which Malloy's symmetric aggregates already
+mostly prevent. It cannot see that the population is wrong.
+
+What caught the cogs case was a person who read the `status` doc ("Cancelled
+lines never ship and are not sales") and wrote `where: status != 'Cancelled'`
+into the golden's query. That is an **authored assertion**. So a raw check is
+exactly that, made durable: the conductor writes a control query onto the ledger
+record, and `verify_definitions.py` re-runs and compares it on every rebuild.
+
+```json
+{
+  "entityId": "measure:order_items:total_gross_margin",
+  "check": {
+    "kind": "raw",
+    "against": "model",
+    "query": "run: order_items -> { aggregate: control is sale_price.sum() { where: status != 'Cancelled' } - inventory_items.cost.sum() { where: status != 'Cancelled' } }",
+    "note": "excludes Cancelled, per status's own doc and units_sold"
+  },
+  "cause": "CONVENTION"
+}
+```
+
+A control may be authored on **any** measure record, not only a `raw` one, and
+it supersedes the within-model check. That check can only say a measure is what
+its expression says; a person can say what its population should be. `total_sales
+is sale_price.sum()` agrees with itself while including the cancelled lines its
+own docs exclude -- the within-model check reads `agrees`, and it is the measure
+twelve of the sample set's cases depend on. A one-line control on it is the
+whole difference.
+
+The control returns one row with a `control` column. `against: model` runs it on
+the same server as the measure and is the default -- it reuses the model's joins
+and columns and asserts only the population. `against: truth` runs it on a truth
+package of raw tables (`--truth-publisher`, `--truth-package`) for a fully
+independent derivation, join included. The measure's own value is always fetched
+through the model, separately, because the control is *supposed* to differ in
+population and may run elsewhere.
+
+Authoring a control is judgement, and the same rules as authoring a golden apply:
+where two populations are both defensible from the docs, do not pick one --
+record the ambiguity in `note` and leave the record `unchecked`. `cause` is the
+`eval-diagnose` code the author expects a disagreement to mean (the cogs case is
+`CONVENTION`); it is carried onto the finding, not inferred.
+
+This is **validate what someone asserted**, not **find business-wrong definitions
+unaided**. It turns "I believe `total_gross_margin` should exclude cancelled
+lines" into a checked, re-runnable assertion with a sha, so the belief is tested
+on every rebuild instead of once in someone's head. The difference is the whole
+point, and the run report must not blur it.
+
+### Build once, then maintain
+
+`--out` writes a fresh ledger. `--ledger <file>` reads an existing one, keeps
+every field a person wrote (`check.query`, `check.against`, `check.note`,
+`cause`), re-parses the model, re-runs every check, and writes it back. Nothing
+else is carried: a verdict is never inherited from a definition that may have
+moved, and a record whose definition the model no longer declares is dropped,
+control and all -- a control for a measure that does not exist is not a
+validated measure.
 
 ## What it will not claim
 
@@ -123,7 +185,7 @@ Every one of these records `unchecked`, and a reader must treat `unchecked` as
 
 | Situation | Why not checked |
 |---|---|
-| reaches through a join | fanout moves both sides equally |
+| reaches through a join, and no control has been authored | fanout moves both sides of a within-model check equally, and nobody has written down what the population should be |
 | spans more than one line | only the first line was read, so the recorded expression is a fragment |
 | the query failed | a check that could not run is not a check that passed |
 | no rows came back | nothing to compare |
@@ -201,6 +263,29 @@ over-claim this whole direction exists to remove.
 
 Staleness is a hash comparison against the run's own `model.malloy` snapshot --
 the bytes that actually answered -- so it costs nothing and runs every arm.
+
+## The composition rule at the gate
+
+`verify_goldens.py` used to exit 3 -- "could not run" -- on any set that named no
+truth package, because no golden value could be re-derived. That was right when
+re-derivation was the only evidence there was. With a ledger it is one of two:
+
+> A golden is trustworthy if it was derived independently, **or** if every
+> definition it tests has itself been validated.
+
+`verify_goldens.py --definitions <ledger>` applies the second half. For each
+value-bearing case it takes the entities the case names in `expectedEntities` --
+the same ids the ledger is keyed on -- and asks whether every one is `agrees` in
+the ledger and not stale against `--model`. If every case passes, the absent truth
+server is not a check that failed to happen, and the audit exits 0 with a line
+saying what validated it; `--promote` may then promote a `provisional` golden that
+also carries a second derivation, and `verifiedBy` names the ledger. If any case
+does not pass, the exit stays 3 and the message names the cases and the
+definitions that let them down. Nothing is inferred about a case that names no
+entities: it is unvalidated, and it says so.
+
+`improve.py` passes `--definitions` through when it has one, so the acceptance
+check can pass on a set that never had a truth package.
 
 ## Where it goes
 
