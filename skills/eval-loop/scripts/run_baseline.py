@@ -2494,14 +2494,21 @@ def main(argv: list[str] | None = None) -> int:
                     v["gold_status_from"] = "set"
             # `gold_status_from` is for this run's own report and is not a
             # ledger field: a score event's schema does not have it.
-            sc = {k: x for k, x in v.items()
-                  if k not in ("judge_cost_usd", "gold_status_from")}
             # The schema: a score copies the attempt's contamination flag and
             # a contaminated attempt carries no verdict. This was hardcoded
             # "false" until 2026-09-01, so a flagged attempt could still pass.
+            #
+            # Written into the verdict rather than the `sc` copy, for the same
+            # reason gold_status is: the run summary reads `verdicts`, so a
+            # nulling that only reached the ledger left a flagged attempt
+            # counting as a pass in the printed score. A fully contaminated
+            # 33-case run reported `12 of 21 decided (57%)` while every score
+            # event in its own ledger carried `verdict: null`.
             tainted = bool(att.get("breaches"))
             if tainted:
-                sc["verdict"] = None
+                v["verdict"] = None
+            sc = {k: x for k, x in v.items()
+                  if k not in ("judge_cost_usd", "gold_status_from")}
             events.append(ledger.event("score", **base, **sc,
                           judge_version=JUDGE_VERSION,
                           rubric_sha=RUBRIC_SHA,

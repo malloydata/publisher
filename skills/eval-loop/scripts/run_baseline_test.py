@@ -729,5 +729,42 @@ class RebuildCaseList(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+
+class ContaminatedAttemptsLeaveTheAggregates(unittest.TestCase):
+    """A flagged attempt must not reach the printed score.
+
+    The ledger has nulled a contaminated verdict since 2026-09-01, but the
+    nulling landed on the copy bound for events.jsonl while the summary read
+    the judge's original. A 33-case run in which EVERY attempt was flagged
+    printed `12 of 21 decided (57%)` over a ledger whose every score event said
+    `verdict: null`. That is the contamination check working and the line a
+    human reads disagreeing with it.
+    """
+
+    def test_a_flagged_attempt_is_not_counted_as_a_pass(self):
+        verdicts = {"q1": {"verdict": "match"}, "q2": {"verdict": "match"}}
+        attempts = {"q1": {"breaches": ["host tool available: TaskCreate"]},
+                    "q2": {"breaches": []}}
+        for qid, v in verdicts.items():
+            if attempts[qid].get("breaches"):
+                v["verdict"] = None
+        decided = [v for v in verdicts.values()
+                   if v.get("verdict") in ("match", "no_match")]
+        self.assertEqual(len(decided), 1, "the flagged attempt still counted")
+        self.assertIsNone(verdicts["q1"]["verdict"])
+        self.assertEqual(verdicts["q2"]["verdict"], "match")
+
+    def test_a_fully_contaminated_run_decides_nothing(self):
+        verdicts = {f"q{i}": {"verdict": "match"} for i in range(21)}
+        attempts = {q: {"breaches": ["host tool available: TaskCreate"]}
+                    for q in verdicts}
+        for qid, v in verdicts.items():
+            if attempts[qid].get("breaches"):
+                v["verdict"] = None
+        decided = [v for v in verdicts.values()
+                   if v.get("verdict") in ("match", "no_match")]
+        self.assertEqual(len(decided), 0,
+                         "a run with no clean attempt reported a score")
+
 if __name__ == "__main__":
     unittest.main()
