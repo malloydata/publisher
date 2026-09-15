@@ -68,7 +68,14 @@ const retitle = (title: string, next: string) => {
    fireEvent.change(field, { target: { value: next } });
    fireEvent.keyDown(field, { key: "Escape" });
 };
-const button = (name: string) => screen.getByRole("button", { name });
+/**
+ * A named button, hidden or not. A window's exit transition never ends under
+ * the test runner, so once any window has been open the rest of the page reads
+ * as hidden to assistive tech; the header's buttons have to be reached through
+ * that, and it costs nothing when no window was.
+ */
+const button = (name: string) =>
+   screen.getByRole("button", { name, hidden: true });
 
 /**
  * Every style rule the grid puts on a tile's item — its column, and the
@@ -224,9 +231,8 @@ describe("DashboardBuilder: the dashboard's filters", () => {
          written = source;
       });
       // The file binds CATEGORY without declaring it, so that chip is the
-      // model's: removable here too, which takes it off every tile.
+      // model's: it can still be opened, and taken off every tile from there.
       expect(screen.getByLabelText("Edit filter CATEGORY")).toBeDefined();
-      expect(screen.getByLabelText("Remove control CATEGORY")).toBeDefined();
 
       fireEvent.click(button("Add filter"));
       fireEvent.change(screen.getByLabelText("Field to filter"), {
@@ -239,9 +245,8 @@ describe("DashboardBuilder: the dashboard's filters", () => {
          screen.getByRole("button", { name: "Add filter", hidden: false }),
       );
 
-      // Declared here, so its chip can be removed; and bound on both tiles.
+      // Declared here, and bound on both tiles.
       expect(screen.getByLabelText("Edit filter BRAND")).toBeDefined();
-      expect(screen.getByLabelText("Remove control BRAND")).toBeDefined();
 
       // The window's exit transition hides the rest of the page from assistive
       // tech until it ends, and the test runner never ends it; the header's
@@ -314,6 +319,8 @@ describe("DashboardBuilder: the dashboard's filters", () => {
             }}
          />,
       );
+      // From the control's window, which is the one place a control is removed.
+      fireEvent.click(screen.getByLabelText("Edit filter CATEGORY"));
       fireEvent.click(screen.getByLabelText("Remove control CATEGORY"));
       expect(screen.queryByLabelText("Edit filter CATEGORY")).toBeNull();
 
@@ -337,6 +344,8 @@ describe("DashboardBuilder: a control the model declares", () => {
       await mount((source) => {
          written = source;
       });
+      // From the control's window, which is the one place a control is removed.
+      fireEvent.click(screen.getByLabelText("Edit filter CATEGORY"));
       fireEvent.click(screen.getByLabelText("Remove control CATEGORY"));
       expect(screen.queryByLabelText("Edit filter CATEGORY")).toBeNull();
       fireEvent.click(button("Save changes"));

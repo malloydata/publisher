@@ -329,10 +329,23 @@ export function DashboardBuilder({
 
    const columns = editor.document.columns ?? DEFAULT_COLUMNS;
 
+   // The givens the MODEL offers: the caller's list, less any the opened file
+   // declared itself. A caller gets that list from the server's manifest, which
+   // resolves givens across the file and its imports without saying which is
+   // which — so it names this file's own declarations too, and keeps naming a
+   // control after this document removes it, until a save is written and the
+   // package reloads. Without this, "Remove from dashboard" took the chip off
+   // and it came straight back, faint, labelled "from the model".
+   const modelGivens = useMemo(() => {
+      const ownDeclarations = new Set(
+         (document.localGivens ?? []).map((given) => given.name),
+      );
+      return (givens ?? []).filter((given) => !ownDeclarations.has(given.name));
+   }, [document, givens]);
    // Every control the builder can offer: this file's own, then the model's.
    const controlList = useMemo(
-      () => controlsOf(editor.document, givens ?? []),
-      [editor.document, givens],
+      () => controlsOf(editor.document, modelGivens),
+      [editor.document, modelGivens],
    );
    // Model givens nothing binds yet: what "From the model" offers.
    const available = useMemo(
@@ -568,9 +581,9 @@ export function DashboardBuilder({
 
          {/* The filter band — Looker's, for this format. The header is the
              dashboard's controls as this FILE has them: a chip per control,
-             which opens its tiles-to-update window, and whose × takes it off
-             the dashboard (the declaration too when this file made it, every
-             binding when the model did). The live control row the caller
+             which opens its window — the one place a control is edited, bound
+             or removed, so the consequences are in view when it happens. A ×
+             on the chip was a second place, with none of them. The live control row the caller
              passes in sits directly under, showing the same controls as a
              reader gets them — from the saved file. */}
          <Stack sx={{ gap: 1 }}>
@@ -620,22 +633,6 @@ export function DashboardBuilder({
                               : "outlined"
                         }
                         onClick={() => setFilterDialog({ control })}
-                        onDelete={() => dropControl(control.name)}
-                        deleteIcon={
-                           <Box
-                              component="span"
-                              role="button"
-                              aria-label={`Remove control ${control.name}`}
-                              sx={{
-                                 display: "inline-flex",
-                                 fontSize: 14,
-                                 lineHeight: 1,
-                                 px: 0.25,
-                              }}
-                           >
-                              ×
-                           </Box>
-                        }
                         sx={{
                            // Faint when nothing binds it: declared, but not yet a
                            // control a reader would see.

@@ -17,7 +17,7 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import {
    canBind,
@@ -85,7 +85,14 @@ export function FilterDialog({
    onRemove,
 }: FilterDialogProps) {
    const { theme } = usePublisherTheme();
-   const editing = control !== undefined;
+   // What the window SHOWS: the control while open, and the same control while
+   // it fades out. The builder drops `control` the instant the window closes,
+   // and without this the title flipped to "Add a filter" for the length of
+   // the exit transition.
+   const shownRef = useRef(control);
+   if (open) shownRef.current = control;
+   const shown = open ? control : shownRef.current;
+   const editing = shown !== undefined;
 
    const [source, setSource] = useState<Source>({ kind: "new" });
    const [label, setLabel] = useState("");
@@ -240,7 +247,7 @@ export function FilterDialog({
       }
    };
 
-   const fromModel = editing && control.origin === "model";
+   const fromModel = editing && shown.origin === "model";
    const operatorField = (
       value: string | undefined,
       onChange: (op: string) => void,
@@ -266,7 +273,7 @@ export function FilterDialog({
    return (
       <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
          <DialogTitle sx={{ pb: 0.5 }}>
-            {editing ? (control.label ?? control.name) : "Add a filter"}
+            {editing ? (shown.label ?? shown.name) : "Add a filter"}
             {editing && (
                <Typography
                   component="div"
@@ -277,7 +284,7 @@ export function FilterDialog({
                      component="span"
                      sx={{ fontFamily: "ui-monospace, monospace" }}
                   >
-                     ${control.name}
+                     ${shown.name}
                   </Box>
                   {fromModel
                      ? " · declared in the model, so its label and options are set there"
@@ -549,8 +556,8 @@ export function FilterDialog({
             {editing && (
                <Button
                   color="error"
-                  onClick={() => onRemove(control.name)}
-                  aria-label={`Remove control ${control.name}`}
+                  onClick={() => onRemove(shown.name)}
+                  aria-label={`Remove control ${shown.name}`}
                   sx={{ mr: "auto" }}
                >
                   Remove from dashboard
