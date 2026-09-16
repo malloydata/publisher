@@ -4,66 +4,61 @@
 import { Card, CardContent, CardMedia, styled } from "@mui/material";
 
 /**
- * Malloy brand colors — exact hex values from
- * `publisher/packages/app/public/logo.svg`. Use these instead of hardcoding
- * the hex values inline so the brand can be retuned in one place.
+ * The Console's palette: one set of hues, used everywhere a colour carries
+ * meaning.
+ *
+ * These are the register data tools encode categories in — saturated, mid-dark,
+ * evenly spaced around the wheel — rather than colours lifted from a logo. A
+ * logo is drawn to be recognised at one size in one place; a palette has to
+ * distinguish a dozen kinds of thing in a list, behind a glyph, and along a
+ * chart's series, and the two jobs pull in different directions. The previous
+ * palette was the logo's three plus two families invented to extend it, which
+ * is how one screen ended up with three unrelated colour systems on it.
+ *
+ * **Every value clears 3:1 against white**, WCAG's minimum for a graphical
+ * object, because these are painted as small solid backplates behind white
+ * glyphs where the glyph has to stay readable. That is a hard constraint on
+ * anything added here, asserted in `ContentTypeIcon.spec.ts` rather than left
+ * to review: a too-light plate looks perfectly fine in a screenshot and simply
+ * stops being legible. Measured against white, lowest first: emerald 3.8:1,
+ * red 4.8:1, lime 5.0:1, amber 5.0:1, blue 5.2:1, orange 5.2:1, cyan 5.4:1,
+ * teal 5.5:1, violet 5.7:1, pink 6.0:1, indigo 6.3:1, slate 7.6:1.
  */
-export const MALLOY_BRAND = {
-   teal: "#14b3cb", // light wing of the M
-   orange: "#e47404", // right wing of the M
-   darkBlue: "#1474a4", // deep shadow of the M
-} as const;
-
-/**
- * Accents that extend the logo's three, for the places that need more colors
- * than the brand supplies. The package page gives every kind of content its
- * own, and three kinds became six.
- *
- * Their own family rather than borrowings from the chart series
- * (`theme/defaults.ts`), because the two have opposite constraints. A series
- * color fills a large area and can be light; these sit behind a white icon as a
- * small solid backplate, where the icon has to stay legible. Measured against
- * white: violet 5.5:1, magenta 4.6:1, moss 3.9:1, so all three clear 3:1, the
- * WCAG minimum for a graphical object. The nearest series hues do not: `#aacd85`
- * sage is 1.8:1, `#ec72b8` pink 2.7:1, `#b87ced` violet 2.9:1.
- *
- * These three were picked against the bar, but they are not the only colors it
- * now binds. `CONTENT_TINT` in `Package/ContentTypeIcon.tsx` paints all three of
- * `MALLOY_BRAND` behind glyphs as well, and `ContentTypeIcon.spec.ts` holds two
- * of them to the same 3:1: orange at 3.09:1 and darkBlue at 5.17:1. Orange
- * clears it by 0.09, so retuning it lighter turns that suite red, in a file a
- * brand change would not otherwise open. For those two the bar is a component
- * constraint, not only a brand decision.
- *
- * Teal is the exception at 2.5:1, below the bar and inherited from the logo, so
- * the row it backs carries a white-on-teal glyph that does not meet the
- * standard. Pre-existing, not introduced here. The spec grandfathers it by
- * content type rather than by color, so a new type handed teal still fails.
- */
-export const MALLOY_ACCENT = {
-   violet: "#7c4dcc",
-   magenta: "#c2478f",
-   moss: "#5c8f3f",
+export const PALETTE = {
+   blue: "#2563eb",
+   indigo: "#4f46e5",
+   violet: "#7c3aed",
+   pink: "#be185d",
+   red: "#dc2626",
+   orange: "#c2410c",
+   amber: "#b45309",
+   lime: "#4d7c0f",
+   emerald: "#059669",
+   teal: "#0f766e",
+   cyan: "#0e7490",
+   slate: "#475569",
 } as const;
 
 /**
  * The tints for what a SERVER holds, as against what a package holds. Three
  * kinds — an environment, a package, a connection — listed on the home and
- * environment pages, where `CONTENT_TINT`'s six never appear, so these are
- * free to be their own family rather than compete with it.
+ * environment pages.
  *
- * Picked in the hues the other two families leave open (indigo, gold, emerald)
- * and against the same 3:1 bar as `MALLOY_ACCENT`, measured against white:
- * indigo 5.7:1, gold 4.6:1, emerald 3.9:1.
+ * Kept clear of the hues `CONTENT_TINT` uses, so a colour means one kind of
+ * thing across the whole Console rather than one kind per page. All three are
+ * real colours rather than near-neutrals: a grey plate reads as chrome instead
+ * of as one of the coloured kinds, which is the plate's whole job.
  *
- * Emerald rather than the slate this started as: a near-neutral plate reads as
- * chrome rather than as one of the coloured kinds, which is the whole job of
- * the plate. A tint has to look like a colour someone chose.
+ * Also kept clear of the primary. Packages were indigo, which sat a few degrees
+ * from the blue of the "Package" button on the same row and read as a failed
+ * attempt at the same colour. Teal is the furthest hue from blue still open,
+ * and packages and connections — the pair that actually share a screen — now
+ * sit on opposite sides of the wheel. Environments never appear beside either.
  */
 export const SURFACE_TINT = {
-   environment: "#0f8a5f", // emerald
-   package: "#3b5bdb", // indigo
-   connection: "#8a6d1f", // gold
+   environment: PALETTE.emerald,
+   package: PALETTE.teal,
+   connection: PALETTE.orange,
 } as const;
 
 /**

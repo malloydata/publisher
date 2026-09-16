@@ -1,18 +1,26 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { MALLOY_BRAND } from "../components/styles";
+import { PALETTE } from "../components/styles";
 import type { Theme } from "./types";
 
+/**
+ * The categorical series, from the Console's own `PALETTE`.
+ *
+ * Ordered by separation rather than by hue: consecutive series are the ones a
+ * reader most needs to tell apart, so the sequence alternates warm and cool
+ * instead of walking the colour wheel and putting two greens side by side. The
+ * first three carry most charts.
+ */
 const DEFAULT_SERIES = [
-   MALLOY_BRAND.teal,
-   MALLOY_BRAND.orange,
-   MALLOY_BRAND.darkBlue,
-   "#66cedc",
-   "#ec72b8",
-   "#f9c85b",
-   "#aacd85",
-   "#b87ced",
+   PALETTE.blue,
+   PALETTE.orange,
+   PALETTE.emerald,
+   PALETTE.pink,
+   PALETTE.violet,
+   PALETTE.amber,
+   PALETTE.cyan,
+   PALETTE.lime,
 ];
 
 const DEFAULT_FONT_FAMILY =
@@ -61,14 +69,12 @@ export const DEFAULT_THEME: Required<Theme> = {
          light: "#5d626b",
          dark: "#94a3b8",
       },
-      // Saturated end of the choropleth / heatmap gradient. The
-      // renderer pairs this with a near-neutral low end. Defaults
-      // match the first series colour (teal) so unbranded installs
-      // get a brand-coherent gradient instead of the renderer's
-      // hardcoded blue ramp.
+      // Saturated end of the choropleth / heatmap gradient. The renderer
+      // pairs this with a near-neutral low end. Matches the first series
+      // colour, so a map and a chart on one page ramp to the same hue.
       mapColor: {
-         light: MALLOY_BRAND.teal,
-         dark: MALLOY_BRAND.teal,
+         light: PALETTE.blue,
+         dark: PALETTE.blue,
       },
    },
    font: {

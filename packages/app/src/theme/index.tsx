@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { ThemeMode } from "@malloy-publisher/sdk";
+import { PALETTE, type ThemeMode } from "@malloy-publisher/sdk";
 import { createTheme } from "@mui/material/styles";
 import { colors, greyScale, SANS_FONT_FAMILY } from "./colors";
 
@@ -34,13 +34,15 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
    const textSecondary = isDark ? DARK_TEXT_SECONDARY : colors.grey.mid;
    const divider = isDark ? DARK_DIVIDER : colors.grey.light;
 
-   // Contained primary buttons read their bg from primary.main and text
-   // from contrastText. Stock options (pure black light, near-white dark)
-   // both feel jarring next to surfaces. Neutral dark gray / slate sits
-   // one step softer than the corner of the page, with white text in
-   // both modes.
-   const primaryMain = isDark ? "#334155" : "#555450";
-   const primaryHover = isDark ? "#475569" : "#73726f";
+   // Contained primary buttons read their bg from primary.main and text from
+   // contrastText, so this is the colour of every confirming action in the
+   // Console. The palette's anchor blue, which is also its first chart series:
+   // the button that saves a dashboard and the first line on it are the same
+   // hue, and the page has one accent rather than a neutral button beside
+   // coloured content. Lifted a step in dark mode, where the same blue on a
+   // slate ground goes muddy.
+   const primaryMain = isDark ? "#3b82f6" : PALETTE.blue;
+   const primaryHover = isDark ? "#60a5fa" : "#1d4ed8";
 
    return createTheme({
       cssVariables: { nativeColor: true },
