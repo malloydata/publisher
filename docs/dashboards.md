@@ -564,12 +564,14 @@ the file, reload again.
 
 ## Serving, URLs, and the API
 
-| Path                                                       | What it is                                                  |
-| ---------------------------------------------------------- | ----------------------------------------------------------- |
-| `/<env>/<pkg>/dashboards/<name>`                           | The Console page                                            |
-| `/<env>/<pkg>/dashboards/<name>?CATEGORY=Outerwear`        | The same page, filtered: control state is URL state         |
-| `GET /api/v0/environments/<env>/packages/<pkg>/dashboards` | List them                                                   |
-| `GET …/dashboards/<name>`                                  | The manifest: title, autorun, columns, control specs, tiles |
+| Path                                                       | What it is                                                     |
+| ---------------------------------------------------------- | -------------------------------------------------------------- |
+| `/<env>/<pkg>/dashboards/<name>`                           | The Console page                                               |
+| `/<env>/<pkg>/dashboards/<name>?CATEGORY=Outerwear`        | The same page, filtered: control state is URL state            |
+| `GET /api/v0/environments/<env>/packages/<pkg>/dashboards` | List them                                                      |
+| `GET …/dashboards/<name>`                                  | The manifest: title, autorun, columns, control specs, tiles    |
+| `/<env>/<pkg>/dashboards/<name>/edit`                      | The same dashboard in the builder                              |
+| `PUT …/models/dashboards/<name>.malloy`                    | Write the file into the package and reload; the builder's save |
 
 A dashboard's query runs through the ordinary query endpoint against
 `dashboards/<name>.malloy`, with givens in the request body. There is no dashboard-specific
@@ -579,6 +581,15 @@ else. [ai-agents.md](ai-agents.md) has the REST playbook.
 After editing a dashboard file, `GET …/packages/<pkg>?reload=true` recompiles the package in place,
 and a reload that fails to compile leaves the previously compiled model serving.
 [AGENTS.md](../AGENTS.md) §6 covers the edit loop and watch mode.
+
+**Editing in the Console.** Every dashboard page has an **Edit** button, and the package page has
+**New dashboard**: pick a model, a source, the view for the first tile and a title, and the file is
+written into the package and opened in the builder. The builder's **Save** writes the file back
+through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
+atomically, reloads the package in place, and restores the previous text if the reload does not
+take it; a copy someone else changed since you opened it is refused (409), never merged. On a
+server that does not take writes (`frozenConfig`), Save keeps the edit in this browser instead,
+the package page lists those drafts, and **Export** hands the file back for the package.
 
 ## Rendering one in your own React app
 

@@ -72,26 +72,27 @@ givens textually under their `source:` line rather than trusting the tree.
 
 ## 2. Where the builder stands
 
-| Capability                 | Today                                                                                                                                                                       |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Open an existing dashboard | Any composite `## artifact { tiles=[…] }` file the reader can fully represent. Refused with a reason and a line otherwise.                                                  |
-| Save                       | Splices the file; the round-trip gate refuses a write it cannot read back. Comments and unmodelled Malloy survive. A save that adds or removes a tile shows the diff first. |
-| Layout                     | Drag to reorder (whole tile, `@dnd-kit/react`, keyboard included), drag the right edge for width, drop into the empty end of a row to move up.                              |
-| Row structure              | `# break` is treated as positional: a move keeps the rows' shape; a drop into a gap is the one move that changes it.                                                        |
-| Sizing aids                | Column guides and a width badge while dragging; width presets (full, ½, ⅓, ¼) on the tile's menu; a quick layout that sets every tile to one width.                         |
-| Tile presentation          | Title and subtitle from the tile's own menu. Inherited tiles (declared on the model) are movable but not restyled.                                                          |
-| Add or remove a tile       | Added from the package catalog (source → view, correct by construction); removed from the tile's menu. Both preview the file's diff before saving.                          |
-| Filters                    | Declared in the dashboard and bound per tile from one place, the strip under the header, with a tiles-to-update mapping, per-tile comparison and a field picker.            |
-| Filters from the model     | Bindable and removable from the dashboard; not editable, since the declaration is the model's.                                                                              |
-| Clickable cells            | A `# drill` on any dimension the dashboard's own extension declares: destinations (this dashboard, the package's others) and the control a click sets, from the tile menu.  |
-| Page settings              | Title, markdown description, grid width, run-as-controls-change (`autorun`) and starting values, from the edit bar.                                                         |
-| Live view                  | Tiles run the document's bindings on the dashboard's own extension, so an edit is visible before it is saved; the control row follows the document.                         |
-| Undo/redo                  | Whole-document history, one entry per gesture. Keyboard: ⌘Z / ⌘⇧Z, ⌘S, Esc, ←/→ to nudge width.                                                                             |
-| Validation                 | A binding to a field the source does not have, or of a type the given cannot compare, is marked and blocks Apply when the catalog is known.                                 |
-| Viewer                     | A grouped value with no `# drill` opens the rows behind it (`drill:` through the tile's view); a drill behaves as the tag says; each tile has "Explore from here" into the model explorer.                                 |
-| Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, exported, rows shown, explored — each with outcome and duration. The Console logs them structured.     |
-| Notebooks                  | `.malloynb` is viewed read-only (`Notebook`) and stays that way. The authored notebook is a Malloyyo-style format that does not exist yet; see §7.                          |
-| Where it lives             | The SDK's lazy `builder` entry; the Console's `dashboards/<slug>/edit` page; saves go to the browser's `DocumentStorage`, Export hands the file back for the package.       |
+| Capability                 | Today                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Open an existing dashboard | Any composite `## artifact { tiles=[…] }` file the reader can fully represent. Refused with a reason and a line otherwise.                                                                                                                                                                                                                   |
+| Save                       | Splices the file; the round-trip gate refuses a write it cannot read back. Comments and unmodelled Malloy survive. A save that adds or removes a tile shows the diff first. Into the package when the server takes writes (compile-first, atomic, reloaded in place, refused if the file changed since opening); into the browser otherwise. |
+| Create                     | "New dashboard" on the package page: a model, a source, the first tile's view and a title; the file the builder would write, written into the package and opened in the builder.                                                                                                                                                             |
+| Layout                     | Drag to reorder (whole tile, `@dnd-kit/react`, keyboard included), drag the right edge for width, drop into the empty end of a row to move up.                                                                                                                                                                                               |
+| Row structure              | `# break` is treated as positional: a move keeps the rows' shape; a drop into a gap is the one move that changes it.                                                                                                                                                                                                                         |
+| Sizing aids                | Column guides and a width badge while dragging; width presets (full, ½, ⅓, ¼) on the tile's menu; a quick layout that sets every tile to one width.                                                                                                                                                                                          |
+| Tile presentation          | Title and subtitle from the tile's own menu. Inherited tiles (declared on the model) are movable but not restyled.                                                                                                                                                                                                                           |
+| Add or remove a tile       | Added from the package catalog (source → view, correct by construction); removed from the tile's menu. Both preview the file's diff before saving.                                                                                                                                                                                           |
+| Filters                    | Declared in the dashboard and bound per tile from one place, the strip under the header, with a tiles-to-update mapping, per-tile comparison and a field picker.                                                                                                                                                                             |
+| Filters from the model     | Bindable and removable from the dashboard; not editable, since the declaration is the model's.                                                                                                                                                                                                                                               |
+| Clickable cells            | A `# drill` on any dimension the dashboard's own extension declares: destinations (this dashboard, the package's others) and the control a click sets, from the tile menu.                                                                                                                                                                   |
+| Page settings              | Title, markdown description, grid width, run-as-controls-change (`autorun`) and starting values, from the edit bar.                                                                                                                                                                                                                          |
+| Live view                  | Tiles run the document's bindings on the dashboard's own extension, so an edit is visible before it is saved; the control row follows the document.                                                                                                                                                                                          |
+| Undo/redo                  | Whole-document history, one entry per gesture. Keyboard: ⌘Z / ⌘⇧Z, ⌘S, Esc, ←/→ to nudge width.                                                                                                                                                                                                                                              |
+| Validation                 | A binding to a field the source does not have, or of a type the given cannot compare, is marked and blocks Apply when the catalog is known.                                                                                                                                                                                                  |
+| Viewer                     | A grouped value with no `# drill` opens the rows behind it (`drill:` through the tile's view); a drill behaves as the tag says; each tile has "Explore from here" into the model explorer.                                                                                                                                                   |
+| Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, exported, rows shown, explored — each with outcome and duration. The Console logs them structured.                                                                                                                                                                      |
+| Notebooks                  | `.malloynb` is viewed read-only (`Notebook`) and stays that way. The authored notebook is a Malloyyo-style format that does not exist yet; see §7.                                                                                                                                                                                           |
+| Where it lives             | The SDK's lazy `builder` entry; the Console's `dashboards/<slug>/edit` page and package page (New dashboard, Drafts); the write path `PUT …/models/dashboards/<slug>.malloy`.                                                                                                                                                                |
 
 ## 3. Gaps against the state of the art
 
@@ -182,14 +183,14 @@ deferred shipped on 2026-09-15.
    read-only origin: edit copies it into the provider (the Console's default is
    this browser), save writes the copy, a draft that was there when the editor
    opened is offered on the next visit, and Export hands the file back for the
-   package. **Deferred, by decision: any server write path.** Writing back into
-   the package, and with it a Publisher package-file provider, means a new REST
-   endpoint, and API changes are out of scope. When it is taken up, the shape
-   that was prototyped and rolled back is worth keeping: compile first as the
-   file, write atomically, reload the package _in place_ (a location-based
-   reinstall would overwrite the write), restore the previous file on a failed
-   reload, refuse under `frozenConfig`, and track the origin (`contentHash` at
-   copy time, re-fetch and compare on open, never auto-merge).
+   package. **The server write path shipped 2026-09-15**, lifting the earlier
+   deferral by decision: `PUT …/models/dashboards/<slug>.malloy` compiles the
+   text as the file, writes atomically under the package lock, reloads the
+   package _in place_, restores the previous text on a failed reload, refuses
+   under `frozenConfig`, and refuses a file that changed since it was opened
+   (`expectedHash`, SHA-256 of the opened text) rather than merging. When the
+   server takes writes the builder's Save goes there and a browser draft of
+   the same file is superseded; otherwise the browser flow above stands.
 3. **Add and remove tiles.** The picker is built from the package catalog
    (`buildCatalog`), so every tile expression is correct by construction; the
    emitted view name is assigned once and never recomputed from position. A
@@ -434,10 +435,11 @@ settings popover gain the controls, which the writer already knows how to emit.
 
 ### The server write path
 
-A `PUT` for a model file with compile-first, atomic write, in-place reload,
-restore-on-failure and `frozenConfig` refusal, plus a package-file
-`DocumentStorage` provider and origin tracking. _Who agrees:_ Publisher's API
-owners. Prototyped and rolled back on 2026-09-15; the shape is in §5.2.
+Shipped 2026-09-15 (§5.2), scoped to dashboard files. What remains here is
+its generalisation, if ever wanted: a `DocumentStorage` provider over the
+endpoint for hosts other than the Console, and writes to other kinds of file,
+which would each need their own compile-first rule and a look at the security
+posture.
 
 ### Renderer asks (`@malloydata/render`)
 
@@ -465,9 +467,8 @@ splice approach no longer needs one.
 2. Open the grammar conversation with Malloyyo with G1, G2 (markdown blocks,
    text tiles, the notebook artifact), G3 and G6 as one proposal, with the
    control-tag names alongside.
-3. When API changes are back in scope: the server write path and package-file
-   provider (§8), then the control tags and settings that ride on the `Given`
-   schema.
+3. The control tags and settings that ride on the `Given` schema (§8), now
+   that API changes are in scope again — the write path (§5.2) has landed.
 4. The notebook (§7): the shared editor core can be generalised now with no
    agreement needed; the format goes into the grammar proposal of step 2; the
    builder follows the grammar.
