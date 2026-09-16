@@ -195,6 +195,8 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(409, error.message);
    } else if (error instanceof InvalidStateTransitionError) {
       return httpError(409, error.message);
+   } else if (error instanceof WriteConflictError) {
+      return httpError(409, error.message);
    } else if (error instanceof ServiceUnavailableError) {
       return httpError(503, error.message);
    } else if (error instanceof PayloadTooLargeError) {
@@ -465,6 +467,13 @@ export class MaterializationNotFoundError extends Error {
 }
 
 export class MaterializationConflictError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/** A write whose `expectedHash` no longer matches the file: someone else saved first. */
+export class WriteConflictError extends Error {
    constructor(message: string) {
       super(message);
    }
