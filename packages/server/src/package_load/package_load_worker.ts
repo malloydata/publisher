@@ -782,6 +782,7 @@ async function compileMalloyModel(
       authorizeOwnNotes,
       computeGivenDeclaredTypes(givens),
       (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
+      attributedAuthorizeOwnNotes,
    );
    // Validate #(authorize) at compile time (shared with Model.create). Throws
    // on an unknown given / source-field reference or a rejected row-level
@@ -1043,6 +1044,7 @@ async function compileNotebookModel(
          extracted.authorizeOwnNotes,
          computeGivenDeclaredTypes(finalGivens),
          (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
+         extracted.attributedAuthorizeOwnNotes,
       );
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.

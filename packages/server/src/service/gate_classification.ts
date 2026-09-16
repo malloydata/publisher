@@ -1110,13 +1110,26 @@ export type RowLevelGraftEntry = {
  * `ancestorGateExprs` still grafts the inherited text unvalidated — a
  * grammar-banned gate then loads and enforces fail-open at that entry point.
  *
- * `onAdmitAllGate` reports each OWN unconditional `true` this walk parses —
- * the one body in the grammar that turns a gate off. Reported, never
- * refused, and only for an OWN declaration: an entry point that merely
- * INHERITS a `true` would otherwise make the count a function of model shape
- * rather than of authoring decisions. Optional, and passed as a callback for
- * the same reason as `validateAuthorizeProbes`'s `onRowLevelGateRejected` —
- * this module stays out of the telemetry layer.
+ * `onAdmitAllGate` reports each unconditional `true` a source actually
+ * DECLARES — the one body in the grammar that turns a gate off. Reported,
+ * never refused, and passed as a callback for the same reason as
+ * `validateAuthorizeProbes`'s `onRowLevelGateRejected`: this module stays out
+ * of the telemetry layer.
+ *
+ * "Declares" is decided by `attributedAuthorizeOwnNotes`, NOT by the
+ * presence-based `authorizeOwnNotes` the rest of this function runs on. The
+ * two differ exactly where it matters here: Malloy copies a base's annotation
+ * note objects onto a plain `extend {}`/`except:`/`accept:` derivation BY
+ * REFERENCE, so the presence map calls every such derivation an owner and one
+ * declared `true` would tick once per entry point that inherits it — the
+ * "function of model shape rather than of authoring decisions" this counter
+ * exists to avoid. It is a separate parameter rather than a swap because
+ * `source_extraction.ts`'s own doc warns that narrowing the presence map at
+ * the `"false"`-filter call site below turns a load refusal into a fail-open.
+ *
+ * Fired AFTER the coherence checks pass, so a model refused for
+ * `admit_all_with_sibling` (or any other cause) does not tick a counter for a
+ * gate that never becomes servable.
  *
  * `authorizeOwnNotes` still decides, per source, whether `authorizeMap`'s
  * group is the source's OWN declaration (validate every expr, `"false"`
@@ -1152,11 +1165,13 @@ export function assertAuthorizeGrammarValid(
    authorizeOwnNotes: AuthorizeOwnNotesMap,
    givenDeclaredTypes: ReadonlyMap<string, string>,
    onAdmitAllGate?: (sourceName: string, route: string) => void,
+   attributedAuthorizeOwnNotes?: AuthorizeOwnNotesMap,
 ): void {
    if (!modelDef) return;
    for (const [sourceName, groups] of authorizeMap) {
       const struct = modelDef.contents[sourceName];
       const ownGroupTerms: AuthorizeGrammarRoutedTerm[] = [];
+      const declaredAdmitAllRoutes: string[] = [];
       for (const { route, exprs } of groups) {
          const isOwn =
             (authorizeOwnNotes.get(sourceName)?.get(route)?.length ?? 0) > 0;
@@ -1174,8 +1189,12 @@ export function assertAuthorizeGrammarValid(
             );
             for (const term of terms) {
                groupTerms.push({ term, route });
-               if (term.scope === "admit_all" && isOwn) {
-                  onAdmitAllGate?.(sourceName, route);
+               if (
+                  term.scope === "admit_all" &&
+                  (attributedAuthorizeOwnNotes?.get(sourceName)?.get(route)
+                     ?.length ?? 0) > 0
+               ) {
+                  declaredAdmitAllRoutes.push(route);
                }
                if (term.scope === "row_level" && isSourceDef(struct)) {
                   assertNoFanoutFieldPath(
@@ -1195,6 +1214,9 @@ export function assertAuthorizeGrammarValid(
       }
       if (ownGroupTerms.length > 0) {
          assertAuthorizeGrammarTermsCoherent(sourceName, ownGroupTerms);
+      }
+      for (const route of declaredAdmitAllRoutes) {
+         onAdmitAllGate?.(sourceName, route);
       }
    }
 }

@@ -2960,6 +2960,7 @@ export class Model {
                sourceResult.authorizeOwnNotes,
                computeGivenDeclaredTypes(givens),
                (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
+               sourceResult.attributedAuthorizeOwnNotes,
             );
             // Translation-time validation of #(authorize) annotations (shared
             // with the package-load worker so both compile paths validate

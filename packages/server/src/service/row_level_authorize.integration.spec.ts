@@ -78,10 +78,11 @@ import {
    type QueryMaterializer,
    type SourceDef,
 } from "@malloydata/malloy";
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { resetAuthorizeGuardTelemetryForTesting } from "../authorize_metrics";
 import { AccessDeniedError, ModelCompilationError } from "../errors";
 import {
    PackageLoadPool,
@@ -96,6 +97,10 @@ import {
    resolveGateShape,
 } from "./gate_classification";
 import { malloyGivenToApi, type MalloyGiven } from "./given";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
 import { Model } from "./model";
 import { Package } from "./package";
 
@@ -4335,6 +4340,30 @@ source: reopened is base extend {}
       }
    });
 
+   it("`true` re-opens an `extend` derivation but NOT a query-source one — the base's `false` stays in the conjunction", async () => {
+      // Pins fail-closed behavior the docs now state, not a bug to fix later:
+      // a query-source derivation collects its base's gate unconditionally, so
+      // an own gate can only narrow it, never replace it.
+      const { model, duckdb, dir } = await createModel(`
+#(authorize) false
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) true
+source: reopened is base extend {}
+
+#(authorize) true
+source: derived is base -> { select: id }
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "reopened", {})).toEqual([1, 2, 3, 4]);
+         expect(await ids(model, "derived", {})).toEqual([]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
    it("a source's OWN `#(authorize) true` alongside another note ON THE SAME ROUTE is refused (admit_all_with_sibling)", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
@@ -4350,6 +4379,100 @@ source: X is duckdb.table('parent') extend {}
          expect((err as AuthorizeGrammarError).rejectionCause).toBe(
             "admit_all_with_sibling",
          );
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
+
+// ---------------------------------------------------------------------------
+// `publisher_authorize_admit_all_total` counts DECLARATIONS, not entry points.
+// Malloy copies a base's annotation note objects onto a plain `extend {}`
+// derivation BY REFERENCE, so the presence-based `authorizeOwnNotes` calls
+// every such derivation an owner. Counting off it ticked once per inheriting
+// entry point, making the number a function of model shape.
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — the admit-all counter counts declarations", () => {
+   let harness: MetricsHarness;
+
+   const COUNTER = "publisher_authorize_admit_all_total";
+
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      // Drop the cached instrument so it re-binds to this test's provider.
+      resetAuthorizeGuardTelemetryForTesting();
+   });
+
+   afterEach(async () => {
+      resetAuthorizeGuardTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   async function loadModel(
+      text: string,
+   ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-admit-count-"));
+      fs.writeFileSync(
+         path.join(dir, "m.malloy"),
+         `##! experimental.givens\n\n${text}`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         dir,
+         "m.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, duckdb, dir };
+   }
+
+   it("one declared `#(authorize) true` inherited by two `extend` derivations ticks ONCE, not once per entry point", async () => {
+      const { model, duckdb, dir } = await loadModel(`
+#(authorize) true
+source: base is duckdb.table('parent') extend {}
+
+source: mid is base extend {}
+
+source: leaf is mid extend {}
+`);
+      try {
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+         expect(
+            await harness.collectCounter(COUNTER, {
+               route: "authorize",
+            }),
+         ).toBe(1);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("a model refused as admit_all_with_sibling ticks nothing — the callback runs after coherence", async () => {
+      const { model, duckdb, dir } = await loadModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) true
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('parent') extend {}
+`);
+      try {
+         const err = (model as unknown as { compilationError?: Error })
+            .compilationError;
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "admit_all_with_sibling",
+         );
+         expect(
+            await harness.collectCounter(COUNTER, {
+               route: "authorize",
+            }),
+         ).toBe(0);
       } finally {
          await duckdb.close();
          fs.rmSync(dir, { recursive: true, force: true });

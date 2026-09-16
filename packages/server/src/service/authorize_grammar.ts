@@ -631,8 +631,12 @@ export function assertAuthorizeGrammarTermsCoherent(
                "declare the `true` on its own route only.",
          );
       }
+      // Both sentinels named, not just `admit_all`: `deny_all` is already
+      // gone by the `continue` above, but a predicate that relies on that
+      // would silently mistype one if the `continue` ever moved.
       const routeTerms = allRouteTerms.filter(
-         (t): t is AuthorizeGrammarParsedTerm => t.scope !== "admit_all",
+         (t): t is AuthorizeGrammarParsedTerm =>
+            t.scope !== "admit_all" && t.scope !== "deny_all",
       );
       const rowLevel = routeTerms.filter((t) => t.scope === "row_level");
       const sourceLevel = routeTerms.filter((t) => t.scope === "source_level");
