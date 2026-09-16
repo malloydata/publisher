@@ -53,7 +53,7 @@ each with its own conjunctive gate — see [docs/authorize.md § OR semantics](d
 
 **A source may now declare more than one `#(authorize)` note, and repeats AND together instead of
 failing the load.** `assertAtMostOneAuthorizeGate` refused a second note outright in every released
-version from 0.2.0 through 0.2.7, so no model that loads on a released version already has two of a
+version from 0.2.0 through 0.3.0, so no model that loads on a released version already has two of a
 source's own notes to reinterpret; this is new capability, not a reinterpretation of an existing one.
 Separately, and more consequential: **a two-note declaring ancestor two or more `import` hops away
 now ANDs both notes where it previously did not.** That case moves served rows silently, with no
