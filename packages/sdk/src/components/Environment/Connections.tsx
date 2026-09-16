@@ -160,7 +160,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
          <Box
             sx={{
                display: "flex",
-               alignItems: "flex-start",
+               alignItems: "center",
                justifyContent: "space-between",
                mb: 3,
             }}

@@ -1,8 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Loading } from "@malloy-publisher/sdk";
-import { Box } from "@mui/material";
+import { BackLink, DashboardBar, Loading } from "@malloy-publisher/sdk";
+import { Box, Stack } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { logDashboardEvent } from "../../../utils/dashboardTelemetry";
@@ -44,7 +44,24 @@ export default function DashboardEditPage({
    );
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
-         <Suspense fallback={<Loading text="Opening the builder…" />}>
+         {/* The same way up the reader's view has, in the same place, so the
+             bar below it sits at the same height in both modes. Leaving by it
+             is leaving without saving, exactly as the browser's own Back is;
+             Done is the way out that keeps the page you were on. */}
+         <BackLink
+            label={packageName}
+            onClick={() => navigate(`/${environmentName}/${packageName}`)}
+         />
+         {/* The bar, at the height the reader's view had it, so the page does
+             not collapse and refill while the builder's chunk arrives. */}
+         <Suspense
+            fallback={
+               <Stack sx={{ gap: 2 }}>
+                  <DashboardBar />
+                  <Loading text="Opening the builder…" />
+               </Stack>
+            }
+         >
             <DashboardEditor
                environmentName={environmentName}
                packageName={packageName}

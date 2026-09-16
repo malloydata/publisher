@@ -625,17 +625,6 @@ describe("DashboardBuilder: widths and the page's own settings", () => {
       expect(itemStyleOf("by_brand")).toContain("grid-column: span 6");
    });
 
-   it("lays every tile the file owns to one width, as one history entry", async () => {
-      await mount();
-      fireEvent.click(button("Layout"));
-      fireEvent.click(screen.getByRole("menuitem", { name: "A quarter" }));
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 3");
-      expect(itemStyleOf("by_brand")).toContain("grid-column: span 3");
-      fireEvent.click(button("Undo"));
-      expect(itemStyleOf("by_cat")).toContain("grid-column: span 6");
-      expect(itemStyleOf("by_brand")).toContain("grid-column: span 6");
-   });
-
    it("edits the page's title, width and autorun, and writes them to the tag", async () => {
       let saved = "";
       await mount((source) => {

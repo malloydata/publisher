@@ -38,7 +38,17 @@ export function PackageSection({
             <Stack direction="row" alignItems="baseline" spacing={1}>
                <Typography
                   variant="h6"
-                  sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
+                  sx={{
+                     fontWeight: 600,
+                     letterSpacing: "-0.025em",
+                     // The heading's box is centred against the buttons, but
+                     // its ink is not: at the theme's 1.6 line height the
+                     // leading sits mostly under a word with no descenders, so
+                     // the title reads as riding high. Trim the box to the
+                     // glyphs and the two line up by eye as well as by
+                     // measurement.
+                     lineHeight: 1.2,
+                  }}
                >
                   {title}
                </Typography>

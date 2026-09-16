@@ -9,6 +9,7 @@ export { ApiErrorDisplay, type ApiErrorDisplayProps } from "./ApiErrorDisplay";
 // Publisher app included — builds its own screens out of the same four.
 export { AddButton, SecondaryButton } from "./buttons";
 export { BackLink } from "./BackLink";
+export { DashboardBar } from "./Dashboard/DashboardBar";
 export { useRouterClickHandler, type NavigationClick } from "./click_helper";
 export * from "./Dashboard";
 export * from "./DataAppViewer";

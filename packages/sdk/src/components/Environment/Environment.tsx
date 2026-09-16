@@ -59,7 +59,7 @@ export default function Environment({
             <Stack
                direction="row"
                justifyContent="space-between"
-               alignItems="flex-start"
+               alignItems="center"
                sx={{ mb: 3 }}
             >
                <Box>

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import CheckIcon from "@mui/icons-material/Check";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,6 +15,8 @@ import {
    type DocumentLocator,
 } from "../DocumentStorage";
 import { GivensPanel } from "../given";
+import { SecondaryButton } from "../buttons";
+import { DashboardBar } from "../Dashboard/DashboardBar";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
@@ -286,7 +289,15 @@ export function DashboardEditor({
          />
       );
    if (!packageText || !draftChecked)
-      return <Loading text="Opening the dashboard…" />;
+      // The bar first, so the page it is opening into is already the right
+      // shape: the reader's view had a bar in this spot, and a spinner where
+      // the bar was made the switch look like a page reload.
+      return (
+         <Stack sx={{ gap: 2 }}>
+            <DashboardBar />
+            <Loading text="Opening the dashboard…" />
+         </Stack>
+      );
    if (openError)
       return (
          <Alert severity="error" sx={{ m: 2 }}>
@@ -327,9 +338,11 @@ export function DashboardEditor({
                {...(onEvent ? { onEvent } : {})}
                toolbar={
                   onExit && (
-                     <Button size="small" onClick={onExit}>
-                        Done
-                     </Button>
+                     <SecondaryButton
+                        label="Done"
+                        icon={<CheckIcon />}
+                        onClick={onExit}
+                     />
                   )
                }
                note={
