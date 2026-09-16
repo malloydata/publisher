@@ -67,7 +67,9 @@ test.describe("dashboard-builder", () => {
    // the package, and every test here opens the same dashboard.
    const openEditor = async (page: Page) => {
       await page.goto(`/${env}/${PKG}/dashboards/tiled/edit`);
-      await expect(page.getByText("Editing")).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+         timeout: 60_000,
+      });
       await expect(page.getByText(/^Tiled/).first()).toBeVisible();
    };
 
@@ -88,7 +90,9 @@ test.describe("dashboard-builder", () => {
       await expect(
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();
-      await expect(page.getByText("Unsaved changes")).toBeVisible();
+      await expect(
+         page.getByRole("button", { name: "Save changes" }),
+      ).toBeEnabled();
 
       await page.getByRole("button", { name: "Save changes" }).click();
       await expect(page.getByRole("button", { name: "Saved" })).toBeVisible();
@@ -96,7 +100,9 @@ test.describe("dashboard-builder", () => {
       // The save went into the package, so the next visit opens the edited
       // file itself: the new title, and nothing offering a browser draft.
       await page.goto(`/${env}/${PKG}/dashboards/tiled/edit`);
-      await expect(page.getByText("Editing")).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+         timeout: 60_000,
+      });
       await expect(
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();
@@ -132,7 +138,9 @@ test.describe("dashboard-builder", () => {
          );
       }
       await page.mouse.up();
-      await expect(page.getByText("Unsaved changes")).toBeVisible();
+      await expect(
+         page.getByRole("button", { name: "Save changes" }),
+      ).toBeEnabled();
 
       // Each tile's chart still sits INSIDE its tile. The regression this
       // guards was not a missing chart but a displaced one: a stale render
@@ -171,6 +179,8 @@ test.describe("dashboard-builder", () => {
          revenue.boundingBox(),
       ]);
       expect(a && b && b.y > a.y + a.height - 1).toBe(true);
-      await expect(page.getByText("Unsaved changes")).toBeVisible();
+      await expect(
+         page.getByRole("button", { name: "Save changes" }),
+      ).toBeEnabled();
    });
 });

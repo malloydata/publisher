@@ -1,10 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, Container, Stack, Typography } from "@mui/material";
+import { Box, Container, Typography } from "@mui/material";
 import { useEffect } from "react";
+import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { BackLink } from "../BackLink";
+import { PackageSection } from "../PackageSection";
 import { useServer } from "../ServerProvider";
 import About from "./About";
 import AddPackageDialog from "./AddPackageDialog";
@@ -20,8 +22,14 @@ export default function Environment({
    onSelectPackage,
    resourceUri,
 }: EnvironmentProps) {
-   const { mutable } = useServer();
+   const { apiClients, mutable } = useServer();
    const { environmentName } = parseResourceUri(resourceUri);
+   // Only for the heading's count: the list below runs the same query under the
+   // same key, so this shares its cache rather than fetching twice.
+   const packages = useQueryWithApiError({
+      queryKey: ["packages", environmentName],
+      queryFn: () => apiClients.packages.listPackages(environmentName),
+   });
 
    useEffect(() => {
       window.scrollTo({ top: 0, behavior: "auto" });
@@ -30,9 +38,9 @@ export default function Environment({
    return (
       <Container
          maxWidth={false}
-         sx={{ maxWidth: 1024, mx: "auto", px: 4, py: 3 }}
+         sx={{ maxWidth: 1024, mx: "auto", px: 3, py: 6 }}
       >
-         <Box sx={{ mb: 5 }}>
+         <Box sx={{ mb: 4 }}>
             {/* The environment's parent is the server itself, which is what
                 home lists. `onSelectPackage` is this component's one navigation
                 hook; the name is narrow but the job is not. */}
@@ -55,35 +63,23 @@ export default function Environment({
             </Typography>
          </Box>
 
-         <Box sx={{ mb: 5 }}>
-            <Stack
-               direction="row"
-               justifyContent="space-between"
-               alignItems="center"
-               sx={{ mb: 3 }}
-            >
-               <Box>
-                  <Typography
-                     variant="h6"
-                     sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
-                  >
-                     Packages
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                     Published packages available for use in this environment
-                  </Typography>
-               </Box>
-               {mutable && <AddPackageDialog resourceUri={resourceUri} />}
-            </Stack>
+         <PackageSection
+            title="Packages"
+            {...(packages.isSuccess
+               ? { count: packages.data.data.length }
+               : {})}
+            description="Published packages available for use in this environment"
+            {...(mutable
+               ? { action: <AddPackageDialog resourceUri={resourceUri} /> }
+               : {})}
+         >
             <Packages
                onSelectPackage={onSelectPackage}
                resourceUri={resourceUri}
             />
-         </Box>
+         </PackageSection>
 
-         <Box sx={{ mb: 5 }}>
-            <Connections resourceUri={resourceUri} />
-         </Box>
+         <Connections resourceUri={resourceUri} />
 
          <About resourceUri={resourceUri} />
       </Container>

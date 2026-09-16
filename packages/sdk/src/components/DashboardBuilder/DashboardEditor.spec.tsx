@@ -167,7 +167,7 @@ describe("DashboardEditor", () => {
       expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
-   it("hands Done to the host and reports the open", async () => {
+   it("hands the exit to the host and reports the open", async () => {
       const onExit = mock(() => {});
       const onEvent = mock((_event: DashboardEvent) => {});
       mount(onExit, onEvent);
@@ -182,7 +182,7 @@ describe("DashboardEditor", () => {
          from: "package",
          tiles: 1,
       });
-      fireEvent.click(button("Done"));
+      fireEvent.click(button("Done editing"));
       expect(onExit).toHaveBeenCalledTimes(1);
    });
 });

@@ -30,11 +30,6 @@ mockServerProvider({ models: { getModel, updateModelSource } });
 
 const { NewDashboardDialog } = await import("./NewDashboardDialog");
 
-const pick = (label: RegExp, option: string | RegExp) => {
-   fireEvent.mouseDown(screen.getByRole("combobox", { name: label }));
-   fireEvent.click(screen.getByRole("option", { name: option }));
-};
-
 beforeEach(() => {
    clearCache();
    updateModelSource.mockClear();
@@ -55,25 +50,32 @@ describe("NewDashboardDialog", () => {
          />,
          { wrapper: serverWrapper },
       );
+      // Nothing to choose until the package's models are read; then the one
+      // model with views, its first tile and a title are already filled in.
       await waitFor(() =>
-         expect(
-            screen
-               .getByRole("combobox", { name: /Source/ })
-               .getAttribute("aria-disabled"),
-         ).not.toBe("true"),
+         expect(screen.getByLabelText("Dashboard title")).toHaveProperty(
+            "value",
+            "by category",
+         ),
       );
-      pick(/Source/, "order_items");
-      pick(/First tile/, "by_category");
-      // The title follows the view until typed over; the slug follows the title.
-      expect(screen.getByLabelText("Dashboard title")).toHaveProperty(
-         "value",
-         "by category",
+      // A source with no views is not on the list, so a pair that cannot be
+      // written cannot be picked.
+      fireEvent.mouseDown(screen.getByRole("combobox", { name: /First tile/ }));
+      const options = screen
+         .getAllByRole("option")
+         .map((option) => option.textContent);
+      expect(options).toEqual([
+         "order_items → by_category",
+         "order_items → by_brand",
+      ]);
+      fireEvent.click(
+         screen.getByRole("option", { name: "order_items → by_category" }),
       );
       fireEvent.change(screen.getByLabelText("Dashboard title"), {
          target: { value: "Sales by Region" },
       });
       expect(
-         screen.getByText("Written as dashboards/sales-by-region.malloy"),
+         screen.getByText(/Written as dashboards\/sales-by-region\.malloy/),
       ).toBeDefined();
 
       fireEvent.click(screen.getByRole("button", { name: "Create" }));
@@ -107,6 +109,12 @@ describe("NewDashboardDialog", () => {
             onCreated={() => {}}
          />,
          { wrapper: serverWrapper },
+      );
+      await waitFor(() =>
+         expect(screen.getByLabelText("Dashboard title")).toHaveProperty(
+            "value",
+            "by category",
+         ),
       );
       fireEvent.change(screen.getByLabelText("Dashboard title"), {
          target: { value: "Overview" },

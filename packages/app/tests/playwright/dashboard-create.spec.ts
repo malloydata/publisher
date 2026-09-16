@@ -73,16 +73,17 @@ test.describe("dashboard-create", () => {
       });
 
       const dialog = page.getByRole("dialog");
-      await dialog.getByRole("combobox", { name: "Model" }).click();
-      await page.getByRole("option", { name: "orders.malloy" }).click();
-      const source = dialog.getByRole("combobox", { name: "Source" });
-      await expect(source).not.toHaveAttribute("aria-disabled", "true", {
+      // The model and a first tile fill themselves in; only the ones with a
+      // view to put on a tile are offered at all.
+      await expect(dialog.getByLabel("Dashboard title")).not.toHaveValue("", {
          timeout: 30_000,
       });
-      await source.click();
-      await page.getByRole("option", { name: "orders", exact: true }).click();
+      await dialog.getByRole("combobox", { name: "Model" }).click();
+      await page.getByRole("option", { name: "orders.malloy" }).click();
       await dialog.getByRole("combobox", { name: "First tile" }).click();
-      await page.getByRole("option", { name: "by_brand", exact: true }).click();
+      await page
+         .getByRole("option", { name: "orders → by_brand", exact: true })
+         .click();
       await dialog.getByLabel("Dashboard title").fill("Created here");
       await dialog.getByRole("button", { name: "Create" }).click();
 
@@ -90,7 +91,9 @@ test.describe("dashboard-create", () => {
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/created-here/edit$`),
       );
-      await expect(page.getByText("Editing")).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+         timeout: 60_000,
+      });
       await expect(
          page.getByText("Created here", { exact: true }),
       ).toBeVisible();
@@ -109,7 +112,7 @@ test.describe("dashboard-create", () => {
       });
 
       // The reader's view is served from the package, so it shows the save.
-      await page.getByRole("button", { name: "Done" }).click();
+      await page.getByRole("button", { name: "Done editing" }).click();
       await expect(page).toHaveURL(
          new RegExp(`/${env}/${PKG}/dashboards/created-here$`),
       );

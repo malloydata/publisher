@@ -461,7 +461,9 @@ export function DashboardBuilder({
       // grid alone, so the header, the control row and the tiles all inset
       // together and stay aligned with each other. 4px = the ring's 2px offset
       // plus its 2px width.
-      <Stack sx={{ gap: 2 }}>
+      // The bar carries its own gap to what it sits over, so the surface adds
+      // none between the two.
+      <Stack sx={{ gap: 0 }}>
          {/* Outside the ring's inset, so the bar lines up to the pixel with the
              reader's — the whole point of it being the same bar. */}
          <BuilderToolbar
@@ -477,7 +479,11 @@ export function DashboardBuilder({
             onSettings={setSettingsAnchor}
          />
 
-         <Stack sx={{ gap: 2, p: "4px" }}>
+         {/* The ring's inset, minus the top: nothing at the top of this stack
+             can be selected (the prose and the control row are not tiles), and
+             4px there would put the title 4px further from the bar than the
+             reader's is. */}
+         <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
             <DashboardProse
                title={editor.document.title || "Untitled dashboard"}
                {...(editor.document.description

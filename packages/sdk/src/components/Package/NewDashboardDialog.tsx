@@ -11,7 +11,6 @@ import {
    MenuItem,
    Stack,
    TextField,
-   Typography,
 } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
@@ -46,54 +45,100 @@ export function NewDashboardDialog({
 }) {
    const { apiClients } = useServer();
    const [modelPath, setModelPath] = useState("");
-   const [source, setSource] = useState("");
-   const [view, setView] = useState("");
+   /** The chosen tile, as `source::view` — one value, so the pair is always valid. */
+   const [tile, setTile] = useState("");
    const [title, setTitle] = useState("");
+   const [touchedTitle, setTouchedTitle] = useState(false);
    const [busy, setBusy] = useState(false);
    const [failure, setFailure] = useState<string | undefined>(undefined);
 
+   // Every model at once rather than the chosen one: a model that declares no
+   // source with a view cannot start a dashboard, and the only way to offer a
+   // list without those is to know before the user picks. The package has a
+   // handful of models and each is a cached GET the package page has usually
+   // made already.
+   const catalog = useQueryWithApiError({
+      queryKey: ["new-dashboard-models", environmentName, packageName, models],
+      queryFn: async () => {
+         const loaded = await Promise.all(
+            models.map(async (path) => {
+               try {
+                  const response = await apiClients.models.getModel(
+                     environmentName,
+                     packageName,
+                     path,
+                  );
+                  return { path, sources: response.data.sources ?? [] };
+               } catch {
+                  // A model that will not load is a model that cannot start a
+                  // dashboard; it drops out of the list rather than failing it.
+                  return { path, sources: [] };
+               }
+            }),
+         );
+         return loaded;
+      },
+      enabled: open && models.length > 0,
+   });
+
+   /** Model → the (source, view) pairs it can start a dashboard from. */
+   const choices = useMemo(() => {
+      const out = new Map<string, Array<{ source: string; view: string }>>();
+      for (const model of catalog.data ?? []) {
+         const pairs: Array<{ source: string; view: string }> = [];
+         for (const source of model.sources) {
+            if (typeof source.name !== "string") continue;
+            for (const view of source.views ?? []) {
+               if (typeof view.name === "string")
+                  pairs.push({ source: source.name, view: view.name });
+            }
+         }
+         if (pairs.length > 0) out.set(model.path, pairs);
+      }
+      return out;
+   }, [catalog.data]);
+
+   const tiles = useMemo(
+      () => choices.get(modelPath) ?? [],
+      [choices, modelPath],
+   );
+   const chosen = tiles.find((t) => `${t.source}::${t.view}` === tile);
+
+   // Everything with one answer answers itself: a package with one usable
+   // model, a model with one view to put on a tile, and a title taken from
+   // that view. What is left to fill in is what the author actually chooses.
    useEffect(() => {
       if (!open) return;
-      setModelPath(models[0] ?? "");
-      setSource("");
-      setView("");
-      setTitle("");
-      setFailure(undefined);
-   }, [open, models]);
+      const usable = [...choices.keys()];
+      if (modelPath === "" && usable.length > 0) setModelPath(usable[0]);
+   }, [open, choices, modelPath]);
 
-   const model = useQueryWithApiError({
-      queryKey: [
-         "new-dashboard-model",
-         environmentName,
-         packageName,
-         modelPath,
-      ],
-      queryFn: () =>
-         apiClients.models.getModel(environmentName, packageName, modelPath),
-      enabled: open && modelPath !== "",
-   });
-   const sources = useMemo(
-      () =>
-         (model.data?.data.sources ?? []).filter(
-            (s): s is typeof s & { name: string } => typeof s.name === "string",
-         ),
-      [model.data],
-   );
-   const views = useMemo(
-      () =>
-         (sources.find((s) => s.name === source)?.views ?? [])
-            .map((v) => v.name)
-            .filter((name): name is string => typeof name === "string"),
-      [sources, source],
-   );
+   useEffect(() => {
+      if (!open || tiles.length === 0) return;
+      if (chosen === undefined) setTile(`${tiles[0].source}::${tiles[0].view}`);
+   }, [open, tiles, chosen]);
+
+   useEffect(() => {
+      if (!open || touchedTitle || chosen === undefined) return;
+      setTitle(chosen.view.replace(/_/g, " "));
+   }, [open, touchedTitle, chosen]);
+
+   useEffect(() => {
+      if (open) return;
+      // Reset on close, so the next open starts from the package again.
+      setModelPath("");
+      setTile("");
+      setTitle("");
+      setTouchedTitle(false);
+      setFailure(undefined);
+   }, [open]);
 
    const slug = slugFor(title);
    const taken = existing.includes(slug);
-   const canCreate =
-      modelPath !== "" && source !== "" && view !== "" && slug !== "" && !taken;
+   const canCreate = chosen !== undefined && slug !== "" && !taken;
 
    const create = async () => {
-      if (!canCreate) return;
+      if (!canCreate || chosen === undefined) return;
       setBusy(true);
       setFailure(undefined);
       try {
@@ -101,7 +146,14 @@ export function NewDashboardDialog({
             environmentName,
             packageName,
             `dashboards/${slug}.malloy`,
-            { source: newDashboardSource({ title, modelPath, source, view }) },
+            {
+               source: newDashboardSource({
+                  title,
+                  modelPath,
+                  source: chosen.source,
+                  view: chosen.view,
+               }),
+            },
          );
          onCreated(slug);
       } catch (error) {
@@ -121,70 +173,62 @@ export function NewDashboardDialog({
          <DialogTitle sx={{ pb: 0.5 }}>New dashboard</DialogTitle>
          <DialogContent>
             <Stack sx={{ gap: 2, pt: 1 }}>
+               {catalog.isSuccess && choices.size === 0 && (
+                  <Alert severity="info">
+                     A dashboard starts from a view of a source, and no model in
+                     this package declares one yet. Add a view to a source and
+                     this list fills in.
+                  </Alert>
+               )}
                <TextField
                   select
                   size="small"
                   label="Model"
                   value={modelPath}
+                  disabled={choices.size === 0}
                   onChange={(event) => {
                      setModelPath(event.target.value);
-                     setSource("");
-                     setView("");
+                     setTile("");
                   }}
                   inputProps={{ "aria-label": "Model" }}
+                  helperText={
+                     catalog.isLoading
+                        ? "Reading the package's models…"
+                        : choices.size === 1
+                          ? "The only model with a view to put on a tile."
+                          : "Models with a view to put on a tile."
+                  }
                >
-                  {models.map((path) => (
+                  {[...choices.keys()].map((path) => (
                      <MenuItem key={path} value={path}>
                         {path}
                      </MenuItem>
                   ))}
                </TextField>
-               <TextField
-                  select
-                  size="small"
-                  label="Source"
-                  value={source}
-                  disabled={sources.length === 0}
-                  onChange={(event) => {
-                     setSource(event.target.value);
-                     setView("");
-                  }}
-                  inputProps={{ "aria-label": "Source" }}
-                  helperText={
-                     model.isError
-                        ? "This model did not load."
-                        : modelPath && !model.isSuccess
-                          ? "Loading the model…"
-                          : undefined
-                  }
-               >
-                  {sources.map((s) => (
-                     <MenuItem key={s.name} value={s.name}>
-                        {s.name}
-                     </MenuItem>
-                  ))}
-               </TextField>
+               {/* One field, not two: the file needs a view OF a source, so
+                   the pair is the thing being chosen. Picking them separately
+                   let a reader land on a source with no views and a disabled
+                   Create that said nothing about why. */}
                <TextField
                   select
                   size="small"
                   label="First tile"
-                  value={view}
-                  disabled={views.length === 0}
-                  onChange={(event) => {
-                     setView(event.target.value);
-                     if (!title)
-                        setTitle(event.target.value.replace(/_/g, " "));
-                  }}
+                  value={chosen ? tile : ""}
+                  disabled={tiles.length === 0}
+                  onChange={(event) => setTile(event.target.value)}
                   inputProps={{ "aria-label": "First tile" }}
                   helperText={
-                     source && views.length === 0
-                        ? "This source declares no views to put on a tile."
-                        : "A view of the source; more tiles are added in the builder."
+                     tiles.length === 1
+                        ? "The only view this model offers; more tiles are added in the builder."
+                        : "A view of a source; more tiles are added in the builder."
                   }
                >
-                  {views.map((name) => (
-                     <MenuItem key={name} value={name}>
-                        {name}
+                  {tiles.map((option) => (
+                     <MenuItem
+                        key={`${option.source}::${option.view}`}
+                        value={`${option.source}::${option.view}`}
+                     >
+                        {option.source} → {option.view}
                      </MenuItem>
                   ))}
                </TextField>
@@ -192,22 +236,21 @@ export function NewDashboardDialog({
                   size="small"
                   label="Title"
                   value={title}
-                  onChange={(event) => setTitle(event.target.value)}
+                  onChange={(event) => {
+                     setTouchedTitle(true);
+                     setTitle(event.target.value);
+                  }}
                   inputProps={{ "aria-label": "Dashboard title" }}
                   error={taken}
                   helperText={
                      taken
                         ? `dashboards/${slug}.malloy already exists in this package.`
                         : slug
-                          ? `Written as dashboards/${slug}.malloy`
+                          ? `Written as dashboards/${slug}.malloy, and opened in the builder.`
                           : "Names the file too."
                   }
                />
                {failure && <Alert severity="error">{failure}</Alert>}
-               <Typography variant="caption" sx={{ opacity: 0.7 }}>
-                  The file is written into the package and opened in the
-                  builder.
-               </Typography>
             </Stack>
          </DialogContent>
          <DialogActions sx={{ px: 3, py: 1.5 }}>

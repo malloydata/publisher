@@ -24,6 +24,7 @@ import {
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { ItemRow } from "../ItemRow";
+import { PackageSection } from "../PackageSection";
 import { SURFACE_TINT } from "../styles";
 import AddConnectionDialog from "../Connections/AddConnectionDialog";
 import DeleteConnectionDialog from "../Connections/DeleteConnectionDialog";
@@ -156,34 +157,23 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
       deleteConnection.isPending;
 
    return (
-      <Box>
-         <Box
-            sx={{
-               display: "flex",
-               alignItems: "center",
-               justifyContent: "space-between",
-               mb: 3,
-            }}
-         >
-            <Box>
-               <Typography
-                  variant="h6"
-                  sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
-               >
-                  Connections
-               </Typography>
-               <Typography variant="body2" color="text.secondary">
-                  Database connections available to packages in this environment
-               </Typography>
-            </Box>
-            {mutable && isSuccess && (
-               <AddConnectionDialog
-                  onSubmit={(payload) => addConnection.mutateAsync(payload)}
-                  isSubmitting={addConnection.isPending}
-               />
-            )}
-         </Box>
-
+      <PackageSection
+         title="Connections"
+         {...(isSuccess ? { count: connections.length } : {})}
+         description="Database connections available to packages in this environment"
+         {...(mutable && isSuccess
+            ? {
+                 action: (
+                    <AddConnectionDialog
+                       onSubmit={(payload) =>
+                          addConnection.mutateAsync(payload)
+                       }
+                       isSubmitting={addConnection.isPending}
+                    />
+                 ),
+              }
+            : {})}
+      >
          {!isSuccess && !isError && (
             <Typography variant="body2" color="text.secondary">
                Fetching Connections...
@@ -265,7 +255,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
                )}
             </DialogContent>
          </Dialog>
-      </Box>
+      </PackageSection>
    );
 }
 

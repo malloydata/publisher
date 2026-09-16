@@ -44,6 +44,10 @@ export function DashboardBar({
             // switching modes moves nothing.
             minHeight: 48,
             py: 0.5,
+            // The rule is the bar's own edge, not the page's underline: the
+            // title below needs room to read as a heading rather than as the
+            // bar's caption.
+            mb: 3,
             // Its own ground, so the tiles scrolling under it do not show
             // through, and an edge so it reads as a bar rather than a row. The
             // Publisher theme's ground and edge, like every other surface here

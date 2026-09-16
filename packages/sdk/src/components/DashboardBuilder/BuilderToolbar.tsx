@@ -7,14 +7,7 @@ import TuneIcon from "@mui/icons-material/Tune";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
-import {
-   Button,
-   Chip,
-   Divider,
-   IconButton,
-   Tooltip,
-   Typography,
-} from "@mui/material";
+import { Button, Chip, Divider, IconButton, Tooltip } from "@mui/material";
 import type { ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { DashboardBar } from "../Dashboard/DashboardBar";
@@ -67,11 +60,17 @@ export function BuilderToolbar({
       <DashboardBar
          left={
             <Chip
-               size="small"
+               // The app's theme makes every chip small; this one stands in a
+               // row of buttons, so it says otherwise and takes their height
+               // and type size. One size across the bar, or the state reads as
+               // a label that shrank away from the controls.
+               size="medium"
                variant="outlined"
-               icon={<EditOutlinedIcon sx={{ fontSize: 14 }} />}
+               icon={<EditOutlinedIcon sx={{ fontSize: 20 }} />}
                label="Editing"
                sx={{
+                  height: 37,
+                  fontSize: "0.875rem",
                   fontWeight: 500,
                   // The app's own chip: the page's edge and its secondary
                   // text, not a filled blue badge borrowed from the drill
@@ -79,6 +78,7 @@ export function BuilderToolbar({
                   border: theme.border,
                   color: theme.tileTitle,
                   "& .MuiChip-icon": { color: "inherit" },
+                  "& .MuiChip-label": { fontSize: "0.875rem" },
                }}
             />
          }
@@ -86,8 +86,7 @@ export function BuilderToolbar({
          {/* What the page is made of. */}
          {onAddTile && (
             <Button
-               size="small"
-               startIcon={<AddIcon fontSize="small" />}
+               startIcon={<AddIcon />}
                onClick={onAddTile}
                aria-label="Add tile"
             >
@@ -95,8 +94,7 @@ export function BuilderToolbar({
             </Button>
          )}
          <Button
-            size="small"
-            startIcon={<TuneIcon fontSize="small" />}
+            startIcon={<TuneIcon />}
             onClick={(event) => onSettings(event.currentTarget)}
          >
             Settings
@@ -110,9 +108,9 @@ export function BuilderToolbar({
             <span>
                <IconButton
                   aria-label="Undo"
-                  size="small"
                   disabled={!canUndo}
                   onClick={onUndo}
+                  sx={{ width: 37, height: 37 }}
                >
                   <UndoIcon fontSize="small" />
                </IconButton>
@@ -122,9 +120,9 @@ export function BuilderToolbar({
             <span>
                <IconButton
                   aria-label="Redo"
-                  size="small"
                   disabled={!canRedo}
                   onClick={onRedo}
+                  sx={{ width: 37, height: 37 }}
                >
                   <RedoIcon fontSize="small" />
                </IconButton>
@@ -132,24 +130,6 @@ export function BuilderToolbar({
          </Tooltip>
          {onSave && (
             <>
-               {/* "Unsaved changes" beside Save: the button's label alone
-                   reads as a command, not as a state. */}
-               <Typography
-                  variant="caption"
-                  aria-live="polite"
-                  sx={{
-                     color: theme.tileTitle,
-                     minWidth: 108,
-                     textAlign: "right",
-                     // Room between the state and the button that acts on it:
-                     // at the row's 4px gap the two read as one label.
-                     mr: 1.5,
-                     opacity: dirty && !saving ? 1 : 0,
-                     transition: "opacity 120ms",
-                  }}
-               >
-                  Unsaved changes
-               </Typography>
                <Tooltip title={dirty ? `Save (${MOD}S)` : ""}>
                   <span>
                      <Button

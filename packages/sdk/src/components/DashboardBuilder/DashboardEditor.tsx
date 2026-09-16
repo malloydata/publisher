@@ -47,7 +47,7 @@ export interface DashboardEditorProps {
    packageName: string;
    /** The dashboard's slug: `overview`, not `dashboards/overview.malloy`. */
    dashboardName: string;
-   /** Leave the editor: the host's "Done". Absent, no Done button. */
+   /** Leave the editor: the host's "Done editing". Absent, no such button. */
    onExit?: () => void;
    /**
     * What the editor does — opened, saved, refused — for the host to log or
@@ -339,7 +339,7 @@ export function DashboardEditor({
                toolbar={
                   onExit && (
                      <SecondaryButton
-                        label="Done"
+                        label="Done editing"
                         icon={<CheckIcon />}
                         onClick={onExit}
                      />

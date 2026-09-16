@@ -5,18 +5,25 @@ import { Box, Stack, Typography } from "@mui/material";
 import * as React from "react";
 
 /**
- * One titled section of a package's page: a heading, how many things are in it,
- * and the control that adds one. Shared so a section written elsewhere — the
- * materializations section is one — sits in the same rhythm as the rest.
+ * One titled section of a page: a heading, how many things are in it, what they
+ * are, and the control that adds one.
+ *
+ * Every section on every page is this component, so moving between a package
+ * and the environment above it does not restate the same heading at a different
+ * size, indent or gap. The environment page's sections used to be written out
+ * by hand beside it, which is how the two ended up one step apart on each.
  */
 export function PackageSection({
    title,
    count,
+   description,
    action,
    children,
 }: {
    title: string;
    count?: number;
+   /** What the section holds, in a line, under the heading. */
+   description?: string;
    /** A control on the heading's row, hard right. */
    action?: React.ReactNode;
    children: React.ReactNode;
@@ -33,7 +40,7 @@ export function PackageSection({
             // than by a margin on itself: `Stack`'s own spacing rule outranks
             // an `ml: auto` on a child, which is how the button ended up
             // beside the heading instead of at the edge.
-            sx={{ mb: 1, minHeight: 40 }}
+            sx={{ mb: description ? 0 : 1, minHeight: 40 }}
          >
             <Stack direction="row" alignItems="baseline" spacing={1}>
                <Typography
@@ -60,6 +67,11 @@ export function PackageSection({
             </Stack>
             {action}
          </Stack>
+         {description && (
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+               {description}
+            </Typography>
+         )}
          <Box>{children}</Box>
       </Box>
    );
