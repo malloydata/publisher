@@ -50,16 +50,10 @@ export async function openMaterializations(
    await gotoHome(page);
    await openEnvironment(page, env);
    await openPackage(page, env, pkg);
-   // The package page lists a "Materializations" entry row (role=button) that
-   // links to the dedicated screen. Git-cloned packages can take a while to
-   // appear, so allow a generous timeout before clicking.
-   const entry = page.getByRole("button", { name: "Materializations" });
-   await expect(entry).toBeVisible({ timeout: 60_000 });
-   await entry.click();
-   await expect(page).toHaveURL(
-      new RegExp(`/${env}/${pkg}/materializations/?$`),
-   );
+   // Materializations are a section of the package's own page: the runs are
+   // that package's history, so there is no separate screen to open. A
+   // git-cloned package can take a while to appear.
    await expect(
-      page.getByRole("heading", { name: "Materializations", level: 1 }),
-   ).toBeVisible();
+      page.getByRole("heading", { name: "Materializations", level: 6 }),
+   ).toBeVisible({ timeout: 60_000 });
 }

@@ -67,6 +67,8 @@ is a Console convenience.
   **Semantic Models**, **Package Data** and **Materializations**, in that order, plus the package's
   `README.malloynb` rendered underneath. Dashboards and Data Apps are hidden when the package has
   none. Every kind has its own icon and its own color, so a row's type reads before its name does.
+  The Materializations section lists the package's build runs and carries the three controls that
+  change them: **Scope**, **Schedule** and **Add materialization**.
   Notebooks and dashboards are listed by title, with a notebook's path beside it and a dashboard's
   slug beside it; a notebook's title comes from its opening markdown heading unless a
   `## title="…"` or a `#" ` doc comment overrides it.

@@ -37,9 +37,6 @@ const ModelPage = React.lazy(
 const PackagePage = React.lazy(
    () => import("./components/pages/PackagePage/PackagePage"),
 );
-const MaterializationsPage = React.lazy(
-   () => import("./components/pages/MaterializationsPage/MaterializationsPage"),
-);
 const EnvironmentPage = React.lazy(
    () => import("./components/pages/EnvironmentPage/EnvironmentPage"),
 );
@@ -101,10 +98,6 @@ export const createMalloyRouter = (
             {
                path: ":environmentName/:packageName",
                element: <PackagePage />,
-            },
-            {
-               path: ":environmentName/:packageName/materializations",
-               element: <MaterializationsPage />,
             },
             {
                path: ":environmentName/:packageName/*",

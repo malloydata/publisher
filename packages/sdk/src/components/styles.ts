@@ -52,12 +52,16 @@ export const MALLOY_ACCENT = {
  * environment pages, where `CONTENT_TINT`'s six never appear, so these are
  * free to be their own family rather than compete with it.
  *
- * Picked in the hues the other two families leave open (indigo, gold, slate)
+ * Picked in the hues the other two families leave open (indigo, gold, emerald)
  * and against the same 3:1 bar as `MALLOY_ACCENT`, measured against white:
- * indigo 5.7:1, gold 4.6:1, slate 8.1:1.
+ * indigo 5.7:1, gold 4.6:1, emerald 3.9:1.
+ *
+ * Emerald rather than the slate this started as: a near-neutral plate reads as
+ * chrome rather than as one of the coloured kinds, which is the whole job of
+ * the plate. A tint has to look like a colour someone chose.
  */
 export const SURFACE_TINT = {
-   environment: "#4a5568", // slate
+   environment: "#0f8a5f", // emerald
    package: "#3b5bdb", // indigo
    connection: "#8a6d1f", // gold
 } as const;

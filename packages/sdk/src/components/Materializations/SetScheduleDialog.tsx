@@ -63,13 +63,14 @@ export default function SetScheduleDialog({
       <span>
          <Button
             variant="outlined"
-            size="small"
             startIcon={<ScheduleIcon />}
             onClick={handleOpen}
             disabled={disabled}
+            // The label is the noun, like every other control on this row; the
+            // accessible name keeps the verb, and says which verb it is.
             aria-label={currentSchedule ? "Edit schedule" : "Set schedule"}
          >
-            {currentSchedule ? "Edit schedule" : "Set schedule"}
+            Schedule
          </Button>
       </span>
    );
