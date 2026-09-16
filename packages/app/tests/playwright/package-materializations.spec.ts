@@ -56,7 +56,7 @@ test.describe("package-materializations: mutable", () => {
    }) => {
       await openMaterializations(page, DEFAULT_ENV, PKG);
 
-      await page.getByRole("button", { name: "New materialization" }).click();
+      await page.getByRole("button", { name: "Add materialization" }).click();
       const dialog = page.getByRole("dialog", { name: "New materialization" });
       await expect(dialog).toBeVisible();
       await expect(
@@ -83,7 +83,7 @@ test.describe("package-materializations: mutable", () => {
       });
 
       // --- Materialize (auto-run: compile + plan + build + load) ---
-      await page.getByRole("button", { name: "New materialization" }).click();
+      await page.getByRole("button", { name: "Add materialization" }).click();
       const dialog = page.getByRole("dialog", { name: "New materialization" });
       await expect(dialog).toBeVisible();
       await dialog.getByRole("button", { name: "Materialize" }).click();
@@ -125,7 +125,7 @@ test.describe("package-materializations: mutable", () => {
       const row = page.locator('table tbody tr[role="button"]').first();
       if ((await row.count()) === 0) {
          await page
-            .getByRole("button", { name: "New materialization" })
+            .getByRole("button", { name: "Add materialization" })
             .click();
          const create = page.getByRole("dialog", {
             name: "New materialization",
@@ -167,7 +167,7 @@ test.describe("package-materializations: mutability parity with /api/v0/status",
       await openMaterializations(page, DEFAULT_ENV, PKG);
 
       await expect(
-         page.getByRole("button", { name: "New materialization" }),
+         page.getByRole("button", { name: "Add materialization" }),
       ).toHaveCount(expected);
    });
 });

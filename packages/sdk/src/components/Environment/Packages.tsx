@@ -91,6 +91,7 @@ function PackageRow({
          icon={<Inventory2OutlinedIcon sx={{ fontSize: 18 }} />}
          tint={SURFACE_TINT.package}
          label={pkg.name}
+         ariaLabel={pkg.name}
          {...(pkg.description ? { description: pkg.description } : {})}
          onClick={(event) => onSelectPackage(pkg.name, event)}
          {...(mutable

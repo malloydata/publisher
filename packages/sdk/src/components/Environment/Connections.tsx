@@ -300,6 +300,7 @@ function ConnectionRow({
          icon={<StorageOutlinedIcon sx={{ fontSize: 18 }} />}
          tint={SURFACE_TINT.connection}
          label={connection.name ?? ""}
+         ariaLabel={connection.name ?? ""}
          description={typeLabel(connection.type)}
          onClick={onOpenExplorer}
          {...(mutable

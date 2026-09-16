@@ -23,11 +23,11 @@ test.describe("packages — read", () => {
          PACKAGES.governed,
          PACKAGES.dataApp,
       ]) {
-         // Scope to the package tile heading: the environment page also lists
+         // Scope to the package's row: the environment page also lists
          // materializations, whose Package column can render the same name as a
          // link, so a bare getByText(pkg) is ambiguous under strict mode.
          await expect(
-            page.getByRole("heading", { name: pkg, exact: true, level: 6 }),
+            page.getByRole("button", { name: pkg, exact: true }),
          ).toBeVisible();
       }
    });
@@ -83,9 +83,7 @@ test.describe("packages — mutable CRUD", () => {
 
       // --- 1. Create a disposable environment ---
       await gotoHome(page);
-      await page
-         .getByRole("button", { name: "Create New Environment" })
-         .click();
+      await page.getByRole("button", { name: "Add environment" }).click();
       const createEnvDialog = page.getByRole("dialog", {
          name: "Create New Environment",
       });
@@ -95,12 +93,17 @@ test.describe("packages — mutable CRUD", () => {
          .click();
       await expect(createEnvDialog).toBeHidden();
       await expect(
-         page.getByRole("heading", { name: envName, level: 6 }),
+         page
+            .getByRole("main")
+            .getByRole("button", { name: envName, exact: true }),
       ).toBeVisible();
 
       // --- 2. Open it ---
-      // Redesigned env cards are click-targets themselves; click the heading.
-      await page.getByRole("heading", { name: envName, level: 6 }).click();
+      // An environment row is the click target itself.
+      await page
+         .getByRole("main")
+         .getByRole("button", { name: envName, exact: true })
+         .click();
       await expect(page).toHaveURL(new RegExp(`/${envName}/?$`));
 
       // Fresh env: no packages yet.
@@ -156,7 +159,9 @@ test.describe("packages — mutable CRUD", () => {
       // --- 7. Go back to Home and delete the environment ---
       await page.goto("/");
       await expect(
-         page.getByRole("heading", { name: envName, level: 6 }),
+         page
+            .getByRole("main")
+            .getByRole("button", { name: envName, exact: true }),
       ).toBeVisible();
       await page
          .getByRole("button", { name: `Environment actions for ${envName}` })
@@ -169,7 +174,9 @@ test.describe("packages — mutable CRUD", () => {
       await deleteEnvDialog.getByRole("button", { name: "Delete" }).click();
       await expect(deleteEnvDialog).toBeHidden();
       await expect(
-         page.getByRole("heading", { name: envName, level: 6 }),
+         page
+            .getByRole("main")
+            .getByRole("button", { name: envName, exact: true }),
       ).toHaveCount(0);
    });
 });
