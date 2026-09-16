@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import AddIcon from "@mui/icons-material/Add";
 import {
    Button,
    Dialog,
@@ -15,6 +14,7 @@ import {
    Tooltip,
 } from "@mui/material";
 import { useState } from "react";
+import { AddButton } from "../AddButton";
 
 type CreateMaterializationDialogProps = {
    onSubmit: (opts: { forceRefresh: boolean }) => Promise<unknown>;
@@ -46,15 +46,11 @@ export default function CreateMaterializationDialog({
 
    const button = (
       <span>
-         <Button
-            variant="contained"
-            startIcon={<AddIcon />}
+         <AddButton
+            label="Materialization"
             onClick={() => setOpen(true)}
             disabled={disabled}
-            aria-label="New materialization"
-         >
-            New materialization
-         </Button>
+         />
       </span>
    );
 

@@ -1,8 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import DownloadIcon from "@mui/icons-material/Download";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -22,7 +22,7 @@ import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument } from "./document";
 import { previewGivens, previewTileQuery } from "./preview";
 import { readDashboardDocument, readFailed } from "./readDocument";
-import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
+import { sha256Hex } from "../../utils/sha256";
 
 /**
  * The builder, opened on a package dashboard, with everything a host has to
@@ -30,16 +30,14 @@ import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
  * control row and live tiles that follow the document, a catalog for the
  * filter window's field search, and saving.
  *
- * SAVING is through the host's {@link DocumentStorage}, not to the package.
- * The package dashboard is a read-only origin: editing works on a copy, the
- * copy is saved where the host keeps documents (the Console's default is this
- * browser), and "Export" hands the file back so it can be put in the package.
- * That is the plan's copy-and-export model, and it needs no server write path.
- * A host with no storage still gets the editor, without Save.
+ * SAVING goes to the package on a server that takes writes, and otherwise to
+ * the host's {@link DocumentStorage} — the Console's default is this browser,
+ * where the copy is offered back on the next visit. A host with neither still
+ * gets the editor, without Save.
  *
  * What that costs is stated in the toolbar: a control added here is live in the
  * editor (its value is written into each tile's query) but reaches the package
- * only when the exported file does.
+ * only when the file is saved into it.
  */
 export interface DashboardEditorProps {
    environmentName: string;
@@ -49,8 +47,8 @@ export interface DashboardEditorProps {
    /** Leave the editor: the host's "Done". Absent, no Done button. */
    onExit?: () => void;
    /**
-    * What the editor does — opened, saved, exported, refused — for the host
-    * to log or count; see `DashboardEvent`.
+    * What the editor does — opened, saved, refused — for the host to log or
+    * count; see `DashboardEvent`.
     */
    onEvent?: DashboardEventHandler;
 }
@@ -74,7 +72,8 @@ export function DashboardEditor({
    onExit,
    onEvent,
 }: DashboardEditorProps) {
-   const { apiClients } = useServer();
+   const { apiClients, mutable } = useServer();
+   const queryClient = useQueryClient();
    // When the editor was asked for — or the reader chose what to open — so
    // "opened" can say how long it took. Read through refs by the open effect,
    // so a host's handler changing identity does not re-open the document.
@@ -98,6 +97,22 @@ export function DashboardEditor({
    const packageText = (
       modelQuery.data?.data as { sourceText?: string } | undefined
    )?.sourceText;
+   // The hash of the package file as opened: what a save into the package
+   // hands back as `expectedHash`, so a copy someone else changed in the
+   // meantime is refused rather than overwritten.
+   const [packageHash, setPackageHash] = useState<string | undefined>(
+      undefined,
+   );
+   useEffect(() => {
+      if (packageText === undefined) return;
+      let stale = false;
+      void sha256Hex(packageText).then((hash) => {
+         if (!stale) setPackageHash(hash);
+      });
+      return () => {
+         stale = true;
+      };
+   }, [packageText]);
 
    // The host's copy, if one was saved earlier: offered, never assumed.
    const [workspace, setWorkspace] = useState<string | undefined>(undefined);
@@ -147,8 +162,12 @@ export function DashboardEditor({
       | undefined
    >(undefined);
    const [openError, setOpenError] = useState<string | undefined>(undefined);
+   // The text the builder last saved into the package. When that text comes
+   // back from the server it is not a new document to open — the builder
+   // already holds it, with its history — so the open effect leaves it be.
+   const savedRef = useRef<string | undefined>(undefined);
    useEffect(() => {
-      if (opening === undefined) return;
+      if (opening === undefined || opening === savedRef.current) return;
       let stale = false;
       void readDashboardDocument(opening).then((result) => {
          if (stale) return;
@@ -178,27 +197,82 @@ export function DashboardEditor({
       };
    }, [opening]);
 
-   const save = useCallback(
+   const locator =
+      workspace === undefined
+         ? undefined
+         : dashboardLocator(workspace, environmentName, packageName, modelPath);
+   const saveToBrowser = useCallback(
       async (source: string) => {
-         if (!storage || workspace === undefined)
+         if (!storage || !locator)
             throw new Error(
                "This host keeps no documents, so there is nowhere to save.",
             );
-         await storage.saveDocument(
-            dashboardLocator(
-               workspace,
-               environmentName,
-               packageName,
-               modelPath,
-            ),
-            source,
-         );
+         await storage.saveDocument(locator, source);
          setDraft(source);
          // Saving without choosing is choosing the package file.
          setResume((chosen) => chosen ?? false);
       },
-      [storage, workspace, environmentName, packageName, modelPath],
+      [storage, locator],
    );
+   // Into the package itself, when the server takes writes: compile-checked,
+   // written atomically and reloaded there, refused if the file changed since
+   // it was opened. A browser draft of the same file is superseded by it.
+   const saveToPackage = useCallback(
+      async (source: string) => {
+         if (packageHash === undefined)
+            throw new Error("The package file is still loading; try again.");
+         let result;
+         try {
+            result = await apiClients.models.updateModelSource(
+               environmentName,
+               packageName,
+               modelPath,
+               { source, expectedHash: packageHash },
+            );
+         } catch (error) {
+            throw new Error(apiErrorMessage(error));
+         }
+         savedRef.current = source;
+         setPackageHash(result.data.contentHash);
+         if (storage && locator) {
+            await storage.deleteDocument(locator).catch(() => undefined);
+            setDraft(undefined);
+            setOffered(false);
+         }
+         setResume((chosen) => chosen ?? false);
+         // The package changed: the file, the manifest the live view reads,
+         // the package's dashboards list, and the dashboard the reader sees.
+         await queryClient.invalidateQueries({
+            queryKey: [
+               "dashboard-editor-model",
+               environmentName,
+               packageName,
+               modelPath,
+            ],
+         });
+         for (const key of [
+            "dashboard-editor-manifest",
+            "dashboards",
+            "dashboard",
+         ])
+            void queryClient.invalidateQueries({ queryKey: [key] });
+      },
+      [
+         apiClients,
+         environmentName,
+         packageName,
+         modelPath,
+         packageHash,
+         storage,
+         locator,
+         queryClient,
+      ],
+   );
+   const save = mutable
+      ? saveToPackage
+      : storage && locator
+        ? saveToBrowser
+        : undefined;
    const choose = (resumeDraft: boolean) => {
       startedAt.current = now();
       setResume(resumeDraft);
@@ -249,7 +323,7 @@ export function DashboardEditor({
                modelPath={modelPath}
                slug={dashboardName}
                opened={opened}
-               onSave={storage && workspace !== undefined ? save : undefined}
+               onSave={save}
                {...(onEvent ? { onEvent } : {})}
                toolbar={
                   onExit && (
@@ -259,9 +333,11 @@ export function DashboardEditor({
                   )
                }
                note={
-                  storage
-                     ? "Saved in this browser. Export puts the file in the package."
-                     : "Export puts the file in the package."
+                  mutable
+                     ? "Save writes the file into the package."
+                     : storage
+                       ? "Saved in this browser: this server does not take writes."
+                       : "This server does not take writes."
                }
             />
          )}
@@ -371,22 +447,6 @@ function Surface({
 
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
-   // Export: the file a save would write for the document as it stands —
-   // spliced when asked for, so an edit costs nothing until then. Refused
-   // (which the builder has already reported), the file as opened goes out.
-   const exportFile = useCallback(async () => {
-      const result = await spliceDashboardDocument(opened.source, doc);
-      const text = spliceFailed(result) ? opened.source : result.source;
-      onEvent?.({ type: "dashboard.exported", bytes: text.length });
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `${slug}.malloy`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-   }, [opened.source, doc, slug, onEvent]);
-
    const modelSpecs = useMemo(() => manifest?.givens ?? [], [manifest]);
    const runnable = useMemo(
       () =>
@@ -466,18 +526,7 @@ function Surface({
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
-            toolbar={
-               <>
-                  <Button
-                     size="small"
-                     startIcon={<DownloadIcon fontSize="small" />}
-                     onClick={() => void exportFile()}
-                  >
-                     Export
-                  </Button>
-                  {toolbar}
-               </>
-            }
+            toolbar={toolbar}
             controls={
                isSuccess ? <GivensPanel {...panel} layout="bar" /> : undefined
             }
@@ -490,4 +539,12 @@ function Surface({
          </Box>
       </Stack>
    );
+}
+
+/** The server's own reason for a refused write, when it gave one. */
+function apiErrorMessage(error: unknown): string {
+   const data = (error as { response?: { data?: { message?: string } } })
+      .response?.data;
+   if (data?.message) return data.message;
+   return error instanceof Error ? error.message : String(error);
 }

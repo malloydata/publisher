@@ -6,15 +6,12 @@ import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import {
    Box,
    Button,
-   Card,
-   CardContent,
    Container,
    Divider,
    Grid,
    IconButton,
    Menu,
    Stack,
-   Tooltip,
    Typography,
 } from "@mui/material";
 import { useState } from "react";
@@ -25,6 +22,8 @@ import { getEnvironmentDescription } from "../../utils/parsing";
 import { DOC_LINKS } from "../../constants/docLinks";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
+import { ItemRow } from "../ItemRow";
+import { SURFACE_TINT } from "../styles";
 import { useServer } from "../ServerProvider";
 import AddEnvironmentDialog from "./AddEnvironmentDialog";
 import DeleteEnvironmentDialog from "./DeleteEnvironmentDialog";
@@ -215,19 +214,15 @@ export default function Home({ onClickEnvironment }: HomeProps) {
                   </Box>
                   {mutable && <AddEnvironmentDialog />}
                </Stack>
-               <Grid container spacing={2}>
+               <Stack role="region" aria-label="Environments">
                   {environments.map((environment) => (
-                     <Grid
-                        size={{ xs: 12, sm: 6, md: 4 }}
+                     <EnvironmentRow
                         key={environment.name}
-                     >
-                        <EnvironmentCard
-                           environment={environment}
-                           onClickEnvironment={onClickEnvironment}
-                        />
-                     </Grid>
+                        environment={environment}
+                        {...(onClickEnvironment ? { onClickEnvironment } : {})}
+                     />
                   ))}
-               </Grid>
+               </Stack>
             </Box>
          ) : (
             <Box sx={{ mb: 4 }}>
@@ -309,7 +304,7 @@ export default function Home({ onClickEnvironment }: HomeProps) {
    );
 }
 
-function EnvironmentCard({
+function EnvironmentRow({
    environment,
    onClickEnvironment,
 }: {
@@ -322,124 +317,66 @@ function EnvironmentCard({
 
    const description = getEnvironmentDescription(environment.readme);
 
-   const handleClick = (event: React.MouseEvent) => {
-      if (environment.name && onClickEnvironment) {
-         onClickEnvironment(`/${environment.name}/`, event);
-      }
-   };
-
    const handleMenuClick = (event: React.MouseEvent<HTMLElement>) => {
       event.stopPropagation();
       setMenuAnchorEl(event.currentTarget);
    };
-
-   const handleMenuClose = () => {
-      setMenuAnchorEl(null);
-   };
+   const handleMenuClose = () => setMenuAnchorEl(null);
 
    return (
-      <Card
-         variant="outlined"
-         onClick={handleClick}
-         sx={{
-            height: "100%",
-            cursor: "pointer",
-            borderRadius: 3,
-            borderColor: "divider",
-            boxShadow: "none",
-            transition: "all 0.2s ease-in-out",
-            "&:hover": { boxShadow: 2, borderColor: "primary.main" },
-         }}
-      >
-         <CardContent sx={{ p: 2.5, "&:last-child": { pb: 2.5 } }}>
-            <Box
-               sx={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 1.5,
-               }}
-            >
-               <Box
-                  sx={(theme) => ({
-                     width: 36,
-                     height: 36,
-                     borderRadius: 1.5,
-                     bgcolor:
-                        theme.palette.mode === "dark"
-                           ? "rgba(255, 255, 255, 0.08)"
-                           : "grey.100",
-                     display: "flex",
-                     alignItems: "center",
-                     justifyContent: "center",
-                     flexShrink: 0,
-                     color: "text.primary",
-                  })}
-               >
-                  <FolderOutlinedIcon sx={{ fontSize: 20 }} />
-               </Box>
-               <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography
-                     variant="subtitle1"
-                     component="h6"
-                     noWrap
-                     sx={{ fontWeight: 600, mb: 0.5 }}
-                  >
-                     {environment.name}
-                  </Typography>
-                  <Tooltip title={description} followCursor enterDelay={1000}>
-                     <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        sx={{
-                           overflow: "hidden",
-                           textOverflow: "ellipsis",
-                           display: "-webkit-box",
-                           WebkitLineClamp: 2,
-                           WebkitBoxOrient: "vertical",
-                           lineHeight: 1.5,
-                        }}
-                     >
-                        {description}
-                     </Typography>
-                  </Tooltip>
-               </Box>
-               {mutable && (
-                  <>
-                     <IconButton
-                        size="small"
-                        onClick={handleMenuClick}
-                        aria-label={`Environment actions for ${environment.name}`}
-                        sx={{ flexShrink: 0, mt: -0.5, mr: -0.5 }}
-                     >
-                        <MoreVert fontSize="small" />
-                     </IconButton>
-                     <Menu
-                        anchorEl={menuAnchorEl}
-                        open={menuOpen}
-                        onClose={handleMenuClose}
-                        onClick={(e) => e.stopPropagation()}
-                        anchorOrigin={{
-                           vertical: "bottom",
-                           horizontal: "right",
-                        }}
-                        transformOrigin={{
-                           vertical: "top",
-                           horizontal: "right",
-                        }}
-                     >
-                        <EditEnvironmentDialog
-                           environment={environment}
-                           onCloseDialog={handleMenuClose}
-                        />
-                        <DeleteEnvironmentDialog
-                           environment={environment}
-                           onCloseDialog={handleMenuClose}
-                        />
-                     </Menu>
-                  </>
-               )}
-            </Box>
-         </CardContent>
-      </Card>
+      <ItemRow
+         icon={<FolderOutlinedIcon sx={{ fontSize: 18 }} />}
+         tint={SURFACE_TINT.environment}
+         label={environment.name ?? ""}
+         // The row's name is the environment's, not the row's whole text: a
+         // description in the accessible name makes every exact-name lookup,
+         // ours and a reader's, a guessing game about the author's prose.
+         ariaLabel={environment.name ?? ""}
+         {...(description ? { description } : {})}
+         {...(environment.name && onClickEnvironment
+            ? {
+                 onClick: (event: React.MouseEvent) =>
+                    onClickEnvironment(`/${environment.name}/`, event),
+              }
+            : {})}
+         {...(mutable
+            ? {
+                 trailingAction: (
+                    <>
+                       <IconButton
+                          size="small"
+                          onClick={handleMenuClick}
+                          aria-label={`Environment actions for ${environment.name}`}
+                       >
+                          <MoreVert fontSize="small" />
+                       </IconButton>
+                       <Menu
+                          anchorEl={menuAnchorEl}
+                          open={menuOpen}
+                          onClose={handleMenuClose}
+                          onClick={(event) => event.stopPropagation()}
+                          anchorOrigin={{
+                             vertical: "bottom",
+                             horizontal: "right",
+                          }}
+                          transformOrigin={{
+                             vertical: "top",
+                             horizontal: "right",
+                          }}
+                       >
+                          <EditEnvironmentDialog
+                             environment={environment}
+                             onCloseDialog={handleMenuClose}
+                          />
+                          <DeleteEnvironmentDialog
+                             environment={environment}
+                             onCloseDialog={handleMenuClose}
+                          />
+                       </Menu>
+                    </>
+                 ),
+              }
+            : {})}
+      />
    );
 }

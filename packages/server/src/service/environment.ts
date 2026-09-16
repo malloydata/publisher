@@ -1469,6 +1469,132 @@ export class Environment {
       return this.getOrCreatePackageMutex(packageName).runExclusive(fn);
    }
 
+   /**
+    * The text of one model file as it is on disk, or undefined when there is
+    * no such file. Read under the package lock, like every other disk read of
+    * the canonical tree.
+    */
+   public async readModelFile(
+      packageName: string,
+      modelPath: string,
+   ): Promise<string | undefined> {
+      assertSafePackageName(packageName);
+      assertSafeRelativeModelPath(modelPath);
+      return this.withPackageLock(packageName, async () => {
+         const target = safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+            modelPath,
+         );
+         try {
+            return await fs.promises.readFile(target, "utf8");
+         } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT")
+               return undefined;
+            throw error;
+         }
+      });
+   }
+
+   /**
+    * Write one model file's text, atomically: a sibling temporary file is
+    * renamed over the target, so a reader never sees a half-written file and
+    * a crash leaves either the old text or the new. Returns the text that was
+    * there before, or undefined for a new file, so a caller can put it back.
+    * The served package is NOT touched here; reload it to serve the new text.
+    */
+   public async writeModelFile(
+      packageName: string,
+      modelPath: string,
+      source: string,
+   ): Promise<{ previous: string | undefined }> {
+      assertSafePackageName(packageName);
+      assertSafeRelativeModelPath(modelPath);
+      return this.withPackageLock(packageName, async () => {
+         const target = safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+            modelPath,
+         );
+         let previous: string | undefined;
+         try {
+            previous = await fs.promises.readFile(target, "utf8");
+         } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+         }
+         await fs.promises.mkdir(path.dirname(target), { recursive: true });
+         const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+         await fs.promises.writeFile(temporary, source, "utf8");
+         await fs.promises.rename(temporary, target);
+         return { previous };
+      });
+   }
+
+   /**
+    * Write one model file, but only against the text the caller last saw.
+    *
+    * `check` runs inside the same hold of the package lock as the write, with
+    * the file's current text (undefined when there is none), and refuses by
+    * throwing — so two saves racing on one file cannot both pass their
+    * precondition and the second silently win. Anything the caller needs the
+    * lock NOT to cover, compiling above all, belongs before this call: the
+    * lock is not reentrant, and compiling the proposed text does not depend
+    * on what is on disk.
+    */
+   public async writeModelFileChecked(
+      packageName: string,
+      modelPath: string,
+      source: string,
+      check: (current: string | undefined) => void,
+   ): Promise<{ previous: string | undefined }> {
+      assertSafePackageName(packageName);
+      assertSafeRelativeModelPath(modelPath);
+      return this.withPackageLock(packageName, async () => {
+         const target = safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+            modelPath,
+         );
+         let previous: string | undefined;
+         try {
+            previous = await fs.promises.readFile(target, "utf8");
+         } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+         }
+         check(previous);
+         await fs.promises.mkdir(path.dirname(target), { recursive: true });
+         const temporary = `${target}.${crypto.randomUUID()}.tmp`;
+         await fs.promises.writeFile(temporary, source, "utf8");
+         await fs.promises.rename(temporary, target);
+         return { previous };
+      });
+   }
+
+   /**
+    * Put a model file back the way {@link writeModelFile} found it: the
+    * previous text, or gone when there was none.
+    */
+   public async restoreModelFile(
+      packageName: string,
+      modelPath: string,
+      previous: string | undefined,
+   ): Promise<void> {
+      if (previous !== undefined) {
+         await this.writeModelFile(packageName, modelPath, previous);
+         return;
+      }
+      assertSafePackageName(packageName);
+      assertSafeRelativeModelPath(modelPath);
+      await this.withPackageLock(packageName, async () => {
+         const target = safeJoinUnderRoot(
+            this.environmentPath,
+            packageName,
+            modelPath,
+         );
+         await fs.promises.rm(target, { force: true });
+      });
+   }
+
    private allocateStagingPath(packageName: string): string {
       return safeJoinUnderRoot(
          this.environmentPath,

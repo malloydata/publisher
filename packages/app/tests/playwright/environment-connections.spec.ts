@@ -7,7 +7,7 @@ import { gotoHome, openEnvironment } from "./helpers/navigation";
 import { getPublisherStatus } from "./helpers/publisherStatus";
 
 test.describe("environment-connections — read", () => {
-   test("Connections section renders a card for each connection", async ({
+   test("Connections section renders a row for each connection", async ({
       page,
    }) => {
       await gotoHome(page);
@@ -18,8 +18,10 @@ test.describe("environment-connections — read", () => {
       ).toBeVisible();
       // `bigquery` is a stub connection the CI workflow injects into the
       // examples environment before this suite runs; see app-playwright.yml.
-      const bigqueryCard = page.locator("h6", { hasText: "bigquery" });
-      await expect(bigqueryCard).toBeVisible();
+      const bigqueryRow = page
+         .getByRole("region", { name: "Connections" })
+         .getByRole("button", { name: "bigquery", exact: true });
+      await expect(bigqueryRow).toBeVisible();
       await expect(page.getByText("BigQuery", { exact: true })).toBeVisible();
    });
 });
@@ -92,7 +94,7 @@ test.describe("environment-connections — mutable CRUD", () => {
       await expect(addDialog).toBeHidden({ timeout: 15_000 });
 
       // Verify the card rendered with the right name + type label
-      const card = page.locator("h6", { hasText: connName });
+      const card = page.getByRole("button", { name: connName, exact: true });
       await expect(card).toBeVisible();
       await expect(
          page.getByText("PostgreSQL", { exact: true }).first(),
@@ -219,7 +221,7 @@ test.describe("environment-connections — delete is not gated on `resource`", (
          await gotoHome(page);
          await openEnvironment(page, DEFAULT_ENV);
 
-         const card = page.locator("h6", { hasText: connName });
+         const card = page.getByRole("button", { name: connName, exact: true });
          await expect(card).toBeVisible();
 
          await page

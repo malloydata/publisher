@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import AddIcon from "@mui/icons-material/Add";
 import {
    Box,
    Button,
@@ -17,6 +16,7 @@ import {
    Typography,
 } from "@mui/material";
 import { useState } from "react";
+import { AddButton } from "../AddButton";
 
 type CreateEnvMaterializationDialogProps = {
    /** Packages in the environment the user can materialize. */
@@ -68,15 +68,11 @@ export default function CreateEnvMaterializationDialog({
 
    return (
       <>
-         <Button
-            variant="contained"
-            startIcon={<AddIcon />}
+         <AddButton
+            label="Materialization"
             onClick={handleOpen}
             disabled={disabled}
-            aria-label="New materialization"
-         >
-            New materialization
-         </Button>
+         />
 
          <Dialog
             open={open}

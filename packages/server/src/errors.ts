@@ -195,6 +195,11 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(409, error.message);
    } else if (error instanceof InvalidStateTransitionError) {
       return httpError(409, error.message);
+   } else if (error instanceof WriteConflictError) {
+      return httpError(409, error.message);
+   } else if (error instanceof WriteRolledBackError) {
+      logInternalFailure("Dashboard write rolled back", error, "warn");
+      return httpError(500, error.message);
    } else if (error instanceof ServiceUnavailableError) {
       return httpError(503, error.message);
    } else if (error instanceof PayloadTooLargeError) {
@@ -467,6 +472,28 @@ export class MaterializationNotFoundError extends Error {
 export class MaterializationConflictError extends Error {
    constructor(message: string) {
       super(message);
+   }
+}
+
+/** A write whose `expectedHash` no longer matches the file: someone else saved first. */
+export class WriteConflictError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "WriteConflictError";
+   }
+}
+
+/**
+ * A write that was applied and then taken back: the package would not serve it,
+ * so the previous text was put back. The caller's request was well-formed and
+ * the file compiled, so this is the server's failure, not theirs — 500, with
+ * the message, which says what state the package was left in. The underlying
+ * failure is logged rather than returned; it can carry a path.
+ */
+export class WriteRolledBackError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "WriteRolledBackError";
    }
 }
 

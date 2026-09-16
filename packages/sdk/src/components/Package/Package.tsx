@@ -3,6 +3,7 @@
 
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CloseIcon from "@mui/icons-material/Close";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
    Alert,
@@ -22,20 +23,25 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import React, { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import React, { useCallback, useEffect, useState } from "react";
 import { Database } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
+import type { DocumentLocator } from "../DocumentStorage/DocumentStorage";
+import { useOptionalDocumentStorage } from "../DocumentStorage/DocumentStorageProvider";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
+import { NewDashboardDialog } from "./NewDashboardDialog";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { serverBaseUrl } from "../../utils/dataAppEmbed";
-import { MONO_FONT_FAMILY } from "../styles";
 import ContentTypeIcon, {
    CONTENT_TINT,
    type ContentType,
 } from "./ContentTypeIcon";
+import { AddButton } from "../AddButton";
+import { ItemRow } from "../ItemRow";
 
 const README_NOTEBOOK = "README.malloynb";
 
@@ -48,7 +54,8 @@ export default function Package({
    onClickPackageFile,
    resourceUri,
 }: PackageProps) {
-   const { apiClients, server } = useServer();
+   const { apiClients, server, mutable } = useServer();
+   const queryClient = useQueryClient();
    const onClick =
       onClickPackageFile ??
       ((to: string) => {
@@ -58,6 +65,30 @@ export default function Package({
       parseResourceUri(resourceUri);
 
    const [schemaDatabase, setSchemaDatabase] = useState<Database | null>(null);
+   const [creating, setCreating] = useState(false);
+
+   // Dashboards saved in this browser and not (yet) in the package: the
+   // builder's drafts, listed so they are found rather than stumbled on.
+   const storage = useOptionalDocumentStorage()?.documentStorage;
+   const [drafts, setDrafts] = useState<DocumentLocator[]>([]);
+   const draftPrefix = `${environmentName}/${packageName}/dashboards/`;
+   const refreshDrafts = useCallback(async () => {
+      if (!storage) return;
+      const workspaces = await storage.listWorkspaces(true);
+      const found: DocumentLocator[] = [];
+      for (const workspace of workspaces)
+         for (const locator of await storage.listDocuments(
+            workspace,
+            "dashboard",
+         ))
+            if (locator.path.startsWith(draftPrefix)) found.push(locator);
+      setDrafts(found);
+   }, [storage, draftPrefix]);
+   useEffect(() => {
+      void refreshDrafts();
+   }, [refreshDrafts]);
+   const draftSlug = (locator: DocumentLocator) =>
+      locator.path.slice(draftPrefix.length).replace(/\.malloy$/, "");
 
    const pkgQuery = useQueryWithApiError({
       queryKey: ["package", environmentName, packageName, versionId],
@@ -282,6 +313,31 @@ export default function Package({
 
          {isLoading && <Loading text="Loading package..." />}
 
+         <NewDashboardDialog
+            open={creating}
+            environmentName={environmentName}
+            packageName={packageName}
+            models={models
+               .map((model) => model.path)
+               .filter(
+                  (path): path is string =>
+                     typeof path === "string" &&
+                     path.endsWith(".malloy") &&
+                     !path.startsWith("dashboards/"),
+               )}
+            existing={dashboards
+               .map((dashboard) => dashboard.name)
+               .filter((name): name is string => typeof name === "string")}
+            onClose={() => setCreating(false)}
+            onCreated={(slug) => {
+               setCreating(false);
+               void queryClient.invalidateQueries({ queryKey: ["dashboards"] });
+               onClick(
+                  `/${environmentName}/${packageName}/dashboards/${encodeURIComponent(slug)}/edit`,
+               );
+            }}
+         />
+
          {!isLoading && (
             <>
                {/* First: the at-a-glance artifact a visitor most likely wants,
@@ -313,8 +369,22 @@ export default function Package({
                      </Alert>
                   </Box>
                )}
-               {dashboards.length > 0 && (
-                  <PackageSection title="Dashboards" count={dashboards.length}>
+               {(dashboards.length > 0 || mutable) && (
+                  <PackageSection
+                     title="Dashboards"
+                     count={dashboards.length}
+                     action={
+                        mutable ? (
+                           <AddButton
+                              label="Dashboard"
+                              onClick={() => setCreating(true)}
+                           />
+                        ) : undefined
+                     }
+                  >
+                     {dashboards.length === 0 && (
+                        <EmptyRow label="No dashboards yet" />
+                     )}
                      {dashboards.map((dashboard) => {
                         // A title equal to the slug is what the server falls
                         // back to when the file names itself neither way, so
@@ -344,6 +414,40 @@ export default function Package({
                            />
                         );
                      })}
+                  </PackageSection>
+               )}
+               {drafts.length > 0 && (
+                  <PackageSection title="Drafts" count={drafts.length}>
+                     {drafts.map((locator) => (
+                        <PackageItemRow
+                           key={locator.path}
+                           type="dashboard"
+                           label={draftSlug(locator)}
+                           rightLabel="saved in this browser"
+                           onClick={(event) =>
+                              onClick(
+                                 `/${environmentName}/${packageName}/dashboards/${encodeURIComponent(draftSlug(locator))}/edit`,
+                                 event,
+                              )
+                           }
+                           trailingAction={
+                              <Tooltip title="Delete this draft">
+                                 <IconButton
+                                    size="small"
+                                    aria-label={`Delete draft ${draftSlug(locator)}`}
+                                    onClick={(event) => {
+                                       event.stopPropagation();
+                                       void storage
+                                          ?.deleteDocument(locator)
+                                          .then(refreshDrafts);
+                                    }}
+                                 >
+                                    <DeleteOutlineIcon fontSize="small" />
+                                 </IconButton>
+                              </Tooltip>
+                           }
+                        />
+                     ))}
                   </PackageSection>
                )}
 
@@ -550,31 +654,43 @@ export default function Package({
 function PackageSection({
    title,
    count,
+   action,
    children,
 }: {
    title: string;
    count?: number;
+   /** A control on the heading's row, hard right. */
+   action?: React.ReactNode;
    children: React.ReactNode;
 }) {
    return (
       <Box sx={{ mb: 4 }}>
          <Stack
             direction="row"
-            alignItems="baseline"
-            spacing={1}
-            sx={{ mb: 1 }}
+            alignItems="center"
+            justifyContent="space-between"
+            // Tall enough for the section's add button whether or not it has
+            // one, so a section with nothing to add does not sit tighter than
+            // its neighbours. The action is pushed right by the layout rather
+            // than by a margin on itself: `Stack`'s own spacing rule outranks
+            // an `ml: auto` on a child, which is how the button ended up
+            // beside the heading instead of at the edge.
+            sx={{ mb: 1, minHeight: 40 }}
          >
-            <Typography
-               variant="h6"
-               sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
-            >
-               {title}
-            </Typography>
-            {count !== undefined && (
-               <Typography variant="caption" color="text.secondary">
-                  ({count})
+            <Stack direction="row" alignItems="baseline" spacing={1}>
+               <Typography
+                  variant="h6"
+                  sx={{ fontWeight: 600, letterSpacing: "-0.025em" }}
+               >
+                  {title}
                </Typography>
-            )}
+               {count !== undefined && (
+                  <Typography variant="caption" color="text.secondary">
+                     ({count})
+                  </Typography>
+               )}
+            </Stack>
+            {action}
          </Stack>
          <Box>{children}</Box>
       </Box>
@@ -607,90 +723,16 @@ function PackageItemRow({
     *  `event.stopPropagation()` so the row click doesn't also fire. */
    trailingAction?: React.ReactNode;
 }) {
-   const interactive = !!onClick;
-   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (!onClick) return;
-      if (event.key === "Enter" || event.key === " ") {
-         event.preventDefault();
-         onClick(event as unknown as React.MouseEvent);
-      }
-   };
    return (
-      <Box
-         onClick={onClick}
-         onKeyDown={interactive ? handleKeyDown : undefined}
-         role={interactive ? "button" : undefined}
-         tabIndex={interactive ? 0 : undefined}
-         sx={(theme) => ({
-            display: "flex",
-            alignItems: "center",
-            gap: 1.5,
-            py: 1,
-            px: 1,
-            mx: -1,
-            cursor: interactive ? "pointer" : "default",
-            borderRadius: 1.5,
-            transition: "background-color 0.1s",
-            "&:hover": interactive
-               ? {
-                    backgroundColor:
-                       theme.palette.mode === "dark"
-                          ? "rgba(255, 255, 255, 0.08)"
-                          : "grey.100",
-                 }
-               : undefined,
-            "&:focus-visible": interactive
-               ? {
-                    outline: "2px solid",
-                    outlineColor: "primary.main",
-                    outlineOffset: 2,
-                 }
-               : undefined,
-         })}
-      >
-         <Box
-            sx={{
-               width: 32,
-               height: 32,
-               borderRadius: 1,
-               bgcolor: CONTENT_TINT[type],
-               color: "#FFFFFF",
-               display: "flex",
-               alignItems: "center",
-               justifyContent: "center",
-               flexShrink: 0,
-            }}
-         >
-            <ContentTypeIcon type={type} />
-         </Box>
-         <Typography
-            variant="body2"
-            sx={{
-               fontFamily: MONO_FONT_FAMILY,
-               flex: 1,
-               minWidth: 0,
-               overflow: "hidden",
-               textOverflow: "ellipsis",
-               whiteSpace: "nowrap",
-            }}
-         >
-            {label}
-         </Typography>
-         {rightLabel && (
-            <Typography
-               variant="caption"
-               color="text.secondary"
-               sx={{ flexShrink: 0 }}
-            >
-               {rightLabel}
-            </Typography>
-         )}
-         {trailingAction && (
-            <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center" }}>
-               {trailingAction}
-            </Box>
-         )}
-      </Box>
+      <ItemRow
+         icon={<ContentTypeIcon type={type} />}
+         tint={CONTENT_TINT[type]}
+         label={label}
+         mono
+         {...(rightLabel === undefined ? {} : { rightLabel })}
+         {...(onClick === undefined ? {} : { onClick })}
+         {...(trailingAction === undefined ? {} : { trailingAction })}
+      />
    );
 }
 
