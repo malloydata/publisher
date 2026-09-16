@@ -257,7 +257,7 @@ export default function ThemeEditorPage() {
 
    return (
       <Box sx={{ p: 4, maxWidth: 980, mx: "auto" }}>
-         <BackLink label="Publisher" onClick={() => navigate("/")} />
+         <BackLink label="Publisher" href="/" onClick={() => navigate("/")} />
          <Stack
             direction="row"
             justifyContent="space-between"

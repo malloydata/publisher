@@ -4,11 +4,10 @@
 import React, { useState } from "react";
 import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
-import { ListItemIcon, ListItemText, MenuItem, Snackbar } from "@mui/material";
+import { ListItemIcon, ListItemText, MenuItem } from "@mui/material";
 import { Delete } from "@mui/icons-material";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { useServer } from "../ServerProvider";
-import { useQueryClient } from "@tanstack/react-query";
 import { parseResourceUri } from "../../utils/formatting";
 import { AppDialog } from "../AppDialog";
 
@@ -21,8 +20,6 @@ export default function DeletePackageDialog({
 }) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const queryClient = useQueryClient();
-   const [notificationMessage, setNotificationMessage] = useState("");
    const handleClickOpen = () => {
       setOpen(true);
    };
@@ -32,21 +29,12 @@ export default function DeletePackageDialog({
    };
    const { environmentName, packageName } = parseResourceUri(resourceUri);
 
-   const deletePackage = useMutationWithApiError({
+   const deletePackage = useCrudMutation({
       mutationFn: () =>
          apiClients.packages.deletePackage(environmentName, packageName),
-      onSuccess() {
-         handleClose();
-         queryClient.invalidateQueries({ queryKey: ["packages"] });
-         setNotificationMessage("Package deleted successfully");
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Package deleted",
+      invalidates: [["packages", environmentName]],
+      onSettled: handleClose,
    });
 
    return (
@@ -81,12 +69,7 @@ export default function DeletePackageDialog({
                served and this cannot be undone.
             </Typography>
          </AppDialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
+         {deletePackage.notice}
       </React.Fragment>
    );
 }

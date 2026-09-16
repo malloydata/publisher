@@ -40,6 +40,7 @@ export default function NotebookPage({
       <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
          <BackLink
             label={packageName}
+            href={`/${environmentName}/${packageName}`}
             onClick={(event) =>
                navigate(`/${environmentName}/${packageName}`, event)
             }

@@ -50,6 +50,7 @@ export default function DashboardEditPage({
              Done is the way out that keeps the page you were on. */}
          <BackLink
             label={packageName}
+            href={`/${environmentName}/${packageName}`}
             onClick={() => navigate(`/${environmentName}/${packageName}`)}
          />
          {/* The bar, at the height the reader's view had it, so the page does

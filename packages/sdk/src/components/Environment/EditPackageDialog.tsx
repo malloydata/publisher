@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { Edit } from "@mui/icons-material";
-import { ListItemIcon, ListItemText, MenuItem, Snackbar } from "@mui/material";
+import { ListItemIcon, ListItemText, MenuItem } from "@mui/material";
 import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
-import { useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
 import { Package } from "../../client";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { parseResourceUri } from "../../utils/formatting";
 import { useServer } from "../ServerProvider";
 import { Stack } from "@mui/material";
@@ -27,8 +26,6 @@ export default function EditPackageDialog({
 }: EditPackageDialogProps) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const queryClient = useQueryClient();
-   const [notificationMessage, setNotificationMessage] = useState("");
 
    const handleClickOpen = () => {
       setOpen(true);
@@ -40,8 +37,8 @@ export default function EditPackageDialog({
    };
 
    const { packageName, environmentName } = parseResourceUri(resourceUri);
-   const editPackage = useMutationWithApiError({
-      async mutationFn(variables: { description: string }) {
+   const editPackage = useCrudMutation({
+      mutationFn(variables: { description: string }) {
          return apiClients.packages.updatePackage(
             environmentName,
             packageName,
@@ -51,20 +48,9 @@ export default function EditPackageDialog({
             },
          );
       },
-      onSuccess() {
-         handleClose();
-         setNotificationMessage("Package updated successfully");
-         queryClient.invalidateQueries({
-            queryKey: ["packages", environmentName],
-         });
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Package updated",
+      invalidates: [["packages", environmentName]],
+      onSettled: handleClose,
    });
 
    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -136,12 +122,7 @@ export default function EditPackageDialog({
                </Stack>
             </form>
          </AppDialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
+         {editPackage.notice}
       </React.Fragment>
    );
 }

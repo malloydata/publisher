@@ -22,6 +22,7 @@ import { DOC_LINKS } from "../../constants/docLinks";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import { ItemRow } from "../ItemRow";
+import { PackageSection } from "../PackageSection";
 import { SURFACE_TINT } from "../styles";
 import { useServer } from "../ServerProvider";
 import AddEnvironmentDialog from "./AddEnvironmentDialog";
@@ -188,31 +189,13 @@ export default function Home({ onClickEnvironment }: HomeProps) {
          <Divider sx={{ my: 4 }} />
 
          {environments.length > 0 ? (
-            <Box sx={{ mb: 4 }}>
-               <Stack
-                  direction="row"
-                  justifyContent="space-between"
-                  alignItems="center"
-                  sx={{ mb: 3 }}
-               >
-                  <Box>
-                     <Typography
-                        variant="h5"
-                        sx={{
-                           fontWeight: 500,
-                           letterSpacing: "-0.025em",
-                           mb: 0.5,
-                        }}
-                     >
-                        Environments
-                     </Typography>
-                     <Typography variant="body2" color="text.secondary">
-                        Published environments available on this server
-                     </Typography>
-                  </Box>
-                  {mutable && <AddEnvironmentDialog />}
-               </Stack>
-               <Stack role="region" aria-label="Environments">
+            <PackageSection
+               title="Environments"
+               count={environments.length}
+               description="Published environments available on this server"
+               {...(mutable ? { action: <AddEnvironmentDialog /> } : {})}
+            >
+               <Stack>
                   {environments.map((environment) => (
                      <EnvironmentRow
                         key={environment.name}
@@ -221,7 +204,7 @@ export default function Home({ onClickEnvironment }: HomeProps) {
                      />
                   ))}
                </Stack>
-            </Box>
+            </PackageSection>
          ) : (
             <Box sx={{ mb: 4 }}>
                <Typography

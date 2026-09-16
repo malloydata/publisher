@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import Button from "@mui/material/Button";
-import Snackbar from "@mui/material/Snackbar";
 import TextField from "@mui/material/TextField";
-import { useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { generateEnvironmentReadme } from "../../utils/parsing";
 import { useServer } from "../ServerProvider";
 import { AddButton } from "../buttons";
@@ -16,7 +14,6 @@ import { AppDialog } from "../AppDialog";
 export default function AddEnvironmentDialog() {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const [notificationMessage, setNotificationMessage] = useState("");
    const handleClickOpen = () => {
       setOpen(true);
    };
@@ -24,9 +21,8 @@ export default function AddEnvironmentDialog() {
    const handleClose = () => {
       setOpen(false);
    };
-   const queryClient = useQueryClient();
-   const addEnvironment = useMutationWithApiError({
-      async mutationFn(variables: { name: string; description: string }) {
+   const addEnvironment = useCrudMutation({
+      mutationFn(variables: { name: string; description: string }) {
          return apiClients.environments.createEnvironment({
             name: variables.name,
             readme: generateEnvironmentReadme(
@@ -38,18 +34,9 @@ export default function AddEnvironmentDialog() {
             ),
          });
       },
-      onSuccess() {
-         handleClose();
-         queryClient.invalidateQueries({ queryKey: ["environments"] });
-         setNotificationMessage("Environment created successfully");
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Environment created",
+      invalidates: [["environments"]],
+      onSettled: handleClose,
    });
 
    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -117,12 +104,7 @@ export default function AddEnvironmentDialog() {
                </Stack>
             </form>
          </AppDialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
+         {addEnvironment.notice}
       </React.Fragment>
    );
 }

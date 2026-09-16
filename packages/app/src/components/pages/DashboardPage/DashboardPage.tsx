@@ -69,6 +69,7 @@ export default function DashboardPage({
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          <BackLink
             label={packageName}
+            href={`/${environmentName}/${packageName}`}
             onClick={() => navigate(`/${environmentName}/${packageName}`)}
          />
          {/* The same bar the builder has, with the same button in the same

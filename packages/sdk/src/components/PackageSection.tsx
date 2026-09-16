@@ -3,6 +3,7 @@
 
 import { Box, Stack, Typography } from "@mui/material";
 import * as React from "react";
+import { useId } from "react";
 
 /**
  * One titled section of a page: a heading, how many things are in it, what they
@@ -10,8 +11,12 @@ import * as React from "react";
  *
  * Every section on every page is this component, so moving between a package
  * and the environment above it does not restate the same heading at a different
- * size, indent or gap. The environment page's sections used to be written out
- * by hand beside it, which is how the two ended up one step apart on each.
+ * size, indent or gap.
+ *
+ * The section is a landmark named by its own heading, which is what makes
+ * "Dashboards" addressable — to a screen reader moving by region, and to a test
+ * that wants the dashboards list rather than every row on the page that happens
+ * to share a word with it.
  */
 export function PackageSection({
    title,
@@ -28,8 +33,9 @@ export function PackageSection({
    action?: React.ReactNode;
    children: React.ReactNode;
 }) {
+   const titleId = useId();
    return (
-      <Box sx={{ mb: 4 }}>
+      <Box component="section" aria-labelledby={titleId} sx={{ mb: 4 }}>
          <Stack
             direction="row"
             alignItems="center"
@@ -44,6 +50,7 @@ export function PackageSection({
          >
             <Stack direction="row" alignItems="baseline" spacing={1}>
                <Typography
+                  id={titleId}
                   variant="h6"
                   sx={{
                      fontWeight: 600,

@@ -4,12 +4,11 @@
 import React, { useState } from "react";
 import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
-import { ListItemIcon, ListItemText, MenuItem, Snackbar } from "@mui/material";
+import { ListItemIcon, ListItemText, MenuItem } from "@mui/material";
 import { Delete } from "@mui/icons-material";
 import { Environment } from "../../client";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { useServer } from "../ServerProvider";
-import { useQueryClient } from "@tanstack/react-query";
 import { AppDialog } from "../AppDialog";
 
 export default function DeleteEnvironmentDialog({
@@ -21,8 +20,6 @@ export default function DeleteEnvironmentDialog({
 }) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const queryClient = useQueryClient();
-   const [notificationMessage, setNotificationMessage] = useState("");
    const handleClickOpen = () => {
       setOpen(true);
    };
@@ -31,21 +28,12 @@ export default function DeleteEnvironmentDialog({
       onCloseDialog();
    };
 
-   const deleteEnvironment = useMutationWithApiError({
+   const deleteEnvironment = useCrudMutation({
       mutationFn: () =>
          apiClients.environments.deleteEnvironment(environment.name),
-      onSuccess() {
-         handleClose();
-         queryClient.invalidateQueries({ queryKey: ["environments"] });
-         setNotificationMessage("Environment deleted successfully");
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Environment deleted",
+      invalidates: [["environments"]],
+      onSettled: handleClose,
    });
 
    return (
@@ -80,12 +68,7 @@ export default function DeleteEnvironmentDialog({
                being served and this cannot be undone.
             </Typography>
          </AppDialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
+         {deleteEnvironment.notice}
       </React.Fragment>
    );
 }

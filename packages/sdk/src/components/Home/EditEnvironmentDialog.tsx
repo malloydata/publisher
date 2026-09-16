@@ -6,14 +6,13 @@ import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
 import { useState } from "react";
 import { Edit } from "@mui/icons-material";
-import { MenuItem, ListItemIcon, ListItemText, Snackbar } from "@mui/material";
+import { MenuItem, ListItemIcon, ListItemText } from "@mui/material";
 import { Environment } from "../../client";
 import {
    generateEnvironmentReadme,
    getEnvironmentDescription,
 } from "../../utils/parsing";
-import { useQueryClient } from "@tanstack/react-query";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { useServer } from "../ServerProvider";
 import Stack from "@mui/material/Stack";
 import { AppDialog } from "../AppDialog";
@@ -29,8 +28,6 @@ export default function EditEnvironmentDialog({
 }: EditEnvironmentModalProps) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const queryClient = useQueryClient();
-   const [notificationMessage, setNotificationMessage] = useState("");
 
    const handleClickOpen = () => {
       setOpen(true);
@@ -41,8 +38,8 @@ export default function EditEnvironmentDialog({
       onCloseDialog();
    };
 
-   const editEnvironment = useMutationWithApiError({
-      async mutationFn(variables: { description: string }) {
+   const editEnvironment = useCrudMutation({
+      mutationFn(variables: { description: string }) {
          return apiClients.environments.updateEnvironment(environment.name, {
             name: environment.name,
             readme: generateEnvironmentReadme(
@@ -54,18 +51,9 @@ export default function EditEnvironmentDialog({
             ),
          });
       },
-      onSuccess() {
-         handleClose();
-         queryClient.invalidateQueries({ queryKey: ["environments"] });
-         setNotificationMessage("Environment updated successfully");
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Environment updated",
+      invalidates: [["environments"]],
+      onSettled: handleClose,
    });
 
    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -138,12 +126,7 @@ export default function EditEnvironmentDialog({
                </Stack>
             </form>
          </AppDialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
+         {editEnvironment.notice}
       </React.Fragment>
    );
 }

@@ -48,10 +48,10 @@ export default function Packages({
    const packages = [...data.data].sort((a, b) => a.name.localeCompare(b.name));
 
    return (
-      // A labelled region, so a reader can jump to the packages and a test can
-      // name one without catching the same package's name in the
-      // materializations table below.
-      <Stack role="region" aria-label="Packages">
+      // The labelled region is the `PackageSection` above this: a reader can
+      // jump to the packages, and a test can name one without catching the
+      // same package's name in the materializations table below.
+      <Stack>
          {packages.map((pkg) => {
             const packageResourceUri = encodeResourceUri({
                environmentName,

@@ -109,6 +109,7 @@ function ModelPage() {
          <Box sx={wrapperSx}>
             <BackLink
                label={params.packageName}
+               href={`/${params.environmentName}/${params.packageName}`}
                onClick={(event) =>
                   navigate(
                      `/${params.environmentName}/${params.packageName}`,
@@ -132,6 +133,7 @@ function ModelPage() {
          <Box sx={wrapperSx}>
             <BackLink
                label={params.packageName}
+               href={`/${params.environmentName}/${params.packageName}`}
                onClick={(event) =>
                   navigate(
                      `/${params.environmentName}/${params.packageName}`,
@@ -175,6 +177,7 @@ function ModelPage() {
       <Box sx={wrapperSx}>
          <BackLink
             label={params.packageName}
+            href={`/${params.environmentName}/${params.packageName}`}
             onClick={(event) =>
                navigate(
                   `/${params.environmentName}/${params.packageName}`,

@@ -178,7 +178,7 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
             </Typography>
          )}
          {isSuccess && connections.length > 0 && (
-            <Stack role="region" aria-label="Connections">
+            <Stack>
                {connections.map((conn) => (
                   <ConnectionRow
                      key={conn.name}

@@ -1,11 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, Button, Snackbar, Stack, TextField } from "@mui/material";
-import { useQueryClient } from "@tanstack/react-query";
+import { Box, Button, Stack, TextField } from "@mui/material";
 import React, { useState } from "react";
 import { Package } from "../../client";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { parseResourceUri } from "../../utils/formatting";
 import { DOC_LINKS } from "../../constants/docLinks";
 import { useServer } from "../ServerProvider";
@@ -21,33 +20,20 @@ export default function AddPackageDialog({
 }: AddPackageDialogProps) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const queryClient = useQueryClient();
-   const [notificationMessage, setNotificationMessage] = useState("");
 
    const { environmentName } = parseResourceUri(resourceUri);
 
-   const addPackage = useMutationWithApiError({
-      async mutationFn(variables: Package) {
+   const addPackage = useCrudMutation({
+      mutationFn(variables: Package) {
          return apiClients.packages.createPackage(environmentName, {
             name: variables.name,
             description: variables.description,
             location: variables.location,
          });
       },
-      onSuccess() {
-         setOpen(false);
-         setNotificationMessage("Package created successfully");
-         queryClient.invalidateQueries({
-            queryKey: ["packages", environmentName],
-         });
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Package created",
+      invalidates: [["packages", environmentName]],
+      onSettled: () => setOpen(false),
    });
 
    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -139,12 +125,7 @@ export default function AddPackageDialog({
                </Stack>
             </form>
          </AppDialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
+         {addPackage.notice}
       </>
    );
 }
