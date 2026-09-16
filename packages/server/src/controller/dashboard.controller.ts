@@ -5,15 +5,39 @@ import { createHash } from "node:crypto";
 import { components } from "../api";
 import {
    BadRequestError,
+   CompileRefusedError,
    DashboardNotFoundError,
    FrozenConfigError,
    WriteConflictError,
+   WriteRolledBackError,
 } from "../errors";
+import {
+   recordDashboardWrite,
+   type DashboardWriteOutcome,
+} from "../dashboard_write_metrics";
 import { assertSafeRelativeModelPath } from "../path_safety";
 import { EnvironmentStore } from "../service/environment_store";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
+/**
+ * Which outcome an error from the write path represents.
+ *
+ * Read from the error's type rather than decided at each throw, so a branch
+ * added later is classified by what it throws instead of being silently
+ * counted as something else — or forgotten.
+ */
+function outcomeOf(error: Error): DashboardWriteOutcome {
+   if (error instanceof WriteConflictError) return "conflict";
+   if (error instanceof CompileRefusedError) return "compile_failed";
+   if (error instanceof WriteRolledBackError) return "rolled_back";
+   if (error instanceof BadRequestError || error instanceof FrozenConfigError)
+      return "refused";
+   // A 404 for an unknown package, or anything genuinely unexpected. Counted
+   // as refused rather than invented a bucket for: the endpoint did not write.
+   return "refused";
+}
+
 type ApiModelSourceWrite = components["schemas"]["ModelSourceWriteRequest"];
 type ApiModelSourceWriteResult =
    components["schemas"]["ModelSourceWriteResult"];
@@ -116,6 +140,37 @@ export class DashboardController {
       modelPath: string,
       body: ApiModelSourceWrite,
    ): Promise<ApiModelSourceWriteResult> {
+      // One record per attempt, whichever way it leaves — including the throws,
+      // which are most of what is worth knowing here. Classified from the error
+      // rather than at each throw site, so a branch added later cannot forget.
+      const startedAt = Date.now();
+      try {
+         const result = await this.writeDashboardSource(
+            environmentName,
+            packageName,
+            modelPath,
+            body,
+         );
+         recordDashboardWrite(
+            result.created ? "created" : "replaced",
+            Date.now() - startedAt,
+         );
+         return result;
+      } catch (error) {
+         recordDashboardWrite(
+            outcomeOf(error as Error),
+            Date.now() - startedAt,
+         );
+         throw error;
+      }
+   }
+
+   private async writeDashboardSource(
+      environmentName: string,
+      packageName: string,
+      modelPath: string,
+      body: ApiModelSourceWrite,
+   ): Promise<ApiModelSourceWriteResult> {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError(
             'Cannot write a dashboard: publisher.config.json has "frozenConfig": true.',
@@ -151,7 +206,7 @@ export class DashboardController {
       );
       const errors = problems.filter((problem) => problem.severity === "error");
       if (errors.length > 0) {
-         throw new BadRequestError(
+         throw new CompileRefusedError(
             `The dashboard does not compile, so it was not written: ` +
                errors.map(describeProblem).join("; "),
          );

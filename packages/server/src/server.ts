@@ -1695,8 +1695,21 @@ app.put(
          // answers; 200 for one that was replaced.
          res.status(result.created ? 201 : 200).json(result);
       } catch (error) {
-         logger.error("Dashboard write error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
+         // A refused write is the endpoint working: a stale hash, a dashboard
+         // that does not compile, a path that is not a dashboard. Logging all
+         // of those at `error` made the level meaningless on this route and
+         // buried the one case that is genuinely wrong — a write that compiled,
+         // landed, and could not be reloaded.
+         const detail = {
+            environmentName: req.params.environmentName,
+            packageName: req.params.packageName,
+            modelPath: (req.params as Record<string, string>)["0"],
+            status,
+            error,
+         };
+         if (status >= 500) logger.error("Dashboard write failed", detail);
+         else logger.warn("Dashboard write refused", detail);
          res.status(status).json(json);
       }
    },

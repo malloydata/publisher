@@ -1,14 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import sinon from "sinon";
 import {
    BadRequestError,
+   CompileRefusedError,
    FrozenConfigError,
    WriteConflictError,
    WriteRolledBackError,
 } from "../errors";
+import { resetDashboardWriteMetricsForTest } from "../dashboard_write_metrics";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
 import type { EnvironmentStore } from "../service/environment_store";
 import { contentHashOf, DashboardController } from "./dashboard.controller";
 
@@ -203,5 +209,107 @@ describe("DashboardController.putDashboardSource", () => {
       // will not compile the file; putting the text back is the service's,
       // under the lock it still holds.
       expect(model.getModel.called).toBe(true);
+   });
+});
+
+/**
+ * Every exit from the endpoint records exactly one outcome, and records the
+ * one that matches what happened. The classifier reads the error's TYPE, so
+ * these are what stops a reworded message — or a branch added later — from
+ * quietly recounting a compile failure as a malformed request.
+ */
+describe("putDashboardSource: what it reports", () => {
+   let metrics: MetricsHarness;
+
+   beforeEach(async () => {
+      metrics = await startMetricsHarness();
+      resetDashboardWriteMetricsForTest();
+   });
+
+   afterEach(async () => {
+      resetDashboardWriteMetricsForTest();
+      await metrics.shutdown();
+      sinon.restore();
+   });
+
+   const outcomeCount = (outcome: string) =>
+      metrics.collectCounter("publisher_dashboard_writes_total", { outcome });
+
+   it("reports a create and a replace apart", async () => {
+      await harness().controller.putDashboardSource("env", "pkg", PATH, {
+         source: AFTER,
+      });
+      expect(await outcomeCount("created")).toBe(1);
+
+      await harness({ current: BEFORE }).controller.putDashboardSource(
+         "env",
+         "pkg",
+         PATH,
+         { source: AFTER, expectedHash: contentHashOf(BEFORE) },
+      );
+      expect(await outcomeCount("replaced")).toBe(1);
+   });
+
+   it("reports a stale hash as a conflict", async () => {
+      const { controller } = harness({ current: "changed" });
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, {
+            source: AFTER,
+            expectedHash: contentHashOf(BEFORE),
+         }),
+      ).rejects.toBeInstanceOf(WriteConflictError);
+      expect(await outcomeCount("conflict")).toBe(1);
+   });
+
+   it("reports source that does not compile apart from a malformed request", async () => {
+      const { controller } = harness({
+         current: BEFORE,
+         problems: [{ severity: "error", message: "'x' is not defined" }],
+      });
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, {
+            source: AFTER,
+            expectedHash: contentHashOf(BEFORE),
+         }),
+      ).rejects.toBeInstanceOf(CompileRefusedError);
+      expect(await outcomeCount("compile_failed")).toBe(1);
+      expect(await outcomeCount("refused")).toBe(0);
+
+      // A body with no source is the other kind: the caller got the API
+      // wrong, not Malloy. Counting the two together would make the compile
+      // gate impossible to watch.
+      await expect(
+         harness().controller.putDashboardSource(
+            "env",
+            "pkg",
+            PATH,
+            {} as never,
+         ),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(await outcomeCount("refused")).toBe(1);
+   });
+
+   it("reports a rollback under its own outcome", async () => {
+      const { controller } = harness({
+         current: BEFORE,
+         reloadCompiles: false,
+      });
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, {
+            source: AFTER,
+            expectedHash: contentHashOf(BEFORE),
+         }),
+      ).rejects.toBeInstanceOf(WriteRolledBackError);
+      expect(await outcomeCount("rolled_back")).toBe(1);
+      expect(await outcomeCount("refused")).toBe(0);
+   });
+
+   it("reports a frozen config as refused, without touching the package", async () => {
+      const { controller, environment } = harness({ frozen: true });
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
+      ).rejects.toBeInstanceOf(FrozenConfigError);
+      expect(await outcomeCount("refused")).toBe(1);
+      expect(environment.getPackage.called).toBe(false);
    });
 });
