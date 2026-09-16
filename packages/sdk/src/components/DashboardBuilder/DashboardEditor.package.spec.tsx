@@ -35,7 +35,7 @@ const getModel = mock((_env: string, _pkg: string, path: string) =>
             : { modelPath: path, sources: [], sourceInfos: [] },
    }),
 );
-const putModelSource = mock(
+const updateModelSource = mock(
    (_env: string, _pkg: string, path: string, body: { source: string }) =>
       Promise.resolve({
          data: {
@@ -50,7 +50,7 @@ mockServerProvider(
       models: {
          getModel,
          executeQueryModel: mock(() => pending()),
-         putModelSource,
+         updateModelSource,
       },
       dashboards: {
          getDashboard: mock(() =>
@@ -98,7 +98,7 @@ const button = (name: string) =>
 beforeEach(() => {
    clearCache();
    localStorage.clear();
-   putModelSource.mockClear();
+   updateModelSource.mockClear();
 });
 
 describe("DashboardEditor, when the server takes writes", () => {
@@ -117,8 +117,8 @@ describe("DashboardEditor, when the server takes writes", () => {
       fireEvent.keyDown(screen.getByLabelText("Tile title"), { key: "Escape" });
       fireEvent.click(button("Save changes"));
 
-      await waitFor(() => expect(putModelSource).toHaveBeenCalledTimes(1));
-      const [env, pkg, path, body] = putModelSource.mock.calls[0];
+      await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
+      const [env, pkg, path, body] = updateModelSource.mock.calls[0];
       expect([env, pkg, path]).toEqual([
          "env",
          "pkg",
@@ -135,7 +135,7 @@ describe("DashboardEditor, when the server takes writes", () => {
    });
 
    it("keeps the edit and shows the server's reason when the package refuses the write", async () => {
-      putModelSource.mockImplementationOnce(() =>
+      updateModelSource.mockImplementationOnce(() =>
          Promise.reject({
             response: {
                data: {

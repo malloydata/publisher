@@ -7,14 +7,20 @@ import {
    BadRequestError,
    FrozenConfigError,
    WriteConflictError,
+   WriteRolledBackError,
 } from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
 import { contentHashOf, DashboardController } from "./dashboard.controller";
 
 /**
  * The write path, against a stubbed environment: what is refused before
- * anything touches disk, the order of compile → write → reload, and the
- * restore when the reload does not take the new file.
+ * anything touches disk, the order of compile → checked write → reload, and
+ * the restore when the reload does not take the new file.
+ *
+ * The precondition is checked by a callback the service runs under the package
+ * lock, so the stub for `writeModelFileChecked` runs it here too — that
+ * callback IS the 409, and a stub that ignored it would pass every test while
+ * the endpoint overwrote whatever it liked.
  */
 const PATH = "dashboards/overview.malloy";
 const BEFORE = '## artifact { title="Before" tiles=["a -> x"] }';
@@ -37,11 +43,22 @@ function harness(
    const pkg = { getModel: sinon.stub().returns(model) };
    const environment = {
       getPackage: sinon.stub().resolves(pkg),
-      readModelFile: sinon.stub().resolves(options.current),
       compileSource: sinon
          .stub()
          .resolves({ problems: options.problems ?? [] }),
-      writeModelFile: sinon.stub().resolves({ previous: options.current }),
+      writeModelFileChecked: sinon
+         .stub()
+         .callsFake(
+            async (
+               _pkg: string,
+               _path: string,
+               _source: string,
+               check: (current: string | undefined) => void,
+            ) => {
+               check(options.current);
+               return { previous: options.current };
+            },
+         ),
       restoreModelFile: sinon.stub().resolves(undefined),
    };
    const store = {
@@ -61,6 +78,7 @@ describe("DashboardController.putDashboardSource", () => {
          expectedHash: contentHashOf(BEFORE),
       });
       expect(result).toEqual({
+         resource: `/api/v0/environments/env/packages/pkg/models/${PATH}`,
          path: PATH,
          contentHash: contentHashOf(AFTER),
          created: false,
@@ -68,17 +86,20 @@ describe("DashboardController.putDashboardSource", () => {
       const compile = environment.compileSource.firstCall.args;
       expect(compile.slice(0, 3)).toEqual(["pkg", PATH, AFTER]);
       expect(compile[5]).toBe("file");
+      expect(environment.writeModelFileChecked.calledOnce).toBe(true);
       expect(
-         environment.writeModelFile.calledOnceWith("pkg", PATH, AFTER),
-      ).toBe(true);
+         environment.writeModelFileChecked.firstCall.args.slice(0, 3),
+      ).toEqual(["pkg", PATH, AFTER]);
       // The reload is the second getPackage: the first found the package.
       expect(environment.getPackage.secondCall.args).toEqual(["pkg", true]);
       expect(
-         environment.compileSource.calledBefore(environment.writeModelFile),
+         environment.compileSource.calledBefore(
+            environment.writeModelFileChecked,
+         ),
       ).toBe(true);
       expect(
          environment.getPackage.secondCall.calledAfter(
-            environment.writeModelFile.firstCall,
+            environment.writeModelFileChecked.firstCall,
          ),
       ).toBe(true);
       expect(environment.restoreModelFile.called).toBe(false);
@@ -112,19 +133,24 @@ describe("DashboardController.putDashboardSource", () => {
             controller.putDashboardSource("env", "pkg", bad, { source: AFTER }),
          ).rejects.toBeInstanceOf(BadRequestError);
       }
-      expect(environment.writeModelFile.called).toBe(false);
+      expect(environment.writeModelFileChecked.called).toBe(false);
    });
 
    it("refuses, without merging, when the file changed since it was opened", async () => {
-      const { controller, environment } = harness({ current: "changed" });
+      const { controller } = harness({ current: "changed" });
       await expect(
          controller.putDashboardSource("env", "pkg", PATH, {
             source: AFTER,
             expectedHash: contentHashOf(BEFORE),
          }),
       ).rejects.toBeInstanceOf(WriteConflictError);
-      expect(environment.compileSource.called).toBe(false);
-      expect(environment.writeModelFile.called).toBe(false);
+   });
+
+   it("refuses to overwrite an existing file when no expectedHash is sent", async () => {
+      const { controller } = harness({ current: BEFORE });
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
+      ).rejects.toBeInstanceOf(WriteConflictError);
    });
 
    it("refuses text that does not compile, and writes nothing", async () => {
@@ -136,9 +162,12 @@ describe("DashboardController.putDashboardSource", () => {
          ],
       });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
+         controller.putDashboardSource("env", "pkg", PATH, {
+            source: AFTER,
+            expectedHash: contentHashOf(BEFORE),
+         }),
       ).rejects.toThrow(/does not compile.*'x' is not defined/);
-      expect(environment.writeModelFile.called).toBe(false);
+      expect(environment.writeModelFileChecked.called).toBe(false);
    });
 
    it("restores the previous text and reloads again when the reloaded package does not compile the file", async () => {
@@ -147,8 +176,11 @@ describe("DashboardController.putDashboardSource", () => {
          reloadCompiles: false,
       });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
-      ).rejects.toThrow(/previous text was restored/);
+         controller.putDashboardSource("env", "pkg", PATH, {
+            source: AFTER,
+            expectedHash: contentHashOf(BEFORE),
+         }),
+      ).rejects.toBeInstanceOf(WriteRolledBackError);
       expect(
          environment.restoreModelFile.calledOnceWith("pkg", PATH, BEFORE),
       ).toBe(true);
