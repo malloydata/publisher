@@ -98,12 +98,14 @@ describe("reporting()", () => {
       const seen: ConsoleEvent[] = [];
       setConsoleEventHandler((e) => seen.push(e));
       const boom = new Error("Connection is in use");
-      const write = reporting("connection", "delete", async () => {
+      // Takes a variable like the real delete does, so the call below is the
+      // shape a caller actually uses.
+      const write = reporting("connection", "delete", async (_name: string) => {
          throw boom;
       });
 
       // The SAME error object: a caller that matches on it must still match.
-      await expect(write(undefined as never)).rejects.toBe(boom);
+      await expect(write("bigquery")).rejects.toBe(boom);
       expect(seen).toHaveLength(1);
       expect(seen[0]).toMatchObject({
          ok: false,
@@ -114,10 +116,10 @@ describe("reporting()", () => {
    it("reports a rejection that is not an Error without inventing a message", async () => {
       const seen: ConsoleEvent[] = [];
       setConsoleEventHandler((e) => seen.push(e));
-      const write = reporting("package", "update", async () => {
+      const write = reporting("package", "update", async (_name: string) => {
          throw "a bare string";
       });
-      await expect(write(undefined as never)).rejects.toBe("a bare string");
+      await expect(write("storefront")).rejects.toBe("a bare string");
       expect(seen[0].reason).toBe("An unknown error occurred");
    });
 
