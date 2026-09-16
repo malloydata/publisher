@@ -606,10 +606,16 @@ describe("ambientTrustBundlePath", () => {
    it("hands libpq a file this process wrote, in a directory only it can enter", () => {
       const file = ambientTrustBundlePath();
       // A private mkdtemp directory: nothing pre-existing at a predictable path
-      // can be picked up as the trust store.
-      expect(statSync(join(file, "..")).mode & 0o777).toBe(0o700);
-      expect(statSync(file).mode & 0o777).toBe(0o600);
+      // can be picked up as the trust store. The directory name carries the
+      // mkdtemp suffix, so it is not a fixed, guessable path.
+      expect(join(file, "..")).toMatch(/publisher-ambient-ca-[^/\\]+$/);
       expect(file).not.toBe(join(tmpdir(), "publisher-ambient-ca.pem"));
+      // POSIX permission bits; Windows has no equivalent in `mode`, so the
+      // private-directory guarantee there is the unguessable name alone.
+      if (process.platform !== "win32") {
+         expect(statSync(join(file, "..")).mode & 0o777).toBe(0o700);
+         expect(statSync(file).mode & 0o777).toBe(0o600);
+      }
    });
 
    it("skips an unreadable NODE_EXTRA_CA_CERTS the way the runtime does, instead of failing the build", async () => {
