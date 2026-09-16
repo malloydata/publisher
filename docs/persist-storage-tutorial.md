@@ -519,9 +519,12 @@ source's `where:` cannot be reproduced on the shape — one reaching through a j
 whose target is not materialized, or one over a column the source hides with
 `except:` — that **source** serves live, rather than serving from storage without
 its filter. Serving fewer queries from the tier is a cost; serving the wrong rows
-is not a trade worth making. Only that source is affected: its siblings keep the
-tier, and keep it at full strength rather than falling back to bare stored
-columns. For the same reason a filter is never dropped when the shape sheds
+is not a trade worth making. Normally only that source is affected: its siblings
+keep the tier, and keep it at full strength rather than falling back to bare
+stored columns. Two cases still cost the whole model its tier — when no source in
+it can be served, and when each compiles alone so the failure is in their
+combination rather than in any one of them (a duplicate source name). Both serve
+live, so the rows stay right either way. For the same reason a filter is never dropped when the shape sheds
 its riskier refinements: a source whose view cannot be reproduced loses the view
 and keeps the filter.
 
