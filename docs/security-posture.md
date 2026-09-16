@@ -163,6 +163,20 @@ open.
 `event.origin`. Source-matching is the stronger of the two checks and the payload is a single
 number, so the exposure is bounded, but the check is one line.
 
+**5. MCP has no tenant scoping, so a directly-reachable worker must be single-tenant.** Every
+MCP tool takes `environmentName` and `packageName` as ordinary arguments, and the two discovery
+tools treat them as optional: `list_packages` declares an empty argument schema and walks every
+loaded environment, and `search_database_schema` with no `environmentName` fans out across all of
+them and lists each one's connections. That is deliberate (an agent with no prior knowledge has
+to start somewhere) and it is correct on a deployment serving one tenant. It is a tenant
+directory on a deployment serving several. The transport defaults now make MCP harder to reach
+(loopback bind, no cross-origin by default), but neither narrows what a caller who does reach it
+can enumerate, and `MCP_HOST=0.0.0.0` is exactly the setting an operator reaches for to use MCP
+remotely. Publisher has no tenant model to scope these tools against, so until it has one the
+control is a deployment constraint rather than code: a worker reachable by more than one tenant
+must not expose MCP. The REST surface has no equivalent: every route is addressed under a
+specific environment, and none returns the whole set.
+
 ## If isolation gets built
 
 The mechanism to reuse already exists, preserved out of tree from the cut custom-JSX sandbox

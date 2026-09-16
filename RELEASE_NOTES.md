@@ -51,6 +51,12 @@ origins from `MCP_CORS_ORIGINS`, defaulting to none. A remote MCP client that
 could reach port 4040 can no longer do so: set `MCP_HOST=0.0.0.0` to restore the
 old bind, and put a gateway in front of it (see `docs/security-posture.md`).
 
+Know what widening it exposes before you do. MCP tools take `environmentName`
+and `packageName` as ordinary arguments and the discovery tools treat them as
+optional, so a caller who reaches the endpoint can enumerate every loaded
+environment and the connections on each. Publisher has no tenant model to scope
+that against, so a worker reachable by more than one tenant must not expose MCP.
+
 MCP gets its own host knob rather than reusing `PUBLISHER_HOST`, because that
 variable drove both the REST and MCP listeners -- defaulting it to loopback would
 have moved the REST port to localhost too. Precedence is `MCP_HOST`, then an
