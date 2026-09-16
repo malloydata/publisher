@@ -595,12 +595,15 @@ What makes it different from a classic BI tool is not the editing, it is what th
 There is no proprietary layout document: the builder reads and writes the same
 `dashboards/*.malloy` file described above, splicing your changes into it rather than regenerating
 it, so comments and anything it does not model survive the round trip. The result is a source file
-you can review in a pull request, and one an agent can write by hand just as well. The builder's **Save** writes the file back
+you can review in a pull request, and one an agent can write by hand just as well.
+
+The builder's **Save** writes the file back
 through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
 atomically, reloads the package in place, and restores the previous text if the reload does not
 take it; a copy someone else changed since you opened it is refused (409), never merged. The
-check and the write happen under one hold of the package lock, so two saves racing on one file
-cannot both pass it. On a
+check, the write, the reload and the restore all happen under one hold of the package lock, so two
+saves racing on one file cannot both pass the check, and a rollback cannot revert the other
+writer's text instead of its own. On a
 server that does not take writes (`frozenConfig`), Save keeps the edit in this browser instead,
 and the package page lists those drafts.
 

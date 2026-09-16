@@ -203,7 +203,8 @@ the reader to find.
    package _in place_, restores the previous text on a failed reload, refuses
    under `frozenConfig`, and refuses a file that changed since it was opened
    (`expectedHash`, SHA-256 of the opened text) rather than merging. The check
-   and the write happen under one hold of the package lock, so two saves racing
+   the write, the reload and the restore happen under one hold of the package
+   lock, so two saves racing
    on one file cannot both pass it; omitting `expectedHash` means create, and a
    file that is already there is refused the same way rather than overwritten.
    A create answers 201, a replacement 200. When the server takes writes the
