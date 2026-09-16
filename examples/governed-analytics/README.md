@@ -10,12 +10,12 @@ mechanism — power three things at once:
 
 - **Interactive filter controls** — `REGION` and `MIN_AMOUNT` become inputs in the notebook
   Parameters panel and scope the `sales` source. → [givens.md](../../docs/givens.md)
-- **Source authorization** — `#(authorize)` gates *who* may read `orders_secured`. It is enforced as a
+- **Source authorization** — `#(authorize)` gates _who_ may read `orders_secured`. It is enforced as a
   row filter, so a caller it admits nowhere gets 200 with zero rows; a 403 means the gate could not be
   attached at all (here: a referenced given was not supplied).
   → [authorize.md](../../docs/authorize.md)
-- **Row-level access** — the same `#(authorize)` gate that admits the caller also scopes *which
-  rows* they see, with no separate `where:`. → [row-level-access.md](../../docs/row-level-access.md)
+- **Row-level access** — the same `#(authorize)` gate that admits the caller also scopes _which
+  rows_ they see, with no separate `where:`. → [row-level-access.md](../../docs/row-level-access.md)
 
 …plus **discovery curation** — `orders_base` lives in a file not listed in `explores`, so it's hidden
 and not directly queryable, while the public models still import it.
@@ -23,20 +23,19 @@ and not directly queryable, while the public models still import it.
 
 ## Files
 
-| File | Role |
-| --- | --- |
-| `orders.parquet` | ~4,900 orders over two years across 3 regions × 3 tenants × 3 statuses (no credentials — DuckDB reads it directly). |
-| `internal.malloy` | `orders_base`, the shared base source. **Not** in `explores` → hidden + not directly queryable. |
-| `orders.malloy` | `REGION` / `MIN_AMOUNT` givens and the `sales` source (interactive controls + `# dashboard`). |
-| `secured.malloy` | `TENANTS` given and `orders_secured` — a row-level `#(authorize)` gate alone. |
-| `orders.malloynb` | Notebook over `sales` — renders the Parameters panel and the overview dashboard. |
-| `publisher.json` | `explores` + `queryableSources: "declared"` — the discovery/query boundary. |
+| File              | Role                                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `orders.parquet`  | ~4,900 orders over two years across 3 regions × 3 tenants × 3 statuses (no credentials — DuckDB reads it directly). |
+| `internal.malloy` | `orders_base`, the shared base source. **Not** in `explores` → hidden + not directly queryable.                     |
+| `orders.malloy`   | `REGION` / `MIN_AMOUNT` givens and the `sales` source (interactive controls + `# dashboard`).                       |
+| `secured.malloy`  | `TENANTS` given and `orders_secured` — a row-level `#(authorize)` gate alone.                                       |
+| `publisher.json`  | `explores` + `queryableSources: "declared"` — the discovery/query boundary.                                         |
 
 ## Run it
 
 `governed-analytics` ships in Publisher's default config under the `examples`
 environment, so with the server running just open the notebook at
-<http://localhost:4000/examples/governed-analytics/orders.malloynb>
+<http://localhost:4000/examples/governed-analytics>
 and change the Parameters panel to see the dashboard re-run.
 
 ### Run it standalone (live editing)

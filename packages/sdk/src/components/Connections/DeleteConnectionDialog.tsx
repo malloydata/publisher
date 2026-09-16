@@ -2,20 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { Delete } from "@mui/icons-material";
-import CloseIcon from "@mui/icons-material/Close";
-import { Snackbar } from "@mui/material";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
-import IconButton from "@mui/material/IconButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
 import MenuItem from "@mui/material/MenuItem";
 import Typography from "@mui/material/Typography";
 import React, { useState } from "react";
 import { Connection } from "../../client";
+import { AppDialog } from "../AppDialog";
 
 export default function DeleteConnectionDialog({
    connection,
@@ -29,7 +23,6 @@ export default function DeleteConnectionDialog({
    onDelete: () => void;
 }) {
    const [open, setOpen] = useState(false);
-   const [notificationMessage, setNotificationMessage] = useState("");
    const handleClickOpen = () => {
       setOpen(true);
    };
@@ -54,50 +47,30 @@ export default function DeleteConnectionDialog({
             <ListItemText>Delete</ListItemText>
          </MenuItem>
 
-         <Dialog
-            onClose={handleClose}
-            aria-labelledby="customized-dialog-title"
+         <AppDialog
             open={open}
+            onClose={handleClose}
+            title="Delete connection"
+            actions={
+               <>
+                  <Button onClick={handleClose}>Cancel</Button>
+                  <Button
+                     variant="contained"
+                     color="error"
+                     autoFocus
+                     onClick={() => onDelete()}
+                     loading={isMutating}
+                  >
+                     Delete connection
+                  </Button>
+               </>
+            }
          >
-            <DialogTitle sx={{ m: 0, p: 2 }} id="customized-dialog-title">
-               Delete Connection
-            </DialogTitle>
-            <IconButton
-               aria-label="close"
-               onClick={handleClose}
-               sx={(theme) => ({
-                  position: "absolute",
-                  right: 8,
-                  top: 8,
-                  color: theme.palette.grey[500],
-               })}
-            >
-               <CloseIcon />
-            </IconButton>
-            <DialogContent dividers>
-               <Typography gutterBottom>
-                  Are you sure you want to delete &quot;{connection.name}&quot;?
-                  This action cannot be undone.
-               </Typography>
-            </DialogContent>
-            <DialogActions>
-               <Button
-                  loading={isMutating}
-                  variant="contained"
-                  autoFocus
-                  onClick={() => onDelete()}
-                  color="error"
-               >
-                  Delete
-               </Button>
-            </DialogActions>
-            <Snackbar
-               open={notificationMessage !== ""}
-               autoHideDuration={6000}
-               onClose={() => setNotificationMessage("")}
-               message={notificationMessage}
-            />
-         </Dialog>
+            <Typography variant="body2">
+               Delete <strong>{connection.name}</strong>? Packages that query
+               through it stop working, and this cannot be undone.
+            </Typography>
+         </AppDialog>
       </React.Fragment>
    );
 }

@@ -35,7 +35,8 @@
 //      ever reaches the raw `/`, so the password tail after the raw `@`
 //      stays visible (a residual gap, see below). Scheme-restricted so it
 //      can never touch an https URL.
-//   3. The original keyword-form pass, unchanged.
+//   3. The keyword-form pass. A single-quoted value is matched whole, escaped
+//      quotes included, since libpq conninfo quoting backslash-escapes `'`.
 //
 // The scheme has no leading `\b`/anchor on purpose: a scheme abutting a
 // word char (`x_postgres://u:pw@h`) should still redact. Over-matching a
@@ -58,5 +59,5 @@ export function redactPgSecrets(s: string): string {
          /((?:postgres|postgresql):\/\/[^:/?#\s]*):([^@\s]+)@/gi,
          "$1:***@",
       )
-      .replace(/password=('[^']*'|"[^"]*"|\S+)/gi, "password=***");
+      .replace(/password=('(?:\\.|[^'\\])*'|"[^"]*"|\S+)/gi, "password=***");
 }

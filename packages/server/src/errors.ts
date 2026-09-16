@@ -195,6 +195,11 @@ export function internalErrorToHttpError(error: Error) {
       return httpError(409, error.message);
    } else if (error instanceof InvalidStateTransitionError) {
       return httpError(409, error.message);
+   } else if (error instanceof WriteConflictError) {
+      return httpError(409, error.message);
+   } else if (error instanceof WriteRolledBackError) {
+      logInternalFailure("Dashboard write rolled back", error, "warn");
+      return httpError(500, error.message);
    } else if (error instanceof ServiceUnavailableError) {
       return httpError(503, error.message);
    } else if (error instanceof PayloadTooLargeError) {
@@ -256,6 +261,21 @@ export class BadRequestError extends Error {
  * Still a BadRequestError, so it still maps to HTTP 400.
  */
 export class InvalidArgumentError extends BadRequestError {}
+
+/**
+ * A dashboard write was refused because the text does not compile, and the
+ * message names each problem with its line and column.
+ *
+ * A subclass so telemetry can tell the compile gate doing its job apart from a
+ * malformed request — a frozen config, a path that is not a dashboard, a body
+ * with no source. Those are a caller getting the API wrong; this one is a
+ * caller getting Malloy wrong, and an operator watching the write path needs
+ * the two counted separately. Classifying on the message text would have
+ * worked until someone reworded it.
+ *
+ * Still a BadRequestError, so it still maps to HTTP 400.
+ */
+export class CompileRefusedError extends BadRequestError {}
 
 export class EnvironmentNotFoundError extends Error {
    constructor(message: string) {
@@ -467,6 +487,28 @@ export class MaterializationNotFoundError extends Error {
 export class MaterializationConflictError extends Error {
    constructor(message: string) {
       super(message);
+   }
+}
+
+/** A write whose `expectedHash` no longer matches the file: someone else saved first. */
+export class WriteConflictError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "WriteConflictError";
+   }
+}
+
+/**
+ * A write that was applied and then taken back: the package would not serve it,
+ * so the previous text was put back. The caller's request was well-formed and
+ * the file compiled, so this is the server's failure, not theirs — 500, with
+ * the message, which says what state the package was left in. The underlying
+ * failure is logged rather than returned; it can carry a path.
+ */
+export class WriteRolledBackError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "WriteRolledBackError";
    }
 }
 

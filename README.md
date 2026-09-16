@@ -42,8 +42,8 @@ but looks plausible — and the same question returns the same numbers tomorrow.
 - **Analyze** — Claude, Cursor, Codex, or an agent you build asks over MCP; unattended agents and
   applications use REST. Queries are Malloy, legible enough to review at a glance, and run against
   the model, never your raw tables.
-- **Surface** — dashboards declared in Malloy, notebooks, and no-build HTML data apps, all shipped
-  inside the package, plus the Console for browsing it all.
+- **Surface** — dashboards declared in Malloy and built by dragging tiles if you like, notebooks,
+  and no-build HTML data apps, all shipped inside the package, plus the Console for browsing it all.
 - **Govern** — givens, row-level access, and `#(authorize)` decide who sees what; discovery curation
   decides what is even visible.
 - **Optimize** — one `#@ persist` annotation materializes an expensive source into a table and
@@ -187,7 +187,9 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 ### Surface
 
 - **Dashboards declared in Malloy.** A `dashboards/*.malloy` file _is_ the dashboard: filterable,
-  clickable, grid-laid-out, no code and no build step — [docs/dashboards.md](docs/dashboards.md).
+  clickable, grid-laid-out, no code and no build step. Build it by dragging tiles around a grid in
+  the Console if you want the classic feel, or write the tags by hand — same file either way, and it
+  reviews like any other source file — [docs/dashboards.md](docs/dashboards.md).
 - **No-build HTML data apps.** Ship HTML, CSS, and JavaScript inside a package and Publisher hosts it
   against the model — [docs/html-data-apps.md](docs/html-data-apps.md).
 - **The Publisher Console.** Browse packages, models, and every artifact in the built-in web UI, with

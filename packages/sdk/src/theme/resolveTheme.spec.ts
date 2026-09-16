@@ -82,14 +82,19 @@ describe("resolveTheme cascade", () => {
    it("exposes derived mode values (border, foreground, axisFaint)", () => {
       const light = resolveTheme([], "light");
       const dark = resolveTheme([], "dark");
-      expect(light.border).toBe("1px solid #e5e7eb");
+      // All on one slate ramp, in both modes: these are the chrome around
+      // the data, and a neutral with a colour cast in it reads as a failed
+      // attempt at whatever the data is painted in.
+      expect(light.border).toBe("1px solid #e2e8f0");
       expect(dark.border).toBe("1px solid #334155");
-      expect(light.foreground).toBe("#1f2937");
+      expect(light.foreground).toBe("#0f172a");
       expect(dark.foreground).toBe("#e2e8f0");
-      expect(light.axisFaint).toBe("#d1d5db");
+      expect(light.axisFaint).toBe("#cbd5e1");
       expect(dark.axisFaint).toBe("#475569");
-      expect(light.valueColor).toBe("#1f2937");
+      expect(light.valueColor).toBe("#0f172a");
       expect(dark.valueColor).toBe("#f1f5f9");
+      expect(light.pinnedBorder).toBe("1px solid #cbd5e1");
+      expect(dark.pinnedBorder).toBe("1px solid #475569");
    });
 
    it("drillLink is a link colour per mode, not a series colour", () => {
