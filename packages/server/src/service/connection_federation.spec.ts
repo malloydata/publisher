@@ -9,7 +9,7 @@
 // spike's job.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import * as sinon from "sinon";
@@ -600,6 +600,22 @@ describe("ambientTrustBundlePath", () => {
          const pem = readFileSync(ambientTrustBundlePath(), "utf8");
          expect(pem).toContain(tls.rootCertificates[0]);
          expect(pem).not.toContain("EXTRA-MARKER");
+      });
+   });
+
+   it("hands libpq a file this process wrote, in a directory only it can enter", () => {
+      const file = ambientTrustBundlePath();
+      // A private mkdtemp directory: nothing pre-existing at a predictable path
+      // can be picked up as the trust store.
+      expect(statSync(join(file, "..")).mode & 0o777).toBe(0o700);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(file).not.toBe(join(tmpdir(), "publisher-ambient-ca.pem"));
+   });
+
+   it("skips an unreadable NODE_EXTRA_CA_CERTS the way the runtime does, instead of failing the build", async () => {
+      await withCaBundle(join(tmpdir(), "does-not-exist.pem"), () => {
+         const pem = readFileSync(ambientTrustBundlePath(), "utf8");
+         expect(pem).toContain(tls.rootCertificates[0]);
       });
    });
 });

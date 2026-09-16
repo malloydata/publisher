@@ -33,7 +33,7 @@ import {
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
 import { createHash } from "crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -1326,31 +1326,45 @@ export function defaultProxiedAttachTrust(): ProxiedAttachTrust {
 }
 
 const ambientTrustBundles = new Map<string | undefined, string>();
+let ambientTrustDir: string | undefined;
 
 /**
  * Materializes the runtime's ambient trust anchors as one PEM file libpq can take
  * as `sslrootcert`: `tls.rootCertificates` (the bundled roots) followed by the
  * contents of NODE_EXTRA_CA_CERTS when set. libpq verifies against exactly one
- * file, so the union has to exist on disk. Written once per process per bundle
- * path, under a content-addressed name, so a concurrent writer lands the same
- * bytes and a restart reuses the file. Exported for tests.
+ * file, so the union has to exist on disk.
+ *
+ * The file is written by THIS process into a directory it created (`mkdtemp`,
+ * mode 0700) and never reused from a path that merely exists: a trust store
+ * picked up because something at a predictable name was already there would let
+ * whoever wrote it choose the CAs a `verify-full` build trusts. Written once per
+ * process per bundle path. An unreadable NODE_EXTRA_CA_CERTS is skipped with a
+ * warning, which is what both runtimes do with it at startup, so the build trusts
+ * the same set the query path does. Exported for tests.
  */
 export function ambientTrustBundlePath(): string {
    const extra = process.env.NODE_EXTRA_CA_CERTS || undefined;
    const cached = ambientTrustBundles.get(extra);
    if (cached) return cached;
-   const pem =
-      [
-         ...tls.rootCertificates,
-         ...(extra ? [readFileSync(extra, "utf8").trim()] : []),
-      ].join("\n") + "\n";
-   const digest = createHash("sha256").update(pem).digest("hex").slice(0, 16);
-   const file = path.join(os.tmpdir(), `publisher-ambient-ca-${digest}.pem`);
-   if (!existsSync(file)) {
-      const partial = `${file}.${process.pid}.partial`;
-      writeFileSync(partial, pem, { mode: 0o600 });
-      renameSync(partial, file);
+   let extraPem: string | undefined;
+   if (extra) {
+      try {
+         extraPem = readFileSync(extra, "utf8").trim();
+      } catch (err) {
+         logger.warn(
+            `Ignoring NODE_EXTRA_CA_CERTS for the storage build's trust bundle: ${extra} could not be read (${err instanceof Error ? err.message : String(err)}).`,
+         );
+      }
    }
+   const pem =
+      [...tls.rootCertificates, ...(extraPem ? [extraPem] : [])].join("\n") +
+      "\n";
+   const digest = createHash("sha256").update(pem).digest("hex").slice(0, 16);
+   ambientTrustDir ??= mkdtempSync(
+      path.join(os.tmpdir(), "publisher-ambient-ca-"),
+   );
+   const file = path.join(ambientTrustDir, `${digest}.pem`);
+   writeFileSync(file, pem, { mode: 0o600 });
    ambientTrustBundles.set(extra, file);
    return file;
 }
