@@ -315,10 +315,13 @@ describe("federateSourceForPassthrough", () => {
       );
       // The tunnel is opened to the database's own host:port …
       expect(dialled).toEqual({ host: "db.internal.example", port: 5432 });
-      // … and the ATTACH goes to the tunnel's local endpoint, never the real host.
+      // … and the ATTACH dials the tunnel's local endpoint (`hostaddr`), keeping
+      // the database's own name as `host` for SNI and the certificate check.
       const attach = sql.find((s) => s.startsWith("ATTACH"));
-      expect(attach).toContain("host=127.0.0.1 port=54321");
-      expect(attach).not.toContain("db.internal.example");
+      expect(attach).toContain(
+         "host=db.internal.example hostaddr=127.0.0.1 port=54321",
+      );
+      expect(attach).not.toContain("host=127.0.0.1");
       expect(attach).toContain("dbname=d user=u password=pw");
       // Encrypt without verifying by default (a force-SSL target must not be
       // refused for plaintext; the query path defaults the same way).
@@ -516,10 +519,10 @@ describe("buildProxiedPgAttachString", () => {
          password: "p",
          sslmode,
       }) as components["schemas"]["PostgresConnection"];
-   it("targets the tunnel endpoint and defaults to sslmode=require", () => {
+   it("dials the tunnel endpoint as hostaddr, keeps the real host, and defaults to sslmode=require", () => {
       const s = buildProxiedPgAttachString("c", pg(undefined), endpoint);
       expect(s).toBe(
-         "host=127.0.0.1 port=6000 dbname=d user=u password=p sslmode=require",
+         "host=real.example hostaddr=127.0.0.1 port=6000 dbname=d user=u password=p sslmode=require",
       );
    });
 
@@ -545,14 +548,24 @@ describe("buildProxiedPgAttachString", () => {
       });
    });
 
-   it("verify-full needs no bundle: the chain is verified against the ambient roots plus the bundle, not the hostname", () => {
-      // No NODE_EXTRA_CA_CERTS: a publicly-trusted target still builds.
-      expect(
-         buildProxiedPgAttachString("c", pg("verify-full"), endpoint, {
+   it("verify-full stays verify-full: chain against the ambient roots plus the bundle, hostname against the real host", () => {
+      // No NODE_EXTRA_CA_CERTS: a publicly-trusted target still builds. libpq
+      // checks the certificate against `host` (real.example) while dialling
+      // `hostaddr`, so nothing is downgraded through the tunnel.
+      const full = buildProxiedPgAttachString(
+         "c",
+         pg("verify-full"),
+         endpoint,
+         {
             caBundle: undefined,
             ambientBundle: () => "/tmp/ambient.pem",
-         }),
-      ).toContain("sslmode=verify-ca sslrootcert=/tmp/ambient.pem");
+         },
+      );
+      expect(full).toContain("host=real.example hostaddr=127.0.0.1");
+      expect(full).toContain(
+         "sslmode=verify-full sslrootcert=/tmp/ambient.pem",
+      );
+      expect(full).not.toContain("verify-ca");
       // With a bundle set, the union (ambient roots + bundle) is what libpq gets —
       // the query path's trust set — never the pinned bundle alone.
       const s = buildProxiedPgAttachString("c", pg("verify-full"), endpoint, {

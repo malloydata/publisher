@@ -1282,7 +1282,16 @@ async function federatePostgres(
          `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
       );
    } catch (e) {
-      await endpoint?.close().catch(() => {});
+      // The federation error is the one that propagates; a tunnel that then
+      // fails to close is the one case where a listener really does outlive the
+      // build, so it is logged rather than lost.
+      await endpoint
+         ?.close()
+         .catch((closeErr) =>
+            logger.warn(
+               `Failed to close the SSH proxy opened for Postgres source '${config.name}' after its federation failed: ${String(closeErr)}`,
+            ),
+         );
       throw e;
    }
    return {
@@ -1373,22 +1382,23 @@ type ProxiedSslmode = (typeof PROXIED_SSLMODES)[number];
 
 /**
  * libpq keyword/value string for a Postgres source reached through the SSH
- * tunnel: the socket goes to the tunnel's LOCAL endpoint, the credentials are the
- * connection's own. TLS is mapped from the connection's `sslmode` the way the
- * query path maps it (see resolveProxiedTls), with libpq's vocabulary:
+ * tunnel. libpq splits the two roles a host name plays: `hostaddr` is the
+ * address it dials, `host` is the name it sends as SNI and checks the server
+ * certificate against. So the socket goes to the tunnel's LOCAL endpoint
+ * (`hostaddr`, `port`) while `host` stays the database's own name, and every
+ * `sslmode` keeps its full libpq meaning through the tunnel, `verify-full`
+ * included. The credentials are the connection's own. TLS is mapped from the
+ * connection's `sslmode` the way the query path maps it (see resolveProxiedTls):
  *
  *  - unset / `no-verify` → `require`: encrypt without verifying, so a force-SSL
  *    target (the common managed-Postgres case) is not rejected for plaintext;
  *  - `disable` → `disable`;
  *  - `verify-ca` → `verify-ca` against the trusted CA bundle (NODE_EXTRA_CA_CERTS,
  *    the same pinned file the query path uses), which libpq takes as `sslrootcert`;
- *  - `verify-full` → `verify-ca` against the runtime's ambient trust anchors plus
+ *  - `verify-full` → `verify-full` against the runtime's ambient trust anchors plus
  *    NODE_EXTRA_CA_CERTS — the trust set the query path verifies `verify-full`
  *    against, so a target with a publicly-trusted CA builds as it queries and no
- *    bundle is required. The tunnel terminates at 127.0.0.1 and libpq checks the
- *    certificate's hostname against the host it dialled, so the hostname half of
- *    verify-full cannot hold through a tunnel; the chain is still verified and the
- *    downgrade is logged.
+ *    bundle is required — with the certificate's hostname checked against `host`.
  *
  * Exported for tests.
  */
@@ -1398,8 +1408,17 @@ export function buildProxiedPgAttachString(
    endpoint: ProxyEndpoint,
    trust: ProxiedAttachTrust = defaultProxiedAttachTrust(),
 ): string {
+   if (!pg.host) {
+      // validateConnectionShape requires host on a proxied connection, so this
+      // is unreachable in practice — guard so the certificate is never checked
+      // against an empty name.
+      throw new Error(
+         `Connection proxy on '${name}' requires an explicit host on the postgres connection.`,
+      );
+   }
    const parts = [
-      pgConninfoPair("host", endpoint.host),
+      pgConninfoPair("host", pg.host),
+      pgConninfoPair("hostaddr", endpoint.host),
       pgConninfoPair("port", String(endpoint.port)),
    ];
    if (pg.databaseName) parts.push(pgConninfoPair("dbname", pg.databaseName));
@@ -1428,16 +1447,12 @@ export function buildProxiedPgAttachString(
          );
          break;
       }
-      case "verify-full": {
-         logger.warn(
-            `Connection proxy on '${name}': the storage build verifies the certificate chain (verify-ca) but cannot verify the hostname through the tunnel, which terminates at ${endpoint.host}.`,
-         );
+      case "verify-full":
          parts.push(
-            "sslmode=verify-ca",
+            "sslmode=verify-full",
             pgConninfoPair("sslrootcert", trust.ambientBundle()),
          );
          break;
-      }
       default: {
          const unhandled: never = mode;
          throw new Error(

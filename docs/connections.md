@@ -313,9 +313,10 @@ local forward endpoint (`127.0.0.1`), not the real database host, so the certifi
 - `disable` — no TLS.
 
 A `storage=` build of a proxied source reaches it through its own tunnel with libpq rather
-than the query driver. It maps `sslmode` the same way, with one difference: `verify-full`
-verifies the chain against the same trust set but not the hostname, which libpq checks
-against the tunnel's `127.0.0.1`; the build logs that downgrade.
+than the query driver, and every mode above keeps its meaning there: libpq dials the tunnel
+endpoint as `hostaddr` while `host` stays the database's own name, so `verify-full` checks the
+certificate against the real host through the tunnel, with the same trust set the query path
+uses.
 
 ## Credentials in API responses
 

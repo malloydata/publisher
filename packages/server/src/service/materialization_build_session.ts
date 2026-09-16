@@ -762,6 +762,12 @@ export interface StorageIncrementalRefresh {
  * @returns the destination connection name and the captured authoritative
  *   schema, both recorded on the manifest entry for the serve transform.
  */
+/** See `buildSourceIntoStorage`'s `deps`. */
+export interface BuildSessionDeps {
+   federate?: typeof federateSourceForPassthrough;
+   read?: typeof issuePassthroughRead;
+}
+
 export async function buildSourceIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
@@ -788,6 +794,14 @@ export async function buildSourceIntoStorage(params: {
     * leaves this function exactly the full build it was.
     */
    incremental?: StorageIncrementalRefresh;
+   /**
+    * Injection seam for tests: how the source is federated onto the session and
+    * how the passthrough read is issued. Production callers pass nothing. It
+    * exists so the one line that closes a proxied source's tunnel — in this
+    * function's `finally` — can be proven to run, on a clean build and on a
+    * failed one, without a live warehouse.
+    */
+   deps?: BuildSessionDeps;
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -798,6 +812,8 @@ export async function buildSourceIntoStorage(params: {
       environmentPath,
       queryMetadata,
    } = params;
+   const federate = params.deps?.federate ?? federateSourceForPassthrough;
+   const read = params.deps?.read ?? issuePassthroughRead;
 
    assertSupportedDestination(destinationName, destinationConnection);
    const sourceType = passthroughSourceType(sourceConnection);
@@ -846,7 +862,7 @@ export async function buildSourceIntoStorage(params: {
       // session it protects is this one — see pinSessionToUTC.
       await pinSessionToUTC(session);
 
-      const federated = await federateSourceForPassthrough(
+      const federated = await federate(
          session,
          sourceType,
          sourceFederationConfig(sourceConnection),
@@ -906,7 +922,7 @@ export async function buildSourceIntoStorage(params: {
          }
       }
 
-      const read = await issuePassthroughRead(
+      const passthrough = await read(
          session,
          sourceType,
          federated.handle,
@@ -920,7 +936,7 @@ export async function buildSourceIntoStorage(params: {
       const schema = await createTableAndDescribe(
          session,
          target,
-         read.selectSQL,
+         passthrough.selectSQL,
       );
       // The table now holds a full snapshot, so record where that snapshot
       // reaches: this is what turns the NEXT refresh into a delta. On this
@@ -940,7 +956,7 @@ export async function buildSourceIntoStorage(params: {
          // unchanged, so it can only be asked once the read has run — which is
          // here, while the session still holds the credentials.
          readCost:
-            read.cost ??
+            passthrough.cost ??
             (await snowflakeReadCostAfterBuild(
                session,
                sourceType,
