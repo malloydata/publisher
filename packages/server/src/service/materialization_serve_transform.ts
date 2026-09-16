@@ -467,7 +467,8 @@ function serveShapeFragment(binding: ServeBinding): string {
    // them are computed from the stored tables at serve time (the wrapper) rather
    // than falling back to live. Emission order matters for resolution: joins
    // first (a dimension/measure/view may reference a joined field), then
-   // dimensions/measures, then views (a view may reference any of them).
+   // dimensions/measures, then the source's own `where:` clauses (which may
+   // reference either), then views (a view may reference any of them).
    // Everything here references the shape's columns, a sibling virtual source, or
    // an earlier refinement; anything it references that the shape lacks makes the
    // serve shape fail to compile, which safely falls back.
@@ -575,6 +576,69 @@ export function buildServeShapeModelForBindings(
 }
 
 /** One base source re-exposed over its rollup members. */
+/**
+ * The refinement kind that is SEMANTICS rather than an optimization, and so is
+ * carried by every tier of the serve-shape ladder.
+ *
+ * Dropping a join or a view costs the tier for the queries that use it; dropping
+ * a source's `where:` answers with rows the source excludes. See
+ * {@link buildServeShapeTiers}.
+ */
+export const NEVER_THINNED: readonly string[] = ["filter"];
+
+/**
+ * One rung of the serve-shape escalation ladder: which refinement kinds to keep,
+ * and whether pre-aggregation groups are carried.
+ */
+export interface ServeShapeTier {
+   keep: ReadonlySet<string>;
+   groups: RollupShapeGroup[];
+}
+
+/**
+ * The ladder `Model.compileServeShape` walks, richest first.
+ *
+ * Built here rather than inline so the invariant that matters can be asserted:
+ * EVERY tier keeps {@link NEVER_THINNED}. A tier that did not would answer with
+ * rows the source excludes, which is the defect the filter refinement exists to
+ * close — and a floor tier assembled separately from the thinning ladder is
+ * exactly how that reappears.
+ */
+export function buildServeShapeTiers(
+   rollupGroups: RollupShapeGroup[],
+): ServeShapeTier[] {
+   const always = [...NEVER_THINNED];
+   // Richest first; each keeps fewer optional kinds than the last.
+   const keepKinds: Array<ReadonlySet<string>> = [
+      new Set([...always, "join", "dimension", "measure", "view"]),
+      new Set([...always, "join", "dimension", "measure"]),
+      new Set([...always, "dimension", "measure"]),
+      new Set(always),
+   ];
+   const hasGroups = rollupGroups.length > 0;
+   return [
+      // Richest, with groups.
+      { keep: keepKinds[0], groups: rollupGroups },
+      // Then groups DROPPED while every authored refinement is kept, so a
+      // group-caused failure costs the rollups and nothing else.
+      ...(hasGroups
+         ? [{ keep: keepKinds[0], groups: [] as RollupShapeGroup[] }]
+         : []),
+      // Then the ordinary thinning ladder, still WITH groups: reaching here means
+      // dropping the groups alone did not fix it, so an authored refinement is
+      // implicated and the groups may be fine.
+      ...keepKinds.slice(1).map((keep) => ({ keep, groups: rollupGroups })),
+      // The floor: no optional refinements and no groups. Appended only when
+      // there is a group to drop, since without one the last thinning tier is
+      // already this shape. It keeps the never-thinned kinds like every tier
+      // above it — this floor is the one that historically did not, which let a
+      // package carrying any rollup serve a filtered source unfiltered.
+      ...(hasGroups
+         ? [{ keep: new Set(always), groups: [] as RollupShapeGroup[] }]
+         : []),
+   ];
+}
+
 export interface RollupShapeGroup {
    baseSourceName: string;
    members: ServeBinding[];
@@ -847,13 +911,25 @@ export function narrowSchemaToPublic(
  * The source-level filters to re-declare on the serve shape, one per
  * `filterList` entry of the materialized source's compiled definition.
  *
- * EVERY entry is carried, including one that cannot be reproduced on the shape
- * (a filter reaching through a join whose target is not materialized, or one
- * referencing a given). Such an entry makes the shape fail to compile, and the
- * caller must answer that by withholding the binding rather than by serving it
- * filter-free — a dropped filter is not a lost optimization, it is rows the
- * source excludes. See the serve-shape ladder in `Model.compileServeShape`,
- * which keeps this kind at every tier for exactly that reason.
+ * EVERY entry is carried, including one that cannot be reproduced on the shape:
+ * a filter reaching through a join whose target is not materialized, or one over
+ * a column the source hides (the declared `::Shape` is narrowed to the source's
+ * PUBLIC columns, so `where: not is_deleted` with `except: is_deleted` names a
+ * column the shape does not declare). Such an entry makes the shape fail to
+ * compile, which is the required outcome — a dropped filter is not a lost
+ * optimization, it is rows the source excludes. See the serve-shape ladder in
+ * `Model.compileServeShape`, which keeps this kind at every tier for that
+ * reason.
+ *
+ * The cost of that failure is the whole MODEL's storage tier, not just this
+ * source's: `compileServeShape` emits one model text covering every binding, so
+ * an unreproducible filter on one source sends every source in the model live.
+ * Correct, and blunt — withholding only the offending binding wants a per-binding
+ * probe the ladder does not do today.
+ *
+ * A filter referencing a given cannot reach here: `assertMaterializationEligible`
+ * refuses a given-referencing source outright, as it does `#(partition)` and
+ * `#(authorize)`.
  *
  * `filterList` accumulates through `extend`, so a source's own entries already
  * carry every filter it inherits from the source it extends.

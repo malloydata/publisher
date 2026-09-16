@@ -21,6 +21,8 @@ import {
    buildServeShapeModel,
    buildServeShapeModelForBindings,
    extractSourceFilters,
+   buildServeShapeTiers,
+   NEVER_THINNED,
    UNREPRODUCIBLE_FILTER,
    buildVirtualMap,
    deriveServeBindings,
@@ -1447,5 +1449,66 @@ describe("extractSourceFilters", () => {
          },
       ]);
       expect(modelText).toContain(UNREPRODUCIBLE_FILTER);
+   });
+});
+
+describe("buildServeShapeTiers", () => {
+   // The invariant the whole filter fix rests on. A tier that thins `filter`
+   // answers with rows the source excludes — and the floor tier, which is
+   // assembled separately from the thinning ladder, is exactly where that
+   // reappears when someone adds a rung.
+   for (const [label, groups] of [
+      ["no rollup groups", []],
+      [
+         "with a rollup group",
+         [
+            {
+               baseSourceName: "orders",
+               shapeTypeName: "orders__shape",
+               members: [],
+            },
+         ],
+      ],
+   ] as const) {
+      it(`keeps every never-thinned kind at every tier (${label})`, () => {
+         const tiers = buildServeShapeTiers(
+            groups as unknown as Parameters<typeof buildServeShapeTiers>[0],
+         );
+         expect(tiers.length).toBeGreaterThan(0);
+         for (const [i, tier] of tiers.entries()) {
+            for (const kind of NEVER_THINNED) {
+               expect(`tier ${i} keeps ${kind}: ${tier.keep.has(kind)}`).toBe(
+                  `tier ${i} keeps ${kind}: true`,
+               );
+            }
+         }
+      });
+   }
+
+   it("adds the group-dropping rungs only when there is a group", () => {
+      const without = buildServeShapeTiers([]);
+      const with_ = buildServeShapeTiers([
+         {
+            baseSourceName: "orders",
+            shapeTypeName: "orders__shape",
+            members: [],
+         },
+      ] as unknown as Parameters<typeof buildServeShapeTiers>[0]);
+      expect(with_.length).toBe(without.length + 2);
+      // The floor drops the groups AND keeps the never-thinned kinds.
+      const floor = with_[with_.length - 1];
+      expect(floor.groups).toEqual([]);
+      for (const kind of NEVER_THINNED) expect(floor.keep.has(kind)).toBe(true);
+   });
+
+   it("thins the optional kinds monotonically", () => {
+      const tiers = buildServeShapeTiers([]);
+      const optional = tiers.map(
+         (t) => [...t.keep].filter((k) => !NEVER_THINNED.includes(k)).length,
+      );
+      for (let i = 1; i < optional.length; i++) {
+         expect(optional[i]).toBeLessThanOrEqual(optional[i - 1]);
+      }
+      expect(optional[optional.length - 1]).toBe(0);
    });
 });

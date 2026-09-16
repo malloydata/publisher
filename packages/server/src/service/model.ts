@@ -69,6 +69,7 @@ import {
    extractJoins,
    extractRefinements,
    extractSourceFilters,
+   buildServeShapeTiers,
    extractViews,
    narrowSchemaToPublic,
    type RollupShapeGroup,
@@ -4387,8 +4388,11 @@ export class Model {
     * disable storage serving for every source in the package. So the shape is
     * validated once (per binding set — the result is cached) and, on failure,
     * the riskiest refinement category is dropped and it retries: full → drop
-    * views → drop views + joins → base-only. Base-only is pure virtual sources
-    * and always compiles, so it is the guaranteed floor. Each surviving tier
+    * views → drop views + joins → base-only. Base-only carries the virtual
+    * sources and their filters, so it compiles for every source whose filters
+    * can be reproduced — it is the floor, but no longer a guaranteed one: a
+    * filter that cannot be reproduced fails every tier, and the caller then
+    * serves live rather than serving unfiltered. Each surviving tier
     * still serves everything it can; the per-query eager compile in
     * {@link loadServeShapeQuery} remains the final net for query-specific
     * ineligibility.
@@ -4406,63 +4410,13 @@ export class Model {
       rollupGroups: RollupShapeGroup[] = [],
    ): Promise<ModelMaterializer> {
       // Richest first; each predicate keeps fewer refinement kinds than the last.
-      //
-      // `filter` is in EVERY tier, the empty one included. The other kinds are
-      // optimizations — dropping a view costs the tier for queries that use it
-      // and nothing else — while a source's `where:` is part of what the source
-      // MEANS, so a tier that dropped it would answer with rows the source
-      // excludes. That makes the floor no longer "always compiles": a filter
-      // that cannot be reproduced (one reaching through a join whose target is
-      // not materialized, or referencing a given) fails every tier, and the
-      // caller then serves live rather than serving unfiltered. See
-      // {@link extractSourceFilters}.
-      const ALWAYS = ["filter"] as const;
-      const keepKinds: Array<ReadonlySet<string>> = [
-         new Set([...ALWAYS, "join", "dimension", "measure", "view"]),
-         new Set([...ALWAYS, "join", "dimension", "measure"]),
-         new Set([...ALWAYS, "dimension", "measure"]),
-         new Set([...ALWAYS]),
-      ];
-      // A pre-aggregation group is dropped WHOLE, in one final tier, and never
-      // thinned by the tiers above it.
-      //
-      // Thinning does nothing for a group: its measures are generated from its own
-      // plan and are the only reason its member exists, so a tier that removes
-      // them leaves a member that compiles and answers nothing. What CAN rescue
-      // the shape is removing the group, and until this tier existed nothing did
-      // — which mattered because a group that will not compile takes the whole
-      // package's storage serving with it. Base-only was documented as the
-      // guaranteed floor, and a group breached it: a composite whose members
-      // disagree about a grain column's captured type fails at every tier,
-      // including the one that carries no refinements at all.
-      const tiers: Array<{
-         keep: ReadonlySet<string>;
-         groups: RollupShapeGroup[];
-      }> = [
-         // Richest, with groups.
-         { keep: keepKinds[0], groups: rollupGroups },
-         // Then groups DROPPED while every authored refinement is kept. This tier
-         // exists because the two failure sources are independent and the ladder
-         // otherwise conflates them: a single uncompilable group failed all four
-         // thinning tiers, and the tier that finally dropped it had already
-         // stripped every join, view, dimension and measure — so one bad rollup
-         // degraded every authored `storage=` source in the package to base-only,
-         // where before this feature it served at the richest tier. Trying this
-         // second means a group-caused failure costs the rollups and nothing else.
-         ...(rollupGroups.length > 0
-            ? [{ keep: keepKinds[0], groups: [] as RollupShapeGroup[] }]
-            : []),
-         // Then the ordinary thinning ladder, still WITH groups: reaching here
-         // means dropping the groups alone did not fix it, so an authored
-         // refinement is implicated and the groups may be fine.
-         ...keepKinds.slice(1).map((keep) => ({ keep, groups: rollupGroups })),
-         // The floor: no refinements and no groups. Pure virtual bases, so it
-         // always compiles. Appended only when there is a group to drop, since
-         // without one the last thinning tier is already this shape.
-         ...(rollupGroups.length > 0
-            ? [{ keep: new Set<string>(), groups: [] as RollupShapeGroup[] }]
-            : []),
-      ];
+      // The ladder, richest first. Built by {@link buildServeShapeTiers} rather
+      // than here so the invariant it must hold — every tier keeps the
+      // never-thinned kinds — is assertable in one place. `filter` is one of
+      // those: the other kinds are optimizations, while a source's `where:` is
+      // part of what the source MEANS, so a tier that dropped it would answer
+      // with rows the source excludes.
+      const tiers = buildServeShapeTiers(rollupGroups);
       // Skip escalation entirely when nothing beyond the base is carried — but a
       // GROUP is something beyond the base. Reading this off `enriched` alone left
       // the pure-rollup case (no ordinary bindings at all) returning tier 0
@@ -4516,9 +4470,15 @@ export class Model {
          }
       }
       // Unreachable: the last tier returns above. Satisfy the type checker.
-      // Groups dropped, matching what that last tier is.
+      // Groups dropped and the never-thinned kinds kept, matching what that last
+      // tier is — stripping every refinement here would reintroduce the
+      // unfiltered serve this ladder exists to prevent.
+      const floor = tiers[tiers.length - 1].keep;
       return this.buildServeShapeMaterializer(
-         enriched.map((b) => ({ ...b, refinements: [] })),
+         enriched.map((b) => ({
+            ...b,
+            refinements: (b.refinements ?? []).filter((r) => floor.has(r.kind)),
+         })),
          [],
       );
    }
