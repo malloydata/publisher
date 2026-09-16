@@ -147,7 +147,13 @@ export interface DashboardBuilderProps {
    /** Saves and refusals, for the host to log; see `DashboardEvent`. */
    onEvent?: DashboardEventHandler;
    /**
-    * The host's own actions for the edit bar — Export, Done — rendered beside
+    * Where `onSave` puts the file, for the event it reports. The builder
+    * cannot tell — it is handed a function — and a save into the package and a
+    * save into this browser are not the same event.
+    */
+   savesTo?: "package" | "browser";
+   /**
+    * The host's own actions for the edit bar — Done — rendered beside
     * undo, redo and save. The builder owns the edits; where the file goes
     * afterwards is the host's, so its buttons sit in the host's slot.
     */
@@ -166,6 +172,7 @@ export function DashboardBuilder({
    toolbar,
    dashboards,
    onEvent,
+   savesTo = "package",
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
@@ -315,6 +322,7 @@ export function DashboardBuilder({
                   type: "dashboard.saved",
                   tiles,
                   structural,
+                  where: savesTo,
                   durationMs: now() - started,
                });
             else
@@ -324,7 +332,7 @@ export function DashboardBuilder({
                });
          })
          .finally(() => setSaving(false));
-   }, [editor, onEvent]);
+   }, [editor, onEvent, savesTo]);
    const save = useCallback(() => {
       if (!onSave || !editor.dirty || saving) return;
       if (!editor.structural) {
@@ -374,15 +382,6 @@ export function DashboardBuilder({
          });
       });
       setSelected(editor.document.tiles.length);
-   };
-
-   /** Every tile this file owns, to one fraction of the grid. */
-   const quickLayout = (share: 1 | 2 | 3 | 4) => {
-      const span = Math.max(1, Math.round(columns / share));
-      editor.update((draft) => {
-         for (const tile of draft.tiles)
-            if (tile.declaration.kind !== "inherited") tile.colspan = span;
-      });
    };
 
    const removeTile = (index: number) => {
@@ -470,9 +469,11 @@ export function DashboardBuilder({
       // grid alone, so the header, the control row and the tiles all inset
       // together and stay aligned with each other. 4px = the ring's 2px offset
       // plus its 2px width.
-      <Stack sx={{ gap: 2, p: "4px" }}>
-         {/* The reader's own header, from the component the dashboard renders:
-             the surface whose job is showing the author what a reader gets. */}
+      // The bar carries its own gap to what it sits over, so the surface adds
+      // none between the two.
+      <Stack sx={{ gap: 0 }}>
+         {/* Outside the ring's inset, so the bar lines up to the pixel with the
+             reader's — the whole point of it being the same bar. */}
          <BuilderToolbar
             canUndo={editor.canUndo}
             canRedo={editor.canRedo}
@@ -484,170 +485,182 @@ export function DashboardBuilder({
             {...(toolbar ? { actions: toolbar } : {})}
             {...(catalog ? { onAddTile: () => setAddingTile(true) } : {})}
             onSettings={setSettingsAnchor}
-            onQuickLayout={quickLayout}
          />
 
-         <DashboardProse
-            title={editor.document.title || "Untitled dashboard"}
-            {...(editor.document.description
-               ? { description: editor.document.description }
-               : {})}
-         />
+         {/* The ring's inset, minus the top: nothing at the top of this stack
+             can be selected (the prose and the control row are not tiles), and
+             4px there would put the title 4px further from the bar than the
+             reader's is. */}
+         <Stack sx={{ gap: 2, px: "4px", pb: "4px" }}>
+            <DashboardProse
+               title={editor.document.title || "Untitled dashboard"}
+               {...(editor.document.description
+                  ? { description: editor.document.description }
+                  : {})}
+            />
 
-         <FilterStrip
-            controls={controlList}
-            tileCount={editor.document.tiles.length}
-            unknownFieldsOf={unknownFieldsOf}
-            onEdit={(control) => setFilterDialog({ control })}
-            onAdd={() => setFilterDialog({})}
-         >
-            {controls}
-         </FilterStrip>
+            <FilterStrip
+               controls={controlList}
+               tileCount={editor.document.tiles.length}
+               unknownFieldsOf={unknownFieldsOf}
+               onEdit={(control) => setFilterDialog({ control })}
+               onAdd={() => setFilterDialog({})}
+            >
+               {controls}
+            </FilterStrip>
 
-         {editor.error && (
-            // The edit is still here; the message says what stopped it reaching
-            // the file, which is a different thing from losing the work.
-            <Alert severity="warning">{editor.error}</Alert>
-         )}
+            {editor.error && (
+               // The edit is still here; the message says what stopped it reaching
+               // the file, which is a different thing from losing the work.
+               <Alert severity="warning">{editor.error}</Alert>
+            )}
 
-         <DragDropProvider
-            sensors={builderSensors}
-            onDragStart={onDragStart}
-            onDragOver={onDragOver}
-            onDragEnd={onDragEnd}
-         >
-            <Box ref={gridBox} sx={{ position: "relative" }}>
-               {(resize !== undefined || dragging) && (
-                  <GridGuides columns={columns} />
+            <DragDropProvider
+               sensors={builderSensors}
+               onDragStart={onDragStart}
+               onDragOver={onDragOver}
+               onDragEnd={onDragEnd}
+            >
+               <Box ref={gridBox} sx={{ position: "relative" }}>
+                  {(resize !== undefined || dragging) && (
+                     <GridGuides columns={columns} />
+                  )}
+
+                  <DashboardGrid
+                     tiles={entries}
+                     columns={columns}
+                     keyOf={(entry) =>
+                        entry.kind === "gap"
+                           ? gapId(entry.after)
+                           : tileKey(entry.tile)
+                     }
+                     renderTile={(entry) => {
+                        if (entry.kind === "gap")
+                           return <GapTarget after={entry.after} />;
+                        const { tile: each, index } = entry;
+                        return (
+                           <TileFrame
+                              tile={each}
+                              index={index}
+                              selected={index === selected}
+                              menuOpen={menu?.index === index}
+                              resizeSpan={
+                                 resize?.index === index
+                                    ? resize.span
+                                    : undefined
+                              }
+                              columns={columns}
+                              onSelect={() => setSelected(index)}
+                              onOpenMenu={(anchor) => {
+                                 setSelected(index);
+                                 setMenu({ anchor, index });
+                              }}
+                              onResizeStart={(event) =>
+                                 startResize(event, index)
+                              }
+                              onResizeMove={onResize}
+                              onResizeEnd={endResize}
+                           >
+                              {renderTile ? (
+                                 renderTile(each)
+                              ) : (
+                                 <TilePlaceholder tile={each} />
+                              )}
+                           </TileFrame>
+                        );
+                     }}
+                  />
+               </Box>
+            </DragDropProvider>
+            <FilterDialog
+               open={filterDialog !== undefined}
+               document={editor.document}
+               {...(filterDialog?.control
+                  ? { control: filterDialog.control }
+                  : {})}
+               available={available}
+               {...(catalog ? { fieldsFor } : {})}
+               onClose={() => setFilterDialog(undefined)}
+               onApply={applyFilter}
+               onRemove={dropControl}
+            />
+            <TileMenu
+               anchor={menu?.anchor ?? null}
+               tile={
+                  menu === undefined
+                     ? undefined
+                     : editor.document.tiles[menu.index]
+               }
+               onClose={() => setMenu(undefined)}
+               onCommit={(next) => {
+                  const at = menu?.index;
+                  if (at === undefined) return;
+                  editor.update((draft) => {
+                     draft.tiles[at] = next;
+                  });
+               }}
+               onRemove={() => {
+                  if (menu !== undefined) removeTile(menu.index);
+               }}
+               columns={columns}
+               onDrills={() => {
+                  if (menu !== undefined)
+                     setDrillSource(editor.document.tiles[menu.index]?.source);
+               }}
+            />
+            <DrillDialog
+               open={drillSource !== undefined}
+               document={editor.document}
+               source={editor.document.sources.find(
+                  (s) => s.name === drillSource,
                )}
-
-               <DashboardGrid
-                  tiles={entries}
-                  columns={columns}
-                  keyOf={(entry) =>
-                     entry.kind === "gap"
-                        ? gapId(entry.after)
-                        : tileKey(entry.tile)
-                  }
-                  renderTile={(entry) => {
-                     if (entry.kind === "gap")
-                        return <GapTarget after={entry.after} />;
-                     const { tile: each, index } = entry;
-                     return (
-                        <TileFrame
-                           tile={each}
-                           index={index}
-                           selected={index === selected}
-                           menuOpen={menu?.index === index}
-                           resizeSpan={
-                              resize?.index === index ? resize.span : undefined
-                           }
-                           columns={columns}
-                           onSelect={() => setSelected(index)}
-                           onOpenMenu={(anchor) => {
-                              setSelected(index);
-                              setMenu({ anchor, index });
-                           }}
-                           onResizeStart={(event) => startResize(event, index)}
-                           onResizeMove={onResize}
-                           onResizeEnd={endResize}
-                        >
-                           {renderTile ? (
-                              renderTile(each)
-                           ) : (
-                              <TilePlaceholder tile={each} />
-                           )}
-                        </TileFrame>
+               givenNames={controlList.map((c) => c.name)}
+               dashboards={dashboards ?? []}
+               onClose={() => setDrillSource(undefined)}
+               onApply={(drills) =>
+                  editor.update((draft) => {
+                     const kept = (draft.drills ?? []).filter(
+                        (d) => d.source !== drillSource,
                      );
-                  }}
-               />
-            </Box>
-         </DragDropProvider>
-         <FilterDialog
-            open={filterDialog !== undefined}
-            document={editor.document}
-            {...(filterDialog?.control
-               ? { control: filterDialog.control }
-               : {})}
-            available={available}
-            {...(catalog ? { fieldsFor } : {})}
-            onClose={() => setFilterDialog(undefined)}
-            onApply={applyFilter}
-            onRemove={dropControl}
-         />
-         <TileMenu
-            anchor={menu?.anchor ?? null}
-            tile={
-               menu === undefined
-                  ? undefined
-                  : editor.document.tiles[menu.index]
-            }
-            onClose={() => setMenu(undefined)}
-            onCommit={(next) => {
-               const at = menu?.index;
-               if (at === undefined) return;
-               editor.update((draft) => {
-                  draft.tiles[at] = next;
-               });
-            }}
-            onRemove={() => {
-               if (menu !== undefined) removeTile(menu.index);
-            }}
-            columns={columns}
-            onDrills={() => {
-               if (menu !== undefined)
-                  setDrillSource(editor.document.tiles[menu.index]?.source);
-            }}
-         />
-         <DrillDialog
-            open={drillSource !== undefined}
-            document={editor.document}
-            source={editor.document.sources.find((s) => s.name === drillSource)}
-            givenNames={controlList.map((c) => c.name)}
-            dashboards={dashboards ?? []}
-            onClose={() => setDrillSource(undefined)}
-            onApply={(drills) =>
-               editor.update((draft) => {
-                  const kept = (draft.drills ?? []).filter(
-                     (d) => d.source !== drillSource,
-                  );
-                  const next = [...kept, ...drills];
-                  if (next.length === 0) delete draft.drills;
-                  else draft.drills = next;
-               })
-            }
-         />
-         <SettingsPopover
-            anchor={settingsAnchor}
-            settings={settings}
-            onClose={() => setSettingsAnchor(null)}
-            onCommit={(next) =>
-               editor.update((draft) => {
-                  draft.title = next.title;
-                  if (next.description === undefined) delete draft.description;
-                  else draft.description = next.description;
-                  if (next.columns === undefined) delete draft.columns;
-                  else draft.columns = next.columns;
-                  if (next.autorun === undefined) delete draft.autorun;
-                  else draft.autorun = next.autorun;
-               })
-            }
-         />
-         <AddTileDialog
-            open={addingTile}
-            document={editor.document}
-            catalog={catalog}
-            columns={columns}
-            onClose={() => setAddingTile(false)}
-            onAdd={addTile}
-         />
-         <DiffDialog
-            open={pendingSave !== undefined}
-            before={pendingSave?.before ?? ""}
-            after={pendingSave?.after ?? ""}
-            onConfirm={commitSave}
-            onClose={() => setPendingSave(undefined)}
-         />
+                     const next = [...kept, ...drills];
+                     if (next.length === 0) delete draft.drills;
+                     else draft.drills = next;
+                  })
+               }
+            />
+            <SettingsPopover
+               anchor={settingsAnchor}
+               settings={settings}
+               onClose={() => setSettingsAnchor(null)}
+               onCommit={(next) =>
+                  editor.update((draft) => {
+                     draft.title = next.title;
+                     if (next.description === undefined)
+                        delete draft.description;
+                     else draft.description = next.description;
+                     if (next.columns === undefined) delete draft.columns;
+                     else draft.columns = next.columns;
+                     if (next.autorun === undefined) delete draft.autorun;
+                     else draft.autorun = next.autorun;
+                  })
+               }
+            />
+            <AddTileDialog
+               open={addingTile}
+               document={editor.document}
+               catalog={catalog}
+               columns={columns}
+               onClose={() => setAddingTile(false)}
+               onAdd={addTile}
+            />
+            <DiffDialog
+               open={pendingSave !== undefined}
+               before={pendingSave?.before ?? ""}
+               after={pendingSave?.after ?? ""}
+               onConfirm={commitSave}
+               onClose={() => setPendingSave(undefined)}
+            />
+         </Stack>
       </Stack>
    );
 }

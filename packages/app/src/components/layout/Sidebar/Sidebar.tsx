@@ -11,7 +11,6 @@ import CodeOutlinedIcon from "@mui/icons-material/CodeOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
-import PaletteOutlinedIcon from "@mui/icons-material/PaletteOutlined";
 import SidebarToggleIcon from "./SidebarToggleIcon";
 import {
    Box,
@@ -66,7 +65,6 @@ export default function Sidebar({
             <PrimaryNav isCollapsed={isCollapsed} />
             <EnvironmentsSection isCollapsed={isCollapsed} />
          </Box>
-         <SettingsSection isCollapsed={isCollapsed} />
          <DocsFooter isCollapsed={isCollapsed} />
       </Box>
    );
@@ -237,30 +235,6 @@ function EnvironmentsSection({ isCollapsed }: { isCollapsed: boolean }) {
             })}
          </List>
       </Box>
-   );
-}
-
-/**
- * Pinned to the bottom with the docs links rather than sitting under
- * Environments, and with no section heading of its own. Visualization theme is
- * the only setting there is (`/settings` is a redirect to it), so a headed
- * SETTINGS section directly beneath the environment list gave one operator
- * preference the same weight as the data the sidebar exists to navigate.
- */
-function SettingsSection({ isCollapsed }: { isCollapsed: boolean }) {
-   const location = useLocation();
-   const isThemeRoute = location.pathname.startsWith("/settings/theme");
-
-   return (
-      <List sx={{ pt: 1, pb: 0 }}>
-         <SidebarItem
-            icon={<PaletteOutlinedIcon fontSize="small" />}
-            label="Visualization theme"
-            to="/settings/theme"
-            selected={isThemeRoute}
-            isCollapsed={isCollapsed}
-         />
-      </List>
    );
 }
 

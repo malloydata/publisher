@@ -47,3 +47,6 @@ skills/credible-*/
 .claude/skills/credible-*/
 .claude/rules/credible-*.md
 .cursor/rules/credible-*.mdc
+
+# Internal review notes, kept locally and never published.
+publisher-multitenant-security-review.md

@@ -57,7 +57,7 @@ Reach for it when a reader must not see stale rows, and remember what it costs: 
 
 A source protected by an `#(authorize)` gate — its own, or one carried from a joined or derived
 source — is refused for `storage=` and for pre-aggregation, unconditionally. A **colocated**
-`#@ persist` (no `storage=`) is different: it is admitted when the gate is *proven* to be the entry
+`#@ persist` (no `storage=`) is different: it is admitted when the gate is _proven_ to be the entry
 point's own row filter, and refused otherwise.
 
 - **`storage=`** refuses at build time, unconditionally, alongside an unbound parameter or a given
@@ -68,7 +68,7 @@ point's own row filter, and refused otherwise.
   changes only where the rows are read FROM, never whether the entry point's own `#(authorize)` is
   re-evaluated — the substitution swaps only the source's relation SQL, and the gate applies as the
   reading query's own `WHERE` on top of it, so filtered rows come back filtered. When the compiler can
-  *prove* the gate is the entry point's own row-level filter and nothing else is reachable beneath it,
+  _prove_ the gate is the entry point's own row-level filter and nothing else is reachable beneath it,
   the source is eligible and serves correctly filtered from the materialized table. It is still
   refused when that cannot be proven — a gate reachable only through a join (join-only gate
   attribution is not traced), an inherited gate the compiler cannot attribute cleanly, or a gate that
@@ -77,7 +77,7 @@ point's own row filter, and refused otherwise.
 - **`#@ preaggregate`** refuses unconditionally, regardless of the gate's classification. A rollup
   synthesizes a colocated `#@ persist` over an import of the annotated base, and none of the
   pre-aggregation modules has any `#(authorize)` awareness of its own — so this refusal is the only
-  thing standing between a gated source and the pre-aggregation tier. It also groups *across* the
+  thing standing between a gated source and the pre-aggregation tier. It also groups _across_ the
   gated column, so the column is not even present in the rolled-up result to filter afterwards, even
   in principle. A refused rollup names `#@ preaggregate` and the gated source rather than the
   synthesized rollup's own name, which the author never wrote.
@@ -89,9 +89,9 @@ everyone.
 ### The freshness contract for a gated colocated persist source
 
 Admitting a proven row-level gate applies unconditionally. The refusal it relaxes never fired at
-*load*: it fires inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`), so a
+_load_: it fires inside the build path (`deriveSelfInstructions` / `executeInstructedBuild`), so a
 package with a colocated `#@ persist` on an `#(authorize)`-gated source already loads, appears in
-`plan.sources`, and serves live — what 422'd was its *materialization run*, not the package.
+`plan.sources`, and serves live — what 422'd was its _materialization run_, not the package.
 
 **So such packages already exist.** On upgrade, a run that used to fail succeeds when the gate proves
 row-level and attributed to the entry point, and the next auto-run or scheduled build materializes the
@@ -126,7 +126,7 @@ on. An incremental source needs `reseed` to do the same.
 
 **`refresh="incremental"` does not bound revocation.** The [delta](#incremental-refresh) wraps the
 seed's own SQL in a predicate over `[covered_through, frontier)`, so a row whose access decision
-changes *without its watermark advancing* falls outside every future delta and is never re-read.
+changes _without its watermark advancing_ falls outside every future delta and is never re-read.
 Take `orders`, gated with `#(authorize) org_id = $ORG` and declared
 `refresh="incremental" watermark="order_date"`: order 7 (`order_date` 2026-01-02) moves from org 1 to
 org 2, every later run advances past that date, and principal `ORG: 1` keeps reading it
@@ -277,9 +277,6 @@ malloy-pub schedule clear --environment <env> --package <pkg>
 
 # List a package's runs (ID, Status, Trigger, Started, Completed, Error)
 malloy-pub list materialization --environment <env> --package <pkg>
-
-# List every package's runs across the environment (adds a leading Package column)
-malloy-pub list materialization --environment <env>
 
 # Inspect one run (timings, sourcesBuilt/sourcesReused, manifest entries)
 malloy-pub get materialization <id> --environment <env> --package <pkg>

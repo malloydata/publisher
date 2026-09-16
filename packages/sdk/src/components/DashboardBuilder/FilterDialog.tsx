@@ -6,10 +6,6 @@ import {
    Box,
    Button,
    Checkbox,
-   Dialog,
-   DialogActions,
-   DialogContent,
-   DialogTitle,
    MenuItem,
    Stack,
    TextField,
@@ -32,6 +28,7 @@ import {
    type MappingRow,
 } from "./controls";
 import type { DashboardDocument, DashboardTile, LocalGiven } from "./document";
+import { AppDialog } from "../AppDialog";
 
 /**
  * A filter control: what it is, and which tiles it drives.
@@ -245,15 +242,13 @@ export function FilterDialog({
    );
 
    return (
-      <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
-         <DialogTitle sx={{ pb: 0.5 }}>
-            {editing ? (shown.label ?? shown.name) : "Add a filter"}
-            {editing && (
-               <Typography
-                  component="div"
-                  variant="caption"
-                  sx={{ color: theme.tileTitle, mt: 0.25 }}
-               >
+      <AppDialog
+         open={open}
+         onClose={onClose}
+         title={editing ? (shown.label ?? shown.name) : "Add a filter"}
+         description={
+            editing ? (
+               <>
                   <Box
                      component="span"
                      sx={{ fontFamily: "ui-monospace, monospace" }}
@@ -263,319 +258,305 @@ export function FilterDialog({
                   {fromModel
                      ? " · declared in the model, so its label and options are set there"
                      : " · declared in this dashboard"}
-               </Typography>
-            )}
-         </DialogTitle>
-         <DialogContent>
-            {/* Top margin on the stack, not padding on the content: MUI zeroes
-                a DialogContent's top padding after a DialogTitle with a rule
-                that outranks `sx`, and the fields' floating labels need the
-                room or they clip. */}
-            <Stack sx={{ gap: 2.5, pt: 1 }}>
-               {/* WHAT the filter is. */}
-               {!editing && available.length > 0 && (
-                  <ToggleButtonGroup
-                     exclusive
-                     size="small"
-                     value={source.kind}
-                     onChange={(_, value: "new" | "existing" | null) => {
-                        if (value === "new") setSource({ kind: "new" });
-                        else if (value === "existing" && available[0])
-                           pickExisting(available[0]);
-                     }}
-                     aria-label="Where the filter comes from"
+               </>
+            ) : (
+               "A control on the page, and the tiles it filters."
+            )
+         }
+         actions={
+            <>
+               {editing && (
+                  <Button
+                     color="error"
+                     onClick={() => onRemove(shown.name)}
+                     aria-label={`Remove control ${shown.name}`}
+                     sx={{ mr: "auto" }}
                   >
-                     <ToggleButton value="new">
-                        New in this dashboard
-                     </ToggleButton>
-                     <ToggleButton value="existing">
-                        From the model
-                     </ToggleButton>
-                  </ToggleButtonGroup>
+                     Remove from dashboard
+                  </Button>
                )}
+               <Button onClick={onClose}>Cancel</Button>
+               <Tooltip
+                  title={
+                     canApply || target === undefined
+                        ? ""
+                        : "A ticked tile has no field, or names one its source does not have."
+                  }
+               >
+                  <span>
+                     <Button
+                        variant="contained"
+                        onClick={apply}
+                        disabled={!canApply}
+                     >
+                        {editing ? "Apply" : "Add filter"}
+                     </Button>
+                  </span>
+               </Tooltip>
+            </>
+         }
+      >
+         <Stack sx={{ gap: 2.5, pt: 1 }}>
+            {/* WHAT the filter is. */}
+            {!editing && available.length > 0 && (
+               <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  value={source.kind}
+                  onChange={(_, value: "new" | "existing" | null) => {
+                     if (value === "new") setSource({ kind: "new" });
+                     else if (value === "existing" && available[0])
+                        pickExisting(available[0]);
+                  }}
+                  aria-label="Where the filter comes from"
+               >
+                  <ToggleButton value="new">New in this dashboard</ToggleButton>
+                  <ToggleButton value="existing">From the model</ToggleButton>
+               </ToggleButtonGroup>
+            )}
 
-               {!editing && source.kind === "existing" ? (
+            {!editing && source.kind === "existing" ? (
+               <TextField
+                  select
+                  size="small"
+                  label="Control"
+                  value={source.name}
+                  onChange={(event) => {
+                     const picked = available.find(
+                        (g) => g.name === event.target.value,
+                     );
+                     if (picked) pickExisting(picked);
+                  }}
+               >
+                  {available.map((given) => (
+                     <MenuItem key={given.name} value={given.name}>
+                        {given.label ?? given.name}
+                        <Typography
+                           component="span"
+                           variant="caption"
+                           sx={{ ml: 1, opacity: 0.6 }}
+                        >
+                           ${given.name}
+                        </Typography>
+                     </MenuItem>
+                  ))}
+               </TextField>
+            ) : null}
+
+            <Stack direction="row" sx={{ gap: 1.5, flexWrap: "wrap" }}>
+               {/* Hidden while per-tile fields are open: they speak for
+                      themselves then, and a box above them that applied to
+                      nothing would read as one more thing to fill. */}
+               {!perTile && (
+                  <FieldPicker
+                     value={field}
+                     onChange={pickField}
+                     fields={commonFields}
+                     accepts={accepts}
+                     label="Field to filter"
+                     ariaLabel="Field to filter"
+                     placeholder="category"
+                     autoFocus={!editing}
+                     error={commonProblem !== undefined}
+                     helperText={
+                        commonProblem ??
+                        (!editing && newName
+                           ? `Declared as $${newName}`
+                           : undefined)
+                     }
+                     sx={{ flex: 1, minWidth: 200 }}
+                  />
+               )}
+               {!fromModel && (
+                  <TextField
+                     size="small"
+                     label="Label"
+                     placeholder={newName ? titleCase(newName) : ""}
+                     value={label}
+                     onChange={(event) => setLabel(event.target.value)}
+                     inputProps={{ "aria-label": "Control label" }}
+                     sx={{ flex: 1, minWidth: 160 }}
+                  />
+               )}
+               {valueTyped &&
+                  !perTile &&
+                  operatorField(commonOp, setCommonOp, "Comparison")}
+            </Stack>
+            {!editing && source.kind === "new" && (
+               <Stack direction="row" sx={{ gap: 1.5 }}>
                   <TextField
                      select
                      size="small"
                      label="Control"
-                     value={source.name}
-                     onChange={(event) => {
-                        const picked = available.find(
-                           (g) => g.name === event.target.value,
-                        );
-                        if (picked) pickExisting(picked);
+                     value={kind}
+                     onChange={(event) =>
+                        pickKind(event.target.value as ControlKind)
+                     }
+                     inputProps={{ "aria-label": "Kind of control" }}
+                     slotProps={{
+                        select: {
+                           renderValue: (value) =>
+                              CONTROL_KINDS.find((k) => k.kind === value)
+                                 ?.label ?? String(value),
+                        },
                      }}
+                     sx={{ flex: 1 }}
                   >
-                     {available.map((given) => (
-                        <MenuItem key={given.name} value={given.name}>
-                           {given.label ?? given.name}
+                     {CONTROL_KINDS.map((option) => (
+                        <MenuItem key={option.kind} value={option.kind}>
+                           {option.label}
                            <Typography
                               component="span"
                               variant="caption"
                               sx={{ ml: 1, opacity: 0.6 }}
                            >
-                              ${given.name}
+                              {option.hint}
                            </Typography>
                         </MenuItem>
                      ))}
                   </TextField>
-               ) : null}
-
-               <Stack direction="row" sx={{ gap: 1.5, flexWrap: "wrap" }}>
-                  {/* Hidden while per-tile fields are open: they speak for
-                      themselves then, and a box above them that applied to
-                      nothing would read as one more thing to fill. */}
-                  {!perTile && (
-                     <FieldPicker
-                        value={field}
-                        onChange={pickField}
-                        fields={commonFields}
-                        accepts={accepts}
-                        label="Field to filter"
-                        ariaLabel="Field to filter"
-                        placeholder="category"
-                        autoFocus={!editing}
-                        error={commonProblem !== undefined}
-                        helperText={
-                           commonProblem ??
-                           (!editing && newName
-                              ? `Declared as $${newName}`
-                              : undefined)
-                        }
-                        sx={{ flex: 1, minWidth: 200 }}
-                     />
-                  )}
-                  {!fromModel && (
+                  {kind === "date" && (
                      <TextField
                         size="small"
-                        label="Label"
-                        placeholder={newName ? titleCase(newName) : ""}
-                        value={label}
-                        onChange={(event) => setLabel(event.target.value)}
-                        inputProps={{ "aria-label": "Control label" }}
-                        sx={{ flex: 1, minWidth: 160 }}
-                     />
-                  )}
-                  {valueTyped &&
-                     !perTile &&
-                     operatorField(commonOp, setCommonOp, "Comparison")}
-               </Stack>
-               {!editing && source.kind === "new" && (
-                  <Stack direction="row" sx={{ gap: 1.5 }}>
-                     <TextField
-                        select
-                        size="small"
-                        label="Control"
-                        value={kind}
-                        onChange={(event) =>
-                           pickKind(event.target.value as ControlKind)
-                        }
-                        inputProps={{ "aria-label": "Kind of control" }}
-                        slotProps={{
-                           select: {
-                              renderValue: (value) =>
-                                 CONTROL_KINDS.find((k) => k.kind === value)
-                                    ?.label ?? String(value),
-                           },
-                        }}
+                        type="date"
+                        label="Starts at"
+                        value={dateDefault}
+                        onChange={(event) => setDateDefault(event.target.value)}
+                        InputLabelProps={{ shrink: true }}
                         sx={{ flex: 1 }}
-                     >
-                        {CONTROL_KINDS.map((option) => (
-                           <MenuItem key={option.kind} value={option.kind}>
-                              {option.label}
-                              <Typography
-                                 component="span"
-                                 variant="caption"
-                                 sx={{ ml: 1, opacity: 0.6 }}
-                              >
-                                 {option.hint}
-                              </Typography>
-                           </MenuItem>
-                        ))}
-                     </TextField>
-                     {kind === "date" && (
-                        <TextField
-                           size="small"
-                           type="date"
-                           label="Starts at"
-                           value={dateDefault}
-                           onChange={(event) =>
-                              setDateDefault(event.target.value)
-                           }
-                           InputLabelProps={{ shrink: true }}
-                           sx={{ flex: 1 }}
-                        />
-                     )}
-                  </Stack>
-               )}
-
-               {/* WHICH tiles. */}
-               <Box>
-                  <Stack
-                     direction="row"
-                     sx={{ alignItems: "center", gap: 0.5 }}
-                  >
-                     <Checkbox
-                        size="small"
-                        checked={
-                           bindableCount > 0 && included === bindableCount
-                        }
-                        indeterminate={included > 0 && included < bindableCount}
-                        disabled={bindableCount === 0}
-                        onChange={(event) => setAll(event.target.checked)}
-                        inputProps={{ "aria-label": "All tiles" }}
                      />
-                     <Typography variant="subtitle2" sx={{ flex: 1 }}>
-                        Applies to {included} of {document.tiles.length} tiles
-                     </Typography>
-                     <Button
-                        size="small"
-                        onClick={() => {
-                           // Opening per-tile starts every row from the common
-                           // field; closing it goes back to one box for all.
-                           if (!perTile)
-                              setRows((previous) =>
-                                 previous.map((row) => ({ ...row, field })),
-                              );
-                           setPerTile((was) => !was);
-                        }}
-                     >
-                        {perTile ? "Same field for all" : "Adjust per tile"}
-                     </Button>
-                  </Stack>
-                  <Stack sx={{ gap: perTile ? 1 : 0 }}>
-                     {document.tiles.map((tile, index) => {
-                        const row = rows[index];
-                        const title = tile.label ?? tile.name;
-                        const problem = perTile
-                           ? rowProblems[index]
-                           : undefined;
-                        return (
-                           <Stack
-                              key={`${tile.source}.${tile.name}`}
-                              direction="row"
-                              sx={{
-                                 gap: 1,
-                                 alignItems: perTile ? "flex-start" : "center",
-                                 opacity: bindable[index] ? 1 : 0.6,
-                              }}
-                           >
-                              <Checkbox
-                                 size="small"
-                                 disabled={!bindable[index]}
-                                 checked={
-                                    (row?.include ?? false) && bindable[index]
-                                 }
-                                 inputProps={{
-                                    "aria-label": `Filter ${title}`,
-                                 }}
-                                 onChange={(event) =>
-                                    setRow(index, {
-                                       include: event.target.checked,
-                                    })
-                                 }
-                              />
-                              <Typography
-                                 variant="body2"
-                                 sx={{
-                                    flex: 1,
-                                    minWidth: 0,
-                                    pt: perTile ? 1 : 0,
-                                 }}
-                                 noWrap
-                              >
-                                 {title}
-                              </Typography>
-                              {!bindable[index] ? (
-                                 <Tooltip
-                                    title={
-                                       tile.declaration.kind === "inherited"
-                                          ? "Declared on its source, which this dashboard does not write."
-                                          : "Its query is written out here rather than named, so a filter cannot be added to it."
-                                    }
-                                 >
-                                    <Typography
-                                       variant="caption"
-                                       sx={{ color: theme.tileTitle }}
-                                    >
-                                       {tile.declaration.kind === "inherited"
-                                          ? "From the model"
-                                          : "Inline query"}
-                                    </Typography>
-                                 </Tooltip>
-                              ) : (
-                                 perTile && (
-                                    <>
-                                       {valueTyped &&
-                                          operatorField(
-                                             row?.op,
-                                             (op) => setRow(index, { op }),
-                                             `Comparison for ${title}`,
-                                          )}
-                                       <FieldPicker
-                                          value={row?.field ?? ""}
-                                          onChange={(next) =>
-                                             setRow(index, { field: next })
-                                          }
-                                          fields={fieldsFor?.(tile)}
-                                          accepts={accepts}
-                                          label="Field"
-                                          ariaLabel={`Field for ${title}`}
-                                          disabled={!row?.include}
-                                          error={problem !== undefined}
-                                          helperText={problem}
-                                          sx={{ width: 220 }}
-                                       />
-                                    </>
-                                 )
-                              )}
-                           </Stack>
-                        );
-                     })}
-                  </Stack>
-                  {included === 0 && (
-                     <Typography
-                        variant="caption"
-                        sx={{ color: "warning.main", display: "block", mt: 1 }}
-                     >
-                        No tile is ticked, so this control will not appear on
-                        the dashboard.
-                     </Typography>
                   )}
-               </Box>
-            </Stack>
-         </DialogContent>
-         <DialogActions sx={{ px: 3, py: 1.5 }}>
-            {editing && (
-               <Button
-                  color="error"
-                  onClick={() => onRemove(shown.name)}
-                  aria-label={`Remove control ${shown.name}`}
-                  sx={{ mr: "auto" }}
-               >
-                  Remove from dashboard
-               </Button>
+               </Stack>
             )}
-            <Button onClick={onClose}>Cancel</Button>
-            <Tooltip
-               title={
-                  canApply || target === undefined
-                     ? ""
-                     : "A ticked tile has no field, or names one its source does not have."
-               }
-            >
-               <span>
+
+            {/* WHICH tiles. */}
+            <Box>
+               <Stack direction="row" sx={{ alignItems: "center", gap: 0.5 }}>
+                  <Checkbox
+                     size="small"
+                     checked={bindableCount > 0 && included === bindableCount}
+                     indeterminate={included > 0 && included < bindableCount}
+                     disabled={bindableCount === 0}
+                     onChange={(event) => setAll(event.target.checked)}
+                     inputProps={{ "aria-label": "All tiles" }}
+                  />
+                  <Typography variant="subtitle2" sx={{ flex: 1 }}>
+                     Applies to {included} of {document.tiles.length} tiles
+                  </Typography>
                   <Button
-                     variant="contained"
-                     onClick={apply}
-                     disabled={!canApply}
+                     size="small"
+                     onClick={() => {
+                        // Opening per-tile starts every row from the common
+                        // field; closing it goes back to one box for all.
+                        if (!perTile)
+                           setRows((previous) =>
+                              previous.map((row) => ({ ...row, field })),
+                           );
+                        setPerTile((was) => !was);
+                     }}
                   >
-                     {editing ? "Apply" : "Add filter"}
+                     {perTile ? "Same field for all" : "Adjust per tile"}
                   </Button>
-               </span>
-            </Tooltip>
-         </DialogActions>
-      </Dialog>
+               </Stack>
+               <Stack sx={{ gap: perTile ? 1 : 0 }}>
+                  {document.tiles.map((tile, index) => {
+                     const row = rows[index];
+                     const title = tile.label ?? tile.name;
+                     const problem = perTile ? rowProblems[index] : undefined;
+                     return (
+                        <Stack
+                           key={`${tile.source}.${tile.name}`}
+                           direction="row"
+                           sx={{
+                              gap: 1,
+                              alignItems: perTile ? "flex-start" : "center",
+                              opacity: bindable[index] ? 1 : 0.6,
+                           }}
+                        >
+                           <Checkbox
+                              size="small"
+                              disabled={!bindable[index]}
+                              checked={
+                                 (row?.include ?? false) && bindable[index]
+                              }
+                              inputProps={{
+                                 "aria-label": `Filter ${title}`,
+                              }}
+                              onChange={(event) =>
+                                 setRow(index, {
+                                    include: event.target.checked,
+                                 })
+                              }
+                           />
+                           <Typography
+                              variant="body2"
+                              sx={{
+                                 flex: 1,
+                                 minWidth: 0,
+                                 pt: perTile ? 1 : 0,
+                              }}
+                              noWrap
+                           >
+                              {title}
+                           </Typography>
+                           {!bindable[index] ? (
+                              <Tooltip
+                                 title={
+                                    tile.declaration.kind === "inherited"
+                                       ? "Declared on its source, which this dashboard does not write."
+                                       : "Its query is written out here rather than named, so a filter cannot be added to it."
+                                 }
+                              >
+                                 <Typography
+                                    variant="caption"
+                                    sx={{ color: theme.tileTitle }}
+                                 >
+                                    {tile.declaration.kind === "inherited"
+                                       ? "From the model"
+                                       : "Inline query"}
+                                 </Typography>
+                              </Tooltip>
+                           ) : (
+                              perTile && (
+                                 <>
+                                    {valueTyped &&
+                                       operatorField(
+                                          row?.op,
+                                          (op) => setRow(index, { op }),
+                                          `Comparison for ${title}`,
+                                       )}
+                                    <FieldPicker
+                                       value={row?.field ?? ""}
+                                       onChange={(next) =>
+                                          setRow(index, { field: next })
+                                       }
+                                       fields={fieldsFor?.(tile)}
+                                       accepts={accepts}
+                                       label="Field"
+                                       ariaLabel={`Field for ${title}`}
+                                       disabled={!row?.include}
+                                       error={problem !== undefined}
+                                       helperText={problem}
+                                       sx={{ width: 220 }}
+                                    />
+                                 </>
+                              )
+                           )}
+                        </Stack>
+                     );
+                  })}
+               </Stack>
+               {included === 0 && (
+                  <Typography
+                     variant="caption"
+                     sx={{ color: "warning.main", display: "block", mt: 1 }}
+                  >
+                     No tile is ticked, so this control will not appear on the
+                     dashboard.
+                  </Typography>
+               )}
+            </Box>
+         </Stack>
+      </AppDialog>
    );
 }

@@ -75,6 +75,60 @@ test.describe("theming — light/dark/auto toggle", () => {
       expect(bgColor.replace(/\s/g, "")).not.toMatch(/^rgba?\(255,255,255/);
    });
 
+   /**
+    * The primary button's own label has to be readable in both modes.
+    *
+    * This is asserted rather than eyeballed because the failure is silent and
+    * it has already happened once: moving the primary onto the palette's blue
+    * put white-on-blue at 3.7:1 in dark mode, under the 4.5:1 a label needs,
+    * with a HOVER state at 2.5:1 — worse than its resting state. A screenshot
+    * of that looks like a blue button.
+    */
+   test("a primary button's label clears 4.5:1 against its fill, in both modes", async ({
+      page,
+   }) => {
+      const contrast = () =>
+         page.evaluate(() => {
+            const button = [...document.querySelectorAll("button")].find((b) =>
+               b.className.includes("MuiButton-contained"),
+            );
+            if (!button) return null;
+            const style = getComputedStyle(button);
+            const parse = (c: string) =>
+               (c.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+            const lum = (rgb: number[]) => {
+               const ch = rgb.map((v) => {
+                  const s = v / 255;
+                  return s <= 0.03928
+                     ? s / 12.92
+                     : Math.pow((s + 0.055) / 1.055, 2.4);
+               });
+               return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+            };
+            const a = lum(parse(style.color));
+            const b2 = lum(parse(style.backgroundColor));
+            const [hi, lo] = a > b2 ? [a, b2] : [b2, a];
+            return (hi + 0.05) / (lo + 0.05);
+         });
+
+      for (const mode of ["light", "dark"]) {
+         await page.goto("/");
+         await page.evaluate(({ k, v }) => window.localStorage.setItem(k, v), {
+            k: STORAGE_KEY,
+            v: mode,
+         });
+         await page.reload();
+         await expect(
+            page.getByRole("heading", { name: "Publisher", level: 1 }),
+         ).toBeVisible();
+         const ratio = await contrast();
+         expect(ratio, `${mode} mode primary button`).not.toBeNull();
+         expect(ratio!, `${mode} mode primary button`).toBeGreaterThanOrEqual(
+            4.5,
+         );
+      }
+   });
+
    test("auto mode round-trips: setting auto, reloading, viewing toggle still reads auto", async ({
       page,
    }) => {

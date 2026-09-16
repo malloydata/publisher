@@ -217,31 +217,16 @@ describe("CLI integration (real server)", () => {
     expect(r.output.toLowerCase()).toContain("cron");
   });
 
-  // ── environment-scoped listing ────────────────────────────────────
+  // ── listing requires a package ────────────────────────────────────
 
-  it("lists materializations across the environment (Package + Trigger)", async () => {
-    // Create one run so the env-scoped list has a row to show.
-    const mat = await runCli(["materialize", ...SCOPE, "--wait"], baseUrl);
-    expect(mat.code).toBe(0);
-    const id = extractMaterializationId(mat.output);
-    expect(id).toBeDefined();
-
-    // No --package -> environment-scoped list, labeled by package + trigger.
+  it("refuses to list materializations without a package", async () => {
+    // A materialization is a run of one package's persist sources, so there is
+    // nothing to list at environment scope.
     const list = await runCli(
       ["list", "materialization", "--environment", TEST_ENV],
       baseUrl,
     );
-    expect(list.code).toBe(0);
-    expect(list.output).toContain(TEST_PKG);
-    expect(list.output).toContain("Package");
-    // The env-scoped view keeps the Error column, so a failed run's message is
-    // not invisible environment-wide.
-    expect(list.output).toContain("Error");
-    expect(list.output).toContain("ON_DEMAND");
-
-    await runCli(
-      ["delete", "materialization", id as string, ...SCOPE],
-      baseUrl,
-    );
+    expect(list.code).toBe(1);
+    expect(list.output).toContain("--package");
   });
 });

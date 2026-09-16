@@ -6,7 +6,7 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import {
    gotoHome,
    openEnvironment,
-   openMaterializations,
+   gotoMaterializations,
    openPackage,
 } from "./helpers/navigation";
 import { getPublisherStatus } from "./helpers/publisherStatus";
@@ -20,7 +20,9 @@ const PKG = PACKAGES.storefront;
 const TERMINAL_STATUS = /^(Done|Failed|Cancelled)$/;
 
 test.describe("package-materializations: read", () => {
-   test("package page exposes a Materializations entry", async ({ page }) => {
+   test("the package page carries the materializations section", async ({
+      page,
+   }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PKG);
@@ -28,18 +30,14 @@ test.describe("package-materializations: read", () => {
       await expect(
          page.getByRole("heading", { name: "Materializations", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
+      // What is in force, and the three controls that change it.
+      await expect(page.getByText(/scope: (package|version)/)).toBeVisible();
+      await expect(page.getByRole("button", { name: /^Scope/ })).toBeVisible();
       await expect(
-         page.getByRole("button", { name: "Materializations" }),
+         page.getByRole("button", { name: /schedule/i }),
       ).toBeVisible();
-   });
-
-   test("materializations screen renders the Runs section", async ({
-      page,
-   }) => {
-      await openMaterializations(page, DEFAULT_ENV, PKG);
-
       await expect(
-         page.getByRole("heading", { name: "Runs", level: 6 }),
+         page.getByRole("button", { name: "Add materialization" }),
       ).toBeVisible();
    });
 });
@@ -54,9 +52,9 @@ test.describe("package-materializations: mutable", () => {
    test("New materialization dialog defaults to a full run", async ({
       page,
    }) => {
-      await openMaterializations(page, DEFAULT_ENV, PKG);
+      await gotoMaterializations(page, DEFAULT_ENV, PKG);
 
-      await page.getByRole("button", { name: "New materialization" }).click();
+      await page.getByRole("button", { name: "Add materialization" }).click();
       const dialog = page.getByRole("dialog", { name: "New materialization" });
       await expect(dialog).toBeVisible();
       await expect(
@@ -76,14 +74,14 @@ test.describe("package-materializations: mutable", () => {
       page,
    }) => {
       test.setTimeout(120_000);
-      await openMaterializations(page, DEFAULT_ENV, PKG);
+      await gotoMaterializations(page, DEFAULT_ENV, PKG);
 
       const actions = page.getByRole("button", {
          name: /Materialization actions for/,
       });
 
       // --- Materialize (auto-run: compile + plan + build + load) ---
-      await page.getByRole("button", { name: "New materialization" }).click();
+      await page.getByRole("button", { name: "Add materialization" }).click();
       const dialog = page.getByRole("dialog", { name: "New materialization" });
       await expect(dialog).toBeVisible();
       await dialog.getByRole("button", { name: "Materialize" }).click();
@@ -120,12 +118,12 @@ test.describe("package-materializations: mutable", () => {
       page,
    }) => {
       test.setTimeout(120_000);
-      await openMaterializations(page, DEFAULT_ENV, PKG);
+      await gotoMaterializations(page, DEFAULT_ENV, PKG);
 
       const row = page.locator('table tbody tr[role="button"]').first();
       if ((await row.count()) === 0) {
          await page
-            .getByRole("button", { name: "New materialization" })
+            .getByRole("button", { name: "Add materialization" })
             .click();
          const create = page.getByRole("dialog", {
             name: "New materialization",
@@ -164,10 +162,10 @@ test.describe("package-materializations: mutability parity with /api/v0/status",
       const { mutable } = await getPublisherStatus(baseURL);
       const expected = mutable ? 1 : 0;
 
-      await openMaterializations(page, DEFAULT_ENV, PKG);
+      await gotoMaterializations(page, DEFAULT_ENV, PKG);
 
       await expect(
-         page.getByRole("button", { name: "New materialization" }),
+         page.getByRole("button", { name: "Add materialization" }),
       ).toHaveCount(expected);
    });
 });
