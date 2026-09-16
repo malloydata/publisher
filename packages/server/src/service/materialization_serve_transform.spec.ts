@@ -1355,7 +1355,10 @@ describe("a source's own filters on the serve shape", () => {
          {
             ...base,
             refinements: [
-               { kind: "filter", code: "big and regions.region_name = 'North'" },
+               {
+                  kind: "filter",
+                  code: "big and regions.region_name = 'North'",
+               },
                { kind: "dimension", name: "big", code: "amount > 100" },
                {
                   kind: "join",
@@ -1380,7 +1383,11 @@ describe("a source's own filters on the serve shape", () => {
          {
             ...base,
             refinements: [
-               { kind: "view", name: "by_month", text: "by_month is { group_by: m }" },
+               {
+                  kind: "view",
+                  name: "by_month",
+                  text: "by_month is { group_by: m }",
+               },
                { kind: "filter", code: "not is_deleted" },
             ],
          },
