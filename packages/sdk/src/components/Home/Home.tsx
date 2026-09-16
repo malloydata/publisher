@@ -214,7 +214,7 @@ export default function Home({ onClickEnvironment }: HomeProps) {
                   </Box>
                   {mutable && <AddEnvironmentDialog />}
                </Stack>
-               <Stack>
+               <Stack role="region" aria-label="Environments">
                   {environments.map((environment) => (
                      <EnvironmentRow
                         key={environment.name}

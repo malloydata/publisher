@@ -15,7 +15,7 @@ test.describe("environments — read", () => {
       await gotoHome(page);
       await expect(
          page
-            .getByRole("main")
+            .getByRole("region", { name: "Environments" })
             .getByRole("button", { name: DEFAULT_ENV, exact: true }),
       ).toBeVisible();
    });
@@ -87,7 +87,7 @@ test.describe("environments — mutable CRUD", () => {
 
       // Verify the new row (and its description) rendered on Home.
       const newRow = page
-         .getByRole("main")
+         .getByRole("region", { name: "Environments" })
          .getByRole("button", { name, exact: true });
       await expect(newRow).toBeVisible();
       await expect(page.getByText(description)).toBeVisible();
