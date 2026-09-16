@@ -582,9 +582,20 @@ After editing a dashboard file, `GET …/packages/<pkg>?reload=true` recompiles 
 and a reload that fails to compile leaves the previously compiled model serving.
 [AGENTS.md](../AGENTS.md) §6 covers the edit loop and watch mode.
 
-**Editing in the Console.** Every dashboard page has an **Edit** button, and the package page has
-an **Add dashboard** control: pick a model, a source, the view for the first tile and a title, and the file is
-written into the package and opened in the builder. The builder's **Save** writes the file back
+### Editing in the Console
+
+If you have built dashboards in a classic BI tool, this is the part that will feel familiar. Every
+dashboard page has an **Edit** button, and the package page has an **Add dashboard** control: pick a
+model, a source, the view for the first tile and a title, and the file is written into the package
+and opened in the builder. From there it is the classic loop — **drag a tile by its grip to move
+it, drag its right edge to resize it, pick its view and label from its own menu, and add filters
+from the strip above the grid.**
+
+What makes it different from a classic BI tool is not the editing, it is what the editing produces.
+There is no proprietary layout document: the builder reads and writes the same
+`dashboards/*.malloy` file described above, splicing your changes into it rather than regenerating
+it, so comments and anything it does not model survive the round trip. The result is a source file
+you can review in a pull request, and one an agent can write by hand just as well. The builder's **Save** writes the file back
 through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
 atomically, reloads the package in place, and restores the previous text if the reload does not
 take it; a copy someone else changed since you opened it is refused (409), never merged. The

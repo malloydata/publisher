@@ -72,6 +72,11 @@ is a Console convenience.
   Notebooks and dashboards are listed by title, with a notebook's path beside it and a dashboard's
   slug beside it; a notebook's title comes from its opening markdown heading unless a
   `## title="…"` or a `#" ` doc comment overrides it.
+- **Build a dashboard by dragging** — every dashboard page has an **Edit** button that turns it into
+  a grid you rearrange directly: drag a tile to move it, drag its right edge to resize it, set its
+  view and label from its own menu, add filters from the strip above. The classic dashboard-building
+  feel, over a file you can still read and review — Save writes the
+  `dashboards/*.malloy` back into the package ([dashboards.md](dashboards.md#editing-in-the-console)).
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
   every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
 - **Read a notebook** — a `.malloynb` in a package renders its markdown and runs its query cells
