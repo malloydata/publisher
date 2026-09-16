@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import DownloadIcon from "@mui/icons-material/Download";
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -24,7 +23,6 @@ import type { DashboardDocument } from "./document";
 import { previewGivens, previewTileQuery } from "./preview";
 import { readDashboardDocument, readFailed } from "./readDocument";
 import { sha256Hex } from "../../utils/sha256";
-import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
 
 /**
  * The builder, opened on a package dashboard, with everything a host has to
@@ -32,16 +30,14 @@ import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
  * control row and live tiles that follow the document, a catalog for the
  * filter window's field search, and saving.
  *
- * SAVING is through the host's {@link DocumentStorage}, not to the package.
- * The package dashboard is a read-only origin: editing works on a copy, the
- * copy is saved where the host keeps documents (the Console's default is this
- * browser), and "Export" hands the file back so it can be put in the package.
- * That is the plan's copy-and-export model, and it needs no server write path.
- * A host with no storage still gets the editor, without Save.
+ * SAVING goes to the package on a server that takes writes, and otherwise to
+ * the host's {@link DocumentStorage} — the Console's default is this browser,
+ * where the copy is offered back on the next visit. A host with neither still
+ * gets the editor, without Save.
  *
  * What that costs is stated in the toolbar: a control added here is live in the
  * editor (its value is written into each tile's query) but reaches the package
- * only when the exported file does.
+ * only when the file is saved into it.
  */
 export interface DashboardEditorProps {
    environmentName: string;
@@ -51,8 +47,8 @@ export interface DashboardEditorProps {
    /** Leave the editor: the host's "Done". Absent, no Done button. */
    onExit?: () => void;
    /**
-    * What the editor does — opened, saved, exported, refused — for the host
-    * to log or count; see `DashboardEvent`.
+    * What the editor does — opened, saved, refused — for the host to log or
+    * count; see `DashboardEvent`.
     */
    onEvent?: DashboardEventHandler;
 }
@@ -227,7 +223,7 @@ export function DashboardEditor({
             throw new Error("The package file is still loading; try again.");
          let result;
          try {
-            result = await apiClients.models.putModelSource(
+            result = await apiClients.models.updateModelSource(
                environmentName,
                packageName,
                modelPath,
@@ -340,8 +336,8 @@ export function DashboardEditor({
                   mutable
                      ? "Save writes the file into the package."
                      : storage
-                       ? "Saved in this browser. Export puts the file in the package."
-                       : "Export puts the file in the package."
+                       ? "Saved in this browser: this server does not take writes."
+                       : "This server does not take writes."
                }
             />
          )}
@@ -451,22 +447,6 @@ function Surface({
 
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
-   // Export: the file a save would write for the document as it stands —
-   // spliced when asked for, so an edit costs nothing until then. Refused
-   // (which the builder has already reported), the file as opened goes out.
-   const exportFile = useCallback(async () => {
-      const result = await spliceDashboardDocument(opened.source, doc);
-      const text = spliceFailed(result) ? opened.source : result.source;
-      onEvent?.({ type: "dashboard.exported", bytes: text.length });
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `${slug}.malloy`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-   }, [opened.source, doc, slug, onEvent]);
-
    const modelSpecs = useMemo(() => manifest?.givens ?? [], [manifest]);
    const runnable = useMemo(
       () =>
@@ -546,18 +526,7 @@ function Surface({
             {...(catalog ? { catalog } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
-            toolbar={
-               <>
-                  <Button
-                     size="small"
-                     startIcon={<DownloadIcon fontSize="small" />}
-                     onClick={() => void exportFile()}
-                  >
-                     Export
-                  </Button>
-                  {toolbar}
-               </>
-            }
+            toolbar={toolbar}
             controls={
                isSuccess ? <GivensPanel {...panel} layout="bar" /> : undefined
             }

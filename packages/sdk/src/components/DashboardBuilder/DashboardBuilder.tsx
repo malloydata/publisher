@@ -147,7 +147,7 @@ export interface DashboardBuilderProps {
    /** Saves and refusals, for the host to log; see `DashboardEvent`. */
    onEvent?: DashboardEventHandler;
    /**
-    * The host's own actions for the edit bar — Export, Done — rendered beside
+    * The host's own actions for the edit bar — Done — rendered beside
     * undo, redo and save. The builder owns the edits; where the file goes
     * afterwards is the host's, so its buttons sit in the host's slot.
     */
