@@ -63,7 +63,7 @@ export const SURFACE_TINT = {
 
 /**
  * Monospace font stack used by code-like surfaces inside the SDK
- * (file-path labels in PackageItemRow, code blocks, etc.). Matches the
+ * (file-path labels in `ItemRow`, code blocks, etc.). Matches the
  * `MONO_FONT_FAMILY` defined in the publisher app's theme.
  */
 export const MONO_FONT_FAMILY =

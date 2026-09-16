@@ -21,7 +21,7 @@ import { BuildPlan, Materialization } from "../../client";
 import { MONO_FONT_FAMILY } from "../styles";
 import ManifestView from "./ManifestView";
 import SectionLabel from "./SectionLabel";
-import TriggerChip from "./TriggerChip";
+import TriggerLabel from "./TriggerLabel";
 import {
    formatDuration,
    formatTimestamp,
@@ -79,7 +79,7 @@ export default function MaterializationDetailDialog({
                               : "outlined"
                         }
                      />
-                     <TriggerChip meta={meta} />
+                     <TriggerLabel meta={meta} />
                   </Stack>
                   <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
                      {materialization.packageName ?? "Materialization"}

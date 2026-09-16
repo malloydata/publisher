@@ -33,8 +33,9 @@ export async function openPackage(
    env: string,
    pkg: string,
 ): Promise<void> {
-   // Redesigned env page renders the env name as h4 and the section header
-   // as h6 "Packages" (separate, not concatenated).
+   // The environment page renders its own name as h4 and each section header
+   // as an h6, so "Packages" is its own heading rather than part of a longer
+   // string.
    await expect(
       page.getByRole("heading", { name: "Packages", level: 6 }),
    ).toBeVisible();
@@ -42,7 +43,13 @@ export async function openPackage(
    await expect(page).toHaveURL(new RegExp(`/${env}/${pkg}/?$`));
 }
 
-export async function openMaterializations(
+/**
+ * Open the package page and wait for its Materializations section.
+ *
+ * Named `goto…` rather than `open…`: there is no materializations screen to
+ * open, and the previous name outlived the page it referred to.
+ */
+export async function gotoMaterializations(
    page: Page,
    env: string,
    pkg: string,

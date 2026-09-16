@@ -35,10 +35,8 @@ interface MaterializationsProps {
 /**
  * The package's materializations, as a section of its page: what has been
  * built, and the three controls that change it — scope, schedule, and a new
- * build. It had a page of its own, reached by a row that said
- * "Materializations" and led to a heading that said "Materializations"; the
- * runs are the package's own history and belong beside its dashboards and
- * models, not one click away.
+ * build. The runs are the package's own history, so they sit beside its
+ * dashboards and models rather than one click away on a page of their own.
  */
 export default function Materializations({
    resourceUri,

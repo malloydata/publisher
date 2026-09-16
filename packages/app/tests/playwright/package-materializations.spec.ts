@@ -6,7 +6,7 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import {
    gotoHome,
    openEnvironment,
-   openMaterializations,
+   gotoMaterializations,
    openPackage,
 } from "./helpers/navigation";
 import { getPublisherStatus } from "./helpers/publisherStatus";
@@ -52,7 +52,7 @@ test.describe("package-materializations: mutable", () => {
    test("New materialization dialog defaults to a full run", async ({
       page,
    }) => {
-      await openMaterializations(page, DEFAULT_ENV, PKG);
+      await gotoMaterializations(page, DEFAULT_ENV, PKG);
 
       await page.getByRole("button", { name: "Add materialization" }).click();
       const dialog = page.getByRole("dialog", { name: "New materialization" });
@@ -74,7 +74,7 @@ test.describe("package-materializations: mutable", () => {
       page,
    }) => {
       test.setTimeout(120_000);
-      await openMaterializations(page, DEFAULT_ENV, PKG);
+      await gotoMaterializations(page, DEFAULT_ENV, PKG);
 
       const actions = page.getByRole("button", {
          name: /Materialization actions for/,
@@ -118,7 +118,7 @@ test.describe("package-materializations: mutable", () => {
       page,
    }) => {
       test.setTimeout(120_000);
-      await openMaterializations(page, DEFAULT_ENV, PKG);
+      await gotoMaterializations(page, DEFAULT_ENV, PKG);
 
       const row = page.locator('table tbody tr[role="button"]').first();
       if ((await row.count()) === 0) {
@@ -162,7 +162,7 @@ test.describe("package-materializations: mutability parity with /api/v0/status",
       const { mutable } = await getPublisherStatus(baseURL);
       const expected = mutable ? 1 : 0;
 
-      await openMaterializations(page, DEFAULT_ENV, PKG);
+      await gotoMaterializations(page, DEFAULT_ENV, PKG);
 
       await expect(
          page.getByRole("button", { name: "Add materialization" }),

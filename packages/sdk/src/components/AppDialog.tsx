@@ -24,10 +24,11 @@ import { useId } from "react";
  * with the same padding every time — a text Cancel and a filled confirm, the
  * two roles `buttons.tsx` names.
  *
- * Before this each dialog set its own: four different widths, titles from `h6`
- * to bold body text, content padded four ways, fields switching between the
- * two MUI sizes, Cancel sometimes outlined and sometimes text, and confirm
- * labels that said "Save Changes" on a dialog that creates something.
+ * Three dialogs stay off it deliberately, and each needs something this does
+ * not have: `ModelExplorerDialog` is `fullScreen`, and `RowsDialog` and
+ * `MaterializationDetailDialog` title themselves with a node rather than a
+ * string. Widening this for three callers would cost more than it saves —
+ * but a fourth exception is a reason to widen it, not to hand-roll a fourth.
  */
 export function AppDialog({
    open,

@@ -22,7 +22,7 @@ import {
 import { useState } from "react";
 import { Materialization } from "../../client";
 import DeleteMaterializationDialog from "./DeleteMaterializationDialog";
-import TriggerChip from "./TriggerChip";
+import TriggerLabel from "./TriggerLabel";
 import {
    formatDuration,
    formatRelativeTime,
@@ -178,7 +178,7 @@ function MaterializationRow({
             </Box>
          </TableCell>
          <TableCell>
-            <TriggerChip meta={meta} />
+            <TriggerLabel meta={meta} />
          </TableCell>
          <TableCell>
             {formatRelativeTime(
