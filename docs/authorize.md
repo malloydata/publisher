@@ -138,6 +138,7 @@ is legal; none of the following are:
 | `region = $REGION and org_id = $REGION` | `duplicate_given` | one given per term |
 | `region = $A and region = $B` | `duplicate_field_path` | one field path per term |
 | `'x' = $ROLE and org_id in $GROUPS` | `mixed_scope_body` | a body is either all row-level or all source-level terms, never mixed |
+| `$GROUPS in 'finance'` | `reversed_in_operands` | `in` is not reversible the way `=` is; Malloy rejects array-in-string membership, so write the literal first (`'finance' in $GROUPS`) |
 | `org_id = $GROUPS` where `GROUPS` is list-typed | `operator_arity_mismatch` | a list-typed given takes `in`, not `=` |
 | `kids.name in $GROUPS` where `kids` is a `join_many`/`join_cross` | `fanout_path` | a row-level term cannot read through a fan-out join — see [Row-level gates](#row-level-gates) |
 | `org_id in $GROUPS` inside `#(source-authorize)` | `row_level_term_in_source_authorize` | a `#(source-authorize)` body is caller-only; move the term to `#(authorize)` — see [The `#(source-authorize)` route](#the-source-authorize-route) |
@@ -451,7 +452,7 @@ There is one documented exception, [the authorize bypass](#authorize-bypass-for-
 
 ### Validation
 
-Authorize gates are validated at **model load** (compile-only, no execution). A misdeclared gate (a payload that doesn't compile as a boolean, a duplicate given or field path across a source's repeated notes, an unreachable given, a given with a default) fails the load with **HTTP 424** (`ModelCompilationError`), naming the source and the underlying reason. Fix the model before it serves.
+Authorize gates are validated at **model load** (compile-only, no execution). A misdeclared gate (a payload that doesn't compile as a boolean, a duplicate given or field path across a source's repeated notes on the same route, an unreachable given, a given with a default) fails the load with **HTTP 424** (`ModelCompilationError`), naming the source and the underlying reason. Fix the model before it serves.
 
 **There is no separate field-less-vs-field-referencing carve-out any more.** A row-level term and a source-level term are validated the same way — G4 applies identically to both. Every ordinary term must reference exactly one given (`missing_given_reference`); the sole field-less body still accepted is the `false` deny-all (see [Declaring Gates](#declaring-gates)). **W1 (a gate reading no given at all) still fires for it** — `false` genuinely references none — and loads with a warning naming the source; read it as confirmation the gate is a fixed predicate rather than as a mistake to fix. **W2 (a negated membership test) is unreachable code today**: the grammar refuses that shape outright (`compound_boolean`) before that logic ever runs. See [Row-level gate metrics](#row-level-gate-metrics).
 
