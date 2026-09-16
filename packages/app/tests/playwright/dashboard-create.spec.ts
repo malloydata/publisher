@@ -116,7 +116,15 @@ test.describe("dashboard-create", () => {
       await expect(
          page.getByRole("heading", { name: "Created and saved" }),
       ).toBeVisible({ timeout: 60_000 });
-      await expect(page.getByLabel(/Tile|by_brand/).first()).toBeVisible();
+      // The one tile the new dashboard was created with, headed by its
+      // humanized view name and carrying the run expression as its tooltip,
+      // the way every composite dashboard heads a panel.
+      const tile = page.getByText("By brand tile", { exact: true });
+      await expect(tile).toBeVisible({ timeout: 30_000 });
+      await expect(tile).toHaveAttribute(
+         "title",
+         "orders_tiles -> by_brand_tile",
+      );
 
       // And the package page lists it.
       await page.goto(`/${env}/${PKG}`);
