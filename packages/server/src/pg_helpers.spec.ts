@@ -5,6 +5,11 @@ import { describe, expect, it } from "bun:test";
 import { redactPgSecrets } from "./pg_helpers";
 
 describe("redactPgSecrets", () => {
+   it("redacts a quoted password carrying a space and an escaped quote", () => {
+      expect(
+         redactPgSecrets("host=h password='p w\\'x\\\\y' sslmode=require"),
+      ).toBe("host=h password=*** sslmode=require");
+   });
    it("redacts bare password values", () => {
       expect(redactPgSecrets("host=h password=hunter2 dbname=d")).toBe(
          "host=h password=*** dbname=d",

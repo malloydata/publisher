@@ -51,5 +51,5 @@ export function redactPgSecrets(s: string): string {
          /((?:postgres|postgresql):\/\/[^:/?#\s]*):([^@\s]+)@/gi,
          "$1:***@",
       )
-      .replace(/password=('[^']*'|"[^"]*"|\S+)/gi, "password=***");
+      .replace(/password=('(?:\\.|[^'\\])*'|"[^"]*"|\S+)/gi, "password=***");
 }
