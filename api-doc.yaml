@@ -1642,6 +1642,77 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+    put:
+      tags:
+        - models
+      operationId: put-model-source
+      summary: Write a dashboard file into the package
+      description: |
+        Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy`,
+        the only paths this endpoint accepts — into the package, and reloads the
+        package in place so the dashboard is served from the new text. This is
+        the dashboard builder's save.
+
+        The text is compiled first, as the file, and refused with its problems
+        when it does not compile; nothing is written. The write is atomic (a
+        sibling temporary file renamed over the target). If the reload that
+        follows fails to compile the package, the previous text is restored (or
+        a new file removed) and the package reloaded again, so a save never
+        leaves the package serving less than it did.
+
+        `expectedHash` is the SHA-256 (hex) of the text the caller opened, as
+        `GET …/models/{path}` returned it in `sourceText`. When it is given and
+        the file on disk no longer hashes to it, the write is refused with 409
+        and nothing is merged: the caller re-opens and reapplies its change.
+        Omit it to create a file that does not exist yet.
+
+        Refused with 403 when `publisher.config.json` has `frozenConfig: true`.
+        Like every write on this server, it is unauthenticated and meant to sit
+        behind an authenticating gateway; see docs/security-posture.md.
+      parameters:
+        - name: environmentName
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          description: The dashboard file, `dashboards/<slug>.malloy`
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModelSourceWrite"
+      responses:
+        "200":
+          description: The file was written and the package reloaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelSourceWriteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The file changed since the caller opened it (`expectedHash` mismatch)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /environments/{environmentName}/packages/{packageName}/models/{path}/query:
     post:
@@ -5532,6 +5603,38 @@ components:
             and the source contains a runnable query).
         givens:
           $ref: "#/components/schemas/GivenValues"
+
+    ModelSourceWrite:
+      type: object
+      description: The text to write into a dashboard file
+      required:
+        - source
+      properties:
+        source:
+          type: string
+          description: The whole file's Malloy text
+        expectedHash:
+          type: string
+          description:
+            SHA-256 (hex) of the text the caller opened. Refused with 409 when
+            the file on disk no longer hashes to it. Omit to create a new file.
+
+    ModelSourceWriteResult:
+      type: object
+      description: What a dashboard write left in the package
+      required:
+        - path
+        - contentHash
+      properties:
+        path:
+          type: string
+          description: The file written, relative to the package
+        contentHash:
+          type: string
+          description: SHA-256 (hex) of the text as written; the next write's `expectedHash`
+        created:
+          type: boolean
+          description: True when the file did not exist before
 
     CompileResult:
       type: object
