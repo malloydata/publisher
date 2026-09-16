@@ -2,8 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { useCallback, useMemo, useState } from "react";
-import { tileKey, type DashboardDocument } from "./document";
-import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
+import { type DashboardDocument } from "./document";
+import {
+   spliceDashboardDocument,
+   spliceFailed,
+   tileFileKey,
+} from "./spliceDocument";
 
 /**
  * The editor's state: the document being edited, its history, and saving.
@@ -162,8 +166,12 @@ export function useDashboardEditor(options: {
       [document, saved],
    );
    const structural = useMemo(() => {
-      const before = new Set(saved.tiles.map(tileKey));
-      const after = new Set(document.tiles.map(tileKey));
+      // The FILE's identity for a tile, not the grid's: `document.tileKey` is
+      // `source.name`, so a tile redeclared from another view keeps its key
+      // and a save that rewrites its declaration would not be reported as
+      // structural — the one case where the author most wants the diff.
+      const before = new Set(saved.tiles.map(tileFileKey));
+      const after = new Set(document.tiles.map(tileFileKey));
       return (
          [...before].some((k) => !after.has(k)) ||
          [...after].some((k) => !before.has(k))

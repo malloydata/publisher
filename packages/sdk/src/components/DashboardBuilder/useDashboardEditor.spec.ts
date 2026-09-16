@@ -253,3 +253,59 @@ describe("useDashboardEditor: saving", () => {
       expect(view.result.current.error).toBeUndefined();
    });
 });
+
+/**
+ * `structural` decides whether the builder shows the author a diff before it
+ * saves, so it has to mean what the WRITER means by a changed tile — not what
+ * the grid means.
+ */
+describe("useDashboardEditor: structural", () => {
+   it("is false for presentation and layout edits", async () => {
+      const view = await editor();
+      act(() => {
+         view.result.current.update((d) => {
+            d.tiles[0].label = "Categories";
+            d.tiles[0].colspan = 4;
+         });
+      });
+      expect(view.result.current.dirty).toBe(true);
+      expect(view.result.current.structural).toBe(false);
+   });
+
+   it("is false for a reorder, which moves no declaration", async () => {
+      const view = await editor();
+      act(() => {
+         view.result.current.update((d) => {
+            d.tiles.reverse();
+         });
+      });
+      expect(view.result.current.structural).toBe(false);
+   });
+
+   it("is true when a tile is removed", async () => {
+      const view = await editor();
+      act(() => {
+         view.result.current.update((d) => {
+            d.tiles.pop();
+         });
+      });
+      expect(view.result.current.structural).toBe(true);
+   });
+
+   it("is true when a tile is redeclared, though the grid's key is unchanged", async () => {
+      // The regression: `document.tileKey` is `source.name`, which this edit
+      // leaves alone, so keying `structural` on it reported a save that
+      // rewrites the declaration as a plain presentation change — and the
+      // builder skipped the diff on exactly the edit that most needs one.
+      const view = await editor();
+      const before = view.result.current.document.tiles[0];
+      act(() => {
+         view.result.current.update((d) => {
+            d.tiles[0].declaration = { kind: "inline" };
+         });
+      });
+      const after = view.result.current.document.tiles[0];
+      expect([after.source, after.name]).toEqual([before.source, before.name]);
+      expect(view.result.current.structural).toBe(true);
+   });
+});

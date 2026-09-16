@@ -2,15 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   BackLink,
    Dashboard,
+   DashboardBar,
    encodeResourceUri,
+   SecondaryButton,
    useGivenUrlParams,
 } from "@malloy-publisher/sdk";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
-import { Box, Button, Stack } from "@mui/material";
-import { useMemo } from "react";
+import { Box } from "@mui/material";
+import { useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { logDashboardEvent } from "../../../utils/dashboardTelemetry";
+import { logDashboardEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
 export interface DashboardPageProps {
@@ -45,18 +48,39 @@ export default function DashboardPage({
       [environmentName, packageName, dashboardName],
    );
 
+   // The builder is a lazy chunk carrying the Malloy parser, so the first Edit
+   // used to sit on a spinner while it downloaded. Fetch it as soon as a
+   // dashboard is on screen: by the time anyone reaches for Edit it is usually
+   // already here, and the switch is then a re-render rather than a page that
+   // empties and refills. Idle time, and the browser caches the module, so a
+   // reader who never edits pays one background request.
+   useEffect(() => {
+      const warm = () => void import("@malloy-publisher/sdk/builder");
+      const idle = window.requestIdleCallback;
+      if (idle) {
+         const handle = idle(warm);
+         return () => window.cancelIdleCallback?.(handle);
+      }
+      const timer = setTimeout(warm, 1500);
+      return () => clearTimeout(timer);
+   }, []);
+
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
-         <Stack direction="row" sx={{ justifyContent: "flex-end", mb: 1 }}>
-            <Button
-               size="small"
-               variant="outlined"
-               startIcon={<EditOutlinedIcon fontSize="small" />}
+         <BackLink
+            label={packageName}
+            href={`/${environmentName}/${packageName}`}
+            onClick={() => navigate(`/${environmentName}/${packageName}`)}
+         />
+         {/* The same bar the builder has, with the same button in the same
+             place: Edit becomes Done and nothing else on the page moves. */}
+         <DashboardBar>
+            <SecondaryButton
+               label="Edit"
+               icon={<EditOutlinedIcon />}
                onClick={() => navigate(`${pathname.replace(/\/$/, "")}/edit`)}
-            >
-               Edit
-            </Button>
-         </Stack>
+            />
+         </DashboardBar>
          <Dashboard
             resourceUri={encodeResourceUri({ environmentName, packageName })}
             dashboard={dashboardName}
