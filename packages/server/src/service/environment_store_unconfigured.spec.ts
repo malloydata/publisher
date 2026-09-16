@@ -1,13 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import {
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+   mock,
+   spyOn,
+} from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { getUnresolvedPublisherConfigPath } from "../config";
 import { TEMP_DIR_PATH } from "../constants";
 import { logger } from "../logger";
-import { EnvironmentStore } from "./environment_store";
 
 /**
  * A server that loads nothing reports `serving` with `environments=0
@@ -20,9 +27,52 @@ import { EnvironmentStore } from "./environment_store";
  * value is easy to get right and still reach nobody. The parser-level cases
  * live in the first describe, the boot-path ones in the second.
  *
- * No module mocking here, deliberately. environment_store.spec.ts mocks
- * `../config` in a beforeEach, and these cases need the real resolver.
+ * `../config` is deliberately NOT mocked: environment_store.spec.ts mocks it in
+ * a beforeEach and these cases need the real resolver.
+ *
+ * Storage IS mocked, and it has to be. `mock.module` is process-wide and every
+ * spec file shares one bun process, so without a mock of its own this file
+ * inherits whichever StorageManager the previously-run file installed.
+ * environment_store_clone.spec.ts installs one whose `initialize` throws its
+ * redaction fixture, which makes construction fail, `PUBLISHER_INIT_FAILED`
+ * fire, and the success tail that carries the notice never run. Every boot case
+ * below then reports the notice missing -- including "stays quiet", which
+ * passes for that reason rather than the one it names. Measured: running this
+ * file alone passed 6/6; running it after the clone spec failed the two
+ * positive cases and left the negative one green.
+ *
+ * Hence `assertInitialized`. A notice-absent assertion is only meaningful once
+ * the boot it describes actually happened, so each boot case pins the success
+ * line that immediately precedes the notice.
  */
+
+mock.module("../storage/StorageManager", () => ({
+   StorageManager: class MockStorageManager {
+      async initialize(): Promise<void> {}
+      getRepository() {
+         return {
+            listEnvironments: async () => [],
+            getEnvironmentByName: async () => null,
+            createEnvironment: async (data: Record<string, unknown>) => ({
+               id: "env-id",
+               name: data.name,
+               path: data.path,
+            }),
+            listPackages: async () => [],
+            getPackageByName: async () => null,
+            createPackage: async (data: Record<string, unknown>) => ({
+               id: "pkg-id",
+               name: data.name,
+            }),
+            listConnections: async () => [],
+         };
+      }
+   },
+   StorageConfig: {} as Record<string, unknown>,
+}));
+
+// After the mock, so the binding is the mock rather than the real module.
+const { EnvironmentStore } = await import("./environment_store");
 
 const serverRootPath = path.join(TEMP_DIR_PATH, "unconfigured-spec-root");
 
@@ -82,6 +132,17 @@ describe("unconfigured boot notice", () => {
    const noticeLines = () =>
       infoLines.filter((line) => line.includes("Serving with no environments"));
 
+   // The notice is logged from initialize()'s success tail, one line after
+   // this one. If the boot failed instead both are absent, and a
+   // notice-absent assertion then passes without the boot it describes ever
+   // having happened.
+   const assertInitialized = () =>
+      expect(
+         infoLines.filter((line) =>
+            line.includes("Environment store successfully initialized"),
+         ),
+      ).toHaveLength(1);
+
    beforeEach(() => {
       resetRoot();
       delete process.env.PUBLISHER_CONFIG_PATH;
@@ -101,6 +162,7 @@ describe("unconfigured boot notice", () => {
       const store = new EnvironmentStore(serverRootPath);
       await store.finishedInitialization;
 
+      assertInitialized();
       const notices = noticeLines();
       expect(notices).toHaveLength(1);
       expect(notices[0]).toContain(
@@ -120,6 +182,7 @@ describe("unconfigured boot notice", () => {
       // config file, all three would quietly become wrong.
       const store = new EnvironmentStore(serverRootPath);
       await store.finishedInitialization;
+      assertInitialized();
       expect(noticeLines()).toHaveLength(1);
 
       await store.addEnvironment({ name: "created-at-runtime" });
@@ -141,6 +204,7 @@ describe("unconfigured boot notice", () => {
       const store = new EnvironmentStore(serverRootPath);
       await store.finishedInitialization;
 
+      assertInitialized();
       expect(noticeLines()).toHaveLength(0);
    });
 });
