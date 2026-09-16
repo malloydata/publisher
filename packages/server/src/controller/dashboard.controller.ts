@@ -8,9 +8,7 @@ import {
    DashboardNotFoundError,
    FrozenConfigError,
    WriteConflictError,
-   WriteRolledBackError,
 } from "../errors";
-import { logger } from "../logger";
 import { assertSafeRelativeModelPath } from "../path_safety";
 import { EnvironmentStore } from "../service/environment_store";
 
@@ -159,7 +157,11 @@ export class DashboardController {
          );
       }
 
-      const { previous } = await environment.writeModelFileChecked(
+      // One hold of the package lock covers the precondition, the write, the
+      // reload and the restore. Compiling above stays outside it: the lock is
+      // not reentrant, and the proposed text compiles the same whatever is on
+      // disk.
+      const { previous } = await environment.writeModelFileTransactional(
          packageName,
          modelPath,
          body.source,
@@ -183,29 +185,18 @@ export class DashboardController {
                        `Re-open it and reapply your change; nothing was written.`,
                );
          },
-      );
-      try {
-         const reloaded = await environment.getPackage(packageName, true);
          // A reload that fails to compile keeps the last good model serving
          // and marks the package stale rather than throwing, so the file just
          // written is asked for directly.
-         const written = reloaded.getModel(modelPath);
-         if (!written)
-            throw new Error(`\`${modelPath}\` is not in the reloaded package`);
-         await written.getModel();
-      } catch (error) {
-         await environment.restoreModelFile(packageName, modelPath, previous);
-         await environment.getPackage(packageName, true).catch(() => undefined);
-         logger.error("Dashboard write rolled back", {
-            packageName,
-            modelPath,
-            error,
-         });
-         throw new WriteRolledBackError(
-            `The package did not reload with the new \`${modelPath}\`, so the ` +
-               `previous text was put back and nothing changed.`,
-         );
-      }
+         async (reloaded) => {
+            const written = reloaded.getModel(modelPath);
+            if (!written)
+               throw new Error(
+                  `\`${modelPath}\` is not in the reloaded package`,
+               );
+            await written.getModel();
+         },
+      );
       return {
          resource: `/api/v0/environments/${environmentName}/packages/${packageName}/models/${modelPath}`,
          path: modelPath,

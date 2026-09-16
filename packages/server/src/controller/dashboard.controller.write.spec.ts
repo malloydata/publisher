@@ -17,10 +17,12 @@ import { contentHashOf, DashboardController } from "./dashboard.controller";
  * anything touches disk, the order of compile → checked write → reload, and
  * the restore when the reload does not take the new file.
  *
- * The precondition is checked by a callback the service runs under the package
- * lock, so the stub for `writeModelFileChecked` runs it here too — that
- * callback IS the 409, and a stub that ignored it would pass every test while
- * the endpoint overwrote whatever it liked.
+ * Both callbacks are run by the service under the package lock, so the stub
+ * for `writeModelFileTransactional` runs them here too: the `check` callback
+ * IS the 409 and the `verify` callback IS the rollback trigger, and a stub
+ * that ignored either would pass every test while the endpoint overwrote
+ * whatever it liked. That the restore itself happens under the same lock is
+ * the service's contract, covered in `environment_write_model_file.spec`.
  */
 const PATH = "dashboards/overview.malloy";
 const BEFORE = '## artifact { title="Before" tiles=["a -> x"] }';
@@ -46,7 +48,7 @@ function harness(
       compileSource: sinon
          .stub()
          .resolves({ problems: options.problems ?? [] }),
-      writeModelFileChecked: sinon
+      writeModelFileTransactional: sinon
          .stub()
          .callsFake(
             async (
@@ -54,25 +56,42 @@ function harness(
                _path: string,
                _source: string,
                check: (current: string | undefined) => void,
+               verify: (reloaded: unknown) => Promise<unknown>,
             ) => {
                check(options.current);
-               return { previous: options.current };
+               try {
+                  return {
+                     previous: options.current,
+                     verified: await verify(pkg),
+                  };
+               } catch {
+                  throw new WriteRolledBackError(
+                     "The package did not reload with the new file, so the " +
+                        "previous text was put back and nothing changed.",
+                  );
+               }
             },
          ),
-      restoreModelFile: sinon.stub().resolves(undefined),
    };
    const store = {
       publisherConfigIsFrozen: options.frozen ?? false,
       getEnvironment: sinon.stub().resolves(environment),
    } as unknown as EnvironmentStore;
-   return { controller: new DashboardController(store), environment };
+   return {
+      controller: new DashboardController(store),
+      environment,
+      pkg,
+      model,
+   };
 }
 
 describe("DashboardController.putDashboardSource", () => {
    afterEach(() => sinon.restore());
 
    it("compiles the text as the file, writes it atomically, and reloads the package in place", async () => {
-      const { controller, environment } = harness({ current: BEFORE });
+      const { controller, environment, pkg, model } = harness({
+         current: BEFORE,
+      });
       const result = await controller.putDashboardSource("env", "pkg", PATH, {
          source: AFTER,
          expectedHash: contentHashOf(BEFORE),
@@ -86,23 +105,22 @@ describe("DashboardController.putDashboardSource", () => {
       const compile = environment.compileSource.firstCall.args;
       expect(compile.slice(0, 3)).toEqual(["pkg", PATH, AFTER]);
       expect(compile[5]).toBe("file");
-      expect(environment.writeModelFileChecked.calledOnce).toBe(true);
+      expect(environment.writeModelFileTransactional.calledOnce).toBe(true);
       expect(
-         environment.writeModelFileChecked.firstCall.args.slice(0, 3),
+         environment.writeModelFileTransactional.firstCall.args.slice(0, 3),
       ).toEqual(["pkg", PATH, AFTER]);
-      // The reload is the second getPackage: the first found the package.
-      expect(environment.getPackage.secondCall.args).toEqual(["pkg", true]);
+      // The reload now happens inside the transaction, so `getPackage` is
+      // called once — to find the package before compiling.
+      expect(environment.getPackage.callCount).toBe(1);
       expect(
          environment.compileSource.calledBefore(
-            environment.writeModelFileChecked,
+            environment.writeModelFileTransactional,
          ),
       ).toBe(true);
-      expect(
-         environment.getPackage.secondCall.calledAfter(
-            environment.writeModelFileChecked.firstCall,
-         ),
-      ).toBe(true);
-      expect(environment.restoreModelFile.called).toBe(false);
+      // `verify` asked the reloaded package for the file it just wrote and
+      // compiled it; that is what a rollback is triggered by.
+      expect(pkg.getModel.calledWith(PATH)).toBe(true);
+      expect(model.getModel.called).toBe(true);
    });
 
    it("creates a file that did not exist, and says so", async () => {
@@ -133,7 +151,7 @@ describe("DashboardController.putDashboardSource", () => {
             controller.putDashboardSource("env", "pkg", bad, { source: AFTER }),
          ).rejects.toBeInstanceOf(BadRequestError);
       }
-      expect(environment.writeModelFileChecked.called).toBe(false);
+      expect(environment.writeModelFileTransactional.called).toBe(false);
    });
 
    it("refuses, without merging, when the file changed since it was opened", async () => {
@@ -167,11 +185,11 @@ describe("DashboardController.putDashboardSource", () => {
             expectedHash: contentHashOf(BEFORE),
          }),
       ).rejects.toThrow(/does not compile.*'x' is not defined/);
-      expect(environment.writeModelFileChecked.called).toBe(false);
+      expect(environment.writeModelFileTransactional.called).toBe(false);
    });
 
    it("restores the previous text and reloads again when the reloaded package does not compile the file", async () => {
-      const { controller, environment } = harness({
+      const { controller, model } = harness({
          current: BEFORE,
          reloadCompiles: false,
       });
@@ -181,11 +199,9 @@ describe("DashboardController.putDashboardSource", () => {
             expectedHash: contentHashOf(BEFORE),
          }),
       ).rejects.toBeInstanceOf(WriteRolledBackError);
-      expect(
-         environment.restoreModelFile.calledOnceWith("pkg", PATH, BEFORE),
-      ).toBe(true);
-      // Reload, restore, reload: the package is left serving what it did.
-      expect(environment.getPackage.callCount).toBe(3);
-      expect(environment.getPackage.thirdCall.args).toEqual(["pkg", true]);
+      // The controller's part is refusing the write when the reloaded package
+      // will not compile the file; putting the text back is the service's,
+      // under the lock it still holds.
+      expect(model.getModel.called).toBe(true);
    });
 });
