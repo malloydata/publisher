@@ -222,6 +222,39 @@ function declarationEnd(lines: string[], line: number): number {
    return lines.length - 1;
 }
 
+/** A name as a regex literal: view and source names are identifiers, but the
+ * pattern is built from document data and should not be able to mean anything
+ * else. */
+const literal = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The line where `<source>` declares `view: <view>`, or -1.
+ *
+ * Scoped to that source's own `extend { … }` block, because a view name is
+ * only unique WITHIN a source: two sources in one dashboard may each declare
+ * `by_month`, and a file-wide search finds whichever comes first and then
+ * rewrites its tags — silently retagging a tile the author never touched.
+ *
+ * A source this file does not extend has nothing here to patch, so -1 is the
+ * honest answer; the caller refuses rather than reaching for another source's
+ * view. Tiles whose view lives on the model are `inherited` and never get
+ * this far.
+ */
+function viewDeclarationLine(
+   lines: string[],
+   sourceName: string,
+   viewName: string,
+): number {
+   const sourceLine = lines.findIndex((line) =>
+      new RegExp(`\\bsource:\\s*${literal(sourceName)}\\s+is\\b`).test(line),
+   );
+   if (sourceLine < 0) return -1;
+   const end = declarationEnd(lines, sourceLine);
+   const wanted = new RegExp(`\\bview:\\s*${literal(viewName)}\\s+is\\b`);
+   for (let i = sourceLine; i <= end; i++) if (wanted.test(lines[i])) return i;
+   return -1;
+}
+
 /** `# drill { to=… given=… }`, one line, as the reader spells it back. */
 function drillTagLine(drill: DashboardDrill): string {
    const to =
@@ -238,12 +271,16 @@ const quoted = (text: string) =>
    `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 /**
- * One tile's identity, ignoring presentation and position — but not its
- * declaration: a tile redeclared from another view is a different tile to
- * the file, removed and added, which `document.tileKey` does not say.
+ * One tile's identity TO THE FILE, ignoring presentation and position — but
+ * not its declaration: a tile redeclared from another view is a different tile
+ * to the file, removed and added, which `document.tileKey` does not say.
+ * `document.tileKey` is the grid's identity, which a drag names and React keys
+ * on; this one decides what gets written. Anything asking "will this save
+ * rewrite declarations?" wants THIS key.
  */
-const tileKey = (t: DashboardTile) =>
+export const tileFileKey = (t: DashboardTile) =>
    canonical([t.name, t.source, t.declaration]);
+const tileKey = tileFileKey;
 
 /** The tile list as identities, IN ORDER. Differs under a reorder. */
 const tileIdentity = (document: DashboardDocument) =>
@@ -902,13 +939,13 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          };
       }
 
-      const declLine = lines.findIndex((l) =>
-         new RegExp(`view:\\s*${tile.name}\\s+is\\b`).test(l),
-      );
+      const declLine = viewDeclarationLine(lines, tile.source, tile.name);
       if (declLine < 0) {
          return {
             ok: false,
-            reason: `Could not find where \`${tile.name}\` is declared.`,
+            reason:
+               `Could not find where \`${tile.name}\` is declared inside ` +
+               `\`${tile.source}\`.`,
          };
       }
 

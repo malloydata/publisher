@@ -5,12 +5,8 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
+import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import React, { useState } from "react";
@@ -23,6 +19,8 @@ import {
    ConnectionTypeEnum,
    DucklakeConnection,
 } from "../../client/api";
+import { AppDialog } from "../AppDialog";
+import { AddButton, SecondaryButton } from "../buttons";
 import {
    attachedDatabaseConnectionFieldName,
    attributesFieldName,
@@ -401,43 +399,49 @@ export default function AddConnectionDialog({
 
    return (
       <React.Fragment>
-         {/* Contained with a start icon, matching AddEnvironmentDialog and
-             AddPackageDialog. This was the only add-trigger of the three still
-             outlined and icon-less, which read as the secondary action on a
-             screen where it is the primary one. */}
-         <Button
-            variant="contained"
-            color="primary"
-            startIcon={<AddIcon />}
-            onClick={handleClickOpen}
+         <AddButton label="Connection" onClick={handleClickOpen} />
+         <AppDialog
+            open={open}
+            onClose={handleClose}
+            title="New connection"
+            description="Add a connection so packages in this environment can query your database with Malloy."
+            actions={
+               <>
+                  <Button disabled={isSubmitting} onClick={handleClose}>
+                     Cancel
+                  </Button>
+                  <Button
+                     type="submit"
+                     form="connection-form"
+                     variant="contained"
+                     loading={isSubmitting}
+                  >
+                     Create connection
+                  </Button>
+               </>
+            }
          >
-            Add Connection
-         </Button>
-         <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Create New Connection</DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Add a new connection to query your data database using Malloy.
-               </DialogContentText>
-               <form onSubmit={handleSubmit} id="connection-form">
+            <form onSubmit={handleSubmit} id="connection-form">
+               {/* One column, one gap. The fields carry no margin of
+                   their own, so without this they sit flush and their
+                   borders overlap. */}
+               <Stack sx={{ gap: 2 }}>
                   <TextField
                      autoFocus
                      required
-                     margin="dense"
                      id="name"
                      name="name"
-                     label="Connection Name"
+                     label="Name"
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
                   />
                   <TextField
-                     margin="dense"
                      id="type"
                      name="type"
                      label="Connection Type"
                      fullWidth
-                     variant="standard"
+                     size="small"
                      value={type}
                      select
                      onChange={(event) =>
@@ -469,11 +473,10 @@ export default function AddConnectionDialog({
                               Catalog
                            </Typography>
                            <TextField
-                              margin="dense"
                               id="ducklake_catalogType"
                               label="Catalog Type"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               value={ducklakeCatalogType}
                               select
                               onChange={(event) =>
@@ -488,13 +491,12 @@ export default function AddConnectionDialog({
                                     (field) => (
                                        <TextField
                                           key={`pg_${field.name}`}
-                                          margin="dense"
                                           id={`ducklake_pg_${field.name}`}
                                           name={`ducklake_pg_${field.name}`}
                                           label={field.label}
                                           type={field.type}
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                        />
                                     ),
                                  )}
@@ -518,11 +520,10 @@ export default function AddConnectionDialog({
                               Storage
                            </Typography>
                            <TextField
-                              margin="dense"
                               id="ducklake_storageType"
                               label="Storage Type"
                               fullWidth
-                              variant="standard"
+                              size="small"
                               value={ducklakeStorageType}
                               select
                               onChange={(event) =>
@@ -533,7 +534,6 @@ export default function AddConnectionDialog({
                               <MenuItem value="gcs">GCS</MenuItem>
                            </TextField>
                            <TextField
-                              margin="dense"
                               required
                               id="ducklake_bucketUrl"
                               name="ducklake_bucketUrl"
@@ -544,7 +544,7 @@ export default function AddConnectionDialog({
                               }
                               type="text"
                               fullWidth
-                              variant="standard"
+                              size="small"
                            />
                            {ducklakeStorageType === "s3" && (
                               <>
@@ -565,7 +565,6 @@ export default function AddConnectionDialog({
                                     .map((field) => (
                                        <TextField
                                           key={`s3_${field.name}`}
-                                          margin="dense"
                                           id={`ducklake_s3_${field.name}`}
                                           name={`ducklake_s3_${field.name}`}
                                           label={field.label}
@@ -575,7 +574,7 @@ export default function AddConnectionDialog({
                                                 : field.type
                                           }
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                           required={field.required}
                                           select={!!field.selectOptions}
                                           defaultValue={
@@ -623,13 +622,12 @@ export default function AddConnectionDialog({
                                  {gcsAttachedDatabaseFields.map((field) => (
                                     <TextField
                                        key={`gcs_${field.name}`}
-                                       margin="dense"
                                        id={`ducklake_gcs_${field.name}`}
                                        name={`ducklake_gcs_${field.name}`}
                                        label={field.label}
                                        type={field.type}
                                        fullWidth
-                                       variant="standard"
+                                       size="small"
                                        required={field.required}
                                     />
                                  ))}
@@ -650,14 +648,12 @@ export default function AddConnectionDialog({
                            <Typography variant="subtitle1" fontWeight={500}>
                               Attached Databases
                            </Typography>
-                           <Button
-                              startIcon={<AddIcon />}
+                           <SecondaryButton
+                              label="Database"
+                              icon={<AddIcon />}
                               onClick={addAttachedDatabase}
-                              size="small"
-                              variant="outlined"
-                           >
-                              Add Database
-                           </Button>
+                              ariaLabel="Add database"
+                           />
                         </Box>
                         {attachedDatabases.length === 0 && (
                            <Typography
@@ -707,23 +703,21 @@ export default function AddConnectionDialog({
                                     </IconButton>
                                  </Box>
                                  <TextField
-                                    margin="dense"
                                     required
                                     id={`attachedDb_${index}_name`}
                                     name={`attachedDb_${index}_name`}
                                     label="Database Name"
                                     type="text"
                                     fullWidth
-                                    variant="standard"
+                                    size="small"
                                     defaultValue={db.name}
                                  />
                                  <TextField
-                                    margin="dense"
                                     id={`attachedDb_${index}_type`}
                                     name={`attachedDb_${index}_type`}
                                     label="Database Type"
                                     fullWidth
-                                    variant="standard"
+                                    size="small"
                                     value={db.dbType}
                                     select
                                     onChange={(event) =>
@@ -760,7 +754,6 @@ export default function AddConnectionDialog({
                                     .map((field) => (
                                        <TextField
                                           key={field.name}
-                                          margin="dense"
                                           id={`attachedDb_${index}_${field.name}`}
                                           name={`attachedDb_${index}_${field.name}`}
                                           label={field.label}
@@ -770,7 +763,7 @@ export default function AddConnectionDialog({
                                                 : field.type
                                           }
                                           fullWidth
-                                          variant="standard"
+                                          size="small"
                                           required={field.required}
                                           select={!!field.selectOptions}
                                           defaultValue={
@@ -814,32 +807,19 @@ export default function AddConnectionDialog({
                      connectionFieldsByType[type].map((field) => (
                         <TextField
                            key={field.name}
-                           margin="dense"
                            id={field.name}
                            name={field.name}
                            label={field.label}
                            type={field.type}
                            fullWidth
-                           variant="standard"
+                           size="small"
                            required={field.required}
                         />
                      ))
                   )}
-               </form>
-            </DialogContent>
-            <DialogActions>
-               <Button disabled={isSubmitting} onClick={handleClose}>
-                  Cancel
-               </Button>
-               <Button
-                  type="submit"
-                  form="connection-form"
-                  loading={isSubmitting}
-               >
-                  Create Connection
-               </Button>
-            </DialogActions>
-         </Dialog>
+               </Stack>
+            </form>
+         </AppDialog>
       </React.Fragment>
    );
 }

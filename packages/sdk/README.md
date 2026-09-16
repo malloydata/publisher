@@ -1183,20 +1183,25 @@ function App() {
 
 ### Styled Components
 
-The SDK exports several pre-styled components for consistent UI:
+The SDK exports the pieces the Publisher Console is built from, so a host can
+build screens that match it:
 
 ```tsx
 import {
-   StyledCard,
-   StyledCardContent,
-   StyledCardMedia,
-   PackageCard,
-   PackageCardContent,
-   PackageSectionTitle,
-   CleanNotebookContainer,
-   CleanNotebookSection,
+   AddButton, // the filled pill that adds one thing to a section
+   SecondaryButton, // the outlined control beside it
+   AppDialog, // every dialog, in one shape
+   BackLink, // the way up, at the top of a page
+   DashboardBar, // the bar above a dashboard, in both modes
+   PALETTE, // the twelve hues everything meaningful is drawn from
+   SURFACE_TINT, // which hue an environment, package or connection gets
 } from "@malloy-publisher/sdk";
 ```
+
+`ItemRow` and `PackageSection`, the row and section those screens are built
+out of, are deliberately internal for now; so are the `styled` helpers in
+`components/styles.ts`, which earlier versions of this README showed being
+imported, which never worked.
 
 ---
 

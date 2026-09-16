@@ -3,36 +3,28 @@
 
 import AddIcon from "@mui/icons-material/Add";
 import CheckIcon from "@mui/icons-material/Check";
-import GridViewIcon from "@mui/icons-material/GridView";
 import TuneIcon from "@mui/icons-material/Tune";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
-import {
-   Button,
-   Chip,
-   Divider,
-   IconButton,
-   ListItemIcon,
-   ListItemText,
-   Menu,
-   MenuItem,
-   Stack,
-   Tooltip,
-   Typography,
-} from "@mui/material";
-import { useState, type ReactNode } from "react";
+import { Button, Chip, Divider, IconButton, Tooltip } from "@mui/material";
+import type { ReactNode } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
+import { DashboardBar } from "../Dashboard/DashboardBar";
 import { MOD } from "./useBuilderShortcuts";
 
 /**
- * The edit bar across the top of the builder, in the shape every builder has
- * settled on: that you are editing on the left, what you can do about it on
- * the right.
+ * The edit bar across the top of the builder: that you are editing on the
+ * left, what you can do about it on the right, in the same {@link DashboardBar}
+ * the reader's view uses, so switching modes swaps the contents of one bar
+ * rather than replacing one bar with a different one.
  *
- * Sticky, so undo and save stay in reach on a long dashboard; the reader's own
- * header (title and description) stays in the page below it rather than being
- * repeated here.
+ * The right-hand controls are grouped by what they do, separated rather than
+ * run together: change the page (a tile, its settings), take a change back or
+ * put it down (undo, redo, save), and leave (Done, where the reader's view has
+ * Edit). Sticky, so undo and save stay in reach on a long dashboard; the
+ * reader's own header (title and description) stays in the page below it
+ * rather than being repeated here.
  */
 export interface BuilderToolbarProps {
    canUndo: boolean;
@@ -43,14 +35,12 @@ export interface BuilderToolbarProps {
    saving: boolean;
    /** Absent when the builder has nowhere to save: no Save, no unsaved marker. */
    onSave?: () => void;
-   /** The host's actions, beside the builder's own: Export, Done. */
+   /** The host's way out of editing: Done, at the right edge. */
    actions?: ReactNode;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
    /** Open the page's settings, anchored to the button that asked. */
    onSettings: (anchor: HTMLElement) => void;
-   /** Quick layout: every tile this file owns to one width. */
-   onQuickLayout: (share: 1 | 2 | 3 | 4) => void;
 }
 
 export function BuilderToolbar({
@@ -64,207 +54,109 @@ export function BuilderToolbar({
    actions,
    onAddTile,
    onSettings,
-   onQuickLayout,
 }: BuilderToolbarProps) {
    const { theme } = usePublisherTheme();
-   const [layoutMenu, setLayoutMenu] = useState<HTMLElement | null>(null);
    return (
-      <Stack
-         direction="row"
-         sx={{
-            position: "sticky",
-            top: 0,
-            zIndex: 5,
-            alignItems: "center",
-            gap: 1,
-            px: 1.5,
-            py: 1,
-            // Its own ground, so the tiles scrolling under it do not show
-            // through, and an edge so it reads as a bar rather than a row.
-            // The Publisher theme's ground and edge, like every other surface
-            // here — MUI's own palette would not follow an instance theme or
-            // its dark mode.
-            bgcolor: theme.background,
-            borderBottom: theme.border,
-            borderRadius: 1,
-         }}
+      <DashboardBar
+         left={
+            <Chip
+               // The app's theme makes every chip small; this one stands in a
+               // row of buttons, so it says otherwise and takes their height
+               // and type size. One size across the bar, or the state reads as
+               // a label that shrank away from the controls.
+               size="medium"
+               variant="outlined"
+               icon={<EditOutlinedIcon sx={{ fontSize: 20 }} />}
+               label="Editing"
+               sx={{
+                  height: 37,
+                  fontSize: "0.875rem",
+                  fontWeight: 500,
+                  // The app's own chip: the page's edge and its secondary
+                  // text, not a filled blue badge borrowed from the drill
+                  // link, which read as a notification rather than a state.
+                  border: theme.border,
+                  color: theme.tileTitle,
+                  "& .MuiChip-icon": { color: "inherit" },
+                  "& .MuiChip-label": { fontSize: "0.875rem" },
+               }}
+            />
+         }
       >
-         <Chip
-            size="small"
-            icon={<EditOutlinedIcon sx={{ fontSize: 14 }} />}
-            label="Editing"
-            sx={{
-               fontWeight: 500,
-               bgcolor: theme.drillLink,
-               color: theme.tile,
-               "& .MuiChip-icon": { color: "inherit" },
-            }}
-         />
-         <Typography
-            variant="body2"
-            sx={{
-               color: theme.tileTitle,
-               display: { xs: "none", md: "block" },
-            }}
+         {/* What the page is made of. */}
+         {onAddTile && (
+            <Button
+               startIcon={<AddIcon />}
+               onClick={onAddTile}
+               aria-label="Add tile"
+            >
+               Tile
+            </Button>
+         )}
+         <Button
+            startIcon={<TuneIcon />}
+            onClick={(event) => onSettings(event.currentTarget)}
          >
-            Drag a tile to move it, its right edge to resize it, or into the
-            empty end of a row to move it up.
-         </Typography>
+            Settings
+         </Button>
 
-         <Stack
-            direction="row"
-            sx={{
-               ml: "auto",
-               alignItems: "center",
-               gap: 0.5,
-               // The hint beside the chip is what gives way when the bar is
-               // narrow; a button's label never wraps onto a second line.
-               flexShrink: 0,
-               "& .MuiButton-root": { whiteSpace: "nowrap" },
-            }}
-         >
-            {onAddTile && (
-               <Button
-                  size="small"
-                  startIcon={<AddIcon fontSize="small" />}
-                  onClick={onAddTile}
+         {/* What happens to a change: take it back, or put it down. */}
+         <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+         <Tooltip title={`Undo (${MOD}Z)`}>
+            {/* A span, because a disabled button dispatches no events and a
+                tooltip on one would never show. */}
+            <span>
+               <IconButton
+                  aria-label="Undo"
+                  disabled={!canUndo}
+                  onClick={onUndo}
+                  sx={{ width: 37, height: 37 }}
                >
-                  Add tile
-               </Button>
-            )}
-            <Button
-               size="small"
-               startIcon={<GridViewIcon fontSize="small" />}
-               onClick={(event) => setLayoutMenu(event.currentTarget)}
-               aria-haspopup="menu"
-            >
-               Layout
-            </Button>
-            <Menu
-               anchorEl={layoutMenu}
-               open={layoutMenu !== null}
-               onClose={() => setLayoutMenu(null)}
-            >
-               <Typography
-                  variant="caption"
-                  sx={{
-                     px: 2,
-                     py: 0.5,
-                     display: "block",
-                     color: theme.tileTitle,
-                  }}
+                  <UndoIcon fontSize="small" />
+               </IconButton>
+            </span>
+         </Tooltip>
+         <Tooltip title={`Redo (${MOD}⇧Z)`}>
+            <span>
+               <IconButton
+                  aria-label="Redo"
+                  disabled={!canRedo}
+                  onClick={onRedo}
+                  sx={{ width: 37, height: 37 }}
                >
-                  Set every tile to
-               </Typography>
-               {(
-                  [
-                     ["Full width", 1],
-                     ["Half width", 2],
-                     ["A third", 3],
-                     ["A quarter", 4],
-                  ] as const
-               ).map(([label, share]) => (
-                  <MenuItem
-                     key={share}
-                     onClick={() => {
-                        setLayoutMenu(null);
-                        onQuickLayout(share);
-                     }}
-                  >
-                     <ListItemIcon>
-                        <GridViewIcon fontSize="small" />
-                     </ListItemIcon>
-                     <ListItemText>{label}</ListItemText>
-                  </MenuItem>
-               ))}
-            </Menu>
-            <Button
-               size="small"
-               startIcon={<TuneIcon fontSize="small" />}
-               onClick={(event) => onSettings(event.currentTarget)}
-            >
-               Settings
-            </Button>
-            {actions && (
-               <>
-                  {actions}
-                  <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
-               </>
-            )}
-            <Tooltip title={`Undo (${MOD}Z)`}>
-               {/* A span, because a disabled button dispatches no events and a
-                   tooltip on one would never show. */}
-               <span>
-                  <IconButton
-                     aria-label="Undo"
-                     size="small"
-                     disabled={!canUndo}
-                     onClick={onUndo}
-                  >
-                     <UndoIcon fontSize="small" />
-                  </IconButton>
-               </span>
-            </Tooltip>
-            <Tooltip title={`Redo (${MOD}⇧Z)`}>
-               <span>
-                  <IconButton
-                     aria-label="Redo"
-                     size="small"
-                     disabled={!canRedo}
-                     onClick={onRedo}
-                  >
-                     <RedoIcon fontSize="small" />
-                  </IconButton>
-               </span>
-            </Tooltip>
-            {onSave && (
-               <>
-                  <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
-                  {/* "Unsaved changes" beside Save: the button's label alone
-                      reads as a command, not as a state. */}
-                  <Typography
-                     variant="caption"
-                     aria-live="polite"
-                     sx={{
-                        color: theme.tileTitle,
-                        minWidth: 108,
-                        textAlign: "right",
-                        // Room between the state and the button that acts on
-                        // it: at the row's 4px gap the two read as one label.
-                        mr: 1.5,
-                        opacity: dirty && !saving ? 1 : 0,
-                        transition: "opacity 120ms",
-                     }}
-                  >
-                     Unsaved changes
-                  </Typography>
-                  <Tooltip title={dirty ? `Save (${MOD}S)` : ""}>
-                     <span>
-                        <Button
-                           variant={dirty ? "contained" : "outlined"}
-                           size="small"
-                           disabled={!dirty || saving}
-                           onClick={onSave}
-                           startIcon={
-                              !dirty && !saving ? (
-                                 <CheckIcon fontSize="small" />
-                              ) : undefined
-                           }
-                           sx={{ minWidth: 124 }}
-                        >
-                           {/* Says what will happen, then that it is happening,
-                               then what did. */}
-                           {saving
-                              ? "Saving…"
-                              : dirty
-                                ? "Save changes"
-                                : "Saved"}
-                        </Button>
-                     </span>
-                  </Tooltip>
-               </>
-            )}
-         </Stack>
-      </Stack>
+                  <RedoIcon fontSize="small" />
+               </IconButton>
+            </span>
+         </Tooltip>
+         {onSave && (
+            <>
+               <Tooltip title={dirty ? `Save (${MOD}S)` : ""}>
+                  <span>
+                     <Button
+                        variant={dirty ? "contained" : "outlined"}
+                        disabled={!dirty || saving}
+                        onClick={onSave}
+                        startIcon={
+                           !dirty && !saving ? <CheckIcon /> : undefined
+                        }
+                        sx={{ minWidth: 124 }}
+                     >
+                        {/* Says what will happen, then that it is happening,
+                            then what did. */}
+                        {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
+                     </Button>
+                  </span>
+               </Tooltip>
+            </>
+         )}
+
+         {/* Leaving, where the reader's view has Edit. */}
+         {actions && (
+            <>
+               <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+               {actions}
+            </>
+         )}
+      </DashboardBar>
    );
 }

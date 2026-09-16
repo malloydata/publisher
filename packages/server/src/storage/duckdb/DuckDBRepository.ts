@@ -200,13 +200,6 @@ export class DuckDBRepository implements ResourceRepository {
       return this.materializationRepo.list(environmentId, packageName, options);
    }
 
-   async listMaterializationsByEnvironment(
-      environmentId: string,
-      options?: { limit?: number; offset?: number },
-   ): Promise<Materialization[]> {
-      return this.materializationRepo.listByEnvironment(environmentId, options);
-   }
-
    async getLatestScheduledFireAt(
       environmentId: string,
       packageName: string,
