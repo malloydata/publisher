@@ -59,18 +59,18 @@ when a valid scoping value is asserted, and there is no "unscoped" path. An **un
 ```malloy
 ##! experimental.givens
 
-given: TENANT :: string
+given: TENANTS :: string[]
 
 // Deny unless the caller asserts a tenant on the allow-list.
-#(authorize) $TENANT = 'acme' or $TENANT = 'globex' or $TENANT = 'initech'
+#(authorize) tenant in $TENANTS
 source: orders is duckdb.table('orders.parquet') extend {
-  where: tenant = $TENANT
+  where: tenant in $TENANTS
   measure: order_count is count()
 }
 ```
 
 - `#(authorize)` decides **whether** the caller may query `orders` at all.
-- `where: tenant = $TENANT` decides **which rows** they get once allowed.
+- `where: tenant in $TENANTS` decides **which rows** they get once allowed.
 
 Used together, callers can only reach `orders` with a recognized tenant, and only ever see that
 tenant's rows.
@@ -101,53 +101,52 @@ write or to keep in sync.
 
 - **`where: field in $GIVEN` alone** — a convenience filter, not access control. A caller who omits
   the given sees everything. Use it when scoping is a UX nicety, not a boundary.
-- **`where:` paired with `#(authorize)`** (the pattern above) — the gate is one scalar boolean, and
-  when it reads no row field (`$ROLE = 'admin'`) it resolves the same way for every row, so it reads
-  as all-or-nothing; `where:` does the row scoping. Reach for this when the "may enter,
-  but only sees their rows" logic genuinely needs two independent expressions — an admin-override
-  gate (`$ROLE = 'admin'`) whose row scoping differs from a tenant's (`tenant = $TENANT`), for
-  example — or when the row scoping itself is more than a single gate expression can hold (a
-  `filter<T>`, a range, a join-based lookup composed across several fields): a gate is exactly one
-  scalar boolean expression, so anything that needs its own named intermediate steps belongs in
-  `where:` instead.
+- **`where:` paired with `#(authorize)`** (the pattern above) — reach for this when the row scope
+  needs more than a single gate term can hold (a `filter<T>`, a range, a join-based lookup composed
+  across several fields, an `and` of terms over more givens than the gate references): a gate's body
+  is a narrow grammar of `and`-joined terms (see [authorize.md § Expression
+  Language](authorize.md#expression-language)), so anything needing its own named intermediate steps
+  or a comparison the grammar does not accept belongs in `where:` instead, with the gate covering
+  only the admit/deny decision.
 - **A row-level `#(authorize)` gate alone** — when the access decision and the row scope are
   the *same* comparison (`org_id in $GROUPS` is both "may they enter" and "which rows"), write it
   once as a gate. An unset or empty given fails closed to zero rows, with no matching pair of
   expressions that could drift apart.
 
-A gate's expression is otherwise unrestricted — see
-[authorize.md § Row-level gates](authorize.md#row-level-gates) for what changed there (there is no
-longer a fixed allowlist of accepted comparison shapes) and for the one case where an unsupported
-combination now surfaces as a request-time failure instead of a load-time refusal.
+A gate's expression follows the narrow grammar in
+[authorize.md § Expression Language](authorize.md#expression-language) — not the full Malloy
+expression language `where:` accepts.
 
 > **Trusted-tier requirement.** Givens are **caller-asserted** — anyone who can reach the query API
-> can send `{"TENANT":"acme"}`. Row-level access control is a real boundary only when Publisher sits
-> behind a trusted tier that authenticates the end user and sets `TENANT` from its own verified
+> can send `{"TENANTS":["acme"]}`. Row-level access control is a real boundary only when Publisher sits
+> behind a trusted tier that authenticates the end user and sets `TENANTS` from its own verified
 > context, with the query/MCP API network-isolated from untrusted callers. See
 > [authorize.md § Security model](authorize.md#security-model) for the full deployment contract.
 > Identity-bound givens (values the caller cannot override) are a planned milestone.
 
 ## Runnable example
 
-[`examples/governed-analytics`](../examples/governed-analytics) implements exactly this pattern in
-[`secured.malloy`](../examples/governed-analytics/secured.malloy): `orders_secured` is gated with
-`#(authorize)` and scoped with `where: $ROLE = 'admin' or tenant = $TENANT`. It ships in the default
-`examples` environment, so against the running example the same query returns different rows per caller:
+[`examples/governed-analytics`](../examples/governed-analytics) implements the row-level authorize
+pattern above in [`secured.malloy`](../examples/governed-analytics/secured.malloy): the
+`#(authorize) tenant in $TENANTS` gate on `orders_secured` is both the admit decision and the row
+scope, with no separate `where:`. It ships in the default `examples` environment, so against the
+running example the same query returns different rows per caller:
 
-Neither `ROLE` nor `TENANT` carries a default (a gate-referenced given may not — see
-[authorize.md § Row-level gates](authorize.md#row-level-gates)), so every request must send both
-keys; the one not on the caller's path is sent blank:
+`TENANTS` carries no default (a gate-referenced given may not — see
+[authorize.md § Row-level gates](authorize.md#row-level-gates)), so every request must send it.
+There is no separate admin role: a caller whose identity resolves to every tenant on the list is
+simply handed all of them by the trusted tier that sets `TENANTS`.
 
 ```bash
 API=http://localhost:4000/api/v0/environments/examples/packages/governed-analytics/models
 
-# Admin → every tenant
+# Resolved to every tenant → sees every tenant
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
-  -d '{"query":"run: orders_secured -> by_tenant","givens":{"ROLE":"admin","TENANT":""}}'  # → 3 tenants
+  -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["acme","globex","initech"]}}'  # → 3 tenants
 
-# Tenant caller → only their own rows
+# Resolved to one tenant → only their own rows
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
-  -d '{"query":"run: orders_secured -> by_tenant","givens":{"ROLE":"","TENANT":"acme"}}'   # → 1 tenant
+  -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["acme"]}}'   # → 1 tenant
 ```
 
 ## Locking the base source

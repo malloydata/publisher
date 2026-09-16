@@ -18,36 +18,54 @@
  * `source_extraction.ts` — this module builds on those rather than
  * duplicating them.
  *
- * {@link resolveEntryPointPartitions} answers a DIFFERENT question over the
- * same own-wins-else-ancestor shape: not "is this entry point gated" but
- * "what `#(partition)` (column, given) pairs does it declare", for the
- * dimensional-indexing partition step. It shares the extend/registry
- * ancestor walk with the authorize gate but not `collectEntryPointGates`
- * itself — see that function's own doc for why.
+ * Also home to the `#(authorize)` body GRAMMAR's load-time plumbing —
+ * {@link assertAuthorizeGrammarValid} (the `./authorize_grammar` parser, plus
+ * the fan-out join check that needs the compiled struct the parser never
+ * sees) and {@link assertNoRetiredRouteMarkers} (a leftover marker from a
+ * retired annotation route, e.g. `#(partition)`, which Malloy still parses
+ * happily and which must fail load rather than fail open).
  */
 
 import {
+   isJoined,
    isSourceDef,
    type FilterCondition,
    type ModelDef,
    type ModelMaterializer,
    type SourceDef,
 } from "@malloydata/malloy";
+import { ModelCompilationError } from "../errors";
 import { logger } from "../logger";
 import {
+   annotationTexts,
+   modelAnnotations,
    ownLevelNotes,
    ownLevelNoteTexts,
    type AnnotationNote,
+   type AnnotationsDef,
 } from "./annotations";
 import {
+   AUTHORIZE_ROUTES,
    buildRowLevelProbe,
-   collectAuthorizeExprs,
+   collectAuthorizeExprsForRoute,
    gateFilterText,
+   isLegacyQuotedPayload,
    liftProbeFilterCondition,
    referencedGivenNames,
+   type AuthorizeMap,
+   type AuthorizeOwnNotesMap,
    type RowLevelGateClassification,
    type RowLevelGateRejectionCause,
 } from "./authorize";
+import {
+   assertAuthorizeGrammarTermsCoherent,
+   AuthorizeGrammarError,
+   containsRetiredRouteTag,
+   parseAuthorizeGrammarBody,
+   reachesRetiredRouteTagBelow,
+   RETIRED_ROUTES,
+   type AuthorizeGrammarRoutedTerm,
+} from "./authorize_grammar";
 import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
@@ -55,14 +73,6 @@ import {
    resolveDeclaredSource,
    resolveQuerySourceBase,
 } from "./gate_registry_walk";
-import {
-   collectPartitionPairs,
-   PartitionAnnotationError,
-   type PartitionPair,
-   reachesPartitionTagBelow,
-} from "./partition_annotation";
-
-export type { PartitionPair };
 
 /** One reachable authorize gate found by {@link collectEntryPointGates}. */
 export type GateEntry = {
@@ -77,6 +87,17 @@ export type GateEntry = {
     * keeps two same-text gates of different provenance from collapsing.
     */
    selfContained: boolean;
+   /**
+    * The annotation route this gate was collected under (`AUTHORIZE_ROUTES`)
+    * — `"authorize"` (row-level) or `"source-authorize"` (a rule about the
+    * caller that ANDs with the row-level gate). Enforcement treats every
+    * entry identically regardless of route (both graft/probe the same way);
+    * `route` exists so the collection walk can keep own-wins-over-ancestor
+    * scoped PER ROUTE — see {@link collectEntryPointGates}'s doc — and so a
+    * dedup key that folds two entries together never conflates one route's
+    * gate with the other's.
+    */
+   route: string;
    /**
     * The ENTRY POINT this gate applies to — the run target itself, or its
     * resolved composite branch — NOT necessarily the struct the gate's own
@@ -201,16 +222,37 @@ export function createGateClassificationDeps(
  * Malloy's composite resolver copies a `query_source` base's own annotation
  * note OBJECTS onto its resolved member struct's own `blockNotes`, alongside
  * the member's own notes. Reading them unfiltered folds the base's gate into
- * the member's own OR group — a different declaring source's condition
- * landing in THIS source's disjunction, which is the AND-becomes-OR leak this
- * parameter exists to close. Empty for every caller except the
+ * the member's own group — a different declaring source's condition landing
+ * in THIS source's conjunction, so the base's term is enforced twice under
+ * one attribution instead of as the two separate (AND'd) `GateEntry` results
+ * `collectEntryPointGates` already produces for base vs. composite member;
+ * that misattribution is the leak this parameter exists to close. Empty for
+ * every caller except the
  * composite-member recursion in {@link collectEntryPointGates}.
  *
  * `fromAncestor` reports that the gate came from the derivation base rather
  * than from `struct`'s own notes — see {@link GateEntry}'s `selfContained`.
+ *
+ * `route` scopes both the own-notes read and the ancestor walk to ONE
+ * annotation route (`AUTHORIZE_ROUTES`) — this is what makes
+ * own-wins-over-ancestor PER ROUTE rather than shared: an own
+ * `#(source-authorize)` note does not satisfy (and does not shed) an
+ * ancestor's `#(authorize)` gate, because the caller invokes this function
+ * once per route and each call only ever sees that route's own notes. The
+ * `["false"]` fail-closed sentinel in the `catch` below is synthesized on
+ * EITHER route, not only `AUTHORIZE_ROUTE`: because own-wins-over-ancestor is
+ * decided per route, the two routes' calls over the same struct can diverge
+ * before either reaches the unreadable branch (e.g. `struct` owns a real
+ * `#(authorize)` note and returns early, while its `#(source-authorize)` call
+ * falls through to an ancestor whose IR is unreadable) — one route's success
+ * is never a guarantee the other took the same path, so a route cannot rely
+ * on its sibling to have already denied. See `gate_registry_walk.ts`'s
+ * `ancestorGateExprs` doc for the identical reasoning applied to its own
+ * three fail-closed returns.
  */
 function gateExprsForOwnAnnotations(
    struct: SourceDef,
+   route: string,
    modelDef?: ModelDef,
    excludeNotes: readonly AnnotationNote[] = [],
 ): {
@@ -228,21 +270,27 @@ function gateExprsForOwnAnnotations(
       // `Model.create` / package-load-worker preflight — but a caller with
       // no such preflight (`build_plan.ts`'s materialization-eligibility
       // compile pass) can still reach this classifier with one intact.
-      // There is no special case here for that: `collectAuthorizeExprs`
+      // There is no special case here for that: `collectAuthorizeExprsForRoute`
       // (via `parseAuthorizeAnnotation`) now returns the legacy payload
       // completely verbatim, quotes included, so it is handed to
       // `resolveGateShape` below as an ordinary Malloy expression — see the
       // comment at its lift `catch` for why that alone is enough to make
       // this classifier and the load-time refusal agree structurally,
       // without either one special-casing the other.
-      const own = collectAuthorizeExprs(ownNotes.map((note) => note.text));
+      const own = collectAuthorizeExprsForRoute(
+         ownNotes.map((note) => note.text),
+         route,
+      );
       if (own.length > 0) {
          return { exprs: own, fromAncestor: false };
       }
-      const ancestor = ancestorGateExprs(struct, modelDef);
+      const ancestor = ancestorGateExprs(struct, modelDef, route);
       return { exprs: ancestor, fromAncestor: ancestor.length > 0 };
    } catch {
-      return { exprs: ["false"], fromAncestor: false };
+      return {
+         exprs: ["false"],
+         fromAncestor: false,
+      };
    }
 }
 
@@ -279,8 +327,9 @@ function gateExprsForOwnAnnotations(
  * OBJECTS onto its resolved composite member's own `blockNotes`, alongside
  * the member's own notes, so reading the member's own gate without excluding
  * the base's copy would fold two different declaring sources' gates into one
- * OR group instead of the two separate (AND'd) `GateEntry` results this
- * function already produces for the plain base-vs-composite split. Every
+ * group — enforcing the base's term twice under the member's attribution —
+ * instead of the two separate (AND'd) `GateEntry` results this function
+ * already produces for the plain base-vs-composite split. Every
  * OTHER recursive call passes none: a query-source's own base (as opposed to
  * that base's composite-resolved member) carries no such copy to subtract.
  *
@@ -294,12 +343,57 @@ function gateExprsForOwnAnnotations(
  * struct and its own resolved composite branch, the two call sites that
  * represent the entry point ITSELF, and is what makes those entries' own
  * annotations NOT self-contained.
+ *
+ * Returns entries for BOTH annotation routes (`AUTHORIZE_ROUTES`) — no caller
+ * change required, and none should be made: seven consumers call this walk
+ * directly (the query path, `/compile`'s early gate and its backstop,
+ * notebook cells, `Model`'s `entryPointGatesBySource`,
+ * `queryEntryPointHasRowLevelGate`, `build_plan.ts`'s
+ * `classifyPersistSourceGate`, `probeEntryPointGates`), and a sibling
+ * collector any ONE of them forgot to also call would fail open for
+ * `source-authorize` alone. The route enters by running the ENTIRE walk once
+ * per route ({@link collectEntryPointGatesForRoute}), each with its own fresh
+ * `seen` set (struct-identity cycle guards must not be shared across routes —
+ * a struct legitimately visited under `authorize` must still be visited under
+ * `source-authorize`) and its own independent own-wins-over-ancestor decision
+ * (`gateExprsForOwnAnnotations`) — an own `#(source-authorize)` note on
+ * `struct` never sheds an ancestor's `#(authorize)` gate, or vice versa,
+ * because the two routes' walks never share state.
  */
 export function collectEntryPointGates(
    struct: SourceDef | undefined,
    modelDef: ModelDef | undefined,
    seen: Set<SourceDef> = new Set(),
    treatAsOwnGate = false,
+   entryPointStruct: SourceDef | undefined = struct,
+   excludeNotes: readonly AnnotationNote[] = [],
+): GateEntry[] {
+   const results: GateEntry[] = [];
+   for (const route of AUTHORIZE_ROUTES) {
+      results.push(
+         ...collectEntryPointGatesForRoute(
+            struct,
+            modelDef,
+            route,
+            new Set(seen),
+            treatAsOwnGate,
+            entryPointStruct,
+            excludeNotes,
+         ),
+      );
+   }
+   return results;
+}
+
+/**
+ * The single-route walk {@link collectEntryPointGates} runs once per
+ * {@link AUTHORIZE_ROUTES} entry — see that function's doc for why routing
+ * enters here rather than by threading a route through every caller.
+ */
+function collectEntryPointGatesForRoute(
+   struct: SourceDef | undefined,
+   modelDef: ModelDef | undefined,
+   route: string,
    // The struct that STARTED this walk — the run target itself, or its
    // resolved composite branch. Held fixed across the query-source recursion
    // below (never reassigned to `base`/`resolved`), because it, not whichever
@@ -308,12 +402,14 @@ export function collectEntryPointGates(
    // derivation base applies to THIS entry point as an entry point, and
    // grafting the base instead cannot reach a model-declared derivation
    // (`Z is X -> {...}`), which snapshotted its base at declaration time.
-   entryPointStruct: SourceDef | undefined = struct,
+   seen: Set<SourceDef>,
+   treatAsOwnGate: boolean,
+   entryPointStruct: SourceDef | undefined,
    // See this function's doc. Non-empty only for the composite-member
    // recursion below, which passes the query-source base's own notes so
    // Malloy's by-reference copy of them onto the member's own `blockNotes`
-   // doesn't fold the base's gate into the member's own OR group.
-   excludeNotes: readonly AnnotationNote[] = [],
+   // doesn't fold the base's gate into the member's own group.
+   excludeNotes: readonly AnnotationNote[],
 ): GateEntry[] {
    if (!struct || !modelDef || seen.has(struct)) return [];
    seen.add(struct);
@@ -322,6 +418,7 @@ export function collectEntryPointGates(
    const label = (struct as { as?: string }).as ?? struct.name;
    const { exprs: ownExprs, fromAncestor } = gateExprsForOwnAnnotations(
       struct,
+      route,
       modelDef,
       excludeNotes,
    );
@@ -329,6 +426,7 @@ export function collectEntryPointGates(
       results.push({
          label,
          exprs: ownExprs,
+         route,
          // A gate CARRIED IN from a derivation base counts as authored
          // elsewhere even when `struct` IS the entry point.
          selfContained: fromAncestor || !treatAsOwnGate,
@@ -358,12 +456,14 @@ export function collectEntryPointGates(
       const base = resolveQuerySourceBase(struct, modelDef);
       if (base) {
          results.push(
-            ...collectEntryPointGates(
+            ...collectEntryPointGatesForRoute(
                base,
                modelDef,
+               route,
                seen,
                false,
                entryPointStruct,
+               [],
             ),
          );
       } else {
@@ -374,9 +474,15 @@ export function collectEntryPointGates(
          // deny instead. An already-visited base is not this case: it still
          // resolves and takes the branch above, where the `seen` check makes
          // the recursion a no-op.
+         //
+         // Synthesized on BOTH routes — see `gate_registry_walk.ts`'s
+         // `ancestorGateExprs` doc for why own-wins-over-ancestor is decided
+         // per route, so one route's call cannot rely on the other having
+         // already reached (and denied at) this same branch.
          results.push({
             label,
             exprs: ["false"],
+            route,
             selfContained: true,
          });
       }
@@ -394,9 +500,10 @@ export function collectEntryPointGates(
       const resolved = duck.query?.compositeResolvedSourceDef;
       if (resolved) {
          results.push(
-            ...collectEntryPointGates(
+            ...collectEntryPointGatesForRoute(
                resolved,
                modelDef,
+               route,
                seen,
                false,
                entryPointStruct,
@@ -424,17 +531,19 @@ export function collectEntryPointGates(
  * the literal `"false"` — there is no real struct here to graft anything
  * onto, so this rejects outright rather than attempting a classification.
  *
- * `filterText` folds the entry's whole OR disjunction into ONE expression:
- * `exprs.map(e => "(" + e + ")").join(" or ")`. This is deliberate, not
- * incidental — it is what keeps the admin-override idiom working under
- * row-level enforcement. `#(authorize) "$ROLE = 'admin'"` OR'd with
- * `#(authorize) "org_id in $GROUPS"` becomes
- * `($ROLE = 'admin') or (org_id in $GROUPS)`, ONE filter that preserves OR
- * semantics exactly: an admin's `$ROLE` check makes the whole disjunction
- * (and therefore the row filter) constant-true, not a second gate an admin
- * must ALSO satisfy. A given-only predicate inside a `where:` is legal Malloy
- * and constant for the life of one request, so folding a given-only disjunct
- * into the same filter text changes nothing about what rows it admits.
+ * `filterText` folds the entry's whole conjunction into ONE expression:
+ * `exprs.map(e => "(" + e + ")").join(" and ")`. This is deliberate, not
+ * incidental — it is what keeps a repeated `#(authorize)` enforced as ONE row
+ * filter. `#(authorize) org_id = $ORG` followed by `#(authorize) team_id in
+ * $TEAMS` becomes `(org_id = $ORG) and (team_id in $TEAMS)`, ONE filter that
+ * preserves AND semantics exactly: every term must admit a row for it to
+ * survive. An admin override is instead two extension sources over the same
+ * locked (`#(authorize) false`) base, each with its own conjunctive gate —
+ * `or` is refused everywhere in a gate body, so a disjunction is always two
+ * entry points, never a second arm of one expression. A given-only
+ * predicate inside a `where:` is legal Malloy and constant for the life of one
+ * request, so folding a given-only conjunct into the same filter text changes
+ * nothing about what rows it admits.
  *
  * Classification is memoized per `(cacheScope, graftTarget, filterText)` in
  * `deps.gateShapeCache` — see {@link GateClassificationDeps}'s doc for why
@@ -974,285 +1083,12 @@ export function computeGivenDeclaredTypes(
    );
 }
 
-/**
- * The `#(partition)` (column, given) pairs that apply to `struct` AS AN
- * ENTRY POINT: its own annotations if it declares any, else the nearest
- * ancestor's — the same "own wins over ancestor" rule
- * {@link gateExprsForOwnAnnotations} uses for `#(authorize)`, and for the
- * same two structural reasons (see `./gate_registry_walk`'s module doc):
- * an `extend {}`/rename with an annotation of its own demotes the base's
- * onto `annotations.inherits`, and a base whose own note object Malloy did
- * NOT copy by reference onto the deriving struct is only reachable through
- * `ModelDef.sourceRegistry` — see `authorize_gate_walk.spec.ts`'s doc and
- * `partition_resolution.spec.ts`'s synthetic-IR test for why real compiled
- * input for a plain rename never actually needs this fallback (Malloy copies
- * the base's notes by reference for that shape, so the "own" check above
- * already finds them) and it is kept for structural parity and for any IR
- * shape that doesn't do that copy. Both links are walked here exactly
- * as {@link ancestorGateExprs} walks them — deliberately NOT by delegating to
- * that function, since its return shape (`string[]`, with a `["false"]`
- * fail-closed sentinel) is specific to a boolean access gate and has no
- * partition equivalent. It matches that function's POSTURE, though: an
- * unreadable chain is "a marker up there is unknown", not "there is no
- * marker", and losing a partition axis serves every slice rather than
- * merely producing a worse index — so every case `ancestorGateExprs` would
- * deny with `["false"]`, this throws {@link unresolvableAncestry}, which the
- * read path turns into an `AccessDeniedError`. Only a chain read to its end
- * with nothing found returns `[]`.
- *
- * Also follows a `query_source`'s own base
- * ({@link resolveQuerySourceBase}) the way `collectEntryPointGates` does for
- * authorize — a `Z is X -> {...}` derivation carries no `.annotations` at
- * all, so `X`'s markers would otherwise be unreachable from `Z`. Does NOT
- * follow a composite's resolved member branch (`collectEntryPointGates`'s
- * other query-source hop): that additive OR-group handling is specific to
- * authorize's boolean-gate semantics and has no partition analogue. A
- * composite source that itself carries a `#(partition)` marker is refused
- * outright at publish instead — see {@link assertPartitionAnnotationsValid} for
- * why grafting through a composite's resolved member branch can't be made
- * to work the way it does for a boolean gate.
- *
- * Joined sources are deliberately NOT walked — same Q16 posture as
- * authorize: a `#(partition)` is a statement about the entry point's own
- * declared source, not about everything reachable through a join.
- *
- * `seen` (struct-identity keyed) guards cycles, matching
- * {@link ancestorGateExprs}.
- */
-export function resolveEntryPointPartitions(
-   struct: SourceDef | undefined,
-   modelDef: ModelDef | undefined,
-   seen: Set<SourceDef> = new Set(),
-): PartitionPair[] {
-   if (!struct || !modelDef || seen.has(struct)) return [];
-   seen.add(struct);
-   const label = (struct as { as?: string }).as ?? struct.name;
-
-   const own = collectPartitionPairs(
-      label,
-      ownLevelNotes(struct.annotations).map((note) => note.text),
-   );
-   if (own.length > 0) return own;
-
-   // The `extend`-chain link: covers a deriving statement that carries any
-   // annotation of its own (demoting the base's), which the copy-by-reference
-   // path just above already resolved for the far more common annotation-free
-   // `extend {}` case.
-   let inherited = struct.annotations?.inherits;
-   for (let depth = 0; inherited && depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
-      const pairs = collectPartitionPairs(label, ownLevelNoteTexts(inherited));
-      if (pairs.length > 0) return pairs;
-      inherited = inherited.inherits;
-   }
-   // An exhausted depth cap means the chain was not read to its end, so a
-   // marker further up is unknown rather than absent — deny, exactly as
-   // `ancestorGateExprs` returns `["false"]` for the same shape.
-   if (inherited) throw unresolvableAncestry(label);
-   const declared = resolveDeclaredSource(struct, modelDef);
-   // A registry entry found but unreadable is not "this struct has no base":
-   // the link exists and the walk failed to follow it. Same deny.
-   if (declared.kind === "unresolvable") throw unresolvableAncestry(label);
-   if (declared.kind === "resolved") {
-      const pairs = resolveEntryPointPartitions(
-         declared.source,
-         modelDef,
-         seen,
-      );
-      if (pairs.length > 0) return pairs;
-   }
-
-   const queryBase = resolveQuerySourceBase(struct, modelDef);
-   if (queryBase) return resolveEntryPointPartitions(queryBase, modelDef, seen);
-
-   return [];
-}
-
-/** The deny raised when the marker walk cannot read the IR chain it would
- *  have to follow. Callers on the read path turn any throw from partition
- *  resolution into an `AccessDeniedError` (`Model.rowLevelGraftEntries`), so
- *  an unreadable chain denies the query instead of serving it unfiltered. */
-function unresolvableAncestry(label: string): PartitionAnnotationError {
-   return new PartitionAnnotationError(
-      "ancestry_unresolvable",
-      `Could not resolve whether source "${label}" carries a ` +
-         `\`#(partition)\` marker: the derivation chain it inherits from ` +
-         `could not be read. Denying rather than serving unfiltered.`,
-   );
-}
-
-/**
- * Refuse a composite source (`compose(a, b)`) that reaches a `#(partition)`
- * marker either way it can: on its own annotations (or inherited the same
- * own-wins-else-ancestor way {@link resolveEntryPointPartitions} resolves any
- * other entry point), or on one of its `compose(...)` members — see
- * {@link partitionedMemberLabel} for why the member case is the more
- * dangerous of the two.
- *
- * This is a publish-time refusal, not a graft-time one, because the failure
- * mode it prevents is silent rather than loud. A composite RUN TARGET
- * compiles each query against exactly one concrete member branch
- * (`Query.compositeResolvedSourceDef`), a struct distinct from the composite
- * itself — but a partition filter grafts onto whatever {@link
- * resolveGraftTarget} resolves the ENTRY POINT struct to, which for a
- * composite run target is the composite's own `modelDef.contents` entry.
- * The condition lands on an object the compiled query never reads `structRef`
- * from, so it can never appear in the executed query's `filterList` — every
- * subsequent query against that source then fails the landing proof and
- * denies, opaquely, with nothing in the error pointing back at the
- * mis-declared annotation. `#(authorize)`'s composite handling avoids this by
- * walking `compositeResolvedSourceDef` as its own entry point
- * (`collectEntryPointGates`'s composite-member recursion); partition has no
- * such walk to reuse (see `resolveEntryPointPartitions`'s doc), so refusing
- * the declaration outright is the failure mode that gives the author an
- * actionable error instead of a source that publishes clean and then denies
- * every read.
- *
- * Only checks TOP-LEVEL `modelDef.contents` entries: a composite reached only
- * as a `query_source`'s base is not itself a queryable entry point (the
- * query-source is), so grafting there already lands on the query-source's own
- * struct, not the composite — the failure mode above does not arise.
- *
- * Non-composite sources are swept too, for their body grammar alone: the
- * read path denies a malformed marker but cannot say which annotation was
- * wrong, so an author who never publishes through malloy-code-server's own
- * publish-time refusal would otherwise learn about it as an opaque access
- * denial. See the loop body for which cause is deliberately not raised here.
- */
-export function assertPartitionAnnotationsValid(
-   modelDef: ModelDef | undefined,
-): void {
-   if (!modelDef) return;
-   for (const [key, obj] of Object.entries(modelDef.contents)) {
-      if (!isSourceDef(obj)) continue;
-      const label = (obj as { as?: string }).as ?? obj.name ?? key;
-      if ((obj as { type: string }).type !== "composite") {
-         // Resolved for its THROW, not its value: a body that fails the
-         // grammar (`comparison_operator`, `duplicate_given`, ...) would
-         // otherwise publish clean and then deny every read opaquely, since
-         // the read path turns any resolution throw into an
-         // `AccessDeniedError` carrying no pointer back at the annotation.
-         // `ancestry_unresolvable` is swallowed here: it is not an authoring
-         // mistake, the read path's own deny is the enforcement, and
-         // refusing the whole model over one unreadable IR link would take
-         // down every source in the package including the unmarked ones.
-         let resolved: PartitionPair[] = [];
-         try {
-            resolved = resolveEntryPointPartitions(obj, modelDef);
-         } catch (err) {
-            if (
-               !(err instanceof PartitionAnnotationError) ||
-               err.rejectionCause !== "ancestry_unresolvable"
-            ) {
-               throw err;
-            }
-            continue;
-         }
-         assertNoUnreachableMarker(obj, label, resolved);
-         continue;
-      }
-      if (resolveEntryPointPartitions(obj, modelDef).length > 0) {
-         throw new PartitionAnnotationError(
-            "partitioned_composite",
-            `Source "${label}" is a composite source (\`compose(...)\`) and ` +
-               `also declares \`#(partition)\` (on itself or an ancestor it ` +
-               `derives from). A composite run target compiles each query ` +
-               `against one resolved member branch, which a partition filter ` +
-               `cannot attach to — declare \`#(partition)\` on a non-composite ` +
-               `source instead.`,
-         );
-      }
-      const marked = partitionedMemberLabel(obj, modelDef);
-      if (marked !== undefined) {
-         throw new PartitionAnnotationError(
-            "partitioned_composite",
-            `Source "${label}" is a composite source (\`compose(...)\`) with ` +
-               `member "${marked}", which declares \`#(partition)\`. MEASURED: ` +
-               `querying the composite reads EVERY partition of that member — ` +
-               `the graft lands on the composite's own struct, not the ` +
-               `resolved member branch, so no filter reaches the executed ` +
-               `query. Remove the composite, or drop \`#(partition)\` from ` +
-               `"${marked}" and expose it as its own source.`,
-         );
-      }
-   }
-}
-
-/**
- * Refuse a source whose IR carries a `#(partition)` marker somewhere
- * {@link resolveEntryPointPartitions} does not look — on a field or view
- * instead of the source, or inside an inline `compose(...)`.
- *
- * A misplaced marker is the worst of the failure modes, because it is
- * completely silent: resolution finds nothing, so nothing is grafted and
- * nothing is refused, and the source serves every partition while its text
- * reads as partitioned. Both halves have to agree, and only an unrestricted
- * walk can see the half the targeted resolver misses — so a marker the walk
- * finds and the resolver did not is a refusal, with the walk's own failure
- * treated the same way (unknown, not absent).
- *
- * Silent when resolution DID find markers: the walk cannot tell the marker it
- * found from the one already resolved, and a resolved marker is grafted.
- */
-function assertNoUnreachableMarker(
-   struct: SourceDef,
-   label: string,
-   resolved: PartitionPair[],
-): void {
-   if (resolved.length > 0) return;
-   let reachesBelow: boolean;
-   try {
-      reachesBelow = reachesPartitionTagBelow(struct);
-   } catch {
-      reachesBelow = true;
-   }
-   if (!reachesBelow) return;
-   throw new PartitionAnnotationError(
-      "marker_unreachable",
-      `Source "${label}" carries a \`#(partition)\` marker that is not ` +
-         `declared on the source itself — it sits on a field, a view, or an ` +
-         `inline \`compose(...)\` inside it. Nothing would filter this ` +
-         `source: every caller would read every partition. Move the marker ` +
-         `onto the \`source:\` declaration.`,
-   );
-}
-
-/**
- * The label of the first `compose(...)` member that resolves to a
- * `#(partition)` marker, or `undefined` if none does. Recurses through a
- * member that is itself a composite.
- *
- * Separate from the composite's OWN resolution above because the two fail
- * differently, and only one of them is loud: a marker on the composite denies
- * every read (the landing proof fails), whereas a marker on a MEMBER is
- * silently dropped — the composite serves that member's rows unfiltered
- * across every partition, which is a cross-tenant read rather than an opaque
- * error.
- */
-function partitionedMemberLabel(
-   composite: SourceDef,
-   modelDef: ModelDef,
-   seen: Set<SourceDef> = new Set(),
-): string | undefined {
-   if (seen.has(composite)) return undefined;
-   seen.add(composite);
-   for (const member of (composite as { sources?: SourceDef[] }).sources ??
-      []) {
-      const label = (member as { as?: string }).as ?? member.name;
-      if (resolveEntryPointPartitions(member, modelDef).length > 0) {
-         return label;
-      }
-      if ((member as { type: string }).type === "composite") {
-         const nested = partitionedMemberLabel(member, modelDef, seen);
-         if (nested !== undefined) return nested;
-      }
-   }
-   return undefined;
-}
-
-/** One resolved `#(partition)` row filter, in the same shape
- *  {@link GateEntry}'s row-level classification produces, so the two compose
- *  in the same graft list. */
-export type PartitionGraftEntry = {
+/** One resolved row-level filter, in the shape {@link GateEntry}'s row-level
+ *  classification produces. Named generically (not `AuthorizeGraftEntry`)
+ *  because `Model.probeEntryPointGates` once also pushed `#(partition)`
+ *  entries into this same list — see that method's doc for why the two
+ *  composed as one graft rather than two. */
+export type RowLevelGraftEntry = {
    label: string;
    graftTarget: string;
    filterText: string;
@@ -1261,90 +1097,277 @@ export type PartitionGraftEntry = {
 };
 
 /**
- * The row filter(s) to graft for every `#(partition)` pair `struct` (the run
- * target) declares — see {@link resolveEntryPointPartitions}. Deliberately
- * reuses `#(authorize)`'s own graft-target resolution and condition lift
- * ({@link resolveGraftTarget}, {@link liftGateCondition}) rather than a
- * second mechanism: a `<column> = $GIVEN` predicate is exactly the shape
- * `buildRowLevelProbe` already compiles and lifts, and going through the SAME
- * proven path is what lets a partition filter reach a named query invoked by
- * `queryName` alone or a notebook cell, where the legacy `#(filter)` text
- * injection cannot (see `authorize.ts`'s module doc and `filter.ts`).
+ * Validate every entry point's EFFECTIVE `#(authorize)` body against the
+ * grammar ({@link ../service/authorize_grammar}'s `parseAuthorizeGrammarBody`),
+ * then — for each row-level term — that its field path does not reach
+ * through a fan-out join ({@link assertNoFanoutFieldPath}).
  *
- * Returns `[]` for a struct with no partition marker — the common case, and
- * byte-identical to not calling this at all. A struct that DOES declare one
- * but has nowhere to graft it (no `graftScope`, or an unresolvable graft
- * target) THROWS rather than returning `[]`: a declared partition axis this
- * function cannot attach is not the same as no partition at all, and the
- * caller (`Model.probeEntryPointGates`) turns any throw here into the same
- * opaque `AccessDeniedError` a rejected `#(authorize)` gate gets.
+ * Walks `authorizeMap` (own-or-inherited, from `extractSourcesFromModelDef`),
+ * not just `authorizeOwnNotes`: a source that inherits its gate by reference
+ * (Malloy copies the base's annotation onto a derivation with no annotation
+ * of its own) carries no note at ITS OWN level, so validating only own-level
+ * notes lets an inheriting entry point skip this check entirely while
+ * `ancestorGateExprs` still grafts the inherited text unvalidated — a
+ * grammar-banned gate then loads and enforces fail-open at that entry point.
+ * `authorizeOwnNotes` still decides, per source, whether `authorizeMap`'s
+ * group is the source's OWN declaration (validate every expr, `"false"`
+ * included) or a purely inherited one (skip the literal sentinel `"false"`
+ * — see `gate_registry_walk.ts`'s `effectiveAncestorGateExprs` — which is a
+ * synthetic fail-closed marker for an unresolvable base, never authored
+ * text, and would otherwise misreport as a grammar violation). Also skips
+ * a retired quoted-string-form payload ({@link isLegacyQuotedPayload}):
+ * that refusal is deliberately atomic per DECLARING source only
+ * ({@link findLegacyStringGates}'s doc), so a base's own quoted form is
+ * refused when the base itself loads, not re-litigated here for every
+ * entry point that merely inherits it.
  *
- * Given names are read directly off the parsed pair, never derived from the
- * lifted condition's `refSummary` the way a source-line authorize gate's are
- * — the predicate is one this module authored itself (`<column> = $GIVEN`),
- * so there is nothing to discover: the given IS `pair.given`, by
- * construction.
+ * Cross-term coherence ({@link assertAuthorizeGrammarTermsCoherent}) runs PER
+ * GROUP — never over every group at a source flattened together — EXCEPT for
+ * the groups this source itself OWNS, which are combined into ONE coherence
+ * call across BOTH routes before the per-group loop below. Each `groups`
+ * element still carries its own DECLARING source's notes (`AuthorizeMap`'s
+ * doc); a query-source base and its separately-resolved composite member are
+ * two different groups whose gates AND by design, so flattening THOSE before
+ * the coherence check would refuse a legal model the instant the two sources
+ * happened to share a given name or mix row/source scope. But when `struct`
+ * itself owns groups on BOTH routes (its own `#(authorize)` and its own
+ * `#(source-authorize)`), they are the SAME declaring source and must be
+ * checked together — that is the only way `deny_all_with_sibling` can catch
+ * `#(source-authorize) false` alongside this source's own
+ * `#(authorize) org_id in $GROUPS`, since each is otherwise a single-route
+ * group with nothing else in it to conflict with.
  */
-export async function resolvePartitionGraftEntries(
-   struct: SourceDef | undefined,
-   originModelDef: ModelDef | undefined,
-   graftScope: GraftScope | undefined,
-   deps: GateClassificationDeps,
-): Promise<PartitionGraftEntry[]> {
-   if (!struct || !originModelDef) return [];
-   const pairs = resolveEntryPointPartitions(struct, originModelDef);
-   if (pairs.length === 0) return [];
-
-   const label = (struct as { as?: string }).as ?? struct.name;
-   if (!graftScope) {
-      logger.debug(
-         "Partition filter has no graft scope to attach to; denying",
-         { modelPath: deps.modelPath, label },
-      );
-      throw new Error(`partition on "${label}" has no graft scope`);
-   }
-   const graftTarget = resolveGraftTarget(
-      struct,
-      originModelDef,
-      graftScope.modelDef,
-   );
-   if (!graftTarget) {
-      logger.debug("Partition filter resolved to no graft target; denying", {
-         modelPath: deps.modelPath,
-         label,
-      });
-      throw new Error(`partition on "${label}" resolved to no graft target`);
-   }
-
-   const entries: PartitionGraftEntry[] = [];
-   for (const pair of pairs) {
-      // Same re-check `resolveGateShape` runs on an authorize gate's given
-      // names — `filterGivensToModelSurface` drops a caller-supplied given
-      // that is off this model's surface, so a partition given absent from it
-      // could never bind at request time; refusing here is the fail-closed
-      // answer rather than a confusing unbound-given compile failure.
-      if (!deps.givenDeclaredTypes.has(pair.given)) {
-         logger.warn(
-            "Partition references a given off the model surface; denying",
-            { modelPath: deps.modelPath, graftTarget, givenName: pair.given },
+export function assertAuthorizeGrammarValid(
+   modelDef: ModelDef | undefined,
+   authorizeMap: AuthorizeMap,
+   authorizeOwnNotes: AuthorizeOwnNotesMap,
+   givenDeclaredTypes: ReadonlyMap<string, string>,
+): void {
+   if (!modelDef) return;
+   for (const [sourceName, groups] of authorizeMap) {
+      const struct = modelDef.contents[sourceName];
+      const ownGroupTerms: AuthorizeGrammarRoutedTerm[] = [];
+      for (const { route, exprs } of groups) {
+         const isOwn =
+            (authorizeOwnNotes.get(sourceName)?.get(route)?.length ?? 0) > 0;
+         const filteredExprs = exprs.filter(
+            (expr) =>
+               (isOwn || expr !== "false") && !isLegacyQuotedPayload(expr),
          );
-         throw new Error(
-            `partition on "${label}" references \`$${pair.given}\`, which is not on this model's given surface`,
+         const groupTerms: AuthorizeGrammarRoutedTerm[] = [];
+         for (const expr of filteredExprs) {
+            const terms = parseAuthorizeGrammarBody(
+               sourceName,
+               expr,
+               givenDeclaredTypes,
+               route,
+            );
+            for (const term of terms) {
+               groupTerms.push({ term, route });
+               if (term.scope === "row_level" && isSourceDef(struct)) {
+                  assertNoFanoutFieldPath(
+                     sourceName,
+                     struct,
+                     term.fieldPath,
+                     term.fieldPathSegments,
+                  );
+               }
+            }
+         }
+         if (isOwn) {
+            ownGroupTerms.push(...groupTerms);
+         } else {
+            assertAuthorizeGrammarTermsCoherent(sourceName, groupTerms);
+         }
+      }
+      if (ownGroupTerms.length > 0) {
+         assertAuthorizeGrammarTermsCoherent(sourceName, ownGroupTerms);
+      }
+   }
+}
+
+/** What stopped {@link fanoutSegment} from proving a path clean: it genuinely
+ *  hit a fan-out join, or it could not resolve the segment against the
+ *  struct at all — a distinct outcome deliberately given the same treatment
+ *  below, since an unresolvable segment is unknown, not safe. */
+type FanoutFinding = { segment: string; reason: "fanout" | "unresolved" };
+
+/**
+ * The first segment of `path` (all but its last, which is the compared field
+ * itself and never checked) that is either a fan-out join — `join_many`,
+ * `join_cross`, or a repeated record, which the IR also spells `join:
+ * "many"` — or does not resolve against the struct at all. `undefined` means
+ * the path resolves cleanly through only `join_one` hops all the way to its
+ * last segment.
+ *
+ * A segment that fails to resolve is NOT treated as "no fan-out here": this
+ * function cannot tell a genuine typo (which a later probe compile would
+ * catch on its own) from a resolution bug in its own caller — e.g. a
+ * segment carrying quote characters a real field's name never has — so both
+ * read as unknown, and unknown fails closed here rather than being assumed
+ * safe by a walk with no opinion on it.
+ */
+function fanoutSegment(
+   struct: SourceDef,
+   path: readonly string[],
+): FanoutFinding | undefined {
+   let current = struct;
+   for (let i = 0; i < path.length - 1; i++) {
+      const seg = path[i];
+      const field = (current.fields ?? []).find(
+         (f) => ((f as { as?: string }).as ?? f.name) === seg,
+      );
+      if (!field) return { segment: seg, reason: "unresolved" };
+      if (isJoined(field) && (field as { join?: string }).join !== "one") {
+         return { segment: seg, reason: "fanout" };
+      }
+      if (
+         !isSourceDef(field) &&
+         (field as { type?: string }).type !== "record" &&
+         (field as { type?: string }).type !== "array"
+      ) {
+         return { segment: seg, reason: "unresolved" };
+      }
+      current = field as unknown as SourceDef;
+   }
+   return undefined;
+}
+
+/**
+ * Refuse a row-level `#(authorize)` term whose field path reaches through a
+ * fan-out join before its final segment — the entry row has many values for
+ * what follows, so there is no single key to compare against a given — or
+ * whose path this walk could not resolve against the struct at all, which
+ * fails the same way rather than being assumed safe. This is IR-level
+ * (needs the compiled struct's joins), which is why it lives here rather
+ * than in `./authorize_grammar`, which never sees one.
+ *
+ * `fieldPathSegments` (from the parsed `AuthorizeGrammarTerm`, already split
+ * on top-level dots with backticks stripped) is what this walks — never a
+ * fresh `fieldPath.split(".")`, which would both break on a literal dot
+ * inside a backtick-quoted segment and leave the backticks in place, so a
+ * quoted segment (`` `cost center` ``) could never match the field it
+ * actually names and this check would silently no-op. `fieldPath` (the
+ * original, backtick-and-all text) is kept only for the error message.
+ */
+export function assertNoFanoutFieldPath(
+   sourceName: string,
+   struct: SourceDef,
+   fieldPath: string,
+   fieldPathSegments: readonly string[],
+): void {
+   const finding = fanoutSegment(struct, fieldPathSegments);
+   if (finding === undefined) return;
+   const detail =
+      finding.reason === "fanout"
+         ? `which reaches through \`${finding.segment}\`, a fan-out join ` +
+           `(\`join_many\`/\`join_cross\`, or a repeated record) — the ` +
+           `entry row has many values for what follows, so there is no ` +
+           `single key to compare against a given. Gate on a field reached ` +
+           `only through \`join_one\` joins.`
+         : `whose segment \`${finding.segment}\` does not resolve against ` +
+           `this source — refused rather than assumed safe.`;
+   throw new AuthorizeGrammarError(
+      "fanout_path",
+      `Source "${sourceName}" declares \`#(authorize)\` on \`${fieldPath}\`, ${detail}`,
+   );
+}
+
+/**
+ * A source, top-level query, or the model itself whose IR carries a marker
+ * from a RETIRED annotation route (see `./authorize_grammar`'s
+ * `RETIRED_ROUTES`), described for {@link assertNoRetiredRouteMarkers}'s
+ * message. Checked on each own notes (the position the route's own resolver
+ * used to read) and, via {@link reachesRetiredRouteTagBelow}, everywhere
+ * else in a source's IR — `#(partition)`'s own removal is exactly the case
+ * this exists for: nothing inspects the route any more, but Malloy still
+ * parses it happily (its bracket routing is generic, there is no registry),
+ * so a leftover marker would otherwise load clean and serve every row.
+ *
+ * Sweeps three positions, not just `modelDef.contents`'s sources: a
+ * top-level `query:` statement (`NamedQueryDef`, which `modelDef.contents`
+ * also holds, keyed alongside sources but excluded by {@link isSourceDef})
+ * and the model's own file-level annotations ({@link modelAnnotations}) —
+ * `#(authorize)`'s equivalent misplaced-annotation check
+ * (`assertNoMisplacedAuthorizeAnnotations`) already covers both positions
+ * for its own route, and a marker in either position previously loaded
+ * clean here too, exactly as invisibly as one below a source's own line.
+ */
+export function collectRetiredRouteMarkers(
+   modelDef: ModelDef | undefined,
+): string[] {
+   const found: string[] = [];
+   if (!modelDef) return found;
+
+   const fileMatch = containsRetiredRouteTag(
+      ownLevelNoteTexts(modelAnnotations(modelDef)),
+   );
+   if (fileMatch) {
+      found.push(
+         `the model itself declares a retired \`##(${fileMatch})\` annotation`,
+      );
+   }
+
+   for (const [key, obj] of Object.entries(modelDef.contents)) {
+      const isQuery = (obj as { type?: string }).type === "query";
+      if (!isSourceDef(obj) && !isQuery) continue;
+      const label = (obj as { as?: string }).as ?? obj.name ?? key;
+      const noun = isQuery ? "query" : "source";
+      // Reads the full `inherits` chain, not just this level's own notes: a
+      // retired marker can live only on a base struct that is itself absent
+      // from `modelDef.contents` (reached solely via a transitive import),
+      // and `reachesRetiredRouteTagBelow` deliberately skips the root
+      // annotation chain (it is "below the struct level" by construction).
+      const ownMatch = containsRetiredRouteTag(
+         annotationTexts(
+            (obj as { annotations?: AnnotationsDef }).annotations,
+         ) ?? [],
+      );
+      if (ownMatch) {
+         found.push(
+            `${noun} "${label}" declares a retired \`#(${ownMatch})\` annotation`,
+         );
+         continue;
+      }
+      if (isQuery) {
+         // A named query's IR has no joins/fields of its own to walk below
+         // the struct level — its own annotations are the only place a
+         // marker could sit.
+         continue;
+      }
+      let belowMatch: string | undefined;
+      try {
+         belowMatch = reachesRetiredRouteTagBelow(obj);
+      } catch {
+         // An unread chain is "unknown", not "absent" — same posture as
+         // every other IR walk here. Name the route this list is built for,
+         // since the walk cannot say which one it was still looking for.
+         belowMatch = RETIRED_ROUTES[0];
+      }
+      if (belowMatch) {
+         found.push(
+            `source "${label}" carries a retired \`#(${belowMatch})\` ` +
+               `annotation somewhere in its IR (not on the source line itself)`,
          );
       }
-      const filterText = `${pair.column} = $${pair.given}`;
-      const condition = await liftGateCondition(
-         graftTarget,
-         filterText,
-         graftScope.materializer,
-      );
-      entries.push({
-         label,
-         graftTarget,
-         filterText,
-         condition,
-         givenNames: [pair.given],
-      });
    }
-   return entries;
+   return found;
+}
+
+/**
+ * Refuse a model load carrying any {@link collectRetiredRouteMarkers}
+ * finding. Modeled on `./authorize`'s `assertNoAuthorizeNearMisses`, but
+ * that function is authorize-specific by construction (all three of its
+ * branches key on the literal word "authorize") and cannot be reused here.
+ */
+export function assertNoRetiredRouteMarkers(found: readonly string[]): void {
+   if (found.length === 0) return;
+   throw new ModelCompilationError({
+      message:
+         `These sources carry a marker from a retired annotation route:\n` +
+         `${found.map((f) => `  - ${f}`).join("\n")}\n` +
+         `The route is no longer enforced by anything, so Malloy would ` +
+         `otherwise parse it, load the model clean, and serve every row as ` +
+         `if the marker were never written. Remove the annotation.`,
+   });
 }

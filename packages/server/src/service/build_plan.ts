@@ -691,13 +691,16 @@ function detectDroppedPersistSources(
  * mints a new given identity per call).
  *
  * Gate GROUPS: each `GateEntry` `collectEntryPointGates` returns is one AND'd
- * group (its own OR-disjunction already folded by `resolveGateShape`'s
+ * group (its own conjunction already folded by `resolveGateShape`'s
  * `gateFilterText`); groups are classified independently here and combined
  * with enforcement's own dominance rule — refuse if ANY group rejects, else
  * `row_level`. No entry-point gate at all (`groups.length === 0`) is
  * vacuously `row_level` (no group to reject) — the source is unrestricted at
  * its entry point; `attributed` is what still catches a gate hiding behind a
- * join in that case.
+ * join in that case. A repeated `#(authorize)` term that any ONE of its
+ * siblings can't express (materialization-ineligible) now rejects the whole
+ * group, where before a source could declare at most one term — narrower
+ * than before, not looser.
  *
  * Fails CLOSED: a throw anywhere in classification (this function's own
  * `try`, not `resolveGateShape`'s internal one — that already degrades a

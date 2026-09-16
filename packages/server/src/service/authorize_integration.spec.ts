@@ -30,6 +30,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
+import { AuthorizeGrammarError } from "./authorize_grammar";
 import { Model } from "./model";
 
 // Introspection, compile-time validation, and the runtime gate for
@@ -114,16 +115,17 @@ describe("authorize annotation introspection", () => {
 
 given:
   ROLE :: string
+  DENY :: number[]
 
 // Locked base.
-#(authorize) false
+#(authorize) id in $DENY
 source: customers_raw is duckdb.table('customers') extend {}
 
-// Extension with its own gate — must NOT pick up the base's "false". Its
-// own \`#(authorize)\` note is a distinct object from the base's, so the
+// Extension with its own gate — must NOT pick up the base's lock. Its own
+// \`#(authorize)\` note is a distinct object from the base's, so the
 // own-vs-inherited check (\`validateAuthorizeProbes\`) reads it as authored
 // here, replacing rather than joining the inherited one.
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: customers_marketing is customers_raw extend {
   measure: customer_count is count()
 }
@@ -137,10 +139,10 @@ source: customers_marketing is customers_raw extend {
       );
 
       // Base keeps its own lock.
-      expect(model.getAuthorize("customers_raw")).toEqual(["false"]);
-      // Extension is governed ONLY by its own gate — the base "false" is gone.
+      expect(model.getAuthorize("customers_raw")).toEqual(["id in $DENY"]);
+      // Extension is governed ONLY by its own gate — the base lock is gone.
       expect(model.getAuthorize("customers_marketing")).toEqual([
-         "$ROLE = 'analyst'",
+         "'analyst' = $ROLE",
       ]);
    });
 
@@ -171,7 +173,49 @@ source: plain is duckdb.table('customers')
       const err = model.getNotebookError();
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toMatch(/file level/i);
+      // Names the actual tag written, not a hardcoded assumption — see the
+      // ##(source-authorize) sibling test below, which pins the opposite case.
+      expect(err?.message).toMatch(/at the file level \(`##\(authorize\)`\)/);
       expect(err?.message).toMatch(/source:/);
+      expect(model.getSources()).toBeUndefined();
+   });
+
+   it("refuses a file-level ##(source-authorize) annotation, naming THAT route rather than ##(authorize)", async () => {
+      // Regression for a route hardcoded into the misplacement message: an
+      // author who misplaced ##(source-authorize) at the file level must be
+      // told to move that tag, not a different route with different body
+      // rules.
+      await writeModel(
+         "file_only_source_authorize.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+##(source-authorize) 'admin' = $ROLE
+
+source: plain is duckdb.table('customers')
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "file_only_source_authorize.malloy",
+         getConnections(),
+      );
+
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(ModelCompilationError);
+      expect(err?.message).toMatch(/file level/i);
+      // The finding's own bullet must name the route actually written, not a
+      // hardcoded ##(authorize) — the message's shared explanatory prose
+      // mentions both tags generically, so this pins the specific bullet line.
+      expect(err?.message).toMatch(
+         /at the file level \(`##\(source-authorize\)`\)/,
+      );
+      expect(err?.message).not.toMatch(
+         /at the file level \(`##\(authorize\)`\)/,
+      );
       expect(model.getSources()).toBeUndefined();
    });
 
@@ -254,8 +298,10 @@ source: broken is duckdb.table('customers')
 
       // A malformed gate must surface as a compilation error, not vanish.
       const err = model.getNotebookError();
-      expect(err).toBeDefined();
-      expect(err?.message).toMatch(/quote/i);
+      expect(err).toBeInstanceOf(AuthorizeGrammarError);
+      expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+         "malformed_body",
+      );
       // No sources surfaced for a failed compile — the gate is not silently
       // reported as unrestricted.
       expect(model.getSources()).toBeUndefined();
@@ -279,6 +325,101 @@ source: broken is duckdb.table('customers')
    });
 });
 
+describe("the sourceAuthorize wire field mirrors #(source-authorize)", () => {
+   it("reports #(source-authorize)'s own text under sourceAuthorize, not authorize", async () => {
+      await writeModel(
+         "route_split.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string[]
+
+#(source-authorize) 'finance' in $ROLE
+source: fin is duckdb.table('customers') extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "route_split.malloy",
+         getConnections(),
+      );
+
+      expect(model.getAuthorize("fin")).toEqual([]);
+      expect(model.getSourceAuthorize("fin")).toEqual(["'finance' in $ROLE"]);
+      expect(sourceNamed(model, "fin")?.authorize).toBeUndefined();
+      expect(sourceNamed(model, "fin")?.sourceAuthorize).toEqual([
+         "'finance' in $ROLE",
+      ]);
+   });
+
+   it("a convenience-form #(authorize) body reports under authorize, never sourceAuthorize", async () => {
+      // A pure source-level predicate is legal written on the `authorize`
+      // route itself (not just `source-authorize`) — see this route's own
+      // module doc. That convenience form must stay under `authorize`.
+      await writeModel(
+         "convenience.malloy",
+         `##! experimental.givens
+
+given:
+  GROUPS :: string[]
+
+#(authorize) 'x' in $GROUPS
+source: conv is duckdb.table('customers') extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "convenience.malloy",
+         getConnections(),
+      );
+
+      expect(model.getAuthorize("conv")).toEqual(["'x' in $GROUPS"]);
+      expect(model.getSourceAuthorize("conv")).toEqual([]);
+      expect(sourceNamed(model, "conv")?.sourceAuthorize).toBeUndefined();
+   });
+
+   it("both routes agree between the two producers: extraction and the constructor override", async () => {
+      // model.ts's constructor mutates `sources[].authorize`/`sourceAuthorize`
+      // in place from `entryPointGatesBySource` to "make introspection agree
+      // with enforcement" (see model.ts). A query-source derivation is the
+      // shape that historically diverged between the extractor's narrower
+      // answer and the entry-point walk's — exercise it on BOTH routes.
+      await writeModel(
+         "derived_split.malloy",
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+  ROLE :: string[]
+
+#(authorize) id in $DENY
+#(source-authorize) 'finance' in $ROLE
+source: base is duckdb.table('customers') extend {}
+
+source: derived is base -> { select: id, region }
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "derived_split.malloy",
+         getConnections(),
+      );
+
+      // The constructor-side and extraction-side answers are the same
+      // object on `Model.create`'s path (the constructor mutates in place),
+      // so this is really pinning that BOTH fields were split by route —
+      // a single un-split `exprs.flat()` would have let source-authorize
+      // text leak into `authorize` or vice versa.
+      expect(model.getAuthorize("derived")).toEqual(["id in $DENY"]);
+      expect(model.getSourceAuthorize("derived")).toEqual([
+         "'finance' in $ROLE",
+      ]);
+   });
+});
+
 describe("authorize annotation compile-time validation", () => {
    it("loads a valid expression that references a value-less given", async () => {
       // The probe is compiled, not run, so a given with no default/value does
@@ -290,7 +431,7 @@ describe("authorize annotation compile-time validation", () => {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.table('customers') extend {}
 `,
       );
@@ -302,7 +443,7 @@ source: gated is duckdb.table('customers') extend {}
       );
 
       expect(model.getNotebookError()).toBeUndefined();
-      expect(model.getAuthorize("gated")).toEqual(["$ROLE = 'analyst'"]);
+      expect(model.getAuthorize("gated")).toEqual(["'analyst' = $ROLE"]);
    });
 
    it("fails model load when an expression references an unknown given", async () => {
@@ -313,7 +454,7 @@ source: gated is duckdb.table('customers') extend {}
 given:
   ROLE :: string
 
-#(authorize) $NOPE = 'x'
+#(authorize) 'x' = $NOPE
 source: gated is duckdb.table('customers') extend {}
 `,
       );
@@ -330,6 +471,85 @@ source: gated is duckdb.table('customers') extend {}
       // dimension form's gate is an ordinary expression, so an unknown
       // reference fails to compile before any gate-specific validation runs.
       expect(err?.message).toMatch(/NOPE.*not declared/i);
+   });
+
+   it("fails model load on a leftover #(partition) marker on the source line", async () => {
+      await writeModel(
+         "retired_marker.malloy",
+         `##! experimental.givens
+
+given:
+  ORG :: string
+
+#(partition) org_id = $ORG
+source: gated is duckdb.table('customers') extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "retired_marker.malloy",
+         getConnections(),
+      );
+
+      // The route is no longer inspected by anything, so absent this refusal
+      // the model loads clean and the source serves every row.
+      const err = model.getNotebookError();
+      expect(err).toBeDefined();
+      expect(err?.message).toContain("retired");
+      expect(err?.message).toContain("partition");
+   });
+
+   it("fails model load on a leftover #(partition) marker below the source line", async () => {
+      await writeModel(
+         "retired_marker_low.malloy",
+         `##! experimental.givens
+
+given:
+  ORG :: string
+
+source: gated is duckdb.table('customers') extend {
+  #(partition) org_id = $ORG
+  measure: c is count()
+}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "retired_marker_low.malloy",
+         getConnections(),
+      );
+
+      const err = model.getNotebookError();
+      expect(err).toBeDefined();
+      expect(err?.message).toContain("retired");
+   });
+
+   it("fails model load on a gate outside the grammar", async () => {
+      await writeModel(
+         "grammar_or.malloy",
+         `##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE or 'admin' = $ROLE
+source: gated is duckdb.table('customers') extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "grammar_or.malloy",
+         getConnections(),
+      );
+
+      const err = model.getNotebookError();
+      expect(err).toBeInstanceOf(AuthorizeGrammarError);
+      expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+         "compound_boolean",
+      );
    });
 
    it("fails model load when an expression references a source field", async () => {
@@ -352,16 +572,17 @@ source: gated is duckdb.table('customers') extend {}
    });
 
    it("does not reject a type-mismatched comparison (not a Malloy compile error)", async () => {
-      // Documents the boundary: `$ROLE = 5` is not a compile error; such a gate
-      // simply evaluates per the warehouse at the runtime gate.
+      // Documents the boundary: comparing a string column to a number-typed
+      // given is not a compile error; such a gate simply evaluates per the
+      // warehouse at the runtime gate.
       await writeModel(
          "type_mismatch.malloy",
          `##! experimental.givens
 
 given:
-  ROLE :: string
+  NUM :: number
 
-#(authorize) $ROLE = 5
+#(authorize) region = $NUM
 source: gated is duckdb.table('customers') extend {}
 `,
       );
@@ -382,13 +603,14 @@ source: gated is duckdb.table('customers') extend {}
 
 given:
   AGE :: number
-  TENANT :: string
   ALLOWED :: string[]
 
 // A source may declare at most one gate dimension (G1), so both givens are
 // exercised in one expression rather than the string form's two OR'd notes.
-#(authorize) ($AGE > 18) and ($TENANT in $ALLOWED)
-source: gated is duckdb.table('customers') extend {}
+#(authorize) age = $AGE and region in $ALLOWED
+source: gated is duckdb.table('customers') extend {
+  dimension: age is id + 10
+}
 `,
       );
       const model = await Model.create(
@@ -400,7 +622,7 @@ source: gated is duckdb.table('customers') extend {}
 
       expect(model.getNotebookError()).toBeUndefined();
       expect(model.getAuthorize("gated")).toEqual([
-         "($AGE > 18) and ($TENANT in $ALLOWED)",
+         "age = $AGE and region in $ALLOWED",
       ]);
    });
 });
@@ -601,7 +823,7 @@ describe("authorize runtime gate", () => {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -652,90 +874,36 @@ source: gated is duckdb.table('customers') extend {
       );
    });
 
-   // Two disjuncts fold into ONE dimension now (G1: at most one gate
-   // dimension per source) — the string form's "two OWN #(authorize) notes,
-   // OR'd" idiom is expressed as a single `or` expression instead.
-   //
-   // The string form's OWN OR idiom additionally relied on BOTH givens
-   // declaring a default (`is ''`), so a caller supplying only one still
-   // compiled — the unsupplied given fell back to its default, which failed
-   // its own disjunct, and the OR was decided by whichever given the caller
-   // DID supply. G4 refuses that unconditionally now (a referenced given
-   // with a declared default can silently admit rows the gate meant to
-   // exclude) — see the dedicated G4 test below. So this OR-semantics
-   // coverage supplies BOTH givens on every call; "one given omitted,
-   // defaults to something that doesn't satisfy it" is not a reproducible
-   // shape anymore, not merely untested here.
-   const DISJUNCTION = `##! experimental.givens
+   // The string form's "two OWN #(authorize) notes, OR'd" idiom folded into
+   // ONE dimension expressing an `or` (G1: at most one gate dimension per
+   // source). The authorize grammar goes further: `or` is refused outright
+   // (compound_boolean) inside one term — an admin-override-style disjunction
+   // is written as two extension sources over a locked base instead (see
+   // docs/authorize.md's admin escape hatch). What survives is an
+   // `and`-joined multi-given gate, which the two tests below cover:
+   // satisfying only one term still denies, and satisfying both admits.
+   const CONJUNCTION = `##! experimental.givens
 
 given:
-  ROLE :: string
+  NAME :: string
   REGION :: string
 
-#(authorize) ($ROLE = 'admin') or ($REGION = 'us-west')
+#(authorize) name = $NAME and region = $REGION
 source: regional is duckdb.table('customers') extend {
   measure: c is count()
 }
 `;
 
-   it("grants on the first disjunct", async () => {
-      await writeModel("rt_disj.malloy", DISJUNCTION);
-      const { compactResult } = await runGated(
-         "rt_disj.malloy",
-         "run: regional -> { aggregate: c }",
-         { ROLE: "admin", REGION: "nowhere" },
-      );
-      // `customers` has 2 rows total; a broken `or` (e.g. evaluated as
-      // `and`) would deny both, which `.toBeDefined()` cannot distinguish
-      // from a genuine grant (both resolve to a defined `{c: 0}`/`{c: 2}`).
-      const rows = compactResult as unknown as { c: number }[];
-      expect(rows[0].c).toBe(2);
-   });
-
-   it("grants on the second disjunct", async () => {
-      await writeModel("rt_disj.malloy", DISJUNCTION);
-      const { compactResult } = await runGated(
-         "rt_disj.malloy",
-         "run: regional -> { aggregate: c }",
-         { ROLE: "nobody", REGION: "us-west" },
-      );
-      const rows = compactResult as unknown as { c: number }[];
-      expect(rows[0].c).toBe(2);
-   });
-
-   it("denies (zero rows) when neither disjunct is satisfied", async () => {
-      await writeModel("rt_disj.malloy", DISJUNCTION);
-      await expectDeniedByFilter(
-         "rt_disj.malloy",
-         "run: regional -> { aggregate: c }",
-         { ROLE: "nobody", REGION: "nowhere" },
-      );
-   });
-
-   it("G4 refuses the retired idiom: a disjunct's given declared with a default", async () => {
-      // Left on the DIMENSION form deliberately (not migrated with the rest
-      // of this file — see task-3-report.md): G4 (refuse a gate referencing
-      // a given with a declared default) is `gate_dimension.ts`-only
-      // machinery. MEASURED: the source-line form's `resolveGateShape` has
-      // no equivalent check — the same shape rewritten as
-      // `#(authorize) ($ROLE = 'admin') or ($REGION = 'us-west')` on the
-      // source line loads cleanly instead of refusing. That is a genuine
-      // gap relative to this form, not a migration artifact.
-      //
-      // Pins the guarantee that does NOT survive from the string form: a
-      // referenced given with a default is refused unconditionally, even
-      // one whose default value fails its own disjunct — an unsupplied
-      // given resolving to a default is exactly the shape G4 exists to
-      // close, regardless of which disjunct the caller relies on instead.
+   it("`or` is refused at load (compound_boolean) — a disjunction is not expressible in one gate", async () => {
       await writeModel(
-         "rt_disj_default.malloy",
+         "rt_disj.malloy",
          `##! experimental.givens
 
 given:
   ROLE :: string
-  REGION :: string is ''
+  REGION :: string
 
-#(authorize) ($ROLE = 'admin') or ($REGION = 'us-west')
+#(authorize) ('admin' = $ROLE) or (region = $REGION)
 source: regional is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -744,12 +912,37 @@ source: regional is duckdb.table('customers') extend {
       const model = await Model.create(
          "test-pkg",
          TEST_PKG_DIR,
-         "rt_disj_default.malloy",
+         "rt_disj.malloy",
          getConnections(),
       );
-      expect(model.getNotebookError()?.message).toMatch(
-         /declared with a default/,
+      const err = (model as unknown as { compilationError?: Error })
+         .compilationError;
+      expect(err).toBeInstanceOf(AuthorizeGrammarError);
+      expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+         "compound_boolean",
       );
+   });
+
+   it("an `and`-joined gate ANDs its two terms — satisfying only one still denies", async () => {
+      await writeModel("rt_conj.malloy", CONJUNCTION);
+      await expectDeniedByFilter(
+         "rt_conj.malloy",
+         "run: regional -> { aggregate: c }",
+         { NAME: "a", REGION: "nowhere" },
+      );
+   });
+
+   it("an `and`-joined gate admits only the row satisfying BOTH terms", async () => {
+      await writeModel("rt_conj.malloy", CONJUNCTION);
+      const { compactResult } = await runGated(
+         "rt_conj.malloy",
+         "run: regional -> { aggregate: c }",
+         { NAME: "a", REGION: "us-west" },
+      );
+      // `customers` has 2 rows (id 1: name 'a'/region us-west; id 2: name
+      // 'b'/region us-east); only id 1 satisfies both terms.
+      const rows = compactResult as unknown as { c: number }[];
+      expect(rows[0].c).toBe(1);
    });
 
    it("gates a named query that targets a gated source (no sourceName supplied)", async () => {
@@ -760,7 +953,7 @@ source: regional is duckdb.table('customers') extend {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -835,7 +1028,7 @@ given:
 
 source: ungated is duckdb.table('customers') extend { measure: c is count() }
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -882,7 +1075,7 @@ source: gated is duckdb.table('customers') extend {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -928,7 +1121,7 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: \`gated-source\` is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -954,7 +1147,7 @@ source: \`gated-source\` is duckdb.table('customers') extend {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -989,8 +1182,9 @@ run: secret
 
 given:
   ROLE :: string
+  DENY :: number[]
 
-#(authorize) false
+#(authorize) id in $DENY
 source: base_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -999,7 +1193,7 @@ source: base_locked is duckdb.table('customers') extend {
 // reference) is what makes the override legal — \`validateAuthorizeProbes\`
 // reads it as authored here, replacing rather than joining the inherited
 // lock. No \`except:\` needed: there is no gate FIELD to redeclare.
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: ext_gated is base_locked extend {}
 
 source: ext_nogate is base_locked extend {}
@@ -1038,19 +1232,17 @@ source: top_join is duckdb.table('customers') extend {
 }
 `;
 
-   it("denies (zero rows) a direct query against a base locked with #(authorize) false", async () => {
-      // `false` is a constant row filter now — a bare literal is a legal
-      // gate condition (see `gate_classification.ts`'s `resolveGateShape`),
-      // so this admits the request into a query that matches zero rows (a
-      // `count()` of 0), rather than throwing a 403.
+   it("denies (opaquely) a direct query against a base locked with an unbound given", async () => {
+      // The authorize grammar has no constant deny-everyone idiom (every
+      // term must reference a given) — `LOCKED_BASE` locks `base_locked` by
+      // referencing a given no caller ever supplies, which denies opaquely
+      // (`AccessDeniedError`) rather than compiling a live zero-row filter.
       await writeModel("rt_locked.malloy", LOCKED_BASE);
-      const { compactResult } = await runGated(
-         "rt_locked.malloy",
-         "run: base_locked -> { aggregate: c }",
-         { ROLE: "analyst" },
-      );
-      const rows = compactResult as unknown as { c: number }[];
-      expect(rows[0].c).toBe(0);
+      await expect(
+         runGated("rt_locked.malloy", "run: base_locked -> { aggregate: c }", {
+            ROLE: "analyst",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("allows an extension of a locked base when the extension's own gate passes", async () => {
@@ -1063,18 +1255,18 @@ source: top_join is duckdb.table('customers') extend {
       expect(result.data).toBeDefined();
    });
 
-   it("denies (zero rows) an extension that declares no own gate — it inherits the base lock (safe default)", async () => {
+   it("denies (opaquely) an extension that declares no own gate — it inherits the base lock (safe default)", async () => {
       // Malloy carries the base's #(authorize) onto an extension UNLESS the
       // extension declares its own. So a bare `is base_locked extend {}` with
-      // no own gate stays locked by the base's "false". An extension escapes
-      // the base gate only by declaring its own #(authorize) (see ext_gated).
+      // no own gate stays locked by the base's unbound-given lock. An
+      // extension escapes the base gate only by declaring its own
+      // #(authorize) (see ext_gated).
       await writeModel("rt_locked.malloy", LOCKED_BASE);
-      const { compactResult } = await runGated(
-         "rt_locked.malloy",
-         "run: ext_nogate -> { aggregate: c }",
-         { ROLE: "analyst" },
-      );
-      expect((compactResult as unknown as { c: number }[])[0].c).toBe(0);
+      await expect(
+         runGated("rt_locked.malloy", "run: ext_nogate -> { aggregate: c }", {
+            ROLE: "analyst",
+         }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    // Q16: authorization is evaluated at the ENTRY POINT only. A gate is a
@@ -1141,18 +1333,19 @@ source: top_join is duckdb.table('customers') extend {
          });
       }
 
-      it("still denies (zero rows) the locked base when it IS the entry point", async () => {
+      it("still denies (opaquely) the locked base when it IS the entry point", async () => {
          // The control that keeps the block above meaningful: the gate is real,
          // it just applies where the query enters.
          await writeModel("rt_locked.malloy", LOCKED_BASE);
-         const { compactResult } = await runGated(
-            "rt_locked.malloy",
-            "run: base_locked -> { aggregate: c }",
-            {
-               ROLE: "analyst",
-            },
-         );
-         expect((compactResult as unknown as { c: number }[])[0].c).toBe(0);
+         await expect(
+            runGated(
+               "rt_locked.malloy",
+               "run: base_locked -> { aggregate: c }",
+               {
+                  ROLE: "analyst",
+               },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       });
    });
 
@@ -1267,22 +1460,23 @@ source: top_join is duckdb.table('customers') extend {
          });
       }
 
-      it("denies (zero rows): block annotation on a caller bare rename", async () => {
+      it("denies (opaquely): block annotation on a caller bare rename", async () => {
          // Unlike the three shapes above, `source: mine is base_locked` (a
          // BARE rename with no `extend` at all) resolves a graft target for
          // `mine` — `resolveGraftTarget`'s `sourceRegistry`/annotation-identity
-         // fallback links it back to `base_locked` — so the inherited "false"
-         // gate is enforced as a row filter (zero rows), not a rejected
-         // classification.
+         // fallback links it back to `base_locked` — so the inherited gate is
+         // enforced, denying opaquely (its given is never supplied), not a
+         // rejected classification.
          await writeModel("rt_locked.malloy", LOCKED_BASE);
-         const { compactResult } = await runGated(
-            "rt_locked.malloy",
-            `# some_render_tag
-             source: mine is base_locked
-             run: mine -> { aggregate: c }`,
-            { ROLE: "analyst" },
-         );
-         expect((compactResult as unknown as { c: number }[])[0].c).toBe(0);
+         await expect(
+            runGated(
+               "rt_locked.malloy",
+               `# some_render_tag
+                source: mine is base_locked
+                run: mine -> { aggregate: c }`,
+               { ROLE: "analyst" },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
       });
    });
 
@@ -1311,8 +1505,9 @@ source: top_join is duckdb.table('customers') extend {
 
 given:
   ROLE :: string
+  DENY :: number[]
 
-#(authorize) false
+#(authorize) id in $DENY
 source: base_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -1321,14 +1516,15 @@ source: base_locked is duckdb.table('customers') extend {
 source: ext_tagged is base_locked extend {}
 `,
       );
-      const { compactResult } = await runGated(
-         "rt_tagged_ext.malloy",
-         "run: ext_tagged -> { aggregate: c }",
-         {
-            ROLE: "analyst",
-         },
-      );
-      expect((compactResult as unknown as { c: number }[])[0].c).toBe(0);
+      await expect(
+         runGated(
+            "rt_tagged_ext.malloy",
+            "run: ext_tagged -> { aggregate: c }",
+            {
+               ROLE: "analyst",
+            },
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("still allows an author-declared curated extension of a locked base", async () => {
@@ -1372,7 +1568,7 @@ source: ext_tagged is base_locked extend {}
          `>>>malloy
 ${LOCKED_BASE}
 >>>malloy
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: mine is base_locked extend {
   measure: cc is count()
 }
@@ -1603,7 +1799,12 @@ source: open_src is duckdb.table('customers') extend {
   dimension: open_flag is 1
 }
 
-#(authorize) false
+##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_flag is 1
@@ -1682,7 +1883,12 @@ source: combo is compose(open_src, locked_src)
 
 source: open_src is duckdb.table('customers') extend { measure: c is count() }
 
-#(authorize) false
+##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -1707,15 +1913,15 @@ source: combo_locked_first is compose(locked_src, open_src)
    // includes every member's fields (that is what lets a query reference a
    // member's column through the composite in the first place), so a
    // member's own `#(authorize)` gate is inherited onto `combo` (via
-   // `ancestorGateExprs`) exactly as if `combo` had never declared its own —
-   // and `combo` may declare only ONE `#(authorize)` block of its own
-   // (`findMultipleAuthorizeGates`/`assertAtMostOneAuthorizeGate`), so there
-   // is no way to independently AND a member's gate with `combo`'s own on
-   // the same composite. A composite can carry AT MOST one gate total: either
-   // its own, or (by inheriting) a single member's — never both independently
-   // ANDed. Worth a human decision on whether composites need first-class
-   // multi-gate support, but that is a product question, not a test-authoring
-   // one.
+   // `ancestorGateExprs`) ONLY while `combo` declares none of its own
+   // (`gateExprsForOwnAnnotations`: own, however many notes, always REPLACES
+   // inherited rather than adding to it) — so there is still no way to
+   // independently AND a member's gate with `combo`'s own on the same
+   // composite, repeated notes included. A composite can carry AT MOST one
+   // gate total: either its own (one term or several, AND'd together), or
+   // (by inheriting) a single member's — never both independently ANDed.
+   // Worth a human decision on whether composites need first-class multi-gate
+   // support, but that is a product question, not a test-authoring one.
 
    it("a query source over a composite reports ONE authorize element for one gate, with the authored expression text", async () => {
       // Under the DIMENSION form, `collectEntryPointGates` walked a
@@ -1777,7 +1983,12 @@ describe("a query-local join to a locked source is not gated (Q16)", () => {
          "c_query_local_join.malloy",
          `source: open_src is duckdb.table('customers') extend { measure: c is count() }
 
-#(authorize) false
+##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: secret is name
@@ -1806,7 +2017,7 @@ describe("authorize compile-path gate", () => {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -1815,7 +2026,12 @@ source: open_src is duckdb.table('customers') extend { measure: c is count() }
 `;
    const CP_JOIN = `##! experimental.givens
 
-#(authorize) false
+##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: cp_locked is duckdb.table('customers') extend { measure: c is count() }
 
 source: cp_joiner is duckdb.table('customers') extend {
@@ -1835,7 +2051,7 @@ source: cp_joiner is duckdb.table('customers') extend {
       // classify/graft, but a gate that CAN be expressed as a row filter is
       // deferred rather than evaluated here — it has no whole-source
       // admit/deny answer on its own. Both calls resolve regardless of
-      // whether the given actually satisfies `$ROLE = 'analyst'`; the
+      // whether the given actually satisfies `'analyst' = $ROLE`; the
       // authoritative backstop (`authorizeAndBindRunnable`, exercised via
       // `assertAuthorizedForRunnable` below) is what actually enforces it.
       const model = await cpModel("cp_gate.malloy", CP_GATE);
@@ -1928,7 +2144,7 @@ given:
   ROLE :: string
   REGION :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: regional is duckdb.table('customers') extend {
   measure: c is count()
   view: in_region is {
@@ -1996,7 +2212,7 @@ describe("a joined given-based gate is not evaluated (Q16)", () => {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: base_gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -2078,7 +2294,12 @@ source: g_top is duckdb.table('customers') extend {
 // walk now gates that base too, recursing for a chained derivation and for a
 // query-source reached only via a join.
 describe("authorize query-source derivation enforcement (BLOCKING-5)", () => {
-   const QS_MODEL = `#(authorize) false
+   const QS_MODEL = `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
   dimension: secret is name
@@ -2098,26 +2319,18 @@ source: qs_joiner is duckdb.table('customers') extend {
 source: double_laundered is laundered -> { select: id, secret }
 `;
 
-   it("denies (zero rows) a query against a query-source derived from a locked base", async () => {
+   it("denies (opaquely) a query against a query-source derived from a locked base", async () => {
       // The walk discovers the gate fine (`query.structRef` reaches
-      // `locked_src` directly). Under the DIMENSION form, `laundered`'s own
-      // projection (`-> { select: id, secret }`) did not carry
-      // `locked_src`'s "authorized" FIELD forward, so the by-name graft had
-      // nothing to attach `where: authorized` to and denied outright
-      // (AccessDeniedError) — same root cause the KNOWN GAP inversions
-      // elsewhere name. The source-line form's note is struct-level, not a
-      // droppable field: MEASURED, it is carried onto `laundered` by the
-      // same by-reference note-copy mechanism the STRING form always relied
-      // on, so this is a filter-based deny (zero rows) again — an empty
-      // result set here, not a single zero-count aggregate row, since this
-      // query is a `select:`, not an `aggregate:`.
+      // `locked_src` directly). The source-line form's note is struct-level,
+      // not a droppable field: MEASURED, it is carried onto `laundered` by
+      // the same by-reference note-copy mechanism the STRING form always
+      // relied on. `locked_src`'s gate references a given no caller
+      // supplies, so this denies opaquely (AccessDeniedError), not via a
+      // live filter.
       await writeModel("qs.malloy", QS_MODEL);
-      const { compactResult } = await runGated(
-         "qs.malloy",
-         "run: laundered -> { select: id, secret }",
-         {},
-      );
-      expect(compactResult).toEqual([]);
+      await expect(
+         runGated("qs.malloy", "run: laundered -> { select: id, secret }", {}),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("allows a query-source derived from an ungated base", async () => {
@@ -2142,16 +2355,17 @@ source: double_laundered is laundered -> { select: id, secret }
       expect(result.data).toBeDefined();
    });
 
-   it("denies (zero rows) a CHAINED query-source (derived from a derivation of a locked base)", async () => {
+   it("denies (opaquely) a CHAINED query-source (derived from a derivation of a locked base)", async () => {
       // Same inheritance-survives-projection reasoning as the direct
       // derivation above, one hop further.
       await writeModel("qs.malloy", QS_MODEL);
-      const { compactResult } = await runGated(
-         "qs.malloy",
-         "run: double_laundered -> { select: id, secret }",
-         {},
-      );
-      expect(compactResult).toEqual([]);
+      await expect(
+         runGated(
+            "qs.malloy",
+            "run: double_laundered -> { select: id, secret }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 });
 
@@ -2166,7 +2380,12 @@ source: double_laundered is laundered -> { select: id, secret }
 // already correctly denied via assertAuthorizedForAllSources's own
 // `extendSources` handling.
 describe("a query-source's own inner-pipeline join is not gated (Q16)", () => {
-   const QS_INNER_JOIN_MODEL = `#(authorize) false
+   const QS_INNER_JOIN_MODEL = `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: locked9 is duckdb.table('customers') extend {
   dimension: secret is name
 }
@@ -2313,7 +2532,12 @@ source: open_src is duckdb.table('customers') extend {
   measure: c is count()
 }
 
-#(authorize) false
+##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: locked is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_region is region
@@ -2390,7 +2614,12 @@ source: open_src is duckdb.table('customers') extend {
   dimension: region_d is region
 }
 
-#(authorize) false
+##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: locked is duckdb.table('customers') extend {
   measure: c is count()
   dimension: locked_region is region
@@ -2407,20 +2636,19 @@ source: open_qs_over_combo is inner_combo -> { group_by: id, region_d }
 source: outer_qs is qs_over_combo -> { group_by: locked_region }
 `;
 
-   it("denies (zero rows) a query-source whose base composite resolves to a locked member", async () => {
-      // Under the DIMENSION form, `qs_over_combo`'s own projection
-      // (`-> { group_by: id, locked_region }`) did not carry `locked`'s
-      // "authorized" FIELD forward, so the by-name graft failed to attach
-      // and denied outright rather than filtering to zero rows. MEASURED
-      // under the source-line form: the struct-level note survives, and
-      // this is a filter-based deny (empty result set) again.
+   it("denies (opaquely) a query-source whose base composite resolves to a locked member", async () => {
+      // The struct-level note survives the composite resolution and the
+      // query-source's own projection (MEASURED). `locked`'s gate
+      // references a given no caller supplies, so this denies opaquely
+      // (AccessDeniedError), not via a live filter.
       await writeModel("qsc_unified.malloy", QS_OVER_COMPOSITE_MODEL);
-      const { compactResult } = await runGated(
-         "qsc_unified.malloy",
-         "run: qs_over_combo -> { group_by: locked_region }",
-         {},
-      );
-      expect(compactResult).toEqual([]);
+      await expect(
+         runGated(
+            "qsc_unified.malloy",
+            "run: qs_over_combo -> { group_by: locked_region }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
    it("allows its open-branch twin: query-source whose base composite resolves to the ungated member", async () => {
@@ -2433,14 +2661,15 @@ source: outer_qs is qs_over_combo -> { group_by: locked_region }
       expect(result.data).toBeDefined();
    });
 
-   it("denies (zero rows) at nesting depth 2: a query-source over a query-source over a composite whose resolved branch hits a locked base", async () => {
+   it("denies (opaquely) at nesting depth 2: a query-source over a query-source over a composite whose resolved branch hits a locked base", async () => {
       await writeModel("qsc_unified.malloy", QS_OVER_COMPOSITE_MODEL);
-      const { compactResult } = await runGated(
-         "qsc_unified.malloy",
-         "run: outer_qs -> { group_by: locked_region }",
-         {},
-      );
-      expect(compactResult).toEqual([]);
+      await expect(
+         runGated(
+            "qsc_unified.malloy",
+            "run: outer_qs -> { group_by: locked_region }",
+            {},
+         ),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 });
 
@@ -2473,14 +2702,21 @@ describe("authorize tolerates record/array-typed columns (MUST-FIX 1)", () => {
 // MUST-FIX 2 (review regression): evaluateSelfContainedFirst treated
 // `decls.length === 0` as "unsatisfiable, deny" unconditionally — but that
 // conflates "the expression references givens the caller can't supply"
-// (correct deny) with "the expression references NO givens at all" (e.g. a
-// constant/public gate like `#(authorize) "true"` — there's nothing ambient
-// to isolate from, so there's nothing wrong with running it with no decls).
+// (correct deny) with "the expression references NO givens at all". The
+// authorize grammar now requires every term to reference a given, so the
+// "givens-free constant gate" shape this originally pinned no longer exists
+// — what survives is Q16 (joins are not gated): the joined source's own
+// gate is simply never evaluated on this path, regardless of its shape.
 describe("authorize allows a givens-free joined gate (MUST-FIX 2)", () => {
-   it("allows a same-file `#(authorize) true` source joined by an ungated top", async () => {
+   it("allows a joined gated source when the entry point is the ungated joiner (Q16)", async () => {
       await writeModel(
          "rt_pub.malloy",
-         `#(authorize) true
+         `##! experimental.givens
+
+given:
+  ID :: number
+
+#(authorize) id = $ID
 source: pub_gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -2508,7 +2744,12 @@ source: pub_joiner is duckdb.table('customers') extend {
 // `query`, the request below returned every row of a base locked with
 // `#(authorize) false`.
 describe("the caller-text guard covers sourceName/queryName too", () => {
-   const LOCKED = `#(authorize) false
+   const LOCKED = `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: inj_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -2640,18 +2881,30 @@ describe("authorize is classified by Malloy's annotation route", () => {
    for (const tag of GATE_SPELLINGS) {
       it(`enforces (zero rows) a gate written ${tag}`, async () => {
          const closer = blockCloser(tag);
-         const annotation = closer ? `${tag}\nfalse${closer}` : `${tag} false`;
+         const body = "id = $SENTINEL";
+         const annotation = closer
+            ? `${tag}\n${body}${closer}`
+            : `${tag} ${body}`;
          await writeModel(
             "route.malloy",
-            `${annotation}
+            `##! experimental.givens
+
+given:
+  SENTINEL :: number
+
+${annotation}
 source: route_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
 `,
          );
+         // SENTINEL is supplied but never matches a real \`customers.id\`
+         // (1, 2), so this is a genuine live-filter deny, not an unbound-given
+         // opaque one — the point here is routing, not gate content.
          await expectDeniedByFilter(
             "route.malloy",
             "run: route_locked -> { aggregate: c }",
+            { SENTINEL: -1 },
          );
       });
 
@@ -2730,7 +2983,7 @@ source: near_locked is duckdb.table('customers') extend { measure: c is count() 
          expect(err).toBeInstanceOf(ModelCompilationError);
          // Names the spelling, and what to write instead.
          expect(err?.message).toContain(tag);
-         expect(err?.message).toContain("#(authorize) <expression>");
+         expect(err?.message).toContain("(meant `#(authorize)`?)");
          // Refused, never silently enforced as if it had been spelled right.
          expect(model.getSources()).toBeUndefined();
       });
@@ -2785,7 +3038,7 @@ source: near_qs is near_base_gated -> { select: * }
       const err = model.getNotebookError();
       expect(err).toBeInstanceOf(ModelCompilationError);
       expect(err?.message).toContain("# (authorize)");
-      expect(err?.message).toContain("#(authorize) <expression>");
+      expect(err?.message).toContain("(meant `#(authorize)`?)");
    });
 
    // The other side of the near-miss detector: it is anchored at each note's own
@@ -2826,8 +3079,9 @@ describe("an inherited gate is reported, not just enforced", () => {
 
 given:
   ROLE :: string
+  DENY :: number[]
 
-#(authorize) false
+#(authorize) id in $DENY
 source: rep_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -2846,10 +3100,10 @@ source: rep_ext is rep_locked extend {}
          "rep.malloy",
          getConnections(),
       );
-      expect(sourceNamed(model, "rep_ext")?.authorize).toEqual(["false"]);
-      expect(model.getAuthorize("rep_ext")).toEqual(["false"]);
+      expect(sourceNamed(model, "rep_ext")?.authorize).toEqual(["id in $DENY"]);
+      expect(model.getAuthorize("rep_ext")).toEqual(["id in $DENY"]);
       // The base is unchanged — this is not double-counting.
-      expect(model.getAuthorize("rep_locked")).toEqual(["false"]);
+      expect(model.getAuthorize("rep_locked")).toEqual(["id in $DENY"]);
    });
 
    it("surfaces the caller's own compile error, not a schema oracle bypass", async () => {
@@ -2878,13 +3132,14 @@ source: rep_ext is rep_locked extend {}
 
 given:
   ROLE :: string
+  DENY :: number[]
 
-#(authorize) false
+#(authorize) id in $DENY
 source: ro_locked is duckdb.table('customers') extend {
   measure: c is count()
 }
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: ro_ext is ro_locked extend {}
 `,
       );
@@ -2894,7 +3149,7 @@ source: ro_ext is ro_locked extend {}
          "rep_override.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("ro_ext")).toEqual(["$ROLE = 'analyst'"]);
+      expect(model.getAuthorize("ro_ext")).toEqual(["'analyst' = $ROLE"]);
       const { result } = await runGated(
          "rep_override.malloy",
          "run: ro_ext -> { aggregate: c }",
@@ -2943,6 +3198,48 @@ source: deep_ext is deep_locked extend {}
       await expect(
          runGated("deep_entry.malloy", "run: deep_ext -> { aggregate: c }", {}),
       ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("refuses a grammar-banned gate inherited through an intermediate source with an unrelated annotation of its own", async () => {
+      // The base's own gate is grammar-illegal (`not (...)`  is `compound_boolean`).
+      // Malloy only copies a base's `#(authorize)` note by reference onto a
+      // derivation that carries NO annotation of its own, so `deny_ext`'s
+      // unrelated `# bar_chart` tag stops that copy — its own annotation
+      // level carries nothing, only `ancestorGateExprs` still resolves the
+      // base's text for it. Grammar validation must walk that effective
+      // (own-or-inherited) text, not just each source's own notes, or this
+      // banned gate loads and grafts unvalidated.
+      await writeModel(
+         "deny_base.malloy",
+         `##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(authorize) not (org_id in $GROUPS)
+source: deny_locked is duckdb.table('customers') extend { measure: c is count() }
+`,
+      );
+      await writeModel(
+         "deny_mid.malloy",
+         `import "deny_base.malloy"
+
+# bar_chart
+source: deny_ext is deny_locked extend {}
+`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         TEST_PKG_DIR,
+         "deny_mid.malloy",
+         getConnections(),
+      );
+      const err = (model as unknown as { compilationError?: Error })
+         .compilationError;
+      expect(err).toBeInstanceOf(AuthorizeGrammarError);
+      expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+         "compound_boolean",
+      );
    });
 });
 
@@ -3017,8 +3314,12 @@ describe("docs/authorize.md worked example", () => {
 
 given:
   ROLE :: string
+  DENY :: string[]
 
-#(authorize) false
+// Source-level (a literal, not a row field) so the gate stays expressible
+// on EVERY derivation, including one that projects away every column of the
+// base — see \`salaries_derived\` below, which never selects "id".
+#(authorize) 'x' in $DENY
 source: salaries is duckdb.table('salaries') extend {}
 
 source: salaries_plain is salaries extend {
@@ -3030,7 +3331,7 @@ source: salaries_tagged is salaries extend {
   measure: headcount is count()
 }
 
-#(authorize) $ROLE = 'hr'
+#(authorize) 'hr' = $ROLE
 source: salaries_hr is salaries extend {
   measure: avg_salary is avg(salary)
 }
@@ -3052,8 +3353,12 @@ source: headcount_by_dept is duckdb.table('departments') extend {
    for (const [name, query] of denied) {
       it(`denies (zero rows) ${name} regardless of givens`, async () => {
          await writeModel("doc_example.malloy", DOC_EXAMPLE);
+         // DENY is a real, always-empty array — a genuine live-filter deny
+         // (WHERE id IN ()), not an unbound-given opaque one, matching the
+         // doc's "denies (zero rows)" claim regardless of ROLE.
          const { compactResult } = await runGated("doc_example.malloy", query, {
             ROLE: "hr",
+            DENY: [],
          });
          const rows = compactResult as unknown as Record<string, number>[];
          expect(Object.values(rows[0])[0]).toBe(0);
@@ -3062,20 +3367,16 @@ source: headcount_by_dept is duckdb.table('departments') extend {
 
    it("denies (zero rows) salaries_derived regardless of givens — matches the doc's worked example again", async () => {
       // `salaries_derived is salaries -> { group_by: department }` is a
-      // query-source derivation of `salaries`. Under the DIMENSION form this
-      // used to abort with `AccessDeniedError`: the by-name graft had no
-      // "authorized" field on `salaries_derived`'s own struct to attach
-      // `where: authorized` to (the doc's worked example needed an update to
-      // match). The source-line form's note is struct-level, not a
-      // droppable field — it is carried onto the derivation by the same
-      // by-reference note-copy mechanism the STRING form always relied on
-      // (MEASURED), so this shape is back to matching the doc's original
-      // "denies (zero rows)" claim, same as its siblings above.
+      // query-source derivation of `salaries`. The source-line form's note
+      // is struct-level, not a droppable field — it is carried onto the
+      // derivation by the same by-reference note-copy mechanism the STRING
+      // form always relied on (MEASURED), so this shape matches the doc's
+      // original "denies (zero rows)" claim, same as its siblings above.
       await writeModel("doc_example.malloy", DOC_EXAMPLE);
       const { compactResult } = await runGated(
          "doc_example.malloy",
          "run: salaries_derived -> { aggregate: n is count() }",
-         { ROLE: "hr" },
+         { ROLE: "hr", DENY: [] },
       );
       const rows = compactResult as unknown as Record<string, number>[];
       expect(Object.values(rows[0])[0]).toBe(0);
@@ -3129,7 +3430,14 @@ describe("the early gate agrees with the compiled backstop (no schema oracle)", 
       // all the source extractor can do — leaves it looking unrestricted.
       await writeModel(
          "oracle_derived.malloy",
-         `#(authorize) false
+         `##! experimental.givens
+
+given:
+  DENY :: string[]
+
+// Source-level (a literal, not a row field) so the gate stays expressible
+// on \`laundered\`'s projection below, which does not select "id".
+#(authorize) 'x' in $DENY
 source: locked_src is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -3148,8 +3456,10 @@ source: laundered is locked_src -> { group_by: region }
       // directly — MEASURED: unlike the DIMENSION form's carried-in FIELD,
       // there is no opaque graft identifier here to fall back to, so
       // `getAuthorize` has the real text to report.
-      expect(model.getAuthorize("laundered")).toEqual(["false"]);
-      expect(sourceNamed(model, "laundered")?.authorize).toEqual(["false"]);
+      expect(model.getAuthorize("laundered")).toEqual(["'x' in $DENY"]);
+      expect(sourceNamed(model, "laundered")?.authorize).toEqual([
+         "'x' in $DENY",
+      ]);
       // `laundered`'s own projection (`-> { group_by: region }`) does not
       // select `no_such_field` either, so the caller's bad field reference
       // still surfaces as a compile error before the gate is ever reached —
@@ -3177,7 +3487,12 @@ source: laundered is locked_src -> { group_by: region }
 // concern a source the PACKAGE declares — no caller-declared alias involved — so
 // neither is covered by the known limitation about caller-declared sources.
 describe("run-target expressions do not skip the early gate", () => {
-   const DECLARED = `#(authorize) false
+   const DECLARED = `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: rt_locked is duckdb.table('customers') extend {
   measure: cc is count()
 }
@@ -3257,8 +3572,13 @@ describe("a gate declared in a multi-definition source: block is not silently dr
    it("gates a source declared with its own #(authorize) inside a source: block", async () => {
       await writeModel(
          "block.malloy",
-         `source:
-  #(authorize) false
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+source:
+  #(authorize) id in $DENY
   bf_locked is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3270,11 +3590,14 @@ describe("a gate declared in a multi-definition source: block is not silently dr
          "block.malloy",
          getConnections(),
       );
-      expect(sourceNamed(model, "bf_locked")?.authorize).toEqual(["false"]);
-      expect(model.getAuthorize("bf_locked")).toEqual(["false"]);
+      expect(sourceNamed(model, "bf_locked")?.authorize).toEqual([
+         "id in $DENY",
+      ]);
+      expect(model.getAuthorize("bf_locked")).toEqual(["id in $DENY"]);
       await expectDeniedByFilter(
          "block.malloy",
          "run: bf_locked -> { aggregate: c }",
+         { DENY: [] },
       );
    });
 
@@ -3283,13 +3606,18 @@ describe("a gate declared in a multi-definition source: block is not silently dr
       // reading `blockNotes` — both forms must keep working side by side.
       await writeModel(
          "block_mixed.malloy",
-         `#(authorize) false
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+#(authorize) id in $DENY
 source: bf_above is duckdb.table('customers') extend {
   measure: c is count()
 }
 
 source:
-  #(authorize) false
+  #(authorize) id in $DENY
   bf_block is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3301,8 +3629,8 @@ source:
          "block_mixed.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("bf_above")).toEqual(["false"]);
-      expect(model.getAuthorize("bf_block")).toEqual(["false"]);
+      expect(model.getAuthorize("bf_above")).toEqual(["id in $DENY"]);
+      expect(model.getAuthorize("bf_block")).toEqual(["id in $DENY"]);
    });
 
    it("does not over-gate a sibling in the same block that declares no annotation", async () => {
@@ -3311,9 +3639,14 @@ source:
       // undecorated definition in the same block must stay unrestricted.
       await writeModel(
          "block_sibling.malloy",
-         `source:
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+source:
   bf_open is duckdb.table('customers') extend { measure: c is count() }
-  #(authorize) false
+  #(authorize) id in $DENY
   bf_sibling_locked is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3331,7 +3664,7 @@ source:
       // it precedes. Without this, an off-by-one that attributed a block item's
       // note to the PREVIOUS definition would still satisfy the assertions
       // above while leaving nothing gated at all.
-      expect(model.getAuthorize("bf_sibling_locked")).toEqual(["false"]);
+      expect(model.getAuthorize("bf_sibling_locked")).toEqual(["id in $DENY"]);
       const { result } = await runGated(
          "block_sibling.malloy",
          "run: bf_open -> { aggregate: c }",
@@ -3379,8 +3712,13 @@ source:
       // `ancestorGateExprs` already follows for the line-above form.
       await writeModel(
          "block_inherit.malloy",
-         `source:
-  #(authorize) false
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+source:
+  #(authorize) id in $DENY
   bf_base is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3395,10 +3733,11 @@ source: bf_ext is bf_base extend {}
          "block_inherit.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("bf_ext")).toEqual(["false"]);
+      expect(model.getAuthorize("bf_ext")).toEqual(["id in $DENY"]);
       await expectDeniedByFilter(
          "block_inherit.malloy",
          "run: bf_ext -> { aggregate: c }",
+         { DENY: [] },
       );
    });
 
@@ -3412,8 +3751,13 @@ source: bf_ext is bf_base extend {}
       // sourceRegistry read stays defensive rather than covered.)
       await writeModel(
          "block_registry.malloy",
-         `source:
-  #(authorize) false
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+source:
+  #(authorize) id in $DENY
   bf_reg_base is duckdb.table('customers') extend {
     measure: c is count()
     dimension: secret is name
@@ -3430,7 +3774,7 @@ source: bf_reg_derived is bf_reg_base -> { select: id, secret }
       const { compactResult } = await runGated(
          "block_registry.malloy",
          "run: bf_reg_derived -> { select: id, secret }",
-         {},
+         { DENY: [] },
       );
       expect(compactResult).toEqual([]);
    });
@@ -3447,7 +3791,7 @@ given:
   ROLE :: string
 
 source:
-  #(authorize) $ROLE = 'analyst'
+  #(authorize) 'analyst' = $ROLE
   bf_given is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3459,7 +3803,7 @@ source:
          "block_given.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("bf_given")).toEqual(["$ROLE = 'analyst'"]);
+      expect(model.getAuthorize("bf_given")).toEqual(["'analyst' = $ROLE"]);
       const { result } = await runGated(
          "block_given.malloy",
          "run: bf_given -> { aggregate: c }",
@@ -3479,8 +3823,13 @@ source:
       // dropped by the `blockNotes`-only read exactly like the block form.
       await writeModel(
          "block_afteris.malloy",
-         `source: bf_afteris is
-  #(authorize) false
+         `##! experimental.givens
+
+given:
+  DENY :: number[]
+
+source: bf_afteris is
+  #(authorize) id in $DENY
   duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3492,10 +3841,11 @@ source:
          "block_afteris.malloy",
          getConnections(),
       );
-      expect(model.getAuthorize("bf_afteris")).toEqual(["false"]);
+      expect(model.getAuthorize("bf_afteris")).toEqual(["id in $DENY"]);
       await expectDeniedByFilter(
          "block_afteris.malloy",
          "run: bf_afteris -> { aggregate: c }",
+         { DENY: [] },
       );
    });
 
@@ -3514,7 +3864,7 @@ given:
   ROLE :: string
 
 source:
-  #(authorize) $NO_SUCH_GIVEN = 'x'
+  #(authorize) 'x' = $NO_SUCH_GIVEN
   bf_validate is duckdb.table('customers') extend {
     measure: c is count()
   }
@@ -3550,7 +3900,7 @@ describe("authorize bypass (private data-management path)", () => {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: dm_gated is duckdb.table('customers') extend {
   measure: c is count()
 }
@@ -3564,7 +3914,7 @@ source: dm_gated is duckdb.table('customers') extend {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: dm_mixed is duckdb.table('customers') extend {
   where: region = 'us-west'
   measure: c is count()

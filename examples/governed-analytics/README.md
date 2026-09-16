@@ -14,8 +14,8 @@ mechanism — power three things at once:
   row filter, so a caller it admits nowhere gets 200 with zero rows; a 403 means the gate could not be
   attached at all (here: a referenced given was not supplied).
   → [authorize.md](../../docs/authorize.md)
-- **Row-level access** — a `where:` over the caller's given controls *which rows* they see.
-  → [row-level-access.md](../../docs/row-level-access.md)
+- **Row-level access** — the same `#(authorize)` gate that admits the caller also scopes *which
+  rows* they see, with no separate `where:`. → [row-level-access.md](../../docs/row-level-access.md)
 
 …plus **discovery curation** — `orders_base` lives in a file not listed in `explores`, so it's hidden
 and not directly queryable, while the public models still import it.
@@ -28,7 +28,7 @@ and not directly queryable, while the public models still import it.
 | `orders.parquet` | ~4,900 orders over two years across 3 regions × 3 tenants × 3 statuses (no credentials — DuckDB reads it directly). |
 | `internal.malloy` | `orders_base`, the shared base source. **Not** in `explores` → hidden + not directly queryable. |
 | `orders.malloy` | `REGION` / `MIN_AMOUNT` givens and the `sales` source (interactive controls + `# dashboard`). |
-| `secured.malloy` | `ROLE` / `TENANT` givens and `orders_secured` (`#(authorize)` + row-level `where:`). |
+| `secured.malloy` | `TENANTS` given and `orders_secured` — a row-level `#(authorize)` gate alone. |
 | `orders.malloynb` | Notebook over `sales` — renders the Parameters panel and the overview dashboard. |
 | `publisher.json` | `explores` + `queryableSources: "declared"` — the discovery/query boundary. |
 
@@ -82,23 +82,23 @@ curl -s -X POST $API/orders.malloy/query -H 'content-type: application/json' \
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_status"}'                          # → 403
 
-# Send BOTH keys on every request. The gate and the row-level `where:` each
-# reference ROLE and TENANT, and neither given may carry a default (a
-# gate-referenced given with one is refused at load), so an unsupplied given
-# cannot resolve and the request is denied — send the one your path doesn't
-# care about as "".
+# Send TENANTS on every request. The gate references it, and it may not
+# carry a default (a gate-referenced given with one is refused at load), so
+# an unsupplied given cannot resolve and the request is denied. There is no
+# separate admin role — a caller whose identity resolves to every tenant on
+# the list simply sees every tenant.
 
-# Authorize + row-level: an admin sees all tenants…
+# Authorize + row-level: a caller resolved to all three tenants sees all three…
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
-  -d '{"query":"run: orders_secured -> by_tenant","givens":{"ROLE":"admin","TENANT":""}}'  # → 3 tenants
+  -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["acme","globex","initech"]}}'  # → 3 tenants
 
-# …a tenant caller sees only its own rows.
+# …a caller resolved to one tenant sees only its own rows.
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
-  -d '{"query":"run: orders_secured -> by_tenant","givens":{"ROLE":"","TENANT":"acme"}}'   # → 1 tenant
+  -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["acme"]}}'   # → 1 tenant
 
 # A tenant off the allow-list is admitted nowhere: 200 with zero rows, not 403.
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
-  -d '{"query":"run: orders_secured -> by_tenant","givens":{"ROLE":"","TENANT":"nope"}}'   # → 0 rows
+  -d '{"query":"run: orders_secured -> by_tenant","givens":{"TENANTS":["nope"]}}'   # → 0 rows
 
 # Discovery: orders_base is hidden and not a valid query target → 404
 curl -s -X POST $API/internal.malloy/query -H 'content-type: application/json' \
@@ -106,7 +106,7 @@ curl -s -X POST $API/internal.malloy/query -H 'content-type: application/json' \
 ```
 
 > **Security note.** Givens are **caller-asserted** — these gates enforce policy only behind a trusted
-> tier that sets `ROLE` / `TENANT` from verified identity. See
+> tier that sets `TENANTS` from verified identity. See
 > [authorize.md § Security model](../../docs/authorize.md#security-model).
 
 ## Learn more

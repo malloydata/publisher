@@ -105,34 +105,6 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
       );
    });
 
-   it("refuses a source that declares a #(partition) marker (RLAC security refusal, same as a given)", async () => {
-      // No `given:` declaration and no `##! experimental.givens` needed: the
-      // annotation is never compiled by Malloy, so `referencesGiven` (an IR
-      // walk) sees nothing here either — this is exactly the gap
-      // `referencesPartition` exists to close.
-      const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
-#(partition) tenant = $TENANT
-#@ persist name="mz_partition"
-source: mz_partition is base -> { aggregate: c is count() }`);
-      expect(sources.mz_partition).toBeDefined();
-      // Confirms the gap this refusal closes: the source passes
-      // `referencesGiven` clean even though it declares a partition axis.
-      expect(
-         (
-            sources.mz_partition._sourceDef as unknown as {
-               filterList?: unknown[];
-            }
-         ).filterList ?? [],
-      ).toHaveLength(0);
-      expect(() => assertMaterializationEligible(sources.mz_partition)).toThrow(
-         MaterializationEligibilityError,
-      );
-      expect(() => assertMaterializationEligible(sources.mz_partition)).toThrow(
-         /partition/i,
-      );
-   });
-
    it("refuses a source protected by its own #(authorize) gate", async () => {
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
@@ -170,6 +142,29 @@ source: mz_dim_authz is base -> { aggregate: c is count() }`);
       expect(() => assertMaterializationEligible(sources.mz_dim_authz)).toThrow(
          /authorize/i,
       );
+   });
+
+   it("refuses a source protected ONLY by its own #(source-authorize) gate", async () => {
+      // A source carrying no #(authorize) at all, only #(source-authorize) —
+      // this must draw the same materialization refusal as an ordinary
+      // row-level gate, otherwise a source-authorize-only source freezes
+      // into a materialized artifact served to everyone. `isAuthorizeAnnotation`
+      // (via `parseAuthorizeAnnotation`) is widened to recognize both routes,
+      // so this is automatic rather than a special case.
+      const sources = await persistSources(`##! experimental.persistence
+##! experimental.givens
+given: role :: string
+source: base is duckdb.sql("SELECT 1 AS amount, 'US' AS region")
+#(source-authorize) 'finance' = $role
+#@ persist name="mz_source_authz"
+source: mz_source_authz is base -> { aggregate: c is count() }`);
+      expect(sources.mz_source_authz).toBeDefined();
+      expect(() =>
+         assertMaterializationEligible(sources.mz_source_authz),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertMaterializationEligible(sources.mz_source_authz),
+      ).toThrow(/authorize/i);
    });
 
    it("refuses a source that reaches an #(authorize) gate through a JOIN", async () => {
@@ -383,27 +378,6 @@ source: mz_colocated_plain is base -> { aggregate: c is count() }`);
       expect(() =>
          assertColocatedPersistNotAuthorizeGated(sources.mz_colocated_plain),
       ).not.toThrow();
-   });
-
-   it("refuses a colocated persist source that declares a #(partition) marker (no relaxation, unlike authorize)", async () => {
-      // Storage refusal (a) is trivially sidestepped by dropping `storage=` —
-      // this is the check that closes that gap for the colocated tier.
-      const sources = await persistSources(`##! experimental.persistence
-source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
-#(partition) tenant = $TENANT
-#@ persist name="mz_colocated_partition"
-source: mz_colocated_partition is base -> { aggregate: c is count() }`);
-      expect(sources.mz_colocated_partition).toBeDefined();
-      expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
-            sources.mz_colocated_partition,
-         ),
-      ).toThrow(MaterializationEligibilityError);
-      expect(() =>
-         assertColocatedPersistNotAuthorizeGated(
-            sources.mz_colocated_partition,
-         ),
-      ).toThrow(/partition/i);
    });
 
    it("accepts a colocated persist source that references a given but carries no gate (narrow check does not pull in referencesGiven)", async () => {

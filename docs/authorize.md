@@ -11,7 +11,7 @@ SPDX-License-Identifier: MIT
 > Runnable example: [examples/governed-analytics](../examples/governed-analytics). For the base
 > mechanism, see [givens.md](givens.md); for row scoping, see [row-level-access.md](row-level-access.md).
 
-`#(authorize)` is the **source-authorization** application of [givens](givens.md). **Every gate is enforced as a row filter**, whether or not its expression happens to read a row field: the gate's condition is grafted onto the source the query enters through and evaluated by the same query. A gate that reads no field (`$ROLE = 'analyst'`) is simply a predicate that is constant across every row, so it still behaves as a whole-source admit or deny — it is just reached by the same mechanism. See [Row-level gates](#row-level-gates) below. To scope *which rows* a caller sees using a plain `where:` rather than the gate itself, see [Row-level access](row-level-access.md).
+`#(authorize)` is the **source-authorization** application of [givens](givens.md). **Every gate is enforced as a row filter**: the gate's condition is grafted onto the source the query enters through and evaluated by the same query. A gate whose term compares a fixed literal to a given (`'analyst' in $ROLES`) is constant across every row, so it still behaves as a whole-source admit or deny — it is just reached by the same mechanism. See [Row-level gates](#row-level-gates) below. To scope *which rows* a caller sees using a plain `where:` rather than the gate itself, see [Row-level access](row-level-access.md).
 
 `#(authorize)` annotations gate query access to a Malloy source based on the request's [givens](givens.md). A source with no in-scope annotation is unrestricted.
 
@@ -19,11 +19,18 @@ SPDX-License-Identifier: MIT
 
 > ⚠️ **Read [Security model](#security-model) before deploying this as an access control.** Givens are **caller-asserted**: anyone who can reach the query API can claim a favorable given. `#(authorize)` is only a real boundary when the API sits behind a trusted tier that sets givens from its own verified context. It is not, on its own, end-user authentication.
 
-For the Malloy expression reference, see [Malloy: Expressions](https://docs.malloydata.dev/documentation/language/expressions). For givens, see [givens.md](givens.md).
+For the gate's own grammar, see [Expression Language](#expression-language) below — it is not the full Malloy expression language. For givens, see [givens.md](givens.md).
 
 ## Declaring Gates
 
-A gate is an `#(authorize)` annotation on its own line directly above a `source:` line — an unquoted, natural Malloy boolean expression over declared givens (`$NAME`), row fields, or both:
+A gate is an `#(authorize)` annotation on its own line directly above a `source:` line — **not** an arbitrary Malloy boolean expression, but one or more terms joined by `and`, each one of two shapes:
+
+- **Row-level**: `field_path <op> $GIVEN` — a single column or a dotted join path on the left.
+- **Source-level**: `'<literal>' <op> $GIVEN` — a quoted literal and a given, in either order, since neither side is a column.
+
+`<op>` is fixed by the given's own declared arity: `in` for a list-typed given, `=` for a scalar one. Nothing else parses — no `or`, no `not`, no `!=`/`<`/`>`/`<=`/`>=`, no function calls, no literal on the right of a row-level term, no given compared to another given. See [Row-level gates](#row-level-gates) for the full grammar and every named refusal.
+
+**One deliberate exception: a body that is exactly `false`.** Every ordinary term above references a caller-suppliable given, so without an exception there would be no way to lock a source outright — `#(authorize) false` is still legal, parses as an unconditional deny, and is the recommended way to write a locked base (see [Recommended pattern](#recommended-pattern-locked-base-and-curated-extensions) below). `true` is **not** given the same treatment and stays refused: an admit-everyone gate is not access control at all — omit the annotation instead.
 
 ```malloy
 ##! experimental.givens
@@ -31,16 +38,15 @@ A gate is an `#(authorize)` annotation on its own line directly above a `source:
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: orders is duckdb.table('orders.parquet') extend {
   measure: order_count is count()
 }
 ```
 
-- **A source may declare at most one `#(authorize)` annotation.** Declaring a second on the same source fails the load naming both. See [OR semantics](#or-semantics) for how to combine more than one condition.
+- **A source may declare more than one `#(authorize)` annotation; repeats AND together.** `#(authorize) region = $REGION` and a second `#(authorize) org_id in $GROUPS` on the same source both apply, and a caller must satisfy every one of them. `or` is still refused by the grammar, so there is still no way to admit-if-either inside a single gate — see [OR semantics](#or-semantics) for the two-sources alternative. A separate `#(source-authorize)` route exists for a rule about the caller rather than the row; see [The `#(source-authorize)` route](#the-source-authorize-route) below.
 - **`#(authorize)` only gates from the `source:` line.** The same annotation on a `dimension:`/`measure:`/`join_*:`/`view:` line inside the source, or on a top-level `query:`, is never enforced from there — it fails the load naming the position instead of silently protecting nothing. See [Enforcement](#enforcement).
 - A source with no `#(authorize)` annotation of its own or inherited is **unrestricted**.
-- **A gate may also be a bare reference to a boolean field**, for a condition too long to read comfortably on one line: `#(authorize) authorized` over an ordinary `dimension: authorized is org_id in $GROUPS` declared elsewhere in the source. Validation follows the reference through to the dimension it names — a given the dimension reaches is checked exactly as if the gate had written the expression out directly.
 
 > **`##(authorize)` (file-level) is deprecated and refused at load.** An earlier version of this
 > feature let an annotation written above the file, rather than a source, apply to every source in
@@ -100,26 +106,73 @@ source: orders is duckdb.table('orders.parquet') extend {
 
 ### Expression Language
 
-The expression is an ordinary Malloy boolean expression — anything Malloy itself accepts as the body of a `where:`, over `$given` references, row fields, and literals:
+The body is **not** an arbitrary Malloy boolean expression. It is one or more terms joined only by `and`, each one of two shapes, spelled out by `authorize_grammar.ts`:
+
+- **Row-level**: `field_path <op> $GIVEN` — a single column, or a dotted join path, on the left.
+- **Source-level**: `'<literal>' <op> $GIVEN` — a quoted string literal and a given. Either order reads the same and both parse; a row-level term is not reversible, because its column is what the graft filters on.
+
+`<op>` is `in` when `$GIVEN` is declared as a list (array) type, and `=` when it is declared scalar — the operator is not a free choice, it is fixed by the given's own declaration. Everything else is refused at load, each with its own named cause (`AuthorizeGrammarRejectionCause`):
 
 ```malloy
-#(authorize) $ROLE = 'analyst'
+// A source-level term: a rule about the caller, written inside `#(authorize)`.
+#(authorize) 'analyst' = $ROLE
 source: a is duckdb.table('orders.parquet') extend {}
 
-#(authorize) $REGION = 'us-west' and $ROLE != 'guest'
+// A row-level term. `in`, because `GROUPS` is declared list-typed.
+#(authorize) org_id in $GROUPS
 source: b is duckdb.table('orders.parquet') extend {}
 
-#(authorize) org_id in $GROUPS
+// Two row-level terms on one line. The operator follows each given's arity.
+#(authorize) region = $REGION and org_id in $GROUPS
 source: c is duckdb.table('orders.parquet') extend {}
+
+// The same gate written as repeated notes: a source's own notes AND together.
+#(authorize) region = $REGION
+#(authorize) org_id in $GROUPS
+source: d is duckdb.table('orders.parquet') extend {}
+
+// A path through a `join_one` is a field path like any other. Through a join
+// that fans out it is refused (`fanout_path`), because the gate would multiply rows.
+#(authorize) account.org_id = $ORG_ID
+source: e is duckdb.table('orders.parquet') extend {
+  join_one: account is duckdb.table('accounts.parquet') on account_id = account.id
+}
+
+// A rule about the caller beside a rule about the row: both must admit.
+#(source-authorize) 'admin' in $GROUPS
+#(authorize) org_id in $GROUPS
+source: f is duckdb.table('orders.parquet') extend {}
+
+// Admit nobody. Legal on either route, and the only body naming no given.
+#(authorize) false
+source: g is duckdb.table('orders.parquet') extend {}
 ```
 
-Unlike the retired string form, Publisher does **not** validate the expression against a restricted grammar of accepted shapes — see [Row-level gates](#row-level-gates) for what changed and why that matters for what fails at load versus at request time.
+is legal; none of the following are:
 
-Embedded string literals follow ordinary Malloy syntax: single-quote them as usual (`$ROLE = 'analyst'`) — there is no surrounding quoted-annotation layer left to escape out of, since the expression is now Malloy source, not a string.
+| Body | Cause | Why |
+| --- | --- | --- |
+| (nothing / whitespace) | `empty_body` | a gate must say something |
+| `$ROLE = 'analyst' or org_id in $GROUPS` | `compound_boolean` | `or`/`not` are not joins the grammar accepts — see [OR semantics](#or-semantics) |
+| `org_id != $GROUPS` | `negated_operator` | no `!=` |
+| `org_id > $MIN` | `comparison_operator` | no ordering comparisons |
+| `$ROLE = 'analyst'` | `left_not_field_path` | the given must be on the right; a source-level term's left side must be a quoted literal |
+| `region = 'us-west'` | `missing_given_reference` | every term must reference exactly one given |
+| `authorized` (a bare field reference) | `malformed_body` | no function calls, no bare booleans, only the two term shapes above |
+| `region = $REGION and org_id = $REGION` | `duplicate_given` | one given per term |
+| `region = $A and region = $B` | `duplicate_field_path` | one field path per term |
+| `'x' = $ROLE and org_id in $GROUPS` | `mixed_scope_body` | a body is either all row-level or all source-level terms, never mixed |
+| `$GROUPS in 'finance'` | `reversed_in_operands` | `in` is not reversible the way `=` is; Malloy rejects array-in-string membership, so write the literal first (`'finance' in $GROUPS`) |
+| `org_id = $GROUPS` where `GROUPS` is list-typed | `operator_arity_mismatch` | a list-typed given takes `in`, not `=` |
+| `kids.name in $GROUPS` where `kids` is a `join_many`/`join_cross` | `fanout_path` | a row-level term cannot read through a fan-out join — see [Row-level gates](#row-level-gates) |
+| `org_id in $GROUPS` inside `#(source-authorize)` | `row_level_term_in_source_authorize` | a `#(source-authorize)` body is caller-only; move the term to `#(authorize)` — see [The `#(source-authorize)` route](#the-source-authorize-route) |
+| `#(authorize) false` alongside any other `#(authorize)`/`#(source-authorize)` note on the same source | `deny_all_with_sibling` | a deny-all admits nobody, so a sibling note can never change what is served; delete whichever is wrong |
+
+Embedded string literals follow ordinary Malloy syntax: single-quote them as usual (`'analyst' = $ROLE`).
 
 ## Row-level gates
 
-A gate expression may reference a row field — its own source's, or one reached through a join — instead of only givens and literals. **Every gate is enforced the same way** regardless: as a row filter on the entry-point source. A gate that reads no field is constant across every row, so it still admits all of them or none; it is not a separate mechanism. See [Row-level access](row-level-access.md#row-level-authorize) for what that means for the caller, and [security-posture.md](security-posture.md#row-level-authorize-rows-are-protected-the-schema-is-not) for the trade it makes.
+A row-level term references a row field — its own source's, or one reached through a join — instead of a literal. **Every gate is enforced the same way** regardless of which term shape it uses: as a row filter on the entry-point source. A source-level term is constant across every row, so it still admits all of them or none; it is not a separate mechanism. See [Row-level access](row-level-access.md#row-level-authorize) for what that means for the caller, and [security-posture.md](security-posture.md#row-level-authorize-rows-are-protected-the-schema-is-not) for the trade it makes.
 
 ```malloy
 #(authorize) org_id in $GROUPS
@@ -128,24 +181,17 @@ source: a is duckdb.table('orders.parquet') extend {}
 #(authorize) childtable.name = $BOB
 source: b is duckdb.table('orders.parquet') extend { join_one: childtable on id = childtable.id }
 
-#(authorize) region = $REGION and tier != $EXCLUDED_TIER
+#(authorize) region = $REGION and org_id in $GROUPS
 source: c is duckdb.table('orders.parquet') extend {}
 ```
 
-**There is no accepted-shape allowlist any more.** The retired string form validated its expression against a small allowlist of comparison shapes (`classifyAuthorizeGate`) before it could ever be attached as a filter — a function call, `like`, `is not null`, or a `not in` failed the load outright. The current form does not classify the expression's shape at all: validation checks only that the expression compiles as a scalar boolean (G1) and that every given it references carries no default (G4, below); everything else Malloy itself accepts is accepted here too. Concretely, `upper(region) = $REGION`, `region like $PAT`, `region is not null`, and `amount + 1 > $AMOUNTMIN` are all legal gates today, where the string form refused every one of them at load.
+**The grammar is the accepted-shape allowlist now, checked at load, before anything touches the compiled IR.** A gate that is not one of the two term shapes above, joined only by `and`, is refused with a named `AuthorizeGrammarRejectionCause` before Publisher ever tries to graft it — there is no request-time surprise from an accepted-but-oddly-shaped expression, because nothing outside the grammar is accepted at all.
 
-**This trades an early, named refusal for a request-time failure in one specific case.** The string form additionally checked a given's *declared type* against the operator used on it, so a scalar comparison against an array-typed given (`org_id = $GROUPS`) was refused at load with a clear message. The current form has no such check: `org_id = $GROUPS` compiles cleanly (Malloy itself does not reject it at that point), grafts cleanly onto the entry point, and only fails when the warehouse tries to execute the comparison, surfacing as a request-time execution error rather than a load-time 424. The failure is safe — it errors and serves no rows — but it lands as a warehouse error, not a diagnostic on the author's own line:
+**The operator is fixed by the given's arity, so a scalar/array mismatch is a load-time refusal, not a request-time warehouse error.** `org_id in $GROUPS` requires `GROUPS` to be declared as an array type; `region = $REGION` requires `REGION` to be declared scalar. Either mismatch is `operator_arity_mismatch` at load, naming the source — there is no `upper(region) = $REGION`, `region like $PAT`, or `amount + 1 > $AMOUNTMIN` shape to reach the warehouse with the wrong comparison, because none of those parse as a term in the first place.
 
-```
-Conversion Error: Type VARCHAR with value 'org1' can't be cast to the destination
-type VARCHAR[] when casting from source column org_id
-```
+**Negation is banned outright, not merely warned about.** `not (org_id in $GROUPS)` is `compound_boolean` at load. The empty-given inversion the retired warning (W2) used to flag — "in nothing" negated matches every row — cannot occur, because there is no way to write a negated term at all.
 
-If you write a gate comparing a row field to an array-typed given, use `in`, not `=`/`!=`/`>`/`<` — and note `org_id = $GROUPS` and `org_id ? $GROUPS` are the same comparison node, so neither spelling escapes it. `in` against a *scalar*-typed given (`owner in $ROLE`) is still refused — that one is ordinary Malloy type-checking, not anything `#(authorize)`-specific, so it still fails at load.
-
-**A negated membership test is accepted, with a load-time warning.** `not (org_id in $GROUPS)` used to be refused outright by the string form's grammar. The current form accepts it — G1 only asks "does this compile as a scalar boolean", which a negation satisfies — and it filters correctly for a non-empty given. The warning (W2) exists because an **empty** given then matches every row rather than none (the negation of "in nothing" is "true" for every row), the opposite of what `in` alone does for an empty given. The load succeeds with a warning naming the source; decide per-gate whether that empty-given behavior is what you want. The warning is a best-effort signal, never a gate on the load: it matches the `not (... in $GIVEN)` shape, and other spellings of the same inversion — `(org_id in $GROUPS) = false`, a `pick`, a negating function — will not trigger it, so treat its absence as no evidence either way.
-
-**A given with a declared default is refused outright, whether or not the expression is field-less.** The string form's "vacuous admin-override atom" check applied only to a `<given> <operator> <literal>` atom (`$ROLE = 'admin'` with `ROLE` defaulting to `'blocked'`); a field-referencing comparison against a defaulted given was checked separately and less strictly. **G4** is now a single, unconditional check: *any* given the gate expression references, anywhere in it — including one reached through a bare reference to another dimension (`#(authorize) authorized` over `dimension: authorized is $ROLE = 'analyst'`) — must be declared with no default. An unsupplied given would otherwise silently resolve to its default and admit or exclude rows the gate meant not to, so this is refused at load rather than reasoned about case by case — declare every given a gate references with no default.
+**A given with a declared default is refused outright, unconditionally.** **G4** (`validateSourceLineGateGivenUsage` in `gate_dimension.ts`) checks that *any* given a gate references carries no default. An unsupplied given would otherwise silently resolve to its default and admit or exclude rows the gate meant not to, so this is refused at load rather than reasoned about case by case — declare every given a gate references with no default.
 
 **A given the gate references that is not on the model's own given surface fails at load too, with no separate check needed for it.** The gate's expression is validated by compiling it as a probe query against the model's own given namespace, so an undeclared or out-of-reach given fails that compile with Malloy's own error before anything `#(authorize)`-specific runs. The reach is the same one hop [givens.md](givens.md) describes for the ambient namespace: import the given (`import { GROUPS } from "…"`) if it lives further away.
 
@@ -188,30 +234,104 @@ source: orders_summary is orders_raw -> {
 } extend {}
 ```
 
+## The `#(source-authorize)` route
+
+`#(source-authorize)` is a second annotation route: a gate that is a rule about the CALLER (a
+source-level term, `'literal' <op> $GIVEN`) rather than about the row. It shares the grammar,
+declaration position, and load-time validation described above — see [Declaring Gates](#declaring-gates)
+and [Expression Language](#expression-language) — with three things specific to it:
+
+- **Every term must be source-level.** A row-level term (a field path on the left) inside a
+  `#(source-authorize)` body is refused at load as `row_level_term_in_source_authorize`, naming the
+  rewrite: move the term to `#(authorize)`. The `false` deny-all is accepted on this route too, and
+  denies on either route denies both — see [Enforcement](#enforcement).
+- **It inherits through `extend` the same way `#(authorize)` does, evaluated per route.** An
+  extension that declares its own `#(source-authorize)` replaces the base's on that route only; it
+  still carries whatever `#(authorize)` gate it inherited (or declared) unchanged, and vice versa. A
+  source that inherits `#(authorize)` from its base but declares its own `#(source-authorize)` is
+  correctly "own" for one route and "inherited" for the other.
+- **It ANDs with the row-level `#(authorize)` gate — it never bypasses it.** There is deliberately no
+  spelling anywhere in this grammar for "admit and skip the row filter": a source gated by both
+  `#(authorize) org_id in $GROUPS` and `#(source-authorize) 'finance' in $GROUPS` grafts both, and a
+  caller must satisfy each independently. A caller it does not admit on this route gets the same
+  **200 with zero rows** shape as any other gate.
+
+```malloy
+given:
+  ORG_ID :: string
+  GROUPS :: string[]
+
+#(authorize) org_id = $ORG_ID
+#(source-authorize) 'finance' in $GROUPS
+source: orders is duckdb.table('orders.parquet') extend {}
+```
+
+The API reports the two routes separately. `authorize` carries the row-level route's effective texts
+(this includes a pure source-level `#(authorize)` body, the convenience form below); `sourceAuthorize`
+carries the `source-authorize` route's own effective texts only. See `Source.sourceAuthorize` in
+`api-doc.yaml`.
+
+**The source-level convenience form under `#(authorize)` still exists and is a different thing.**
+`#(authorize) 'analyst' = $ROLE` is a source-level TERM on the `authorize` ROUTE, the form already
+covered in [Declaring Gates](#declaring-gates), and it is reported under `authorize`, not
+`sourceAuthorize`. Reach for `#(source-authorize)` when the caller-rule needs to stay visible as its
+own thing in introspection (`get_context`, the API's `sourceAuthorize` field) and AND separately
+alongside a row-level gate; a source-level term does not need the separate route to be enforced, it
+already works under plain `#(authorize)`.
+
+**`/compile`'s presence-not-truth rule applies identically to this route.** A caller supplying any
+`GROUPS` (right or wrong) clears the decidability check for a `#(source-authorize)` term exactly as
+it does for `#(authorize)` (see [Enforcement](#enforcement)), and `includeSql` returns SQL ungrafted
+with either route's `where:`. This is not new behavior introduced by the second route: it was already
+true of a source-level term before `#(source-authorize)` existed.
+
 ## Semantics
 
 ### OR semantics
 
-**A source may declare at most one `#(authorize)` annotation, so combine conditions with `or` inside that one expression** — there is no longer a way to stack several `#(authorize)` annotations on one source to mean OR; a second one fails the load, naming both:
+**`or` is not accepted anywhere in a gate body — `compound_boolean` at load, unconditionally.** Repeats on the same source AND rather than OR (see [Declaring Gates](#declaring-gates)), so there is still no way to express disjunction on a single source: not by writing `or` in the expression, and not by declaring more than one `#(authorize)` note — that combines conditions, it does not offer a choice between them.
+
+The replacement pattern is two sources instead of one disjunction: give each admitted population its own extension source, each with its own conjunctive gate, over the same base. Every ordinary term must reference a given — see [Declaring Gates](#declaring-gates) — but `false` is a deliberate exception (below), so a base can still be locked outright:
 
 ```malloy
 given:
-  ROLE :: string
-  TENANT :: string
+  TENANTS :: string[]
 
-#(authorize) $ROLE = 'admin' or $TENANT = 'acme'
-source: orders is duckdb.table('orders.parquet') extend {}
+// Locked: nobody queries this directly.
+#(authorize) false
+source: orders_base is duckdb.table('orders.parquet') extend {}
+
+// Each admitted population is its own extension with its own gate.
+#(authorize) tenant in $TENANTS
+source: orders_for_tenants is orders_base extend {}
 ```
 
-`orders` is queryable by an admin **or** by an acme-tenant caller. This is a real change from the retired string form, which read multiple stacked `#(authorize) "<expr>"` annotations on one source as an implicit disjunction (`(a) or (b)`) — that stacking no longer exists; every OR has to be written out in the single gate expression.
+A caller who would have satisfied one arm of an old `or` now queries the extension whose gate their given satisfies, instead of a single source whose gate tries to satisfy everyone at once.
 
-To give one role access to every source in a file, declare the same admin-override sub-expression as one arm of each source's own gate rather than reaching for a model-wide gate — a file-level override existed for this once; it is deprecated (see [Declaring Gates](#declaring-gates)).
+The same shape is also the admin escape hatch: add a further extension over the same locked base whose gate is a source-level convenience term rather than another arm of the row-level rule.
+
+```malloy
+given:
+  ORG_ID :: string[]
+  GROUPS :: string[]
+
+#(authorize) false
+source: orders_base is duckdb.table('orders.parquet') extend {}
+
+#(authorize) org_id in $ORG_ID
+source: orders is orders_base extend {}
+
+#(authorize) 'admin' in $GROUPS
+source: orders_admin is orders_base extend {}
+```
+
+Each extension replaces the base's `false` with its own rule. Gates AND on both routes with no exception, so there is deliberately no spelling for "admit and skip the row filter" here: `orders_admin`'s gate is still evaluated exactly like `orders`'s, it just restricts nothing per row because a source-level term is constant across every row. The disjunction between an ordinary caller and an admin one is expressed the only way this grammar allows a disjunction: as two entry points, never as `or` inside one gate.
 
 ### The entry point, and only the entry point
 
 Authorize is checked on the source the query **enters through** — the run target. A gate answers "who may query this source", not "who may read everything reachable beneath it".
 
-- **Joins are not gated.** A gate on a source reached only via `join_*` **does not fire** — at any depth (A→B→C), aliased, across files, declared in a query-local `join_one` inside a `-> { … }` refinement, or as a member of a joined composite. `run: joiner -> { … }` where `joiner` joins a base gated `#(authorize) false` returns rows. **This is the rule authors have to design around:** joining sensitive data into an ungated source publishes it. Put the gate on the source callers enter through, and use [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) (`include { public: …, private: * }`) to control what an extension re-exposes.
+- **Joins are not gated.** A gate on a source reached only via `join_*` **does not fire** — at any depth (A→B→C), aliased, across files, declared in a query-local `join_one` inside a `-> { … }` refinement, or as a member of a joined composite. `run: joiner -> { … }` where `joiner` joins a gated base returns rows regardless of the base's own gate. **This is the rule authors have to design around:** joining sensitive data into an ungated source publishes it. Put the gate on the source callers enter through, and use [access modifiers](https://docs.malloydata.dev/documentation/experiments/include) (`include { public: …, private: * }`) to control what an extension re-exposes.
 - **A gate MAY reference a field on a joined source — that is not the same as the joined source's own gate firing.** `#(authorize) childtable.name = $BOB` declared on the entry point itself is enforced: the join it needs is emitted as part of the entry point's own build. The rule above is unchanged — a gate declared ON `childtable` still does not fire when `childtable` is only reached via a join from an ungated entry point. Referencing a joined field from the entry point's *own* gate, and a joined source's *own* gate firing, are two different things; only the first is supported.
 - **Extend: own gate replaces, otherwise the base's carries.** `source: b is a extend { … }` is governed by `b`'s own `#(authorize)` annotation when it declares one — that replacement is the [curated-extension idiom](#recommended-pattern-locked-base-and-curated-extensions). When `b` declares none, Malloy copies `a`'s annotation onto `b` by reference, so `a`'s gate still applies to `b` too. That holds however `b` is decorated: a render tag or doc comment on `b` does not remove it.
 - **A derivation that drops the column a gate reads fails CLOSED** — see [Row-level gates](#row-level-gates) above, and the known rename-collision hole there.
@@ -246,7 +366,7 @@ source: salaries_tagged is salaries extend {
 }
 
 // (3) Its own gate REPLACES the base's — the curated-extension idiom.
-#(authorize) $ROLE = 'hr'
+#(authorize) 'hr' = $ROLE
 source: salaries_hr is salaries extend {
   measure: avg_salary is avg(salary)
 }
@@ -265,8 +385,8 @@ source: headcount_by_dept is duckdb.table('departments') extend {
 | Entry point | Verdict | Why |
 | --- | --- | --- |
 | `run: salaries -> …` | **no rows** always | its own `false` |
-| `run: salaries_plain -> …` | **no rows** always | inherited `false` (1) |
-| `run: salaries_tagged -> …` | **no rows** always | inherited `false`; the tag is irrelevant (2) |
+| `run: salaries_plain -> …` | **no rows** always | inherited lock (1) |
+| `run: salaries_tagged -> …` | **no rows** always | inherited lock; the tag is irrelevant (2) |
 | `run: salaries_hr -> …` | no rows unless `ROLE = 'hr'`; 403 if `ROLE` is unsupplied | own gate replaced the base's (3) |
 | `run: salaries_derived -> …` | **no rows** always | derivation carried the base's gate (4) |
 | `run: headcount_by_dept -> …` | **returns rows** | no gate at the entry point; the join is not traced (5) |
@@ -303,7 +423,7 @@ source: customers_raw is duckdb.table('customers.parquet') extend {}
 
 // Extension: re-exposes a curated subset and adds an analyst-role gate.
 // `private: *` hides every other column on the base.
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: customers_marketing is customers_raw include {
   public: name, region, signup_date
   private: *
@@ -312,7 +432,7 @@ source: customers_marketing is customers_raw include {
 }
 
 // A second extension with a different gate and field surface.
-#(authorize) $REGION = 'us-west'
+#(authorize) 'us-west' = $REGION
 source: customers_us_west is customers_raw include {
   public: name, region, signup_date, lifetime_value
   private: *
@@ -320,8 +440,8 @@ source: customers_us_west is customers_raw include {
 ```
 
 - `run: customers_raw -> …` → **200 with no rows** (gate is `false`; nothing is readable).
-- `run: customers_marketing -> …` → allowed with `$ROLE = 'analyst'`; the consumer can only touch `name`, `region`, `signup_date`. Supplying no `$ROLE` at all is a 403, since the gate's given cannot bind.
-- `run: customers_us_west -> …` → allowed with `$REGION = 'us-west'`, on a different surface.
+- `run: customers_marketing -> …` → allowed with `ROLE: 'analyst'`; the consumer can only touch `name`, `region`, `signup_date`. Supplying no `ROLE` at all is a 403, since the gate's given cannot bind.
+- `run: customers_us_west -> …` → allowed with `REGION: 'us-west'`, on a different surface.
 
 The `include { … private: * }` layer is what controls which base columns each extension can re-expose; each extension's own gate gates consumer access to that curated surface. The base's constant-`false` gate is a defense-in-depth backstop against a direct `run: customers_raw`. Remember the fail-closed rename-collision hole above: an `include { … }` that drops a column a gate reads and a later `rename:` that re-populates the exact same name can misbind the gate to the wrong data.
 
@@ -349,16 +469,16 @@ There is one documented exception, [the authorize bypass](#authorize-bypass-for-
 | `POST /…/query` | Gate the run-target source; deny → zero rows where the filter applied, 403 where the field could not be resolved. Skipped entirely when the request carries `x-publisher-bypass-authorize: true`. |
 | `POST /…/projects/…/query` (legacy alias) | Gate as above. Accepts no bypass — it exists for pre-rename SDK compatibility and passes no `givens` either, so a gated source is denied there regardless. Use the `/environments/…` route. |
 | Notebook cell `GET` | Gate each cell that runs a query. Accepts no bypass. |
-| `POST /…/compile` | Gate the named source the submitted text targets (early, before compiling, plus a compiled-source backstop). `/compile` never runs the query, so the backstop cannot attach a filter; it admits a gate it can decide without running it and denies anything else. **"Decidable" is presence, not truth:** a gate referencing NO given is admitted whichever way it resolves — a constant `false` included — as is one whose every given the caller supplied, right or wrong. Only a gate with an unsupplied given denies. Note that `includeSql` then returns the **ungrafted** SQL, without the gate's `where:`. Accepts no bypass. |
+| `POST /…/compile` | Gate the named source the submitted text targets (early, before compiling, plus a compiled-source backstop). `/compile` never runs the query, so the backstop cannot attach a filter; it admits a gate it can decide without running it and denies anything else. **"Decidable" is presence, not truth:** a gate referencing NO given is admitted whichever way it resolves — the `false` deny-all included — as is one whose every given the caller supplied, right or wrong. Only a gate with an unsupplied given denies. Note that `includeSql` then returns the **ungrafted** SQL, without the gate's `where:`. Accepts no bypass. |
 | MCP `execute_query` | Routes through the query path; a denial surfaces as `isError: true` naming the source. Sends no bypass. |
 
 **Fail-closed.** Anything that stops the graft landing denies rather than admits. Where two *sources* gate one entry point — its own gate plus one carried from the source it derives from — each is grafted separately, which AND-s them.
 
 ### Validation
 
-Authorize gates are validated at **model load** (compile-only, no execution). A misdeclared gate (more than one on a source, a payload that doesn't compile as a boolean, an unreachable given, a given with a default) fails the load with **HTTP 424** (`ModelCompilationError`), naming the source and the underlying reason. Fix the model before it serves.
+Authorize gates are validated at **model load** (compile-only, no execution). A misdeclared gate (a payload that doesn't compile as a boolean, a duplicate given or field path across a source's repeated notes on the same route, an unreachable given, a given with a default) fails the load with **HTTP 424** (`ModelCompilationError`), naming the source and the underlying reason. Fix the model before it serves.
 
-**There is no separate field-less-vs-field-referencing carve-out any more.** The retired string form's row-level grammar treated a gate reading no row field as a special class, refused per-source rather than per-model so one field-less gate published under the old rules couldn't take a whole model file out of service. The current form has no such split: G1/G4 apply identically whether or not the expression happens to read a row field, and a field-less gate that references no given at all loads with a **warning** (W1, [Row-level gates](#row-level-gates)) rather than any refusal.
+**There is no separate field-less-vs-field-referencing carve-out any more.** A row-level term and a source-level term are validated the same way — G4 applies identically to both. Every ordinary term must reference exactly one given (`missing_given_reference`); the sole field-less body still accepted is the `false` deny-all (see [Declaring Gates](#declaring-gates)). **W1 (a gate reading no given at all) still fires for it** — `false` genuinely references none — and loads with a warning naming the source; read it as confirmation the gate is a fixed predicate rather than as a mistake to fix. **W2 (a negated membership test) is unreachable code today**: the grammar refuses that shape outright (`compound_boolean`) before that logic ever runs. See [Row-level gate metrics](#row-level-gate-metrics).
 
 **A gate must resolve at every entry point through which the source declaring it is reached, and an entry point where it cannot is closed rather than opened.** Where the entry point declares its **own** `#(authorize)` annotation, a validation failure (G1/G4) is the author's own mistake and package load fails with a 424 naming the source. Where the entry point only **inherits** the annotation via `extend` and its own `except:`/`accept:`/`rename:` drops a field the gate reads, the load does not abort: it warns naming the affected entry point, and that entry point alone denies every request with a 403 (see [Row-level gates](#row-level-gates) for the fail-closed behavior this replaces, and the rename-collision hole that is the one way it can still misfire). This is distinct from *inheriting* a gate that still resolves (see the worked example above and [row-level-access.md](row-level-access.md#row-level-authorize)): there, the filter runs inside the base's own build, before the deriving source's projection ever applies, so a derived source that projects the gated column away still serves correctly filtered — there is no need to keep an inherited gate's column in the projection.
 
@@ -382,7 +502,7 @@ with Malloy's own failure for an unsupplied one, means a gate given the caller o
 request before anything executes rather than silently resolving to a default; and `in` against an
 empty array compiles to a live `WHERE FALSE`, so an empty or omitted array-typed given denies rather
 than matching everything. None of the three depends on what the predicate looks like — a gate that
-is a bare `false`, a multi-arm `or`, or a joined-field comparison all rest on the same floor. What is
+is a single row-level term, a source-level term, a constant `false`, or a joined-field comparison all rest on the same floor. What is
 *not* structural is everything the [known limitations](#known-limitations) above cover: a join that
 doesn't carry the gate, a rename-collision that misbinds it to the wrong column, a scalar/array
 mismatch that only fails at the warehouse. Those are gaps in the specific model, not in the mechanism.
@@ -390,7 +510,7 @@ mismatch that only fails at the warehouse. Those are gaps in the specific model,
 `#(authorize)` evaluates expressions over **request-supplied givens**. There is no authentication in Publisher's query path: a given is whatever the caller sends. So:
 
 - **Authorize is a real boundary only behind a trusted tier.** The intended deployment is Publisher behind an embedding application that authenticates end users and sets givens (role, tenant, region) from its own *verified* context, with the query/MCP API network-isolated from untrusted callers. In that setup the gate enforces the trusted tier's policy.
-- **It does not defend against a caller who sets their own givens.** Exposed directly to untrusted users, anyone can send `{"ROLE":"admin"}` and pass a `$ROLE = 'admin'` gate. Do not treat `#(authorize)` as end-user authn/authz on a public endpoint.
+- **It does not defend against a caller who sets their own givens.** Exposed directly to untrusted users, anyone can send `{"ROLE":"admin"}` and pass an `'admin' = $ROLE` gate. Do not treat `#(authorize)` as end-user authn/authz on a public endpoint.
 - **Identity-bound givens** — a verified token or trusted-proxy header populating reserved "system givens" the caller cannot override — is a planned milestone that would make authorize a standalone boundary. It is not implemented yet.
 
 ### Authorize bypass, for trusted data-management callers
@@ -414,11 +534,11 @@ Every use is counted (`publisher_authorize_bypass_total`, labelled `entry_point`
 Two more counters cover row-level gates specifically:
 
 - `publisher_authorize_row_level_total`, labelled `decision` — exactly two values, `denied_by_gate` and `empty_after_filter`. `denied_by_gate` is the fail-closed refusal when a gate's expression could not be resolved against the entry point; `empty_after_filter` is a normal 200 with zero rows after the filter matched none, which is not an error. A provably constant-`false` gate is not a third case: it runs the `where: false` graft and records `empty_after_filter`.
-- `publisher_authorize_row_level_rejected_total`, labelled `cause`. The label set is generated from the `RowLevelGateRejectionCause` union (`ROW_LEVEL_GATE_REJECTION_CAUSES` in `authorize.ts`, which is the single source of truth — read it there rather than trusting this list) and has seven members: `source_line_gate_no_given_reference`, `source_line_gate_negated_membership`, `unreachable_given`, `entry_point_unexpressible`, `legacy_string_gate`, `given_usage_unresolvable`, `unclassifiable_condition`. The first two are **non-fatal** — the model still loads: W1 (the gate reads no given at all) and W2 (a negated membership test). A hard load-time failure (G1, G4) fails the whole model load but does **not** increment this counter today — it surfaces only as a load error on the package, not as a metric. `entry_point_unexpressible` is the inherited-and-unexpressible case above: the load warns naming the entry point rather than aborting, and that one entry point denies every request. `unreachable_given` and `given_usage_unresolvable` are request-time classification failures — a gate whose given lands off the model's own surface, or whose lifted condition references a field the graft target cannot resolve. `unclassifiable_condition` is a lifted condition carrying no usable expression at all, an IR shape not otherwise expected. `legacy_string_gate` is the only cause that fires for a **load refusal**, and it is the one worth alerting on — but only for the string-form annotation the load-time check can see. The out-of-tree case (a string-form gate declared outside the package tree, see [Declaring Gates](#declaring-gates)) never increments **this** counter: the lift fails at request time and the classifier returns `rejected` with no `cause` at all, so that gate denies every request while staying invisible here. It is not invisible everywhere — it still books `denied_by_gate` on `publisher_authorize_row_level_total` above, which is the rate to alert on. Do not watch for a steady rate on *this* counter to find one; what identifies the string form specifically is a debug log naming the graft target.
+- `publisher_authorize_row_level_rejected_total`, labelled `cause`. The label set is generated from the `RowLevelGateRejectionCause` union (`ROW_LEVEL_GATE_REJECTION_CAUSES` in `authorize.ts`, which is the single source of truth — read it there rather than trusting this list). `entry_point_unexpressible` is the inherited-and-unexpressible case above: the load warns naming the entry point rather than aborting, and that one entry point denies every request. `unreachable_given` and `given_usage_unresolvable` are request-time classification failures — a gate whose given lands off the model's own surface, or whose lifted condition references a field the graft target cannot resolve. `unclassifiable_condition` is a lifted condition carrying no usable expression at all, an IR shape not otherwise expected. `legacy_string_gate` is the only cause that fires for a **load refusal**, and it is the one worth alerting on — but only for the string-form annotation the load-time check can see. A hard load-time failure of the grammar itself (`AuthorizeGrammarRejectionCause`, see [Expression Language](#expression-language)) fails the whole model load but does **not** increment this counter today — it surfaces only as a load error on the package, not as a metric. `source_line_gate_negated_membership` is unreachable in practice now: the grammar refuses that shape (`compound_boolean`) before this classifier ever runs. `source_line_gate_no_given_reference` is NOT unreachable — it still fires (as a non-fatal load warning, W1) for the one field-less body the grammar still accepts, the `false` deny-all (see [Declaring Gates](#declaring-gates)).
 
 `publisher_authorize_guard_rejected_total`, labelled `field` (`query` | `source_name` | `query_name` | `compile_source`), counts requests rejected with 400 for declaring an `#(authorize)` annotation in caller-submitted Malloy text.
 
-**This is an interim answer, not the intended one.** The shape that keeps the decision with the model author is identity-bound givens (above) — a reserved system given the caller cannot set, so an author writes `#(authorize) $ROLE = 'analyst' or $SYSTEM_CALLER = 'indexer'` and a source they never opted in stays gated. This header removes the gate globally instead, for callers the deployment trusts wholesale. When identity-bound givens land, this should narrow or go.
+**This is an interim answer, not the intended one.** The shape that keeps the decision with the model author is identity-bound givens (above) — a reserved system given the caller cannot set. That shape does not compose with `or` any more than any other disjunction does (see [OR semantics](#or-semantics)), so it would need its own extension source (`#(authorize) 'indexer' = $SYSTEM_CALLER`) rather than a second arm bolted onto an existing gate. This header removes the gate globally instead, for callers the deployment trusts wholesale. When identity-bound givens land, this should narrow or go.
 
 ## Known limitations
 
@@ -428,7 +548,7 @@ Two more counters cover row-level gates specifically:
 - **An extension's own gate replaces the base's** (see [above](#the-entry-point-and-only-the-entry-point)) — that is the curated-extension idiom, so pair locked bases with access modifiers to keep the re-exposed column surface deliberate. (An extension with no gate of its own carries the base's.)
 - **A gated source is a schema oracle wherever its gate expression resolves.** The expression-resolution refusal (see [Enforcement](#enforcement)) fires only when the gate's expression cannot be resolved against the entry point at all. Otherwise the gate is grafted into the query and evaluated with it, so compilation happens first, and a caller gets Malloy's own compile errors for the gated source even when the gate then admits them no rows: a malformed probe (`group_by: no_such_field`) returns "field is not defined", confirming whether a column exists. Behind the trusted tier the exposure is a column name, not data — see [security-posture.md](security-posture.md#row-level-authorize-rows-are-protected-the-schema-is-not).
 - **`/compile` raw SQL is not gated.** The gate covers named Malloy sources; `/compile` still compiles unrestricted, so a caller could read a gated table's schema/SQL via raw `duckdb.sql(...)`. Closing this (restricted compilation on `/compile`, as on `/query`) is tracked as a follow-up; until then keep `/compile` behind the trusted tier.
-- **A wrong-shape gate can fail loud at load, or fail confusingly at request time, depending on exactly what it does** (see [Row-level gates](#row-level-gates)). A scalar comparison against an array-typed given loads cleanly and only crashes when the warehouse executes it; a negated membership test loads with a warning rather than being refused. Both are new relative to the retired string form's stricter, load-time-only grammar.
+- **A gate expressing genuine disjunction (admit population A OR population B) has no single-source spelling.** `or` is refused at load (`compound_boolean`), and repeated `#(authorize)` notes on the same source AND together rather than OR, so the replacement is two sources — see [OR semantics](#or-semantics). A constant `false` deny-all is still legal (see [Declaring Gates](#declaring-gates)), but there is no constant admit-everyone counterpart: `true` stays refused.
 - **A gate can only reference a given on the entry model's own surface.** A gate naming a given the entry model does not declare is refused outright (`unreachable_given`) rather than guessed at, because Malloy merges only one level of `import` and the gate would otherwise silently bind that given's *declaration default* instead of the caller's value. Practical effect: to gate a source through a base two or more import hops away, `import { NAME } from …` the SAME declaration into the entry model rather than writing a fresh `given: NAME …` of your own — importing carries the base's given identity (and its no-default-ness) forward; re-declaring mints a new one. **Do not "fix" `unreachable_given` by re-declaring the name with a default** — see the warning [above](#validation): G4 checks that re-declaration too, at every entry point the gate reaches, and refuses the load if it carries one, however many import hops separate the entry model from the source that declared the gate.
 - **A gate given the caller does not supply denies opaquely.** The gate's givens bind with the query's, so Malloy's own failure for an unsupplied one names it ("Given 'ROLE' has no value and no default"). Publisher maps that back to the same `Access denied for source "…"` 403 — a denied caller is never told which given the gate reads.
 - **A notebook cell that both declares a gated source and runs it in the same cell, with a
@@ -443,41 +563,39 @@ Two more counters cover row-level gates specifically:
 
 ## Runnable example
 
-[`examples/governed-analytics`](../examples/governed-analytics) gates a real source with a two-armed
-disjunction — an admin override plus a tenant allow-list, in one gate — in
+[`examples/governed-analytics`](../examples/governed-analytics) gates a real source with a
+row-level allow-list term in
 [`secured.malloy`](../examples/governed-analytics/secured.malloy):
 
 ```malloy
 given:
-  ROLE :: string
-  TENANT :: string
+  TENANTS :: string[]
 
-#(authorize) $ROLE = 'admin' or $TENANT = 'acme' or $TENANT = 'globex' or $TENANT = 'initech'
+#(authorize) tenant in $TENANTS
 source: orders_secured is orders_base extend {
-  where: $ROLE = 'admin' or tenant = $TENANT   // row-level scoping
   ...
 }
 ```
 
-Neither given carries a default — the gate references both, and G4 refuses a referenced given that
-has one. Because `where:` references the same two givens, a caller must send **both** keys on every
-request (the one not on their path can be sent blank); an omitted key fails to resolve and denies
-with a 403, there being no default left to fall back to. Against a running server, the
-`governed-analytics` package ships in the default `examples` environment (see the
+`TENANTS` carries no default — the gate references it, and G4 refuses a referenced given that has
+one. There is no separate admin role: a caller whose identity resolves to every tenant on the list
+is handed all of them and simply sees all of them, through the same gate as everyone else. An
+omitted `TENANTS` fails to resolve and denies with a 403, there being no default left to fall back
+to. Against a running server, the `governed-analytics`
+package ships in the default `examples` environment (see the
 [example's README](../examples/governed-analytics/README.md)):
 
 ```bash
 API=http://localhost:4000/api/v0/environments/examples/packages/governed-analytics/models
 
-# No identity at all → denied with a 403: neither given resolves, so the gate
+# No identity at all → denied with a 403: TENANTS never resolves, so the gate
 # never binds to evaluate against.
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
   -d '{"query":"run: orders_secured -> by_status"}'                                        # → 403
 
-# Admin, TENANT sent blank → allowed (all rows). TENANT still has to be present
-# on the request even though this caller's access doesn't depend on it.
+# Resolved to every tenant → allowed (all rows).
 curl -s -X POST $API/secured.malloy/query -H 'content-type: application/json' \
-  -d '{"query":"run: orders_secured -> by_status","givens":{"ROLE":"admin","TENANT":""}}'  # → 200
+  -d '{"query":"run: orders_secured -> by_status","givens":{"TENANTS":["acme","globex","initech"]}}'  # → 200
 ```
 
 The row-level half of that source — how `where:` narrows an *allowed* caller to their own rows — is

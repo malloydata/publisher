@@ -36,10 +36,16 @@ import {
 } from "./annotations";
 import {
    assertNoAuthorizeNearMisses,
-   collectAuthorizeExprs,
-   collectAuthorizeNearMisses,
+   AUTHORIZE_ROUTE,
+   AUTHORIZE_ROUTES,
+   authorizeAnnotationRoute,
+   collectAuthorizeExprsForRoute,
+   collectAuthorizeNearMissesAllRoutes,
    containsAuthorizeAnnotationTag,
+   SOURCE_AUTHORIZE_ROUTE,
    type AuthorizeMap,
+   type AuthorizeMapGroup,
+   type AuthorizeOwnNotesMap,
    type MisplacedAuthorizeAnnotation,
 } from "./authorize";
 import { parseFilters, type FilterDefinition } from "./filter";
@@ -84,8 +90,23 @@ export interface ExtractedSource {
     * protection, and a consumer treating an absent value as "unrestricted" — the
     * natural reading — gets it wrong for a locked base whose extension carries
     * any stray annotation.
+    *
+    * Scoped to the `authorize` ROUTE only — a source gated solely by
+    * `#(source-authorize)` reports `undefined` here even though it is
+    * enforced (via the internal `authorizeMap`, which carries both routes).
+    * The `source-authorize` route's own effective texts are reported
+    * separately, in `sourceAuthorize` below.
     */
    authorize: string[] | undefined;
+   /**
+    * Effective `#(source-authorize)` expressions gating this source, mirroring
+    * `authorize` above but for the `source-authorize` route ONLY — a
+    * convenience-form `#(authorize)` body (a pure source-level predicate
+    * written on the `authorize` route) reports under `authorize`, not here.
+    * Undefined when nothing on this route gates the source, even if
+    * `authorize` is present.
+    */
+   sourceAuthorize: string[] | undefined;
 }
 
 export interface ExtractedQuery {
@@ -272,7 +293,7 @@ function considerAuthorizeNoteOwner(
  * have been serving, so it is left for a change that can carry that break.
  *
  * `authorize` (and its `authorizeMap` twin) is the EFFECTIVE gate
- * (own-or-inherited), evaluated as one OR disjunction at request time. It is
+ * (own-or-inherited), evaluated as one AND conjunction at request time. It is
  * both what introspection reports — so it must not understate what gates a
  * source — and what `validateAuthorizeProbes` validates, per entry point;
  * `authorizeOwnNotes` is the companion that tells it which of those entry
@@ -322,25 +343,27 @@ export function extractSourcesFromModelDef(
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
    /**
-    * source name → EVERY `#(authorize)`-tagged note object present on that
-    * source's own annotation level, by TEXT/presence alone — this is the
-    * pre-attribution check, restored deliberately. Feeds ONLY
-    * `findLegacyStringGates`/`assertNoLegacyStringGate` and
-    * `findMultipleAuthorizeGates`/`assertAtMostOneAuthorizeGate`, both LOAD
-    * REFUSALS: they must fire on what a source's own annotations literally
-    * carry (a plain `extend {}`/`except:`/`accept:` derivation that adds its
-    * own `#(authorize)` alongside an inherited-by-reference one really does
-    * carry two notes, and declaring two gates is refused regardless of which
-    * one attribution would credit as "declared here"). Do NOT swap this for
-    * {@link attributedAuthorizeOwnNotes} at either call site — narrowing it
-    * to attribution silently turns a load refusal into a fail-open (a
-    * source's own second gate goes unenforced instead of aborting the load;
-    * see the block-form regression test in
-    * `source_line_authorize_integration.spec.ts`).
+    * source name → route → EVERY authorize-tagged note object present on
+    * that source's own annotation level for that route, by TEXT/presence
+    * alone — this is the pre-attribution check, restored deliberately. Feeds
+    * ONLY `findLegacyStringGates`/`assertNoLegacyStringGate`, a LOAD REFUSAL: it
+    * must fire on what a source's own annotations literally carry (a plain
+    * `extend {}`/`except:`/`accept:` derivation that adds its own legacy-form
+    * `#(authorize)` alongside an inherited-by-reference one really does carry
+    * a legacy note, and the refusal must not miss it because attribution
+    * would credit some OTHER source as "declared here"). Do NOT swap this for
+    * {@link attributedAuthorizeOwnNotes} at that call site — narrowing it to
+    * attribution silently turns a load refusal into a fail-open (a source's
+    * own legacy-form gate goes unenforced instead of aborting the load; see
+    * the block-form regression test in
+    * `source_line_authorize_integration.spec.ts`). Keyed per route so
+    * `gate_classification.ts`'s `assertAuthorizeGrammarValid` can decide
+    * own-vs-inherited PER ROUTE — a source may own `#(authorize)` but only
+    * inherit `#(source-authorize)`, or vice versa.
     */
-   authorizeOwnNotes: Map<string, AnnotationNote[]>;
+   authorizeOwnNotes: AuthorizeOwnNotesMap;
    /**
-    * source name → the subset of {@link authorizeOwnNotes} that
+    * source name → route → the subset of {@link authorizeOwnNotes} that
     * `authorizeNoteDeclaredBy` resolved back to THIS struct as the one that
     * actually WROTE the note (see `considerAuthorizeNoteOwner`'s doc). Feeds
     * ONLY `validateAuthorizeProbes`'s own-vs-inherited diagnostic — whether an
@@ -350,7 +373,7 @@ export function extractSourcesFromModelDef(
     * load refusal: it is deliberately narrower than presence, which is
     * exactly what would reopen finding 1.
     */
-   attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
+   attributedAuthorizeOwnNotes: AuthorizeOwnNotesMap;
 } {
    const filterMap = new Map<string, FilterDefinition[]>();
    const authorizeMap: AuthorizeMap = new Map();
@@ -411,7 +434,7 @@ export function extractSourcesFromModelDef(
          }
       }
       nearMissAuthorize.push(
-         ...collectAuthorizeNearMisses(
+         ...collectAuthorizeNearMissesAllRoutes(
             [
                ...ownLevelNotes(struct.annotations),
                // A near miss one line too low is doubly unenforced, and the
@@ -449,7 +472,7 @@ export function extractSourcesFromModelDef(
          }
       }
       nearMissAuthorize.push(
-         ...collectAuthorizeNearMisses(
+         ...collectAuthorizeNearMissesAllRoutes(
             ownLevelNotes((entry as StructDef).annotations).map(
                (note) => note.text,
             ),
@@ -463,7 +486,7 @@ export function extractSourcesFromModelDef(
    // this refusal doesn't catch.
    for (const struct of derivedStructsReachable(sweptStructs, modelDef)) {
       nearMissAuthorize.push(
-         ...collectAuthorizeNearMisses(
+         ...collectAuthorizeNearMissesAllRoutes(
             [
                ...ownLevelNotes(struct.annotations),
                ...struct.fields.flatMap((field) =>
@@ -479,7 +502,7 @@ export function extractSourcesFromModelDef(
    {
       const folded = modelAnnotations(modelDef);
       nearMissAuthorize.push(
-         ...collectAuthorizeNearMisses(
+         ...collectAuthorizeNearMissesAllRoutes(
             [...(folded.notes ?? []), ...(folded.blockNotes ?? [])].map(
                (note) => note.text,
             ),
@@ -488,14 +511,14 @@ export function extractSourcesFromModelDef(
    }
    assertNoAuthorizeNearMisses(nearMissAuthorize);
 
-   // source name → the source's OWN-level `#(authorize)`-tagged note
+   // source name → route → the source's OWN-level authorize-tagged note
    // objects, by presence — see the return type's doc for why this stays
    // presence-based and which two load refusals depend on that.
-   const authorizeOwnNotes = new Map<string, AnnotationNote[]>();
-   // source name → the same notes, narrowed to the ones `authorizeNoteDeclaredBy`
-   // attributes to THIS struct — see the return type's doc. Fed to
-   // `validateAuthorizeProbes` ONLY.
-   const attributedAuthorizeOwnNotes = new Map<string, AnnotationNote[]>();
+   const authorizeOwnNotes: AuthorizeOwnNotesMap = new Map();
+   // source name → route → the same notes, narrowed to the ones
+   // `authorizeNoteDeclaredBy` attributes to THIS struct — see the return
+   // type's doc. Fed to `validateAuthorizeProbes` ONLY.
+   const attributedAuthorizeOwnNotes: AuthorizeOwnNotesMap = new Map();
 
    // A `##(authorize)` on the model itself (file-level) is deprecated: no
    // code path reads a model's own notes for authorize purposes any more, so
@@ -509,12 +532,17 @@ export function extractSourcesFromModelDef(
    // `"file"`-kind finding carries no name to tell two of them apart, so
    // pushing one per note would only repeat the same bullet line N times in
    // the refusal message.
-   if (
-      containsAuthorizeAnnotationTag(
-         (modelAnnotations(modelDef).notes ?? []).map((note) => note.text),
-      )
-   ) {
-      misplacedAuthorize.push({ kind: "file" });
+   {
+      const fileNoteTexts = ownLevelNoteTexts(modelAnnotations(modelDef));
+      if (containsAuthorizeAnnotationTag(fileNoteTexts)) {
+         misplacedAuthorize.push({
+            kind: "file",
+            route:
+               fileNoteTexts
+                  .map((text) => authorizeAnnotationRoute(text))
+                  .find((r): r is string => r !== undefined) ?? AUTHORIZE_ROUTE,
+         });
+      }
    }
 
    const sources: ExtractedSource[] = Object.values(modelDef.contents)
@@ -564,30 +592,45 @@ export function extractSourcesFromModelDef(
          // ancestor's (see the header note on why own-blockNotes alone is not
          // enough). A malformed annotation propagates (model fails to load)
          // rather than silently dropping the gate.
+         //
+         // Computed PER ROUTE (`AUTHORIZE_ROUTES`: `authorize`,
+         // `source-authorize`) and independently own-wins-or-inherits per
+         // route — an own `#(source-authorize)` note never sheds an
+         // inherited `#(authorize)` gate, or vice versa, because each route's
+         // own-notes read and ancestor walk run as their own separate call.
          const ownNotes = ownLevelNoteTexts(struct.annotations);
-         const ownGates = collectAuthorizeExprs(ownNotes);
          // Presence-based: every `#(authorize)`-tagged note this struct's OWN
          // annotations carry, regardless of who wrote it. Feeds the two load
          // refusals — see the return type's doc for why they must NOT read
-         // the attributed map instead.
+         // the attributed map instead. Bucketed by route below.
          const ownAuthorizeNotes = ownLevelNotes(struct.annotations).filter(
             (note) => containsAuthorizeAnnotationTag([note.text]),
          );
-         authorizeOwnNotes.set(sourceName, ownAuthorizeNotes);
-         // Attribution-narrowed: only the notes `authorizeNoteDeclaredBy`
-         // resolved back to THIS struct as the one that wrote them — feeds
-         // `validateAuthorizeProbes`'s own-vs-inherited decision ONLY.
-         // `ownGates`/`authorize`/`authorizeMap` below keep reading by TEXT
-         // regardless of who declared it: the effective gate genuinely
-         // applies to an inheriting entry point, only this diagnostic SIGNAL
-         // changes. See `considerAuthorizeNoteOwner`'s doc for the mechanism
-         // and why simpler alternatives don't work.
-         attributedAuthorizeOwnNotes.set(
-            sourceName,
-            ownAuthorizeNotes.filter(
-               (note) => authorizeNoteDeclaredBy.get(note) === struct,
-            ),
-         );
+         const ownNotesByRoute = new Map<string, AnnotationNote[]>();
+         const attributedOwnNotesByRoute = new Map<string, AnnotationNote[]>();
+         for (const route of AUTHORIZE_ROUTES) {
+            const notesForRoute = ownAuthorizeNotes.filter(
+               (note) => authorizeAnnotationRoute(note.text) === route,
+            );
+            ownNotesByRoute.set(route, notesForRoute);
+            // Attribution-narrowed: only the notes `authorizeNoteDeclaredBy`
+            // resolved back to THIS struct as the one that wrote them — feeds
+            // `validateAuthorizeProbes`'s own-vs-inherited decision ONLY, per
+            // route (a source may own one route's note while merely
+            // inheriting the other's). `authorize`/`authorizeMap` below keep
+            // reading by TEXT regardless of who declared it: the effective
+            // gate genuinely applies to an inheriting entry point, only this
+            // diagnostic SIGNAL changes. See `considerAuthorizeNoteOwner`'s
+            // doc for the mechanism and why simpler alternatives don't work.
+            attributedOwnNotesByRoute.set(
+               route,
+               notesForRoute.filter(
+                  (note) => authorizeNoteDeclaredBy.get(note) === struct,
+               ),
+            );
+         }
+         authorizeOwnNotes.set(sourceName, ownNotesByRoute);
+         attributedAuthorizeOwnNotes.set(sourceName, attributedOwnNotesByRoute);
          // Shared with `./gate_classification`'s `gateExprsForOwnAnnotations`
          // via the `./gate_registry_walk` walk both call into, rather than
          // walking `struct.annotations.inherits` by hand here: that
@@ -598,29 +641,58 @@ export function extractSourcesFromModelDef(
          // annotations chain is exactly how `Z`'s gate went missing from this
          // extraction while still being enforced at request time.
          //
-         // `inheritedGroups` may hold MORE THAN ONE group (a query-source base
-         // gate and, separately, its composite-member's own gate) — see
-         // `AuthorizeMap`'s doc for why those stay separate groups rather than
-         // one concatenated list. `effectiveGroups` is always exactly one
-         // group when `ownGates` is used: a source's own annotations are
-         // genuinely one disjunction, grouping only ever splits gates that
-         // came from different declaring sources.
-         const inheritedGroups =
-            ownGates.length === 0
-               ? effectiveAncestorGateExprs(struct as SourceDef, modelDef)
-               : [];
-         const effectiveGroups =
-            ownGates.length > 0 ? [ownGates] : inheritedGroups;
-         let authorize: string[] | undefined;
-         if (effectiveGroups.length > 0) {
-            authorizeMap.set(sourceName, effectiveGroups);
-            // The wire shape stays a flat `string[]` for introspection — see
-            // `AuthorizeMap`'s doc. Flattening here (rather than keeping
-            // groups on the wire) is safe because nothing downstream of this
-            // field re-derives enforcement from it; only `authorizeMap`
-            // (kept internal) drives `validateAuthorizeProbes`.
-            authorize = effectiveGroups.flat();
+         // Per route, `inheritedGroups` may hold MORE THAN ONE group (a
+         // query-source base gate and, separately, its composite-member's own
+         // gate) — see `AuthorizeMap`'s doc for why those stay separate
+         // groups rather than one concatenated list. `effectiveGroups` for a
+         // route is always exactly one group when that route's own exprs are
+         // used: a source's own annotations of ONE route are genuinely one
+         // conjunction, grouping only ever splits gates that came from
+         // different declaring sources.
+         const groupsForSource: AuthorizeMapGroup[] = [];
+         // Each route's OWN groups, held separately per route so the two WIRE
+         // fields (`authorize`, `sourceAuthorize`) can each report only their
+         // own route's effective texts, even though `authorizeMap` (internal)
+         // carries both.
+         const routeGroupsByRoute = new Map<string, string[][]>();
+         for (const route of AUTHORIZE_ROUTES) {
+            const ownExprsForRoute = collectAuthorizeExprsForRoute(
+               ownNotes,
+               route,
+            );
+            const groupsForRoute =
+               ownExprsForRoute.length > 0
+                  ? [ownExprsForRoute]
+                  : effectiveAncestorGateExprs(
+                       struct as SourceDef,
+                       modelDef,
+                       route,
+                    );
+            for (const exprs of groupsForRoute) {
+               groupsForSource.push({ route, exprs });
+            }
+            routeGroupsByRoute.set(route, groupsForRoute);
          }
+         if (groupsForSource.length > 0) {
+            authorizeMap.set(sourceName, groupsForSource);
+         }
+         // The wire shape stays a flat `string[]` per route for
+         // introspection. `suggestGivenLookup`'s consumers
+         // (`package_load_worker.ts`, `model.ts`'s `getDashboardModelFacts`)
+         // read only `authorize`, so a given referenced solely by a
+         // `#(source-authorize)` term is still not suggested; a known,
+         // accepted gap, not a fail-open — the gate itself still enforces via
+         // `authorizeMap`.
+         const routeGroupsToFlatWire = (
+            groups: string[][] | undefined,
+         ): string[] | undefined =>
+            groups && groups.length > 0 ? groups.flat() : undefined;
+         const authorize = routeGroupsToFlatWire(
+            routeGroupsByRoute.get(AUTHORIZE_ROUTE),
+         );
+         const sourceAuthorize = routeGroupsToFlatWire(
+            routeGroupsByRoute.get(SOURCE_AUTHORIZE_ROUTE),
+         );
          const views: ExtractedView[] = struct.fields
             .filter((field) => field.type === "turtle")
             .filter((turtle) =>
@@ -724,6 +796,11 @@ export function extractSourcesFromModelDef(
                   kind: "field",
                   name: sourceName,
                   fieldName,
+                  route:
+                     fieldAuthorizeNotes
+                        .map((note) => authorizeAnnotationRoute(note.text))
+                        .find((r): r is string => r !== undefined) ??
+                     AUTHORIZE_ROUTE,
                });
                continue;
             }
@@ -738,6 +815,11 @@ export function extractSourcesFromModelDef(
                kind: "field",
                name: sourceName,
                fieldName,
+               route:
+                  fieldAuthorizeNotes
+                     .map((note) => authorizeAnnotationRoute(note.text))
+                     .find((r): r is string => r !== undefined) ??
+                  AUTHORIZE_ROUTE,
             });
          }
 
@@ -748,6 +830,7 @@ export function extractSourcesFromModelDef(
             filters,
             givens,
             authorize,
+            sourceAuthorize,
          };
       });
 
@@ -783,6 +866,10 @@ export function extractQueriesFromModelDef(modelDef: ModelDef): {
       .map((queryObj) => ({
          kind: "query" as const,
          name: queryObj.as || queryObj.name,
+         route:
+            ownLevelNoteTexts(queryObj.annotations)
+               .map((text) => authorizeAnnotationRoute(text))
+               .find((r): r is string => r !== undefined) ?? AUTHORIZE_ROUTE,
       }));
    const queries: ExtractedQuery[] = namedQueries.map((queryObj) => ({
       name: queryObj.as || queryObj.name,

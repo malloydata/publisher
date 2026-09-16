@@ -217,6 +217,14 @@ interface SourceContextEntry {
     * are the givens to supply". See docs/authorize.md.
     */
    authorize?: SourceContextAuthorize[];
+   /**
+    * The `#(source-authorize)` route's own gates, reported separately from
+    * `authorize` above — a rule about the CALLER rather than the row, ANDed
+    * with any `authorize` gate rather than bypassing it. Same report-only
+    * caveats apply. A source gated ONLY by an unconditional deny on either
+    * route never reaches this card at all — see the collector's drop.
+    */
+   sourceAuthorize?: SourceContextAuthorize[];
    /** Filters the source declares via `#(filter)`. */
    filters?: SourceContextFilter[];
 }
@@ -331,6 +339,8 @@ interface SourceCardInfo {
    docs?: string;
    givens?: SourceContextGiven[];
    authorize?: SourceContextAuthorize[];
+   /** The `#(source-authorize)` route's own gates — see `SourceContextEntry.sourceAuthorize`. */
+   sourceAuthorize?: SourceContextAuthorize[];
    filter_params?: SourceContextFilter[];
    /** Publisher extension. Complete, so `[]` means "declares none". */
    joins: SourceContextJoin[];
@@ -386,6 +396,8 @@ function toSourceResults(
    searchTexts: Map<number, string> = new Map(),
    /** Serialize each entity's Malloy expression; off unless asked for. */
    includeCode = false,
+   /** Deny-all sources collectEntities already dropped; refuse to mint a bare card for one. */
+   droppedSources: Set<string> = new Set(),
 ): SourceCard[] {
    const bySource = new Map<string, SourceCard>();
 
@@ -396,6 +408,13 @@ function toSourceResults(
       // Type narrowing only: collectEntities excludes the one entity kind
       // that can lack a source, so no ranked row reaches here nameless.
       if (!name) return undefined;
+      // Defense in depth: collectEntities already keeps every dropped source's
+      // name off every entity's `source` field, but this is the one place that
+      // can mint a card out of a bare name, so it is where a future path that
+      // forgets the drop gets caught instead of leaking the name and shape.
+      if (droppedSources.has(droppedSourceKey(modelPathFallback, name))) {
+         return undefined;
+      }
       let entry = bySource.get(name);
       if (!entry) {
          const ctx = sourceContext.get(name);
@@ -413,6 +432,9 @@ function toSourceResults(
                ...(ctx?.doc ? { docs: ctx.doc } : {}),
                ...(ctx?.givens ? { givens: ctx.givens } : {}),
                ...(ctx?.authorize ? { authorize: ctx.authorize } : {}),
+               ...(ctx?.sourceAuthorize
+                  ? { sourceAuthorize: ctx.sourceAuthorize }
+                  : {}),
                ...(ctx?.filters ? { filter_params: ctx.filters } : {}),
                joins: ctx?.joins ?? [],
             },
@@ -635,6 +657,7 @@ function finishRanked(args: {
    packageName: string;
    searchTexts: Map<number, string>;
    includeCode: boolean;
+   droppedSources: Set<string>;
 }): { sources: SourceCard[]; totalSources: number; entitiesDropped: number } {
    const windowed = windowBySource(args.rows, args.max);
    const sources = toSourceResults(
@@ -644,6 +667,7 @@ function finishRanked(args: {
       args.packageName,
       args.searchTexts,
       args.includeCode,
+      args.droppedSources,
    );
    return {
       sources,
@@ -1156,6 +1180,38 @@ function collectJoinedFields(args: {
 }
 
 /**
+ * Whether `apiSource` is gated by an unconditional `#(authorize) false` / or
+ * `#(source-authorize) false` — on EITHER route, since the two routes AND
+ * together and one bare-`false` conjunct denies every caller regardless of
+ * the other route or any given supplied. Keys on the deny, not the route, so
+ * `#(authorize) false` and `#(source-authorize) false` are treated
+ * identically. Case- and whitespace-insensitive: the grammar parser
+ * lowercases `FALSE` only for its own comparison, so the wire payload can
+ * still carry it uppercase (`authorize_grammar.ts`).
+ */
+function isUnconditionalDenyAuthorize(apiSource: {
+   authorize?: string[];
+   sourceAuthorize?: string[];
+}): boolean {
+   const isDeny = (expr: string) => expr.trim().toLowerCase() === "false";
+   return (
+      (apiSource.authorize ?? []).some(isDeny) ||
+      (apiSource.sourceAuthorize ?? []).some(isDeny)
+   );
+}
+
+/**
+ * The `droppedSources` identity key: `(modelPath, sourceName)`, not the bare
+ * name. Two models can expose a same-named source with different gates
+ * (`governance`/`sourceContext`/`cardFor` resolve that by first-model-wins,
+ * collapsing them into one card), and a deny-all in one must not black out
+ * the other's card — see {@link collectEntities}.
+ */
+function droppedSourceKey(modelPath: string, name: string): string {
+   return `${modelPath}\u0000${name}`;
+}
+
+/**
  * Walk every model in the package and collect sources, their views,
  * dimension/measure fields and declared joins, and named queries. Returns the
  * full set; the optional source-level drill-down is applied by the caller
@@ -1173,6 +1229,11 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
 
    const entities: Entity[] = [];
    const governance = new Map<string, SourceGovernance>();
+   // Names of every source dropped for an unconditional deny-all gate, package-
+   // wide. Computed once per model, before either the source or the query loop
+   // runs, so both can skip the same names and neither can resurrect a card for
+   // one the other dropped (see the query loop and cardFor below).
+   const droppedSources = new Set<string>();
    let n = 0;
    for (const apiModel of models) {
       // path is optional in the generated API types; skip models without one.
@@ -1196,13 +1257,32 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       // still index, just without provenance.
       const modelDef = model.getModelDef?.();
 
+      for (const apiSource of apiSources) {
+         if (apiSource.name && isUnconditionalDenyAuthorize(apiSource)) {
+            droppedSources.add(droppedSourceKey(modelPath, apiSource.name));
+         }
+      }
+
       for (const sourceInfo of sourceInfos) {
          const sourceName = sourceInfo.name;
+         const apiSource = apiSources.find((c) => c.name === sourceName);
+         // An unconditional `#(authorize) false` / `#(source-authorize) false`
+         // (either route, any case/whitespace — see isUnconditionalDenyAuthorize)
+         // denies every caller with no given able to change that, so there is
+         // nothing this card can offer an agent that queries it. Drop the
+         // source entirely rather than list it and let the agent learn only
+         // from the 403; every OTHER gate stays reported, because a caller's
+         // givens are untrusted here and evaluating a real rule would be
+         // forgeable (see execute_query_tool.ts). Keyed by (modelPath, name):
+         // two models can expose a same-named source, and a deny-all in one
+         // must not black out the other's card.
+         if (droppedSources.has(droppedSourceKey(modelPath, sourceName))) {
+            continue;
+         }
          const provenance = readFieldProvenance(modelDef, sourceName);
          // First model wins, matching the entity dedupe below, so a source's
          // identity and its governance always come from the same model.
          if (!governance.has(sourceName)) {
-            const apiSource = apiSources.find((c) => c.name === sourceName);
             if (apiSource) {
                governance.set(sourceName, {
                   givens: (apiSource.givens ?? []).flatMap((given) =>
@@ -1225,6 +1305,12 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
                      expression,
                      given_names: referencedGivenNames(expression),
                   })),
+                  sourceAuthorize: (apiSource.sourceAuthorize ?? []).map(
+                     (expression) => ({
+                        expression,
+                        given_names: referencedGivenNames(expression),
+                     }),
+                  ),
                   filters: (apiSource.filters ?? []).flatMap((filter) =>
                      filter.name && filter.type
                         ? [
@@ -1336,6 +1422,13 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
          // never appearing in `returned`. Exclude it here, before it can be
          // counted anywhere, rather than at serialization.
          if (!query.sourceName) continue;
+         // Same deny-all drop as the source loop above: a query over a locked
+         // source is still a route to learn the source's name and shape exist.
+         if (
+            droppedSources.has(droppedSourceKey(modelPath, query.sourceName))
+         ) {
+            continue;
+         }
          entities.push({
             id: String(n++),
             kind: "query",
@@ -1358,7 +1451,7 @@ async function collectEntities(pkg: Package): Promise<CollectedModel> {
       seen.add(key);
       return true;
    });
-   return { entities: collapseAliases(deduped), governance };
+   return { entities: collapseAliases(deduped), governance, droppedSources };
 }
 
 /** What the compiled model says about querying a source, beyond its schema. */
@@ -1366,12 +1459,15 @@ interface SourceGovernance {
    givens: SourceContextGiven[];
    filters: SourceContextFilter[];
    authorize: SourceContextAuthorize[];
+   sourceAuthorize: SourceContextAuthorize[];
 }
 
 /** The entities of a package, plus the per-source governance beside them. */
 interface CollectedModel {
    entities: Entity[];
    governance: Map<string, SourceGovernance>;
+   /** Sources dropped for an unconditional deny-all gate; see isUnconditionalDenyAuthorize. */
+   droppedSources: Set<string>;
 }
 
 /**
@@ -1516,6 +1612,8 @@ interface PackageIndex {
    entityCount: number;
    /** Per-source context, keyed by source name. Built once with the index. */
    sourceContext: Map<string, SourceContextEntry>;
+   /** Sources dropped for an unconditional deny-all gate; cardFor refuses these. */
+   droppedSources: Set<string>;
 }
 
 /** Longest a one-line summary may be, matching the hosted API's own cap. */
@@ -1561,6 +1659,9 @@ function buildSourceContext(
          ...(summary ? { oneLineSummary: summary } : {}),
          ...(gates?.givens.length ? { givens: gates.givens } : {}),
          ...(gates?.authorize.length ? { authorize: gates.authorize } : {}),
+         ...(gates?.sourceAuthorize.length
+            ? { sourceAuthorize: gates.sourceAuthorize }
+            : {}),
          ...(gates?.filters.length ? { filters: gates.filters } : {}),
       });
    }
@@ -1621,6 +1722,7 @@ async function getPackageIndex(
       index,
       entityCount: entities.length,
       sourceContext: buildSourceContext(collected),
+      droppedSources: collected.droppedSources,
    };
    indexCache.set(pkg, built);
    logger.debug("[MCP Tool getContext] Built and cached entity index", {
@@ -1644,13 +1746,13 @@ const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most 
 - Read warnings and any error/stale field before trusting a number.
 - A source's joins list is complete: empty means it declares none, so write that relationship inline.
 - Read a source's doc before querying: it carries grain and population rules its fields do not.
-- authorize means gated: supply the givens it names or the query is denied.
+- authorize/sourceAuthorize mean gated; a deny-all source never appears here.
 
 ## Parameters
 search_targets: one per concept, {target_type, search_text}; target_type is source|dimension|measure|view|join|dimensional_value, omitting search_text enumerates that type. scopes: {environment, package} + optional model_path, source, entity_name. limit caps sources (max 150). offset pages a listing. filter_params sets #(filter) values. user_prompt: the question asked. include_code adds each field's expression as code.
 
 ## Response
-sources[], best first. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize (report-only), filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, matched_targets, relevance, entity_id. A joined field's name IS its dotted path; use it verbatim.
+sources[], best first. source_info: resource_id (environment/package/model_path/source) -> execute_query's environmentName/packageName/modelPath/sourceName; docs (… = truncated), one_line_summary, complete joins, givens, authorize/sourceAuthorize, filter_params. entities[] nest under it: name, entity_type (dimension/measure/view/join/query), description, data_type, relationship (fan-out), join_path, aliases, matched_targets, relevance, entity_id. A joined field's name is its dotted path; use it verbatim.
 ranking, returned of total_available sources, next_offset on a listing, warnings[].
 Semantic fills relevance: no sources = nothing cleared the floor; below_cutoff_count of total_entities rejected. "lexical" adds retrieval_reason; only "indexing" is worth a retry.
 
@@ -1747,7 +1849,7 @@ async function runContextQuery(
       );
    }
 
-   const { byId, index, sourceContext } = pkgIndex;
+   const { byId, index, sourceContext, droppedSources } = pkgIndex;
    const uri = buildMalloyUri(
       { environment: environmentName, package: packageName },
       "get-context",
@@ -1912,6 +2014,7 @@ async function runContextQuery(
          packageName,
          new Map(),
          request.includeCode,
+         droppedSources,
       );
       // A listing is deterministic catalog order, not a ranking, and
       // Publisher has no query-usage signal to fill the hosted API's
@@ -2140,6 +2243,7 @@ async function runContextQuery(
          packageName,
          searchTexts: searchTextsByIndex,
          includeCode: request.includeCode,
+         droppedSources,
       });
       return jsonResource(uri, {
          sources,
@@ -2241,6 +2345,7 @@ async function runContextQuery(
       packageName,
       searchTexts: searchTextsByIndex,
       includeCode: request.includeCode,
+      droppedSources,
    });
    const envelope = {
       sources,

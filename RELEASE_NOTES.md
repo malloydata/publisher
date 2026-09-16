@@ -31,6 +31,62 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] (BREAKING) — `#(authorize)` accepts a narrow grammar, and `#(partition)` is gone
+
+`#(authorize)`'s body was, until now, any Malloy boolean expression handed to the compiler
+unmodified — including shapes that only failed at request time (a scalar/array mismatch against a
+warehouse conversion error) or that loaded with a warning instead of a refusal (a negated membership
+test). It now parses its own narrow grammar before any of that: one or more terms joined only by
+`and`, each a row-level term (`field_path <op> $GIVEN`) or a source-level term (`'literal' <op>
+$GIVEN`), with `<op>` fixed by the given's declared arity (`in` for a list, `=` for a scalar).
+Anything else — `or`, `not`, `!=`, `<`/`>`/`<=`/`>=`, a function call, a bare field reference, a
+literal on the right of a row-level term, a scalar/array mismatch — is refused at load with a named
+cause instead of surfacing as a request-time surprise or a load warning. See
+[docs/authorize.md](docs/authorize.md) for the full grammar and every refusal.
+
+This closes real gaps, and keeps one idiom deliberately narrow rather than dropping it: **`#(authorize)
+false` still parses, as an unconditional deny — the locked-base-plus-curated-extensions pattern
+still has a legal spelling.** Every ORDINARY term must reference a given, so `#(authorize) true` and
+`#(authorize) 1 = 1` are refused (an admit-everyone gate is not access control at all, and stays
+refused on purpose), and combine what used to be one `or`-joined gate into two extension sources,
+each with its own conjunctive gate — see [docs/authorize.md § OR semantics](docs/authorize.md#or-semantics).
+
+**A source may now declare more than one `#(authorize)` note, and repeats AND together instead of
+failing the load.** `assertAtMostOneAuthorizeGate` refused a second note outright in every released
+version from 0.2.0 through 0.3.0, so no model that loads on a released version already has two of a
+source's own notes to reinterpret; this is new capability, not a reinterpretation of an existing one.
+Separately, and more consequential: **a two-note declaring ancestor two or more `import` hops away
+now ANDs both notes where it previously did not.** That case moves served rows silently, with no
+load error to flag it, so it is the one part of this change worth auditing for rather than trusting
+to surface on its own — look for any ancestor reached through more than one `import` hop that
+declares more than one `#(authorize)` note.
+
+`#(source-authorize)` is a new annotation route: a gate that is a rule about the CALLER (a
+`'literal' <op> $GIVEN` term) rather than the row. It shares the grammar and inheritance rules above,
+and it **ANDs with the row-level `#(authorize)` gate on the same source — it is not a bypass**, and
+there is deliberately no spelling anywhere in the grammar for admitting a caller while skipping the
+row filter. See [docs/authorize.md § The `#(source-authorize)` route](docs/authorize.md#the-source-authorize-route).
+
+`get_context` now drops a source whose gate is an unconditional `false`, on either route, from its
+listing entirely, rather than reporting it as queryable and letting an agent learn only from the
+403/empty result. Every other gate keeps being reported as before, because a caller's givens over
+that MCP path are untrusted and evaluating a real (non-constant) rule there would be forgeable.
+
+`#(partition)` is removed entirely. It predated `given:`/`#(authorize)` as Publisher's own
+tenant-scoping annotation and has been redundant with a row-level `#(authorize)` gate since that
+landed; a model still carrying it — on a `source:` line, on a field inside one, reached through a
+join, on a top-level `query:` statement, or as a file-level `##(partition)` — fails to load, naming
+it, with no fallback interpretation. Migrate a `#(partition)` source to an equivalent `#(authorize)`
+gate (or a scoping `where:`, if the intent was convenience rather than a boundary — see
+[docs/row-level-access.md](docs/row-level-access.md)) before upgrading.
+
+One risk worth flagging for anyone who kept a retired-form `#(authorize)` gate declared outside a
+package's own tree (see [docs/authorize.md § Declaring Gates](docs/authorize.md#declaring-gates)):
+that gate was already denying every request with no compile-time hint, and the grammar restriction
+does not change that — a leftover marker of that shape stays inert rather than becoming newly
+enforced, so it will not surface as a load failure on upgrade. Search for it explicitly rather than
+relying on the release to find it.
+
 ## [0.3.0] — a dashboard's description is its narrative header, and it renders as markdown
 
 A dashboard could already carry a block of prose and was throwing it away at the last step. Malloy

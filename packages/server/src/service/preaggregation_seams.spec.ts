@@ -689,6 +689,91 @@ source: orders is duckdb.sql("""
 });
 
 // ---------------------------------------------------------------------------
+// A `#(source-authorize)`-only gate must block routing exactly like
+// `#(authorize)` does — `hasAnyAuthorizeNote`'s sweep is widened to recognize
+// either route (see `authorize.ts`'s `authorizeNoteContent`), so a model
+// carrying ONLY the caller-identity route must not fall through to the
+// storage/pre-aggregation companion, which carries no `#(authorize)`
+// annotation bytes at all and so could never enforce it downstream.
+// ---------------------------------------------------------------------------
+
+describe("pre-aggregation and a source-authorize gate", () => {
+   const SOURCE_AUTHORIZE_GATED = `##! experimental { persistence composite_sources givens }
+
+given:
+  ROLE :: string[]
+
+#(source-authorize) 'finance' in $ROLE
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+
+   it(
+      "denies routing to the rollup and answers from the live (row-filterable) source instead",
+      async () => {
+         const pkg = await loadPackage(SOURCE_AUTHORIZE_GATED);
+         // Admitted: the caller's ROLE includes 'finance', so the source-level
+         // term is satisfied and every row is served.
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+               { ROLE: ["finance"] },
+            ),
+         ).toEqual([
+            { category: "A", total: 30 },
+            { category: "B", total: 30 },
+         ]);
+         // Not admitted: zero rows, not an error — the term ANDs into a row
+         // filter that every row fails, same enforcement shape as
+         // `#(authorize)`.
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+               { ROLE: ["sales"] },
+            ),
+         ).toEqual([]);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "meters blocked_by_row_level_gate for a source-authorize-only entry point",
+      async () => {
+         const harness = await startMetricsHarness();
+         resetMaterializationTelemetryForTesting();
+         try {
+            const pkg = await loadPackage(SOURCE_AUTHORIZE_GATED);
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+               { ROLE: ["finance"] },
+            );
+            expect(
+               await harness.collectCounter(
+                  "publisher_storage_serve_routing_total",
+                  { outcome: "blocked_by_row_level_gate" },
+               ),
+            ).toBe(1);
+         } finally {
+            resetMaterializationTelemetryForTesting();
+            await harness.shutdown();
+         }
+      },
+      { timeout: 60000 },
+   );
+});
+
+// ---------------------------------------------------------------------------
 // The routing pre-check's own reachability. Blocking a gated entry point from
 // the storage / pre-aggregation tiers is guarded by a model-wide "is there an
 // authorize note ANYWHERE" sweep, so a deployment with rollups and no gates

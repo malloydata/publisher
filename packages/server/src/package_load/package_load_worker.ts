@@ -87,16 +87,20 @@ import { recordRowLevelGateRejected } from "../authorize_metrics";
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { ModelCompilationError } from "../errors";
 import {
-   assertAtMostOneAuthorizeGate,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
    findLegacyStringGates,
-   findMultipleAuthorizeGates,
    validateAuthorizeProbes,
    type AuthorizeMap,
+   type AuthorizeOwnNotesMap,
    type MisplacedAuthorizeAnnotation,
 } from "../service/authorize";
-import { assertPartitionAnnotationsValid } from "../service/gate_classification";
+import {
+   assertAuthorizeGrammarValid,
+   assertNoRetiredRouteMarkers,
+   collectRetiredRouteMarkers,
+   computeGivenDeclaredTypes,
+} from "../service/gate_classification";
 import {
    validateSourceLineGateGivenUsage,
    type ExpandableRefSummary,
@@ -115,7 +119,6 @@ import {
    extractQueriesFromModelDef,
    extractSourcesFromModelDef,
 } from "../service/source_extraction";
-import { type AnnotationNote } from "../service/annotations";
 import {
    malloyGivenToApi,
    type MalloyGiven,
@@ -544,6 +547,7 @@ interface ApiSourceWire {
    filters?: unknown[];
    givens?: unknown[];
    authorize?: string[];
+   sourceAuthorize?: string[];
 }
 interface ApiQueryWire {
    name: string;
@@ -617,8 +621,8 @@ function extractSources(
    filterMap: Map<string, FilterDefinition[]>;
    authorizeMap: AuthorizeMap;
    misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-   authorizeOwnNotes: Map<string, AnnotationNote[]>;
-   attributedAuthorizeOwnNotes: Map<string, AnnotationNote[]>;
+   authorizeOwnNotes: AuthorizeOwnNotesMap;
+   attributedAuthorizeOwnNotes: AuthorizeOwnNotesMap;
 } {
    const {
       sources,
@@ -733,6 +737,10 @@ async function compileMalloyModel(
    } = extractSources(modelDef, givens);
    // Now that each source's EFFECTIVE gate is known, say which givens each
    // `suggest` needs in its request. In place, so the copies on `sources` see it.
+   //
+   // `source.authorize` is scoped to the `authorize` route only (see
+   // `ExtractedSource.authorize`'s doc), so a given referenced only by a
+   // `#(source-authorize)` term is not suggested — a known, accepted gap.
    attachSuggestGivenNames(
       givens,
       suggestGivenLookup(
@@ -744,7 +752,7 @@ async function compileMalloyModel(
    const queryResult = extractQueries(modelDef);
    const queries = queryResult.queries;
    // See the identical check in `Model.create`.
-   assertPartitionAnnotationsValid(modelDef);
+   assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(modelDef));
    // A `#(authorize)` annotation in a position nothing enforces (a top-level
    // `query:` statement, or a field inside a `source:` rather than the
    // `source:` line itself) fails OPEN — see
@@ -763,9 +771,14 @@ async function compileMalloyModel(
       recordRowLevelGateRejected("legacy_string_gate"),
    );
    assertNoLegacyStringGate(legacyStringGates);
-   // A source may declare at most one `#(authorize)` block — see
-   // `findMultipleAuthorizeGates`'s doc. Presence-based, same reason as above.
-   assertAtMostOneAuthorizeGate(findMultipleAuthorizeGates(authorizeOwnNotes));
+   // The body grammar — see `assertAuthorizeGrammarValid`'s doc, same order
+   // as `Model.create`.
+   assertAuthorizeGrammarValid(
+      modelDef,
+      authorizeMap,
+      authorizeOwnNotes,
+      computeGivenDeclaredTypes(givens),
+   );
    // Validate #(authorize) at compile time (shared with Model.create). Throws
    // on an unknown given / source-field reference or a rejected row-level
    // shape; compileOneModel's catch turns it into this model's
@@ -1005,7 +1018,7 @@ async function compileNotebookModel(
       const finalQueryResult = extractQueries(finalModelDef);
       finalQueries = finalQueryResult.queries;
       // See the identical check in `compileMalloyModel` above.
-      assertPartitionAnnotationsValid(finalModelDef);
+      assertNoRetiredRouteMarkers(collectRetiredRouteMarkers(finalModelDef));
       // See the identical check in `compileMalloyModel` above.
       assertNoMisplacedAuthorizeAnnotations([
          ...extracted.misplacedAuthorize,
@@ -1020,8 +1033,11 @@ async function compileNotebookModel(
       );
       assertNoLegacyStringGate(finalLegacyStringGates);
       // See the identical check in `compileMalloyModel` above.
-      assertAtMostOneAuthorizeGate(
-         findMultipleAuthorizeGates(extracted.authorizeOwnNotes),
+      assertAuthorizeGrammarValid(
+         finalModelDef,
+         extracted.authorizeMap,
+         extracted.authorizeOwnNotes,
+         computeGivenDeclaredTypes(finalGivens),
       );
       // Validate #(authorize) at compile time (shared with Model.create). See
       // `validateAuthorizeProbes`'s doc comment for what it validates.
