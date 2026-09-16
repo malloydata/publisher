@@ -71,7 +71,9 @@ All flags exposed by `bin/malloy-publisher --help` have an equivalent env var, s
 | Env var | Equivalent flag | Default | Purpose |
 |---|---|---|---|
 | `PUBLISHER_PORT` | `--port <n>` | `4000` | REST API port. |
-| `PUBLISHER_HOST` | `--host <h>` | `0.0.0.0` | Bind address. |
+| `PUBLISHER_HOST` | `--host <h>` | `0.0.0.0` | REST bind address, and the fallback for MCP. |
+| `MCP_HOST` | `--mcp_host <h>` | `127.0.0.1` | MCP bind address. Takes precedence over `PUBLISHER_HOST`. |
+| `MCP_CORS_ORIGINS` | | (none) | Comma-separated origins allowed cross-origin access to MCP; `*` allows any. Unset means none. |
 | `MCP_PORT` | `--mcp_port <n>` | `4040` | MCP API port. |
 | `PUBLISHER_NO_MCP_CONFIG` | `--no-mcp-config` | `1` **in this image** | Suppresses the `.mcp.json` the server otherwise writes into its working directory on startup. That file exists so an AI agent opened in that directory finds the server; nothing starts an agent session inside the container, and the git-working-tree guard that would normally cover `/publisher` cannot fire because `.dockerignore` excludes `.git`. Left on, every boot would create a root-owned file, which matters if you bind-mount a project directory at `/publisher`. Pass `-e PUBLISHER_NO_MCP_CONFIG=` to turn it back on. Note this is the one env var the image sets for you: `docker run -e PUBLISHER_NO_MCP_CONFIG` (no `=`) and a Compose `environment:` entry with no value both *delete* it when the host does not have it set, which re-enables the write. |
 | `SERVER_ROOT` | `--server_root <path>` | `.` (cwd) at the server level; overridden to `/publisher` by the bundled CMD | Directory the server treats as its working dir. The image's CMD passes `--server_root /publisher` explicitly so the zero-arg `npx` bundled-default trigger doesn't fire inside the container. If you override CMD with your own entrypoint, set `SERVER_ROOT` yourself to keep this behaviour. |
