@@ -603,12 +603,18 @@ def claude(prompt: str, cwd: str, model: str, *, mcp: str | None,
     if tools:
         cmd += ["--allowedTools", *tools]
     # The subprocess, the stream-json parse and the retry are shared with
-    # `agent_harness.spawn_agent`; only the retry predicate differs. `no_events`
-    # retries a dead process or a rate limit and does NOT retry an attempt that
-    # came back with events but no text -- that is a real failed answer, and
-    # re-rolling it would put a second sample where the run records one.
+    # `agent_harness.spawn_agent`; only the retry predicate differs. The
+    # DEFAULT is `no_events`, which retries a dead process or a rate limit and
+    # does NOT retry an attempt that came back with events but no text -- that
+    # is a real failed answer, and re-rolling it would put a second sample
+    # where the run records one. That rule is the ANSWERER's, so it is a
+    # default and not a constant: instrumentation callers pass their own.
+    #
+    # This used to pass `no_events` literally, ignoring the parameter it had
+    # just accepted, so the judge's predicate never reached run_cli and the
+    # judge has never once retried.
     events, _text, stderr, _attempts, _wall = run_cli(
-        cmd, cwd=cwd, timeout=timeout, retry_when=no_events,
+        cmd, cwd=cwd, timeout=timeout, retry_when=retry_when,
         retries=retry, backoff=backoff)
     if not events:
         subtype = "timeout" if "timeout after" in (stderr or "") else "no_output"
@@ -1296,7 +1302,7 @@ def evidence_lines(evidence: dict | None) -> list[str]:
 def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   attempted: int, decided: int, passed: int, near: int,
                   human: int, doubted: list, vetoed: list, alt_path: int,
-                  unscorable: int,
+                  unscorable: int, unparseable: list[str] | None = None,
                   retrieval_mode: str, tally: dict, rs: dict,
                   answerer_cost: float, judge_cost: float,
                   publisher: str, environment: str,
@@ -1332,6 +1338,17 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
              # nobody has established is a DATASET state that no answerer can
              # change. A rate over the wrong denominator hid both.
              f"  unscorable    {unscorable} (no established golden)",
+             # Separate from `unscorable`, which is a DATASET state, and from
+             # `needs_human`, which is a verdict. This is the harness failing
+             # to read its own judge: the case was answered and judged, and the
+             # reply could not be parsed. It counts in none of the verdict
+             # buckets, so without this line it simply left the denominator and
+             # the pass rate was printed over the remainder with nothing said.
+             f"  unreadable    {len(unparseable or [])} (the judge's reply "
+             f"could not be parsed, after retries)"]
+    if unparseable:
+        lines += [f"                {', '.join(sorted(unparseable))}"]
+    lines += [
              f"  cost          ${answerer_cost:.2f} answerer"
              + (f" + ${judge_cost:.2f} judge" if judge_cost else "")]
 
@@ -1960,6 +1977,31 @@ def parse_verdict(text: str) -> dict[str, Any]:
             "gold_status": gs, "gold_note": v.get("gold_note")}
 
 
+def judge_unusable(events: list[dict[str, Any]], text: str) -> bool:
+    """Retry the judge when what came back cannot be scored with.
+
+    `no_text` caught a judge that emitted nothing. It did not catch the more
+    common miss: a judge that emitted PROSE where a JSON object was asked for.
+    That parses to `judge_unparseable`, carries no verdict, and the case then
+    counts in none of match, no_match, near_match or needs_human -- so it
+    leaves the denominator without appearing anywhere, and the printed pass
+    rate is over a set the run never says it shrank. Two cases went that way in
+    one hosted run.
+
+    Retrying is safe HERE and nowhere else. The judge is instrumentation: its
+    output is a reading of the attempt, not a sample of behaviour, so a second
+    reading of the same fixed attempt costs a judge call and biases nothing.
+    The answerer is the opposite, which is why `no_events` stays its default --
+    re-rolling a bad answer would put a second sample where the run records
+    one.
+
+    Reuses `parse_verdict` rather than re-deciding what parseable means; a
+    second definition here would drift from the one that scores.
+    """
+    return no_text(events, text) or (
+        parse_verdict(text).get("reason") == "judge_unparseable")
+
+
 def prediction_for(case: dict[str, Any], att: dict[str, Any],
                    a: argparse.Namespace, art: pathlib.Path,
                    reexec: bool) -> str:
@@ -2233,18 +2275,19 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
                                    prefix="judge-"))
     else:
         work = tempfile.mkdtemp(prefix="judge-")
-    # `no_text` rather than the answerer's `no_events`: a judge that emitted
-    # events but no verdict text parses as needs_human, which drops the case
-    # from every aggregate. The judge is instrumentation, so a retry can only
-    # help -- the measurement-integrity argument against retrying applies to
-    # the answerer alone.
+    # `judge_unusable` rather than the answerer's `no_events`: a judge that
+    # emitted no text, or emitted prose where the JSON object was asked for,
+    # carries no verdict and drops the case out of every aggregate -- and out
+    # of the denominator the pass rate is printed over. The judge is
+    # instrumentation, so a retry can only help; the measurement-integrity
+    # argument against retrying applies to the answerer alone.
     # Six turns, not three: the judge now LOADS skill:eval-judge rather than
     # being handed it, and the load costs a turn before it has read a word of
     # the rubric. Three left it emitting a verdict with the skill still
     # unopened on a bad day.
     events = claude(prompt, work, a.judge_model, mcp=None, turns=6,
                     timeout=300, skills=bool(a.judge_skills),
-                    retry_when=no_text)
+                    retry_when=judge_unusable)
     shutil.rmtree(work, ignore_errors=True)
 
     text = ""
@@ -3015,12 +3058,17 @@ def main(argv: list[str] | None = None) -> int:
     mode, tally = retrieval_summary(attempts.values())
     unscorable = sum(1 for v in verdicts.values()
                      if (v.get("reason") or "").startswith("golden_"))
+    # Read off `verdicts` rather than `scored`, because a case the judge could
+    # not be read on has no gold_status either and must not be filtered out by
+    # the one thing that would have named it.
+    unparseable = sorted(q for q, v in verdicts.items()
+                         if v.get("reason") == "judge_unparseable")
 
     for line in summary_lines(
             out=a.out, set_dir=a.set_dir, events_n=len(events),
             attempted=len(cases), decided=conf, passed=ok, near=near,
             human=human, doubted=doubted, vetoed=vetoed, alt_path=alt,
-            unscorable=unscorable,
+            unscorable=unscorable, unparseable=unparseable,
             retrieval_mode=mode, tally=tally, rs=rs, evidence=evidence,
             coverage_report=coverage_report, cascade=funnel,
             skill_uses=skill_uses,

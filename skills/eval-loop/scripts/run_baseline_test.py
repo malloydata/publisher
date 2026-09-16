@@ -9,6 +9,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import run_baseline as rb  # noqa: E402
@@ -382,6 +383,78 @@ class GoldenForJudge(unittest.TestCase):
         self.assertEqual(rb.golden_for_judge({"value": 7}), "7")
         self.assertIn("unanswerable", rb.golden_for_judge({}))
         self.assertIn("unanswerable", rb.golden_for_judge(None))
+
+
+class AnUnreadableVerdictIsNotLost(unittest.TestCase):
+    """A judge reply that will not parse carries no verdict, so it counts in
+    none of match, no_match, near_match or needs_human. It therefore left the
+    denominator without appearing anywhere, and the pass rate was printed over
+    the remainder. Two cases went that way in one hosted run."""
+
+    GOOD = '{"why":"y","verdict":"match","confidence":9}'
+
+    def test_the_retry_predicate_reaches_run_cli(self):
+        # `claude` accepted `retry_when` and then passed `no_events` literally,
+        # so the judge's predicate never arrived and the judge never retried.
+        with mock.patch.object(rb, "run_cli",
+                               return_value=([], "", "", 1, 0.0)) as run:
+            rb.claude("q", str(pathlib.Path(__file__).parent), "sonnet",
+                      mcp=None, retry_when=rb.judge_unusable)
+        self.assertIs(run.call_args.kwargs["retry_when"], rb.judge_unusable)
+
+    def test_the_answerer_still_defaults_to_no_events(self):
+        # Re-rolling a bad ANSWER would put a second sample where the run
+        # records one. Only the default was ever meant to be the answerer's.
+        with mock.patch.object(rb, "run_cli",
+                               return_value=([], "", "", 1, 0.0)) as run:
+            rb.claude("q", str(pathlib.Path(__file__).parent), "sonnet",
+                      mcp=None)
+        self.assertIs(run.call_args.kwargs["retry_when"], rb.no_events)
+
+    def test_unparseable_prose_is_retried(self):
+        self.assertTrue(rb.judge_unusable([{"type": "assistant"}],
+                                          "The answer looks right to me."))
+
+    def test_no_text_at_all_is_retried(self):
+        self.assertTrue(rb.judge_unusable([], ""))
+
+    def test_a_good_verdict_is_not_retried(self):
+        self.assertFalse(rb.judge_unusable([{"type": "assistant"}], self.GOOD))
+
+    def test_a_verdict_wrapped_in_prose_is_not_retried(self):
+        # `parse_verdict` finds the object inside prose, so this is readable
+        # and re-rolling it would just cost a judge call.
+        self.assertFalse(rb.judge_unusable(
+            [{"type": "assistant"}], f"Here you go:\n{self.GOOD}\nHope that helps"))
+
+    def summary(self, **kw):
+        base = dict(out=pathlib.Path("r"), set_dir=pathlib.Path("s"),
+                    events_n=0, attempted=10, decided=8, passed=4, near=0,
+                    human=0, doubted=[], vetoed=[], alt_path=0, unscorable=0,
+                    retrieval_mode="semantic",
+                    tally={"semantic": 1, "lexical": 0, "unreported": 0},
+                    rs={}, answerer_cost=0.0, judge_cost=0.0, publisher="",
+                    environment="e")
+        return "\n".join(rb.summary_lines(**{**base, **kw}))
+
+    def test_the_summary_names_the_cases_it_could_not_read(self):
+        body = self.summary(unparseable=["cq-07", "cq-02"])
+        self.assertIn("unreadable    2", body)
+        self.assertIn("cq-02, cq-07", body)   # sorted, so a diff is stable
+
+    def test_a_clean_run_still_says_zero(self):
+        # Printed even at zero, for the reason `unscorable` is: a reader must
+        # not have to know the line exists to notice it is missing.
+        body = self.summary()
+        self.assertIn("unreadable    0", body)
+
+    def test_it_is_not_folded_into_unscorable(self):
+        # `unscorable` is a DATASET state no answerer can change. This is the
+        # harness failing to read its own judge. Counting them together would
+        # send someone to fix answer keys that are fine.
+        body = self.summary(unscorable=3, unparseable=["cq-02"])
+        self.assertIn("unscorable    3", body)
+        self.assertIn("unreadable    1", body)
 
 
 class HostedProbe(unittest.TestCase):
