@@ -4,17 +4,11 @@
 import "@malloydata/malloy-explorer/styles.css";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";
-import {
-   Box,
-   IconButton,
-   Snackbar,
-   Stack,
-   Tooltip,
-   Typography,
-} from "@mui/material";
+import { Box, Snackbar, Stack, Tooltip, Typography } from "@mui/material";
 import React, { useState } from "react";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { FloatingIconButton } from "../FloatingIconButton";
 import { Loading } from "../Loading";
 import { ModelCell } from "./ModelCell";
 import { ModelExplorer } from "./ModelExplorer";
@@ -151,29 +145,18 @@ export default function Model({
                      />
 
                      {/* Magnifying glass icon */}
-                     <IconButton
+                     <FloatingIconButton
+                        aria-label="Expand results"
                         sx={{
                            position: "absolute",
                            top: "90px",
                            right: "4px",
-                           backgroundColor: "rgba(255, 255, 255, 0.9)",
-                           "&:hover": {
-                              backgroundColor: "rgba(255, 255, 255, 1)",
-                           },
-                           width: "32px",
-                           height: "32px",
                            zIndex: 2,
                         }}
                         onClick={() => setDialogOpen(true)}
                      >
-                        <SearchIcon
-                           sx={{
-                              fontSize: "18px",
-                              color: "text.secondary",
-                              marginBottom: "5px",
-                           }}
-                        />
-                     </IconButton>
+                        <SearchIcon />
+                     </FloatingIconButton>
                   </Stack>
                )}
 

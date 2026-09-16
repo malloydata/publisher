@@ -166,7 +166,7 @@ export function GivensPanel({
          >
             <Typography
                variant="subtitle2"
-               sx={{ fontWeight: 600, color: "#333" }}
+               sx={{ fontWeight: 600, color: "text.primary" }}
             >
                {title ?? "Parameters"}
             </Typography>

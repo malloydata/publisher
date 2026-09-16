@@ -14,6 +14,7 @@ import Typography from "@mui/material/Typography";
 import { useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
 import DashboardPage from "../DashboardPage/DashboardPage";
+import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
 import NotebookPage from "../NotebookPage/NotebookPage";
 
 function ModelPage() {
@@ -60,11 +61,24 @@ function ModelPage() {
       !modelPath.endsWith(".malloy") &&
       !modelPath.endsWith(".malloynb")
    ) {
+      const slug = modelPath.slice("dashboards/".length);
+      // `dashboards/<slug>/edit` opens the same dashboard in the builder. A
+      // slug never contains a slash (nested dashboard directories are not
+      // discovered), so the one segment can only be this.
+      if (slug.endsWith("/edit")) {
+         return (
+            <DashboardEditPage
+               environmentName={params.environmentName}
+               packageName={params.packageName}
+               dashboardName={slug.slice(0, -"/edit".length)}
+            />
+         );
+      }
       return (
          <DashboardPage
             environmentName={params.environmentName}
             packageName={params.packageName}
-            dashboardName={modelPath.slice("dashboards/".length)}
+            dashboardName={slug}
          />
       );
    }

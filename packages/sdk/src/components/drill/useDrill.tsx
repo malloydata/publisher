@@ -8,11 +8,14 @@ import {
    DRILL_SELF,
    drillDestinations,
    drillGivenName,
+   drillValueLabel,
+   drillValueToFilter,
    humanizeSlug,
    resolveDrill,
    type DrillClickPayload,
    type DrillIntent,
    type DrillNavigation,
+   type DrillRowsRequest,
 } from "./resolveDrill";
 
 export interface UseDrillOptions {
@@ -43,6 +46,15 @@ export interface UseDrillOptions {
     * cannot know which document the reader is in, so the surface names itself.
     */
    selfLabel?: string;
+   /**
+    * Show the rows behind a grouped value. With it, EVERY dimension cell is
+    * clickable: one with no `# drill` this surface can honour opens the rows;
+    * one with a drill behaves exactly as it does without this option, since a
+    * drill is the author's own instruction for that value. Omitted on a
+    * surface with nowhere to show them, and cells then click only where a tag
+    * says so.
+    */
+   onRows?: (request: DrillRowsRequest) => void;
 }
 
 /**
@@ -70,11 +82,12 @@ export interface UseDrillResult {
 }
 
 interface DrillMenuState {
-   intent: DrillIntent;
+   intent?: DrillIntent;
    destinations: string[];
    event?: MouseEvent;
    top: number;
    left: number;
+   label: string;
 }
 
 /**
@@ -91,6 +104,7 @@ export function useDrill({
    onSelf,
    selfLabel = "Filter this view",
    canSelf,
+   onRows,
 }: UseDrillOptions): UseDrillResult {
    // A cell inside the renderer's own DOM is the anchor, and this component
    // holds no ref to it, so the menu is positioned from the click coordinates.
@@ -128,35 +142,60 @@ export function useDrill({
       [onNavigate, onSelf],
    );
 
+   // The rows behind this click, when the surface shows rows and the click is
+   // on a grouped value. A header names the field and has no value; a measure
+   // has no rows of its own; an empty cell is more likely a misclick.
+   const rowsBehind = useCallback(
+      (payload: DrillClickPayload): DrillRowsRequest | undefined => {
+         if (!onRows || payload.isHeader || !payload.field) return undefined;
+         if (!(payload.field.wasDimension?.() ?? false)) return undefined;
+         if (drillValueToFilter(payload.value) === undefined) return undefined;
+         return {
+            field: payload.field.name,
+            rawValue: payload.value,
+            label: drillValueLabel(payload.value),
+            ...(payload.context === undefined
+               ? {}
+               : { context: payload.context }),
+         };
+      },
+      [onRows],
+   );
+
    const onClick = useCallback(
       (payload: DrillClickPayload) => {
          // Runs on every cell click, so "not a drill" is the ordinary answer.
          const intent = resolveDrill(payload);
-         if (!intent) return;
-
+         const rows = rowsBehind(payload);
          // Offer only what this surface can actually do, so a menu never lists a
          // destination that would be a no-op when picked.
-         const destinations = honorable(intent.to, intent.given);
-         if (destinations.length === 0) return;
-         if (destinations.length === 1) {
+         const destinations = intent ? honorable(intent.to, intent.given) : [];
+         if (destinations.length === 0) {
+            if (rows) onRows?.(rows);
+            return;
+         }
+         if (destinations.length === 1 && intent) {
             go(intent, destinations[0], payload.event);
             return;
          }
          setMenu({
-            intent,
+            ...(intent ? { intent } : {}),
             destinations,
             event: payload.event,
             top: payload.event?.clientY ?? 0,
             left: payload.event?.clientX ?? 0,
+            label: intent?.label ?? rows?.label ?? "",
          });
       },
-      [go, honorable],
+      [go, honorable, onRows, rowsBehind],
    );
 
    const canDrill = useCallback(
       (field: DrillField) =>
-         honorable(drillDestinations(field), drillGivenName(field)).length > 0,
-      [honorable],
+         honorable(drillDestinations(field), drillGivenName(field)).length >
+            0 ||
+         (onRows !== undefined && (field.wasDimension?.() ?? false)),
+      [honorable, onRows],
    );
 
    const drill = useMemo<DrillBinding>(
@@ -176,7 +215,7 @@ export function useDrill({
             anchorPosition={{ top: menu?.top ?? 0, left: menu?.left ?? 0 }}
          >
             <ListSubheader sx={{ lineHeight: "32px" }}>
-               {menu ? `${menu.intent.label} →` : ""}
+               {menu ? `${menu.label} →` : ""}
             </ListSubheader>
             {/* Deduplicated: `# drill { to=[overview, overview] }` is a typo
                 rather than a request for two identical rows, and React keys
@@ -188,7 +227,8 @@ export function useDrill({
                      key={destination}
                      onClick={() => {
                         close();
-                        if (menu) go(menu.intent, destination, menu.event);
+                        if (menu?.intent)
+                           go(menu.intent, destination, menu.event);
                      }}
                   >
                      {destination === DRILL_SELF

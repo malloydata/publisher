@@ -6,7 +6,11 @@ import {
    encodeResourceUri,
    useGivenUrlParams,
 } from "@malloy-publisher/sdk";
-import { Box } from "@mui/material";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import { Box, Button, Stack } from "@mui/material";
+import { useMemo } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { logDashboardEvent } from "../../../utils/dashboardTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
 export interface DashboardPageProps {
@@ -33,15 +37,33 @@ export default function DashboardPage({
    // a drill pushes a route. Both are shared with NotebookPage.
    const { params: givens, onGivensChange } = useGivenUrlParams();
    const onNavigate = useDrillNavigate(environmentName, packageName);
+   // Into the builder, one segment down; the builder's Done comes back here.
+   const navigate = useNavigate();
+   const { pathname } = useLocation();
+   const onEvent = useMemo(
+      () => logDashboardEvent({ environmentName, packageName, dashboardName }),
+      [environmentName, packageName, dashboardName],
+   );
 
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
+         <Stack direction="row" sx={{ justifyContent: "flex-end", mb: 1 }}>
+            <Button
+               size="small"
+               variant="outlined"
+               startIcon={<EditOutlinedIcon fontSize="small" />}
+               onClick={() => navigate(`${pathname.replace(/\/$/, "")}/edit`)}
+            >
+               Edit
+            </Button>
+         </Stack>
          <Dashboard
             resourceUri={encodeResourceUri({ environmentName, packageName })}
             dashboard={dashboardName}
             givens={givens}
             onGivensChange={onGivensChange}
             onNavigate={onNavigate}
+            onEvent={onEvent}
             maxResultSize={1024 * 1024}
          />
       </Box>
