@@ -10,11 +10,10 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
  * builder use.
  *
  * Reading and editing are the same page in two states, so the bar that carries
- * the switch has to be the same bar: same height, same ground, same edge, and
- * the same left and right margins as the dashboard under it — the state on the
- * left, the way out of it on the right. Two bars of different heights made the
- * page jump on every switch, which read as the page reloading rather than as a
- * mode changing.
+ * the switch is the same bar: same height, same ground, same edge, and the
+ * same left and right margins as the dashboard under it — the state on the
+ * left, the way out of it on the right. The fixed height is the load-bearing
+ * part: it is what makes switching modes move nothing on the page.
  *
  * No horizontal padding of its own: it is laid out inside whatever insets the
  * dashboard, so the left item lines up with the title below it and the right

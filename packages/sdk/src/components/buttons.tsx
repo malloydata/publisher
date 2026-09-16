@@ -22,10 +22,9 @@ import * as React from "react";
  * 4. **Icon** — a row's overflow menu or a compact toggle. A small icon
  *    button, written inline.
  *
- * The roles exist because the drift they replace was real: five hand-written
- * copies of the same add button, and secondary controls that were `size`
- * "small" beside a default-size primary on the same row, so the row read as
- * two families of control.
+ * The roles are exhaustive on purpose. A button that is none of them is a new
+ * family of control on a page that already has four, so add it here — with the
+ * job it does — rather than inline at its one call site.
  */
 
 /**

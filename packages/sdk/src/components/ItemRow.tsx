@@ -10,14 +10,11 @@ import { MONO_FONT_FAMILY } from "./styles";
  * thing's name, what it is, and whatever acts on it at the right edge. One per
  * row.
  *
- * The rule this settles is that a list is a list. Packages, connections and
- * environments were each drawn as a card in a three-up grid, with their own
- * copy of the same border, radius, hover and icon plate, while the package
- * page listed its six kinds of content as rows — so the same reading task
- * looked like two different products depending on which page you were on, and
- * a three-up grid of cards said "these are tiles to arrange" about a list you
- * only ever scan down. Rows also let the description be a description rather
- * than two clamped lines.
+ * The rule is that a list is a list: everything a reader scans down is drawn
+ * this way, so the same reading task looks the same on every page. A grid of
+ * cards says "these are tiles to arrange", which is not what any of these
+ * lists are; a row also lets the description be a description rather than two
+ * clamped lines.
  *
  * The color is passed rather than derived here: the package page keys it off
  * content type (see `CONTENT_TINT`), and the environment-scoped lists off what
