@@ -407,15 +407,22 @@ source: mz_colocated_partition is base -> { aggregate: c is count() }`);
    });
 
    it("accepts a colocated persist source that references a given but carries no gate (narrow check does not pull in referencesGiven)", async () => {
+      // The given sits in the source's extend block, so it is absent from the
+      // build and applied over the artifact at read with each caller's value.
+      // Previously written with the given INSIDE the persisted query, which is
+      // the shape that bakes the default and serves it to everyone — the check
+      // added below refuses that one, so this test would have been asserting the
+      // defect as the contract.
       const sources = await persistSources(`##! experimental.persistence
 ##! experimental.givens
 given: tenant :: string is 'acme'
 source: base is duckdb.sql("SELECT 1 AS amount, 'acme' AS tenant")
 #@ persist name="mz_colocated_given"
-source: mz_colocated_given is base -> { where: tenant = $tenant; aggregate: c is count() }`);
+source: mz_colocated_given is base -> { select: * } extend { where: tenant = $tenant }`);
       expect(sources.mz_colocated_given).toBeDefined();
-      // assertMaterializationEligible would refuse this (referencesGiven), but
-      // the colocated check deliberately does not apply that rule.
+      // assertMaterializationEligible would refuse this (referencesGiven finds a
+      // given wherever it sits), but the colocated check deliberately does not
+      // apply that rule — it refuses only a given the BUILD would freeze.
       expect(() =>
          assertMaterializationEligible(sources.mz_colocated_given),
       ).toThrow(MaterializationEligibilityError);
@@ -504,5 +511,67 @@ source: orders__preagg__category is orders -> {
             ),
          ).toThrow(/authorize/i);
       });
+   });
+});
+
+describe("a given inside the persisted query (colocated)", () => {
+   const MODEL = `##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id")
+
+#@ persist name="inside"
+source: inside is raw -> { where: org_id = $ORG_ID; select: * }
+
+#@ persist name="outside"
+source: outside is raw -> { select: * } extend { where: org_id = $ORG_ID }
+
+#@ persist name="clean"
+source: clean is raw -> { select: * }`;
+
+   it("refuses a given the persisted query is built with", async () => {
+      // Built with the default substituted, so the table holds one caller's
+      // slice and the read path — which swaps only the FROM — serves it to all.
+      const sources = await persistSources(MODEL);
+      expect(sources.inside).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.inside),
+      ).toThrow(MaterializationEligibilityError);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.inside),
+      ).toThrow(/persisted query references a given/i);
+      // The message has to name the remedy, since the safe shape is one word
+      // of placement away from the refused one.
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.inside),
+      ).toThrow(/extend block/i);
+   });
+
+   it("admits the same given in the source's extend block", async () => {
+      // Absent from the build, applied over the artifact at read with each
+      // caller's own value. This is the documented form; refusing it would
+      // leave row-level access with no materializable shape at all.
+      const sources = await persistSources(MODEL);
+      expect(sources.outside).toBeDefined();
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.outside),
+      ).not.toThrow();
+   });
+
+   it("admits a persisted query that references no given", async () => {
+      const sources = await persistSources(MODEL);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.clean),
+      ).not.toThrow();
+   });
+
+   it("names a rollup by the annotation its author wrote", async () => {
+      const sources = await persistSources(MODEL);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(
+            sources.inside,
+            "orders__preagg__category",
+            "preaggregate",
+         ),
+      ).toThrow(/Pre-aggregation rollup/i);
    });
 });

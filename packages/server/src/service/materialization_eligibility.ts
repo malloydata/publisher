@@ -238,6 +238,36 @@ export function assertColocatedPersistNotAuthorizeGated(
    // function checks ONLY the authorize condition (see its own doc) and does
    // NOT run `assertMaterializationEligible`'s other rules, so a partitioned
    // source with no `storage=` would otherwise sail past both refusals.
+   // A given INSIDE the persisted query is frozen at its default and served to
+   // every caller; one in the source's `filterList` is applied at read with the
+   // caller's value and is the documented form (docs/row-level-access.md). Only
+   // the first is refused, so the safe shape stays available.
+   //
+   // Givens only: a parameter cannot appear in a persisted source's own query
+   // pipeline at all — the compiler answers `'<name>' is not defined` — so there
+   // is no parameter equivalent of this shape to refuse here. (A parameter IS
+   // frozen when a source is DERIVED from a parameterized one, which is a
+   // different shape with its own gate.)
+   if (referencesGivenOutsideSourceFilters(persistSource)) {
+      recordEligibilityRefused("given_in_persisted_query");
+      const what =
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}'`
+            : `Source '${sourceName}'`;
+      throw new MaterializationEligibilityError({
+         reason: "given_in_persisted_query",
+         message:
+            `${what} cannot be materialized (colocated '#@ persist'): its ` +
+            `persisted query references a given. A given inside the query is ` +
+            `substituted at BUILD time, so the table would hold the default's ` +
+            `rows and serve them to every caller, ignoring the value each one ` +
+            `supplies. Move the filter to the source's extend block ` +
+            `(\`… -> { select: * } extend { where: <col> = $GIVEN }\`), where ` +
+            `it is applied per caller over the materialized rows, or stop ` +
+            `persisting this source.`,
+      });
+   }
+
    if (referencesPartition(persistSource)) {
       recordEligibilityRefused("partition");
       const what =
@@ -392,6 +422,53 @@ function referencesGiven(persistSource: PersistSource): boolean {
       return walkForGiven(persistSource._sourceDef, new WeakSet(), 0);
    } catch {
       // Fail closed: if we cannot prove the source is given-free, refuse it.
+      return true;
+   }
+}
+
+/**
+ * Whether a given is referenced anywhere that defines the RELATION the build
+ * writes, as opposed to the source's own `filterList`.
+ *
+ * The distinction decides whether a given is frozen or honoured. A given the
+ * compiler meets while producing the persisted query has only one value
+ * available at build time — the declaration default — so that value is
+ * substituted and the artifact holds one caller's slice. The read path swaps
+ * only the `FROM`, and nothing re-applies a filter that lives inside the
+ * relation, so every caller is served that slice whatever they supply. A given
+ * in the source's `filterList` is the opposite: absent from the build, applied
+ * over the artifact at read with the caller's own value.
+ *
+ * Measured on the two shapes, which differ only in where the `where:` sits:
+ *
+ *   source: inside  is raw -> { where: org_id = $ORG_ID; select: * }
+ *   source: outside is raw -> { select: * } extend { where: org_id = $ORG_ID }
+ *
+ * `inside` builds `… WHERE org_id = 1` and answers 2 rows for a caller asking
+ * for org 2, whose live answer is 1. `outside` builds unfiltered and answers 1.
+ *
+ * Implemented by walking everything EXCEPT the top-level `filterList`, so the
+ * default is refusal: a given reachable by any other route — a field expression
+ * the persisted query uses, a nested pipeline, a shape this code has not met —
+ * counts as baked. Fail-closed on an unwalkable IR for the same reason
+ * {@link referencesGiven} is.
+ */
+function referencesGivenOutsideSourceFilters(
+   persistSource: PersistSource,
+): boolean {
+   try {
+      const def = persistSource._sourceDef as unknown;
+      if (def === null || typeof def !== "object") {
+         throw new Error("compiled source definition is not readable");
+      }
+      // Dropped rather than emptied: an empty array would still be walked, and
+      // the point is that this field is the one place a given is honoured.
+      const { filterList: _appliedAtRead, ...relation } = def as Record<
+         string,
+         unknown
+      >;
+      return walkForGiven(relation, new WeakSet(), 0);
+   } catch {
       return true;
    }
 }
