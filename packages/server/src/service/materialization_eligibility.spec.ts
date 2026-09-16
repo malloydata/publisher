@@ -619,6 +619,45 @@ source: given_in_group_by is raw -> {
       }
    });
 
+   it("refuses a measure or join declared on the INPUT source that the query consumes", async () => {
+      // The two shapes that make excluding `fields` safe rather than merely
+      // convenient: both are field-declared entities that DO reach the build,
+      // and neither bakes anything that looks like a filter — the measure
+      // becomes `CASE WHEN base."org_id"=1 …` inside an aggregate, the join a
+      // conjunct on its ON clause.
+      //
+      // Their job is to catch an upstream change: if a future compiler stopped
+      // summarising a consumed field's given usage on the query, these would
+      // flip to admitted and every other case here would stay green.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 7 AS user_id, 100 AS amt")
+
+source: withmeas is raw extend {
+  measure: scoped_amt is amt.sum() { where: org_id = $ORG_ID }
+}
+#@ persist name="consumed_measure"
+source: consumed_measure is withmeas -> {
+  group_by: user_id
+  aggregate: total is scoped_amt
+}
+
+source: scoped2 is raw extend { where: org_id = $ORG_ID }
+source: withjoin is raw extend { join_one: s3 is scoped2 on org_id = s3.org_id }
+#@ persist name="consumed_join"
+source: consumed_join is withjoin -> {
+  group_by: user_id
+  aggregate: t is s3.amt.sum()
+}`);
+      for (const name of ["consumed_measure", "consumed_join"]) {
+         expect(sources[name]).toBeDefined();
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(sources[name]),
+         ).toThrow(MaterializationEligibilityError);
+      }
+   });
+
    it("admits a persisted query that references no given", async () => {
       const sources = await persistSources(MODEL);
       expect(() =>

@@ -456,8 +456,11 @@ function referencesGiven(persistSource: PersistSource): boolean {
  * code has not met counts as baked; an unwalkable IR refuses too, for the same
  * reason {@link referencesGiven} is fail-closed.
  *
- * Excluding `fields` does not open a hole, because a field is only baked when
- * the persisted QUERY uses it — and then the query carries the usage itself.
+ * Excluding `fields` does not open a hole, and not by luck: a persist source's
+ * own `fields` is the RESULT SCHEMA of its query, while the fields of the source
+ * the query READS reach through `$.query`. The two never hold the same entity,
+ * so a field that is consumed — and therefore baked — is always visible on the
+ * query side.
  * Measured across the shapes that differ in where the predicate is factored:
  *
  *   built with it          IR root      | not built with it        IR root
