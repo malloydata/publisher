@@ -1208,7 +1208,7 @@ function isUnconditionalDenyAuthorize(apiSource: {
  * the other's card — see {@link collectEntities}.
  */
 function droppedSourceKey(modelPath: string, name: string): string {
-   return `${modelPath} ${name}`;
+   return `${modelPath}\u0000${name}`;
 }
 
 /**
