@@ -31,6 +31,39 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [Unreleased] — the dashboard editor is not the only writer, and the browser is not the only store
+
+`DocumentStorage` exists so the host decides where an authored document goes, but the
+editor was written when the browser was the only implementation and the editor was the
+only writer. Both assumptions were baked into its state machine, where they stayed
+invisible while storage really was one person's browser and nothing else wrote the
+package. Given a real backend, or a second writer, they became four ways to lose work.
+
+**Two of them bite the Console today, on the package-write path shipped in 0.4.0.**
+The hash a save hands back as `expectedHash` was taken from the latest fetch of the
+file rather than from the file the builder opened against, so a save could present a
+hash that matched a version the author had never seen, be accepted, and overwrite it.
+And saving a resumed draft into the package remounted the builder onto the pre-save
+package text, silently discarding the save that had just succeeded. Both are fixed.
+
+**New in the interface.** A `Workspace` may now declare itself `authoritative`: its copy
+IS the document, and the package file is a deploy of it. The editor then opens that copy,
+writes back to it, and drops the "you have edits the package does not have" prompt, which
+means nothing when the copy is the record. Omitting the flag leaves every existing host
+exactly as it was. Absence now rejects with a `DocumentNotFoundError` rather than a bare
+`Error`, so a read that failed is no longer indistinguishable from a document that is not
+there; the editor refuses to arm Save on a read it could not complete, instead of
+treating silence as permission to overwrite.
+
+**Also.** A new version of the file arriving while there are unsaved edits is offered
+rather than applied, so a background refetch no longer discards an author's work, and
+saving through storage no longer throws away the undo history. `DashboardEditor` takes an
+`onDirtyChange` callback for hosts that own the way out of the page. The toolbar caption
+and the package page's draft list now say where a document is kept in the backend's own
+words, taken from `Workspace.description`, instead of asserting "this browser".
+`dashboard.saved` gains `where: "host"` and an optional `workspace`; `dashboard.opened`
+gains `from: "record"`.
+
 ## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 
 A materialization is a run of one package's persist sources: `package_name` is NOT NULL on the row, every create takes a package, and the scheduler arms per package. The environment page nonetheless carried a second materializations surface on top of that — a cross-package list, plus a dialog that ticked packages and fired one ordinary per-package create for each — which read like a level of its own while offering strictly less than the package's own page. It is gone, and so is the one endpoint behind it, an aggregate that was the per-package query with the package predicate dropped.
