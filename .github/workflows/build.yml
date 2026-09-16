@@ -556,12 +556,17 @@ jobs:
           echo "$packages" | jq -e '. | length >= 1' >/dev/null \
             || { echo "✗ environment served no packages"; echo "$packages"; exit 1; }
           echo "✓ environment serves $(echo "$packages" | jq 'length') package(s)"
-      - name: Assert malloy_getContext returns a non-empty model context
+      - name: Assert get_context returns a non-empty model context
         run: |
           # The exact signal that was empty on an image reporting `serving`:
-          # an agent calling malloy_getContext got {"results":[]} and isError
+          # an agent calling get_context got an empty payload and isError
           # false, which reads as "this server has no models" rather than as a
           # fault. Asserted over MCP, the surface an agent actually uses.
+          #
+          # `search_targets` and `scopes` are both REQUIRED, and a `source`
+          # target with no `search_text` enumerates rather than ranks, which is
+          # the cheapest call that still proves real content. The scope names
+          # the environment and package the configured container above serves.
           set -e
           # Written to a file rather than held in a shell variable: these
           # payloads run to tens of KB on one line, and round-tripping that
@@ -569,21 +574,30 @@ jobs:
           curl -sS -X POST http://localhost:4041/mcp \
             -H 'Content-Type: application/json' \
             -H 'Accept: application/json, text/event-stream' \
-            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"malloy_getContext","arguments":{}}}' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_context","arguments":{"search_targets":[{"target_type":"source"}],"scopes":[{"environment":"examples","package":"storefront"}]}}}' \
             > /tmp/publisher-smoke/getcontext.raw
           cat /tmp/publisher-smoke/getcontext.raw
           # Stateless StreamableHTTP answers as SSE, so the JSON is the payload
           # of the first `data:` frame rather than the whole body.
           sed -n 's/^data: //p' /tmp/publisher-smoke/getcontext.raw | head -1 \
             > /tmp/publisher-smoke/getcontext.json
+          # A JSON-RPC error carries no `result`, so the count path below would
+          # report 0 and blame an empty catalog for a call that never ran. Name
+          # that case instead: a renamed tool or a rejected argument shape is a
+          # drift to fix here, not a server serving nothing.
+          if jq -e '.error' /tmp/publisher-smoke/getcontext.json >/dev/null 2>&1; then
+            echo "✗ get_context call failed rather than returning a context"
+            jq -r '.error.message' /tmp/publisher-smoke/getcontext.json
+            exit 1
+          fi
           count=$(jq -r '.result.content[0].resource.text' /tmp/publisher-smoke/getcontext.json \
-            | jq '.results | length')
-          echo "malloy_getContext results: $count"
+            | jq '.sources | length')
+          echo "get_context sources: $count"
           # A dead server or an unparsable body lands on 0 and fails here, which
           # is the safe direction: this step only ever passes on real content.
           [ "${count:-0}" -ge 1 ] \
-            || { echo "✗ malloy_getContext returned an empty context from a configured server"; exit 1; }
-          echo "✓ malloy_getContext returned $count result(s)"
+            || { echo "✗ get_context returned an empty context from a configured server"; exit 1; }
+          echo "✓ get_context returned $count source(s)"
       - name: Container logs (always)
         if: always()
         run: |
