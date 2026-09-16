@@ -1946,6 +1946,31 @@ app.get(
    },
 );
 
+app.put(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+      try {
+         // Express stores wildcard matches in params['0'].
+         res.status(200).json(
+            await dashboardController.putDashboardSource(
+               req.params.environmentName,
+               req.params.packageName,
+               (req.params as Record<string, string>)["0"],
+               req.body,
+            ),
+         );
+      } catch (error) {
+         logger.error("Dashboard write error", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile`,
    async (req, res) => {
