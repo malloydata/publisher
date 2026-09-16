@@ -27,7 +27,9 @@ test.describe("packages — read", () => {
          // materializations, whose Package column can render the same name as a
          // link, so a bare getByText(pkg) is ambiguous under strict mode.
          await expect(
-            page.getByRole("button", { name: pkg, exact: true }),
+            page
+               .getByRole("region", { name: "Packages" })
+               .getByRole("button", { name: pkg, exact: true }),
          ).toBeVisible();
       }
    });
@@ -94,14 +96,14 @@ test.describe("packages — mutable CRUD", () => {
       await expect(createEnvDialog).toBeHidden();
       await expect(
          page
-            .getByRole("main")
+            .getByRole("region", { name: "Environments" })
             .getByRole("button", { name: envName, exact: true }),
       ).toBeVisible();
 
       // --- 2. Open it ---
       // An environment row is the click target itself.
       await page
-         .getByRole("main")
+         .getByRole("region", { name: "Environments" })
          .getByRole("button", { name: envName, exact: true })
          .click();
       await expect(page).toHaveURL(new RegExp(`/${envName}/?$`));
@@ -160,7 +162,7 @@ test.describe("packages — mutable CRUD", () => {
       await page.goto("/");
       await expect(
          page
-            .getByRole("main")
+            .getByRole("region", { name: "Environments" })
             .getByRole("button", { name: envName, exact: true }),
       ).toBeVisible();
       await page
@@ -175,7 +177,7 @@ test.describe("packages — mutable CRUD", () => {
       await expect(deleteEnvDialog).toBeHidden();
       await expect(
          page
-            .getByRole("main")
+            .getByRole("region", { name: "Environments" })
             .getByRole("button", { name: envName, exact: true }),
       ).toHaveCount(0);
    });

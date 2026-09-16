@@ -18,10 +18,10 @@ export async function openEnvironment(
    // An environment is a row on Home, and the row itself is the click target
    // — no separate "Open Environment" button. Its accessible name is the
    // environment's name alone.
-   // Scoped to the page, because the sidebar lists every environment by the
-   // same name.
+   // Scoped to the Environments region, because the sidebar lists every
+   // environment by the same name.
    const row = page
-      .getByRole("main")
+      .getByRole("region", { name: "Environments" })
       .getByRole("button", { name, exact: true });
    await expect(row).toBeVisible();
    await row.click();

@@ -18,10 +18,9 @@ test.describe("environment-connections — read", () => {
       ).toBeVisible();
       // `bigquery` is a stub connection the CI workflow injects into the
       // examples environment before this suite runs; see app-playwright.yml.
-      const bigqueryRow = page.getByRole("button", {
-         name: "bigquery",
-         exact: true,
-      });
+      const bigqueryRow = page
+         .getByRole("region", { name: "Connections" })
+         .getByRole("button", { name: "bigquery", exact: true });
       await expect(bigqueryRow).toBeVisible();
       await expect(page.getByText("BigQuery", { exact: true })).toBeVisible();
    });
