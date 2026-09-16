@@ -4979,7 +4979,9 @@ components:
             validates the chain AND the hostname against the real host (verified
             via SNI through the tunnel; requires the target's CA to be trusted by
             Node's bundled CA roots or NODE_EXTRA_CA_CERTS), `no-verify` encrypts without
-            verifying, and `disable` uses no TLS. Note `verify-full` trusts a
+            verifying, and `disable` uses no TLS. A `storage=` build of a proxied
+            source applies the same mode through its own tunnel, `verify-full`
+            included. Note `verify-full` trusts a
             broader CA set than `verify-ca` here — ambient roots plus
             NODE_EXTRA_CA_CERTS, rather than the pinned NODE_EXTRA_CA_CERTS
             bundle that `verify-ca` uses — so it is intentionally not a strict
