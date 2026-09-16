@@ -755,6 +755,23 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     raise ValueError("tools/call returned no readable content")
 
 
+class AuthRequired(Exception):
+    """The MCP endpoint refused the probe for want of credentials.
+
+    Its own class because it is the one probe failure that waiting cannot fix,
+    and because it is not a fact about retrieval at all. `mcp_call` is a raw
+    urllib POST from this process: it carries no token, reads no credential
+    store, and there is nothing a CLI login can do for it. Folded into the
+    generic handler it read as "the index is still warming", which is what sent
+    a hosted run into twelve probes and a two-minute wait before it blamed the
+    retriever for an auth failure.
+    """
+
+    def __init__(self, code: int, url: str):
+        self.code, self.url = code, url
+        super().__init__(f"{url} returned {code}")
+
+
 def probe_arguments(a: argparse.Namespace) -> dict[str, Any]:
     """The arguments of the one cheap `get_context` every probe makes.
 
@@ -779,7 +796,13 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
     one, and it is reported as mode None so the gate below stops rather than
     waiting for something that cannot arrive.
     """
-    return retrieval_of(mcp_call(a.mcp_url, "get_context", probe_arguments(a)))
+    try:
+        payload = mcp_call(a.mcp_url, "get_context", probe_arguments(a))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise AuthRequired(e.code, a.mcp_url) from e
+        raise
+    return retrieval_of(payload)
 
 
 def retrieval_of(payload: Any) -> tuple[str | None, str | None]:
@@ -825,6 +848,10 @@ def wait_retrieval_ready(a: argparse.Namespace, tries: int = 12,
     for i in range(tries):
         try:
             mode, reason = retrieval_probe(a)
+        except AuthRequired:
+            # Not a warming index and not a flaky server: waiting cannot change
+            # it, and every remaining try would spend 10s to be refused again.
+            raise
         except Exception as exc:  # noqa: BLE001
             seen = 0
             last = f"probe failed: {exc}"
@@ -894,7 +921,16 @@ def run_retrieval_gate(a: argparse.Namespace) -> str:
     index.
 
     Returns the line for `run.json`. An opt-out reads differently from a gate
-    that passed, which is the whole point of recording it.
+    that passed, which is the whole point of recording it -- and so does a gate
+    that COULD NOT RUN. Against a credentialed endpoint this one cannot: its
+    probe is a raw urllib POST with no token, so it takes a 401 that no CLI
+    login can clear. That is now said in those words rather than retried twelve
+    times and reported as an index that would not warm up.
+
+    On a platform run it reads the reachability probe's own reply first, which
+    came back through the CLI and therefore WAS authenticated. That is one
+    confirmation where a local run gets two, so the note says which it got: a
+    weaker check must not read as the same check.
     """
     if a.rebuild or a.rejudge:
         # Nothing will be answered: the transcripts exist, and the retriever
@@ -906,7 +942,29 @@ def run_retrieval_gate(a: argparse.Namespace) -> str:
               f"by design, so this arm may measure two retrievers and report "
               f"one number")
         return note
-    ready, said = wait_retrieval_ready(a)
+    # The reachability probe already made this exact call through the CLI,
+    # which is the only client here that carries credentials. Reading its reply
+    # is a real confirmation and costs nothing; making a second one over raw
+    # HTTP cannot be authenticated at all.
+    probed = getattr(a, "probe_payload", None)
+    if probed is not None and retrieval_of(probed)[0] == "semantic":
+        note = ("ready: semantic, from the hosted reachability probe "
+                "(1 confirmation, not 2: the second probe cannot be "
+                "authenticated)")
+        print(f"  retrieval gate: {note}")
+        return note
+    try:
+        ready, said = wait_retrieval_ready(a)
+    except AuthRequired as e:
+        # Named rather than retried. This gate's probe is a raw urllib POST
+        # from this process; it presents no credentials and no CLI login
+        # reaches it, so twelve more tries buy twelve more 401s and then a
+        # message blaming the retriever for an auth failure.
+        note = (f"not run: {e.url} returned {e.code}. This probe presents no "
+                f"credentials, and authenticating the CLI does not reach it, "
+                f"so retrieval was NOT confirmed steady for this arm")
+        print(f"  ! retrieval gate: {note}")
+        return note
     print(f"  {'' if ready else '! '}retrieval gate: {said}")
     if not ready:
         raise SystemExit(
