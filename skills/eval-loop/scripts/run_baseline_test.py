@@ -320,9 +320,13 @@ class GoldenStatusGate(unittest.TestCase):
         # `criteria` holds no value by design; its clauses are the comparison.
         # Refusing a value-less golden would drop every such case, and every
         # deliberately-unanswerable case with it.
+        # The clauses live in `rubric`, which is the documented field
+        # (reference/case-format.md); this fixture said `criteria` and nothing
+        # read it, so the drift was invisible until a renderer had to find them.
         v = self.judge({"status": "verified", "kind": "criteria",
-                        "criteria": ["breaks the total out by region"]})
+                        "rubric": "breaks the total out by region"})
         self.assertEqual(v["reason"], "no_saved_verdict")
+
 
     def test_refusal_is_decided_before_a_saved_verdict_is_reused(self):
         # `--rebuild` without `--rejudge` returns the saved judge.md. A saved
@@ -340,6 +344,44 @@ class GoldenStatusGate(unittest.TestCase):
         self.assertEqual(rb.GOLDEN_UNSCORABLE,
                          ("provisional", "invalid", "ambiguous"))
 
+
+class GoldenForJudge(unittest.TestCase):
+    """What the GOLDEN line of the judge prompt says, per kind.
+
+    A `criteria` golden rendered as "unanswerable" is a contradiction the judge
+    can see, and one called it rather than scoring the case.
+    """
+
+    def test_criteria_never_says_unanswerable(self):
+        line = rb.golden_for_judge(
+            {"kind": "criteria", "rubric": "names the channels"})
+        self.assertNotIn("unanswerable", line)
+        self.assertIn("CASE RUBRIC", line)
+
+    def test_unanswerable_says_so(self):
+        self.assertIn("unanswerable",
+                      rb.golden_for_judge({"kind": "unanswerable"}))
+
+    def test_a_scalar_renders_its_value(self):
+        self.assertEqual(
+            rb.golden_for_judge({"kind": "scalar", "value": {"total": 12.5}}),
+            '{"total": 12.5}')
+
+    def test_rows_render_the_list(self):
+        self.assertEqual(
+            rb.golden_for_judge({"kind": "rows", "value": [{"a": 1}]}),
+            '[{"a": 1}]')
+
+    def test_an_explicit_null_value_is_a_refusal_case(self):
+        # How the ecommerce set's four refusal cases say there is no number.
+        self.assertIn("unanswerable",
+                      rb.golden_for_judge({"kind": "scalar", "value": None}))
+
+    def test_a_golden_with_no_kind_is_unchanged(self):
+        # Sets predating the field must read exactly as they did.
+        self.assertEqual(rb.golden_for_judge({"value": 7}), "7")
+        self.assertIn("unanswerable", rb.golden_for_judge({}))
+        self.assertIn("unanswerable", rb.golden_for_judge(None))
 
 class UnscorablePreflight(unittest.TestCase):
     """A set of bare questions is a supported set, not a set to refuse.

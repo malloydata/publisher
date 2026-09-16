@@ -1933,6 +1933,53 @@ def golden_refusal(golden: dict[str, Any] | None) -> str | None:
     return None
 
 
+def golden_for_judge(golden: dict[str, Any] | None) -> str:
+    """The GOLDEN line of the judge prompt, rendered BY KIND.
+
+    A golden holds its key in a different place depending on its kind, and one
+    renderer read `value` for all of them: anything without a value printed as
+    "(unanswerable: the model cannot answer this)". A `criteria` golden has no
+    value BY DESIGN -- its clauses are the key -- so the judge was handed
+    `GOLDEN (criteria): (unanswerable ...)`, which is a contradiction, and a
+    judge called it on cq-28 rather than scoring the case.
+
+    That is the opposite of what `skill:eval-judge` tells the judge to do with
+    one: "Grade the clauses and nothing else. Do not manufacture a figure to
+    check the answer against, and do not read the absence of a value as a
+    missing golden: a `criteria` golden is complete."
+
+    The four kinds and where each keeps its key (reference/case-format.md, and
+    `verify_goldens.check_value`, which dispatches the same way for the same
+    reason):
+
+      scalar        golden.value, a dict
+      rows          golden.value, a list
+      criteria      golden.rubric -- no value, ever
+      unanswerable  nothing; the pass is a refusal
+
+    An explicit `value: null` on a value-holding kind is NOT an oversight: it
+    is how the ecommerce set's refusal cases say there is no number
+    (`import_cases.holds_value`), so it renders as the refusal text. A golden
+    with no kind at all keeps the old behaviour, so sets that predate the field
+    read exactly as they did.
+    """
+    g = golden or {}
+    kind = g.get("kind")
+    if kind == "criteria":
+        # Pointed at, not duplicated: the clauses are already rendered below as
+        # CASE RUBRIC, and printing them twice invites a judge to read the two
+        # slots as two separate requirements.
+        return ("(criteria: this golden holds no value by design. The CASE "
+                "RUBRIC below IS the key -- grade its clauses, and do not look "
+                "for a number to contain.)")
+    if kind == "unanswerable":
+        return "(unanswerable: the model cannot answer this)"
+    value = g.get("value")
+    if value is not None:
+        return json.dumps(value)
+    return "(unanswerable: the model cannot answer this)"
+
+
 def unscorable_preflight(cases: list[dict[str, Any]], set_name: str
                          ) -> tuple[list[str], list[str], str | None]:
     """(unscorable qids, of those the ones with no golden, refusal or None).
@@ -2018,7 +2065,6 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
             return parse_verdict(saved.read_text())
         return {"verdict": None, "reason": "no_saved_verdict", "confidence": None}
 
-    value = g.get("value")
     # Nothing here is truncated to a length shorter than the thing itself needs.
     # Rubrics were cut at 2000 characters, and because authors write the
     # CORRECT/WRONG part first and the accepted-divergence clauses last, the cut
@@ -2026,8 +2072,7 @@ def run_judge(case: dict[str, Any], att: dict[str, Any], a: argparse.Namespace,
     # "this alternate reading is fine" into one that appeared not to.
     prompt = JUDGE_PROMPT.format(
         rubric=rubric, question=case["question"], kind=g.get("kind"),
-        golden=json.dumps(value) if value is not None
-        else "(unanswerable: the model cannot answer this)",
+        golden=golden_for_judge(g),
         rubric_note=(g.get("rubric") or "none"),
         must_not_use=(must_not_use_note(
             must_not_use_check(g.get("mustNotUse"), att.get("final_query")))
