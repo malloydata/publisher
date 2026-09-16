@@ -5,6 +5,7 @@ import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
+import { getExtensionFetchPolicy } from "../config";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import {
@@ -44,6 +45,7 @@ export type CoreConnectionsPojo = {
 export type EnvironmentConnectionMetadata = {
    apiConnection: ApiConnection;
    attachedDatabases: AttachedDatabase[];
+   setupSQL?: string;
    hasAzureAttachment: boolean;
    hasSnowflakePrivateKey: boolean;
    isDuckLake: boolean;
@@ -58,7 +60,10 @@ export type AssembledEnvironmentConnections = {
    apiConnections: ApiConnection[];
 };
 
-const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>(["attachedDatabases"]);
+const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>([
+   "attachedDatabases",
+   "setupSQL",
+]);
 
 /**
  * Collapse `null` to `undefined` for an optional connection field.
@@ -169,7 +174,16 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
       throw new Error(
          `Unsupported DuckDB connection field(s): ${unsupportedFields.join(
             ", ",
-         )}. Publisher only supports attachedDatabases for environment-authored DuckDB connections.`,
+         )}. Publisher only supports attachedDatabases and setupSQL for environment-authored DuckDB connections.`,
+      );
+   }
+
+   const setupSQL = connection.duckdbConnection.setupSQL;
+   const hasSetupSQL =
+      typeof setupSQL === "string" && setupSQL.trim().length > 0;
+   if (hasSetupSQL && getExtensionFetchPolicy() === "local-only") {
+      throw new Error(
+         `setupSQL is not allowed on DuckDB connection "${connection.name}" when EXTENSION_FETCH_POLICY is "local-only".`,
       );
    }
 }
@@ -292,11 +306,16 @@ function buildDuckdbEntry(
    name: string,
    environmentPath: string,
    databaseFilename = `${name}.duckdb`,
+   setupSQL?: string,
 ): CoreConnectionEntry {
-   return {
+   const entry: CoreConnectionEntry = {
       is: "duckdb",
       databasePath: path.join(environmentPath, databaseFilename),
    };
+   if (typeof setupSQL === "string" && setupSQL.trim().length > 0) {
+      entry.setupSQL = setupSQL;
+   }
+   return entry;
 }
 
 /**
@@ -531,9 +550,12 @@ function validateConnectionShape(connection: ApiConnection): void {
                   );
                }
             }
-            if (attached.length === 0) {
+            const setupSQL = connection.duckdbConnection.setupSQL;
+            const hasSetupSQL =
+               typeof setupSQL === "string" && setupSQL.trim().length > 0;
+            if (attached.length === 0 && !hasSetupSQL) {
                throw new Error(
-                  `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
+                  `DuckDB connection "${connection.name}" must provide either attachedDatabases or non-empty setupSQL.`,
                );
             }
             // Shape only, deliberately not the whole credential check. This
@@ -1072,6 +1094,7 @@ export function assembleEnvironmentConnections(
       metadata.set(connection.name, {
          apiConnection,
          attachedDatabases,
+         setupSQL: connection.duckdbConnection?.setupSQL,
          hasAzureAttachment: attachedDatabases.some(
             (database) => database.type === "azure",
          ),
@@ -1243,6 +1266,7 @@ export function assembleEnvironmentConnections(
                connection.name,
                environmentPath,
                `${connection.name}.duckdb`,
+               connection.duckdbConnection?.setupSQL,
             );
             break;
          }
