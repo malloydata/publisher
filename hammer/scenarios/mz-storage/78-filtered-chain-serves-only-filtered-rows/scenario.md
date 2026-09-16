@@ -20,6 +20,15 @@ is_deleted`) with slices persisted on top of it (`is_open`, `not is_open`). It
 exercises a second path, because a chained build computes the downstream over its
 rebound parents rather than over the raw source.
 
+What the answers below rest on, stated because they cannot show it: a filter is
+not part of what gets BUILT, so once their filters are set aside these two
+sources are the same relation. They content-address identically and share ONE
+physical table — pinned below — and it holds every row, including the ones both
+filters exclude. The artifact is deliberately wider than the source, and every
+reader of it owes the filter. That is why the read side is guarded as closely as
+it is in `filter-survives-the-serve-shape-ladder`: the rows to be excluded are
+sitting in the table.
+
 What is being relied on here, stated because the answers below do not show it: a
 filter is not part of what gets BUILT, so once their filters are set aside these
 two sources are the same relation. They content-address identically, share one
@@ -105,3 +114,21 @@ Expect:
 | total:num |
 | --------- |
 | 125       |
+
+## Connection lake_probe
+
+Two declared `name=` values, ONE physical table: with their filters set aside the
+two sources are the same relation, so the build content-addresses them together.
+A second table here would mean the filter had entered the build, which would make
+the read-side filter a double application rather than the only one.
+
+```sql
+SELECT count(*) AS n FROM information_schema.tables
+WHERE table_name IN ('fch_deals_tbl','fch_open_tbl')
+```
+
+Expect:
+
+| n:num |
+| ----- |
+| 1     |
