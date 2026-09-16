@@ -14,6 +14,7 @@ import type { components } from "../api";
 import {
    attachDuckLakeReadWrite,
    federateSourceForPassthrough,
+   buildProxiedPgAttachString,
 } from "./connection";
 
 /** A real in-memory DuckDB connection with runSQL stubbed to capture SQL. */
@@ -254,6 +255,111 @@ describe("federateSourceForPassthrough", () => {
       expect(attach).toContain('AS "my-pg" (TYPE postgres, READ_ONLY)');
    });
 
+   it("postgres: a proxied source is federated through its tunnel, not at its own host", async () => {
+      const { conn, sql } = stubbedConnection();
+      let closed = 0;
+      let dialled: { host: string; port: number } | undefined;
+      const openProxy = async (
+         _proxy: components["schemas"]["ConnectionProxy"],
+         target: { host: string; port: number },
+      ) => {
+         dialled = target;
+         return {
+            host: "127.0.0.1",
+            port: 54321,
+            close: async () => {
+               closed += 1;
+            },
+         };
+      };
+      const result = await federateSourceForPassthrough(
+         conn,
+         "postgres",
+         {
+            name: "src_pg",
+            postgresConnection: {
+               host: "db.internal.example",
+               port: 5432,
+               databaseName: "d",
+               userName: "u",
+               password: "pw",
+            } as components["schemas"]["PostgresConnection"],
+            proxy: {
+               type: "ssh",
+               ssh: { host: "bastion.example", port: 22, username: "tunnel" },
+            } as components["schemas"]["ConnectionProxy"],
+         },
+         { openProxy },
+      );
+      // The tunnel is opened to the database's own host:port …
+      expect(dialled).toEqual({ host: "db.internal.example", port: 5432 });
+      // … and the ATTACH goes to the tunnel's local endpoint, never the real host.
+      const attach = sql.find((s) => s.startsWith("ATTACH"));
+      expect(attach).toContain("host=127.0.0.1 port=54321");
+      expect(attach).not.toContain("db.internal.example");
+      expect(attach).toContain("dbname=d user=u password=pw");
+      // Encrypt without verifying by default (a force-SSL target must not be
+      // refused for plaintext; the query path defaults the same way).
+      expect(attach).toContain("sslmode=require");
+      expect(attach).toContain('AS "src_pg" (TYPE postgres, READ_ONLY)');
+      expect(result.handle).toBe("src_pg");
+      // The handle carries the tunnel's close for the build session's finally.
+      expect(result.close).toBeDefined();
+      await result.close!();
+      expect(closed).toBe(1);
+   });
+
+   it("postgres: a proxied attach that fails closes the tunnel it opened", async () => {
+      const conn = new DuckDBConnection("build", ":memory:");
+      sinon.stub(conn, "runSQL").callsFake(async (q: string) => {
+         if (q.startsWith("ATTACH")) throw new Error("boom");
+         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         return { rows: [], totalRows: 0, runStats: {} } as any;
+      });
+      let closed = 0;
+      const openProxy = async () => ({
+         host: "127.0.0.1",
+         port: 54321,
+         close: async () => {
+            closed += 1;
+         },
+      });
+      await expect(
+         federateSourceForPassthrough(
+            conn,
+            "postgres",
+            {
+               name: "src_pg",
+               postgresConnection: {
+                  host: "h",
+                  port: 5432,
+               } as components["schemas"]["PostgresConnection"],
+               proxy: {
+                  type: "ssh",
+                  ssh: { host: "b", port: 22, username: "t" },
+               } as components["schemas"]["ConnectionProxy"],
+            },
+            { openProxy },
+         ),
+      ).rejects.toThrow("boom");
+      expect(closed).toBe(1);
+   });
+
+   it("postgres: an unproxied source still attaches at its own host, with no close", async () => {
+      const { conn, sql } = stubbedConnection();
+      const result = await federateSourceForPassthrough(conn, "postgres", {
+         name: "src_pg",
+         postgresConnection: {
+            host: "h",
+            port: 5432,
+         } as components["schemas"]["PostgresConnection"],
+      });
+      expect(sql.find((s) => s.startsWith("ATTACH"))).toContain(
+         "host=h port=5432",
+      );
+      expect(result.close).toBeUndefined();
+   });
+
    it("rejects a source type with no native passthrough", async () => {
       const { conn } = stubbedConnection();
       await expect(
@@ -337,5 +443,72 @@ describe("attachDuckLakeReadWrite", () => {
             ),
          ).toBe(true);
       });
+   });
+});
+
+describe("buildProxiedPgAttachString", () => {
+   const endpoint = { host: "127.0.0.1", port: 6000, close: async () => {} };
+   const pg = (sslmode?: string) =>
+      ({
+         host: "real.example",
+         port: 5432,
+         databaseName: "d",
+         userName: "u",
+         password: "p",
+         sslmode,
+      }) as components["schemas"]["PostgresConnection"];
+   const withCaBundle = async (value: string | undefined, fn: () => void) => {
+      const prev = process.env.NODE_EXTRA_CA_CERTS;
+      if (value === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+      else process.env.NODE_EXTRA_CA_CERTS = value;
+      try {
+         fn();
+      } finally {
+         if (prev === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+         else process.env.NODE_EXTRA_CA_CERTS = prev;
+      }
+   };
+
+   it("targets the tunnel endpoint and defaults to sslmode=require", () => {
+      const s = buildProxiedPgAttachString("c", pg(undefined), endpoint);
+      expect(s).toBe(
+         "host=127.0.0.1 port=6000 dbname=d user=u password=p sslmode=require",
+      );
+   });
+
+   it("maps disable and no-verify", () => {
+      expect(
+         buildProxiedPgAttachString("c", pg("disable"), endpoint),
+      ).toContain("sslmode=disable");
+      expect(
+         buildProxiedPgAttachString("c", pg("no-verify"), endpoint),
+      ).toContain("sslmode=require");
+   });
+
+   it("verify-ca needs the trusted CA bundle and passes it as sslrootcert", async () => {
+      await withCaBundle(undefined, () => {
+         expect(() =>
+            buildProxiedPgAttachString("c", pg("verify-ca"), endpoint),
+         ).toThrow(/NODE_EXTRA_CA_CERTS/);
+      });
+      await withCaBundle("/etc/ssl/rds.pem", () => {
+         expect(
+            buildProxiedPgAttachString("c", pg("verify-ca"), endpoint),
+         ).toContain("sslmode=verify-ca sslrootcert=/etc/ssl/rds.pem");
+      });
+   });
+
+   it("verify-full verifies the chain through the tunnel (hostname cannot be checked at 127.0.0.1)", async () => {
+      await withCaBundle("/etc/ssl/rds.pem", () => {
+         expect(
+            buildProxiedPgAttachString("c", pg("verify-full"), endpoint),
+         ).toContain("sslmode=verify-ca sslrootcert=/etc/ssl/rds.pem");
+      });
+   });
+
+   it("refuses an unknown sslmode", () => {
+      expect(() =>
+         buildProxiedPgAttachString("c", pg("prefer"), endpoint),
+      ).toThrow(/unsupported sslmode/);
    });
 });

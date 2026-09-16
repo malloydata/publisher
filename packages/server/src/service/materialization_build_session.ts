@@ -811,6 +811,10 @@ export async function buildSourceIntoStorage(params: {
    );
    // Visible to the finally, which clears the session tag before release.
    let federatedHandle: string | undefined;
+   // The tunnel a proxied source was federated through, if any: closed in the
+   // finally, because disposing the DuckDB session does not close a listener
+   // this process opened outside it.
+   let federatedClose: (() => Promise<void>) | undefined;
    try {
       // FIRST, before the destination attach: the attach is what carries a
       // DuckLake session into the shared funnel, which applies the limits without
@@ -847,6 +851,7 @@ export async function buildSourceIntoStorage(params: {
          sourceType,
          sourceFederationConfig(sourceConnection),
       );
+      federatedClose = federated.close;
 
       await tagSnowflakeSession(
          session,
@@ -951,6 +956,16 @@ export async function buildSourceIntoStorage(params: {
       // nothing federated or read-write survives the build) and removes its
       // throwaway working directory.
       await dispose();
+      // Then the tunnel, after the attach that used it is gone. Best-effort: a
+      // listener that fails to close is logged, never raised over the build's
+      // own outcome.
+      if (federatedClose) {
+         await federatedClose().catch((e) =>
+            logger.warn(
+               `Failed to close the SSH proxy a storage build federated through: ${String(e)}`,
+            ),
+         );
+      }
    }
 }
 
@@ -1315,12 +1330,16 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
    bigqueryConnection?: components["schemas"]["BigqueryConnection"];
    snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
    postgresConnection?: components["schemas"]["PostgresConnection"];
+   proxy?: components["schemas"]["ConnectionProxy"];
 } {
    return {
       name: sourceConnection.name ?? "src",
       bigqueryConnection: sourceConnection.bigqueryConnection,
       snowflakeConnection: sourceConnection.snowflakeConnection,
       postgresConnection: sourceConnection.postgresConnection,
+      // A proxied source is reached through its tunnel, on the build path as on
+      // the query path; federatePostgres opens and the build session closes it.
+      proxy: sourceConnection.proxy,
    };
 }
 
