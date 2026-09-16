@@ -5,15 +5,13 @@ import { MoreVert } from "@mui/icons-material";
 import StorageOutlinedIcon from "@mui/icons-material/StorageOutlined";
 import {
    Box,
-   Card,
-   CardContent,
    Dialog,
    DialogContent,
    DialogTitle,
-   Grid,
    IconButton,
    Menu,
    Snackbar,
+   Stack,
    Typography,
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
@@ -25,6 +23,8 @@ import {
 } from "../../hooks/useQueryWithApiError";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { ItemRow } from "../ItemRow";
+import { SURFACE_TINT } from "../styles";
 import AddConnectionDialog from "../Connections/AddConnectionDialog";
 import DeleteConnectionDialog from "../Connections/DeleteConnectionDialog";
 import EditConnectionDialog from "../Connections/EditConnectionDialog";
@@ -201,26 +201,23 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
             </Typography>
          )}
          {isSuccess && connections.length > 0 && (
-            <Grid container spacing={2}>
+            <Stack>
                {connections.map((conn) => (
-                  <Grid size={{ xs: 12, sm: 6, md: 4 }} key={conn.name}>
-                     <ConnectionCard
-                        connection={conn}
-                        mutable={mutable}
-                        isMutating={isMutating}
-                        onOpenExplorer={() =>
-                           setSelectedConnection(conn.name ?? null)
-                        }
-                        onEdit={(payload) =>
-                           updateConnection.mutateAsync(payload)
-                        }
-                        onDelete={(payload) =>
-                           deleteConnection.mutateAsync(payload)
-                        }
-                     />
-                  </Grid>
+                  <ConnectionRow
+                     key={conn.name}
+                     connection={conn}
+                     mutable={mutable}
+                     isMutating={isMutating}
+                     onOpenExplorer={() =>
+                        setSelectedConnection(conn.name ?? null)
+                     }
+                     onEdit={(payload) => updateConnection.mutateAsync(payload)}
+                     onDelete={(payload) =>
+                        deleteConnection.mutateAsync(payload)
+                     }
+                  />
                ))}
-            </Grid>
+            </Stack>
          )}
 
          <Snackbar
@@ -281,7 +278,7 @@ type ConnectionCardProps = {
    onDelete: (connection: ApiConnection) => Promise<unknown> | void;
 };
 
-function ConnectionCard({
+function ConnectionRow({
    connection,
    mutable,
    isMutating,
@@ -296,96 +293,57 @@ function ConnectionCard({
       event.stopPropagation();
       setMenuAnchorEl(event.currentTarget);
    };
-
-   const handleMenuClose = () => {
-      setMenuAnchorEl(null);
-   };
+   const handleMenuClose = () => setMenuAnchorEl(null);
 
    return (
-      <Card
-         variant="outlined"
+      <ItemRow
+         icon={<StorageOutlinedIcon sx={{ fontSize: 18 }} />}
+         tint={SURFACE_TINT.connection}
+         label={connection.name ?? ""}
+         description={typeLabel(connection.type)}
          onClick={onOpenExplorer}
-         sx={{
-            height: "100%",
-            cursor: "pointer",
-            borderRadius: 3,
-            borderColor: "divider",
-            boxShadow: "none",
-            transition: "all 0.2s ease-in-out",
-            "&:hover": { boxShadow: 2, borderColor: "primary.main" },
-         }}
-      >
-         <CardContent sx={{ p: 2.5, "&:last-child": { pb: 2.5 } }}>
-            <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5 }}>
-               <Box
-                  sx={{
-                     width: 36,
-                     height: 36,
-                     borderRadius: 1.5,
-                     bgcolor: "warning.light",
-                     display: "flex",
-                     alignItems: "center",
-                     justifyContent: "center",
-                     flexShrink: 0,
-                     color: "warning.main",
-                  }}
-               >
-                  <StorageOutlinedIcon sx={{ fontSize: 20 }} />
-               </Box>
-               <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography
-                     variant="subtitle1"
-                     component="h6"
-                     noWrap
-                     sx={{ fontWeight: 600, mb: 0.5 }}
-                  >
-                     {connection.name}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" noWrap>
-                     {typeLabel(connection.type)}
-                  </Typography>
-               </Box>
-               {mutable && (
-                  <>
-                     <IconButton
-                        size="small"
-                        onClick={handleMenuClick}
-                        aria-label={`Connection actions for ${connection.name ?? ""}`.trim()}
-                        sx={{ flexShrink: 0, mt: -0.5, mr: -0.5 }}
-                     >
-                        <MoreVert fontSize="small" />
-                     </IconButton>
-                     <Menu
-                        anchorEl={menuAnchorEl}
-                        open={menuOpen}
-                        onClose={handleMenuClose}
-                        onClick={(e) => e.stopPropagation()}
-                        anchorOrigin={{
-                           vertical: "bottom",
-                           horizontal: "right",
-                        }}
-                        transformOrigin={{
-                           vertical: "top",
-                           horizontal: "right",
-                        }}
-                     >
-                        <EditConnectionDialog
-                           connection={connection}
-                           onSubmit={onEdit}
-                           isSubmitting={isMutating}
-                           onCloseDialog={handleMenuClose}
-                        />
-                        <DeleteConnectionDialog
-                           connection={connection}
-                           onCloseDialog={handleMenuClose}
-                           isMutating={isMutating}
-                           onDelete={() => onDelete(connection)}
-                        />
-                     </Menu>
-                  </>
-               )}
-            </Box>
-         </CardContent>
-      </Card>
+         {...(mutable
+            ? {
+                 trailingAction: (
+                    <>
+                       <IconButton
+                          size="small"
+                          onClick={handleMenuClick}
+                          aria-label={`Connection actions for ${connection.name ?? ""}`.trim()}
+                       >
+                          <MoreVert fontSize="small" />
+                       </IconButton>
+                       <Menu
+                          anchorEl={menuAnchorEl}
+                          open={menuOpen}
+                          onClose={handleMenuClose}
+                          onClick={(event) => event.stopPropagation()}
+                          anchorOrigin={{
+                             vertical: "bottom",
+                             horizontal: "right",
+                          }}
+                          transformOrigin={{
+                             vertical: "top",
+                             horizontal: "right",
+                          }}
+                       >
+                          <EditConnectionDialog
+                             connection={connection}
+                             onSubmit={onEdit}
+                             isSubmitting={isMutating}
+                             onCloseDialog={handleMenuClose}
+                          />
+                          <DeleteConnectionDialog
+                             connection={connection}
+                             onCloseDialog={handleMenuClose}
+                             isMutating={isMutating}
+                             onDelete={() => onDelete(connection)}
+                          />
+                       </Menu>
+                    </>
+                 ),
+              }
+            : {})}
+      />
    );
 }

@@ -113,8 +113,9 @@ export function FilterStrip({
                   startIcon={<AddIcon fontSize="small" />}
                   onClick={() => onAdd()}
                   sx={{ ml: "auto" }}
+                  aria-label="Add filter"
                >
-                  Add filter
+                  Filter
                </Button>
             </Stack>
 

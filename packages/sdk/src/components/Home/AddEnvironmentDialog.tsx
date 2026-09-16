@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { AddCircleRounded } from "@mui/icons-material";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -15,6 +14,7 @@ import React, { useState } from "react";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { generateEnvironmentReadme } from "../../utils/parsing";
 import { useServer } from "../ServerProvider";
+import { AddButton } from "../AddButton";
 
 export default function AddEnvironmentDialog() {
    const [open, setOpen] = useState(false);
@@ -69,14 +69,7 @@ export default function AddEnvironmentDialog() {
 
    return (
       <React.Fragment>
-         <Button
-            variant="contained"
-            onClick={handleClickOpen}
-            startIcon={<AddCircleRounded />}
-            sx={{ mt: 2 }}
-         >
-            Create New Environment
-         </Button>
+         <AddButton label="Environment" onClick={handleClickOpen} />
          <Dialog open={open} onClose={handleClose}>
             <DialogTitle>Create New Environment</DialogTitle>
             <DialogContent>

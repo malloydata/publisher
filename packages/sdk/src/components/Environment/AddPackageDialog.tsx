@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Add } from "@mui/icons-material";
 import {
    Box,
    Button,
@@ -21,6 +20,7 @@ import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { DOC_LINKS } from "../../constants/docLinks";
 import { useServer } from "../ServerProvider";
+import { AddButton } from "../AddButton";
 
 interface AddPackageDialogProps {
    resourceUri: string;
@@ -71,14 +71,7 @@ export default function AddPackageDialog({
 
    return (
       <>
-         <Button
-            onClick={() => setOpen(true)}
-            variant="contained"
-            color="primary"
-            startIcon={<Add />}
-         >
-            Add Package
-         </Button>
+         <AddButton label="Package" onClick={() => setOpen(true)} />
 
          <Dialog
             open={open}

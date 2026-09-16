@@ -208,10 +208,11 @@ export function SeriesColorsSection({
                variant="outlined"
                size="small"
                startIcon={<AddIcon />}
+               aria-label="Add color"
                onClick={addColor}
                disabled={disabled}
             >
-               Add color
+               Color
             </Button>
          </Box>
       </Box>
