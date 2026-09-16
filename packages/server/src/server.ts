@@ -1562,31 +1562,6 @@ app.post(
    },
 );
 
-// Environment-scoped aggregate: every materialization across all packages in
-// the env, newest first. Nested under `/packages` as the collection-level
-// sibling of the per-package `/packages/:packageName/materializations` list.
-// MUST stay registered ahead of `/packages/:packageName` below so the literal
-// `materializations` segment wins the match; consequently `materializations` is
-// a reserved package name at this position (a package can never be named that).
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/materializations`,
-   async (req, res) => {
-      try {
-         const limit = parseNonNegativeIntParam(req.query.limit);
-         const offset = parseNonNegativeIntParam(req.query.offset);
-         const builds =
-            await materializationController.listEnvironmentMaterializations(
-               req.params.environmentName,
-               { limit, offset },
-            );
-         res.status(200).json(builds);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
@@ -2000,10 +1975,8 @@ app.post(
 );
 
 // ==================== MATERIALIZATION ROUTES ====================
-// The environment-scoped aggregate list (every materialization across all
-// packages) is registered up in the package routes as
-// `/packages/materializations`, ahead of `/packages/:packageName`, so the
-// literal wins the match — see that route for the ordering contract.
+// Every one of them is package-scoped, because a materialization is a run of
+// one package's persist sources and cannot exist without a package.
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,

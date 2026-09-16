@@ -408,16 +408,6 @@ export class MaterializationController {
       );
    }
 
-   async listEnvironmentMaterializations(
-      environmentName: string,
-      options?: { limit?: number; offset?: number },
-   ) {
-      return this.materializationService.listEnvironmentMaterializations(
-         environmentName,
-         options,
-      );
-   }
-
    async getMaterialization(
       environmentName: string,
       packageName: string,
