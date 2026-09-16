@@ -56,12 +56,17 @@ import path from "node:path";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
 
-// Flags that consume the next argv token, from `bun test --help`. Everything
-// else beginning with "-" is treated as a boolean, so an unrecognised
-// value-taking flag leaves its value looking like a path filter. That fails
-// loudly here rather than passing quietly: a value like "200000" collects
-// nothing, so the "collects its own directory" assertion below catches it.
+// Flags whose value is a separate argv token, from `bun test --help`.
+// Everything else beginning with "-" is read as a boolean.
+//
+// `--max-workers` is the exception, and it is here because two integration
+// scripts pass it even though `bun test --help` does not list it. Measured
+// rather than assumed: with a `file1.test.ts` in the tree,
+// `bun test ./tests --max-workers 1` collects one file, not two — bun swallows
+// the value instead of reading it as a filter. A parser that did not would
+// report a path filter the run never had.
 const VALUE_FLAGS = new Set([
+  "--max-workers",
   "--timeout",
   "--rerun-each",
   "--retry",
@@ -293,6 +298,13 @@ describe("reading a bun test command", () => {
     expect(
       filtersOf("bun test --timeout 200000 ./tests --max-workers=1"),
     ).toEqual(["./tests"]);
+  });
+
+  it("skips a space-separated value for a flag bun does not document", () => {
+    // Both forms appear the same to this parser; only the space form can eat a
+    // token, and bun does not hand that token to the filter list either.
+    expect(filtersOf("bun test ./tests --max-workers=1")).toEqual(["./tests"]);
+    expect(filtersOf("bun test ./tests --max-workers 1")).toEqual(["./tests"]);
   });
 
   it("reads a command with an env prefix", () => {
