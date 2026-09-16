@@ -41,7 +41,7 @@
       "typecheck": "bunx tsc --noEmit",
       "lint": "bunx eslint ./src ./scripts --fix",
       "format": "bunx prettier --write --parser typescript '{src,scripts}/**/*.ts'",
-      "test": "bun run copy-skills && bun test src"
+      "test": "bun run copy-skills && bun test ./src"
    },
    "devDependencies": {
       "@eslint/js": "^8.57.0",

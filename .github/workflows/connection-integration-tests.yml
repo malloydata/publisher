@@ -164,7 +164,7 @@ jobs:
           BIGQUERY_TEST_TABLE: ${{ secrets.BIGQUERY_TEST_TABLE }}
         run: |
           cd packages/server
-          bun test --timeout 100000 src/service/connection.spec.ts
+          bun test --timeout 100000 ./src/service/connection.spec.ts
 
       # The storage= build's warehouse read reaches BigQuery job records the unit
       # suite cannot: bigquery_execute's returned job id, the child job a
@@ -179,5 +179,5 @@ jobs:
       - name: Run storage= build integration tests
         run: |
           cd packages/server
-          bun test --timeout 100000 src/service/storage_build_bigquery.integration.spec.ts
+          bun test --timeout 100000 ./src/service/storage_build_bigquery.integration.spec.ts
 
