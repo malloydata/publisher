@@ -32,9 +32,12 @@ import {
 } from "@malloydata/malloy";
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
+import { createHash } from "crypto";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import tls from "tls";
 import { components } from "../api";
 import {
    getDuckDBMemoryLimit,
@@ -64,6 +67,7 @@ import {
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
+   PROXIED_SSLMODES,
 } from "./connection_config";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import {
@@ -1236,40 +1240,44 @@ async function federatePostgres(
    // the same, or the passthrough dials a host the bastion exists to keep
    // unreachable and the build fails on a connect timeout. The tunnel is
    // build-scoped — opened here, closed by the handle's `close` from the build
-   // session's finally — so no listener outlives the build.
+   // session's finally — so no listener outlives the build. It is opened INSIDE
+   // the try: the tunnel is a process-level listener that nothing else can reach,
+   // so any throw between opening it and returning the handle (a refused TLS
+   // mapping as much as a failed ATTACH) has to close it here, or it is stranded
+   // for the life of the process and a retried build opens another.
    let endpoint: ProxyEndpoint | undefined;
-   let attachString: string;
-   if (config.proxy) {
-      if (!pg.host || !pg.port) {
-         // validateConnectionShape requires both on a proxied connection, so
-         // this is unreachable in practice — guard so the tunnel target is
-         // never undefined.
-         throw new Error(
-            `Connection proxy on '${config.name}' requires explicit host and port on the postgres connection.`,
-         );
-      }
-      endpoint = await (deps.openProxy ?? openProxy)(config.proxy, {
-         host: pg.host,
-         port: pg.port,
-      });
-      attachString = buildProxiedPgAttachString(config.name, pg, endpoint);
-   } else {
-      attachString = buildPgConnectionString(pg);
-   }
-   logger.info(
-      `Federating Postgres source for passthrough as alias '${alias}'${endpoint ? " through its SSH proxy" : ""}: ${redactPgSecrets(attachString)}`,
-   );
-   // OR REPLACE for within-session idempotency. The cross-build/cross-tenant
-   // alias-collision boundary is the build session's PRIVATE DuckDB instance
-   // (see createIsolatedBuildSession): each build runs on its own instance, so
-   // its postgres attach cannot collide with another build's or another tenant's
-   // on a shared instance. OR REPLACE is kept as belt-and-suspenders for a
-   // re-attach of the identical source within one session (the alias is the
-   // connection name, the config is that connection's, so replacing is a no-op
-   // rebind to the same source). (bigquery/snowflake federate via CREATE OR
-   // REPLACE SECRET with no ATTACH; secrets are instance-scoped, so isolation
-   // covers them too.)
    try {
+      let attachString: string;
+      if (config.proxy) {
+         if (!pg.host || !pg.port) {
+            // validateConnectionShape requires both on a proxied connection, so
+            // this is unreachable in practice — guard so the tunnel target is
+            // never undefined.
+            throw new Error(
+               `Connection proxy on '${config.name}' requires explicit host and port on the postgres connection.`,
+            );
+         }
+         endpoint = await (deps.openProxy ?? openProxy)(config.proxy, {
+            host: pg.host,
+            port: pg.port,
+         });
+         attachString = buildProxiedPgAttachString(config.name, pg, endpoint);
+      } else {
+         attachString = buildPgConnectionString(pg);
+      }
+      logger.info(
+         `Federating Postgres source for passthrough as alias '${alias}'${endpoint ? " through its SSH proxy" : ""}: ${redactPgSecrets(attachString)}`,
+      );
+      // OR REPLACE for within-session idempotency. The cross-build/cross-tenant
+      // alias-collision boundary is the build session's PRIVATE DuckDB instance
+      // (see createIsolatedBuildSession): each build runs on its own instance, so
+      // its postgres attach cannot collide with another build's or another tenant's
+      // on a shared instance. OR REPLACE is kept as belt-and-suspenders for a
+      // re-attach of the identical source within one session (the alias is the
+      // connection name, the config is that connection's, so replacing is a no-op
+      // rebind to the same source). (bigquery/snowflake federate via CREATE OR
+      // REPLACE SECRET with no ATTACH; secrets are instance-scoped, so isolation
+      // covers them too.)
       await connection.runSQL(
          `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
       );
@@ -1285,20 +1293,88 @@ async function federatePostgres(
 }
 
 /**
+ * One libpq conninfo keyword/value pair. libpq takes a bare value only when it
+ * has no whitespace, quote or backslash; any other value is single-quoted with
+ * `\` and `'` backslash-escaped, so a password containing a space is not read
+ * as a second keyword. Exported for tests.
+ */
+export function pgConninfoPair(key: string, value: string): string {
+   if (value !== "" && !/[\s'\\]/.test(value)) return `${key}=${value}`;
+   return `${key}='${value.replace(/([\\'])/g, "\\$1")}'`;
+}
+
+/**
+ * The CA material a proxied storage build hands libpq. Injected so a test needs
+ * neither the process environment nor a file on disk.
+ */
+export interface ProxiedAttachTrust {
+   /** The deployment's trusted CA bundle (NODE_EXTRA_CA_CERTS), when set. */
+   caBundle?: string;
+   /**
+    * Path of a bundle holding the runtime's ambient trust anchors — its bundled
+    * roots plus `caBundle` — which is the set the query path verifies
+    * `verify-full` against.
+    */
+   ambientBundle: () => string;
+}
+
+export function defaultProxiedAttachTrust(): ProxiedAttachTrust {
+   return {
+      caBundle: process.env.NODE_EXTRA_CA_CERTS || undefined,
+      ambientBundle: ambientTrustBundlePath,
+   };
+}
+
+const ambientTrustBundles = new Map<string | undefined, string>();
+
+/**
+ * Materializes the runtime's ambient trust anchors as one PEM file libpq can take
+ * as `sslrootcert`: `tls.rootCertificates` (the bundled roots) followed by the
+ * contents of NODE_EXTRA_CA_CERTS when set. libpq verifies against exactly one
+ * file, so the union has to exist on disk. Written once per process per bundle
+ * path, under a content-addressed name, so a concurrent writer lands the same
+ * bytes and a restart reuses the file. Exported for tests.
+ */
+export function ambientTrustBundlePath(): string {
+   const extra = process.env.NODE_EXTRA_CA_CERTS || undefined;
+   const cached = ambientTrustBundles.get(extra);
+   if (cached) return cached;
+   const pem =
+      [
+         ...tls.rootCertificates,
+         ...(extra ? [readFileSync(extra, "utf8").trim()] : []),
+      ].join("\n") + "\n";
+   const digest = createHash("sha256").update(pem).digest("hex").slice(0, 16);
+   const file = path.join(os.tmpdir(), `publisher-ambient-ca-${digest}.pem`);
+   if (!existsSync(file)) {
+      const partial = `${file}.${process.pid}.partial`;
+      writeFileSync(partial, pem, { mode: 0o600 });
+      renameSync(partial, file);
+   }
+   ambientTrustBundles.set(extra, file);
+   return file;
+}
+
+type ProxiedSslmode = (typeof PROXIED_SSLMODES)[number];
+
+/**
  * libpq keyword/value string for a Postgres source reached through the SSH
  * tunnel: the socket goes to the tunnel's LOCAL endpoint, the credentials are the
  * connection's own. TLS is mapped from the connection's `sslmode` the way the
- * query path maps it (see buildProxiedSslQuery), with libpq's vocabulary:
+ * query path maps it (see resolveProxiedTls), with libpq's vocabulary:
  *
  *  - unset / `no-verify` → `require`: encrypt without verifying, so a force-SSL
  *    target (the common managed-Postgres case) is not rejected for plaintext;
  *  - `disable` → `disable`;
  *  - `verify-ca` → `verify-ca` against the trusted CA bundle (NODE_EXTRA_CA_CERTS,
- *    the same file the query path uses), which libpq takes as `sslrootcert`;
- *  - `verify-full` → `verify-ca`: the tunnel terminates at 127.0.0.1, and libpq
- *    checks the certificate's hostname against the host it dialled, so the
- *    hostname half of verify-full cannot hold through a tunnel. The chain is
- *    still verified; the downgrade is logged.
+ *    the same pinned file the query path uses), which libpq takes as `sslrootcert`;
+ *  - `verify-full` → `verify-ca` against the runtime's ambient trust anchors plus
+ *    NODE_EXTRA_CA_CERTS — the trust set the query path verifies `verify-full`
+ *    against, so a target with a publicly-trusted CA builds as it queries and no
+ *    bundle is required. The tunnel terminates at 127.0.0.1 and libpq checks the
+ *    certificate's hostname against the host it dialled, so the hostname half of
+ *    verify-full cannot hold through a tunnel; the chain is still verified and the
+ *    downgrade is logged.
  *
  * Exported for tests.
  */
@@ -1306,12 +1382,19 @@ export function buildProxiedPgAttachString(
    name: string,
    pg: components["schemas"]["PostgresConnection"],
    endpoint: ProxyEndpoint,
+   trust: ProxiedAttachTrust = defaultProxiedAttachTrust(),
 ): string {
-   const parts = [`host=${endpoint.host}`, `port=${endpoint.port}`];
-   if (pg.databaseName) parts.push(`dbname=${pg.databaseName}`);
-   if (pg.userName) parts.push(`user=${pg.userName}`);
-   if (pg.password) parts.push(`password=${pg.password}`);
-   const mode = pg.sslmode ?? "no-verify";
+   const parts = [
+      pgConninfoPair("host", endpoint.host),
+      pgConninfoPair("port", String(endpoint.port)),
+   ];
+   if (pg.databaseName) parts.push(pgConninfoPair("dbname", pg.databaseName));
+   if (pg.userName) parts.push(pgConninfoPair("user", pg.userName));
+   if (pg.password) parts.push(pgConninfoPair("password", pg.password));
+   // Typed against PROXIED_SSLMODES, the one list the config validator and the
+   // query path derive from: a mode added there without a case below is a
+   // compile error here, not a throw at build time.
+   const mode: ProxiedSslmode = pg.sslmode ?? "no-verify";
    switch (mode) {
       case "disable":
          parts.push("sslmode=disable");
@@ -1319,26 +1402,34 @@ export function buildProxiedPgAttachString(
       case "no-verify":
          parts.push("sslmode=require");
          break;
-      case "verify-ca":
-      case "verify-full": {
-         const caBundle = process.env.NODE_EXTRA_CA_CERTS;
-         if (!caBundle) {
+      case "verify-ca": {
+         if (!trust.caBundle) {
             throw new Error(
-               `Connection proxy on '${name}' uses sslmode '${mode}' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
+               `Connection proxy on '${name}' uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
             );
          }
-         if (mode === "verify-full") {
-            logger.warn(
-               `Connection proxy on '${name}': the storage build verifies the certificate chain (verify-ca) but cannot verify the hostname through the tunnel, which terminates at ${endpoint.host}.`,
-            );
-         }
-         parts.push("sslmode=verify-ca", `sslrootcert=${caBundle}`);
+         parts.push(
+            "sslmode=verify-ca",
+            pgConninfoPair("sslrootcert", trust.caBundle),
+         );
          break;
       }
-      default:
-         throw new Error(
-            `Connection proxy on '${name}' has unsupported sslmode '${mode}' (expected disable | no-verify | verify-ca | verify-full).`,
+      case "verify-full": {
+         logger.warn(
+            `Connection proxy on '${name}': the storage build verifies the certificate chain (verify-ca) but cannot verify the hostname through the tunnel, which terminates at ${endpoint.host}.`,
          );
+         parts.push(
+            "sslmode=verify-ca",
+            pgConninfoPair("sslrootcert", trust.ambientBundle()),
+         );
+         break;
+      }
+      default: {
+         const unhandled: never = mode;
+         throw new Error(
+            `Connection proxy on '${name}' has unsupported sslmode '${String(unhandled)}' (expected ${PROXIED_SSLMODES.join(" | ")}).`,
+         );
+      }
    }
    return parts.join(" ");
 }

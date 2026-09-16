@@ -9,12 +9,18 @@
 // spike's job.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import * as sinon from "sinon";
+import tls from "tls";
 import type { components } from "../api";
 import {
+   ambientTrustBundlePath,
    attachDuckLakeReadWrite,
    federateSourceForPassthrough,
    buildProxiedPgAttachString,
+   pgConninfoPair,
 } from "./connection";
 
 /** A real in-memory DuckDB connection with runSQL stubbed to capture SQL. */
@@ -27,6 +33,22 @@ function stubbedConnection(): { conn: DuckDBConnection; sql: string[] } {
       return { rows: [], totalRows: 0, runStats: {} } as any;
    });
    return { conn, sql };
+}
+
+/** Runs `fn` with NODE_EXTRA_CA_CERTS set to `value` (unset when undefined). */
+async function withCaBundle(
+   value: string | undefined,
+   fn: () => void | Promise<void>,
+): Promise<void> {
+   const prev = process.env.NODE_EXTRA_CA_CERTS;
+   if (value === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+   else process.env.NODE_EXTRA_CA_CERTS = value;
+   try {
+      await fn();
+   } finally {
+      if (prev === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+      else process.env.NODE_EXTRA_CA_CERTS = prev;
+   }
 }
 
 const SERVICE_ACCOUNT = JSON.stringify({
@@ -345,6 +367,43 @@ describe("federateSourceForPassthrough", () => {
       expect(closed).toBe(1);
    });
 
+   it("postgres: a refusal between opening the tunnel and the attach closes the tunnel", async () => {
+      const { conn, sql } = stubbedConnection();
+      let closed = 0;
+      const openProxy = async () => ({
+         host: "127.0.0.1",
+         port: 54321,
+         close: async () => {
+            closed += 1;
+         },
+      });
+      // verify-ca with no trusted bundle is refused AFTER the tunnel is open and
+      // BEFORE any ATTACH: the tunnel must not be stranded by that refusal.
+      await withCaBundle(undefined, async () => {
+         await expect(
+            federateSourceForPassthrough(
+               conn,
+               "postgres",
+               {
+                  name: "src_pg",
+                  postgresConnection: {
+                     host: "h",
+                     port: 5432,
+                     sslmode: "verify-ca",
+                  } as components["schemas"]["PostgresConnection"],
+                  proxy: {
+                     type: "ssh",
+                     ssh: { host: "b", port: 22, username: "t" },
+                  } as components["schemas"]["ConnectionProxy"],
+               },
+               { openProxy },
+            ),
+         ).rejects.toThrow(/NODE_EXTRA_CA_CERTS/);
+      });
+      expect(sql.find((s) => s.startsWith("ATTACH"))).toBeUndefined();
+      expect(closed).toBe(1);
+   });
+
    it("postgres: an unproxied source still attaches at its own host, with no close", async () => {
       const { conn, sql } = stubbedConnection();
       const result = await federateSourceForPassthrough(conn, "postgres", {
@@ -457,18 +516,6 @@ describe("buildProxiedPgAttachString", () => {
          password: "p",
          sslmode,
       }) as components["schemas"]["PostgresConnection"];
-   const withCaBundle = async (value: string | undefined, fn: () => void) => {
-      const prev = process.env.NODE_EXTRA_CA_CERTS;
-      if (value === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
-      else process.env.NODE_EXTRA_CA_CERTS = value;
-      try {
-         fn();
-      } finally {
-         if (prev === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
-         else process.env.NODE_EXTRA_CA_CERTS = prev;
-      }
-   };
-
    it("targets the tunnel endpoint and defaults to sslmode=require", () => {
       const s = buildProxiedPgAttachString("c", pg(undefined), endpoint);
       expect(s).toBe(
@@ -498,17 +545,61 @@ describe("buildProxiedPgAttachString", () => {
       });
    });
 
-   it("verify-full verifies the chain through the tunnel (hostname cannot be checked at 127.0.0.1)", async () => {
-      await withCaBundle("/etc/ssl/rds.pem", () => {
-         expect(
-            buildProxiedPgAttachString("c", pg("verify-full"), endpoint),
-         ).toContain("sslmode=verify-ca sslrootcert=/etc/ssl/rds.pem");
+   it("verify-full needs no bundle: the chain is verified against the ambient roots plus the bundle, not the hostname", () => {
+      // No NODE_EXTRA_CA_CERTS: a publicly-trusted target still builds.
+      expect(
+         buildProxiedPgAttachString("c", pg("verify-full"), endpoint, {
+            caBundle: undefined,
+            ambientBundle: () => "/tmp/ambient.pem",
+         }),
+      ).toContain("sslmode=verify-ca sslrootcert=/tmp/ambient.pem");
+      // With a bundle set, the union (ambient roots + bundle) is what libpq gets —
+      // the query path's trust set — never the pinned bundle alone.
+      const s = buildProxiedPgAttachString("c", pg("verify-full"), endpoint, {
+         caBundle: "/etc/ssl/rds.pem",
+         ambientBundle: () => "/tmp/ambient.pem",
       });
+      expect(s).toContain("sslrootcert=/tmp/ambient.pem");
+      expect(s).not.toContain("/etc/ssl/rds.pem");
+   });
+
+   it("quotes a value libpq would otherwise split or mis-parse", () => {
+      const s = buildProxiedPgAttachString(
+         "c",
+         { ...pg(undefined), password: "p w'x\\y" },
+         endpoint,
+      );
+      expect(s).toContain("user=u password='p w\\'x\\\\y' sslmode=require");
+      expect(pgConninfoPair("k", "plain")).toBe("k=plain");
+      expect(pgConninfoPair("k", "")).toBe("k=''");
+      expect(pgConninfoPair("k", "a b")).toBe("k='a b'");
    });
 
    it("refuses an unknown sslmode", () => {
       expect(() =>
          buildProxiedPgAttachString("c", pg("prefer"), endpoint),
       ).toThrow(/unsupported sslmode/);
+   });
+});
+
+describe("ambientTrustBundlePath", () => {
+   it("writes the runtime's roots plus NODE_EXTRA_CA_CERTS to one file, once", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "ambient-ca-"));
+      const extra = join(dir, "extra.pem");
+      const marker =
+         "-----BEGIN CERTIFICATE-----\nEXTRA-MARKER\n-----END CERTIFICATE-----";
+      writeFileSync(extra, `${marker}\n`);
+      await withCaBundle(extra, () => {
+         const file = ambientTrustBundlePath();
+         const pem = readFileSync(file, "utf8");
+         expect(pem).toContain(tls.rootCertificates[0]);
+         expect(pem).toContain(marker);
+         expect(ambientTrustBundlePath()).toBe(file);
+      });
+      await withCaBundle(undefined, () => {
+         const pem = readFileSync(ambientTrustBundlePath(), "utf8");
+         expect(pem).toContain(tls.rootCertificates[0]);
+         expect(pem).not.toContain("EXTRA-MARKER");
+      });
    });
 });

@@ -300,17 +300,22 @@ additional trust control on the tunnel itself.
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
 (the non-proxied path keeps using the environment's `PGSSLMODE`). The driver connects to the
 local forward endpoint (`127.0.0.1`), not the real database host, so the certificate
-**hostname** can't be checked. The supported modes:
+**hostname** can't be checked from the tunnel address alone. The supported modes:
 
 - `no-verify` (**default** when a proxy is set) — encrypt without verifying. Chosen as the
   default so a force-SSL target (the common RDS case) isn't rejected for plaintext.
 - `verify-ca` — validate the server cert **chain** against the trusted CA bundle
   (`NODE_EXTRA_CA_CERTS`, e.g. the baked Amazon RDS roots) while skipping the hostname
   check. Fails if no CA bundle is available.
+- `verify-full` — validate the chain **and** the hostname against the real database host
+  (sent as the TLS server name through the tunnel), trusting the runtime's bundled roots
+  plus `NODE_EXTRA_CA_CERTS`. No bundle is required when the target's CA is publicly trusted.
 - `disable` — no TLS.
 
-Full verification (`verify-full`) can't work through the tunnel until per-connection
-`servername` override lands (see malloydata/malloy#2960).
+A `storage=` build of a proxied source reaches it through its own tunnel with libpq rather
+than the query driver. It maps `sslmode` the same way, with one difference: `verify-full`
+verifies the chain against the same trust set but not the hostname, which libpq checks
+against the tunnel's `127.0.0.1`; the build logs that downgrade.
 
 ## Credentials in API responses
 
