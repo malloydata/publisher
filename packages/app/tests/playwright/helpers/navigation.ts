@@ -15,11 +15,16 @@ export async function openEnvironment(
    page: Page,
    name: string = DEFAULT_ENV,
 ): Promise<void> {
-   // Redesigned env cards on Home are themselves the click target — no
-   // separate "Open Environment" button. Click the env's heading.
-   const heading = page.getByRole("heading", { name, level: 6 });
-   await expect(heading).toBeVisible();
-   await heading.click();
+   // An environment is a row on Home, and the row itself is the click target
+   // — no separate "Open Environment" button. Its accessible name is the
+   // environment's name alone.
+   // Scoped to the page, because the sidebar lists every environment by the
+   // same name.
+   const row = page
+      .getByRole("main")
+      .getByRole("button", { name, exact: true });
+   await expect(row).toBeVisible();
+   await row.click();
    await expect(page).toHaveURL(new RegExp(`/${name}/?$`));
 }
 

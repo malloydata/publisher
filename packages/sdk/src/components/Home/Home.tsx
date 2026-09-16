@@ -328,6 +328,10 @@ function EnvironmentRow({
          icon={<FolderOutlinedIcon sx={{ fontSize: 18 }} />}
          tint={SURFACE_TINT.environment}
          label={environment.name ?? ""}
+         // The row's name is the environment's, not the row's whole text: a
+         // description in the accessible name makes every exact-name lookup,
+         // ours and a reader's, a guessing game about the author's prose.
+         ariaLabel={environment.name ?? ""}
          {...(description ? { description } : {})}
          {...(environment.name && onClickEnvironment
             ? {

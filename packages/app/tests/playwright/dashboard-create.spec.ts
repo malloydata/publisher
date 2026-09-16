@@ -68,7 +68,7 @@ test.describe("dashboard-create", () => {
       page,
    }) => {
       await page.goto(`/${env}/${PKG}`);
-      await page.getByRole("button", { name: "New dashboard" }).click({
+      await page.getByRole("button", { name: "Add dashboard" }).click({
          timeout: 60_000,
       });
 
