@@ -31,6 +31,44 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
+## [0.3.1] — a dashboard builder, and the storage seam a host has to supply
+
+Publisher now ships a WYSIWYG editor for a package dashboard: tiles arranged by drag, a filter strip
+whose controls are written into the file as `given:` declarations, per-tile drill targets, and a
+splice-writer that rewrites only the bytes it owns so comments, ordering and everything it does not
+manage survive the round trip. `/<environment>/<package>/dashboards/<slug>/edit` opens it in the
+bundled app.
+
+**It is a separate entry point, and that is deliberate.** Import it from
+`@malloy-publisher/sdk/builder`, not from the package root, and load it lazily —
+`React.lazy(() => import("@malloy-publisher/sdk/builder"))` is what the bundled app does. The builder
+reads Malloy with the Malloy parser, which is 440 KB gzipped, and nothing reachable from the main
+entry imports it. A single static import anywhere on your main path hoists all of it into every page
+load. That entry also installs a `globalThis.process.env` shim the parser's dependencies need in a
+browser, and it has to evaluate before the parser's chunk does, which is the other reason not to
+reach past it into the component file.
+
+**Saving is yours, not ours.** The editor writes through a `DocumentStorage` the host supplies
+through `DocumentStorageProvider` — `listWorkspaces`, `getDocument`, `saveDocument`,
+`deleteDocument`, `moveDocument`, over a `{workspace, type, path}` locator. `BrowserDocumentStorage`
+is exported and keeps documents in `localStorage`, which is what the bundled app uses and is enough
+to try the builder, not enough to share one. A host with no provider still gets the editor, without
+Save. Two things to know before writing an implementation: `saveDocument` carries no version or etag,
+so a backend that needs a precondition has to hold one itself and reject a stale write, and the
+editor opens on the first workspace `listWorkspaces(true)` returns, so return the one you mean to
+save into.
+
+**The package dashboard is a read-only origin.** Editing works on a copy, the copy goes wherever the
+host keeps documents, and "Export" hands the file back so it can be put in the package. There is no
+server write path and this release does not add one. The cost is stated in the toolbar rather than
+hidden: a control added in the builder is live in the editor, because its value is written into each
+tile's query, but it reaches the package only when the exported file does.
+
+**One thing a dashboard author should know.** The file the builder writes is package text, and
+Publisher reads an `#(authorize)` gate from a declaration in the package. A `given:` the builder
+writes is presentation — it does not bound what a viewer can reach, and it is not a tenant boundary.
+Treat a dashboard as model text for review purposes, because that is what it is.
+
 ## [0.3.0] — a dashboard's description is its narrative header, and it renders as markdown
 
 A dashboard could already carry a block of prose and was throwing it away at the last step. Malloy
