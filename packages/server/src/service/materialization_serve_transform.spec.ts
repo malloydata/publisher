@@ -23,6 +23,7 @@ import {
    extractSourceFilters,
    buildServeShapeTiers,
    NEVER_THINNED,
+   type RollupShapeGroup,
    UNREPRODUCIBLE_FILTER,
    buildVirtualMap,
    deriveServeBindings,
@@ -1457,23 +1458,15 @@ describe("buildServeShapeTiers", () => {
    // answers with rows the source excludes — and the floor tier, which is
    // assembled separately from the thinning ladder, is exactly where that
    // reappears when someone adds a rung.
+   const oneGroup: RollupShapeGroup[] = [
+      { baseSourceName: "orders", members: [] },
+   ];
    for (const [label, groups] of [
-      ["no rollup groups", []],
-      [
-         "with a rollup group",
-         [
-            {
-               baseSourceName: "orders",
-               shapeTypeName: "orders__shape",
-               members: [],
-            },
-         ],
-      ],
+      ["no rollup groups", [] as RollupShapeGroup[]],
+      ["with a rollup group", oneGroup],
    ] as const) {
       it(`keeps every never-thinned kind at every tier (${label})`, () => {
-         const tiers = buildServeShapeTiers(
-            groups as unknown as Parameters<typeof buildServeShapeTiers>[0],
-         );
+         const tiers = buildServeShapeTiers([...groups]);
          expect(tiers.length).toBeGreaterThan(0);
          for (const [i, tier] of tiers.entries()) {
             for (const kind of NEVER_THINNED) {
@@ -1488,12 +1481,8 @@ describe("buildServeShapeTiers", () => {
    it("adds the group-dropping rungs only when there is a group", () => {
       const without = buildServeShapeTiers([]);
       const with_ = buildServeShapeTiers([
-         {
-            baseSourceName: "orders",
-            shapeTypeName: "orders__shape",
-            members: [],
-         },
-      ] as unknown as Parameters<typeof buildServeShapeTiers>[0]);
+         { baseSourceName: "orders", members: [] },
+      ]);
       expect(with_.length).toBe(without.length + 2);
       // The floor drops the groups AND keeps the never-thinned kinds.
       const floor = with_[with_.length - 1];

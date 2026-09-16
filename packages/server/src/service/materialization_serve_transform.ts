@@ -921,11 +921,11 @@ export function narrowSchemaToPublic(
  * `Model.compileServeShape`, which keeps this kind at every tier for that
  * reason.
  *
- * The cost of that failure is the whole MODEL's storage tier, not just this
- * source's: `compileServeShape` emits one model text covering every binding, so
- * an unreproducible filter on one source sends every source in the model live.
- * Correct, and blunt — withholding only the offending binding wants a per-binding
- * probe the ladder does not do today.
+ * The cost is that source's tier and no one else's. The shape is one model text
+ * covering every binding, so the failure surfaces model-wide; `compileServeShape`
+ * answers it by probing each binding alone, withholding the ones whose filters do
+ * not reproduce, and re-entering the ladder with the rest — so a sibling keeps
+ * its joins and views rather than being frozen at the shape that failed.
  *
  * A filter referencing a given cannot reach here: `assertMaterializationEligible`
  * refuses a given-referencing source outright, as it does `#(partition)` and
@@ -933,6 +933,12 @@ export function narrowSchemaToPublic(
  *
  * `filterList` accumulates through `extend`, so a source's own entries already
  * carry every filter it inherits from the source it extends.
+ *
+ * A pre-aggregation ROLLUP member carries no filter refinement, and that
+ * asymmetry is not an oversight: a rollup is a `-> { }` derived source, so
+ * READING its base applies the base's filter and the rollup's own build SQL bakes
+ * it in. A base binding rebinds the stored relation directly and so must
+ * re-declare the filter; a rollup already has it.
  *
  * Fail-closed on a malformed entry: an entry whose `code` is not a string
  * yields a filter that cannot compile, so the binding is withheld rather than

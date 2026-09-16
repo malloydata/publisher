@@ -517,12 +517,11 @@ touching the nested field recompute.
 A **filter** is the one exception to that per-query rule, deliberately. If a
 source's `where:` cannot be reproduced on the shape — one reaching through a join
 whose target is not materialized, or one over a column the source hides with
-`except:` — nothing in that **model** serves from storage, rather than the source
-serving without its filter. Serving fewer queries from the tier is a cost;
-serving the wrong rows is not a trade worth making. The blast radius is the model
-rather than the one source because the shape is a single generated model covering
-every binding in it, so check the fallback log line's compile error if a package
-stops routing. For the same reason a filter is never dropped when the shape sheds
+`except:` — that **source** serves live, rather than serving from storage without
+its filter. Serving fewer queries from the tier is a cost; serving the wrong rows
+is not a trade worth making. Only that source is affected: its siblings keep the
+tier, and keep it at full strength rather than falling back to bare stored
+columns. For the same reason a filter is never dropped when the shape sheds
 its riskier refinements: a source whose view cannot be reproduced loses the view
 and keeps the filter.
 

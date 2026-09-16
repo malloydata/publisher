@@ -20,6 +20,11 @@ the join is not emitted, so its filter cannot resolve and its binding cannot
 compile. `big_orders`, in the same model, has a filter that reproduces fine. Only
 `north_orders` loses the tier.
 
+And `big_orders` keeps its tier at full strength, not at the floor: its own view
+still serves from storage. Withholding a sibling re-enters the ladder with the
+survivors rather than freezing them at the shape that failed, so a source that
+did nothing wrong does not lose its joins and views to a neighbour's filter.
+
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on
@@ -50,6 +55,12 @@ source: regions is orders_pg.table('public.ufw_regions')
 #@ persist name="ufw_big" storage=lake
 source: big_orders is orders_pg.sql('SELECT order_id, amount, region_id FROM public.ufw_orders') extend {
   where: amount >= 100
+
+  view: by_region is {
+    group_by: region_id
+    aggregate: total is amount.sum()
+    order_by: region_id asc
+  }
 }
 
 #@ persist name="ufw_north" storage=lake
@@ -130,3 +141,20 @@ Expect:
 | total:num |
 | --------- |
 | 1150      |
+
+## Query big by region (again)
+
+Still the stale `100` / `200` ⇒ `big_orders` kept its VIEW, not just its rows.
+Freezing the survivors at the floor that failed would have dropped the view from
+the shape and sent this query live, where it would read `1100` for `r1`.
+
+```malloy
+run: big_orders -> by_region
+```
+
+Expect:
+
+| region_id | total:num |
+| --------- | --------- |
+| r1        | 100       |
+| r2        | 200       |
