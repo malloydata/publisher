@@ -317,10 +317,14 @@ source: orders is duckdb.table('orders.parquet') extend {
 - **Generate the admin escape hatch as another extension over the locked base, never as a bypass.** When a model needs an ordinary population plus a wider one, add a second extension whose gate is a source-level convenience term:
 
 ```malloy
+given:
+  ORG_IDS :: string[]
+  GROUPS  :: string[]
+
 #(authorize) false
 source: orders_base is duckdb.table('orders.parquet') extend {}
 
-#(authorize) org_id in $ORG_ID
+#(authorize) org_id in $ORG_IDS
 source: orders is orders_base extend {}
 
 #(authorize) 'admin' in $GROUPS
