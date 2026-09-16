@@ -43,7 +43,7 @@ export interface BuilderToolbarProps {
    saving: boolean;
    /** Absent when the builder has nowhere to save: no Save, no unsaved marker. */
    onSave?: () => void;
-   /** The host's actions, beside the builder's own: Export, Done. */
+   /** The host's actions, beside the builder's own: Done. */
    actions?: ReactNode;
    /** Open the add-tile picker. Absent when the host passed no catalog to pick from. */
    onAddTile?: () => void;
@@ -128,8 +128,9 @@ export function BuilderToolbar({
                   size="small"
                   startIcon={<AddIcon fontSize="small" />}
                   onClick={onAddTile}
+                  aria-label="Add tile"
                >
-                  Add tile
+                  Tile
                </Button>
             )}
             <Button

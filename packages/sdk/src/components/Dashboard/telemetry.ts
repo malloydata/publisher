@@ -26,7 +26,6 @@ export type DashboardEvent =
         durationMs: number;
      }
    | { type: "dashboard.save_refused"; reason: string }
-   | { type: "dashboard.exported"; bytes: number }
    | {
         type: "dashboard.rows_shown";
         source: string;

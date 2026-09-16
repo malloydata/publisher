@@ -587,9 +587,11 @@ and a reload that fails to compile leaves the previously compiled model serving.
 written into the package and opened in the builder. The builder's **Save** writes the file back
 through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
 atomically, reloads the package in place, and restores the previous text if the reload does not
-take it; a copy someone else changed since you opened it is refused (409), never merged. On a
+take it; a copy someone else changed since you opened it is refused (409), never merged. The
+check and the write happen under one hold of the package lock, so two saves racing on one file
+cannot both pass it. On a
 server that does not take writes (`frozenConfig`), Save keeps the edit in this browser instead,
-the package page lists those drafts, and **Export** hands the file back for the package.
+and the package page lists those drafts.
 
 ## Rendering one in your own React app
 

@@ -90,7 +90,7 @@ givens textually under their `source:` line rather than trusting the tree.
 | Undo/redo                  | Whole-document history, one entry per gesture. Keyboard: ⌘Z / ⌘⇧Z, ⌘S, Esc, ←/→ to nudge width.                                                                                                                                                                                                                                              |
 | Validation                 | A binding to a field the source does not have, or of a type the given cannot compare, is marked and blocks Apply when the catalog is known.                                                                                                                                                                                                  |
 | Viewer                     | A grouped value with no `# drill` opens the rows behind it (`drill:` through the tile's view); a drill behaves as the tag says; each tile has "Explore from here" into the model explorer.                                                                                                                                                   |
-| Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, exported, rows shown, explored — each with outcome and duration. The Console logs them structured.                                                                                                                                                                      |
+| Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, rows shown, explored — each with outcome and duration. The Console logs them structured.                                                                                                                                                                                |
 | Notebooks                  | `.malloynb` is viewed read-only (`Notebook`) and stays that way. The authored notebook is a Malloyyo-style format that does not exist yet; see §7.                                                                                                                                                                                           |
 | Where it lives             | The SDK's lazy `builder` entry; the Console's `dashboards/<slug>/edit` page and package page (New dashboard, Drafts); the write path `PUT …/models/dashboards/<slug>.malloy`.                                                                                                                                                                |
 
@@ -124,7 +124,7 @@ offer today.
 | What editing does        | Rewrites a database record; a code form, where one exists, is converted                      | Splices the authored file; comments survive                                                                  | Ahead                     |
 | Governance               | Access filters and user attributes through embedding                                         | Givens, row-level access and `#(authorize)` apply to every tile with no wiring                               | Ahead                     |
 | Storage and access       | Database with folder ACLs                                                                    | A storage provider seam; browser storage today; the package-file provider needs a write API                  | Platform                  |
-| Delivery                 | Schedules, alerts, PDF/CSV/PNG, signed embed                                                 | Export of the Malloy file                                                                                    | Platform                  |
+| Delivery                 | Schedules, alerts, PDF/CSV/PNG, signed embed                                                 | The file itself, saved into the package                                                                      | Platform                  |
 | Observability            | Usage and performance telemetry                                                              | Per-operation events with outcome and duration; the host chooses the sink                                    | Parity                    |
 
 The six structural gaps identified in the research, by number: **G1** no
@@ -182,15 +182,18 @@ deferred shipped on 2026-09-15.
    under `<env>/<package>/dashboards/<slug>.malloy`. A package dashboard is a
    read-only origin: edit copies it into the provider (the Console's default is
    this browser), save writes the copy, a draft that was there when the editor
-   opened is offered on the next visit, and Export hands the file back for the
-   package. **The server write path shipped 2026-09-15**, lifting the earlier
+   opened is offered on the next visit. **The server write path shipped 2026-09-15**, lifting the earlier
    deferral by decision: `PUT …/models/dashboards/<slug>.malloy` compiles the
    text as the file, writes atomically under the package lock, reloads the
    package _in place_, restores the previous text on a failed reload, refuses
    under `frozenConfig`, and refuses a file that changed since it was opened
-   (`expectedHash`, SHA-256 of the opened text) rather than merging. When the
-   server takes writes the builder's Save goes there and a browser draft of
-   the same file is superseded; otherwise the browser flow above stands.
+   (`expectedHash`, SHA-256 of the opened text) rather than merging. The check
+   and the write happen under one hold of the package lock, so two saves racing
+   on one file cannot both pass it; omitting `expectedHash` means create, and a
+   file that is already there is refused the same way rather than overwritten.
+   A create answers 201, a replacement 200. When the server takes writes the
+   builder's Save goes there and a browser draft of the same file is
+   superseded; otherwise the browser flow above stands.
 3. **Add and remove tiles.** The picker is built from the package catalog
    (`buildCatalog`), so every tile expression is correct by construction; the
    emitted view name is assigned once and never recomputed from position. A
@@ -216,8 +219,9 @@ deferred shipped on 2026-09-15.
    controls apply); one with a drill does what its tag says, as before.
    Each tile's heading opens the model explorer on the tile's source with its
    view as the query.
-8. **Export.** The Malloy file, from the editor's bar. CSV and PNG per tile are
-   not started.
+8. **Export.** Dropped 2026-09-15: the file goes into the package, so handing
+   a copy back had no audience left. CSV and PNG per tile are not started, and
+   a file export can come back with them if it is asked for.
 9. **Sizing aids.** Width presets and quick layout shipped; run-on-load is
    `autorun`. **Deferred** with the format work in §7: auto-refresh and a
    timezone setting, which have no tag to write (§8).
@@ -269,7 +273,7 @@ storage; one Playwright spec on the Console's edit page. Lines covered:
 builder 97%, writer 92%, reader 96%, editor host 93%.
 
 **Telemetry**: the surfaces emit `DashboardEvent`s (`opened`, `open_refused`,
-`saved`, `save_refused`, `exported`, `rows_shown`, `explored`), context-free;
+`saved`, `save_refused`, `rows_shown`, `explored`), context-free;
 the Console adds environment, package and dashboard and logs one structured
 line per event under `[publisher.dashboard]`, `warn` on a refusal or a failed
 query. A deployment that wants metrics forwards from there; nothing server-side

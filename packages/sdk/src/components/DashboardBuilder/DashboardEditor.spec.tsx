@@ -167,7 +167,7 @@ describe("DashboardEditor", () => {
       expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
-   it("exports the file a save would write, hands Done to the host, and reports both opening and exporting", async () => {
+   it("hands Done to the host and reports the open", async () => {
       const onExit = mock(() => {});
       const onEvent = mock((_event: DashboardEvent) => {});
       mount(onExit, onEvent);
@@ -182,29 +182,6 @@ describe("DashboardEditor", () => {
          from: "package",
          tiles: 1,
       });
-      const created: Blob[] = [];
-      const createObjectURL = mock((blob: Blob) => {
-         created.push(blob);
-         return "blob:test";
-      });
-      const revoked = mock(() => {});
-      Object.assign(URL, { createObjectURL, revokeObjectURL: revoked });
-      const clicked = mock(() => {});
-      const click = HTMLAnchorElement.prototype.click;
-      HTMLAnchorElement.prototype.click = clicked;
-      try {
-         fireEvent.click(button("Export"));
-         await waitFor(() => expect(created).toHaveLength(1));
-         expect(await created[0].text()).toBe(PACKAGE_FILE);
-         expect(clicked).toHaveBeenCalledTimes(1);
-         expect(revoked).toHaveBeenCalledWith("blob:test");
-         expect(onEvent.mock.calls.at(-1)?.[0]).toEqual({
-            type: "dashboard.exported",
-            bytes: PACKAGE_FILE.length,
-         });
-      } finally {
-         HTMLAnchorElement.prototype.click = click;
-      }
       fireEvent.click(button("Done"));
       expect(onExit).toHaveBeenCalledTimes(1);
    });
