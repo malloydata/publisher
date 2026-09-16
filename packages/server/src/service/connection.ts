@@ -955,6 +955,13 @@ export type FederatedSourceType = "bigquery" | "snowflake" | "postgres";
 export interface FederatedHandle {
    handle: string;
    sourceType: FederatedSourceType;
+   /**
+    * Releases anything the federation holds OUTSIDE the DuckDB session — today
+    * the SSH tunnel a proxied Postgres source is reached through. Disposing the
+    * session does not close it (the tunnel is a process-level listener, not a
+    * DuckDB object), so the build session calls this in its `finally`.
+    */
+   close?: () => Promise<void>;
 }
 
 /**
@@ -967,6 +974,19 @@ export interface FederationConfig {
    bigqueryConnection?: components["schemas"]["BigqueryConnection"];
    snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
    postgresConnection?: components["schemas"]["PostgresConnection"];
+   /**
+    * The connection's proxy, when it has one. A proxied Postgres source is only
+    * reachable through the SSH tunnel this server opens to the tenant's bastion;
+    * the query path already tunnels it, and a storage build has to as well or
+    * the passthrough dials the database's own host, which the bastion exists to
+    * keep unreachable.
+    */
+   proxy?: components["schemas"]["ConnectionProxy"];
+}
+
+/** Injection seam for tests: how a proxied federation opens its tunnel. */
+export interface FederationDeps {
+   openProxy?: typeof openProxy;
 }
 
 /**
@@ -988,6 +1008,7 @@ export async function federateSourceForPassthrough(
    connection: DuckDBConnection,
    sourceType: FederatedSourceType,
    config: FederationConfig,
+   deps: FederationDeps = {},
 ): Promise<FederatedHandle> {
    switch (sourceType) {
       case "bigquery":
@@ -995,7 +1016,7 @@ export async function federateSourceForPassthrough(
       case "snowflake":
          return federateSnowflake(connection, config);
       case "postgres":
-         return federatePostgres(connection, config);
+         return federatePostgres(connection, config, deps);
       default: {
          // Exhaustiveness guard: a new FederatedSourceType must add a branch.
          const exhaustive: never = sourceType;
@@ -1179,6 +1200,7 @@ async function federateSnowflake(
 async function federatePostgres(
    connection: DuckDBConnection,
    config: FederationConfig,
+   deps: FederationDeps = {},
 ): Promise<FederatedHandle> {
    const pg = config.postgresConnection;
    if (!pg) {
@@ -1189,13 +1211,39 @@ async function federatePostgres(
 
    await installAndLoadExtension(connection, "postgres");
 
-   const attachString = buildPgConnectionString(pg);
    // `name` is the ATTACH alias AND (verbatim) the postgres_query handle, so the
    // handle stays the raw name while the ATTACH identifier is dialect-quoted —
    // a name needing quoting (e.g. a hyphen) would otherwise be a parser error.
    const alias = config.name;
+
+   // A proxied connection is reached through an SSH tunnel to the tenant's
+   // bastion, never at its own host: the query path opens that tunnel per
+   // connection (see buildProxiedPostgresConnection) and the build path must do
+   // the same, or the passthrough dials a host the bastion exists to keep
+   // unreachable and the build fails on a connect timeout. The tunnel is
+   // build-scoped — opened here, closed by the handle's `close` from the build
+   // session's finally — so no listener outlives the build.
+   let endpoint: ProxyEndpoint | undefined;
+   let attachString: string;
+   if (config.proxy) {
+      if (!pg.host || !pg.port) {
+         // validateConnectionShape requires both on a proxied connection, so
+         // this is unreachable in practice — guard so the tunnel target is
+         // never undefined.
+         throw new Error(
+            `Connection proxy on '${config.name}' requires explicit host and port on the postgres connection.`,
+         );
+      }
+      endpoint = await (deps.openProxy ?? openProxy)(config.proxy, {
+         host: pg.host,
+         port: pg.port,
+      });
+      attachString = buildProxiedPgAttachString(config.name, pg, endpoint);
+   } else {
+      attachString = buildPgConnectionString(pg);
+   }
    logger.info(
-      `Federating Postgres source for passthrough as alias '${alias}': ${redactPgSecrets(attachString)}`,
+      `Federating Postgres source for passthrough as alias '${alias}'${endpoint ? " through its SSH proxy" : ""}: ${redactPgSecrets(attachString)}`,
    );
    // OR REPLACE for within-session idempotency. The cross-build/cross-tenant
    // alias-collision boundary is the build session's PRIVATE DuckDB instance
@@ -1207,10 +1255,78 @@ async function federatePostgres(
    // rebind to the same source). (bigquery/snowflake federate via CREATE OR
    // REPLACE SECRET with no ATTACH; secrets are instance-scoped, so isolation
    // covers them too.)
-   await connection.runSQL(
-      `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
-   );
-   return { handle: alias, sourceType: "postgres" };
+   try {
+      await connection.runSQL(
+         `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
+      );
+   } catch (e) {
+      await endpoint?.close().catch(() => {});
+      throw e;
+   }
+   return {
+      handle: alias,
+      sourceType: "postgres",
+      ...(endpoint ? { close: () => endpoint!.close() } : {}),
+   };
+}
+
+/**
+ * libpq keyword/value string for a Postgres source reached through the SSH
+ * tunnel: the socket goes to the tunnel's LOCAL endpoint, the credentials are the
+ * connection's own. TLS is mapped from the connection's `sslmode` the way the
+ * query path maps it (see buildProxiedSslQuery), with libpq's vocabulary:
+ *
+ *  - unset / `no-verify` → `require`: encrypt without verifying, so a force-SSL
+ *    target (the common managed-Postgres case) is not rejected for plaintext;
+ *  - `disable` → `disable`;
+ *  - `verify-ca` → `verify-ca` against the trusted CA bundle (NODE_EXTRA_CA_CERTS,
+ *    the same file the query path uses), which libpq takes as `sslrootcert`;
+ *  - `verify-full` → `verify-ca`: the tunnel terminates at 127.0.0.1, and libpq
+ *    checks the certificate's hostname against the host it dialled, so the
+ *    hostname half of verify-full cannot hold through a tunnel. The chain is
+ *    still verified; the downgrade is logged.
+ *
+ * Exported for tests.
+ */
+export function buildProxiedPgAttachString(
+   name: string,
+   pg: components["schemas"]["PostgresConnection"],
+   endpoint: ProxyEndpoint,
+): string {
+   const parts = [`host=${endpoint.host}`, `port=${endpoint.port}`];
+   if (pg.databaseName) parts.push(`dbname=${pg.databaseName}`);
+   if (pg.userName) parts.push(`user=${pg.userName}`);
+   if (pg.password) parts.push(`password=${pg.password}`);
+   const mode = pg.sslmode ?? "no-verify";
+   switch (mode) {
+      case "disable":
+         parts.push("sslmode=disable");
+         break;
+      case "no-verify":
+         parts.push("sslmode=require");
+         break;
+      case "verify-ca":
+      case "verify-full": {
+         const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+         if (!caBundle) {
+            throw new Error(
+               `Connection proxy on '${name}' uses sslmode '${mode}' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
+            );
+         }
+         if (mode === "verify-full") {
+            logger.warn(
+               `Connection proxy on '${name}': the storage build verifies the certificate chain (verify-ca) but cannot verify the hostname through the tunnel, which terminates at ${endpoint.host}.`,
+            );
+         }
+         parts.push("sslmode=verify-ca", `sslrootcert=${caBundle}`);
+         break;
+      }
+      default:
+         throw new Error(
+            `Connection proxy on '${name}' has unsupported sslmode '${mode}' (expected disable | no-verify | verify-ca | verify-full).`,
+         );
+   }
+   return parts.join(" ");
 }
 
 /**

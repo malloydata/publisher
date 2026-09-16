@@ -34,7 +34,8 @@ do. Every step here was run against a real server; the outputs shown are real.
 - A **Postgres** database with one table (`orders`) — your "warehouse" source.
   The build pushes the compiled query to the source warehouse via a native
   passthrough; supported source types are `postgres`, `bigquery`, and
-  `snowflake`. Postgres is the easiest to run locally.
+  `snowflake`. Postgres is the easiest to run locally. A Postgres connection
+  that carries a `proxy` (SSH tunnel) is built through that tunnel, as it is queried.
 - A **DuckLake** storage destination — a catalog (a Postgres database)
   plus a local data directory — that you create and materialize into. (A cloud
   deployment would
