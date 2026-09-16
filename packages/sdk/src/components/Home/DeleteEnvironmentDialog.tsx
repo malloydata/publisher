@@ -34,6 +34,8 @@ export default function DeleteEnvironmentDialog({
       success: "Environment deleted",
       invalidates: [["environments"]],
       onSettled: handleClose,
+      resource: "environment",
+      action: "delete",
    });
 
    return (

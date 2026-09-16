@@ -54,6 +54,8 @@ export default function EditEnvironmentDialog({
       success: "Environment updated",
       invalidates: [["environments"]],
       onSettled: handleClose,
+      resource: "environment",
+      action: "update",
    });
 
    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {

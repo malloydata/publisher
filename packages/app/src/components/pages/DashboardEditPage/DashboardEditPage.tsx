@@ -5,7 +5,7 @@ import { BackLink, DashboardBar, Loading } from "@malloy-publisher/sdk";
 import { Box, Stack } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { logDashboardEvent } from "../../../utils/dashboardTelemetry";
+import { logDashboardEvent } from "../../../utils/consoleTelemetry";
 
 /**
  * The builder's entry is loaded here and nowhere else. It carries the Malloy

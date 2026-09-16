@@ -820,6 +820,11 @@ describe("DashboardBuilder: saving", () => {
          type: "dashboard.saved",
          tiles: 2,
          structural: false,
+         // Where it went: a save into the package is a change every reader of
+         // that server sees, and a browser save is one person's local copy.
+         // Reported, because the builder is handed a function and the two are
+         // indistinguishable from the outside.
+         where: "package",
       });
    });
 

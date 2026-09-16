@@ -51,6 +51,8 @@ export default function EditPackageDialog({
       success: "Package updated",
       invalidates: [["packages", environmentName]],
       onSettled: handleClose,
+      resource: "package",
+      action: "update",
    });
 
    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {

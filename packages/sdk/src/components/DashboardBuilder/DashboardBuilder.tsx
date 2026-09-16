@@ -147,6 +147,12 @@ export interface DashboardBuilderProps {
    /** Saves and refusals, for the host to log; see `DashboardEvent`. */
    onEvent?: DashboardEventHandler;
    /**
+    * Where `onSave` puts the file, for the event it reports. The builder
+    * cannot tell — it is handed a function — and a save into the package and a
+    * save into this browser are not the same event.
+    */
+   savesTo?: "package" | "browser";
+   /**
     * The host's own actions for the edit bar — Done — rendered beside
     * undo, redo and save. The builder owns the edits; where the file goes
     * afterwards is the host's, so its buttons sit in the host's slot.
@@ -166,6 +172,7 @@ export function DashboardBuilder({
    toolbar,
    dashboards,
    onEvent,
+   savesTo = "package",
 }: DashboardBuilderProps) {
    const editor = useDashboardEditor({
       source,
@@ -315,6 +322,7 @@ export function DashboardBuilder({
                   type: "dashboard.saved",
                   tiles,
                   structural,
+                  where: savesTo,
                   durationMs: now() - started,
                });
             else
@@ -324,7 +332,7 @@ export function DashboardBuilder({
                });
          })
          .finally(() => setSaving(false));
-   }, [editor, onEvent]);
+   }, [editor, onEvent, savesTo]);
    const save = useCallback(() => {
       if (!onSave || !editor.dirty || saving) return;
       if (!editor.structural) {

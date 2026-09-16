@@ -4,8 +4,12 @@
 import Snackbar from "@mui/material/Snackbar";
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import * as React from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutationWithApiError } from "./useQueryWithApiError";
+import {
+   reportConsoleEvent,
+   type ConsoleResource,
+} from "../telemetry/consoleEvents";
 
 /**
  * A write from a dialog: run it, close the dialog, refetch what it changed,
@@ -27,6 +31,8 @@ export function useCrudMutation<TVariables = void>({
    success,
    invalidates,
    onSettled,
+   resource,
+   action,
 }: {
    mutationFn: (variables: TVariables) => Promise<unknown>;
    /** What the snackbar says when the write lands: "Package created". */
@@ -35,23 +41,47 @@ export function useCrudMutation<TVariables = void>({
    invalidates: QueryKey[];
    /** Closes the dialog. Runs before the refetch, so the dialog goes at once. */
    onSettled: () => void;
+   /** What is being written, for the event; see `ConsoleEvent`. */
+   resource: ConsoleResource;
+   action: "create" | "update" | "delete";
 }) {
    const queryClient = useQueryClient();
    const [message, setMessage] = useState("");
+   // Measured across the whole write, not the request: what a dialog reports
+   // is how long the operator waited for it to close.
+   const startedAt = useRef(0);
    const mutation = useMutationWithApiError({
       mutationFn,
+      onMutate() {
+         startedAt.current = Date.now();
+      },
       onSuccess() {
+         reportConsoleEvent({
+            type: "console.mutation",
+            resource,
+            action,
+            ok: true,
+            durationMs: Date.now() - startedAt.current,
+         });
          onSettled();
          for (const queryKey of invalidates)
             queryClient.invalidateQueries({ queryKey });
          setMessage(success);
       },
       onError(error) {
-         setMessage(
+         const reason =
             error instanceof Error
                ? error.message
-               : "An unknown error occurred",
-         );
+               : "An unknown error occurred";
+         reportConsoleEvent({
+            type: "console.mutation",
+            resource,
+            action,
+            ok: false,
+            durationMs: Date.now() - startedAt.current,
+            reason,
+         });
+         setMessage(reason);
       },
    });
    return {

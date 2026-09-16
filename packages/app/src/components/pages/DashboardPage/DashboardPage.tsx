@@ -13,7 +13,7 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import { Box } from "@mui/material";
 import { useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { logDashboardEvent } from "../../../utils/dashboardTelemetry";
+import { logDashboardEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
 export interface DashboardPageProps {

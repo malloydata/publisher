@@ -335,6 +335,7 @@ export function DashboardEditor({
                slug={dashboardName}
                opened={opened}
                onSave={save}
+               savesTo={mutable ? "package" : "browser"}
                {...(onEvent ? { onEvent } : {})}
                toolbar={
                   onExit && (
@@ -377,6 +378,7 @@ function Surface({
    opened,
    onSave,
    onEvent,
+   savesTo,
    toolbar,
    note,
 }: {
@@ -387,6 +389,7 @@ function Surface({
    opened: { source: string; document: DashboardDocument; generation: number };
    onSave?: (source: string) => Promise<void>;
    onEvent?: DashboardEventHandler;
+   savesTo: "package" | "browser";
    toolbar: React.ReactNode;
    note: string;
 }) {
@@ -544,6 +547,7 @@ function Surface({
                isSuccess ? <GivensPanel {...panel} layout="bar" /> : undefined
             }
             {...(onSave ? { onSave } : {})}
+            savesTo={savesTo}
          />
          <Box sx={{ px: 0.5 }}>
             <Typography variant="caption" sx={{ opacity: 0.7 }}>

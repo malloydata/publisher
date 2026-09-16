@@ -37,6 +37,8 @@ export default function AddEnvironmentDialog() {
       success: "Environment created",
       invalidates: [["environments"]],
       onSettled: handleClose,
+      resource: "environment",
+      action: "create",
    });
 
    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {

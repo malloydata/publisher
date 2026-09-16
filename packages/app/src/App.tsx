@@ -6,6 +6,7 @@ import {
    DocumentStorage,
    DocumentStorageProvider,
    Loading,
+   setConsoleEventHandler,
 } from "@malloy-publisher/sdk";
 import { ServerProvider } from "@malloy-publisher/sdk/client";
 import "@malloy-publisher/sdk/styles.css";
@@ -18,6 +19,7 @@ import {
    RouterProvider,
 } from "react-router-dom";
 import { HeaderProps } from "./components/layout/Header/Header";
+import { logConsoleEvent } from "./utils/consoleTelemetry";
 import { PublisherMuiThemeProvider } from "./theme/PublisherMuiThemeProvider";
 
 /**
@@ -57,6 +59,10 @@ export const createMalloyRouter = (
    documentStorage: DocumentStorage = new BrowserDocumentStorage(),
    headerProps?: HeaderProps,
 ) => {
+   // Here rather than in `main.tsx`, which is only the local dev entry: this
+   // is the one function every host calls, embedders included, so the writes
+   // are reported wherever the Console is mounted.
+   setConsoleEventHandler(logConsoleEvent);
    return createBrowserRouter([
       {
          path: basePath,

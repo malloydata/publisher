@@ -34,6 +34,8 @@ export default function AddPackageDialog({
       success: "Package created",
       invalidates: [["packages", environmentName]],
       onSettled: () => setOpen(false),
+      resource: "package",
+      action: "create",
    });
 
    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
