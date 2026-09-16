@@ -539,11 +539,16 @@ source: clean is raw -> { select: * }`;
       expect(() =>
          assertColocatedPersistNotAuthorizeGated(sources.inside),
       ).toThrow(/persisted query references a given/i);
-      // The message has to name the remedy, since the safe shape is one word
-      // of placement away from the refused one.
+      // The message has to name the remedy, since the safe shape is one move of
+      // placement away from the refused one — and name it as the RULE rather
+      // than one spelling of it, because a given applied at read is equally
+      // correct written as a dimension, a measure or a join.
       expect(() =>
          assertColocatedPersistNotAuthorizeGated(sources.inside),
-      ).toThrow(/extend block/i);
+      ).toThrow(/out of the persisted query/i);
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(sources.inside),
+      ).toThrow(/dimension, measure or join/i);
    });
 
    it("admits the same given in the source's extend block", async () => {
