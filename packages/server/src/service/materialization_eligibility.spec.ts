@@ -557,6 +557,68 @@ source: clean is raw -> { select: * }`;
       ).not.toThrow();
    });
 
+   it("admits a predicate factored through a dimension, measure or join", async () => {
+      // These differ from the admitted `where:` only in how the predicate is
+      // written, and none of them reaches the build: each compiles to the same
+      // unfiltered relation. Refusing them would reject ordinary row-level
+      // access models and tell their authors to make a move they already made.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 100 AS amount")
+
+#@ persist name="via_dimension"
+source: via_dimension is raw -> { select: * } extend {
+  dimension: mine is org_id = $ORG_ID
+  where: mine
+}
+
+#@ persist name="via_measure"
+source: via_measure is raw -> { select: * } extend {
+  measure: mine_total is amount.sum() { where: org_id = $ORG_ID }
+}
+
+#@ persist name="via_extend_only"
+source: via_extend_only is raw extend {
+  dimension: mine is org_id = $ORG_ID
+  where: mine
+}`);
+      for (const name of ["via_dimension", "via_measure", "via_extend_only"]) {
+         expect(sources[name]).toBeDefined();
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(sources[name]),
+         ).not.toThrow();
+      }
+   });
+
+   it("refuses a field the persisted QUERY is built with, wherever it is declared", async () => {
+      // The mirror of the case above: the same dimension, used INSIDE the query
+      // rather than in the extend block, is substituted into the build. The
+      // query carries the usage itself, which is why excluding `fields` from the
+      // walk does not let this through.
+      const sources =
+         await persistSources(`##! experimental { persistence givens }
+given: ORG_ID :: number is 1
+source: raw is duckdb.sql("SELECT 1 AS org_id, 100 AS amount")
+
+#@ persist name="used_in_query"
+source: used_in_query is raw extend {
+  dimension: mine is org_id = $ORG_ID
+} -> { where: mine; select: * }
+
+#@ persist name="given_in_group_by"
+source: given_in_group_by is raw -> {
+  group_by: flag is org_id = $ORG_ID
+  aggregate: c is count()
+}`);
+      for (const name of ["used_in_query", "given_in_group_by"]) {
+         expect(sources[name]).toBeDefined();
+         expect(() =>
+            assertColocatedPersistNotAuthorizeGated(sources[name]),
+         ).toThrow(MaterializationEligibilityError);
+      }
+   });
+
    it("admits a persisted query that references no given", async () => {
       const sources = await persistSources(MODEL);
       expect(() =>

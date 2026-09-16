@@ -235,9 +235,32 @@ export function assertColocatedPersistNotAuthorizeGated(
    // one this function would have to guess whether the persisted table's
    // read path still passes through the graft. Refusing outright is also
    // what closes the gap this check exists for in the first place: this
-   // function checks ONLY the authorize condition (see its own doc) and does
-   // NOT run `assertMaterializationEligible`'s other rules, so a partitioned
-   // source with no `storage=` would otherwise sail past both refusals.
+   // function runs only its own three rules — partition, a build-substituted
+   // given, and authorize — and NOT `assertMaterializationEligible`'s, so a
+   // partitioned source with no `storage=` would otherwise sail past both
+   // refusals.
+   if (referencesPartition(persistSource)) {
+      recordEligibilityRefused("partition");
+      const what =
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}'`
+            : `Source '${sourceName}'`;
+      const gated =
+         origin === "preaggregate"
+            ? `the source '${sourceName}' rolls up declares`
+            : `it declares`;
+      throw new MaterializationEligibilityError({
+         reason: "partition",
+         message:
+            `${what} cannot be materialized (colocated '#@ persist'): ` +
+            `${gated} a #(partition) marker. A partition filter binds a ` +
+            `given at query time; this pass cannot prove the persisted ` +
+            `artifact's read path still applies it, so this is refused for ` +
+            `safety. Move the marker to a source that is not materialized, ` +
+            `or stop persisting this one.`,
+      });
+   }
+
    // A given INSIDE the persisted query is frozen at its default and served to
    // every caller; one in the source's `filterList` is applied at read with the
    // caller's value and is the documented form (docs/row-level-access.md). Only
@@ -258,35 +281,14 @@ export function assertColocatedPersistNotAuthorizeGated(
          reason: "given_in_persisted_query",
          message:
             `${what} cannot be materialized (colocated '#@ persist'): its ` +
-            `persisted query references a given. A given inside the query is ` +
-            `substituted at BUILD time, so the table would hold the default's ` +
-            `rows and serve them to every caller, ignoring the value each one ` +
-            `supplies. Move the filter to the source's extend block ` +
-            `(\`… -> { select: * } extend { where: <col> = $GIVEN }\`), where ` +
-            `it is applied per caller over the materialized rows, or stop ` +
-            `persisting this source.`,
-      });
-   }
-
-   if (referencesPartition(persistSource)) {
-      recordEligibilityRefused("partition");
-      const what =
-         origin === "preaggregate"
-            ? `Pre-aggregation rollup '${sourceName}'`
-            : `Source '${sourceName}'`;
-      const gated =
-         origin === "preaggregate"
-            ? `the source '${sourceName}' rolls up declares`
-            : `it declares`;
-      throw new MaterializationEligibilityError({
-         reason: "partition",
-         message:
-            `${what} cannot be materialized (colocated '#@ persist'): ` +
-            `${gated} a #(partition) marker. A partition filter binds a ` +
-            `given at query time; this pass cannot prove the persisted ` +
-            `artifact's read path still applies it, so this is refused for ` +
-            `safety. Move the marker to a source that is not materialized, ` +
-            `or stop persisting this one.`,
+            `persisted query references a given. A given the persisted query ` +
+            `is built with is substituted at BUILD time, so the table would ` +
+            `hold the default's rows and serve them to every caller, ignoring ` +
+            `the value each one supplies. Keep the given OUT of the persisted ` +
+            `query and apply it when the source is read — a \`where:\` in the ` +
+            `source's extend block, or a dimension, measure or join declared ` +
+            `there — where it binds per caller over the materialized rows. ` +
+            `Otherwise stop persisting this source.`,
       });
    }
 
@@ -447,11 +449,29 @@ function referencesGiven(persistSource: PersistSource): boolean {
  * `inside` builds `… WHERE org_id = 1` and answers 2 rows for a caller asking
  * for org 2, whose live answer is 1. `outside` builds unfiltered and answers 1.
  *
- * Implemented by walking everything EXCEPT the top-level `filterList`, so the
- * default is refusal: a given reachable by any other route — a field expression
- * the persisted query uses, a nested pipeline, a shape this code has not met —
- * counts as baked. Fail-closed on an unwalkable IR for the same reason
- * {@link referencesGiven} is.
+ * Implemented by walking everything EXCEPT the two top-level keys that are read
+ * -time by construction — `filterList` (the source's own `where:`) and `fields`
+ * (its dimensions, measures and joins, which are computed when the source is
+ * queried). Everything else is refused, so a given reachable by a route this
+ * code has not met counts as baked; an unwalkable IR refuses too, for the same
+ * reason {@link referencesGiven} is fail-closed.
+ *
+ * Excluding `fields` does not open a hole, because a field is only baked when
+ * the persisted QUERY uses it — and then the query carries the usage itself.
+ * Measured across the shapes that differ in where the predicate is factored:
+ *
+ *   built with it          IR root      | not built with it        IR root
+ *   ---------------------- ------------ | ------------------------ ----------
+ *   where: in the query    query        | where: in extend         filterList
+ *   dimension used by the  query        | dimension used by a      fields
+ *     query                             |   `where:` in extend
+ *   given in a group_by    query        | measure with a filter    fields
+ *                                       | join to a filtered source fields
+ *
+ * The left column is what must be refused and every row of it surfaces under
+ * `query`; the right column is applied per caller at read, and refusing it would
+ * reject row-level access models that differ from the admitted one only by
+ * factoring the predicate through a dimension, a measure or a join.
  */
 function referencesGivenOutsideSourceFilters(
    persistSource: PersistSource,
@@ -461,12 +481,14 @@ function referencesGivenOutsideSourceFilters(
       if (def === null || typeof def !== "object") {
          throw new Error("compiled source definition is not readable");
       }
-      // Dropped rather than emptied: an empty array would still be walked, and
-      // the point is that this field is the one place a given is honoured.
-      const { filterList: _appliedAtRead, ...relation } = def as Record<
-         string,
-         unknown
-      >;
+      // Dropped rather than emptied: an empty array or object would still be
+      // walked, and the point is that these are the places a given is honoured
+      // rather than frozen.
+      const {
+         filterList: _sourceFilters,
+         fields: _queryTimeFields,
+         ...relation
+      } = def as Record<string, unknown>;
       return walkForGiven(relation, new WeakSet(), 0);
    } catch {
       return true;
