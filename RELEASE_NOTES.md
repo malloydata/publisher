@@ -62,6 +62,51 @@ variable drove both the REST and MCP listeners -- defaulting it to loopback woul
 have moved the REST port to localhost too. Precedence is `MCP_HOST`, then an
 explicit `PUBLISHER_HOST` so `--host` still moves both together, then
 `127.0.0.1`. The REST default is unchanged.
+
+## [Unreleased] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
+
+A materialization is a run of one package's persist sources: `package_name` is NOT NULL on the row, every create takes a package, and the scheduler arms per package. The environment page nonetheless carried a second materializations surface on top of that — a cross-package list, plus a dialog that ticked packages and fired one ordinary per-package create for each — which read like a level of its own while offering strictly less than the package's own page. It is gone, and so is the one endpoint behind it, an aggregate that was the per-package query with the package predicate dropped.
+
+**Removed:** `GET /api/v0/environments/{env}/packages/materializations`. Its per-package sibling, `GET /api/v0/environments/{env}/packages/{pkg}/materializations`, is unchanged, so a caller that wants the environment-wide view asks each package and concatenates. `malloy-pub list materialization` now requires `--package`; omitting it used to list the whole environment and now fails with `--environment and --package are required`. `EnvironmentMaterializations` is no longer exported from `@malloy-publisher/sdk`. All five package-scoped endpoints, the scheduler, and the table and its indexes are untouched.
+
+**One thing comes back.** That aggregate had to be matched ahead of `…/packages/{packageName}`, which reserved `materializations` as a package name nobody could use. The reservation is lifted.
+
+## [Unreleased] — the Console writes a dashboard into the package: a save endpoint, create, and drafts
+
+The dashboard builder shipped in 0.3.1 with an Export button: it handed back a copy of the file for someone to put in the package by hand. The Console now closes the loop instead.
+
+**New:** `PUT /api/v0/environments/{env}/packages/{pkg}/models/dashboards/<slug>.malloy`, for that one kind of file. In order: refused under `frozenConfig`; compiled *as the file* and refused with its problems — line and column included — when it does not compile, writing nothing; then, under one hold of the package lock, the caller's precondition is checked and the file written atomically, the package reloaded in place, and, if the reloaded package does not compile the file, the previous text restored — or a new file removed — and the package reloaded again. A save never leaves a package serving less than it did.
+
+The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{path}` returned. A file that changed since is refused with 409 and nothing merged. Omitting it means *create*, and a file that is already there is refused the same way — so an unconditional overwrite is not something a caller can ask for by leaving a field out. A create answers 201, a replacement 200, and the response carries the hash of what was written, which is the next save's `expectedHash`.
+
+**Like every write on this server it is unauthenticated** and belongs behind the gateway; `frozenConfig` turns it off. It opens no door that was shut — a caller who can reach it can already register a package — and it is recorded in [docs/security-posture.md](docs/security-posture.md).
+
+**In the Console:** Save writes into the package when the server takes writes, superseding a browser draft of the same file; a read-only server keeps the browser-draft flow. The package page gains an **Add dashboard** control (model, a source it declares, the first tile's view, a title) and a **Drafts** section listing this browser's saved dashboards, to open or delete. **Export is gone**, because Save is what it stood in for.
+
+## [Unreleased] — the bundled examples no longer ship a notebook
+
+`examples/storefront/storefront.malloynb` and `examples/governed-analytics/orders.malloynb` are removed. The `.malloynb` format is deprecated: read-only support stays, and a package that ships one still renders it, but a new narrative surface should be a dashboard until the authored notebook format lands. [docs/choosing-a-surface.md](docs/choosing-a-surface.md) says which surface to reach for.
+
+## [Unreleased] — a failed connection test no longer returns the password
+
+`POST /api/v0/connections/test` put the driver's error verbatim into `errorMessage`, and a DuckDB attach failure echoes the whole connection string — so testing a Postgres, DuckLake, or DuckDB-with-attachments connection that could not connect sent its cleartext password back to the caller, and wrote it to the server log. Both now go through the redaction the service already applied to its own copy, on the attach path as well as the controller's catch.
+
+**If you were affected:** wherever a failed connection test's response or the server's log was captured — a browser network panel, a support bundle, a log shipper — that password is in the clear. Rotate it if any of those left the machine.
+
+**Also fixed: duckdb and ducklake connection tests work again.** Since 0.0.193 the throwaway config behind a test was built with an empty environment path, so DuckDB rejected the empty working directory before any attach ran and every test of those two types failed with a validation error. The config is now rooted in a fresh temp directory, removed afterwards — which also means a connection test never reads, writes, or deletes an operator's own `<name>.duckdb`, and two tests of the same name cannot clobber each other.
+
+**One new refusal.** A duckdb or ducklake connection name becomes a `<name>.duckdb` filename, so an unsafe one is now a 400 rather than a test that runs and fails. Names on every other connection type are unaffected.
+
+## [Unreleased] — a materialized source's `where:` reaches the serve shape
+
+A source's filter is part of what the source means, and the `storage=` tier was dropping it. The build SQL is the persisted relation alone, and the serve shape re-declared only dimensions, measures, joins and views — so the tier answered with **every row the source excludes**, silently, because a dropped filter still compiles. The colocated tier was never affected: substitution swaps only the `FROM` and leaves the reading query's own `WHERE` in place.
+
+**Now:** the shape carries the source's `where:` clauses, one per `filterList` entry, and filters accumulate through `extend` the way they do in the model. They are kept at every tier of the shape ladder, so a source whose view cannot be reproduced loses the view and keeps the filter.
+
+**A filter is the one exception to the per-query fallback rule**, deliberately. If a `where:` cannot be reproduced on the shape — one reaching through a join whose target is not materialized, or one over a column the source hides with `except:` — that source serves live rather than serving from storage without its filter. Its siblings keep the tier. Serving fewer queries from the tier is a cost; serving the wrong rows is not a trade worth making.
+
+**If you were affected:** only a server running `PERSIST_STORAGE_MODE=on` served from the tier at all, and only a source carrying a `where:` answered wrongly — but every query against one of those, aggregates included, has been counting rows the filter excludes. The filter is applied when the artifact is read, not when it is built, so upgrading is enough: no rebuild, and nothing in the package changes. To confirm, compare a count against the same query served live.
+
 ## [Unreleased] — a storage build reaches a proxied Postgres source through its tunnel
 
 A `storage=` build of a source on a Postgres connection that carries a `proxy` (an SSH tunnel to the tenant's bastion) failed on every attempt with `Unable to connect to Postgres at "host=<the database's own host> …": Connection timed out`, after a full TCP timeout per source. The query path opens the tunnel and connects through it; the build path handed DuckDB's `postgres` extension the connection's own host and port, which the bastion exists to keep unreachable. A proxied connection had never been built into a storage destination before — the passthrough was proven on BigQuery and Snowflake, whose federation has no network hop.
