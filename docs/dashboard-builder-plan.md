@@ -177,15 +177,22 @@ What that parks, explicitly (and what it does **not** block; see §5):
 
 ## 5. What could be done with no Malloy, renderer or Malloyyo change
 
-Each is SDK or server work on the existing format. Everything not marked
-deferred shipped on 2026-09-15.
+Each is SDK or server work on the existing format. All ten were walked against
+the code and its tests on 2026-09-15: eight shipped, two were built and then
+dropped by decision (export, quick layout), and what stays deferred is marked
+as such and says why. The evidence for each is named below rather than left to
+the reader to find.
 
 1. **Console wiring and lazy loading.** The SDK's `builder` entry (`React.lazy`
    boundary so the parser, 440 KB gzipped, loads only when the builder opens; the
    `globalThis.process` shim its dependencies need) and the Console's
    `dashboards/<slug>/edit` page. One static `import { Malloy }` anywhere
    reachable from the entry chunk defeats this, so the reader keeps its
-   `await import`.
+   `await import`. Checked against the built bundle, not the intent: the chunk
+   `index.html` loads carries no parser symbol, and `readDocument.spec` asserts
+   the reader reaches the parser through `await import` and nothing else. The
+   dashboard page now warms that chunk while idle, so the first Edit is a
+   re-render rather than a download.
 2. **Saving through the storage seam.** `DocumentStorage` stores Malloy text
    under `<env>/<package>/dashboards/<slug>.malloy`. A package dashboard is a
    read-only origin: edit copies it into the provider (the Console's default is
@@ -202,16 +209,19 @@ deferred shipped on 2026-09-15.
    A create answers 201, a replacement 200. When the server takes writes the
    builder's Save goes there and a browser draft of the same file is
    superseded; otherwise the browser flow above stands.
-3. **Add and remove tiles.** The picker is built from the package catalog
+3. **Add and remove tiles.** Both through the diff, each with its own test. The
+   picker is built from the package catalog
    (`buildCatalog`), so every tile expression is correct by construction; the
    emitted view name is assigned once and never recomputed from position. A
    removed tile loses its declaration and `#` tags; a `//` comment above it
    stays, because the file cannot say whether it belonged to the tile, the row or
    the page — and the diff preview makes that the author's call.
-4. **Dashboard settings.** Title, `##"` description, grid width, `autorun` and
-   starting givens, from a popover off the edit bar, committed on close as one
-   history entry.
-5. **Drill authoring.** "Clickable cells" on a tile's menu: every dimension the
+4. **Dashboard settings.** Title, `##"` description, grid width and `autorun`,
+   from a popover off the edit bar, committed on close as one history entry.
+   A control's starting value is edited where the control is, in the filter
+   window, rather than in this popover — the same place its binding and
+   comparison are set, so one control is one dialog.
+5. **Drill authoring.** "Clickable cells" on a tile's menu (`DrillDialog`): every dimension the
    tile's source declares in this file, with its destinations and the control a
    click sets. The builder writes the `# drill` tag, never the dimension — a
    dimension no view groups by is a dead drill, and views are the author's. This

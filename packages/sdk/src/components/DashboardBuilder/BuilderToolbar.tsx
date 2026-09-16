@@ -66,39 +66,21 @@ export function BuilderToolbar({
    return (
       <DashboardBar
          left={
-            <>
-               <Chip
-                  size="small"
-                  variant="outlined"
-                  icon={<EditOutlinedIcon sx={{ fontSize: 14 }} />}
-                  label="Editing"
-                  sx={{
-                     fontWeight: 500,
-                     // The app's own chip: the page's edge and its secondary
-                     // text, not a filled blue badge borrowed from the drill
-                     // link, which read as a notification rather than a state.
-                     border: theme.border,
-                     color: theme.tileTitle,
-                     "& .MuiChip-icon": { color: "inherit" },
-                  }}
-               />
-               <Typography
-                  variant="body2"
-                  noWrap
-                  sx={{
-                     color: theme.tileTitle,
-                     // One line or none: a hint that wraps makes the bar taller
-                     // than the reader's, and the point of the bar is that
-                     // switching modes moves nothing.
-                     display: { xs: "none", lg: "block" },
-                     overflow: "hidden",
-                     textOverflow: "ellipsis",
-                  }}
-               >
-                  Drag a tile to move it, its right edge to resize it, or into
-                  the empty end of a row to move it up.
-               </Typography>
-            </>
+            <Chip
+               size="small"
+               variant="outlined"
+               icon={<EditOutlinedIcon sx={{ fontSize: 14 }} />}
+               label="Editing"
+               sx={{
+                  fontWeight: 500,
+                  // The app's own chip: the page's edge and its secondary
+                  // text, not a filled blue badge borrowed from the drill
+                  // link, which read as a notification rather than a state.
+                  border: theme.border,
+                  color: theme.tileTitle,
+                  "& .MuiChip-icon": { color: "inherit" },
+               }}
+            />
          }
       >
          {/* What the page is made of. */}

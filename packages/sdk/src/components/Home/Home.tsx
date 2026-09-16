@@ -17,7 +17,6 @@ import {
 import { useState } from "react";
 import { Environment } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { serverBaseUrl } from "../../utils/dataAppEmbed";
 import { getEnvironmentDescription } from "../../utils/parsing";
 import { DOC_LINKS } from "../../constants/docLinks";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -105,7 +104,7 @@ function InlineLink({
 }
 
 export default function Home({ onClickEnvironment }: HomeProps) {
-   const { apiClients, mutable, server } = useServer();
+   const { apiClients, mutable } = useServer();
 
    const { data, isSuccess, isError, error } = useQueryWithApiError({
       queryKey: ["environments"],
@@ -260,34 +259,9 @@ export default function Home({ onClickEnvironment }: HomeProps) {
          <Typography
             variant="body2"
             color="text.secondary"
-            sx={{ maxWidth: 720, lineHeight: 1.6 }}
-         >
-            {/* Six of the ten types in the api-doc.yaml enum. connections.md
-                names eight. Two of the six named here, mysql and trino,
-                appear in connections.md exactly once, in the parenthetical that
-                ends "etc."; Databricks and MotherDuck it never names at all. "And more"
-                rather than a full list, because a list that reads as complete
-                while omitting Databricks is worse than a short one that says
-                it is short. */}
-            The REST API does everything this console does, and is documented{" "}
-            {/* Built from the configured server rather than written as
-                "/api-doc.html". The spec is a static file off the Publisher
-                server's root, and an SDK consumer's page origin need not be
-                that server: a root-relative href resolves against the host and
-                404s. serverBaseUrl exists for exactly this. */}
-            <InlineLink href={`${serverBaseUrl(server)}/api-doc.html`}>
-               here
-            </InlineLink>
-            .
-         </Typography>
-
-         <Typography
-            variant="body2"
-            color="text.secondary"
             sx={{ maxWidth: 720, lineHeight: 1.6, mt: 2 }}
          >
-            Publisher is built on fully open infrastructure and designed for the
-            AI era. Join the{" "}
+            Join the{" "}
             <InlineLink href="https://join.slack.com/t/malloy-community/shared_invite/zt-1kgfwgi5g-CrsdaRqs81QY67QW0~t_uw">
                Malloy Slack community
             </InlineLink>{" "}
