@@ -114,14 +114,35 @@ The body is **not** an arbitrary Malloy boolean expression. It is one or more te
 `<op>` is `in` when `$GIVEN` is declared as a list (array) type, and `=` when it is declared scalar — the operator is not a free choice, it is fixed by the given's own declaration. Everything else is refused at load, each with its own named cause (`AuthorizeGrammarRejectionCause`):
 
 ```malloy
+// A source-level term: a rule about the caller, written inside `#(authorize)`.
 #(authorize) 'analyst' = $ROLE
 source: a is duckdb.table('orders.parquet') extend {}
 
+// A row-level term. `in`, because `GROUPS` is declared list-typed.
 #(authorize) org_id in $GROUPS
 source: b is duckdb.table('orders.parquet') extend {}
 
+// Two row-level terms on one line. The operator follows each given's arity.
 #(authorize) region = $REGION and org_id in $GROUPS
 source: c is duckdb.table('orders.parquet') extend {}
+
+// The same gate written as repeated notes: a source's own notes AND together.
+#(authorize) region = $REGION
+#(authorize) org_id in $GROUPS
+source: d is duckdb.table('orders.parquet') extend {}
+
+// A path through a `join_one` is a field path like any other.
+#(authorize) account.org_id = $ORG_ID
+source: e is orders_base extend { join_one: account is accounts on account_id = account.id }
+
+// A rule about the caller beside a rule about the row: both must admit.
+#(source-authorize) 'admin' in $GROUPS
+#(authorize) org_id in $GROUPS
+source: f is duckdb.table('orders.parquet') extend {}
+
+// Admit nobody. Legal on either route, and the only body naming no given.
+#(authorize) false
+source: g is duckdb.table('orders.parquet') extend {}
 ```
 
 is legal; none of the following are:
