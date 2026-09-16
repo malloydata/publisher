@@ -129,31 +129,3 @@ export const StyledExplorerContent = styled("div")({
 });
 
 // Package page styles
-export const PackageCard = styled(Card)(({ theme }) => ({
-   backgroundColor: theme.palette.background.paper,
-   padding: "24px",
-   borderRadius: "8px",
-   border: `1px solid ${theme.palette.divider}`,
-   boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
-   height: "100%",
-   transition: "box-shadow 0.2s ease-in-out",
-   "&:hover": {
-      boxShadow: "0 2px 6px rgba(0, 0, 0, 0.08)",
-   },
-}));
-
-export const PackageCardContent = styled(CardContent)({
-   padding: "0",
-   "&:last-child": {
-      paddingBottom: "0",
-   },
-});
-
-export const PackageSectionTitle = styled("div")(({ theme }) => ({
-   fontSize: "0.875rem",
-   fontWeight: 500,
-   color: theme.palette.text.secondary,
-   marginBottom: "16px",
-   paddingBottom: "8px",
-   borderBottom: `1px solid ${theme.palette.divider}`,
-}));

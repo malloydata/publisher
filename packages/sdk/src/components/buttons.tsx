@@ -40,20 +40,20 @@ export function AddButton({
    label,
    onClick,
    disabled,
-   icon,
 }: {
    /** The thing being added, as it should read on the button: "Package". */
    label: string;
    onClick: () => void;
    disabled?: boolean;
-   /** Replaces the plus, for an add that wants its own glyph. */
-   icon?: React.ReactNode;
 }) {
    return (
       <Button
          variant="contained"
          color="primary"
-         startIcon={icon ?? <AddIcon />}
+         // Always the plus. The glyph is half of what makes this role
+         // recognisable across pages, and a per-caller override is how a
+         // consistent control becomes an inconsistent one.
+         startIcon={<AddIcon />}
          onClick={onClick}
          disabled={disabled}
          aria-label={`Add ${label.toLowerCase()}`}
