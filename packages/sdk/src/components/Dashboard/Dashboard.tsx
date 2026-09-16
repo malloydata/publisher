@@ -2,20 +2,34 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import Markdown from "markdown-to-jsx";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { DashboardManifest } from "../../client";
-import { useGivensState } from "../../hooks/useGivensState";
+import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import { useDrill, useDrillSelf, type DrillNavigation } from "../drill";
+import {
+   useDrill,
+   type DrillBinding,
+   type DrillClickPayload,
+   type DrillNavigation,
+   type DrillRowsRequest,
+} from "../drill";
 import { GivensPanel } from "../given";
+import { Prose } from "../Prose";
+import { givensToRequest } from "../given/paramCodec";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useServer } from "../ServerProvider";
+import { DashboardGrid, DEFAULT_COLUMNS } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
+import { ExploreDialog } from "./ExploreDialog";
+import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
+import type { DashboardEventHandler } from "./telemetry";
+
+// The grid rule moved to `DashboardGrid`, which the builder shares.
+// Re-exported so existing importers of it are unaffected.
+export { DEFAULT_COLUMNS, tileGridColumn } from "./DashboardGrid";
 
 export interface DashboardProps {
    /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
@@ -58,26 +72,8 @@ export interface DashboardProps {
     */
    height?: number;
    maxResultSize?: number;
-}
-
-/** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
-const DEFAULT_COLUMNS = 2;
-
-/**
- * The `grid-column` one tile occupies: its `# colspan`, and a `# break` forcing
- * it to start a fresh row.
- *
- * Clamped to the grid width the same way @malloydata/render clamps it, so one
- * view laid out as a composite tile and as a `nest:` under `# dashboard` lands
- * in the same place. A break is `1 / span N` — an explicit start line, which is
- * what pushes the tile down to the next row; the renderer's grid does the same.
- */
-export function tileGridColumn(
-   tile: { colspan?: number; break?: boolean },
-   columns: number,
-): string {
-   const span = Math.min(tile.colspan ?? 1, columns);
-   return tile.break ? `1 / span ${span}` : `span ${span}`;
+   /** The rows shown and tiles explored, for the host to log or count. */
+   onEvent?: DashboardEventHandler;
 }
 
 /**
@@ -97,6 +93,7 @@ export function Dashboard({
    onNavigate,
    height,
    maxResultSize,
+   onEvent,
 }: DashboardProps) {
    const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -143,85 +140,72 @@ export function Dashboard({
    const manifest = manifestResponse?.data;
 
    const specs = useMemo(() => manifest?.givens ?? [], [manifest]);
-   const declaredTypes = useMemo(
-      () =>
-         new Map(
-            specs
-               .filter((spec) => spec.name !== undefined)
-               .map((spec) => [spec.name as string, spec.type]),
-         ),
-      [specs],
-   );
 
-   // Hands the host the names this dashboard MANAGES alongside the values, so it
-   // can merge into a shared query string instead of replacing it. Guarded on
-   // `isSuccess` as well as at the call site, since an empty declared set before
-   // the manifest lands is the absence of an answer rather than the answer.
-   const reportGivens = useCallback(
-      (next: Record<string, string>) => {
-         if (!isSuccess) return;
-         onGivensChange?.(next, Array.from(declaredTypes.keys()));
-      },
-      [isSuccess, onGivensChange, declaredTypes],
-   );
-
-   const { draft, applied, setGiven, reset, apply, pending } = useGivensState({
-      declaredTypes,
+   // The control row's state, options and `to=self` drill: the same hook the
+   // notebook uses, so a control behaves identically on both surfaces.
+   const controls = useDocumentControls({
+      specs,
+      loaded: isSuccess,
       startingValues: manifest?.startingGivens,
       params: givens,
-      // Withheld until the manifest has loaded, for the same reason the notebook
-      // withholds it. Changing `dashboard` changes the query key, so `data` is
-      // undefined for one commit and `declaredTypes` is empty; `applied` prunes
-      // to nothing and the hook reports "no values, and I manage nothing". This
-      // component is reconciled rather than remounted on a dashboard-to-dashboard
-      // drill, so the hook's record of what it last reported still holds the
-      // PREVIOUS dashboard's values and does not suppress that report as a
-      // repeat. The host reasonably clears its query string, which is exactly the
-      // givens the drill just seeded for the dashboard now arriving.
-      onParamsChange: isSuccess ? reportGivens : undefined,
-      // Which document these edits belong to. Without it the edits are keyed by
-      // their starting VALUES alone, so two dashboards whose starting values
-      // coincide (the common case: both empty) look like one document, and the
-      // one you came from keeps filtering the one you drilled into.
-      // The version belongs in that identity too, so a swap between versions
-      // drops the edits a reader made to the one they came from. Only the
-      // EDITS: `initial` is `startingValues` merged with `params`, so a host
-      // that round-trips givens through its own URL hands them straight back
-      // and they still apply across the swap. That one is the host's call, and
-      // this key neither can nor should overrule it.
+      onGivensChange,
+      // Which document these edits belong to, version included: two
+      // dashboards whose starting values coincide (both empty, usually)
+      // would otherwise look like one document, and the one you came from
+      // would keep filtering the one you drilled into. Only the EDITS: a host
+      // that round-trips givens through its own URL hands them straight back,
+      // and they still apply across the swap.
       documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${dashboard}`,
       // Absent means autorun; only an explicit `autorun=false` batches.
       autorun: manifest?.autorun !== false,
-   });
-
-   const {
-      options,
-      isLoading: optionsLoading,
-      failed: optionsFailed,
-   } = useSuggestOptions(
       environmentName,
       packageName,
-      manifest?.path,
-      specs,
+      modelPath: manifest?.path,
       versionId,
-      // So a suggest over a gated or scoped source carries the givens it needs.
-      { values: applied, declaredTypes },
-   );
-
-   // `to=self` filters in place. Which givens a tag may set, and setting one
-   // from a clicked cell, is the same on both surfaces, so it is shared.
-   const { canSelf, onSelf } = useDrillSelf({
-      declaredTypes,
-      setGiven,
       documentName: dashboard,
    });
+   const { applied, declaredTypes, canSelf, onSelf } = controls;
+
+   // The rows behind a clicked value, and a tile's query in the explorer —
+   // the two ways past a number. Composite tiles only: each names its
+   // source, which is what the rows are of and what the explorer opens on.
+   const [rows, setRows] = useState<RowsRequest | undefined>(undefined);
+   const [exploring, setExploring] = useState<string | undefined>(undefined);
+   const onRows = useCallback((request: DrillRowsRequest) => {
+      const steps = stepsOf(request.context);
+      if (steps === undefined) return;
+      setRows({
+         ...steps,
+         field: request.field,
+         rawValue: request.rawValue,
+         label: request.label,
+      });
+   }, []);
+
+   // The whole applied row: a source's own `where:` may read any of it, and a
+   // given the rows query does not reference is ignored by the server.
+   const rowsGivens = useMemo(
+      () => givensToRequest(applied, declaredTypes),
+      [applied, declaredTypes],
+   );
 
    const { drill, drillMenu } = useDrill({
       onNavigate,
       onSelf,
       canSelf,
       selfLabel: "Filter this dashboard",
+      onRows,
    });
+   // Each tile's clicks carry the tile they came from, so the rows behind a
+   // value know which source to run against.
+   const drillFor = useCallback(
+      (tile: string): DrillBinding => ({
+         canDrill: drill.canDrill,
+         onClick: (payload: DrillClickPayload) =>
+            drill.onClick({ ...payload, context: tile }),
+      }),
+      [drill],
+   );
 
    // After every hook, so the hook order does not depend on the URI.
    if (!uriNamesBoth) {
@@ -271,21 +255,7 @@ export function Dashboard({
       <Stack spacing={2}>
          <DashboardHeader manifest={manifest} />
 
-         <GivensPanel
-            givens={specs}
-            values={draft}
-            onChange={setGiven}
-            onReset={reset}
-            layout="bar"
-            options={options}
-            optionsLoading={optionsLoading}
-            optionsFailed={optionsFailed}
-            apply={
-               manifest.autorun === false
-                  ? { onApply: apply, pending }
-                  : undefined
-            }
-         />
+         <GivensPanel {...controls.panel} layout="bar" />
 
          {modelPath === undefined ? (
             <Alert severity="error">
@@ -311,50 +281,40 @@ export function Dashboard({
             // Composite form: each tile runs on its own and the results are
             // combined into one grid here, since no single Malloy result spans
             // them.
-            <Box
-               sx={{
-                  display: "grid",
-                  gridTemplateColumns: {
-                     xs: "1fr",
-                     md: `repeat(${columns}, minmax(0, 1fr))`,
-                  },
-                  gap: 2,
-               }}
-            >
-               {tiles.map((tile, index) => (
-                  <Box
-                     // Position too, not the expression alone: `tiles=[…]` can
-                     // repeat one, which is a typo rather than a request for two
-                     // identical panels, and keying on the expression made the
-                     // duplicate warn and reconcile onto its twin.
-                     key={`${index}:${tile.query}`}
-                     sx={{
-                        display: "grid",
-                        // Only above `md`: the narrow breakpoint is one column,
-                        // where a span would overflow the grid rather than widen
-                        // anything.
-                        gridColumn: { md: tileGridColumn(tile, columns) },
+            <DashboardGrid
+               tiles={tiles}
+               columns={columns}
+               // Position too, not the expression alone: `tiles=[…]` can repeat
+               // one, which is a typo rather than a request for two identical
+               // panels, and keying on the expression made the duplicate warn
+               // and reconcile onto its twin.
+               keyOf={(tile, index) => `${index}:${tile.query}`}
+               renderTile={(tile) => (
+                  <DashboardTile
+                     environmentName={environmentName}
+                     packageName={packageName}
+                     versionId={versionId}
+                     modelPath={modelPath}
+                     tile={tile.query}
+                     label={tile.label}
+                     subtitle={tile.subtitle}
+                     borderless={tile.borderless}
+                     givens={applied}
+                     declaredTypes={declaredTypes}
+                     givenNames={tile.givenNames}
+                     height={height ?? TILE_MAX_HEIGHT}
+                     maxResultSize={maxResultSize}
+                     drill={drillFor(tile.query)}
+                     onExplore={() => {
+                        setExploring(tile.query);
+                        onEvent?.({
+                           type: "dashboard.explored",
+                           tile: tile.query,
+                        });
                      }}
-                  >
-                     <DashboardTile
-                        environmentName={environmentName}
-                        packageName={packageName}
-                        versionId={versionId}
-                        modelPath={modelPath}
-                        tile={tile.query}
-                        label={tile.label}
-                        subtitle={tile.subtitle}
-                        borderless={tile.borderless}
-                        givens={applied}
-                        declaredTypes={declaredTypes}
-                        givenNames={tile.givenNames}
-                        height={height ?? TILE_MAX_HEIGHT}
-                        maxResultSize={maxResultSize}
-                        drill={drill}
-                     />
-                  </Box>
-               ))}
-            </Box>
+                  />
+               )}
+            />
          ) : (
             <Alert severity="warning">
                This dashboard names neither a query nor any tiles.
@@ -362,6 +322,38 @@ export function Dashboard({
          )}
 
          {drillMenu}
+         {modelPath !== undefined && (
+            <>
+               <RowsDialog
+                  request={rows}
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  {...(versionId === undefined ? {} : { versionId })}
+                  modelPath={modelPath}
+                  givens={rowsGivens}
+                  onClose={() => setRows(undefined)}
+                  onDone={(ok, durationMs) => {
+                     if (rows)
+                        onEvent?.({
+                           type: "dashboard.rows_shown",
+                           source: rows.source,
+                           view: rows.view,
+                           field: rows.field,
+                           ok,
+                           durationMs,
+                        });
+                  }}
+               />
+               <ExploreDialog
+                  tile={exploring}
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  {...(versionId === undefined ? {} : { versionId })}
+                  modelPath={modelPath}
+                  onClose={() => setExploring(undefined)}
+               />
+            </>
+         )}
       </Stack>
    );
 }
@@ -382,40 +374,38 @@ export function Dashboard({
  */
 function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
    return (
+      <DashboardProse
+         title={manifest.title ?? manifest.name}
+         {...(manifest.description
+            ? { description: manifest.description }
+            : {})}
+      />
+   );
+}
+
+/**
+ * The prose header itself, over the two fields it actually needs.
+ *
+ * Separate from {@link DashboardHeader} so the BUILDER can render the same
+ * header over a `DashboardDocument` — which carries `title` and `description`
+ * but is not a manifest. Same argument as {@link tileGridColumn}: what the
+ * builder shows a author is the thing a reader will see, and one component is
+ * what stops the two drifting. A builder that restated this markdown block
+ * would be one edit away from showing a different header than it writes.
+ */
+export function DashboardProse({
+   title,
+   description,
+}: {
+   title: string;
+   description?: string;
+}) {
+   return (
       <Box>
          <Typography variant="h5" sx={{ fontWeight: 600 }}>
-            {manifest.title ?? manifest.name}
+            {title}
          </Typography>
-         {manifest.description && (
-            <Box
-               sx={{
-                  color: "text.secondary",
-                  typography: "body2",
-                  // The block starts flush under the title and ends flush
-                  // against the controls, so a one-line description sits
-                  // exactly where the old `Typography` put it and a longer one
-                  // grows downward rather than pushing the title around.
-                  "& > :first-of-type": { mt: 0 },
-                  "& > :last-child": { mb: 0 },
-                  // Headings in a description are section labels within the
-                  // page, not competitors to its title, so they stay at body
-                  // weight and size rather than MUI's h1..h6 scale.
-                  "& h1, & h2, & h3, & h4, & h5, & h6": {
-                     fontSize: "inherit",
-                     fontWeight: 600,
-                     m: "0.5em 0 0.25em",
-                  },
-                  "& p": { m: "0.5em 0" },
-                  "& ul, & ol": { m: "0.5em 0", pl: 3 },
-                  "& code": {
-                     fontFamily: "monospace",
-                     fontSize: "0.9em",
-                  },
-               }}
-            >
-               <Markdown>{manifest.description}</Markdown>
-            </Box>
-         )}
+         {description && <Prose variant="caption">{description}</Prose>}
       </Box>
    );
 }

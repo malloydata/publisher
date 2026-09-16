@@ -18,6 +18,12 @@ export * from "./Materializations";
 export * from "./Model";
 export * from "./Notebook";
 export * from "./Package";
+export {
+   Prose,
+   type ProseLinkContext,
+   type ProseProps,
+   type ProseVariant,
+} from "./Prose";
 export * from "./QueryResult";
 export * from "./RenderedResult";
 export { ServerProvider, useServer } from "./ServerProvider";
