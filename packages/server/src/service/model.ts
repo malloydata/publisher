@@ -4551,6 +4551,16 @@ export class Model {
     * view and the ladder above already does it. Only filters survive to this
     * tier, so a failure here is a filter failure.
     *
+    * Known limit, and the reason that reasoning does not fully generalise: the
+    * floor carries no joins, so a filter reaching through a join whose target IS
+    * materialized fails this solo probe even though it compiles at the richer
+    * tiers. Such a binding is over-withheld and serves live. Fails safe, and no
+    * worse than before filters were carried at all, but it is why a source can
+    * lose the tier to a sibling it has nothing to do with. Fixing it means
+    * probing a binding together with its join-dependency closure rather than
+    * alone — `orderBindingsByJoinDeps` already computes that ordering — which is
+    * more machinery than the case has so far warranted.
+    *
     * Withholding, never thinning: a binding that does not compile is absent from
     * the shape, so queries on it fail to resolve and serve live. Thinning its
     * filters instead would serve it unfiltered, which is the defect this whole
