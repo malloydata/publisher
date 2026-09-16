@@ -16,6 +16,7 @@ import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { AppDialog } from "../AppDialog";
 import { ItemRow } from "../ItemRow";
 import { PackageSection } from "../PackageSection";
+import { reporting } from "../../telemetry/consoleEvents";
 import { SURFACE_TINT } from "../styles";
 import AddConnectionDialog from "../Connections/AddConnectionDialog";
 import DeleteConnectionDialog from "../Connections/DeleteConnectionDialog";
@@ -65,12 +66,12 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
    });
 
    const addConnection = useMutationWithApiError({
-      mutationFn: (payload: ApiConnection) => {
-         return apiClients.environments.updateEnvironment(environmentName, {
+      mutationFn: reporting("connection", "create", (payload: ApiConnection) =>
+         apiClients.environments.updateEnvironment(environmentName, {
             name: environmentName,
             connections: [...data!.data, payload],
-         });
-      },
+         }),
+      ),
       onSuccess() {
          setNotificationMessage("Connection added successfully");
          queryClient.invalidateQueries({
@@ -83,14 +84,14 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
    });
 
    const updateConnection = useMutationWithApiError({
-      mutationFn: (payload: ApiConnection) => {
-         return apiClients.environments.updateEnvironment(environmentName, {
+      mutationFn: reporting("connection", "update", (payload: ApiConnection) =>
+         apiClients.environments.updateEnvironment(environmentName, {
             name: environmentName,
             connections: data!.data.map((conn) =>
                conn.name === payload.name ? payload : conn,
             ),
-         });
-      },
+         }),
+      ),
       onSuccess(_data, variables) {
          setNotificationMessage(
             `Connection ${variables.name} updated successfully`,
@@ -110,15 +111,19 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
       // row for one that went away, so a deleted connection came back on the
       // next boot. This path removes the row and cleans up a duckdb/ducklake
       // connection's database file.
-      mutationFn: (payload: ApiConnection) => {
-         if (!payload.name) {
-            throw new Error("Cannot delete a connection with no name");
-         }
-         return apiClients.connections.deleteConnection(
-            environmentName,
-            payload.name,
-         );
-      },
+      mutationFn: reporting(
+         "connection",
+         "delete",
+         (payload: ApiConnection) => {
+            if (!payload.name) {
+               throw new Error("Cannot delete a connection with no name");
+            }
+            return apiClients.connections.deleteConnection(
+               environmentName,
+               payload.name,
+            );
+         },
+      ),
       onSuccess(_data, variables) {
          setNotificationMessage(
             `Connection ${variables.name} deleted successfully`,

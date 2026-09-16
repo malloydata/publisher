@@ -13,6 +13,7 @@ import {
    useMutationWithApiError,
    useQueryWithApiError,
 } from "../../hooks/useQueryWithApiError";
+import { reporting } from "../../telemetry/consoleEvents";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
@@ -87,14 +88,18 @@ export default function Materializations({
    // Auto-run: the publisher compiles, builds every persist source, and loads
    // the resulting manifest in a single pass.
    const createMaterialization = useMutationWithApiError({
-      mutationFn: (opts: { forceRefresh: boolean }) =>
-         apiClients.materializations.createMaterialization(
-            environmentName,
-            packageName,
-            {
-               forceRefresh: opts.forceRefresh,
-            },
-         ),
+      mutationFn: reporting(
+         "materialization",
+         "create",
+         (opts: { forceRefresh: boolean }) =>
+            apiClients.materializations.createMaterialization(
+               environmentName,
+               packageName,
+               {
+                  forceRefresh: opts.forceRefresh,
+               },
+            ),
+      ),
       onSuccess() {
          setNotificationMessage("Materialization requested");
          invalidateList();
@@ -106,13 +111,17 @@ export default function Materializations({
    });
 
    const stopMaterialization = useMutationWithApiError({
-      mutationFn: (materialization: Materialization) =>
-         apiClients.materializations.materializationAction(
-            environmentName,
-            packageName,
-            materialization.id as string,
-            MaterializationActionActionEnum.Stop,
-         ),
+      mutationFn: reporting(
+         "materialization",
+         "update",
+         (materialization: Materialization) =>
+            apiClients.materializations.materializationAction(
+               environmentName,
+               packageName,
+               materialization.id as string,
+               MaterializationActionActionEnum.Stop,
+            ),
+      ),
       onSuccess() {
          setNotificationMessage("Materialization stopped");
          invalidateList();
@@ -123,19 +132,23 @@ export default function Materializations({
    });
 
    const deleteMaterialization = useMutationWithApiError({
-      mutationFn: ({
-         materialization,
-         dropTables,
-      }: {
-         materialization: Materialization;
-         dropTables: boolean;
-      }) =>
-         apiClients.materializations.deleteMaterialization(
-            environmentName,
-            packageName,
-            materialization.id as string,
+      mutationFn: reporting(
+         "materialization",
+         "delete",
+         ({
+            materialization,
             dropTables,
-         ),
+         }: {
+            materialization: Materialization;
+            dropTables: boolean;
+         }) =>
+            apiClients.materializations.deleteMaterialization(
+               environmentName,
+               packageName,
+               materialization.id as string,
+               dropTables,
+            ),
+      ),
       onSuccess() {
          setNotificationMessage("Materialization deleted");
          invalidateList();
@@ -154,7 +167,7 @@ export default function Materializations({
    // strands scope: version with no way back. The running scheduler re-arms from
    // the new cron on its next tick — no reload needed.
    const updateSchedule = useMutationWithApiError({
-      mutationFn: (schedule: string | null) =>
+      mutationFn: reporting("schedule", "update", (schedule: string | null) =>
          apiClients.packages.updatePackage(environmentName, packageName, {
             name: packageName,
             // updatePackage overwrites description from the body — carry the
@@ -163,6 +176,7 @@ export default function Materializations({
             ...(schedule ? { scope: PackageScopeEnum.Version } : {}),
             materialization: { schedule },
          }),
+      ),
       onSuccess(_data, schedule) {
          setNotificationMessage(
             schedule ? "Schedule updated" : "Schedule cleared",
@@ -182,12 +196,13 @@ export default function Materializations({
    // still set (publish-gate Rule 2), so the UI only offers this when no
    // schedule is active.
    const updateScope = useMutationWithApiError({
-      mutationFn: (scope: PackageScopeEnum) =>
+      mutationFn: reporting("scope", "update", (scope: PackageScopeEnum) =>
          apiClients.packages.updatePackage(environmentName, packageName, {
             name: packageName,
             description: currentPackage?.description,
             scope,
          }),
+      ),
       onSuccess() {
          setNotificationMessage("Scope updated");
          queryClient.invalidateQueries({

@@ -67,3 +67,58 @@ export function reportConsoleEvent(event: ConsoleEvent): void {
       // A sink that throws is the sink's problem, not the write's.
    }
 }
+
+/**
+ * Wrap a mutation's function so it reports itself.
+ *
+ * The write that reports is the `mutationFn`, not the hook around it, because
+ * the Console has two shapes of write and only one of them fits a shared hook.
+ * The CRUD dialogs each own a mutation, a snackbar and a dialog to close, and
+ * {@link useCrudMutation} holds all three. Connections and Materializations do
+ * not: they `mutateAsync` from a caller that awaits the promise, and share one
+ * snackbar across several mutations at the component level. Forcing those onto
+ * the dialog hook would mean giving them a snackbar each and a dialog to close
+ * that they do not have.
+ *
+ * Wrapping the function instead fits both, and reports the same event either
+ * way: it times what the caller actually waits on, it sees the rejection
+ * before any handler has turned it into a message, and it re-throws unchanged
+ * so nothing downstream can tell it is there.
+ */
+export function reporting<F extends (variables: never) => Promise<unknown>>(
+   resource: ConsoleResource,
+   action: ConsoleEvent["action"],
+   mutationFn: F,
+): F {
+   // Returns the SAME function type it was given, so the mutation hook infers
+   // its variables from the wrapped function exactly as it did from the bare
+   // one. Re-declaring the signature with fresh type parameters broke that
+   // inference and collapsed the variables type to `void`.
+   return (async (variables: Parameters<F>[0]) => {
+      const startedAt = Date.now();
+      try {
+         const result = await mutationFn(variables);
+         reportConsoleEvent({
+            type: "console.mutation",
+            resource,
+            action,
+            ok: true,
+            durationMs: Date.now() - startedAt,
+         });
+         return result;
+      } catch (error) {
+         reportConsoleEvent({
+            type: "console.mutation",
+            resource,
+            action,
+            ok: false,
+            durationMs: Date.now() - startedAt,
+            reason:
+               error instanceof Error
+                  ? error.message
+                  : "An unknown error occurred",
+         });
+         throw error;
+      }
+   }) as F;
+}

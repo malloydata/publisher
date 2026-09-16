@@ -4,12 +4,9 @@
 import Snackbar from "@mui/material/Snackbar";
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
 import * as React from "react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useMutationWithApiError } from "./useQueryWithApiError";
-import {
-   reportConsoleEvent,
-   type ConsoleResource,
-} from "../telemetry/consoleEvents";
+import { reporting, type ConsoleResource } from "../telemetry/consoleEvents";
 
 /**
  * A write from a dialog: run it, close the dialog, refetch what it changed,
@@ -54,41 +51,23 @@ export function useCrudMutation<TVariables = void>({
 }) {
    const queryClient = useQueryClient();
    const [message, setMessage] = useState("");
-   // Measured across the whole write, not the request: what a dialog reports
-   // is how long the operator waited for it to close.
-   const startedAt = useRef(0);
    const mutation = useMutationWithApiError({
-      mutationFn,
-      onMutate() {
-         startedAt.current = Date.now();
-      },
+      // The same wrapper Connections and Materializations use, so there is one
+      // implementation of "a Console write reports itself" rather than one per
+      // shape of write.
+      mutationFn: reporting(resource, action, mutationFn),
       onSuccess() {
-         reportConsoleEvent({
-            type: "console.mutation",
-            resource,
-            action,
-            ok: true,
-            durationMs: Date.now() - startedAt.current,
-         });
          closeDialog();
          for (const queryKey of invalidates)
             queryClient.invalidateQueries({ queryKey });
          setMessage(success);
       },
       onError(error) {
-         const reason =
+         setMessage(
             error instanceof Error
                ? error.message
-               : "An unknown error occurred";
-         reportConsoleEvent({
-            type: "console.mutation",
-            resource,
-            action,
-            ok: false,
-            durationMs: Date.now() - startedAt.current,
-            reason,
-         });
-         setMessage(reason);
+               : "An unknown error occurred",
+         );
       },
    });
    return {
