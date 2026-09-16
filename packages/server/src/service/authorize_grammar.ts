@@ -74,6 +74,7 @@
 
 import { routeOf } from "@malloydata/malloy";
 import { ModelCompilationError } from "../errors";
+import { AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE } from "./authorize_routes";
 
 /** Malloy's own routing for ONE note — see `authorize.ts`'s identical helper. */
 function noteRoute(text: string): string | undefined {
@@ -504,25 +505,6 @@ function parseTerm(
       operator,
    };
 }
-
-/** The row-level `#(authorize)` route. See {@link assertAuthorizeGrammarTermsCoherent}'s
- *  doc for why the route string, not the term shape, is what keeps two
- *  routes' terms from being compared to each other. */
-export const AUTHORIZE_ROUTE = "authorize";
-
-/**
- * The `#(source-authorize)` route — a rule about the CALLER (a `'literal'
- * in/= $GIVEN` term) rather than the row. Every term in a body parsed under
- * this route must be `scope: "source_level"`, with the whole-body sentinels
- * (a bare `false` or `true`) carved out — see {@link parseAuthorizeGrammarBody}'s
- * `row_level_term_in_source_authorize` check. It ANDs with the row-level
- * `#(authorize)` gate rather than bypassing it: there is deliberately no
- * spelling anywhere in this grammar for "admit and skip the row filter", and
- * `#(source-authorize) true` is no exception — it sheds an inherited
- * `#(source-authorize)`, never the row-level gate, which is collected
- * independently on its own route.
- */
-export const SOURCE_AUTHORIZE_ROUTE = "source-authorize";
 
 /** One term paired with the route its declaring note was parsed under —
  *  what {@link assertAuthorizeGrammarTermsCoherent} needs to tell "two

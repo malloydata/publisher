@@ -98,17 +98,16 @@ import {
    assertNoCallerAuthorizeAnnotation,
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
-   AUTHORIZE_ROUTE,
    containsAuthorizeAnnotationTag,
    findLegacyStringGates,
    referencedGivenNames,
-   SOURCE_AUTHORIZE_ROUTE,
    validateAuthorizeProbes,
    type AuthorizeMap,
    type AuthorizeOwnNotesMap,
    type MisplacedAuthorizeAnnotation,
    type RowLevelGateRejectionCause,
 } from "./authorize";
+import { AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE } from "./authorize_routes";
 import { readDashboardModelFacts, type DashboardModelFacts } from "./dashboard";
 import {
    validateSourceLineGateGivenUsage,

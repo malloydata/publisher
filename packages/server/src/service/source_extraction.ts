@@ -36,18 +36,20 @@ import {
 } from "./annotations";
 import {
    assertNoAuthorizeNearMisses,
-   AUTHORIZE_ROUTE,
-   AUTHORIZE_ROUTES,
    authorizeAnnotationRoute,
    collectAuthorizeExprsForRoute,
    collectAuthorizeNearMissesAllRoutes,
    containsAuthorizeAnnotationTag,
-   SOURCE_AUTHORIZE_ROUTE,
    type AuthorizeMap,
    type AuthorizeMapGroup,
    type AuthorizeOwnNotesMap,
    type MisplacedAuthorizeAnnotation,
 } from "./authorize";
+import {
+   AUTHORIZE_ROUTE,
+   AUTHORIZE_ROUTES,
+   SOURCE_AUTHORIZE_ROUTE,
+} from "./authorize_routes";
 import { parseFilters, type FilterDefinition } from "./filter";
 import {
    derivedStructsReachable,

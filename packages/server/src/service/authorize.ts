@@ -44,41 +44,19 @@
  * module builds is COMPILED, never RUN — the package-load worker's
  * `ProxyConnection.runSQL` deliberately throws (`package_load_worker.ts`).
  * Kept light so it bundles cleanly into the package-load worker: its only
- * non-type imports are `../errors` and `./annotations` (which the worker
- * already bundles via `source_extraction.ts`).
+ * non-type imports are `../errors`, `./annotations` (which the worker already
+ * bundles via `source_extraction.ts`) and `./authorize_routes`, which imports
+ * nothing at all.
  */
 
 import { payloadOf, routeOf } from "@malloydata/malloy";
 import { BadRequestError, ModelCompilationError } from "../errors";
 import { type AnnotationNote } from "./annotations";
-
-/**
- * The annotation route Malloy assigns a row-level `authorize` gate. Exported
- * (unlike this module's other route-classification internals — see
- * `authorizeNoteContent`'s doc for why everything else keys through it rather
- * than this literal) because `source_extraction.ts`'s wire `authorize` field
- * stays scoped to this ONE route — a convenience-form `#(authorize)` body
- * reports here, not under `sourceAuthorize` — so it needs the literal to pick
- * that route back out of `AUTHORIZE_ROUTES`.
- */
-export const AUTHORIZE_ROUTE = "authorize";
-/**
- * The annotation route for a `#(source-authorize)` gate — a rule about the
- * CALLER (`'literal' in/= $GIVEN`) rather than the row, that ANDs with the
- * row-level gate rather than bypassing it. See `authorize_grammar.ts`'s
- * module doc and its `SOURCE_AUTHORIZE_ROUTE` for the grammar this route's
- * body is restricted to. Exported for `source_extraction.ts`'s wire
- * `sourceAuthorize` field, which mirrors this route's effective texts the
- * same way `authorize` mirrors `AUTHORIZE_ROUTE`.
- */
-export const SOURCE_AUTHORIZE_ROUTE = "source-authorize";
-/** Every route this module recognizes as an authorize gate, for a caller
- *  that needs to enumerate both (`source_extraction.ts`,
- *  `gate_classification.ts`'s `collectEntryPointGates`). */
-export const AUTHORIZE_ROUTES: readonly string[] = [
+import {
    AUTHORIZE_ROUTE,
+   AUTHORIZE_ROUTES,
    SOURCE_AUTHORIZE_ROUTE,
-];
+} from "./authorize_routes";
 
 /**
  * Malloy's own routing for ONE note, via the public `routeOf`. Three outcomes,

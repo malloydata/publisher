@@ -4,18 +4,13 @@
 import { describe, expect, it } from "bun:test";
 import {
    assertNoCallerAuthorizeAnnotation,
-   AUTHORIZE_ROUTE,
    collectAuthorizeExprs,
    collectAuthorizeNearMisses,
    containsAuthorizeAnnotationTag,
    parseAuthorizeAnnotation,
    referencedGivenNames,
 } from "./authorize";
-
-/** Mirrors `authorize.ts`'s own private `SOURCE_AUTHORIZE_ROUTE` literal —
- *  not imported, since this module's route constant is deliberately kept
- *  private (see `authorize.ts`'s doc on `AUTHORIZE_ROUTE`). */
-const SOURCE_AUTHORIZE_ROUTE = "source-authorize";
+import { AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE } from "./authorize_routes";
 
 /** A parsed row-level route result, for `.toEqual` against
  *  `parseAuthorizeAnnotation`'s `{route, expr}` shape. */

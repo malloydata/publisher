@@ -45,7 +45,6 @@ import {
    type AnnotationsDef,
 } from "./annotations";
 import {
-   AUTHORIZE_ROUTES,
    buildRowLevelProbe,
    collectAuthorizeExprsForRoute,
    gateFilterText,
@@ -66,6 +65,7 @@ import {
    RETIRED_ROUTES,
    type AuthorizeGrammarRoutedTerm,
 } from "./authorize_grammar";
+import { AUTHORIZE_ROUTES } from "./authorize_routes";
 import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,

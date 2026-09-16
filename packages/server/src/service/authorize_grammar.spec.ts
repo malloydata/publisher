@@ -18,12 +18,11 @@ import {
 import { beforeAll, describe, expect, it } from "bun:test";
 import {
    assertAuthorizeGrammarTermsCoherent,
-   AUTHORIZE_ROUTE,
    AuthorizeGrammarError,
    parseAuthorizeGrammarBody,
-   SOURCE_AUTHORIZE_ROUTE,
    type AuthorizeGrammarRoutedTerm,
 } from "./authorize_grammar";
+import { AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
    assertNoFanoutFieldPath,
    assertNoRetiredRouteMarkers,
