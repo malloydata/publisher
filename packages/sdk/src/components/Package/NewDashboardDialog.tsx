@@ -97,7 +97,7 @@ export function NewDashboardDialog({
       setBusy(true);
       setFailure(undefined);
       try {
-         await apiClients.models.putModelSource(
+         await apiClients.models.updateModelSource(
             environmentName,
             packageName,
             `dashboards/${slug}.malloy`,

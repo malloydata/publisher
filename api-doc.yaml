@@ -1645,7 +1645,7 @@ paths:
     put:
       tags:
         - models
-      operationId: put-model-source
+      operationId: update-model-source
       summary: Write a dashboard file into the package
       description: |
         Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy`,
@@ -1661,10 +1661,16 @@ paths:
         leaves the package serving less than it did.
 
         `expectedHash` is the SHA-256 (hex) of the text the caller opened, as
-        `GET …/models/{path}` returned it in `sourceText`. When it is given and
-        the file on disk no longer hashes to it, the write is refused with 409
-        and nothing is merged: the caller re-opens and reapplies its change.
-        Omit it to create a file that does not exist yet.
+        `GET …/models/{path}` returned it in `sourceText`. When the file on disk
+        no longer hashes to it, the write is refused with 409 and nothing is
+        merged: the caller re-opens and reapplies its change. Omit it to CREATE
+        the file: a file that already exists is then refused with 409 too, so an
+        unconditional overwrite is not something a caller can ask for by leaving
+        a field out. The check and the write happen under one hold of the
+        package lock, so two saves racing on one file cannot both pass it.
+
+        A create answers 201 and an update 200; `created` in the body says the
+        same thing.
 
         Refused with 403 when `publisher.config.json` has `frozenConfig: true`.
         Like every write on this server, it is unauthenticated and meant to sit
@@ -1672,11 +1678,13 @@ paths:
       parameters:
         - name: environmentName
           in: path
+          description: Name of the environment
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: packageName
           in: path
+          description: Name of the package
           required: true
           schema:
             type: string
@@ -1686,33 +1694,53 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ModelSourceWrite"
+              $ref: "#/components/schemas/ModelSourceWriteRequest"
       responses:
         "200":
-          description: The file was written and the package reloaded
+          description: The file was replaced and the package reloaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelSourceWriteResult"
+        "201":
+          description: The file did not exist and was created
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ModelSourceWriteResult"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: The file changed since the caller opened it (`expectedHash` mismatch)
+          description:
+            The file changed since the caller opened it, or already exists and
+            no `expectedHash` was sent
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /environments/{environmentName}/packages/{packageName}/models/{path}/query:
     post:
@@ -5603,7 +5631,7 @@ components:
         givens:
           $ref: "#/components/schemas/GivenValues"
 
-    ModelSourceWrite:
+    ModelSourceWriteRequest:
       type: object
       description: The text to write into a dashboard file
       required:
@@ -5616,7 +5644,8 @@ components:
           type: string
           description:
             SHA-256 (hex) of the text the caller opened. Refused with 409 when
-            the file on disk no longer hashes to it. Omit to create a new file.
+            the file on disk no longer hashes to it. Omit to create the file,
+            which is then refused with 409 if it already exists.
 
     ModelSourceWriteResult:
       type: object
@@ -5625,6 +5654,9 @@ components:
         - path
         - contentHash
       properties:
+        resource:
+          type: string
+          description: Resource path to the model file that was written
         path:
           type: string
           description: The file written, relative to the package

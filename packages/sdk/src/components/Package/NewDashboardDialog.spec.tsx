@@ -23,10 +23,10 @@ const getModel = mock(() =>
       },
    }),
 );
-const putModelSource = mock((_env: string, _pkg: string, path: string) =>
+const updateModelSource = mock((_env: string, _pkg: string, path: string) =>
    Promise.resolve({ data: { path, contentHash: "h", created: true } }),
 );
-mockServerProvider({ models: { getModel, putModelSource } });
+mockServerProvider({ models: { getModel, updateModelSource } });
 
 const { NewDashboardDialog } = await import("./NewDashboardDialog");
 
@@ -37,7 +37,7 @@ const pick = (label: RegExp, option: string | RegExp) => {
 
 beforeEach(() => {
    clearCache();
-   putModelSource.mockClear();
+   updateModelSource.mockClear();
 });
 
 describe("NewDashboardDialog", () => {
@@ -80,7 +80,7 @@ describe("NewDashboardDialog", () => {
       await waitFor(() =>
          expect(onCreated).toHaveBeenCalledWith("sales-by-region"),
       );
-      const [, , path, body] = putModelSource.mock.calls[0] as unknown as [
+      const [, , path, body] = updateModelSource.mock.calls[0] as unknown as [
          string,
          string,
          string,

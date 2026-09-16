@@ -1701,6 +1701,32 @@ app.get(
    },
 );
 
+app.put(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+      try {
+         // Express stores wildcard matches in params['0'].
+         const result = await dashboardController.putDashboardSource(
+            req.params.environmentName,
+            req.params.packageName,
+            (req.params as Record<string, string>)["0"],
+            req.body,
+         );
+         // 201 for a file that did not exist, the way a created materialization
+         // answers; 200 for one that was replaced.
+         res.status(result.created ? 201 : 200).json(result);
+      } catch (error) {
+         logger.error("Dashboard write error", { error });
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
    async (req, res) => {
@@ -1940,31 +1966,6 @@ app.get(
          );
       } catch (error) {
          logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.put(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-      try {
-         // Express stores wildcard matches in params['0'].
-         res.status(200).json(
-            await dashboardController.putDashboardSource(
-               req.params.environmentName,
-               req.params.packageName,
-               (req.params as Record<string, string>)["0"],
-               req.body,
-            ),
-         );
-      } catch (error) {
-         logger.error("Dashboard write error", { error });
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
