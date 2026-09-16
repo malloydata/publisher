@@ -73,15 +73,13 @@ test.describe("environments — mutable CRUD", () => {
       // --- Create ---
       await page.getByRole("button", { name: "Add environment" }).click();
       const createDialog = page.getByRole("dialog", {
-         name: "Create New Environment",
+         name: "New environment",
       });
       await expect(createDialog).toBeVisible();
-      await createDialog.getByLabel("Environment Name").fill(name);
+      await createDialog.getByLabel("Name").fill(name);
+      await createDialog.getByLabel("Description").fill(description);
       await createDialog
-         .getByLabel("Environment Description")
-         .fill(description);
-      await createDialog
-         .getByRole("button", { name: "Create Environment" })
+         .getByRole("button", { name: "Create environment" })
          .click();
       await expect(createDialog).toBeHidden();
 
@@ -97,11 +95,11 @@ test.describe("environments — mutable CRUD", () => {
          .getByRole("button", { name: `Environment actions for ${name}` })
          .dispatchEvent("click");
       await page.getByRole("menuitem", { name: "Edit" }).click();
-      const editDialog = page.getByRole("dialog", { name: "Edit Environment" });
+      const editDialog = page.getByRole("dialog", { name: "Edit environment" });
       await expect(editDialog).toBeVisible();
-      const descField = editDialog.getByLabel("Environment Description");
+      const descField = editDialog.getByLabel("Description");
       await descField.fill(editedDescription);
-      await editDialog.getByRole("button", { name: "Save Changes" }).click();
+      await editDialog.getByRole("button", { name: "Save changes" }).click();
       await expect(editDialog).toBeHidden();
       await expect(page.getByText(editedDescription)).toBeVisible();
 
@@ -111,11 +109,13 @@ test.describe("environments — mutable CRUD", () => {
          .dispatchEvent("click");
       await page.getByRole("menuitem", { name: "Delete" }).click();
       const deleteDialog = page.getByRole("dialog", {
-         name: "Delete Environment",
+         name: "Delete environment",
       });
       await expect(deleteDialog).toBeVisible();
       await expect(deleteDialog).toContainText(name);
-      await deleteDialog.getByRole("button", { name: "Delete" }).click();
+      await deleteDialog
+         .getByRole("button", { name: "Delete environment" })
+         .click();
       await expect(deleteDialog).toBeHidden();
       await expect(newRow).toHaveCount(0);
    });

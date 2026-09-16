@@ -2,11 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
 import Snackbar from "@mui/material/Snackbar";
 import TextField from "@mui/material/TextField";
 import { useQueryClient } from "@tanstack/react-query";
@@ -15,6 +10,8 @@ import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { generateEnvironmentReadme } from "../../utils/parsing";
 import { useServer } from "../ServerProvider";
 import { AddButton } from "../buttons";
+import Stack from "@mui/material/Stack";
+import { AppDialog } from "../AppDialog";
 
 export default function AddEnvironmentDialog() {
    const [open, setOpen] = useState(false);
@@ -70,53 +67,56 @@ export default function AddEnvironmentDialog() {
    return (
       <React.Fragment>
          <AddButton label="Environment" onClick={handleClickOpen} />
-         <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Create New Environment</DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Add a new environment to start exploring semantic models and
-                  analyzing data.
-               </DialogContentText>
-               <form onSubmit={handleSubmit} id="environment-form">
+         <AppDialog
+            open={open}
+            onClose={handleClose}
+            title="New environment"
+            description="An environment holds packages and the connections they query through."
+            actions={
+               <>
+                  <Button
+                     disabled={addEnvironment.isPending}
+                     onClick={handleClose}
+                  >
+                     Cancel
+                  </Button>
+                  <Button
+                     type="submit"
+                     form="environment-form"
+                     variant="contained"
+                     loading={addEnvironment.isPending}
+                  >
+                     Create environment
+                  </Button>
+               </>
+            }
+         >
+            <form onSubmit={handleSubmit} id="environment-form">
+               <Stack sx={{ gap: 2 }}>
                   <TextField
                      autoFocus
                      required
-                     margin="dense"
                      id="name"
                      name="name"
-                     label="Environment Name"
+                     label="Name"
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
+                     InputLabelProps={{ shrink: true }}
                   />
                   <TextField
-                     margin="dense"
                      id="description"
                      name="description"
-                     label="Environment Description"
+                     label="Description"
                      placeholder="Explore semantic models, run queries, and build dashboards"
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
+                     InputLabelProps={{ shrink: true }}
                   />
-               </form>
-            </DialogContent>
-            <DialogActions>
-               <Button
-                  disabled={addEnvironment.isPending}
-                  onClick={handleClose}
-               >
-                  Cancel
-               </Button>
-               <Button
-                  type="submit"
-                  form="environment-form"
-                  loading={addEnvironment.isPending}
-               >
-                  Create Environment
-               </Button>
-            </DialogActions>
-         </Dialog>
+               </Stack>
+            </form>
+         </AppDialog>
          <Snackbar
             open={notificationMessage !== ""}
             autoHideDuration={6000}

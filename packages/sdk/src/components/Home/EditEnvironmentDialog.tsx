@@ -4,11 +4,6 @@
 import React from "react";
 import Button from "@mui/material/Button";
 import TextField from "@mui/material/TextField";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
 import { useState } from "react";
 import { Edit } from "@mui/icons-material";
 import { MenuItem, ListItemIcon, ListItemText, Snackbar } from "@mui/material";
@@ -20,6 +15,8 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { useServer } from "../ServerProvider";
+import Stack from "@mui/material/Stack";
+import { AppDialog } from "../AppDialog";
 
 interface EditEnvironmentModalProps {
    environment: Environment;
@@ -87,56 +84,60 @@ export default function EditEnvironmentDialog({
             <ListItemText>Edit</ListItemText>
          </MenuItem>
 
-         <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Edit Environment</DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Edit this environment&apos;s description.
-               </DialogContentText>
-               <form onSubmit={handleSubmit} id="environment-form">
+         <AppDialog
+            open={open}
+            onClose={handleClose}
+            title="Edit environment"
+            description="What this environment is, for the people who open it."
+            actions={
+               <>
+                  <Button
+                     disabled={editEnvironment.isPending}
+                     onClick={handleClose}
+                  >
+                     Cancel
+                  </Button>
+                  <Button
+                     type="submit"
+                     form="environment-form"
+                     variant="contained"
+                     loading={editEnvironment.isPending}
+                  >
+                     Save changes
+                  </Button>
+               </>
+            }
+         >
+            <form onSubmit={handleSubmit} id="environment-form">
+               <Stack sx={{ gap: 2 }}>
                   <TextField
                      autoFocus
                      required
-                     margin="dense"
                      id="name"
                      name="name"
-                     label="Environment Name"
+                     label="Name"
                      disabled
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
                      defaultValue={environment.name}
+                     InputLabelProps={{ shrink: true }}
                   />
                   <TextField
-                     margin="dense"
                      id="description"
                      name="description"
-                     label="Environment Description"
+                     label="Description"
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
                      defaultValue={getEnvironmentDescription(
                         environment.readme,
                      )}
+                     InputLabelProps={{ shrink: true }}
                   />
-               </form>
-            </DialogContent>
-            <DialogActions>
-               <Button
-                  disabled={editEnvironment.isPending}
-                  onClick={handleClose}
-               >
-                  Cancel
-               </Button>
-               <Button
-                  type="submit"
-                  form="environment-form"
-                  loading={editEnvironment.isPending}
-               >
-                  Save Changes
-               </Button>
-            </DialogActions>
-         </Dialog>
+               </Stack>
+            </form>
+         </AppDialog>
          <Snackbar
             open={notificationMessage !== ""}
             autoHideDuration={6000}

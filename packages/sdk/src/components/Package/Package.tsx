@@ -1,16 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
    Alert,
    Box,
    Container,
-   Dialog,
-   DialogContent,
-   DialogTitle,
    IconButton,
    Table,
    TableBody,
@@ -38,6 +34,7 @@ import ContentTypeIcon, {
    type ContentType,
 } from "./ContentTypeIcon";
 import { AddButton } from "../buttons";
+import { AppDialog } from "../AppDialog";
 import { BackLink } from "../BackLink";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
@@ -577,50 +574,38 @@ export default function Package({
             </>
          )}
 
-         <Dialog
+         <AppDialog
             open={schemaDatabase !== null}
             onClose={() => setSchemaDatabase(null)}
-            maxWidth="sm"
-            fullWidth
+            title={schemaDatabase?.path ?? "Columns"}
+            showClose
          >
-            <DialogTitle sx={{ pr: 6 }}>
-               {schemaDatabase?.path}
-               <IconButton
-                  aria-label="close"
-                  onClick={() => setSchemaDatabase(null)}
-                  sx={{ position: "absolute", right: 8, top: 8 }}
-               >
-                  <CloseIcon fontSize="small" />
-               </IconButton>
-            </DialogTitle>
-            <DialogContent>
-               {schemaDatabase?.error && (
-                  <Typography variant="body2" color="error">
-                     {schemaDatabase.error}
-                  </Typography>
-               )}
-               {schemaDatabase?.info?.columns && (
-                  <Table size="small">
-                     <TableHead>
-                        <TableRow>
-                           <TableCell>Column</TableCell>
-                           <TableCell>Type</TableCell>
+            {schemaDatabase?.error && (
+               <Typography variant="body2" color="error">
+                  {schemaDatabase.error}
+               </Typography>
+            )}
+            {schemaDatabase?.info?.columns && (
+               <Table size="small">
+                  <TableHead>
+                     <TableRow>
+                        <TableCell>Column</TableCell>
+                        <TableCell>Type</TableCell>
+                     </TableRow>
+                  </TableHead>
+                  <TableBody>
+                     {schemaDatabase.info.columns.map((column) => (
+                        <TableRow key={column.name}>
+                           <TableCell component="th" scope="row">
+                              {column.name}
+                           </TableCell>
+                           <TableCell>{column.type}</TableCell>
                         </TableRow>
-                     </TableHead>
-                     <TableBody>
-                        {schemaDatabase.info.columns.map((column) => (
-                           <TableRow key={column.name}>
-                              <TableCell component="th" scope="row">
-                                 {column.name}
-                              </TableCell>
-                              <TableCell>{column.type}</TableCell>
-                           </TableRow>
-                        ))}
-                     </TableBody>
-                  </Table>
-               )}
-            </DialogContent>
-         </Dialog>
+                     ))}
+                  </TableBody>
+               </Table>
+            )}
+         </AppDialog>
       </Container>
    );
 }

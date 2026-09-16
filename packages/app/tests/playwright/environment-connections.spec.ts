@@ -124,11 +124,13 @@ test.describe("environment-connections — mutable CRUD", () => {
          .getByRole("menuitem", { name: `Delete connection ${connName}` })
          .click();
       const deleteDialog = page.getByRole("dialog", {
-         name: "Delete Connection",
+         name: "Delete connection",
       });
       await expect(deleteDialog).toBeVisible();
       await expect(deleteDialog).toContainText(connName);
-      await deleteDialog.getByRole("button", { name: "Delete" }).click();
+      await deleteDialog
+         .getByRole("button", { name: "Delete connection" })
+         .click();
       await expect(deleteDialog).toBeHidden({ timeout: 15_000 });
       await expect(card).toHaveCount(0);
    });
@@ -231,7 +233,7 @@ test.describe("environment-connections — delete is not gated on `resource`", (
             .getByRole("menuitem", { name: `Delete connection ${connName}` })
             .click();
          const deleteDialog = page.getByRole("dialog", {
-            name: "Delete Connection",
+            name: "Delete connection",
          });
          await expect(deleteDialog).toBeVisible();
 
@@ -251,7 +253,9 @@ test.describe("environment-connections — delete is not gated on `resource`", (
                   ),
             { timeout: 15_000 },
          );
-         await deleteDialog.getByRole("button", { name: "Delete" }).click();
+         await deleteDialog
+            .getByRole("button", { name: "Delete connection" })
+            .click();
          await deleteRequest;
 
          // The dialog has no self-close: it goes away by unmounting with the

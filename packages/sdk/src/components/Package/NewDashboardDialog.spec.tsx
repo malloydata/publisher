@@ -78,7 +78,7 @@ describe("NewDashboardDialog", () => {
          screen.getByText(/Written as dashboards\/sales-by-region\.malloy/),
       ).toBeDefined();
 
-      fireEvent.click(screen.getByRole("button", { name: "Create" }));
+      fireEvent.click(screen.getByRole("button", { name: "Create dashboard" }));
       await waitFor(() =>
          expect(onCreated).toHaveBeenCalledWith("sales-by-region"),
       );
@@ -122,7 +122,7 @@ describe("NewDashboardDialog", () => {
       expect(screen.getByText(/already exists in this package/)).toBeDefined();
       expect(
          screen
-            .getByRole("button", { name: "Create" })
+            .getByRole("button", { name: "Create dashboard" })
             .hasAttribute("disabled"),
       ).toBe(true);
    });

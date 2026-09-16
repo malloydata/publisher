@@ -87,11 +87,11 @@ test.describe("packages — mutable CRUD", () => {
       await gotoHome(page);
       await page.getByRole("button", { name: "Add environment" }).click();
       const createEnvDialog = page.getByRole("dialog", {
-         name: "Create New Environment",
+         name: "New environment",
       });
-      await createEnvDialog.getByLabel("Environment Name").fill(envName);
+      await createEnvDialog.getByLabel("Name").fill(envName);
       await createEnvDialog
-         .getByRole("button", { name: "Create Environment" })
+         .getByRole("button", { name: "Create environment" })
          .click();
       await expect(createEnvDialog).toBeHidden();
       await expect(
@@ -116,17 +116,19 @@ test.describe("packages — mutable CRUD", () => {
       // --- 3. Add ecommerce package from git ---
       await page.getByRole("button", { name: "Add Package" }).click();
       const addPkgDialog = page.getByRole("dialog", {
-         name: "Create New Package",
+         name: "New package",
       });
       await expect(addPkgDialog).toBeVisible();
-      await addPkgDialog.getByLabel("Package Name").fill(packageName);
+      await addPkgDialog.getByLabel("Name").fill(packageName);
       // Description uses a rich-text area; the `textarea[name=description]` is
       // the actual editable; fall back to filling via role so both renderings pass.
       await addPkgDialog
          .locator("textarea[name=description]")
          .fill(packageDescription);
       await addPkgDialog.getByLabel("Location").fill(packageLocation);
-      await addPkgDialog.getByRole("button", { name: "Save Changes" }).click();
+      await addPkgDialog
+         .getByRole("button", { name: "Create package" })
+         .click();
 
       // Git clone can take a while; wait up to 60s for the tile to appear.
       const pkgTile = page.getByText(packageName, { exact: true });
@@ -151,10 +153,12 @@ test.describe("packages — mutable CRUD", () => {
          .dispatchEvent("click");
       await page.getByRole("menuitem", { name: "Delete" }).click();
       const deletePkgDialog = page.getByRole("dialog", {
-         name: "Delete Package",
+         name: "Delete package",
       });
       await expect(deletePkgDialog).toContainText(packageName);
-      await deletePkgDialog.getByRole("button", { name: "Delete" }).click();
+      await deletePkgDialog
+         .getByRole("button", { name: "Delete package" })
+         .click();
       await expect(deletePkgDialog).toBeHidden();
       await expect(page.getByText(packageName, { exact: true })).toHaveCount(0);
 
@@ -170,10 +174,12 @@ test.describe("packages — mutable CRUD", () => {
          .dispatchEvent("click");
       await page.getByRole("menuitem", { name: "Delete" }).click();
       const deleteEnvDialog = page.getByRole("dialog", {
-         name: "Delete Environment",
+         name: "Delete environment",
       });
       await expect(deleteEnvDialog).toContainText(envName);
-      await deleteEnvDialog.getByRole("button", { name: "Delete" }).click();
+      await deleteEnvDialog
+         .getByRole("button", { name: "Delete environment" })
+         .click();
       await expect(deleteEnvDialog).toBeHidden();
       await expect(
          page

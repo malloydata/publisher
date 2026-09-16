@@ -51,8 +51,8 @@ The [REST and MCP APIs](api-overview.md) expose this exact hierarchy; the Consol
 You'll see two path styles, and they're not interchangeable:
 
 - **Console routes** are short — `/{environment}/{package}/{file}`, e.g.
-  `http://localhost:4000/examples/storefront/storefront.malloynb`. Use these to link to something
-  inside the Console (a notebook, a package).
+  `http://localhost:4000/examples/storefront/storefront.malloy`. Use these to link to something
+  inside the Console (a model, a dashboard, a package).
 - **Resource paths** are fully qualified — `/environments/{environment}/packages/{package}/...`.
   This is the canonical form the [REST and MCP APIs](api-overview.md) use, and it's also how an
   in-package HTML data app is served, e.g.
@@ -74,15 +74,15 @@ is a Console convenience.
   `## title="…"` or a `#" ` doc comment overrides it.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
   every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
-- **Read a notebook** — a `.malloynb` renders its markdown and runs its query cells inline, including
-  `# dashboard` views (KPI tiles + nested charts). Try
-  `http://localhost:4000/examples/storefront/storefront.malloynb`.
+- **Read a notebook** — a `.malloynb` in a package renders its markdown and runs its query cells
+  inline, including `# dashboard` views (KPI tiles + nested charts). The format is deprecated and
+  the bundled examples no longer ship one, but the viewer stays for packages that have them.
 
 ![The storefront business-overview dashboard rendered inline in a notebook](screenshots/storefront-dashboard.png)
 
-- **Tune parameters live** — when a model declares [givens](givens.md), the notebook shows a
-  **Parameters panel** above the cells; change a control and every cell re-runs. Try
-  `http://localhost:4000/examples/governed-analytics/orders.malloynb`.
+- **Tune parameters live** — when a model declares [givens](givens.md), a dashboard over it shows a
+  control row and a notebook a **Parameters panel**; change a control and every tile or cell re-runs.
+  Try `http://localhost:4000/examples/governed-analytics`.
 
 ![A notebook's Parameters panel, generated automatically from the model's givens](screenshots/givens-parameters-panel.png)
 

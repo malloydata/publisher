@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   AppDialog,
    BackLink,
    SecondaryButton,
    useServer,
@@ -18,11 +19,6 @@ import {
    Card,
    CardContent,
    CardHeader,
-   Dialog,
-   DialogActions,
-   DialogContent,
-   DialogContentText,
-   DialogTitle,
    Snackbar,
    Stack,
    ToggleButton,
@@ -369,41 +365,34 @@ export default function ThemeEditorPage() {
             anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
          />
 
-         <Dialog
+         <AppDialog
             open={confirmResetOpen}
             onClose={() => setConfirmResetOpen(false)}
-            aria-labelledby="reset-confirm-title"
+            title="Reset to defaults?"
+            actions={
+               <>
+                  <Button onClick={() => setConfirmResetOpen(false)}>
+                     Cancel
+                  </Button>
+                  <Button
+                     variant="contained"
+                     color="error"
+                     onClick={() => {
+                        setConfirmResetOpen(false);
+                        resetMutation.mutate();
+                     }}
+                     autoFocus
+                  >
+                     Reset theme
+                  </Button>
+               </>
+            }
          >
-            <DialogTitle id="reset-confirm-title">
-               Reset to defaults?
-            </DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Every customized color and font for the visualization theme
-                  will be cleared, restoring the publisher.config.json boot seed
-                  (or the built-in defaults). This applies immediately to every
-                  viewer.
-               </DialogContentText>
-            </DialogContent>
-            <DialogActions>
-               <Button
-                  onClick={() => setConfirmResetOpen(false)}
-                  sx={{ color: "text.primary" }}
-               >
-                  Cancel
-               </Button>
-               <Button
-                  color="error"
-                  onClick={() => {
-                     resetMutation.mutate();
-                     setConfirmResetOpen(false);
-                  }}
-                  autoFocus
-               >
-                  Reset
-               </Button>
-            </DialogActions>
-         </Dialog>
+            <Typography variant="body2">
+               Every colour and font on this page goes back to the Publisher
+               defaults, for every viewer.
+            </Typography>
+         </AppDialog>
       </Box>
    );
 }

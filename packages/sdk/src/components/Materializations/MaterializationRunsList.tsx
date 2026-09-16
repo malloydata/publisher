@@ -6,7 +6,6 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import StopIcon from "@mui/icons-material/Stop";
 import {
    Box,
-   Chip,
    IconButton,
    ListItemIcon,
    ListItemText,
@@ -64,7 +63,18 @@ export default function MaterializationRunsList({
    }
 
    return (
-      <Table size="small">
+      <Table
+         size="small"
+         // The section's rows start at its left edge and end at its right, so
+         // the table does too: MUI's own 16px on the outer cells put this one
+         // table a thumb's width inside every list above it.
+         sx={{
+            "& td, & th": { borderColor: "divider" },
+            "& td:first-of-type, & th:first-of-type": { pl: 0 },
+            "& td:last-of-type, & th:last-of-type": { pr: 0 },
+            "& th": { color: "text.secondary", fontWeight: 600 },
+         }}
+      >
          <TableHead>
             <TableRow>
                <TableCell>Status</TableCell>
@@ -145,12 +155,21 @@ function MaterializationRow({
       >
          <TableCell>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-               <Chip
-                  size="small"
-                  label={statusLabel(materialization.status)}
-                  color={statusColor(materialization.status)}
-                  variant={active ? "filled" : "outlined"}
-               />
+               {/* The word, in the colour the state already carries. A pill
+                   around one word of a six-word row was the only chip on the
+                   page, and it read as a control rather than as a value. */}
+               <Typography
+                  variant="body2"
+                  sx={{
+                     fontWeight: 500,
+                     color:
+                        statusColor(materialization.status) === "default"
+                           ? "text.primary"
+                           : `${statusColor(materialization.status)}.main`,
+                  }}
+               >
+                  {statusLabel(materialization.status)}
+               </Typography>
                {error && (
                   <Tooltip title={error}>
                      <InfoOutlinedIcon fontSize="small" color="error" />

@@ -2,10 +2,85 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test } from "@playwright/test";
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
+/**
+ * `.malloynb` is deprecated and the example packages no longer ship one, so
+ * this suite writes the notebook it reads about and removes it afterwards. The
+ * viewer stays supported, so the coverage stays.
+ */
+const FIXTURE_NOTEBOOK = "test_package_notebook.malloynb";
+const PKG_DIR = path.resolve(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "../../../server/publisher_data/examples/storefront",
+);
+const GOVERNED_NOTEBOOK = "test_governed_notebook.malloynb";
+const GOVERNED_DIR = path.resolve(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "../../../server/publisher_data/examples/governed-analytics",
+);
+const GOVERNED_SOURCE = `>>>markdown
+# Governed notebook
+
+>>>malloy
+import "orders.malloy"
+
+>>>malloy
+run: sales -> by_region
+`;
+// Three cells, all of views with no render tag, because the cell-height test
+// below counts the tables a notebook paints.
+const NOTEBOOK_SOURCE = `>>>markdown
+# A notebook
+
+>>>malloy
+import "storefront.malloy"
+
+>>>malloy
+run: order_items -> top_products
+
+>>>malloy
+run: order_items -> top_customers
+
+>>>malloy
+run: order_items -> category_performance
+`;
+
+async function reloadPackage(
+   baseURL: string,
+   pkg: string = PACKAGES.storefront,
+): Promise<void> {
+   const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${pkg}?reload=true`;
+   const res = await fetch(url);
+   if (!res.ok) throw new Error(`Package reload failed: ${res.status}`);
+}
+
 test.describe("package-notebooks", () => {
+   test.beforeAll(async ({ baseURL }) => {
+      await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
+      await fs.writeFile(
+         path.join(GOVERNED_DIR, GOVERNED_NOTEBOOK),
+         GOVERNED_SOURCE,
+      );
+      await reloadPackage(baseURL!);
+      await reloadPackage(baseURL!, PACKAGES.governed);
+   });
+
+   test.afterAll(async ({ baseURL }) => {
+      await fs
+         .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
+         .catch(() => undefined);
+      await fs
+         .unlink(path.join(GOVERNED_DIR, GOVERNED_NOTEBOOK))
+         .catch(() => undefined);
+      await reloadPackage(baseURL!).catch(() => undefined);
+      await reloadPackage(baseURL!, PACKAGES.governed).catch(() => undefined);
+   });
+
    test("Notebooks section lists .malloynb files", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
@@ -24,7 +99,7 @@ test.describe("package-notebooks", () => {
       ).toHaveCount(0);
 
       await expect(
-         page.getByText("storefront.malloynb", { exact: true }),
+         page.getByText(FIXTURE_NOTEBOOK, { exact: true }),
       ).toBeVisible();
    });
 
@@ -35,27 +110,24 @@ test.describe("package-notebooks", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
 
-      await page.getByText("storefront.malloynb", { exact: true }).click();
+      await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
 
       // The notebook opens on its own route; assert we navigated off the package route.
       await expect(page).not.toHaveURL(
          new RegExp(`/${DEFAULT_ENV}/${PACKAGES.storefront}/?$`),
       );
-      await expect(page).toHaveURL(/storefront\.malloynb/);
+      await expect(page).toHaveURL(/test_package_notebook\.malloynb/);
    });
 
    test("the notebook view renders authored content", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
-      await page.getByText("storefront.malloynb", { exact: true }).click();
-      // The storefront.malloynb renders an authored H1 ("Storefront — a guided
-      // tour"): presence confirms the Notebook mounted and executed the cells.
+      await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
+      // The fixture's own H1: its presence confirms the Notebook mounted and
+      // ran the cells.
       await expect(
-         page.getByRole("heading", {
-            name: "Storefront — a guided tour",
-            level: 1,
-         }),
+         page.getByRole("heading", { name: "A notebook", level: 1 }),
       ).toBeVisible();
    });
 
@@ -66,14 +138,15 @@ test.describe("package-notebooks", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.governed);
 
-      // orders.malloynb shares no name overlap with the governed-analytics
-      // package, so a dropped package segment lands on /examples/orders.malloynb
-      // and 404s. The storefront.malloynb case above cannot catch that (the
-      // URL still matches either way).
-      await page.getByText("orders.malloynb", { exact: true }).click();
+      // The fixture's name shares nothing with its package, so a dropped
+      // package segment lands on /examples/<file> and 404s. The storefront
+      // case above cannot catch that: its URL matches either way.
+      await page.getByText(GOVERNED_NOTEBOOK, { exact: true }).click();
 
       await expect(page).toHaveURL(
-         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.governed}/orders\\.malloynb$`),
+         new RegExp(
+            `/${DEFAULT_ENV}/${PACKAGES.governed}/${GOVERNED_NOTEBOOK}$`,
+         ),
       );
       await expect(page.getByText(/does not exist/i)).toHaveCount(0);
    });
@@ -82,7 +155,7 @@ test.describe("package-notebooks", () => {
       page,
    }) => {
       await page.goto(
-         `/${DEFAULT_ENV}/${PACKAGES.storefront}/storefront.malloynb`,
+         `/${DEFAULT_ENV}/${PACKAGES.storefront}/test_package_notebook.malloynb`,
       );
 
       // Every notebook table, measured against the box the cell gives it: a
@@ -96,7 +169,7 @@ test.describe("package-notebooks", () => {
       // see has dead space, so without this a run where only one table has
       // painted is a pass - and that is the run least likely to reproduce the
       // measurement race this test guards. Three is every untagged view in
-      // storefront.malloynb: top_products, top_customers, and the two-row
+      // test_package_notebook.malloynb: top_products, top_customers, and the two-row
       // top_products cell. Every other view carries a render tag, and the
       // dashboard's nested tables match neither .root nor the direct-child
       // step. Adding an untagged cell to that notebook means updating this.

@@ -85,7 +85,7 @@ test.describe("dashboard-create", () => {
          .getByRole("option", { name: "orders → by_brand", exact: true })
          .click();
       await dialog.getByLabel("Dashboard title").fill("Created here");
-      await dialog.getByRole("button", { name: "Create" }).click();
+      await dialog.getByRole("button", { name: "Create dashboard" }).click();
 
       // The builder opens on the file just written into the package.
       await expect(page).toHaveURL(

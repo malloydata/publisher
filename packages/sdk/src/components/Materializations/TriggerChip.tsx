@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Chip, Tooltip } from "@mui/material";
+import { Tooltip, Typography } from "@mui/material";
 import { MaterializationMetadata, triggerLabel } from "./utils";
 
 /**
@@ -28,16 +28,11 @@ export default function TriggerChip({
                : "Triggered manually"
          }
       >
-         <Chip
-            size="small"
-            variant="outlined"
-            label={triggerLabel(meta)}
-            // Quiet, whichever value it is. Colour in this table means STATUS —
-            // the chip beside it is green for done and red for failed — so a
-            // trigger painted blue for one value and near-black for the other
-            // read as two kinds of thing in a column that holds one.
-            sx={{ color: "text.secondary", borderColor: "divider" }}
-         />
+         {/* The word, like every other cell in the row. A bordered pill here
+             made a value look like something to click. */}
+         <Typography variant="body2" color="text.secondary">
+            {triggerLabel(meta)}
+         </Typography>
       </Tooltip>
    );
 }

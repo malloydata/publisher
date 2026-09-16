@@ -3,17 +3,7 @@
 
 import { MoreVert } from "@mui/icons-material";
 import StorageOutlinedIcon from "@mui/icons-material/StorageOutlined";
-import {
-   Box,
-   Dialog,
-   DialogContent,
-   DialogTitle,
-   IconButton,
-   Menu,
-   Snackbar,
-   Stack,
-   Typography,
-} from "@mui/material";
+import { IconButton, Menu, Snackbar, Stack, Typography } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Connection as ApiConnection } from "../../client/api";
@@ -23,6 +13,7 @@ import {
 } from "../../hooks/useQueryWithApiError";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { AppDialog } from "../AppDialog";
 import { ItemRow } from "../ItemRow";
 import { PackageSection } from "../PackageSection";
 import { SURFACE_TINT } from "../styles";
@@ -72,10 +63,6 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
       queryKey: ["connections", environmentName],
       queryFn: () => apiClients.connections.listConnections(environmentName),
    });
-
-   const handleCloseDialog = () => {
-      setSelectedConnection(null);
-   };
 
    const addConnection = useMutationWithApiError({
       mutationFn: (payload: ApiConnection) => {
@@ -217,44 +204,23 @@ export default function Connections({ resourceUri }: ConnectionsProps) {
             message={notificationMessage}
          />
 
-         <Dialog
+         <AppDialog
             open={selectedConnection !== null}
-            onClose={handleCloseDialog}
+            onClose={() => setSelectedConnection(null)}
             maxWidth="lg"
-            fullWidth
+            title={`Connection explorer: ${selectedConnection ?? ""}`}
+            showClose
          >
-            <DialogTitle>
-               Connection Explorer: {selectedConnection}
-               <IconButton
-                  aria-label="close"
-                  onClick={handleCloseDialog}
-                  sx={{ position: "absolute", right: 8, top: 8 }}
-               >
-                  <Box
-                     sx={{
-                        width: 24,
-                        height: 24,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                     }}
-                  >
-                     X
-                  </Box>
-               </IconButton>
-            </DialogTitle>
-            <DialogContent>
-               {selectedConnection && (
-                  <ConnectionExplorer
-                     resourceUri={selectedConnectionResourceUri}
-                     connectionName={selectedConnection}
-                     connection={data?.data?.find(
-                        (c) => c.name === selectedConnection,
-                     )}
-                  />
-               )}
-            </DialogContent>
-         </Dialog>
+            {selectedConnection && (
+               <ConnectionExplorer
+                  resourceUri={selectedConnectionResourceUri}
+                  connectionName={selectedConnection}
+                  connection={data?.data?.find(
+                     (c) => c.name === selectedConnection,
+                  )}
+               />
+            )}
+         </AppDialog>
       </PackageSection>
    );
 }

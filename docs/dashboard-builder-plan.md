@@ -92,7 +92,7 @@ givens textually under their `source:` line rather than trusting the tree.
 | Validation                 | A binding to a field the source does not have, or of a type the given cannot compare, is marked and blocks Apply when the catalog is known.                                                                                                                                                                                                  |
 | Viewer                     | A grouped value with no `# drill` opens the rows behind it (`drill:` through the tile's view); a drill behaves as the tag says; each tile has "Explore from here" into the model explorer.                                                                                                                                                   |
 | Telemetry                  | `onEvent` on the viewer, builder and editor: opened, saved, refused, rows shown, explored — each with outcome and duration. The Console logs them structured.                                                                                                                                                                                |
-| Notebooks                  | `.malloynb` is viewed read-only (`Notebook`) and stays that way. The authored notebook is a Malloyyo-style format that does not exist yet; see §7.                                                                                                                                                                                           |
+| Notebooks                  | `.malloynb` is deprecated: viewed read-only (`Notebook`), never written, and gone from the bundled examples. The authored notebook is a Malloyyo-style format that does not exist yet; see §7.                                                                                                                                               |
 | Where it lives             | The SDK's lazy `builder` entry; the Console's `dashboards/<slug>/edit` page and package page (Add dashboard, Drafts); the write path `PUT …/models/dashboards/<slug>.malloy`.                                                                                                                                                                |
 
 ## 3. Gaps against the state of the art
@@ -309,11 +309,18 @@ governed parameters. Publisher renders one today from `.malloynb`, the Malloy VS
 Code extension's format (`>>>markdown` / `>>>malloy` cells in plain text). The
 decision of 2026-09-13, reaffirmed 2026-09-15, is **not** to build on it:
 
-- **`.malloynb` is on ice.** It stays a read-only import for VS Code interop —
-  the `Notebook` viewer keeps working — and is never extended and never written
-  by a builder. Its authoring side upstream has had maintenance commits only
-  since April 2026, Malloyyo has no notebook format at all, and the Workbook
-  editor's private JSON was retired (PR #1146) rather than become a third one.
+- **`.malloynb` is deprecated (2026-09-15).** On ice since 2026-09-13, it is now
+  on the way out: the `Notebook` viewer keeps working for packages that have
+  one, nothing new is built on it, and no surface writes one. The first visible
+  step is that the bundled examples no longer ship a notebook — `storefront` and
+  `governed-analytics` each had one, and what they demonstrated (a narrative
+  over a model, controls from givens) a dashboard demonstrates in the format
+  that is not going away. The viewer leaves when the authored format below can
+  carry those readers, and not before; removing it earlier would strand every
+  package that has a `.malloynb` in it today. Its authoring side upstream has
+  had maintenance commits only since April 2026, Malloyyo has no notebook format
+  at all, and the Workbook editor's private JSON was retired (PR #1146) rather
+  than become a third one.
 - **The authored notebook is a Malloyyo-style format**: a Malloy file, in the
   family the dashboard already belongs to, whose cells are the file's own
   statements and annotations in order. It is git-native and agent-authorable,

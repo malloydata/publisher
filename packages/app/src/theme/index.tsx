@@ -214,7 +214,11 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                select: {
                   fontFamily: SANS_FONT_FAMILY,
                   fontSize: "0.875rem",
-                  color: textSecondary,
+                  // The VALUE, in the text colour a typed value gets. In
+                  // secondary grey — which is what this was — a filled select
+                  // read as a disabled one, and a form of them read as a form
+                  // nobody could fill in.
+                  color: textPrimary,
                },
             },
          },

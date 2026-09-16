@@ -3,17 +3,13 @@
 
 import {
    Button,
-   Dialog,
-   DialogActions,
-   DialogContent,
-   DialogContentText,
-   DialogTitle,
    FormControlLabel,
    FormGroup,
    Switch,
    Tooltip,
 } from "@mui/material";
 import { useState } from "react";
+import { AppDialog } from "../AppDialog";
 import { AddButton } from "../buttons";
 
 type CreateMaterializationDialogProps = {
@@ -62,47 +58,38 @@ export default function CreateMaterializationDialog({
             button
          )}
 
-         <Dialog
+         <AppDialog
             open={open}
             onClose={handleClose}
-            maxWidth="xs"
-            fullWidth
-            aria-labelledby="create-materialization-title"
+            title="New materialization"
+            description="Compile the package, build a table for every persist source, and load them so queries serve from the tables."
+            actions={
+               <>
+                  <Button onClick={handleClose}>Cancel</Button>
+                  <Button
+                     variant="contained"
+                     loading={isSubmitting}
+                     onClick={handleRun}
+                  >
+                     Materialize
+                  </Button>
+               </>
+            }
          >
-            <DialogTitle id="create-materialization-title">
-               New materialization
-            </DialogTitle>
-            <DialogContent>
-               <DialogContentText sx={{ mb: 2 }}>
-                  Materialize every persist source in this package: compile,
-                  build the tables, and load them so queries serve from the
-                  materialized tables.
-               </DialogContentText>
-               <FormGroup>
-                  <FormControlLabel
-                     control={
-                        <Switch
-                           checked={forceRefresh}
-                           onChange={(event) =>
-                              setForceRefresh(event.target.checked)
-                           }
-                        />
-                     }
-                     label="Force refresh (rebuild even if unchanged)"
-                  />
-               </FormGroup>
-            </DialogContent>
-            <DialogActions>
-               <Button onClick={handleClose}>Cancel</Button>
-               <Button
-                  variant="contained"
-                  loading={isSubmitting}
-                  onClick={handleRun}
-               >
-                  Materialize
-               </Button>
-            </DialogActions>
-         </Dialog>
+            <FormGroup>
+               <FormControlLabel
+                  control={
+                     <Switch
+                        checked={forceRefresh}
+                        onChange={(event) =>
+                           setForceRefresh(event.target.checked)
+                        }
+                     />
+                  }
+                  label="Force refresh (rebuild even if unchanged)"
+               />
+            </FormGroup>
+         </AppDialog>
       </>
    );
 }
