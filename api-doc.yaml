@@ -4233,6 +4233,13 @@ components:
             source is gated, not to recompute WHETHER a given caller passes.
             Reading it as a pure disjunction grants where Publisher denies.
 
+            Two whole-body sentinels are the exception to "non-empty means
+            restricted": `"false"` admits nobody, and `"true"` admits
+            everybody — the latter is how an author declares an extension of a
+            locked base deliberately open, since a source declaring no gate of
+            its own inherits its ancestor's. A consumer deciding what to
+            withhold should read `"true"` as ungated.
+
             Givens are caller-asserted, so this is a boundary only behind a
             trusted tier — see docs/authorize.md.
           items:
@@ -4250,9 +4257,9 @@ components:
             means nothing on this route gates the source, even if `authorize`
             is present.
 
-            Same flattening and AND-not-OR caveats as `authorize` apply: this
-            is not a predicate to re-evaluate, only a signal that the source
-            is gated. Givens are caller-asserted, so this is a boundary only
+            Same flattening, AND-not-OR and `"false"`/`"true"` sentinel
+            caveats as `authorize` apply: this is not a predicate to
+            re-evaluate, only a signal that the source is gated. Givens are caller-asserted, so this is a boundary only
             behind a trusted tier — see docs/authorize.md.
           items:
             type: string

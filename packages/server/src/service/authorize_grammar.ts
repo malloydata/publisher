@@ -18,23 +18,46 @@
  * `#(source-authorize)` is a second annotation route ({@link
  * SOURCE_AUTHORIZE_ROUTE}) declared on a `source:` line exactly like
  * `#(authorize)`, and parsed by this same grammar — but every term its body
- * declares must be SOURCE-LEVEL (the deny-all `false` sentinel below is the
- * one carve-out): it is a rule about the CALLER, not the row, and ANDs with
- * the row-level `#(authorize)` gate rather than replacing or bypassing it.
+ * declares must be SOURCE-LEVEL (the whole-body `false`/`true` sentinels
+ * below are the carve-outs): it is a rule about the CALLER, not the row, and
+ * ANDs with the row-level `#(authorize)` gate rather than replacing or
+ * bypassing it.
  * There is deliberately no spelling anywhere in this grammar for "admit and
  * skip the row filter". See `gate_classification.ts`'s `collectEntryPointGates`
  * for how the two routes' gates are collected (independently, so an own
  * declaration on one route never sheds the other's inherited gate) and
  * combined (AND, identically to two `#(authorize)` notes).
  *
- * One exception, deliberately narrow: a body that is EXACTLY (trimmed,
- * case-insensitive) `false` — never a term inside an `and` — parses as an
- * unconditional deny. Every other term references a caller-suppliable
- * given, so without this there is no gate a caller cannot eventually
- * satisfy, and the locked-base-plus-curated-extensions pattern this page's
- * own docs teach has no legal spelling. `true` is deliberately NOT given
- * the same treatment: an admit-everyone gate is not a gate at all — omit
- * the annotation instead.
+ * Two exceptions, deliberately narrow: a body that is EXACTLY (trimmed,
+ * case-insensitive) `false` or `true` — never a term inside an `and` —
+ * parses as an unconditional deny or an unconditional admit. Every other
+ * term references a caller-suppliable given, so without `false` there is no
+ * gate a caller cannot eventually satisfy.
+ *
+ * `true` is legal because of INHERITANCE, not because of how the annotation
+ * reads on its own. `gate_classification.ts`'s `collectEntryPointGates`
+ * short-circuits on a source's OWN notes, so a source declaring none
+ * inherits its ancestor's gate: over a `#(authorize) false` base, omitting
+ * the annotation inherits the lock rather than opening it. Every other legal
+ * body references a given, so `true` is the ONLY spelling for "this
+ * extension is deliberately open", and without it the
+ * locked-base-plus-curated-extensions pattern `docs/authorize.md` teaches can
+ * lock a base and narrow it but can never re-open any part of it. The
+ * argument that an admit-everyone gate is not access control and should just
+ * be omitted holds ONLY for a source with no ancestor gate, where the
+ * annotation is a harmless marker that the source is open by decision rather
+ * than by omission; do not let it take the capability away from the
+ * inherited case, which is the case this grammar was built for.
+ *
+ * `true` is also the only token in this grammar that turns a gate OFF, and
+ * own-wins-over-ancestor means one line on an extension opens a locked base,
+ * so it carries its own guards: it is refused alongside any sibling note
+ * ({@link AuthorizeGrammarRejectionCause}'s `admit_all_with_sibling`, on its
+ * own route), a
+ * caller-minted one is still a 400 on the caller-annotation guard
+ * (`assertNoCallerAuthorizeAnnotation`), and every own declaration of it is
+ * counted at load (`publisher_authorize_admit_all_total`) so "how many
+ * sources are gated open" is answerable without reading every model.
  *
  * This module answers "does this body fit the grammar", nothing more. It
  * does not resolve a field path against a struct (a fan-out join check needs
@@ -42,9 +65,10 @@
  * `assertNoFanoutFieldPath`) and it does not feed the graft path: the
  * `collectAuthorizeExprs` -> `gateFilterText` -> `liftGateCondition`
  * pipeline still hands the author's own text to the compiler unmodified —
- * Malloy already compiles a bare `false` as a boolean literal on its own,
- * which is what the retired string form relied on too, so accepting it
- * here needs no graft-side change.
+ * Malloy already compiles a bare `false` or `true` as a boolean literal on
+ * its own, which is what the retired string form relied on too, so accepting
+ * either here needs no graft-side change (`true` grafts as `where: (true)`,
+ * a live filter that keeps every row).
  * This module only decides whether that text is legal to hand over at all.
  */
 
@@ -74,6 +98,15 @@ export type AuthorizeGrammarRejectionCause =
    | "duplicate_field_path"
    | "mixed_scope_body"
    | "deny_all_with_sibling"
+   // The admit-all `true` sentinel alongside another note ON THE SAME ROUTE.
+   // A route's notes AND into one body, so `true and x` reduces to `x` and
+   // the sentinel is dead text there. Route-scoped, unlike
+   // `deny_all_with_sibling`: `true` sheds only its own route's inherited
+   // gate, so it is live beside a note on the OTHER route. Raised by
+   // {@link assertAuthorizeGrammarTermsCoherent}, after
+   // `deny_all_with_sibling`, which is the fail-closed reading when one
+   // route carries both sentinels.
+   | "admit_all_with_sibling"
    | "operator_arity_mismatch"
    | "fanout_path"
    // A row-level term (field on the left) inside a `#(source-authorize)`
@@ -120,8 +153,8 @@ const NEGATED_OPERATOR_RE = /!=/gu;
 const COMPARISON_OPERATOR_RE = /(?:>=|<=|>|<)/gu;
 
 /** One parsed TERM of an `#(authorize)` body — never the whole-body
- *  `deny_all` exception, which is not a term and cannot appear alongside
- *  one; see {@link AuthorizeGrammarTerm}. */
+ *  `deny_all`/`admit_all` exceptions, which are not terms and cannot appear
+ *  alongside one; see {@link AuthorizeGrammarTerm}. */
 export type AuthorizeGrammarParsedTerm =
    | {
         scope: "row_level";
@@ -141,12 +174,14 @@ export type AuthorizeGrammarParsedTerm =
    | { scope: "source_level"; literal: string; given: string };
 
 /** What {@link parseAuthorizeGrammarBody} returns: either the parsed terms
- *  of an ordinary `and`-joined body, or the single `deny_all` sentinel for
- *  the one whole-body exception (a bare `false`) — never a mix, since
- *  `deny_all` can only ever be the sole element of the returned array. */
+ *  of an ordinary `and`-joined body, or a single whole-body sentinel —
+ *  `deny_all` for a bare `false`, `admit_all` for a bare `true` — never a
+ *  mix, since either sentinel can only ever be the sole element of the
+ *  returned array. */
 export type AuthorizeGrammarTerm =
    | AuthorizeGrammarParsedTerm
-   | { scope: "deny_all" };
+   | { scope: "deny_all" }
+   | { scope: "admit_all" };
 
 /**
  * Split an already-`FIELD_PATH_RE`-validated field path on its top-level
@@ -478,11 +513,14 @@ export const AUTHORIZE_ROUTE = "authorize";
 /**
  * The `#(source-authorize)` route — a rule about the CALLER (a `'literal'
  * in/= $GIVEN` term) rather than the row. Every term in a body parsed under
- * this route must be `scope: "source_level"`, with the whole-body `deny_all`
- * sentinel (a bare `false`) carved out — see {@link parseAuthorizeGrammarBody}'s
+ * this route must be `scope: "source_level"`, with the whole-body sentinels
+ * (a bare `false` or `true`) carved out — see {@link parseAuthorizeGrammarBody}'s
  * `row_level_term_in_source_authorize` check. It ANDs with the row-level
  * `#(authorize)` gate rather than bypassing it: there is deliberately no
- * spelling anywhere in this grammar for "admit and skip the row filter".
+ * spelling anywhere in this grammar for "admit and skip the row filter", and
+ * `#(source-authorize) true` is no exception — it sheds an inherited
+ * `#(source-authorize)`, never the row-level gate, which is collected
+ * independently on its own route.
  */
 export const SOURCE_AUTHORIZE_ROUTE = "source-authorize";
 
@@ -527,10 +565,22 @@ export type AuthorizeGrammarRoutedTerm = {
  * change.
  *
  * `deny_all_with_sibling` is the one check that is NOT route-scoped: an
- * unconditional `#(authorize) false` alongside ANY sibling note — same
- * route or not — is the same authoring mistake regardless of which route
- * the companion used, so it is checked over every entry passed in, before
- * the per-route split below.
+ * unconditional `#(authorize) false` alongside ANY sibling note — same route
+ * or not — is the same authoring mistake regardless of which route the
+ * companion used, because a deny-all admits nothing and no sibling on any
+ * route can change what is served. It is checked over every entry passed in,
+ * before the per-route split below.
+ *
+ * `admit_all_with_sibling` is route-scoped, and the asymmetry is the point.
+ * `true` sheds only its OWN route's inherited gate, so `#(authorize) true`
+ * beside `#(source-authorize) 'finance' in $GROUPS` is a live combination —
+ * open every row of a base that locked them, still gate the caller — not
+ * dead text. WITHIN one route the notes AND into a single body, where `true
+ * and x` really does reduce to `x` and the sentinel is dead, which is what
+ * that cause names.
+ *
+ * Deny is checked first, so a source carrying both sentinels on one route is
+ * reported as `deny_all_with_sibling` — the fail-closed reading.
  *
  * CRITICAL: never call this over a flattened list spanning more than one
  * DECLARING SOURCE (`AuthorizeMap`'s `groups.flat()`) — a query-source
@@ -556,7 +606,7 @@ export function assertAuthorizeGrammarTermsCoherent(
       );
    }
 
-   const byRoute = new Map<string, AuthorizeGrammarParsedTerm[]>();
+   const byRoute = new Map<string, AuthorizeGrammarTerm[]>();
    for (const { term, route } of terms) {
       if (term.scope === "deny_all") continue;
       const list = byRoute.get(route);
@@ -564,7 +614,26 @@ export function assertAuthorizeGrammarTermsCoherent(
       else byRoute.set(route, [term]);
    }
 
-   for (const routeTerms of byRoute.values()) {
+   for (const allRouteTerms of byRoute.values()) {
+      // Route-scoped, unlike the deny-all above — see this function's doc.
+      // Checked after it, so both sentinels on one route report the deny.
+      if (
+         allRouteTerms.length > 1 &&
+         allRouteTerms.some((t) => t.scope === "admit_all")
+      ) {
+         rejectCoherence(
+            sourceName,
+            "admit_all_with_sibling",
+            "an unconditional `true` admit-all cannot be combined with " +
+               "another note on the same route — that route's notes AND " +
+               "together, so `true and x` reduces to `x` and the admit-all " +
+               "is dead text. To open one route while another still gates, " +
+               "declare the `true` on its own route only.",
+         );
+      }
+      const routeTerms = allRouteTerms.filter(
+         (t): t is AuthorizeGrammarParsedTerm => t.scope !== "admit_all",
+      );
       const rowLevel = routeTerms.filter((t) => t.scope === "row_level");
       const sourceLevel = routeTerms.filter((t) => t.scope === "source_level");
       if (rowLevel.length > 0 && sourceLevel.length > 0) {
@@ -623,16 +692,17 @@ export function assertAuthorizeGrammarTermsCoherent(
  * surface handy would otherwise be forced to guess.
  *
  * Handles SYNTAX only — term splitting, `parseTerm`, `compound_boolean`, the
- * whole-body `deny_all` exception. The four checks that need to see more
+ * whole-body `deny_all`/`admit_all` exceptions. The four checks that need to see more
  * than this one body's own terms live in
  * {@link assertAuthorizeGrammarTermsCoherent}, called here on this body's
  * own terms so a single-note source is refused exactly as before.
  *
  * `route` defaults to {@link AUTHORIZE_ROUTE} so every existing caller keeps
  * its exact prior behavior. Passed {@link SOURCE_AUTHORIZE_ROUTE}, every
- * parsed term must be `scope: "source_level"` — the `deny_all` sentinel is
- * the one carve-out, since `false` names no row at all and is accepted
- * identically on both routes (see this module's doc). A `row_level` term
+ * parsed term must be `scope: "source_level"` — the two whole-body
+ * sentinels are the carve-outs, since neither `false` nor `true` names a row
+ * at all and both are accepted identically on both routes (each returns
+ * before the route check below; see this module's doc). A `row_level` term
  * reaching here under that route is refused as
  * `row_level_term_in_source_authorize`, the mirror of `mixed_scope_body`.
  */
@@ -652,13 +722,17 @@ export function parseAuthorizeGrammarBody(
       );
    }
 
-   // The one exception to "every term references a given" — see this
+   // The two exceptions to "every term references a given" — see this
    // module's doc. Checked against the WHOLE body, before splitting on
    // `and`, so `false and org_id in $GROUPS` does NOT take this path: it is
    // not a deny-all, it is a two-term body whose first term is malformed,
-   // and falls through to the ordinary per-term errors below.
+   // and falls through to the ordinary per-term errors below. `true and
+   // org_id = $A` is read the same way.
    if (trimmedBody.toLowerCase() === "false") {
       return [{ scope: "deny_all" }];
+   }
+   if (trimmedBody.toLowerCase() === "true") {
+      return [{ scope: "admit_all" }];
    }
 
    const { terms: rawTerms, compoundTokens } = splitTerms(trimmedBody);

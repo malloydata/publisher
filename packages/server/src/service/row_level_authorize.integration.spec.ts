@@ -4163,3 +4163,196 @@ source: Gated is duckdb.table('parent') extend {
       }
    });
 });
+
+// ---------------------------------------------------------------------------
+// The `true` admit-all sentinel — the motivating capability behind the
+// `false`/`true` symmetry: a `#(authorize) false` base, plus a curated
+// `#(authorize) true` extension that deliberately re-opens it. Every test
+// here runs a REAL query and asserts rows, never stops at "it loaded".
+// ---------------------------------------------------------------------------
+
+describe("row-level authorize — the `true` admit-all sentinel", () => {
+   async function createModel(
+      text: string,
+   ): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+      const duckdb = await newDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-admit-all-"));
+      fs.writeFileSync(
+         path.join(dir, "m.malloy"),
+         text.includes("experimental.givens")
+            ? text
+            : `##! experimental.givens\n\n${text}`,
+      );
+      const model = await Model.create(
+         "test-pkg",
+         dir,
+         "m.malloy",
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, duckdb, dir };
+   }
+
+   function compilationErrorOf(model: Model): Error | undefined {
+      return (model as unknown as { compilationError?: Error })
+         .compilationError;
+   }
+
+   async function ids(
+      model: Model,
+      sourceName: string,
+      givens: Record<string, unknown>,
+   ): Promise<number[]> {
+      const result = await model.getQueryResults(
+         undefined,
+         undefined,
+         `run: ${sourceName} -> { select: id; order_by: id }`,
+         {},
+         true,
+         givens as never,
+      );
+      return (result.compactResult as unknown as { id: number }[])
+         .map((r) => r.id)
+         .sort((a, b) => a - b);
+   }
+
+   it("a `#(authorize) false` base plus a `#(authorize) true` extension — the base still denies every caller, the extension admits all", async () => {
+      const { model, duckdb, dir } = await createModel(`
+#(authorize) false
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) true
+source: reopened is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "base", {})).toEqual([]);
+         expect(await ids(model, "reopened", {})).toEqual([1, 2, 3, 4]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("an extension's own `#(authorize) true` sheds only the ROW-LEVEL inherited gate — an inherited `#(source-authorize)` still ANDs in", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  ROLE :: string[]
+
+#(source-authorize) 'finance' in $ROLE
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) true
+source: reopened is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // The row-level gate is shed (own `true`), but the INHERITED
+         // source-authorize gate still denies a caller it excludes.
+         expect(await ids(model, "reopened", { ROLE: ["sales"] })).toEqual([]);
+         expect(await ids(model, "reopened", { ROLE: ["finance"] })).toEqual([
+            1, 2, 3, 4,
+         ]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("an extension's own `#(source-authorize) true` sheds only the CALLER-CHECK inherited gate — an inherited row-level `#(authorize)` still filters rows", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) org_id in $GROUPS
+source: base is duckdb.table('parent') extend {}
+
+#(source-authorize) true
+source: reopened is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // The caller check is shed (own `true`), but the INHERITED row-level
+         // gate still filters — a GROUPS value matching no row admits zero.
+         expect(await ids(model, "reopened", { GROUPS: [999] })).toEqual([]);
+         expect(await ids(model, "reopened", { GROUPS: [1] })).toEqual([1, 2]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("an inherited `#(source-authorize) true` alongside the SAME source's own row-level `#(authorize)` — rows are still filtered", async () => {
+      // `#(source-authorize) true` here is inherited from `base`, not owned
+      // by `X`, while `X` owns its row-level `#(authorize)`. Own-wins-over-
+      // ancestor is decided PER ROUTE, so the two coexist.
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: number[]
+
+#(source-authorize) true
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) org_id in $GROUPS
+source: X is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         expect(await ids(model, "X", { GROUPS: [1] })).toEqual([1, 2]);
+         expect(await ids(model, "X", { GROUPS: [999] })).toEqual([]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("a source's OWN `#(authorize) true` alongside its OWN `#(source-authorize)` term — the row lock is lifted, the caller check still decides", async () => {
+      // The admit-all guard is ROUTE-scoped: `true` sheds only the
+      // `authorize` route's inherited gate, so the caller rule on the other
+      // route is live and both notes are legal on one source.
+      const { model, duckdb, dir } = await createModel(`
+given:
+  ROLE :: string[]
+
+#(authorize) false
+source: base is duckdb.table('parent') extend {}
+
+#(authorize) true
+#(source-authorize) 'finance' in $ROLE
+source: reopened is base extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         // The base still denies everyone; the extension's own `true`
+         // replaced that lock, and only the caller check remains.
+         expect(await ids(model, "base", { ROLE: ["finance"] })).toEqual([]);
+         expect(await ids(model, "reopened", { ROLE: ["finance"] })).toEqual([
+            1, 2, 3, 4,
+         ]);
+         expect(await ids(model, "reopened", { ROLE: ["sales"] })).toEqual([]);
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("a source's OWN `#(authorize) true` alongside another note ON THE SAME ROUTE is refused (admit_all_with_sibling)", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: number[]
+
+#(authorize) true
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('parent') extend {}
+`);
+      try {
+         const err = compilationErrorOf(model);
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "admit_all_with_sibling",
+         );
+      } finally {
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});

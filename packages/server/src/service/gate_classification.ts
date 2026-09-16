@@ -1109,6 +1109,15 @@ export type RowLevelGraftEntry = {
  * notes lets an inheriting entry point skip this check entirely while
  * `ancestorGateExprs` still grafts the inherited text unvalidated — a
  * grammar-banned gate then loads and enforces fail-open at that entry point.
+ *
+ * `onAdmitAllGate` reports each OWN unconditional `true` this walk parses —
+ * the one body in the grammar that turns a gate off. Reported, never
+ * refused, and only for an OWN declaration: an entry point that merely
+ * INHERITS a `true` would otherwise make the count a function of model shape
+ * rather than of authoring decisions. Optional, and passed as a callback for
+ * the same reason as `validateAuthorizeProbes`'s `onRowLevelGateRejected` —
+ * this module stays out of the telemetry layer.
+ *
  * `authorizeOwnNotes` still decides, per source, whether `authorizeMap`'s
  * group is the source's OWN declaration (validate every expr, `"false"`
  * included) or a purely inherited one (skip the literal sentinel `"false"`
@@ -1142,6 +1151,7 @@ export function assertAuthorizeGrammarValid(
    authorizeMap: AuthorizeMap,
    authorizeOwnNotes: AuthorizeOwnNotesMap,
    givenDeclaredTypes: ReadonlyMap<string, string>,
+   onAdmitAllGate?: (sourceName: string, route: string) => void,
 ): void {
    if (!modelDef) return;
    for (const [sourceName, groups] of authorizeMap) {
@@ -1164,6 +1174,9 @@ export function assertAuthorizeGrammarValid(
             );
             for (const term of terms) {
                groupTerms.push({ term, route });
+               if (term.scope === "admit_all" && isOwn) {
+                  onAdmitAllGate?.(sourceName, route);
+               }
                if (term.scope === "row_level" && isSourceDef(struct)) {
                   assertNoFanoutFieldPath(
                      sourceName,

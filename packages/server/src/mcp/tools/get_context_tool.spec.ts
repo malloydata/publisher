@@ -2890,6 +2890,21 @@ describe("get_context authorize deny-all drop", () => {
       expect("authorize" in sources[0].source_info).toBe(false);
    });
 
+   // `isUnconditionalDenyAuthorize` compares against `"false"` only — `true`
+   // is a real (if unconditional) gate, not a deny, so it is reported like
+   // any other rule rather than dropped.
+   it("does NOT drop a source gated by `#(authorize) true` — reports it like an ordinary gate", async () => {
+      const sources = await sourcesFor({
+         name: "reopened",
+         authorize: ["true"],
+      });
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("reopened");
+      expect(sources[0].source_info.authorize).toEqual([
+         { expression: "true", given_names: [] },
+      ]);
+   });
+
    // Two models can expose a same-named source with different gates —
    // `droppedSources` must be keyed by (modelPath, sourceName), not the bare
    // name, or a deny-all in one model blacks out the open model's card too

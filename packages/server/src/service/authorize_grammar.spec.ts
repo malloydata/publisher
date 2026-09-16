@@ -353,6 +353,168 @@ describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
    });
 });
 
+describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
+   it("`true`, `TRUE`, and a padded ` true ` all parse to the admit_all sentinel, on both routes", () => {
+      for (const spelling of ["true", "TRUE", "  true  "]) {
+         for (const route of [AUTHORIZE_ROUTE, SOURCE_AUTHORIZE_ROUTE]) {
+            expect(
+               parseAuthorizeGrammarBody("X", spelling, new Map(), route),
+            ).toEqual([{ scope: "admit_all" }]);
+         }
+      }
+   });
+
+   it("`true and org_id = $A` is NOT the sentinel — it falls through to the ordinary per-term errors", () => {
+      // The whole-body check runs BEFORE `splitTerms`, so only an EXACT
+      // (trimmed) `true` takes the sentinel path — this is a two-term body
+      // whose first term (`true`, no `=`/`in`) is malformed, not an admit-all
+      // plus a dead conjunct.
+      try {
+         parseAuthorizeGrammarBody(
+            "X",
+            "true and org_id = $A",
+            new Map([["A", "string"]]),
+         );
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "malformed_body",
+         );
+      }
+   });
+
+   it("admit_all plus a sibling term — same route — is refused as admit_all_with_sibling", () => {
+      const [admitAll] = parseAuthorizeGrammarBody("X", "true", new Map());
+      const [sibling] = parseAuthorizeGrammarBody(
+         "X",
+         "region = $REGION",
+         SCALAR_GIVENS,
+      );
+      try {
+         assertAuthorizeGrammarTermsCoherent("X", [
+            { term: admitAll, route: AUTHORIZE_ROUTE },
+            { term: sibling, route: AUTHORIZE_ROUTE },
+         ]);
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect(err).toBeInstanceOf(AuthorizeGrammarError);
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "admit_all_with_sibling",
+         );
+      }
+   });
+
+   it("an own `#(source-authorize) true` plus a term on that same route is refused as admit_all_with_sibling", () => {
+      const [admitAll] = parseAuthorizeGrammarBody(
+         "X",
+         "true",
+         new Map(),
+         SOURCE_AUTHORIZE_ROUTE,
+      );
+      const [sibling] = parseAuthorizeGrammarBody(
+         "X",
+         "'finance' in $G",
+         LIST_GIVENS,
+         SOURCE_AUTHORIZE_ROUTE,
+      );
+      try {
+         assertAuthorizeGrammarTermsCoherent("X", [
+            { term: admitAll, route: SOURCE_AUTHORIZE_ROUTE },
+            { term: sibling, route: SOURCE_AUTHORIZE_ROUTE },
+         ]);
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "admit_all_with_sibling",
+         );
+      }
+   });
+
+   it("admit_all beside a term on the OTHER route is legal — `true` sheds only its own route's inherited gate, so the sibling is live rather than dead text", () => {
+      const [admitAll] = parseAuthorizeGrammarBody(
+         "X",
+         "true",
+         new Map(),
+         AUTHORIZE_ROUTE,
+      );
+      const [callerTerm] = parseAuthorizeGrammarBody(
+         "X",
+         "'finance' in $G",
+         LIST_GIVENS,
+         SOURCE_AUTHORIZE_ROUTE,
+      );
+      expect(() =>
+         assertAuthorizeGrammarTermsCoherent("X", [
+            { term: admitAll, route: AUTHORIZE_ROUTE },
+            { term: callerTerm, route: SOURCE_AUTHORIZE_ROUTE },
+         ]),
+      ).not.toThrow();
+
+      // The mirror: an own `#(source-authorize) true` beside an own row-level
+      // `#(authorize)` opens the caller route while the row filter still runs.
+      const [rowTerm] = parseAuthorizeGrammarBody(
+         "X",
+         "region = $REGION",
+         SCALAR_GIVENS,
+      );
+      const [callerAdmitAll] = parseAuthorizeGrammarBody(
+         "X",
+         "true",
+         new Map(),
+         SOURCE_AUTHORIZE_ROUTE,
+      );
+      expect(() =>
+         assertAuthorizeGrammarTermsCoherent("X", [
+            { term: rowTerm, route: AUTHORIZE_ROUTE },
+            { term: callerAdmitAll, route: SOURCE_AUTHORIZE_ROUTE },
+         ]),
+      ).not.toThrow();
+   });
+
+   it("THE ORDER PIN — admit_all and deny_all on ONE route resolve to deny_all_with_sibling, the deliberate fail-closed reading of the contradiction", () => {
+      const [admitAll] = parseAuthorizeGrammarBody("X", "true", new Map());
+      const [denyAll] = parseAuthorizeGrammarBody("X", "false", new Map());
+      try {
+         assertAuthorizeGrammarTermsCoherent("X", [
+            { term: admitAll, route: AUTHORIZE_ROUTE },
+            { term: denyAll, route: AUTHORIZE_ROUTE },
+         ]);
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "deny_all_with_sibling",
+         );
+      }
+   });
+
+   it("a deny_all on the OTHER route still beats an admit_all — the deny check is the one that is not route-scoped", () => {
+      const [admitAll] = parseAuthorizeGrammarBody(
+         "X",
+         "true",
+         new Map(),
+         AUTHORIZE_ROUTE,
+      );
+      const [denyAll] = parseAuthorizeGrammarBody(
+         "X",
+         "false",
+         new Map(),
+         SOURCE_AUTHORIZE_ROUTE,
+      );
+      try {
+         assertAuthorizeGrammarTermsCoherent("X", [
+            { term: admitAll, route: AUTHORIZE_ROUTE },
+            { term: denyAll, route: SOURCE_AUTHORIZE_ROUTE },
+         ]);
+         throw new Error("expected a throw");
+      } catch (err) {
+         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
+            "deny_all_with_sibling",
+         );
+      }
+   });
+});
+
 describe("parseAuthorizeGrammarBody — accepted shapes", () => {
    it("`and` inside a string literal is not a compound boolean", () => {
       const terms = parseAuthorizeGrammarBody(

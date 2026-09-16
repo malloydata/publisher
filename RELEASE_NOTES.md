@@ -44,12 +44,19 @@ literal on the right of a row-level term, a scalar/array mismatch — is refused
 cause instead of surfacing as a request-time surprise or a load warning. See
 [docs/authorize.md](docs/authorize.md) for the full grammar and every refusal.
 
-This closes real gaps, and keeps one idiom deliberately narrow rather than dropping it: **`#(authorize)
-false` still parses, as an unconditional deny — the locked-base-plus-curated-extensions pattern
-still has a legal spelling.** Every ORDINARY term must reference a given, so `#(authorize) true` and
-`#(authorize) 1 = 1` are refused (an admit-everyone gate is not access control at all, and stays
-refused on purpose), and combine what used to be one `or`-joined gate into two extension sources,
-each with its own conjunctive gate — see [docs/authorize.md § OR semantics](docs/authorize.md#or-semantics).
+This closes real gaps while keeping the locked-base-plus-curated-extensions pattern spellable at
+full strength: **`#(authorize) false` parses as an unconditional deny, and `#(authorize) true` as an
+unconditional admit.** Both are whole-body sentinels on either route, never a term inside an `and`,
+`false` may not share a source with another note at all (`deny_all_with_sibling`); `true` may not share
+its own route with one (`admit_all_with_sibling`), but is live beside a note on the other route, since
+it sheds only its own route's inherited gate. One route carrying both sentinels reports the deny, which
+is the fail-closed reading. `true` is what an
+extension of a locked base needs in order to be open — a source declaring no gate of its own inherits
+its ancestor's, so omitting the annotation over a `false` base inherits the lock. Every own
+declaration of it is counted at load on `publisher_authorize_admit_all_total`. Every ORDINARY term
+must still reference a given, so `#(authorize) 1 = 1` is refused; and combine what used to be one
+`or`-joined gate into two extension sources, each with its own conjunctive gate — see
+[docs/authorize.md § OR semantics](docs/authorize.md#or-semantics).
 
 **A source may now declare more than one `#(authorize)` note, and repeats AND together instead of
 failing the load.** `assertAtMostOneAuthorizeGate` refused a second note outright in every released

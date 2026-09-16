@@ -179,6 +179,7 @@ import {
    extractSourcesFromModelDef,
 } from "./source_extraction";
 import {
+   recordAuthorizeAdmitAllGate,
    recordAuthorizeBypass,
    recordAuthorizeGuardRejection,
    recordRowLevelGateDecision,
@@ -2958,6 +2959,7 @@ export class Model {
                sourceResult.authorizeMap,
                sourceResult.authorizeOwnNotes,
                computeGivenDeclaredTypes(givens),
+               (_sourceName, route) => recordAuthorizeAdmitAllGate(route),
             );
             // Translation-time validation of #(authorize) annotations (shared
             // with the package-load worker so both compile paths validate

@@ -286,6 +286,23 @@ source: Y is X extend {}
       }
    });
 
+   it("`#(authorize) true` loads with no compilation error and serves every row to a caller supplying nothing", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  UNUSED :: string
+
+#(authorize) true
+source: X is duckdb.table('accounts') extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const rows = await rowsFor(model, "X", {});
+         expect(ids(rows)).toEqual([1, 2, 3, 4, 5, 6]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
    it("empty array given — fail-closed, zero rows", async () => {
       const { model, duckdb, dir } = await createModel(`
 given:
@@ -472,13 +489,13 @@ source: X is duckdb.table('accounts') extend {}
       );
    });
 
-   it("bare boolean literals `true`/`false` no longer parse (no operator, no given)", async () => {
+   it("`true and org_id in $GROUPS` — `true` only sheds the sentinel form; alongside an `and`, it is an ordinary malformed first term", async () => {
       await expectRejectionCause(
          `
 given:
-  UNUSED :: string
+  GROUPS :: string[]
 
-#(authorize) true
+#(authorize) true and org_id in $GROUPS
 source: X is duckdb.table('accounts') extend {}
 `,
          "malformed_body",
@@ -809,6 +826,76 @@ source: X is duckdb.table('accounts') extend {}
       }
    });
 
+   it("`#(source-authorize) true` loads and admits every caller", async () => {
+      const { model, duckdb, dir } = await createModel(`
+#(source-authorize) true
+source: X is duckdb.table('accounts') extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const rows = await rowsFor(model, "X", {});
+         expect(ids(rows)).toEqual([1, 2, 3, 4, 5, 6]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("`#(authorize) true` alongside a sibling note ON THE SAME ROUTE is refused (admit_all_with_sibling)", async () => {
+      await expectRejectionCause(
+         `
+given:
+  GROUPS :: string[]
+
+#(authorize) true
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('accounts') extend {}
+`,
+         "admit_all_with_sibling",
+      );
+   });
+
+   it("`#(authorize) true` alongside a `#(source-authorize)` term is LEGAL and both apply — the admit-all guard is route-scoped", async () => {
+      // `true` sheds only the `authorize` route's inherited gate, so the
+      // caller rule on the other route is live, not dead text.
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: string[]
+
+#(authorize) true
+#(source-authorize) 'finance' in $GROUPS
+source: X is duckdb.table('accounts') extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const admitted = await rowsFor(model, "X", { GROUPS: ["finance"] });
+         const refused = await rowsFor(model, "X", { GROUPS: ["sales"] });
+         expect(ids(admitted)).toEqual([1, 2, 3, 4, 5, 6]);
+         expect(ids(refused)).toEqual([]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("`#(source-authorize) true` alongside a row-level `#(authorize)` is LEGAL and the row filter still runs", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: string[]
+
+#(source-authorize) true
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('accounts') extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         const org1 = await rowsFor(model, "X", { GROUPS: ["org1"] });
+         const org2 = await rowsFor(model, "X", { GROUPS: ["org2"] });
+         expect(ids(org1)).toEqual([1, 2, 3]);
+         expect(ids(org2)).toEqual([4, 5, 6]);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
    it("`#(source-authorize) false` alongside `#(authorize) org_id in $GROUPS` is refused (deny_all_with_sibling)", async () => {
       await expectRejectionCause(
          `
@@ -908,6 +995,31 @@ source: X is duckdb.table('accounts') extend {}
                undefined,
                undefined,
                `#(source-authorize) 'x' in $GROUPS\nrun: X -> { select: id }`,
+               {},
+               true,
+               { GROUPS: ["org1"] } as never,
+            ),
+         ).rejects.toThrow(/not permitted in caller-submitted/);
+      } finally {
+         await cleanup(duckdb, dir);
+      }
+   });
+
+   it("a caller-submitted `#(source-authorize) true` is rejected too — the highest-value forgery in the system, since `true` is the one spelling that turns a gate OFF", async () => {
+      const { model, duckdb, dir } = await createModel(`
+given:
+  GROUPS :: string[]
+
+#(authorize) org_id in $GROUPS
+source: X is duckdb.table('accounts') extend {}
+`);
+      try {
+         expect(compilationErrorOf(model)).toBeUndefined();
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               `#(source-authorize) true\nrun: X -> { select: id }`,
                {},
                true,
                { GROUPS: ["org1"] } as never,

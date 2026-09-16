@@ -30,7 +30,9 @@ A gate is an `#(authorize)` annotation on its own line directly above a `source:
 
 `<op>` is fixed by the given's own declared arity: `in` for a list-typed given, `=` for a scalar one. Nothing else parses — no `or`, no `not`, no `!=`/`<`/`>`/`<=`/`>=`, no function calls, no literal on the right of a row-level term, no given compared to another given. See [Row-level gates](#row-level-gates) for the full grammar and every named refusal.
 
-**One deliberate exception: a body that is exactly `false`.** Every ordinary term above references a caller-suppliable given, so without an exception there would be no way to lock a source outright — `#(authorize) false` is still legal, parses as an unconditional deny, and is the recommended way to write a locked base (see [Recommended pattern](#recommended-pattern-locked-base-and-curated-extensions) below). `true` is **not** given the same treatment and stays refused: an admit-everyone gate is not access control at all — omit the annotation instead.
+**Two deliberate exceptions: a body that is exactly `false`, and one that is exactly `true`.** Every ordinary term above references a caller-suppliable given, so without them there would be no way to lock a source outright, nor to re-open one. `#(authorize) false` parses as an unconditional deny and is the recommended way to write a locked base; `#(authorize) true` parses as an unconditional admit, and is the only way to write an extension of a locked base that is deliberately open — a source declaring no gate of its own **inherits** its ancestor's, so omitting the annotation over a `false` base inherits the lock rather than lifting it. Both are legal on either route. A `false` may not share a source with another note at all (`deny_all_with_sibling`); a `true` may not share its OWN route with one (`admit_all_with_sibling`), but is perfectly live beside a note on the other route — `#(authorize) true` with `#(source-authorize) 'finance' in $GROUPS` opens every row of a locked base while still gating who reaches it. See [Recommended pattern](#recommended-pattern-locked-base-and-curated-extensions) below for both in one model.
+
+`true` is the one body in the grammar that turns a gate off, so treat it as a declaration rather than a shrug: on a source with no ancestor gate it changes nothing and reads as "open by decision, not by omission", but on an extension it re-opens whatever the base locked. Publisher counts every one at package load (`publisher_authorize_admit_all_total`) so a deployment can answer "which sources are gated open" without reading every model.
 
 ```malloy
 ##! experimental.givens
@@ -143,10 +145,24 @@ source: e is duckdb.table('orders.parquet') extend {
 #(authorize) org_id in $GROUPS
 source: f is duckdb.table('orders.parquet') extend {}
 
-// Admit nobody. Legal on either route, and the only body naming no given.
+// Admit nobody. Legal on either route.
 #(authorize) false
 source: g is duckdb.table('orders.parquet') extend {}
+
+// Admit everybody, explicitly. The only way to re-open an extension of a
+// locked base, since a source declaring no gate inherits the base's.
+#(authorize) true
+source: h is g extend {}
+
+// Both sentinels read the same on the caller route.
+#(source-authorize) false
+source: i is duckdb.table('orders.parquet') extend {}
+
+#(source-authorize) true
+source: j is i extend {}
 ```
+
+`false` and `true` are the only bodies naming no given, and the only ones that are not terms — neither may appear inside an `and`, so `true and org_id in $GROUPS` is read as an ordinary two-term body whose first term is malformed, not as an admit-all.
 
 is legal; none of the following are:
 
@@ -158,7 +174,7 @@ is legal; none of the following are:
 | `org_id > $MIN` | `comparison_operator` | no ordering comparisons |
 | `$ROLE = 'analyst'` | `left_not_field_path` | the given must be on the right; a source-level term's left side must be a quoted literal |
 | `region = 'us-west'` | `missing_given_reference` | every term must reference exactly one given |
-| `authorized` (a bare field reference) | `malformed_body` | no function calls, no bare booleans, only the two term shapes above |
+| `authorized` (a bare field reference) | `malformed_body` | no function calls, no bare booleans other than the whole-body `false`/`true` sentinels, only the two term shapes above |
 | `region = $REGION and org_id = $REGION` | `duplicate_given` | one given per term |
 | `region = $A and region = $B` | `duplicate_field_path` | one field path per term |
 | `'x' = $ROLE and org_id in $GROUPS` | `mixed_scope_body` | a body is either all row-level or all source-level terms, never mixed |
@@ -167,6 +183,7 @@ is legal; none of the following are:
 | `kids.name in $GROUPS` where `kids` is a `join_many`/`join_cross` | `fanout_path` | a row-level term cannot read through a fan-out join — see [Row-level gates](#row-level-gates) |
 | `org_id in $GROUPS` inside `#(source-authorize)` | `row_level_term_in_source_authorize` | a `#(source-authorize)` body is caller-only; move the term to `#(authorize)` — see [The `#(source-authorize)` route](#the-source-authorize-route) |
 | `#(authorize) false` alongside any other `#(authorize)`/`#(source-authorize)` note on the same source | `deny_all_with_sibling` | a deny-all admits nobody, so a sibling note can never change what is served; delete whichever is wrong |
+| `#(authorize) true` alongside another note **on the same route** | `admit_all_with_sibling` | a route's notes AND together, so `true and x` reduces to `x` and the admit-all is dead text; delete whichever is wrong. Across routes it is legal, since `true` sheds only its own route's inherited gate. One route carrying **both** sentinels is reported as `deny_all_with_sibling` — the fail-closed reading |
 
 Embedded string literals follow ordinary Malloy syntax: single-quote them as usual (`'analyst' = $ROLE`).
 
@@ -404,6 +421,8 @@ And the caller cannot mint a gate to escape one:
 }
 ```
 
+That refusal is the load-bearing one. `true` is legal in a *model*, where an author who can write it can already write anything else; minted by a *caller*, it would be a one-line unlock of any source they can name. Caller-submitted Malloy carrying any `#(authorize)` is a 400 before anything compiles.
+
 ## Recommended pattern: locked base and curated extensions
 
 Lock sensitive base sources with a `false` gate and re-expose curated subsets through extension sources, each with its own gate and access modifiers:
@@ -437,11 +456,25 @@ source: customers_us_west is customers_raw include {
   public: name, region, signup_date, lifetime_value
   private: *
 } extend {}
+
+// A third extension that is deliberately OPEN: a curated, non-sensitive
+// surface anyone may read. The annotation is not decoration — omitting it
+// would inherit the base's `false` and serve nobody.
+#(authorize) true
+source: customers_public is customers_raw include {
+  public: region, signup_date
+  private: *
+} extend {
+  measure: customer_count is count()
+}
 ```
 
 - `run: customers_raw -> …` → **200 with no rows** (gate is `false`; nothing is readable).
 - `run: customers_marketing -> …` → allowed with `ROLE: 'analyst'`; the consumer can only touch `name`, `region`, `signup_date`. Supplying no `ROLE` at all is a 403, since the gate's given cannot bind.
 - `run: customers_us_west -> …` → allowed with `REGION: 'us-west'`, on a different surface.
+- `run: customers_public -> …` → allowed for every caller, on the `region`/`signup_date` surface only.
+
+**Replacement is per route, and it is what makes all three extensions work.** An own `#(authorize)` replaces the ancestor's `#(authorize)` and nothing else; an own `#(source-authorize)` replaces the ancestor's `#(source-authorize)` and nothing else. So `#(authorize) true` on `customers_public` sheds the base's `false` — and would not shed a `#(source-authorize)` the base also carried.
 
 The `include { … private: * }` layer is what controls which base columns each extension can re-expose; each extension's own gate gates consumer access to that curated surface. The base's constant-`false` gate is a defense-in-depth backstop against a direct `run: customers_raw`. Remember the fail-closed rename-collision hole above: an `include { … }` that drops a column a gate reads and a later `rename:` that re-populates the exact same name can misbind the gate to the wrong data.
 
@@ -548,7 +581,7 @@ Two more counters cover row-level gates specifically:
 - **An extension's own gate replaces the base's** (see [above](#the-entry-point-and-only-the-entry-point)) — that is the curated-extension idiom, so pair locked bases with access modifiers to keep the re-exposed column surface deliberate. (An extension with no gate of its own carries the base's.)
 - **A gated source is a schema oracle wherever its gate expression resolves.** The expression-resolution refusal (see [Enforcement](#enforcement)) fires only when the gate's expression cannot be resolved against the entry point at all. Otherwise the gate is grafted into the query and evaluated with it, so compilation happens first, and a caller gets Malloy's own compile errors for the gated source even when the gate then admits them no rows: a malformed probe (`group_by: no_such_field`) returns "field is not defined", confirming whether a column exists. Behind the trusted tier the exposure is a column name, not data — see [security-posture.md](security-posture.md#row-level-authorize-rows-are-protected-the-schema-is-not).
 - **`/compile` raw SQL is not gated.** The gate covers named Malloy sources; `/compile` still compiles unrestricted, so a caller could read a gated table's schema/SQL via raw `duckdb.sql(...)`. Closing this (restricted compilation on `/compile`, as on `/query`) is tracked as a follow-up; until then keep `/compile` behind the trusted tier.
-- **A gate expressing genuine disjunction (admit population A OR population B) has no single-source spelling.** `or` is refused at load (`compound_boolean`), and repeated `#(authorize)` notes on the same source AND together rather than OR, so the replacement is two sources — see [OR semantics](#or-semantics). A constant `false` deny-all is still legal (see [Declaring Gates](#declaring-gates)), but there is no constant admit-everyone counterpart: `true` stays refused.
+- **A gate expressing genuine disjunction (admit population A OR population B) has no single-source spelling.** `or` is refused at load (`compound_boolean`), and repeated `#(authorize)` notes on the same source AND together rather than OR, so the replacement is two sources — see [OR semantics](#or-semantics). The constant sentinels do not help here: `false` denies everyone and `true` admits everyone (see [Declaring Gates](#declaring-gates)), and neither can share a source with the term that would have been the disjunction's other arm.
 - **A gate can only reference a given on the entry model's own surface.** A gate naming a given the entry model does not declare is refused outright (`unreachable_given`) rather than guessed at, because Malloy merges only one level of `import` and the gate would otherwise silently bind that given's *declaration default* instead of the caller's value. Practical effect: to gate a source through a base two or more import hops away, `import { NAME } from …` the SAME declaration into the entry model rather than writing a fresh `given: NAME …` of your own — importing carries the base's given identity (and its no-default-ness) forward; re-declaring mints a new one. **Do not "fix" `unreachable_given` by re-declaring the name with a default** — see the warning [above](#validation): G4 checks that re-declaration too, at every entry point the gate reaches, and refuses the load if it carries one, however many import hops separate the entry model from the source that declared the gate.
 - **A gate given the caller does not supply denies opaquely.** The gate's givens bind with the query's, so Malloy's own failure for an unsupplied one names it ("Given 'ROLE' has no value and no default"). Publisher maps that back to the same `Access denied for source "…"` 403 — a denied caller is never told which given the gate reads.
 - **A notebook cell that both declares a gated source and runs it in the same cell, with a

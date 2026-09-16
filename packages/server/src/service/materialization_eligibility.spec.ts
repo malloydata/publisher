@@ -144,6 +144,25 @@ source: mz_dim_authz is base -> { aggregate: c is count() }`);
       );
    });
 
+   it("refuses a source gated by the `true` admit-all sentinel, same as any other gate", async () => {
+      // Pins current behavior deliberately: `hasAnyAuthorizeNote` /
+      // `isAuthorizeAnnotation` see any gate, `true` included, so a
+      // `true`-gated source stays out of the storage companion. Treating it
+      // as ungated is a later, separate decision, not a side effect.
+      const sources = await persistSources(`##! experimental.persistence
+#(authorize) true
+source: base is duckdb.sql("SELECT 1 AS org_id") extend {}
+#@ persist name="mz_admit_all"
+source: mz_admit_all is base -> { aggregate: c is count() }`);
+      expect(sources.mz_admit_all).toBeDefined();
+      expect(() => assertMaterializationEligible(sources.mz_admit_all)).toThrow(
+         MaterializationEligibilityError,
+      );
+      expect(() => assertMaterializationEligible(sources.mz_admit_all)).toThrow(
+         /authorize/i,
+      );
+   });
+
    it("refuses a source protected ONLY by its own #(source-authorize) gate", async () => {
       // A source carrying no #(authorize) at all, only #(source-authorize) —
       // this must draw the same materialization refusal as an ordinary
