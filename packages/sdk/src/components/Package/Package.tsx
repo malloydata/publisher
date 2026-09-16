@@ -1,12 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import AddIcon from "@mui/icons-material/Add";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CloseIcon from "@mui/icons-material/Close";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
    Alert,
    Box,
+   Button,
    Container,
    Dialog,
    DialogContent,
@@ -22,13 +25,17 @@ import {
    Tooltip,
    Typography,
 } from "@mui/material";
-import React, { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import React, { useCallback, useEffect, useState } from "react";
 import { Database } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
+import type { DocumentLocator } from "../DocumentStorage/DocumentStorage";
+import { useOptionalDocumentStorage } from "../DocumentStorage/DocumentStorageProvider";
 import { Notebook } from "../Notebook";
 import { useServer } from "../ServerProvider";
+import { NewDashboardDialog } from "./NewDashboardDialog";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { serverBaseUrl } from "../../utils/dataAppEmbed";
 import { MONO_FONT_FAMILY } from "../styles";
@@ -48,7 +55,8 @@ export default function Package({
    onClickPackageFile,
    resourceUri,
 }: PackageProps) {
-   const { apiClients, server } = useServer();
+   const { apiClients, server, mutable } = useServer();
+   const queryClient = useQueryClient();
    const onClick =
       onClickPackageFile ??
       ((to: string) => {
@@ -58,6 +66,30 @@ export default function Package({
       parseResourceUri(resourceUri);
 
    const [schemaDatabase, setSchemaDatabase] = useState<Database | null>(null);
+   const [creating, setCreating] = useState(false);
+
+   // Dashboards saved in this browser and not (yet) in the package: the
+   // builder's drafts, listed so they are found rather than stumbled on.
+   const storage = useOptionalDocumentStorage()?.documentStorage;
+   const [drafts, setDrafts] = useState<DocumentLocator[]>([]);
+   const draftPrefix = `${environmentName}/${packageName}/dashboards/`;
+   const refreshDrafts = useCallback(async () => {
+      if (!storage) return;
+      const workspaces = await storage.listWorkspaces(true);
+      const found: DocumentLocator[] = [];
+      for (const workspace of workspaces)
+         for (const locator of await storage.listDocuments(
+            workspace,
+            "dashboard",
+         ))
+            if (locator.path.startsWith(draftPrefix)) found.push(locator);
+      setDrafts(found);
+   }, [storage, draftPrefix]);
+   useEffect(() => {
+      void refreshDrafts();
+   }, [refreshDrafts]);
+   const draftSlug = (locator: DocumentLocator) =>
+      locator.path.slice(draftPrefix.length).replace(/\.malloy$/, "");
 
    const pkgQuery = useQueryWithApiError({
       queryKey: ["package", environmentName, packageName, versionId],
@@ -282,6 +314,31 @@ export default function Package({
 
          {isLoading && <Loading text="Loading package..." />}
 
+         <NewDashboardDialog
+            open={creating}
+            environmentName={environmentName}
+            packageName={packageName}
+            models={models
+               .map((model) => model.path)
+               .filter(
+                  (path): path is string =>
+                     typeof path === "string" &&
+                     path.endsWith(".malloy") &&
+                     !path.startsWith("dashboards/"),
+               )}
+            existing={dashboards
+               .map((dashboard) => dashboard.name)
+               .filter((name): name is string => typeof name === "string")}
+            onClose={() => setCreating(false)}
+            onCreated={(slug) => {
+               setCreating(false);
+               void queryClient.invalidateQueries({ queryKey: ["dashboards"] });
+               onClick(
+                  `/${environmentName}/${packageName}/dashboards/${encodeURIComponent(slug)}/edit`,
+               );
+            }}
+         />
+
          {!isLoading && (
             <>
                {/* First: the at-a-glance artifact a visitor most likely wants,
@@ -313,8 +370,25 @@ export default function Package({
                      </Alert>
                   </Box>
                )}
-               {dashboards.length > 0 && (
-                  <PackageSection title="Dashboards" count={dashboards.length}>
+               {(dashboards.length > 0 || mutable) && (
+                  <PackageSection
+                     title="Dashboards"
+                     count={dashboards.length}
+                     action={
+                        mutable ? (
+                           <Button
+                              size="small"
+                              startIcon={<AddIcon fontSize="small" />}
+                              onClick={() => setCreating(true)}
+                           >
+                              New dashboard
+                           </Button>
+                        ) : undefined
+                     }
+                  >
+                     {dashboards.length === 0 && (
+                        <EmptyRow label="No dashboards yet" />
+                     )}
                      {dashboards.map((dashboard) => {
                         // A title equal to the slug is what the server falls
                         // back to when the file names itself neither way, so
@@ -344,6 +418,40 @@ export default function Package({
                            />
                         );
                      })}
+                  </PackageSection>
+               )}
+               {drafts.length > 0 && (
+                  <PackageSection title="Drafts" count={drafts.length}>
+                     {drafts.map((locator) => (
+                        <PackageItemRow
+                           key={locator.path}
+                           type="dashboard"
+                           label={draftSlug(locator)}
+                           rightLabel="saved in this browser"
+                           onClick={(event) =>
+                              onClick(
+                                 `/${environmentName}/${packageName}/dashboards/${encodeURIComponent(draftSlug(locator))}/edit`,
+                                 event,
+                              )
+                           }
+                           trailingAction={
+                              <Tooltip title="Delete this draft">
+                                 <IconButton
+                                    size="small"
+                                    aria-label={`Delete draft ${draftSlug(locator)}`}
+                                    onClick={(event) => {
+                                       event.stopPropagation();
+                                       void storage
+                                          ?.deleteDocument(locator)
+                                          .then(refreshDrafts);
+                                    }}
+                                 >
+                                    <DeleteOutlineIcon fontSize="small" />
+                                 </IconButton>
+                              </Tooltip>
+                           }
+                        />
+                     ))}
                   </PackageSection>
                )}
 
@@ -550,10 +658,13 @@ export default function Package({
 function PackageSection({
    title,
    count,
+   action,
    children,
 }: {
    title: string;
    count?: number;
+   /** A control on the heading's row, hard right. */
+   action?: React.ReactNode;
    children: React.ReactNode;
 }) {
    return (
@@ -575,6 +686,7 @@ function PackageSection({
                   ({count})
                </Typography>
             )}
+            {action && <Box sx={{ ml: "auto" }}>{action}</Box>}
          </Stack>
          <Box>{children}</Box>
       </Box>

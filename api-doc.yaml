@@ -3501,7 +3501,6 @@ components:
             when an embedding provider is configured. Absent when the server
             has no provider, because there is no index to describe.
 
-
     PackageEmbeddingIndex:
       type: object
       readOnly: true
