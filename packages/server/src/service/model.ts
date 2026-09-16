@@ -68,6 +68,7 @@ import {
    buildVirtualMap,
    extractJoins,
    extractRefinements,
+   extractSourceFilters,
    extractViews,
    narrowSchemaToPublic,
    type RollupShapeGroup,
@@ -4405,11 +4406,22 @@ export class Model {
       rollupGroups: RollupShapeGroup[] = [],
    ): Promise<ModelMaterializer> {
       // Richest first; each predicate keeps fewer refinement kinds than the last.
+      //
+      // `filter` is in EVERY tier, the empty one included. The other kinds are
+      // optimizations — dropping a view costs the tier for queries that use it
+      // and nothing else — while a source's `where:` is part of what the source
+      // MEANS, so a tier that dropped it would answer with rows the source
+      // excludes. That makes the floor no longer "always compiles": a filter
+      // that cannot be reproduced (one reaching through a join whose target is
+      // not materialized, or referencing a given) fails every tier, and the
+      // caller then serves live rather than serving unfiltered. See
+      // {@link extractSourceFilters}.
+      const ALWAYS = ["filter"] as const;
       const keepKinds: Array<ReadonlySet<string>> = [
-         new Set(["join", "dimension", "measure", "view"]),
-         new Set(["join", "dimension", "measure"]),
-         new Set(["dimension", "measure"]),
-         new Set(),
+         new Set([...ALWAYS, "join", "dimension", "measure", "view"]),
+         new Set([...ALWAYS, "join", "dimension", "measure"]),
+         new Set([...ALWAYS, "dimension", "measure"]),
+         new Set([...ALWAYS]),
       ];
       // A pre-aggregation group is dropped WHOLE, in one final tier, and never
       // thinned by the tiers above it.
@@ -4477,9 +4489,14 @@ export class Model {
                        : b,
                  );
          const materializer = this.buildServeShapeMaterializer(shaped, groups);
-         // The last tier is pure virtual bases with no composite, so it always
-         // compiles; trust it without a probe. And when there is nothing to
-         // escalate, tier 0 IS that shape — skip too.
+         // The last tier is virtual bases plus their filters. It compiles for
+         // every source whose filters can be reproduced, which is the ordinary
+         // case; when one cannot, the shape does not compile and the caller's
+         // eager per-query compile turns that into serving live — the required
+         // answer, because the alternative is serving the rows the filter
+         // excludes. Returned without a probe either way: a probe here could
+         // only choose between two shapes that both fail. And when there is
+         // nothing to escalate, tier 0 IS that shape — skip too.
          if (tier === lastTier || (tier === 0 && nothingToEscalate)) {
             return materializer;
          }
@@ -4572,7 +4589,11 @@ export class Model {
             | {
                  contents?: Record<
                     string,
-                    { sourceID?: unknown; fields?: unknown[] }
+                    {
+                       sourceID?: unknown;
+                       fields?: unknown[];
+                       filterList?: unknown[];
+                    }
                  >;
               }
             | undefined
@@ -4623,6 +4644,11 @@ export class Model {
                      liftText,
                   }),
                   ...extractRefinements(fields),
+                  // The source's own `where:` clauses. Not part of the
+                  // materialized relation (the build SQL is the persisted
+                  // relation alone), so without these the shape serves rows the
+                  // source excludes.
+                  ...extractSourceFilters(contents?.[b.sourceName]?.filterList),
                   ...extractViews(fields, liftText),
                ];
                return { ...b, schema, refinements };

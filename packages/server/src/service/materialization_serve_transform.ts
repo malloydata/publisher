@@ -86,14 +86,37 @@ export interface ViewRefinement {
 }
 
 /**
+ * A `where:` written in the materialized source's extend block, re-declared on
+ * the serve shape's virtual base.
+ *
+ * The filter is NOT part of the materialized relation: Malloy's build SQL for a
+ * persisted source is the persisted relation alone, and an extend-block `where:`
+ * refines that relation when it is read. The colocated tier gets this for free
+ * (substitution swaps only the `FROM`, so the reading query keeps its own
+ * `WHERE`); the storage tier re-declares the source instead, so it has to carry
+ * the filter itself or serve rows the source excludes.
+ *
+ * `code` is the author's verbatim expression text. One refinement per
+ * `filterList` entry, emitted as its own `where:` line: Malloy parenthesises
+ * each entry and ANDs them, so joining two entries' `code` with `and` would
+ * reassociate a top-level `or`.
+ */
+export interface FilterRefinement {
+   kind: "filter";
+   /** Verbatim author expression, e.g. `not is_deleted`. */
+   code: string;
+}
+
+/**
  * A refinement to re-declare on the serve shape's virtual base: a dimension or
- * measure ({@link FieldRefinement}), a join ({@link JoinRefinement}), or a view
- * ({@link ViewRefinement}).
+ * measure ({@link FieldRefinement}), a join ({@link JoinRefinement}), a view
+ * ({@link ViewRefinement}), or a source-level filter ({@link FilterRefinement}).
  */
 export type SourceRefinement =
    | FieldRefinement
    | JoinRefinement
-   | ViewRefinement;
+   | ViewRefinement
+   | FilterRefinement;
 
 export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
@@ -458,6 +481,13 @@ function serveShapeFragment(binding: ServeBinding): string {
          lines.push(`   ${r.kind}: ${r.name} is ${r.code}`);
       }
    }
+   // Filters after joins and fields, because a `where:` may reference a joined
+   // alias or a dimension declared above it, and before views for the same
+   // reason a view is emitted last. One line per entry — see
+   // {@link FilterRefinement} for why they are never combined with `and`.
+   for (const r of refinements) {
+      if (r.kind === "filter") lines.push(`   where: ${r.code}`);
+   }
    for (const r of refinements) {
       if (r.kind === "view") lines.push(`   view: ${r.text}`);
    }
@@ -812,6 +842,47 @@ export function narrowSchemaToPublic(
    }
    return out;
 }
+
+/**
+ * The source-level filters to re-declare on the serve shape, one per
+ * `filterList` entry of the materialized source's compiled definition.
+ *
+ * EVERY entry is carried, including one that cannot be reproduced on the shape
+ * (a filter reaching through a join whose target is not materialized, or one
+ * referencing a given). Such an entry makes the shape fail to compile, and the
+ * caller must answer that by withholding the binding rather than by serving it
+ * filter-free — a dropped filter is not a lost optimization, it is rows the
+ * source excludes. See the serve-shape ladder in `Model.compileServeShape`,
+ * which keeps this kind at every tier for exactly that reason.
+ *
+ * `filterList` accumulates through `extend`, so a source's own entries already
+ * carry every filter it inherits from the source it extends.
+ *
+ * Fail-closed on a malformed entry: an entry whose `code` is not a string
+ * yields a filter that cannot compile, so the binding is withheld rather than
+ * silently under-filtered.
+ */
+export function extractSourceFilters(
+   filterList: readonly unknown[] | undefined,
+): FilterRefinement[] {
+   const out: FilterRefinement[] = [];
+   for (const entry of filterList ?? []) {
+      const code = (entry as { code?: unknown })?.code;
+      out.push({
+         kind: "filter",
+         code: typeof code === "string" ? code : UNREPRODUCIBLE_FILTER,
+      });
+   }
+   return out;
+}
+
+/**
+ * Emitted in place of a filter whose expression text could not be read. Not
+ * valid Malloy, deliberately: it fails the shape compile, which withholds the
+ * binding and serves live. The alternative — dropping the entry — would serve
+ * the unfiltered relation.
+ */
+export const UNREPRODUCIBLE_FILTER = "__unreproducible_filter__";
 
 export function extractRefinements(
    fields: readonly unknown[] | undefined,

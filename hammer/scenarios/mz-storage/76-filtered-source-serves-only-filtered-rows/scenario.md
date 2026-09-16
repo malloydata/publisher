@@ -1,6 +1,6 @@
 ---
 id: filtered-source-serves-only-filtered-rows
-tags: serve-correctness, sql-select, known-red
+tags: serve-correctness, sql-select
 package: fsf
 ---
 <!--
@@ -23,10 +23,6 @@ still attached (`filtered-source-serves-only-filtered-rows-colocated` is the
 control, and it is green). The storage tier re-declares the source instead — as
 `conn.virtual('handle')::Shape` plus its dimensions, measures, joins and views —
 so it has to carry the filter itself, and today it does not.
-
-RED today: the query is answered from the artifact, unfiltered. GREEN once the
-serve shape reproduces the source's filters — or refuses to bind a source that
-has any.
 
 ## Publisher
 
@@ -80,8 +76,8 @@ Expect:
 
 ## Query high value total
 
-The same 300, whichever tier answers. Today this returns 375 — every row in the
-artifact, including the two the filter excludes.
+The same 300, whichever tier answers. Serving the artifact as-is would return
+375 — every row, including the two the filter excludes.
 
 ```malloy
 run: high_value -> { aggregate: total is amount.sum() }
@@ -93,32 +89,22 @@ Expect:
 | --------- |
 | 300       |
 
-## Note (since=2026-09-02)
+## Note (since=2026-09-16)
 
-> A wrong ANSWER, not a lost optimization, and silent: the query succeeds, the
-> tier is never mentioned, and the rows are simply the unfiltered relation. The
-> whole storage tier is built on falling back to live whenever the shape cannot
-> reproduce something, and every other omission does fall back — a view that
-> traverses a non-materialized join, an analytic field, an unbound source — because
-> the omission makes the shape fail to COMPILE. A dropped `where:` compiles
-> perfectly, so nothing catches it.
+> Easy to reintroduce, and silent when it is. Every other refinement the shape
+> cannot reproduce announces itself by failing the shape's COMPILE, which is what
+> triggers the fallback ladder; a dropped `where:` compiles perfectly and simply
+> answers with more rows. Nothing upstream catches it either — materialization
+> eligibility refuses a given, a `#(partition)`, an authorize gate and a free
+> parameter, and says nothing about filters.
 >
-> Nothing gates it upstream either. `assertMaterializationEligible` refuses free
-> parameters, given references and authorize gates, and says nothing about
-> filters; `assertServesInDuckDB` only asks whether the shape compiles, which it
-> does.
+> Hence the two rules the fix rests on. Filters are carried at EVERY tier of the
+> serve-shape ladder, the empty one included: the other kinds are optimizations,
+> while a filter is part of what the source means. And an entry that cannot be
+> reproduced — one reaching through a join whose target is not materialized, or
+> referencing a given — is still emitted, so the shape fails to compile and the
+> query serves live, rather than being dropped so the query serves unfiltered.
 >
-> The filter is available — it is on the compiled source's `filterList`, the same
-> place the authorize walk reads its lifted `where:` from — so carrying it looks
-> like another refinement category, with the existing full → drop views → drop
-> views+joins → base-only ladder as the safe floor. Refusing to bind a source that
-> carries filters is the smaller immediate move and costs only the tier.
->
-> The neighbouring shape `X is <table> extend { where … }` is already refused
-> (`persist-shape-not-materializable`), so this is reachable specifically over a
-> `sql_select` base. Worth checking whether a parameterized filter belongs in the
-> same fix: `capped(limit_n::number is 1) is raw extend { where: n <= limit_n }`
-> is eligible (a parameter bound to a default counts as bound), and its artifact is
-> likewise unfiltered — the only thing keeping an OVERRIDDEN parameter honest today
-> is that the shape declares no parameters, so the query fails to compile against
-> it and falls back live.
+> `filterList` accumulates through `extend`, so a source's own entries already
+> carry every filter it inherits. That is why the chained arrangement
+> (`filtered-chain-serves-only-filtered-rows`) needs no separate handling.
