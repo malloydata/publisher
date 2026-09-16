@@ -78,10 +78,13 @@ test.describe("environment-connections — mutable CRUD", () => {
       // --- 1. Create ---
       await page.getByRole("button", { name: "Add Connection" }).click();
       const addDialog = page.getByRole("dialog", {
-         name: "Create New Connection",
+         name: "New connection",
       });
       await expect(addDialog).toBeVisible();
-      await addDialog.getByLabel("Connection Name").fill(connName);
+      // By name, not by label: the label renders "Name *" for a required
+      // field, and a loose "Name" match would also catch "Database Name"
+      // and "User Name" on the same form.
+      await addDialog.locator("input[name=name]").fill(connName);
       // Type defaults to postgres. Postgres requires either a Connection String
       // or all 5 detail fields — give it a connection string, which is the
       // shortest valid form.
@@ -89,7 +92,7 @@ test.describe("environment-connections — mutable CRUD", () => {
          .locator("input[name=connectionString]")
          .fill("postgres://test@localhost:5432/test");
       await addDialog
-         .getByRole("button", { name: "Create Connection" })
+         .getByRole("button", { name: "Create connection" })
          .click();
       await expect(addDialog).toBeHidden({ timeout: 15_000 });
 
@@ -107,11 +110,11 @@ test.describe("environment-connections — mutable CRUD", () => {
       await page
          .getByRole("menuitem", { name: `Edit connection ${connName}` })
          .click();
-      const editDialog = page.getByRole("dialog", { name: "Edit Connection" });
+      const editDialog = page.getByRole("dialog", { name: "Edit connection" });
       await expect(editDialog).toBeVisible();
       // Change the host field to verify the round-trip works
       await editDialog.locator("input[name=host]").fill("edited-host.example");
-      await editDialog.getByRole("button", { name: "Edit Connection" }).click();
+      await editDialog.getByRole("button", { name: "Save changes" }).click();
       await expect(editDialog).toBeHidden({ timeout: 15_000 });
       // Card name + type label are unchanged, so it should still render
       await expect(card).toBeVisible();
