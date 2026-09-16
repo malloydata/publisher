@@ -44,29 +44,34 @@ export const DEFAULT_THEME: Required<Theme> = {
          dark: "#1e293b",
       },
       tableHeader: {
-         light: "#5d626b",
+         light: "#475569",
          dark: "#cbd5e1",
       },
       // Background of the table header row, independent of the
       // tile (dashboard tile container) so the operator can theme
       // the header band on its own.
       tableHeaderBackground: {
-         light: "#f5fafc",
+         light: "#f8fafc",
          dark: "#1e293b",
       },
       tableBody: {
-         light: "#727883",
+         light: "#475569",
          dark: "#e2e8f0",
       },
       // The padded container that wraps each chart / table in a
-      // dashboard. Light mode: a faint tint so tiles read as recessed
-      // cards on the page; dark mode: page-outer slate.
+      // dashboard. Light mode: a faint recess off white; dark mode:
+      // page-outer slate.
+      //
+      // Neutral slate, not a tint. This was `#f5fafc`, a cyan-cast
+      // near-white left from the logo palette, and it was the most visible
+      // survivor of it: every dashboard on the server painted a pale blue
+      // panel behind its tiles, under charts that were no longer blue-green.
       tile: {
-         light: "#f5fafc",
+         light: "#f8fafc",
          dark: "#0f172a",
       },
       tileTitle: {
-         light: "#5d626b",
+         light: "#475569",
          dark: "#94a3b8",
       },
       // Saturated end of the choropleth / heatmap gradient. The renderer
