@@ -8,6 +8,7 @@ import Button from "@mui/material/Button";
 import IconButton from "@mui/material/IconButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
+import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import React, { useState } from "react";
@@ -543,465 +544,481 @@ export default function EditConnectionDialog({
             }
          >
             <form onSubmit={handleSubmit} id="connection-form">
-               <TextField
-                  autoFocus
-                  required
-                  id="name"
-                  name="name"
-                  label="Name"
-                  type="text"
-                  fullWidth
-                  size="small"
-                  defaultValue={connection.name}
-               />
-               <TextField
-                  id="type"
-                  name="type"
-                  label="Connection Type"
-                  fullWidth
-                  size="small"
-                  value={type}
-                  select
-                  onChange={(event) =>
-                     setType(event.target.value as ConnectionTypeEnum)
-                  }
-               >
-                  {uiCreatableConnectionTypes.map((type) => (
-                     <MenuItem key={type} value={type}>
-                        {type}
-                     </MenuItem>
-                  ))}
-               </TextField>
-               {type === "ducklake" ? (
-                  <Box sx={{ mt: 2 }}>
-                     <Box
-                        sx={{
-                           mb: 3,
-                           p: 2,
-                           border: "1px solid",
-                           borderColor: "divider",
-                           borderRadius: 1,
-                        }}
-                     >
-                        <Typography
-                           variant="subtitle2"
-                           sx={{ mb: 2 }}
-                           fontWeight={500}
+               {/* One column, one gap. The fields carry no margin of
+                   their own, so without this they sit flush and their
+                   borders overlap. */}
+               <Stack sx={{ gap: 2 }}>
+                  <TextField
+                     autoFocus
+                     required
+                     id="name"
+                     name="name"
+                     label="Name"
+                     type="text"
+                     fullWidth
+                     size="small"
+                     defaultValue={connection.name}
+                  />
+                  <TextField
+                     id="type"
+                     name="type"
+                     label="Connection Type"
+                     fullWidth
+                     size="small"
+                     value={type}
+                     select
+                     onChange={(event) =>
+                        setType(event.target.value as ConnectionTypeEnum)
+                     }
+                  >
+                     {uiCreatableConnectionTypes.map((type) => (
+                        <MenuItem key={type} value={type}>
+                           {type}
+                        </MenuItem>
+                     ))}
+                  </TextField>
+                  {type === "ducklake" ? (
+                     <Box sx={{ mt: 2 }}>
+                        <Box
+                           sx={{
+                              mb: 3,
+                              p: 2,
+                              border: "1px solid",
+                              borderColor: "divider",
+                              borderRadius: 1,
+                           }}
                         >
-                           Catalog
-                        </Typography>
-                        <TextField
-                           id="ducklake_catalogType"
-                           label="Catalog Type"
-                           fullWidth
-                           size="small"
-                           value={ducklakeCatalogType}
-                           select
-                           onChange={(event) =>
-                              setDucklakeCatalogType(event.target.value)
-                           }
+                           <Typography
+                              variant="subtitle2"
+                              sx={{ mb: 2 }}
+                              fontWeight={500}
+                           >
+                              Catalog
+                           </Typography>
+                           <TextField
+                              id="ducklake_catalogType"
+                              label="Catalog Type"
+                              fullWidth
+                              size="small"
+                              value={ducklakeCatalogType}
+                              select
+                              onChange={(event) =>
+                                 setDucklakeCatalogType(event.target.value)
+                              }
+                           >
+                              <MenuItem value="postgres">PostgreSQL</MenuItem>
+                           </TextField>
+                           {ducklakeCatalogType === "postgres" && (
+                              <>
+                                 {connectionFieldsByType["postgres"].map(
+                                    (field) => (
+                                       <TextField
+                                          key={`pg_${field.name}`}
+                                          id={`ducklake_pg_${field.name}`}
+                                          name={`ducklake_pg_${field.name}`}
+                                          label={field.label}
+                                          type={field.type}
+                                          fullWidth
+                                          size="small"
+                                          defaultValue={getDucklakeDefault(
+                                             `pg_${field.name}`,
+                                          )}
+                                       />
+                                    ),
+                                 )}
+                              </>
+                           )}
+                        </Box>
+                        <Box
+                           sx={{
+                              mb: 3,
+                              p: 2,
+                              border: "1px solid",
+                              borderColor: "divider",
+                              borderRadius: 1,
+                           }}
                         >
-                           <MenuItem value="postgres">PostgreSQL</MenuItem>
-                        </TextField>
-                        {ducklakeCatalogType === "postgres" && (
-                           <>
-                              {connectionFieldsByType["postgres"].map(
-                                 (field) => (
+                           <Typography
+                              variant="subtitle2"
+                              sx={{ mb: 2 }}
+                              fontWeight={500}
+                           >
+                              Storage
+                           </Typography>
+                           <TextField
+                              id="ducklake_storageType"
+                              label="Storage Type"
+                              fullWidth
+                              size="small"
+                              value={ducklakeStorageType}
+                              select
+                              onChange={(event) =>
+                                 setDucklakeStorageType(event.target.value)
+                              }
+                           >
+                              <MenuItem value="s3">S3</MenuItem>
+                              <MenuItem value="gcs">GCS</MenuItem>
+                           </TextField>
+                           <TextField
+                              required
+                              id="ducklake_bucketUrl"
+                              name="ducklake_bucketUrl"
+                              label={
+                                 ducklakeStorageType === "s3"
+                                    ? "Bucket URL (e.g. s3://my-bucket/path)"
+                                    : "Bucket URL (e.g. gs://my-bucket/path)"
+                              }
+                              type="text"
+                              fullWidth
+                              size="small"
+                              defaultValue={getDucklakeDefault("bucketUrl")}
+                           />
+                           {ducklakeStorageType === "s3" && (
+                              <>
+                                 <Typography
+                                    variant="caption"
+                                    sx={{ mt: 2, mb: 1, display: "block" }}
+                                    color="text.secondary"
+                                 >
+                                    S3 Credentials
+                                 </Typography>
+                                 {s3AttachedDatabaseFields
+                                    .filter((field) =>
+                                       field.visibleWhen
+                                          ? ducklakeS3Provider ===
+                                            field.visibleWhen.value
+                                          : true,
+                                    )
+                                    .map((field) => (
+                                       <TextField
+                                          key={`s3_${field.name}`}
+                                          id={`ducklake_s3_${field.name}`}
+                                          name={`ducklake_s3_${field.name}`}
+                                          label={field.label}
+                                          type={
+                                             field.selectOptions
+                                                ? undefined
+                                                : field.type
+                                          }
+                                          fullWidth
+                                          size="small"
+                                          required={
+                                             field.required &&
+                                             field.name !== "secretAccessKey"
+                                          }
+                                          select={!!field.selectOptions}
+                                          defaultValue={
+                                             field.selectOptions
+                                                ? ducklakeS3Provider
+                                                : getDucklakeDefault(
+                                                     `s3_${field.name}`,
+                                                  )
+                                          }
+                                          onChange={
+                                             field.name === "provider"
+                                                ? (e) =>
+                                                     setDucklakeS3Provider(
+                                                        e.target.value,
+                                                     )
+                                                : undefined
+                                          }
+                                          placeholder={
+                                             field.name === "region"
+                                                ? "us-east-1"
+                                                : field.name ===
+                                                       "secretAccessKey" &&
+                                                    withheldFields.has(
+                                                       "ducklakeConnection.storage.s3Connection.secretAccessKey",
+                                                    )
+                                                  ? "Leave empty to keep existing"
+                                                  : undefined
+                                          }
+                                       >
+                                          {field.selectOptions?.map(
+                                             (option) => (
+                                                <MenuItem
+                                                   key={option.value}
+                                                   value={option.value}
+                                                >
+                                                   {option.label}
+                                                </MenuItem>
+                                             ),
+                                          )}
+                                       </TextField>
+                                    ))}
+                              </>
+                           )}
+                           {ducklakeStorageType === "gcs" && (
+                              <>
+                                 <Typography
+                                    variant="caption"
+                                    sx={{ mt: 2, mb: 1, display: "block" }}
+                                    color="text.secondary"
+                                 >
+                                    GCS Credentials
+                                 </Typography>
+                                 {gcsAttachedDatabaseFields.map((field) => (
                                     <TextField
-                                       key={`pg_${field.name}`}
-                                       id={`ducklake_pg_${field.name}`}
-                                       name={`ducklake_pg_${field.name}`}
+                                       key={`gcs_${field.name}`}
+                                       id={`ducklake_gcs_${field.name}`}
+                                       name={`ducklake_gcs_${field.name}`}
                                        label={field.label}
                                        type={field.type}
                                        fullWidth
                                        size="small"
-                                       defaultValue={getDucklakeDefault(
-                                          `pg_${field.name}`,
-                                       )}
-                                    />
-                                 ),
-                              )}
-                           </>
-                        )}
-                     </Box>
-                     <Box
-                        sx={{
-                           mb: 3,
-                           p: 2,
-                           border: "1px solid",
-                           borderColor: "divider",
-                           borderRadius: 1,
-                        }}
-                     >
-                        <Typography
-                           variant="subtitle2"
-                           sx={{ mb: 2 }}
-                           fontWeight={500}
-                        >
-                           Storage
-                        </Typography>
-                        <TextField
-                           id="ducklake_storageType"
-                           label="Storage Type"
-                           fullWidth
-                           size="small"
-                           value={ducklakeStorageType}
-                           select
-                           onChange={(event) =>
-                              setDucklakeStorageType(event.target.value)
-                           }
-                        >
-                           <MenuItem value="s3">S3</MenuItem>
-                           <MenuItem value="gcs">GCS</MenuItem>
-                        </TextField>
-                        <TextField
-                           required
-                           id="ducklake_bucketUrl"
-                           name="ducklake_bucketUrl"
-                           label={
-                              ducklakeStorageType === "s3"
-                                 ? "Bucket URL (e.g. s3://my-bucket/path)"
-                                 : "Bucket URL (e.g. gs://my-bucket/path)"
-                           }
-                           type="text"
-                           fullWidth
-                           size="small"
-                           defaultValue={getDucklakeDefault("bucketUrl")}
-                        />
-                        {ducklakeStorageType === "s3" && (
-                           <>
-                              <Typography
-                                 variant="caption"
-                                 sx={{ mt: 2, mb: 1, display: "block" }}
-                                 color="text.secondary"
-                              >
-                                 S3 Credentials
-                              </Typography>
-                              {s3AttachedDatabaseFields
-                                 .filter((field) =>
-                                    field.visibleWhen
-                                       ? ducklakeS3Provider ===
-                                         field.visibleWhen.value
-                                       : true,
-                                 )
-                                 .map((field) => (
-                                    <TextField
-                                       key={`s3_${field.name}`}
-                                       id={`ducklake_s3_${field.name}`}
-                                       name={`ducklake_s3_${field.name}`}
-                                       label={field.label}
-                                       type={
-                                          field.selectOptions
-                                             ? undefined
-                                             : field.type
-                                       }
-                                       fullWidth
-                                       size="small"
                                        required={
                                           field.required &&
-                                          field.name !== "secretAccessKey"
+                                          field.name !== "secret"
                                        }
-                                       select={!!field.selectOptions}
-                                       defaultValue={
-                                          field.selectOptions
-                                             ? ducklakeS3Provider
-                                             : getDucklakeDefault(
-                                                  `s3_${field.name}`,
-                                               )
-                                       }
-                                       onChange={
-                                          field.name === "provider"
-                                             ? (e) =>
-                                                  setDucklakeS3Provider(
-                                                     e.target.value,
-                                                  )
+                                       defaultValue={getDucklakeDefault(
+                                          `gcs_${field.name}`,
+                                       )}
+                                       placeholder={
+                                          field.name === "secret" &&
+                                          withheldFields.has(
+                                             "ducklakeConnection.storage.gcsConnection.secret",
+                                          )
+                                             ? "Leave empty to keep existing"
                                              : undefined
                                        }
-                                       placeholder={
-                                          field.name === "region"
-                                             ? "us-east-1"
-                                             : field.name ===
-                                                    "secretAccessKey" &&
-                                                 withheldFields.has(
-                                                    "ducklakeConnection.storage.s3Connection.secretAccessKey",
-                                                 )
-                                               ? "Leave empty to keep existing"
-                                               : undefined
-                                       }
-                                    >
-                                       {field.selectOptions?.map((option) => (
-                                          <MenuItem
-                                             key={option.value}
-                                             value={option.value}
-                                          >
-                                             {option.label}
-                                          </MenuItem>
-                                       ))}
-                                    </TextField>
+                                    />
                                  ))}
-                           </>
-                        )}
-                        {ducklakeStorageType === "gcs" && (
-                           <>
-                              <Typography
-                                 variant="caption"
-                                 sx={{ mt: 2, mb: 1, display: "block" }}
-                                 color="text.secondary"
-                              >
-                                 GCS Credentials
-                              </Typography>
-                              {gcsAttachedDatabaseFields.map((field) => (
-                                 <TextField
-                                    key={`gcs_${field.name}`}
-                                    id={`ducklake_gcs_${field.name}`}
-                                    name={`ducklake_gcs_${field.name}`}
-                                    label={field.label}
-                                    type={field.type}
-                                    fullWidth
-                                    size="small"
-                                    required={
-                                       field.required && field.name !== "secret"
-                                    }
-                                    defaultValue={getDucklakeDefault(
-                                       `gcs_${field.name}`,
-                                    )}
-                                    placeholder={
-                                       field.name === "secret" &&
-                                       withheldFields.has(
-                                          "ducklakeConnection.storage.gcsConnection.secret",
-                                       )
-                                          ? "Leave empty to keep existing"
-                                          : undefined
-                                    }
-                                 />
-                              ))}
-                           </>
-                        )}
+                              </>
+                           )}
+                        </Box>
                      </Box>
-                  </Box>
-               ) : type === "duckdb" ? (
-                  <Box sx={{ mt: 2 }}>
-                     <Box
-                        sx={{
-                           display: "flex",
-                           justifyContent: "space-between",
-                           alignItems: "center",
-                           mb: 2,
-                        }}
-                     >
-                        <Typography variant="subtitle1" fontWeight={500}>
-                           Attached Databases
-                        </Typography>
-                        <SecondaryButton
-                           label="Database"
-                           icon={<AddIcon />}
-                           onClick={addAttachedDatabase}
-                           ariaLabel="Add database"
-                        />
-                     </Box>
-                     {attachedDatabases.length === 0 && (
-                        <Typography
-                           variant="body2"
-                           color="text.secondary"
-                           sx={{ mb: 2 }}
+                  ) : type === "duckdb" ? (
+                     <Box sx={{ mt: 2 }}>
+                        <Box
+                           sx={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              mb: 2,
+                           }}
                         >
-                           DuckDB connections require at least one attached
-                           database. Click &quot;Add Database&quot; to get
-                           started.
-                        </Typography>
-                     )}
-                     {attachedDatabases.map((db, index) => {
-                        const dbFields = getAttachedDatabaseFields(db.dbType);
-                        return (
-                           <Box
-                              key={index}
-                              sx={{
-                                 mb: 3,
-                                 p: 2,
-                                 border: "1px solid",
-                                 borderColor: "divider",
-                                 borderRadius: 1,
-                              }}
+                           <Typography variant="subtitle1" fontWeight={500}>
+                              Attached Databases
+                           </Typography>
+                           <SecondaryButton
+                              label="Database"
+                              icon={<AddIcon />}
+                              onClick={addAttachedDatabase}
+                              ariaLabel="Add database"
+                           />
+                        </Box>
+                        {attachedDatabases.length === 0 && (
+                           <Typography
+                              variant="body2"
+                              color="text.secondary"
+                              sx={{ mb: 2 }}
                            >
+                              DuckDB connections require at least one attached
+                              database. Click &quot;Add Database&quot; to get
+                              started.
+                           </Typography>
+                        )}
+                        {attachedDatabases.map((db, index) => {
+                           const dbFields = getAttachedDatabaseFields(
+                              db.dbType,
+                           );
+                           return (
                               <Box
+                                 key={index}
                                  sx={{
-                                    display: "flex",
-                                    justifyContent: "space-between",
-                                    alignItems: "center",
-                                    mb: 2,
+                                    mb: 3,
+                                    p: 2,
+                                    border: "1px solid",
+                                    borderColor: "divider",
+                                    borderRadius: 1,
                                  }}
                               >
-                                 <Typography variant="subtitle2">
-                                    Database {index + 1}
-                                 </Typography>
-                                 <IconButton
-                                    aria-label={`Remove attached database ${index + 1}`}
-                                    onClick={() =>
-                                       removeAttachedDatabase(index)
-                                    }
-                                    size="small"
-                                    color="error"
+                                 <Box
+                                    sx={{
+                                       display: "flex",
+                                       justifyContent: "space-between",
+                                       alignItems: "center",
+                                       mb: 2,
+                                    }}
                                  >
-                                    <DeleteIcon fontSize="small" />
-                                 </IconButton>
-                              </Box>
-                              <TextField
-                                 required
-                                 id={`attachedDb_${index}_name`}
-                                 name={`attachedDb_${index}_name`}
-                                 label="Database Name"
-                                 type="text"
-                                 fullWidth
-                                 size="small"
-                                 defaultValue={db.name}
-                              />
-                              <TextField
-                                 id={`attachedDb_${index}_type`}
-                                 name={`attachedDb_${index}_type`}
-                                 label="Database Type"
-                                 fullWidth
-                                 size="small"
-                                 value={db.dbType}
-                                 select
-                                 onChange={(event) =>
-                                    updateAttachedDatabaseType(
-                                       index,
-                                       event.target
-                                          .value as AttachedDatabaseTypeEnum,
-                                    )
-                                 }
-                              >
-                                 {Object.values(AttachedDatabaseTypeEnum).map(
-                                    (dbType) => (
+                                    <Typography variant="subtitle2">
+                                       Database {index + 1}
+                                    </Typography>
+                                    <IconButton
+                                       aria-label={`Remove attached database ${index + 1}`}
+                                       onClick={() =>
+                                          removeAttachedDatabase(index)
+                                       }
+                                       size="small"
+                                       color="error"
+                                    >
+                                       <DeleteIcon fontSize="small" />
+                                    </IconButton>
+                                 </Box>
+                                 <TextField
+                                    required
+                                    id={`attachedDb_${index}_name`}
+                                    name={`attachedDb_${index}_name`}
+                                    label="Database Name"
+                                    type="text"
+                                    fullWidth
+                                    size="small"
+                                    defaultValue={db.name}
+                                 />
+                                 <TextField
+                                    id={`attachedDb_${index}_type`}
+                                    name={`attachedDb_${index}_type`}
+                                    label="Database Type"
+                                    fullWidth
+                                    size="small"
+                                    value={db.dbType}
+                                    select
+                                    onChange={(event) =>
+                                       updateAttachedDatabaseType(
+                                          index,
+                                          event.target
+                                             .value as AttachedDatabaseTypeEnum,
+                                       )
+                                    }
+                                 >
+                                    {Object.values(
+                                       AttachedDatabaseTypeEnum,
+                                    ).map((dbType) => (
                                        <MenuItem key={dbType} value={dbType}>
                                           {dbType}
                                        </MenuItem>
-                                    ),
-                                 )}
-                              </TextField>
-                              {dbFields
-                                 .filter((field) => {
-                                    if (!field.visibleWhen) return true;
-                                    const currentValue =
-                                       db[field.visibleWhen.field] ||
-                                       getAttachedDbDefault(
-                                          index,
-                                          field.visibleWhen.field,
-                                       ) ||
-                                       dbFields.find(
-                                          (f) =>
-                                             f.name ===
-                                             field.visibleWhen?.field,
-                                       )?.selectOptions?.[0]?.value;
-                                    return (
-                                       currentValue === field.visibleWhen.value
-                                    );
-                                 })
-                                 .map((field) => (
-                                    <TextField
-                                       key={field.name}
-                                       id={`attachedDb_${index}_${field.name}`}
-                                       name={`attachedDb_${index}_${field.name}`}
-                                       label={field.label}
-                                       type={
-                                          field.selectOptions
-                                             ? undefined
-                                             : field.type
-                                       }
-                                       fullWidth
-                                       size="small"
-                                       required={field.required}
-                                       select={!!field.selectOptions}
-                                       defaultValue={
+                                    ))}
+                                 </TextField>
+                                 {dbFields
+                                    .filter((field) => {
+                                       if (!field.visibleWhen) return true;
+                                       const currentValue =
+                                          db[field.visibleWhen.field] ||
                                           getAttachedDbDefault(
                                              index,
-                                             field.name,
-                                          ) || field.selectOptions?.[0]?.value
-                                       }
-                                       onChange={
-                                          field.selectOptions
-                                             ? (e) => {
-                                                  const updated = [
-                                                     ...attachedDatabases,
-                                                  ];
-                                                  updated[index] = {
-                                                     ...updated[index],
-                                                     [field.name]:
-                                                        e.target.value,
-                                                  };
-                                                  setAttachedDatabases(updated);
-                                               }
-                                             : undefined
-                                       }
-                                    >
-                                       {field.selectOptions?.map((option) => (
-                                          <MenuItem
-                                             key={option.value}
-                                             value={option.value}
-                                          >
-                                             {option.label}
-                                          </MenuItem>
-                                       ))}
-                                    </TextField>
-                                 ))}
-                           </Box>
+                                             field.visibleWhen.field,
+                                          ) ||
+                                          dbFields.find(
+                                             (f) =>
+                                                f.name ===
+                                                field.visibleWhen?.field,
+                                          )?.selectOptions?.[0]?.value;
+                                       return (
+                                          currentValue ===
+                                          field.visibleWhen.value
+                                       );
+                                    })
+                                    .map((field) => (
+                                       <TextField
+                                          key={field.name}
+                                          id={`attachedDb_${index}_${field.name}`}
+                                          name={`attachedDb_${index}_${field.name}`}
+                                          label={field.label}
+                                          type={
+                                             field.selectOptions
+                                                ? undefined
+                                                : field.type
+                                          }
+                                          fullWidth
+                                          size="small"
+                                          required={field.required}
+                                          select={!!field.selectOptions}
+                                          defaultValue={
+                                             getAttachedDbDefault(
+                                                index,
+                                                field.name,
+                                             ) ||
+                                             field.selectOptions?.[0]?.value
+                                          }
+                                          onChange={
+                                             field.selectOptions
+                                                ? (e) => {
+                                                     const updated = [
+                                                        ...attachedDatabases,
+                                                     ];
+                                                     updated[index] = {
+                                                        ...updated[index],
+                                                        [field.name]:
+                                                           e.target.value,
+                                                     };
+                                                     setAttachedDatabases(
+                                                        updated,
+                                                     );
+                                                  }
+                                                : undefined
+                                          }
+                                       >
+                                          {field.selectOptions?.map(
+                                             (option) => (
+                                                <MenuItem
+                                                   key={option.value}
+                                                   value={option.value}
+                                                >
+                                                   {option.label}
+                                                </MenuItem>
+                                             ),
+                                          )}
+                                       </TextField>
+                                    ))}
+                              </Box>
+                           );
+                        })}
+                     </Box>
+                  ) : (
+                     connectionFieldsByType[type].map((field) => {
+                        const existingValue =
+                           connection?.[attributesFieldName[type] ?? ""]?.[
+                              field.name ?? ""
+                           ] ?? "";
+                        // Wider than the submit path's check on purpose: a
+                        // password-typed field that nobody added to
+                        // SERVER_HELD_SECRETS still renders as a secret, so it
+                        // is never prefilled. It would, however, submit an
+                        // empty string, which reads as an explicit clear, so a
+                        // new secret field belongs in that set.
+                        const isPasswordField =
+                           field.type === "password" ||
+                           SERVER_HELD_SECRETS.has(field.name);
+                        // Whether THIS connection holds a value for THIS field,
+                        // rather than whether the field is the kind that can
+                        // hold one. Saying "leave empty to keep it" over a box
+                        // with nothing behind it is the confusion
+                        // withheldFields exists to remove.
+                        const isStored = withheldFields.has(
+                           `${attributesFieldName[type] ?? ""}.${field.name}`,
                         );
-                     })}
-                  </Box>
-               ) : (
-                  connectionFieldsByType[type].map((field) => {
-                     const existingValue =
-                        connection?.[attributesFieldName[type] ?? ""]?.[
-                           field.name ?? ""
-                        ] ?? "";
-                     // Wider than the submit path's check on purpose: a
-                     // password-typed field that nobody added to
-                     // SERVER_HELD_SECRETS still renders as a secret, so it
-                     // is never prefilled. It would, however, submit an
-                     // empty string, which reads as an explicit clear, so a
-                     // new secret field belongs in that set.
-                     const isPasswordField =
-                        field.type === "password" ||
-                        SERVER_HELD_SECRETS.has(field.name);
-                     // Whether THIS connection holds a value for THIS field,
-                     // rather than whether the field is the kind that can
-                     // hold one. Saying "leave empty to keep it" over a box
-                     // with nothing behind it is the confusion
-                     // withheldFields exists to remove.
-                     const isStored = withheldFields.has(
-                        `${attributesFieldName[type] ?? ""}.${field.name}`,
-                     );
-                     return (
-                        <TextField
-                           key={field.name}
-                           id={field.name}
-                           name={field.name}
-                           label={field.label}
-                           type={field.type}
-                           fullWidth
-                           size="small"
-                           required={
-                              field.required &&
-                              !isPasswordField &&
-                              !existingValue
-                           }
-                           defaultValue={existingValue}
-                           placeholder={
-                              isStored
-                                 ? "Leave empty to keep existing"
-                                 : undefined
-                           }
-                           helperText={
-                              isPasswordField
-                                 ? isStored
-                                    ? "Stored value is not shown. Leave empty to keep it."
-                                    : "No value stored."
-                                 : undefined
-                           }
-                        />
-                     );
-                  })
-               )}
+                        return (
+                           <TextField
+                              key={field.name}
+                              id={field.name}
+                              name={field.name}
+                              label={field.label}
+                              type={field.type}
+                              fullWidth
+                              size="small"
+                              required={
+                                 field.required &&
+                                 !isPasswordField &&
+                                 !existingValue
+                              }
+                              defaultValue={existingValue}
+                              placeholder={
+                                 isStored
+                                    ? "Leave empty to keep existing"
+                                    : undefined
+                              }
+                              helperText={
+                                 isPasswordField
+                                    ? isStored
+                                       ? "Stored value is not shown. Leave empty to keep it."
+                                       : "No value stored."
+                                    : undefined
+                              }
+                           />
+                        );
+                     })
+                  )}
+               </Stack>
             </form>
          </AppDialog>
       </React.Fragment>
