@@ -583,7 +583,7 @@ and a reload that fails to compile leaves the previously compiled model serving.
 [AGENTS.md](../AGENTS.md) §6 covers the edit loop and watch mode.
 
 **Editing in the Console.** Every dashboard page has an **Edit** button, and the package page has
-**New dashboard**: pick a model, a source, the view for the first tile and a title, and the file is
+an **Add dashboard** control: pick a model, a source, the view for the first tile and a title, and the file is
 written into the package and opened in the builder. The builder's **Save** writes the file back
 through `PUT …/models/dashboards/<name>.malloy`, which compiles the text first, writes it
 atomically, reloads the package in place, and restores the previous text if the reload does not
