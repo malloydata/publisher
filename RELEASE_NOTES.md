@@ -31,7 +31,7 @@ One behaviour change to know about: `skills-npm.yml` now publishes only from `ma
 
 ---
 
-## [Unreleased] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
+## [0.4.0] (BREAKING) — materializations are package-scoped, and the environment-wide list is gone
 
 A materialization is a run of one package's persist sources: `package_name` is NOT NULL on the row, every create takes a package, and the scheduler arms per package. The environment page nonetheless carried a second materializations surface on top of that — a cross-package list, plus a dialog that ticked packages and fired one ordinary per-package create for each — which read like a level of its own while offering strictly less than the package's own page. It is gone, and so is the one endpoint behind it, an aggregate that was the per-package query with the package predicate dropped.
 
@@ -39,7 +39,7 @@ A materialization is a run of one package's persist sources: `package_name` is N
 
 **One thing comes back.** That aggregate had to be matched ahead of `…/packages/{packageName}`, which reserved `materializations` as a package name nobody could use. The reservation is lifted.
 
-## [Unreleased] — the Console writes a dashboard into the package: a save endpoint, create, and drafts
+## [0.4.0] — the Console writes a dashboard into the package: a save endpoint, create, and drafts
 
 The dashboard builder shipped in 0.3.1 with an Export button: it handed back a copy of the file for someone to put in the package by hand. The Console now closes the loop instead.
 
@@ -51,11 +51,11 @@ The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{pat
 
 **In the Console:** Save writes into the package when the server takes writes, superseding a browser draft of the same file; a read-only server keeps the browser-draft flow. The package page gains an **Add dashboard** control (model, a source it declares, the first tile's view, a title) and a **Drafts** section listing this browser's saved dashboards, to open or delete. **Export is gone**, because Save is what it stood in for.
 
-## [Unreleased] — the bundled examples no longer ship a notebook
+## [0.4.0] — the bundled examples no longer ship a notebook
 
 `examples/storefront/storefront.malloynb` and `examples/governed-analytics/orders.malloynb` are removed. The `.malloynb` format is deprecated: read-only support stays, and a package that ships one still renders it, but a new narrative surface should be a dashboard until the authored notebook format lands. [docs/choosing-a-surface.md](docs/choosing-a-surface.md) says which surface to reach for.
 
-## [Unreleased] — a failed connection test no longer returns the password
+## [0.4.0] — a failed connection test no longer returns the password
 
 `POST /api/v0/connections/test` put the driver's error verbatim into `errorMessage`, and a DuckDB attach failure echoes the whole connection string — so testing a Postgres, DuckLake, or DuckDB-with-attachments connection that could not connect sent its cleartext password back to the caller, and wrote it to the server log. Both now go through the redaction the service already applied to its own copy, on the attach path as well as the controller's catch.
 
@@ -65,7 +65,7 @@ The precondition is `expectedHash`, the SHA-256 of the text `GET …/models/{pat
 
 **One new refusal.** A duckdb or ducklake connection name becomes a `<name>.duckdb` filename, so an unsafe one is now a 400 rather than a test that runs and fails. Names on every other connection type are unaffected.
 
-## [Unreleased] — a materialized source's `where:` reaches the serve shape
+## [0.4.0] — a materialized source's `where:` reaches the serve shape
 
 A source's filter is part of what the source means, and the `storage=` tier was dropping it. The build SQL is the persisted relation alone, and the serve shape re-declared only dimensions, measures, joins and views — so the tier answered with **every row the source excludes**, silently, because a dropped filter still compiles. The colocated tier was never affected: substitution swaps only the `FROM` and leaves the reading query's own `WHERE` in place.
 
@@ -75,7 +75,7 @@ A source's filter is part of what the source means, and the `storage=` tier was 
 
 **If you were affected:** only a server running `PERSIST_STORAGE_MODE=on` served from the tier at all, and only a source carrying a `where:` answered wrongly — but every query against one of those, aggregates included, has been counting rows the filter excludes. The filter is applied when the artifact is read, not when it is built, so upgrading is enough: no rebuild, and nothing in the package changes. To confirm, compare a count against the same query served live.
 
-## [Unreleased] — a storage build reaches a proxied Postgres source through its tunnel
+## [0.4.0] — a storage build reaches a proxied Postgres source through its tunnel
 
 A `storage=` build of a source on a Postgres connection that carries a `proxy` (an SSH tunnel to the tenant's bastion) failed on every attempt with `Unable to connect to Postgres at "host=<the database's own host> …": Connection timed out`, after a full TCP timeout per source. The query path opens the tunnel and connects through it; the build path handed DuckDB's `postgres` extension the connection's own host and port, which the bastion exists to keep unreachable. A proxied connection had never been built into a storage destination before — the passthrough was proven on BigQuery and Snowflake, whose federation has no network hop.
 
