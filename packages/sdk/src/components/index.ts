@@ -5,6 +5,10 @@
 // failures through it; a host composing those needs the same presentation for
 // its own.
 export { ApiErrorDisplay, type ApiErrorDisplayProps } from "./ApiErrorDisplay";
+// The Console's button roles; see `buttons.tsx`. Exported so a host — the
+// Publisher app included — builds its own screens out of the same four.
+export { AddButton, SecondaryButton } from "./buttons";
+export { BackLink } from "./BackLink";
 export { useRouterClickHandler, type NavigationClick } from "./click_helper";
 export * from "./Dashboard";
 export * from "./DataAppViewer";

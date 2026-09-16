@@ -3,8 +3,9 @@
 
 import AddIcon from "@mui/icons-material/Add";
 import FilterListIcon from "@mui/icons-material/FilterList";
-import { Button, Chip, Stack, Tooltip, Typography } from "@mui/material";
+import { Box, Chip, Stack, Tooltip, Typography } from "@mui/material";
 import type { ReactNode } from "react";
+import { SecondaryButton } from "../buttons";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { BuilderControl } from "./controls";
 
@@ -107,16 +108,15 @@ export function FilterStrip({
                      </Tooltip>
                   );
                })}
-               <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<AddIcon fontSize="small" />}
-                  onClick={() => onAdd()}
-                  sx={{ ml: "auto" }}
-                  aria-label="Add filter"
-               >
-                  Filter
-               </Button>
+               <Box sx={{ ml: "auto" }}>
+                  <SecondaryButton
+                     label="Filter"
+                     icon={<AddIcon />}
+                     onClick={() => onAdd()}
+                     ariaLabel="Add filter"
+                     ariaHasPopup="dialog"
+                  />
+               </Box>
             </Stack>
 
             {children}

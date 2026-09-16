@@ -7,16 +7,10 @@ import {
    type Theme,
    type ThemeMode,
 } from "@malloy-publisher/sdk";
+import { SecondaryButton } from "@malloy-publisher/sdk";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import {
-   Box,
-   Button,
-   IconButton,
-   Stack,
-   Tooltip,
-   Typography,
-} from "@mui/material";
+import { Box, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { useRef } from "react";
 import { ColorPickerField } from "../ColorPickerField";
 import { BarChartPreview } from "../previews/BarChartPreview";
@@ -204,16 +198,13 @@ export function SeriesColorsSection({
             ))}
          </Box>
          <Box>
-            <Button
-               variant="outlined"
-               size="small"
-               startIcon={<AddIcon />}
-               aria-label="Add color"
+            <SecondaryButton
+               label="Color"
+               icon={<AddIcon />}
                onClick={addColor}
                disabled={disabled}
-            >
-               Color
-            </Button>
+               ariaLabel="Add color"
+            />
          </Box>
       </Box>
    );

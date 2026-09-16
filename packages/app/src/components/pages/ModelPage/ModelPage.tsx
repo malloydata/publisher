@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   BackLink,
    DataAppViewer,
    encodeResourceUri,
    Model,
    packageFileUrl,
+   useRouterClickHandler,
    useServer,
 } from "@malloy-publisher/sdk";
 import Box from "@mui/material/Box";
@@ -21,6 +23,9 @@ function ModelPage() {
    const params = useParams();
    const modelPath = params["*"];
    const { server } = useServer();
+   // Every branch below has the same parent, the package, so the way up is
+   // built once here.
+   const navigate = useRouterClickHandler();
    if (!params.environmentName) {
       return (
          <div>
@@ -100,7 +105,20 @@ function ModelPage() {
          packageName: params.packageName,
          modelPath: dataAppPath,
       });
-      return <DataAppViewer resourceUri={dataAppResourceUri} />;
+      return (
+         <Box sx={wrapperSx}>
+            <BackLink
+               label={params.packageName}
+               onClick={(event) =>
+                  navigate(
+                     `/${params.environmentName}/${params.packageName}`,
+                     event,
+                  )
+               }
+            />
+            <DataAppViewer resourceUri={dataAppResourceUri} />
+         </Box>
+      );
    }
 
    const resourceUri = encodeResourceUri({
@@ -112,6 +130,15 @@ function ModelPage() {
    if (modelPath?.endsWith(".malloy")) {
       return (
          <Box sx={wrapperSx}>
+            <BackLink
+               label={params.packageName}
+               onClick={(event) =>
+                  navigate(
+                     `/${params.environmentName}/${params.packageName}`,
+                     event,
+                  )
+               }
+            />
             <Model
                resourceUri={resourceUri}
                runOnDemand={true}
@@ -146,6 +173,15 @@ function ModelPage() {
    });
    return (
       <Box sx={wrapperSx}>
+         <BackLink
+            label={params.packageName}
+            onClick={(event) =>
+               navigate(
+                  `/${params.environmentName}/${params.packageName}`,
+                  event,
+               )
+            }
+         />
          <Typography variant="h6" sx={{ fontWeight: 600 }}>
             Nothing to open at this path
          </Typography>
@@ -185,14 +221,7 @@ function ModelPage() {
             </Typography>
          )}
          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            <Link
-               href={`/${encodeURIComponent(params.environmentName)}/${encodeURIComponent(
-                  params.packageName,
-               )}`}
-            >
-               Back to {params.packageName}
-            </Link>{" "}
-            lists this package&apos;s models, notebooks, and data apps.
+            The package lists its models, notebooks, and data apps.
          </Typography>
       </Box>
    );

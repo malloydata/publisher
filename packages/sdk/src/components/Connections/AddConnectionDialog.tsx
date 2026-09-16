@@ -23,7 +23,7 @@ import {
    ConnectionTypeEnum,
    DucklakeConnection,
 } from "../../client/api";
-import { AddButton } from "../AddButton";
+import { AddButton, SecondaryButton } from "../buttons";
 import {
    attachedDatabaseConnectionFieldName,
    attributesFieldName,
@@ -640,15 +640,12 @@ export default function AddConnectionDialog({
                            <Typography variant="subtitle1" fontWeight={500}>
                               Attached Databases
                            </Typography>
-                           <Button
-                              startIcon={<AddIcon />}
+                           <SecondaryButton
+                              label="Database"
+                              icon={<AddIcon />}
                               onClick={addAttachedDatabase}
-                              size="small"
-                              variant="outlined"
-                              aria-label="Add database"
-                           >
-                              Database
-                           </Button>
+                              ariaLabel="Add database"
+                           />
                         </Box>
                         {attachedDatabases.length === 0 && (
                            <Typography

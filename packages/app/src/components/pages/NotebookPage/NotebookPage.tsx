@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   BackLink,
    encodeResourceUri,
    Notebook,
    useGivenUrlParams,
@@ -37,6 +38,12 @@ export default function NotebookPage({
 
    return (
       <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
+         <BackLink
+            label={packageName}
+            onClick={(event) =>
+               navigate(`/${environmentName}/${packageName}`, event)
+            }
+         />
          <Notebook
             resourceUri={encodeResourceUri({
                environmentName,

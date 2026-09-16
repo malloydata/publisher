@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
@@ -13,7 +12,6 @@ import {
    DialogContent,
    DialogTitle,
    IconButton,
-   Link,
    Table,
    TableBody,
    TableCell,
@@ -39,7 +37,8 @@ import ContentTypeIcon, {
    CONTENT_TINT,
    type ContentType,
 } from "./ContentTypeIcon";
-import { AddButton } from "../AddButton";
+import { AddButton } from "../buttons";
+import { BackLink } from "../BackLink";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
 import { PackageSection } from "../PackageSection";
@@ -275,25 +274,10 @@ export default function Package({
          sx={{ maxWidth: 1024, mx: "auto", px: 3, py: 6 }}
       >
          <Box sx={{ mb: 4 }}>
-            <Link
-               onClick={(event: React.MouseEvent) =>
-                  onClick(`/${environmentName}/`, event)
-               }
-               underline="none"
-               sx={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 0.5,
-                  cursor: "pointer",
-                  color: "text.secondary",
-                  fontSize: "0.875rem",
-                  mb: 2,
-                  "&:hover": { color: "primary.main" },
-               }}
-            >
-               <ArrowBackIcon sx={{ fontSize: 18 }} />
-               Back to {environmentName}
-            </Link>
+            <BackLink
+               label={environmentName}
+               onClick={(event) => onClick(`/${environmentName}/`, event)}
+            />
             <Typography
                variant="h4"
                component="h1"

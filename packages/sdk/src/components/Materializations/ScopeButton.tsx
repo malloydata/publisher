@@ -3,15 +3,9 @@
 
 import CheckIcon from "@mui/icons-material/Check";
 import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
-import {
-   Button,
-   ListItemIcon,
-   ListItemText,
-   Menu,
-   MenuItem,
-   Tooltip,
-} from "@mui/material";
+import { ListItemIcon, ListItemText, Menu, MenuItem } from "@mui/material";
 import { useState } from "react";
+import { SecondaryButton } from "../buttons";
 
 export type Scope = "package" | "version";
 
@@ -50,30 +44,19 @@ export default function ScopeButton({
       if (next !== scope) await onChange(next).catch(() => undefined);
    };
 
-   const button = (
-      <span>
-         <Button
-            variant="outlined"
-            startIcon={<LayersOutlinedIcon />}
-            onClick={(event) => setAnchor(event.currentTarget)}
-            disabled={disabled || isSubmitting}
-            aria-haspopup="menu"
-            // The value is in the name, so the current scope is legible without
-            // opening the menu and a test can assert it.
-            aria-label={`Scope: ${scope}`}
-         >
-            Scope
-         </Button>
-      </span>
-   );
-
    return (
       <>
-         {disabled && disabledReason ? (
-            <Tooltip title={disabledReason}>{button}</Tooltip>
-         ) : (
-            button
-         )}
+         <SecondaryButton
+            label="Scope"
+            icon={<LayersOutlinedIcon />}
+            onClick={(event) => setAnchor(event.currentTarget)}
+            disabled={disabled || isSubmitting}
+            {...(disabledReason ? { disabledReason } : {})}
+            ariaHasPopup="menu"
+            // The value is in the name, so the current scope is legible without
+            // opening the menu and a test can assert it.
+            ariaLabel={`Scope: ${scope}`}
+         />
          <Menu
             anchorEl={anchor}
             open={Boolean(anchor)}

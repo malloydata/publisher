@@ -20,7 +20,7 @@ import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
 import { DOC_LINKS } from "../../constants/docLinks";
 import { useServer } from "../ServerProvider";
-import { AddButton } from "../AddButton";
+import { AddButton } from "../buttons";
 
 interface AddPackageDialogProps {
    resourceUri: string;
@@ -168,7 +168,6 @@ export default function AddPackageDialog({
             </DialogContent>
             <DialogActions sx={{ px: 3, pt: 2, pb: 3, gap: 1 }}>
                <Button
-                  variant="outlined"
                   disabled={addPackage.isPending}
                   onClick={() => setOpen(false)}
                >

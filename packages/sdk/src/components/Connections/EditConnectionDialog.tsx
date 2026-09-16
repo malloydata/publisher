@@ -35,6 +35,7 @@ import {
    s3AttachedDatabaseFields,
    uiCreatableConnectionTypes,
 } from "./common";
+import { SecondaryButton } from "../buttons";
 
 /**
  * Credential fields the API deliberately never returns, so an edit form can
@@ -797,15 +798,12 @@ export default function EditConnectionDialog({
                            <Typography variant="subtitle1" fontWeight={500}>
                               Attached Databases
                            </Typography>
-                           <Button
-                              startIcon={<AddIcon />}
+                           <SecondaryButton
+                              label="Database"
+                              icon={<AddIcon />}
                               onClick={addAttachedDatabase}
-                              size="small"
-                              variant="outlined"
-                              aria-label="Add database"
-                           >
-                              Database
-                           </Button>
+                              ariaLabel="Add database"
+                           />
                         </Box>
                         {attachedDatabases.length === 0 && (
                            <Typography

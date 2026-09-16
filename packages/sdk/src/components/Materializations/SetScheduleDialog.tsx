@@ -12,11 +12,11 @@ import {
    DialogContentText,
    DialogTitle,
    TextField,
-   Tooltip,
    Typography,
 } from "@mui/material";
 import { useState } from "react";
 import { MONO_FONT_FAMILY } from "../styles";
+import { SecondaryButton } from "../buttons";
 import { describeCron, formatNextRun } from "./cron";
 
 type SetScheduleDialogProps = {
@@ -59,29 +59,19 @@ export default function SetScheduleDialog({
       }
    };
 
-   const button = (
-      <span>
-         <Button
-            variant="outlined"
-            startIcon={<ScheduleIcon />}
-            onClick={handleOpen}
-            disabled={disabled}
-            // The label is the noun, like every other control on this row; the
-            // accessible name keeps the verb, and says which verb it is.
-            aria-label={currentSchedule ? "Edit schedule" : "Set schedule"}
-         >
-            Schedule
-         </Button>
-      </span>
-   );
-
    return (
       <>
-         {disabled && disabledReason ? (
-            <Tooltip title={disabledReason}>{button}</Tooltip>
-         ) : (
-            button
-         )}
+         <SecondaryButton
+            label="Schedule"
+            icon={<ScheduleIcon />}
+            onClick={handleOpen}
+            disabled={disabled}
+            {...(disabledReason ? { disabledReason } : {})}
+            ariaHasPopup="dialog"
+            // The label is the noun, like every other control on this row; the
+            // accessible name keeps the verb, and says which verb it is.
+            ariaLabel={currentSchedule ? "Edit schedule" : "Set schedule"}
+         />
 
          <Dialog
             open={open}

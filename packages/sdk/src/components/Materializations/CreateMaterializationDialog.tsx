@@ -14,7 +14,7 @@ import {
    Tooltip,
 } from "@mui/material";
 import { useState } from "react";
-import { AddButton } from "../AddButton";
+import { AddButton } from "../buttons";
 
 type CreateMaterializationDialogProps = {
    onSubmit: (opts: { forceRefresh: boolean }) => Promise<unknown>;

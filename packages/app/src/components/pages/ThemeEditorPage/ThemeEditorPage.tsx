@@ -1,7 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { useServer, type Theme, type ThemeMode } from "@malloy-publisher/sdk";
+import {
+   BackLink,
+   SecondaryButton,
+   useServer,
+   type Theme,
+   type ThemeMode,
+} from "@malloy-publisher/sdk";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
@@ -25,6 +31,7 @@ import {
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { MapsSection } from "./sections/MapsSection";
 import { SeriesColorsSection } from "./sections/SeriesColorsSection";
 import { TablesSection } from "./sections/TablesSection";
@@ -43,6 +50,7 @@ export default function ThemeEditorPage() {
    const { apiClients } = useServer();
    const queryClient = useQueryClient();
 
+   const navigate = useNavigate();
    const themeQuery = useQuery({
       queryKey: ["theme"],
       queryFn: async () => {
@@ -253,6 +261,7 @@ export default function ThemeEditorPage() {
 
    return (
       <Box sx={{ p: 4, maxWidth: 980, mx: "auto" }}>
+         <BackLink label="Publisher" onClick={() => navigate("/")} />
          <Stack
             direction="row"
             justifyContent="space-between"
@@ -260,7 +269,11 @@ export default function ThemeEditorPage() {
             sx={{ mb: 3 }}
          >
             <Box>
-               <Typography variant="h4" sx={{ fontWeight: 600, mb: 1 }}>
+               <Typography
+                  variant="h4"
+                  component="h1"
+                  sx={{ fontWeight: 600, mb: 1 }}
+               >
                   Visualization theme
                </Typography>
                <Typography variant="body2" color="text.secondary">
@@ -269,15 +282,12 @@ export default function ThemeEditorPage() {
                   automatically and apply to every viewer on next page load.
                </Typography>
             </Box>
-            <Button
-               variant="outlined"
-               size="small"
-               startIcon={<RestartAltIcon />}
+            <SecondaryButton
+               label="Reset to defaults"
+               icon={<RestartAltIcon />}
                disabled={frozen || resetMutation.isPending}
                onClick={() => setConfirmResetOpen(true)}
-            >
-               Reset to defaults
-            </Button>
+            />
          </Stack>
 
          {frozen && (

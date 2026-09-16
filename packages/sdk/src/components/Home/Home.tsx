@@ -41,29 +41,19 @@ interface HomeProps {
  */
 const FEATURES: Array<{ title: string; body: string; href: string }> = [
    {
-      title: "Ad-hoc analysis",
-      body: "Browse the semantic sources on this server and build nested queries in Explorer. Every click writes valid Malloy, so metrics stay correct even across joins.",
-      href: DOC_LINKS.explorer,
+      title: "Model",
+      body: "An agent writes what the data means in Malloy — sources, joins, measures — from a warehouse or a file, and validates each edit without a restart.",
+      href: DOC_LINKS.publishing,
    },
    {
-      title: "Notebooks",
-      body: "A data story: markdown and live query cells in one file, versioned beside the model it reads. Any givens it imports become a panel of filter controls above the cells.",
-      href: DOC_LINKS.surfaces,
-   },
-   {
-      title: "Dashboards",
-      body: "A tagged Malloy file is the page. Tags lay out the grid, the filter row is rendered from the query's parameters, and a tagged dimension clicks through to a detail page. No front-end code.",
-      href: DOC_LINKS.dashboards,
-   },
-   {
-      title: "Data apps",
-      body: "Hand-author an HTML page in a package's public directory and Publisher serves it, backed by that package's models. No build step, and it embeds in a host page.",
-      href: DOC_LINKS.dataApps,
-   },
-   {
-      title: "AI data agents",
-      body: "One MCP endpoint. Agents discover the sources, compile-check the Malloy they write, and ask well-formed questions instead of guessing at raw tables.",
+      title: "Analyze",
+      body: "Claude, Cursor, Codex or an agent you build asks over MCP; applications and BI tools use REST. Every question runs against the model, never the raw tables.",
       href: DOC_LINKS.mcpAgents,
+   },
+   {
+      title: "Surface",
+      body: "Dashboards declared in Malloy, notebooks, and no-build HTML data apps, all shipped inside the package, plus this Console for browsing them.",
+      href: DOC_LINKS.surfaces,
    },
    {
       // Deliberately not "so every caller sees only their rows". Givens are
@@ -71,9 +61,19 @@ const FEATURES: Array<{ title: string; body: string; href: string }> = [
       // a boundary on its own; `#(authorize)` is the thing that refuses. What is
       // true, and what this says, is that the declarations live in the model, so
       // no surface can define its own.
-      title: "Governed access",
-      body: "Runtime parameters, row-level filters, and per-source access gates are declared in the model, so every surface reads the same rules rather than reimplementing them.",
+      title: "Govern",
+      body: "Runtime parameters, row-level filters and per-source gates are declared in the model, so every surface reads the same rules rather than writing its own.",
       href: DOC_LINKS.givens,
+   },
+   {
+      title: "Optimize",
+      body: "One annotation materializes an expensive source into a table, and another rolls a measure up to a coarser grain, rebuilt on demand or on a schedule.",
+      href: DOC_LINKS.materialization,
+   },
+   {
+      title: "Run anywhere",
+      body: "DuckDB is built in for CSV, Parquet, JSON and Excel; BigQuery, Snowflake, Postgres, Databricks, MotherDuck and more connect by configuration.",
+      href: DOC_LINKS.connections,
    },
 ];
 
@@ -133,19 +133,18 @@ export default function Home({ onClickEnvironment }: HomeProps) {
                Publisher
             </Typography>
             <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-               The open-source semantic model server for the Malloy data
-               language.
+               The analytics engine for Malloy.
             </Typography>
             <Typography
                variant="body2"
                color="text.secondary"
                sx={{ maxWidth: 720, lineHeight: 1.6 }}
             >
-               Define semantic models once and use them everywhere. Publisher
-               serves Malloy models over a REST API and a single MCP endpoint,
-               so applications, BI tools, and AI agents compose queries against
-               the model instead of writing SQL, and the numbers come back right
-               by construction.
+               One data model, served over MCP and REST to AI agents,
+               applications and BI tools. Write down what your data means — the
+               sources, the joins, the measures, who may see what — and every
+               surface asks the same model, so the same question returns the
+               same numbers tomorrow.
             </Typography>
          </Box>
 
@@ -270,22 +269,16 @@ export default function Home({ onClickEnvironment }: HomeProps) {
                 rather than a full list, because a list that reads as complete
                 while omitting Databricks is worse than a short one that says
                 it is short. */}
-            Also here:{" "}
-            <InlineLink href={DOC_LINKS.connections}>connections</InlineLink> to
-            BigQuery, Snowflake, Postgres, MySQL, Trino, DuckDB and more;{" "}
-            <InlineLink href={DOC_LINKS.materialization}>
-               materialized tables
-            </InlineLink>{" "}
-            built on demand or on a schedule; and a{" "}
+            The REST API does everything this console does, and is documented{" "}
             {/* Built from the configured server rather than written as
                 "/api-doc.html". The spec is a static file off the Publisher
                 server's root, and an SDK consumer's page origin need not be
                 that server: a root-relative href resolves against the host and
                 404s. serverBaseUrl exists for exactly this. */}
             <InlineLink href={`${serverBaseUrl(server)}/api-doc.html`}>
-               REST API
-            </InlineLink>{" "}
-            that does everything this console does.
+               here
+            </InlineLink>
+            .
          </Typography>
 
          <Typography

@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   BackLink,
    Dashboard,
    encodeResourceUri,
+   SecondaryButton,
    useGivenUrlParams,
 } from "@malloy-publisher/sdk";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
-import { Box, Button, Stack } from "@mui/material";
+import { Box, Stack } from "@mui/material";
 import { useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { logDashboardEvent } from "../../../utils/dashboardTelemetry";
@@ -47,15 +49,19 @@ export default function DashboardPage({
 
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
-         <Stack direction="row" sx={{ justifyContent: "flex-end", mb: 1 }}>
-            <Button
-               size="small"
-               variant="outlined"
-               startIcon={<EditOutlinedIcon fontSize="small" />}
+         <Stack
+            direction="row"
+            sx={{ justifyContent: "space-between", alignItems: "center" }}
+         >
+            <BackLink
+               label={packageName}
+               onClick={() => navigate(`/${environmentName}/${packageName}`)}
+            />
+            <SecondaryButton
+               label="Edit"
+               icon={<EditOutlinedIcon />}
                onClick={() => navigate(`${pathname.replace(/\/$/, "")}/edit`)}
-            >
-               Edit
-            </Button>
+            />
          </Stack>
          <Dashboard
             resourceUri={encodeResourceUri({ environmentName, packageName })}

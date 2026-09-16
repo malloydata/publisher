@@ -14,7 +14,7 @@ import React, { useState } from "react";
 import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
 import { generateEnvironmentReadme } from "../../utils/parsing";
 import { useServer } from "../ServerProvider";
-import { AddButton } from "../AddButton";
+import { AddButton } from "../buttons";
 
 export default function AddEnvironmentDialog() {
    const [open, setOpen] = useState(false);

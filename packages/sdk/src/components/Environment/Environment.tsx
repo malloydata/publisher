@@ -4,6 +4,7 @@
 import { Box, Container, Stack, Typography } from "@mui/material";
 import { useEffect } from "react";
 import { parseResourceUri } from "../../utils/formatting";
+import { BackLink } from "../BackLink";
 import { useServer } from "../ServerProvider";
 import About from "./About";
 import AddPackageDialog from "./AddPackageDialog";
@@ -32,6 +33,15 @@ export default function Environment({
          sx={{ maxWidth: 1024, mx: "auto", px: 4, py: 3 }}
       >
          <Box sx={{ mb: 5 }}>
+            {/* The environment's parent is the server itself, which is what
+                home lists. `onSelectPackage` is this component's one navigation
+                hook; the name is narrow but the job is not. */}
+            <Box>
+               <BackLink
+                  label="Publisher"
+                  onClick={(event) => onSelectPackage("/", event)}
+               />
+            </Box>
             <Typography
                variant="h4"
                component="h1"
