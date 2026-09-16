@@ -9,7 +9,7 @@
  * prop alone.
  */
 import { beforeEach, expect, it, mock } from "bun:test";
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
    cacheKeys,
    clearCache,
@@ -54,7 +54,7 @@ it("puts the version in the request body and in the key", async () => {
 
    await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
    expect(executeQueryModel.mock.calls[0][3].versionId).toBe("v2");
-   expect(cacheKeys("dashboardTile")[0]).toContain('"v2"');
+   expect(cacheKeys("queryResult")[0]).toContain('"v2"');
 });
 
 it("sends and keys nothing extra without one", async () => {
@@ -64,9 +64,9 @@ it("sends and keys nothing extra without one", async () => {
    expect(executeQueryModel.mock.calls[0][3].versionId).toBeUndefined();
    // The whole key: an empty slot rather than a literal "undefined", and
    // nothing else disturbed. The narrow assertion above cannot see either.
-   expect(cacheKeys("dashboardTile")[0]).toBe(
-      '["dashboardTile","env","pkg",null,"dashboards/ops.malloy",null,' +
-         '"sales_by_month","{}","http://localhost/api/v0"]',
+   expect(cacheKeys("queryResult")[0]).toBe(
+      '["queryResult","env","pkg",null,"dashboards/ops.malloy",null,' +
+         '"run: sales_by_month",null,"{}","http://localhost/api/v0"]',
    );
 });
 
@@ -77,5 +77,29 @@ it("keeps two versions of one tile apart", async () => {
    rerender(tileAt("v2"));
 
    await waitFor(() => expect(executeQueryModel).toHaveBeenCalledTimes(2));
-   expect(new Set(cacheKeys("dashboardTile")).size).toBe(2);
+   expect(new Set(cacheKeys("queryResult")).size).toBe(2);
+});
+
+it("offers to explore from the tile when the host can take it somewhere", () => {
+   const onExplore = mock(() => {});
+   render(
+      <DashboardTile
+         environmentName="env"
+         packageName="pkg"
+         modelPath="dashboards/ops.malloy"
+         tile="overview -> sales_by_month"
+         givens={new Map()}
+         declaredTypes={new Map()}
+         height={400}
+         onExplore={onExplore}
+      />,
+      { wrapper: serverWrapper },
+   );
+   fireEvent.click(screen.getByLabelText("Explore Sales by month"));
+   expect(onExplore).toHaveBeenCalledTimes(1);
+});
+
+it("has no explore button when the host offers nowhere to go", () => {
+   render(tileAt(), { wrapper: serverWrapper });
+   expect(screen.queryByLabelText(/^Explore /)).toBeNull();
 });

@@ -16,8 +16,14 @@
  * deps, so it's safe to bundle into the worker entry).
  */
 
+import {
+   isSourceDef,
+   type ModelDef,
+   type NamedQueryDef,
+} from "@malloydata/malloy";
 import type { Annotations } from "@malloydata/malloy";
 import { isReservedRoute } from "./annotations";
+import { referencedGivenNames } from "./authorize";
 import type { Tag } from "@malloydata/malloy-tag";
 import { motlyTag, tagNumeric, tagText } from "./motly";
 
@@ -49,6 +55,16 @@ export interface GivenSuggestSpec {
    query?: string;
    source?: string;
    dimension?: string;
+   /**
+    * The givens the suggest query needs in its request to RUN: those the
+    * source it reads is scoped by (a source-level `where: … ~ $X`) or gated by
+    * (an `#(authorize)` expression reading `$X`), plus, for the `query=` form,
+    * the ones the named query itself references. A client sends the current
+    * values of exactly these and nothing else, so a gated source's options load
+    * while the option list still does not depend on the page's other filters.
+    * Absent when the query needs none, or from a server too old to say.
+    */
+   givenNames?: string[];
 }
 
 /**
@@ -254,4 +270,127 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
       default: (given as { _internal?: { defaultText?: string } })._internal
          ?.defaultText,
    };
+}
+
+/**
+ * Collect the given names referenced anywhere in a slice of Malloy IR.
+ *
+ * A view's `TurtleDef` carries no `givenUsage` summary the way a `Query` does,
+ * but its pipeline holds the `{ node: 'given', refName }` reference nodes
+ * themselves, so a structural walk answers the same question exactly.
+ */
+export function collectGivenRefs(value: unknown, into: Set<string>): void {
+   if (Array.isArray(value)) {
+      for (const item of value) collectGivenRefs(item, into);
+      return;
+   }
+   if (value === null || typeof value !== "object") return;
+   const node = value as Record<string, unknown>;
+   if (node.node === "given" && typeof node.refName === "string") {
+      into.add(node.refName);
+   }
+   for (const child of Object.values(node)) collectGivenRefs(child, into);
+}
+
+/**
+ * Which givens a query over a source, or a named query, needs in its request.
+ * Both answer with names in first-seen order, or undefined for an unknown name.
+ */
+export interface SuggestGivenLookup {
+   forSource(name: string): string[] | undefined;
+   forQuery(name: string): string[] | undefined;
+}
+
+/**
+ * Build the lookup a `suggest` is resolved against, from a compiled model.
+ *
+ * A source's names are the givens its own `where:` reads plus the ones its
+ * EFFECTIVE `#(authorize)` gate reads; the caller supplies the gate expressions
+ * per source because inheritance (`extend` of a gated base) is resolved by
+ * `extractSourcesFromModelDef`, not here. A named query's names are its own
+ * `givenUsage` plus its source's. `surfaced`, when given, narrows every answer
+ * to names the entry can actually bind, since sending any other guarantees an
+ * "unknown given" error.
+ */
+export function suggestGivenLookup(
+   modelDef: ModelDef,
+   authorizeBySource: (source: string) => readonly string[] | undefined,
+   surfaced?: ReadonlySet<string>,
+): SuggestGivenLookup {
+   const registry = modelDef.givens ?? {};
+   const bySource = new Map<string, string[]>();
+   const byQuery = new Map<string, { own: string[]; source?: string }>();
+   for (const obj of Object.values(modelDef.contents)) {
+      if (isSourceDef(obj)) {
+         const name = obj.as || obj.name;
+         const refs = new Set<string>();
+         collectGivenRefs(obj.filterList, refs);
+         for (const expr of authorizeBySource(name) ?? []) {
+            for (const given of referencedGivenNames(expr)) refs.add(given);
+         }
+         bySource.set(name, Array.from(refs));
+      } else if (obj.type === "query") {
+         const query = obj as NamedQueryDef;
+         byQuery.set(query.as || query.name, {
+            own: (query.givenUsage ?? [])
+               .map((usage) => registry[usage.id]?.name)
+               .filter((n): n is string => n !== undefined),
+            source:
+               typeof query.structRef === "string"
+                  ? query.structRef
+                  : undefined,
+         });
+      }
+   }
+   const narrow = (names: string[]) =>
+      Array.from(new Set(names)).filter(
+         (name) => surfaced === undefined || surfaced.has(name),
+      );
+   return {
+      forSource: (name) => {
+         const found = bySource.get(name);
+         return found && narrow(found);
+      },
+      forQuery: (name) => {
+         const found = byQuery.get(name);
+         if (!found) return undefined;
+         return narrow([
+            ...found.own,
+            ...(found.source ? (bySource.get(found.source) ?? []) : []),
+         ]);
+      },
+   };
+}
+
+/**
+ * The `givenNames` for one suggest block, or undefined when it needs none or
+ * names something the lookup does not know (a target the lint reports).
+ */
+export function suggestGivenNames(
+   suggest: GivenSuggestSpec,
+   lookup: SuggestGivenLookup,
+): string[] | undefined {
+   const names =
+      suggest.query !== undefined
+         ? lookup.forQuery(suggest.query)
+         : suggest.source !== undefined
+           ? lookup.forSource(suggest.source)
+           : undefined;
+   return names && names.length > 0 ? names : undefined;
+}
+
+/**
+ * Fill in `suggest.givenNames` on every given that has a suggest block, in
+ * place, so the same objects the sources carry see it too.
+ */
+export function attachSuggestGivenNames(
+   givens: readonly MalloyGivenApi[] | undefined,
+   lookup: SuggestGivenLookup,
+): void {
+   for (const given of givens ?? []) {
+      if (!given.suggest) continue;
+      const names = suggestGivenNames(given.suggest, lookup);
+      if (names) given.suggest.givenNames = names;
+      else delete given.suggest.givenNames;
+   }
 }

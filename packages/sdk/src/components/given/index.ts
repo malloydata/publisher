@@ -7,3 +7,7 @@ export {
    type GivensLayout,
    type GivensPanelProps,
 } from "./GivensPanel";
+export {
+   useGivenUrlParams,
+   type UseGivenUrlParamsResult,
+} from "./useGivenUrlParams";

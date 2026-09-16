@@ -447,3 +447,161 @@ describe("useGivensState: swapping documents", () => {
       expect(entries(result.current.applied)).toEqual({});
    });
 });
+
+describe("useGivensState: clearing a given that has a starting value", () => {
+   // The limitation this hook used to document. A clear dropped the name from
+   // the report, the host removed it from the URL and fed that URL back in, and
+   // the changed `params` re-keyed the edits away: `initial` recomputed from the
+   // starting values and the control snapped back to what was just cleared.
+   it("stays cleared when the host echoes the URL back", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      expect(entries(host.current.applied)).toEqual({ REGION: "West" });
+
+      act(() => host.current.setGiven("REGION", null));
+      host.settle();
+      expect(entries(host.current.applied)).toEqual({});
+      expect(entries(host.current.draft)).toEqual({});
+      expect(host.url).toEqual({});
+   });
+
+   it("clears one starting value while keeping another", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West", MIN_AMOUNT: "5" },
+      });
+      act(() => host.current.setGiven("REGION", null));
+      host.settle();
+      expect(entries(host.current.applied)).toEqual({ MIN_AMOUNT: 5 });
+      expect(host.url).toEqual({ MIN_AMOUNT: "5" });
+   });
+
+   it("still takes a URL the host did NOT get from us, such as a drill landing", () => {
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               startingValues: { REGION: "West" },
+               params: props.params,
+               documentKey: "overview",
+               autorun: true,
+            }),
+         { initialProps: { params: {} } },
+      );
+      act(() => result.current.setGiven("REGION", null));
+      expect(entries(result.current.applied)).toEqual({});
+
+      // Not an echo: nothing this hook reported said East.
+      rerender({ params: { REGION: "East" } });
+      expect(entries(result.current.applied)).toEqual({ REGION: "East" });
+   });
+
+   it("treats a host that keeps unrelated parameters beside ours as an echo", () => {
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               startingValues: { REGION: "West" },
+               params: props.params,
+               documentKey: "overview",
+               autorun: true,
+            }),
+         { initialProps: { params: { tab: "sales" } } },
+      );
+      act(() => result.current.setGiven("REGION", null));
+      // The host writes our (empty) report but keeps its own `tab`.
+      rerender({ params: { tab: "sales" } });
+      expect(entries(result.current.applied)).toEqual({});
+      // And the same with the report carrying a value.
+      act(() => result.current.setGiven("REGION", "East"));
+      rerender({ params: { tab: "sales", REGION: "East" } });
+      expect(entries(result.current.applied)).toEqual({ REGION: "East" });
+   });
+
+   // The regression that broke notebook clearing. A report does not reach
+   // `params` in the same tick, so a re-render in between (a cell finishing, the
+   // host's callback changing identity with its location) arrives carrying the
+   // URL the report has not replaced yet. Matching only the newest report read
+   // that stale URL as an external push: the anchor moved, the edits were
+   // discarded, and `initial` put the cleared value back in the control and then
+   // wrote it to the URL again.
+   it("keeps a clear across a render that still carries the pre-report URL", () => {
+      let url: Record<string, string> = {};
+      const urlWrites: Record<string, string>[] = [];
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               params: props.params,
+               onParamsChange: (next) => {
+                  url = next;
+                  urlWrites.push(next);
+               },
+               documentKey: "notebook",
+               autorun: true,
+            }),
+         { initialProps: { params: url } },
+      );
+
+      act(() => result.current.setGiven("REGION", "East"));
+      rerender({ params: url });
+      expect(entries(result.current.applied)).toEqual({ REGION: "East" });
+
+      act(() => result.current.setGiven("REGION", null));
+      expect(url).toEqual({});
+
+      // The stale render: the host has been told, but its URL has not landed.
+      rerender({ params: { REGION: "East" } });
+      expect(entries(result.current.applied)).toEqual({});
+
+      // And then the real one.
+      rerender({ params: url });
+      expect(entries(result.current.applied)).toEqual({});
+      expect(urlWrites.at(-1)).toEqual({});
+   });
+
+   // The other half: once the newer report HAS been seen, the URL it replaced is
+   // no longer in flight, so going back to it is a real navigation.
+   it("treats the previous URL as a new starting point once the report lands", () => {
+      let url: Record<string, string> = {};
+      const { result, rerender } = renderHook(
+         (props: { params: Record<string, string> }) =>
+            useGivensState({
+               declaredTypes: TYPES,
+               params: props.params,
+               onParamsChange: (next) => {
+                  url = next;
+               },
+               documentKey: "notebook",
+               autorun: true,
+            }),
+         { initialProps: { params: url } },
+      );
+
+      act(() => result.current.setGiven("REGION", "East"));
+      rerender({ params: url });
+      act(() => result.current.setGiven("REGION", null));
+      rerender({ params: url });
+      expect(entries(result.current.applied)).toEqual({});
+
+      // Back button to the URL that carried East: a starting point, not an echo.
+      rerender({ params: { REGION: "East" } });
+      expect(entries(result.current.applied)).toEqual({ REGION: "East" });
+   });
+
+   it("Reset after a clear restores the starting value and runs once", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      act(() => host.current.setGiven("REGION", null));
+      host.settle();
+      const writes = host.urlWrites.length;
+      act(() => host.current.reset());
+      host.settle();
+      expect(entries(host.current.applied)).toEqual({ REGION: "West" });
+      expect(host.urlWrites.length).toBe(writes + 1);
+   });
+});
